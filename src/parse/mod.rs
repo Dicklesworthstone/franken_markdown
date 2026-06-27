@@ -890,7 +890,7 @@ fn split_table_row(line: &str) -> Vec<String> {
     let mut i = 0usize;
     while i < chars.len() {
         let c = chars[i];
-        if c == '`' {
+        if c == '`' && !prev_backslash {
             let ticks = run_len(&chars, i, '`');
             for _ in 0..ticks {
                 cur.push('`');

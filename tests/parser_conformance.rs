@@ -232,6 +232,14 @@ fn gfm_table_escaped_pipes_still_stay_in_the_cell() {
 }
 
 #[test]
+fn gfm_table_escaped_backticks_do_not_hide_cell_pipes() {
+    let out = html("A | B\n--- | ---\n\\` | right");
+
+    assert!(out.contains("<tr><td>`</td><td>right</td></tr>"));
+    assert!(!out.contains("<td>` | right</td><td></td>"));
+}
+
+#[test]
 fn html_blocks_escape_by_default_and_pass_through_when_allowed() {
     let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
     let escaped = html(md);

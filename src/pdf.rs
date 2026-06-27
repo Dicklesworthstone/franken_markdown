@@ -19,7 +19,7 @@ use crate::PdfOptions;
 use crate::ast::{Block, Document, Inline, List};
 use crate::error::Result;
 use crate::fonts::{self, FontStyle};
-use crate::text::Font;
+use crate::text::{Font, Kerning};
 use std::collections::BTreeSet;
 
 const PAGE_W: f32 = 612.0; // US Letter, points
@@ -284,7 +284,12 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         let Ok(font) = Font::parse(bytes.clone()) else {
             return empty_pdf();
         };
-        subsets.push(EmbeddedFace { slot, bytes, font });
+        subsets.push(EmbeddedFace {
+            slot,
+            bytes,
+            font,
+            kern: source.gpos_kerning(),
+        });
     }
 
     // Build per-page content streams, encoding text as Identity-H glyph ids.
@@ -309,12 +314,12 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         } else if !line.text.is_empty() {
             if let Some(face) = subsets.iter().find(|f| f.slot == line.font) {
                 content.push_str(&format!(
-                    "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm <{hex}> Tj ET\n",
+                    "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
                     f = line.font,
                     s = line.size,
                     x = line.x,
                     y = y,
-                    hex = glyph_hex(&face.font, &line.text),
+                    tj = kerned_tj(&face.font, faces.get(line.font), &face.kern, &line.text),
                 ));
             }
         }
@@ -333,6 +338,9 @@ struct EmbeddedFace {
     slot: u8,
     bytes: Vec<u8>,
     font: Font,
+    /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
+    /// original glyph ids — used to position glyphs in the content stream.
+    kern: Kerning,
 }
 
 fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec<u8> {
@@ -551,13 +559,29 @@ fn widths_array(font: &Font) -> String {
     s
 }
 
-/// Hex string of 2-byte glyph ids for `text` in the subset font (Identity-H).
-fn glyph_hex(font: &Font, text: &str) -> String {
-    let mut s = String::with_capacity(text.len() * 4);
-    for c in text.chars() {
-        s.push_str(&format!("{:04X}", font.glyph_index(c)));
+/// Build a `TJ` array of Identity-H glyph ids for `text`, inserting GPOS pair
+/// kerning between glyphs. `subset` gives the emitted (renumbered) glyph ids;
+/// `source` + `kern` provide the original-gid kern lookup the subset no longer
+/// carries. The bracketed array `[<hex> adj <hex> ...]` is returned without the
+/// trailing `TJ` operator.
+fn kerned_tj(subset: &Font, source: &Font, kern: &Kerning, text: &str) -> String {
+    let upm = i32::from(source.units_per_em.max(1));
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::from("[<");
+    for (i, &c) in chars.iter().enumerate() {
+        out.push_str(&format!("{:04X}", subset.glyph_index(c)));
+        if let Some(&next) = chars.get(i + 1) {
+            let k = kern.pair(source.glyph_index(c), source.glyph_index(next));
+            if k != 0 {
+                // A TJ number shifts the next glyph left by number/1000 em, so a
+                // tightening (negative) kern becomes a positive number.
+                let adj = -(i32::from(k) * 1000 / upm);
+                out.push_str(&format!(">{adj}<"));
+            }
+        }
     }
-    s
+    out.push_str(">]");
+    out
 }
 
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text

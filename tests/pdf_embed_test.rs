@@ -59,6 +59,45 @@ fn embedded_fontfile2_programs_are_valid_subsets() {
 }
 
 #[test]
+fn pdf_applies_gpos_kerning_via_tj() {
+    // Text dense in kern pairs (AV/VA/To/Wa/Ya/PA...).
+    let pdf = render_pdf(
+        "# AVALANCHE\n\nTo Wave, Yo. PAVAVA AWAY VAT.\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+    assert!(s.contains(" TJ"), "content uses TJ positioning arrays");
+
+    // Kern adjustments appear as `>{int}<` between glyph runs inside the arrays.
+    let mut nonzero = 0usize;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'>' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'<' && bytes[j] != b'>' {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'<' {
+                if let Ok(n) = s[i + 1..j].trim().parse::<i32>() {
+                    if n != 0 {
+                        nonzero += 1;
+                    }
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        nonzero > 0,
+        "expected GPOS kern adjustments in the content stream"
+    );
+}
+
+#[test]
 fn embedded_pdf_is_tiny_and_deterministic() {
     let a = render_pdf(DOC, &PdfOptions::default()).unwrap();
     let b = render_pdf(DOC, &PdfOptions::default()).unwrap();

@@ -990,12 +990,12 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 }
             }
             '<' => {
-                if let Some((url, next)) = parse_autolink(&bytes, i) {
+                if let Some((label, dest, next)) = parse_autolink(&bytes, i) {
                     flush(&mut buf, &mut out);
                     out.push(Inline::Link {
-                        dest: url.clone(),
+                        dest,
                         title: None,
-                        content: vec![Inline::Text(url)],
+                        content: vec![Inline::Text(label)],
                     });
                     i = next;
                 } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
@@ -1181,7 +1181,7 @@ fn parse_reference_link_like(
     ))
 }
 
-fn parse_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
+fn parse_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
     if chars.get(i) != Some(&'<') {
         return None;
     }
@@ -1192,12 +1192,13 @@ fn parse_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
         j += 1;
     }
     if chars.get(j) == Some(&'>') && (url.contains("://") || url.contains('@')) {
-        let dest = if url.contains('@') && !url.contains("://") {
-            format!("mailto:{url}")
+        let label = url;
+        let dest = if label.contains('@') && !label.contains("://") {
+            format!("mailto:{label}")
         } else {
-            url
+            label.clone()
         };
-        Some((dest, j + 1))
+        Some((label, dest, j + 1))
     } else {
         None
     }

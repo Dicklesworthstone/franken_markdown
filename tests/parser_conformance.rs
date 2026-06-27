@@ -181,6 +181,17 @@ fn malformed_angle_bracket_text_stays_escaped_text() {
 }
 
 #[test]
+fn uri_and_email_autolinks_render_with_commonmark_display_text() {
+    let out = html("Visit <https://example.com/docs?q=1> or <team@example.com>.");
+
+    assert!(
+        out.contains("<a href=\"https://example.com/docs?q=1\">https://example.com/docs?q=1</a>")
+    );
+    assert!(out.contains("<a href=\"mailto:team@example.com\">team@example.com</a>"));
+    assert!(!out.contains(">mailto:team@example.com</a>"));
+}
+
+#[test]
 fn top_level_indented_code_blocks_strip_one_code_indent() {
     let out = html("    let x = 1;\n        let y = 2;\n    <tag>\n\nnext");
 

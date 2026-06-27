@@ -1,11 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use franken_markdown::ast::Inline;
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
-    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, UNITS_PER_POINT,
-    adjustment_to_layout_units, advance_to_layout_units, break_paragraph, expansion_budget,
-    hyphenated_paragraph_items_from_text, measure_advances, measure_text, measure_text_with_pairs,
-    paragraph_items_from_text, protruded_fit_width, protrusion_for_text,
+    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, StyledText, TextStyle,
+    UNITS_PER_POINT, adjustment_to_layout_units, advance_to_layout_units, break_paragraph,
+    expansion_budget, hyphenated_paragraph_items_from_text, measure_advances, measure_styled_text,
+    measure_text, measure_text_with_pairs, paragraph_items_from_inlines, paragraph_items_from_text,
+    protruded_fit_width, protrusion_for_text,
 };
 
 struct StubMetrics;
@@ -152,6 +154,76 @@ fn paragraph_item_width_returns_natural_width() {
 }
 
 #[test]
+fn styled_text_preserves_markdown_inline_boundaries() {
+    let inlines = vec![
+        Inline::Text("plain ".to_string()),
+        Inline::Strong(vec![
+            Inline::Text("bold".to_string()),
+            Inline::Emphasis(vec![Inline::Text(" both".to_string())]),
+        ]),
+        Inline::Text(" ".to_string()),
+        Inline::Code("code".to_string()),
+        Inline::Text(" ".to_string()),
+        Inline::Link {
+            dest: "https://example.com".to_string(),
+            title: None,
+            content: vec![Inline::Text("link".to_string())],
+        },
+    ];
+    let styled = StyledText::from_inlines(&inlines);
+
+    assert_eq!(styled.plain_text(), "plain bold both code link");
+    assert_eq!(styled.runs.len(), 7);
+    assert_eq!(styled.runs[0].text, "plain ");
+    assert_eq!(styled.runs[0].style, TextStyle::BODY);
+    assert_eq!(styled.runs[1].text, "bold");
+    assert_eq!(styled.runs[1].style, TextStyle::BODY.with_bold());
+    assert_eq!(styled.runs[2].text, " both");
+    assert_eq!(
+        styled.runs[2].style,
+        TextStyle::BODY.with_bold().with_italic()
+    );
+    assert_eq!(styled.runs[4].text, "code");
+    assert_eq!(styled.runs[4].style, TextStyle::BODY.with_code());
+    assert_eq!(styled.runs[6].text, "link");
+    assert_eq!(styled.runs[6].style, TextStyle::BODY.with_link());
+}
+
+#[test]
+fn paragraph_items_from_inlines_keep_styles_inside_boxes() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let inlines = vec![
+        Inline::Text("plain ".to_string()),
+        Inline::Strong(vec![Inline::Text("bold".to_string())]),
+        Inline::Text(" ".to_string()),
+        Inline::Code("code".to_string()),
+        Inline::Text(" ".to_string()),
+        Inline::Link {
+            dest: "#target".to_string(),
+            title: None,
+            content: vec![Inline::Text("link".to_string())],
+        },
+    ];
+    let items = paragraph_items_from_inlines(&metrics, &inlines, size);
+
+    assert_eq!(items.len(), 8);
+    assert_box_style(&items[0], "plain", TextStyle::BODY);
+    assert_box_style(&items[2], "bold", TextStyle::BODY.with_bold());
+    assert_box_style(&items[4], "code", TextStyle::BODY.with_code());
+    assert_box_style(&items[6], "link", TextStyle::BODY.with_link());
+    assert_eq!(
+        measure_styled_text(&metrics, &StyledText::from_inlines(&inlines), size),
+        measure_text_with_pairs(&metrics, "plain ", size)
+            + measure_text_with_pairs(&metrics, "bold", size)
+            + measure_text_with_pairs(&metrics, " ", size)
+            + measure_text_with_pairs(&metrics, "code", size)
+            + measure_text_with_pairs(&metrics, " ", size)
+            + measure_text_with_pairs(&metrics, "link", size)
+    );
+}
+
+#[test]
 fn break_paragraph_optimizes_across_the_whole_paragraph() {
     let metrics = StubMetrics;
     let size = FontSize::from_points(10);
@@ -283,6 +355,18 @@ fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {
         }
     }
     words.join(" ")
+}
+
+fn assert_box_style(item: &ParagraphItem, text: &str, style: TextStyle) {
+    match item {
+        ParagraphItem::Box(b) => {
+            assert_eq!(b.text, text);
+            assert_eq!(b.runs.runs.len(), 1);
+            assert_eq!(b.runs.runs[0].text, text);
+            assert_eq!(b.runs.runs[0].style, style);
+        }
+        other => panic!("expected styled box, got {other:?}"),
+    }
 }
 
 #[test]

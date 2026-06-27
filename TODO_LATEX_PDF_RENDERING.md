@@ -26,7 +26,7 @@ details easy to scan while implementation is moving quickly.
      - `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-vxi.3`
        Fonts: implement focused GSUB ligature shaping
      - `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-vxi.4`
-       Fonts: implement focused GPOS pair positioning
+       Fonts: implement focused GPOS pair positioning (**done**)
    - Acceptance:
      - all metric math has a deterministic fixed-point representation,
      - font-backed measurement replaces approximate PDF widths,
@@ -34,7 +34,7 @@ details easy to scan while implementation is moving quickly.
      - browser/WASM builds remain free of filesystem/system-font assumptions.
 
 3. **Preserve styled PDF inline runs.**
-   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.1`
+   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.1` (**done**)
    - Replace string-flattening before PDF layout with styled run metadata:
      body/bold/italic/code/link/color/source span.
    - Acceptance:
@@ -108,7 +108,8 @@ details easy to scan while implementation is moving quickly.
     - Broad bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep`
     - New children:
       - `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.2`
-        Type0 CIDFontType2 subset embedding with ToUnicode (**landed in `91d4707`; bead close currently blocked by broad parent state**)
+        Type0 CIDFontType2 subset embedding with ToUnicode (**code done in
+        `91d4707`; Beads close still blocked by the broad `fep` graph edge**)
       - `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.3`
         links, outlines, metadata, and annotations
       - `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.4`
@@ -150,7 +151,8 @@ details easy to scan while implementation is moving quickly.
 - [x] Implement `dy5.4` Liang-style hyphenation core with starter English corpus.
 - [ ] Expand to full TeX English hyphenation corpus (`dy5.6`).
 - [x] Implement `dy5.5` deterministic microtypography hooks.
-- [ ] Sync beads and commit only owned files.
+- [x] Implement `dy5.1` styled inline runs in layout primitives.
+- [x] Sync beads and commit only owned files for the current slice.
 - [ ] Re-check Agent Mail before touching `src/pdf.rs`.
 
 ## Implementation Notes

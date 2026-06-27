@@ -21,6 +21,7 @@
 //! * **Microtypography** — optional punctuation protrusion and tiny font
 //!   expansion hooks once the baseline layout is proven.
 
+use crate::ast::Inline;
 use crate::text::Font;
 
 /// Number of fixed layout units in one PDF point.
@@ -251,8 +252,149 @@ impl ParagraphItem {
 /// Unbreakable paragraph content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextBox {
+    /// Plain fallback text for extraction, diagnostics, and simple renderers.
     pub text: String,
+    /// Styled text runs carried through to the PDF line/page builders.
+    pub runs: StyledText,
     pub width: LayoutUnit,
+}
+
+/// Inline text style metadata preserved for PDF layout.
+///
+/// This is intentionally a compact value type rather than a general CSS model.
+/// Markdown only needs a small set of semantic text roles; the PDF builder can
+/// map these roles to bundled faces, colors, annotations, and decoration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+    pub strikethrough: bool,
+    pub link: bool,
+}
+
+impl TextStyle {
+    /// Unstyled body text.
+    pub const BODY: Self = Self {
+        bold: false,
+        italic: false,
+        code: false,
+        strikethrough: false,
+        link: false,
+    };
+
+    #[must_use]
+    pub const fn with_bold(self) -> Self {
+        Self { bold: true, ..self }
+    }
+
+    #[must_use]
+    pub const fn with_italic(self) -> Self {
+        Self {
+            italic: true,
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub const fn with_code(self) -> Self {
+        Self { code: true, ..self }
+    }
+
+    #[must_use]
+    pub const fn with_strikethrough(self) -> Self {
+        Self {
+            strikethrough: true,
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub const fn with_link(self) -> Self {
+        Self { link: true, ..self }
+    }
+}
+
+/// A contiguous text segment with one semantic style.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyledRun {
+    pub text: String,
+    pub style: TextStyle,
+}
+
+/// Markdown inline text after semantic styling has been preserved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyledText {
+    pub runs: Vec<StyledRun>,
+}
+
+impl StyledText {
+    /// Construct unstyled text.
+    #[must_use]
+    pub fn plain(text: &str) -> Self {
+        let mut out = Self::default();
+        out.push_text(text, TextStyle::BODY);
+        out
+    }
+
+    /// Convert Markdown inlines into styled runs.
+    #[must_use]
+    pub fn from_inlines(inlines: &[Inline]) -> Self {
+        let mut out = Self::default();
+        push_inline_runs(&mut out, inlines, TextStyle::BODY);
+        out
+    }
+
+    /// True if there are no non-empty runs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    /// Append text with style, coalescing adjacent equal-style runs.
+    pub fn push_text(&mut self, text: &str, style: TextStyle) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(last) = self.runs.last_mut() {
+            if last.style == style {
+                last.text.push_str(text);
+                return;
+            }
+        }
+        self.runs.push(StyledRun {
+            text: text.to_string(),
+            style,
+        });
+    }
+
+    /// Plain-text projection for fallback renderers and copy/search behavior.
+    #[must_use]
+    pub fn plain_text(&self) -> String {
+        let mut out = String::new();
+        for run in &self.runs {
+            out.push_str(&run.text);
+        }
+        out
+    }
+}
+
+fn push_inline_runs(out: &mut StyledText, inlines: &[Inline], style: TextStyle) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(text) => out.push_text(text, style),
+            Inline::Emphasis(content) => push_inline_runs(out, content, style.with_italic()),
+            Inline::Strong(content) => push_inline_runs(out, content, style.with_bold()),
+            Inline::Strikethrough(content) => {
+                push_inline_runs(out, content, style.with_strikethrough());
+            }
+            Inline::Code(text) => out.push_text(text, style.with_code()),
+            Inline::Link { content, .. } => push_inline_runs(out, content, style.with_link()),
+            Inline::Image { alt, .. } => out.push_text(alt, style),
+            Inline::SoftBreak | Inline::HardBreak => out.push_text(" ", style),
+            Inline::Html(_) => {}
+        }
+    }
 }
 
 /// Flexible space with natural width and stretch/shrink budgets.
@@ -287,15 +429,37 @@ pub fn paragraph_items_from_text<M: PairMetrics>(
     text: &str,
     size: FontSize,
 ) -> Vec<ParagraphItem> {
+    paragraph_items_from_styled_text(metrics, &StyledText::plain(text), size)
+}
+
+/// Convert Markdown inlines into styled paragraph items.
+#[must_use]
+pub fn paragraph_items_from_inlines<M: PairMetrics>(
+    metrics: &M,
+    inlines: &[Inline],
+    size: FontSize,
+) -> Vec<ParagraphItem> {
+    paragraph_items_from_styled_text(metrics, &StyledText::from_inlines(inlines), size)
+}
+
+/// Convert styled text into a box/glue/forced-break paragraph.
+#[must_use]
+pub fn paragraph_items_from_styled_text<M: PairMetrics>(
+    metrics: &M,
+    text: &StyledText,
+    size: FontSize,
+) -> Vec<ParagraphItem> {
     let mut items = Vec::new();
-    let mut words = text.split_whitespace().peekable();
+    let words = styled_words(text);
     let space = measure_text_with_pairs(metrics, " ", size);
-    while let Some(word) = words.next() {
+    for (idx, word) in words.iter().enumerate() {
+        let plain = word.plain_text();
         items.push(ParagraphItem::Box(TextBox {
-            text: word.to_string(),
-            width: measure_text_with_pairs(metrics, word, size),
+            text: plain,
+            runs: word.clone(),
+            width: measure_styled_text(metrics, word, size),
         }));
-        if words.peek().is_some() {
+        if idx + 1 < words.len() {
             items.push(ParagraphItem::Glue(default_interword_glue(space)));
         }
     }
@@ -305,6 +469,55 @@ pub fn paragraph_items_from_text<M: PairMetrics>(
         flagged: false,
     }));
     items
+}
+
+/// Measure styled text while preserving each run boundary.
+///
+/// The first implementation uses the same metrics for every style. That is
+/// intentional: this layer preserves style semantics without forcing the font
+/// subsystem into the core line-breaker API yet. The PDF builder can later map
+/// bold/italic/code/link runs to face-specific shaped advances and still feed
+/// the resulting boxes into the same paragraph optimizer.
+#[must_use]
+pub fn measure_styled_text<M: PairMetrics>(
+    metrics: &M,
+    text: &StyledText,
+    size: FontSize,
+) -> LayoutUnit {
+    let mut total = LayoutUnit::ZERO;
+    for run in &text.runs {
+        total += measure_text_with_pairs(metrics, &run.text, size);
+    }
+    total
+}
+
+fn styled_words(text: &StyledText) -> Vec<StyledText> {
+    let mut words = Vec::new();
+    let mut current = StyledText::default();
+    for run in &text.runs {
+        let mut chunk = String::new();
+        for ch in run.text.chars() {
+            if ch.is_whitespace() {
+                if !chunk.is_empty() {
+                    current.push_text(&chunk, run.style);
+                    chunk.clear();
+                }
+                if !current.is_empty() {
+                    words.push(current);
+                    current = StyledText::default();
+                }
+            } else {
+                chunk.push(ch);
+            }
+        }
+        if !chunk.is_empty() {
+            current.push_text(&chunk, run.style);
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 /// Convert plain text into paragraph items with discretionary hyphen penalties.
@@ -345,6 +558,7 @@ fn push_hyphenated_word_items<M: PairMetrics>(
     if points.is_empty() {
         out.push(ParagraphItem::Box(TextBox {
             text: word.to_string(),
+            runs: StyledText::plain(word),
             width: measure_text_with_pairs(metrics, word, size),
         }));
         return;
@@ -357,6 +571,7 @@ fn push_hyphenated_word_items<M: PairMetrics>(
             let part = &word[start..end];
             out.push(ParagraphItem::Box(TextBox {
                 text: part.to_string(),
+                runs: StyledText::plain(part),
                 width: measure_text_with_pairs(metrics, part, size),
             }));
             out.push(ParagraphItem::Penalty(Penalty {
@@ -371,6 +586,7 @@ fn push_hyphenated_word_items<M: PairMetrics>(
         let part = &word[start..];
         out.push(ParagraphItem::Box(TextBox {
             text: part.to_string(),
+            runs: StyledText::plain(part),
             width: measure_text_with_pairs(metrics, part, size),
         }));
     }

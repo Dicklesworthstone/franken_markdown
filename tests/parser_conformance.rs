@@ -192,6 +192,15 @@ fn uri_and_email_autolinks_render_with_commonmark_display_text() {
 }
 
 #[test]
+fn character_references_decode_named_decimal_and_hex_forms() {
+    let out = html("AT&amp;T &copy; &#169; &#xA9; &#x1F680; &notaref;");
+
+    assert!(out.contains("AT&amp;T"));
+    assert!(out.contains("\u{a9} \u{a9} \u{a9} \u{1f680}"));
+    assert!(out.contains("&amp;notaref;"));
+}
+
+#[test]
 fn top_level_indented_code_blocks_strip_one_code_indent() {
     let out = html("    let x = 1;\n        let y = 2;\n    <tag>\n\nnext");
 

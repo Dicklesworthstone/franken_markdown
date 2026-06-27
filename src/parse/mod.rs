@@ -1007,6 +1007,15 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                     i += 1;
                 }
             }
+            '&' => {
+                if let Some((ch, next)) = parse_character_reference(&bytes, i) {
+                    buf.push(ch);
+                    i = next;
+                } else {
+                    buf.push(c);
+                    i += 1;
+                }
+            }
             '~' if run_len(&bytes, i, '~') >= 2 => {
                 if let Some((inner, next)) = parse_delim(&bytes, i, '~', 2) {
                     flush(&mut buf, &mut out);
@@ -1201,6 +1210,54 @@ fn parse_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
         Some((label, dest, j + 1))
     } else {
         None
+    }
+}
+
+fn parse_character_reference(chars: &[char], i: usize) -> Option<(char, usize)> {
+    if chars.get(i) != Some(&'&') {
+        return None;
+    }
+    let semi = chars[i + 1..]
+        .iter()
+        .position(|&ch| ch == ';')
+        .map(|offset| i + 1 + offset)?;
+    if semi == i + 1 {
+        return None;
+    }
+    let body = chars[i + 1..semi].iter().collect::<String>();
+    let decoded = if let Some(numeric) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
+    {
+        decode_numeric_reference(numeric, 16)
+    } else if let Some(numeric) = body.strip_prefix('#') {
+        decode_numeric_reference(numeric, 10)
+    } else {
+        decode_named_reference(&body)
+    }?;
+    Some((decoded, semi + 1))
+}
+
+fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
+    if value.is_empty() {
+        return None;
+    }
+    let code = u32::from_str_radix(value, radix).ok()?;
+    char::from_u32(code)
+}
+
+const fn decode_named_reference(name: &str) -> Option<char> {
+    match name.as_bytes() {
+        b"amp" => Some('&'),
+        b"lt" => Some('<'),
+        b"gt" => Some('>'),
+        b"quot" => Some('"'),
+        b"apos" => Some('\''),
+        b"nbsp" => Some('\u{00a0}'),
+        b"copy" => Some('\u{00a9}'),
+        b"reg" => Some('\u{00ae}'),
+        b"trade" => Some('\u{2122}'),
+        b"ndash" => Some('\u{2013}'),
+        b"mdash" => Some('\u{2014}'),
+        _ => None,
     }
 }
 

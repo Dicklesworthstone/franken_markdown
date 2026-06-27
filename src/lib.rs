@@ -5,10 +5,11 @@
 //!
 //! * a **self-contained ("all-in-one") HTML** document that looks incredible by
 //!   default (Cursor/GitHub-preview-like) and accepts a custom stylesheet, or
-//! * a **tiny, deterministic PDF**. The current v0 writer uses built-in PDF
-//!   base-14 fonts; the roadmap adds embedded curated fonts and LaTeX-grade
-//!   typesetting (Knuth-Plass optimal line breaking, real kerning, ligatures,
-//!   leading, hyphenation).
+//! * a **tiny, deterministic PDF**. The current v0 writer embeds curated
+//!   per-document font subsets with real metrics, focused GPOS kerning, GSUB
+//!   ligatures, and selectable text; the roadmap adds LaTeX-grade paragraph and
+//!   page layout (Knuth-Plass optimal line breaking, hyphenation, widow/orphan
+//!   control, compression, and richer block pagination).
 //!
 //! The library has **zero third-party dependencies** — every component (the
 //! Markdown parser, the HTML emitter, the font/text subsystem, the line-breaking
@@ -19,8 +20,9 @@
 //!
 //! Pre-Phase-0 scaffold. The HTML path renders today with clean-room syntax
 //! highlighting for common documentation languages. The PDF path renders a
-//! compact deterministic v0; the high-typography layout/text/font subsystems
-//! are still being built out (tracked in beads). Nothing here is final.
+//! compact deterministic embedded-font v0; the high-typography paragraph and
+//! page-layout subsystems are still being built out (tracked in beads). Nothing
+//! here is final.
 #![forbid(unsafe_code)]
 #![cfg_attr(not(feature = "cli"), allow(dead_code))]
 

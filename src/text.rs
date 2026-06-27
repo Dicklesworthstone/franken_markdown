@@ -1,17 +1,17 @@
 //! Clean-room TrueType / OpenType font reader.
 //!
-//! Parses the sfnt table directory plus the metric and character-map tables we
-//! need to lay out and (later) embed text: `head` (units per em), `maxp` (glyph
-//! count), `hhea`/`hmtx` (vertical metrics + advance widths), and `cmap`
-//! (character → glyph, formats 4 and 12), and legacy `kern` format-0 pair
-//! kerning. Latin-first, zero-dependency, and free of `unsafe`/`unwrap`/`panic`
-//! — every read is bounds-checked.
+//! Parses the sfnt table directory plus the metric, character-map, outline, and
+//! layout tables we need to lay out and embed text: `head` (units per em),
+//! `maxp` (glyph count), `hhea`/`hmtx` (vertical metrics + advance widths),
+//! `cmap` (character → glyph, formats 4 and 12), `glyf`/`loca` (TrueType
+//! outlines for subsetting), legacy `kern` format-0 pair kerning, focused GPOS
+//! pair positioning, and GSUB standard ligatures. Latin-first, zero-dependency,
+//! and free of `unsafe`/`unwrap`/`panic` — every read is bounds-checked.
 //!
-//! Outline parsing (`glyf`/`loca`/`CFF`) for PDF embedding + subsetting, and
-//! ligatures / richer positioning (GPOS/GSUB), are later increments. This
-//! module gives the real advance metrics the layout engine needs to replace the
-//! base-14 approximations, and the `cmap` needed to map text to glyphs for
-//! embedding.
+//! CFF/OpenType outline subsetting and broader script shaping are still future
+//! increments. The current module is enough for bundled TrueType fonts, real
+//! PDF metrics, deterministic subset embedding, kerning, ligatures, and
+//! selectable `ToUnicode` output.
 
 /// A parsed font, owning its backing bytes.
 #[derive(Debug, Clone)]

@@ -88,7 +88,13 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"robot_triage\":\"available\""));
     assert!(stdout.contains("\"native_config\":\"available\""));
     assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
+    assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
+    assert!(stdout.contains("\"embedded_subset_fonts_pdf\":\"available\""));
+    assert!(stdout.contains("\"gpos_kerning_pdf\":\"available_focused\""));
+    assert!(stdout.contains("\"gsub_ligatures_pdf\":\"available_focused\""));
+    assert!(stdout.contains("\"knuth_plass_pdf\":\"planned\""));
     assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
+    assert!(!stdout.contains("available_v0_base14"));
 
     let doctor = fmd(&["doctor", "--json"]);
     assert!(doctor.status.success());
@@ -96,8 +102,10 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     let stdout = text(&doctor.stdout);
     assert!(stdout.contains("\"ok\":true"));
     assert!(stdout.contains("\"html\":\"available\""));
+    assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
     assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
     assert!(stdout.contains("\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\""));
+    assert!(!stdout.contains("available_v0_base14"));
 
     let triage = fmd(&["--robot-triage"]);
     assert!(triage.status.success());
@@ -105,7 +113,24 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     let stdout = text(&triage.stdout);
     assert!(stdout.contains("\"quick_ref\""));
     assert!(stdout.contains("\"recommended_next_actions\""));
+    assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
     assert!(stdout.contains("fmd README.md --out README.html"));
+    assert!(!stdout.contains("available_v0_base14"));
+}
+
+#[test]
+fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
+    let out = fmd(&["robot-docs", "guide"]);
+
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("embedded per-document font subsets"));
+    assert!(stdout.contains("focused GPOS kerning"));
+    assert!(stdout.contains("GSUB ligatures"));
+    assert!(stdout.contains("Knuth-Plass paragraph layout"));
+    assert!(!stdout.contains("base-14"));
+    assert!(!stdout.contains("Base-14"));
 }
 
 #[test]

@@ -15,9 +15,10 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 
 > **Status: pre-Phase-0 scaffold.** The Markdown-to-HTML path works today,
 > including clean-room syntax highlighting for common documentation languages.
-> The PDF path also works as a compact deterministic v0 using built-in PDF
-> base-14 fonts. The final high-typography PDF engine, font subsetting, and
-> WASM package remain active roadmap work tracked in beads.
+> The PDF path also works as a compact deterministic v0 with embedded
+> per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures,
+> and selectable text. The final high-typography paragraph/page-layout engine
+> and WASM package remain active roadmap work tracked in beads.
 
 ## TL;DR
 
@@ -37,7 +38,7 @@ browser/WASM.
 | Beautiful default output | Cursor/GitHub-style theme, high-readable measure, polished tables, blockquotes, code blocks |
 | Shared style model | Typed theme v1 for font family, mono family, colors, spacing, table density, code theme, dark mode, and page contract |
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
-| PDF quality | Compact deterministic Base-14 PDF v0 now; planned Knuth-Plass line breaking, kerning, ligatures, leading, hyphenation, pagination, and font subsetting |
+| PDF quality | Compact deterministic embedded-font PDF v0 now; planned Knuth-Plass line breaking, hyphenation, page-builder polish, stream compression, and richer pagination |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
 | Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage` |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are product targets |
@@ -76,10 +77,11 @@ target/release/fmd --no-config examples/showcase.md --out showcase.html
 ```
 
 The PDF path is intentionally honest about its stage: it produces valid,
-deterministic PDFs today, but the v0 writer uses Base-14 fonts and greedy
-wrapping. The beads for embedded curated fonts, font subsetting, Knuth-Plass
-line breaking, kerning, ligatures, hyphenation, and pagination quality remain
-open.
+deterministic PDFs today with embedded curated font subsets, real metrics,
+focused GPOS kerning, GSUB ligatures, and selectable text. The current writer
+still uses simple greedy wrapping and an early page model. The beads for
+Knuth-Plass line breaking, hyphenation, page-builder quality, stream
+compression, and visual polish remain open.
 
 ```bash
 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
@@ -126,7 +128,10 @@ Implemented today:
 - clean-room syntax highlighting for common documentation languages,
 - default sans and serif font stacks,
 - custom stylesheet replacement,
-- compact deterministic PDF v0 using PDF base-14 fonts,
+- compact deterministic PDF v0 with embedded curated font subsets,
+- real TrueType metrics, focused GPOS pair kerning, and GSUB standard ligatures
+  in PDF output,
+- `ToUnicode` mappings for selectable text, including ligature glyphs,
 - `fmd` and `franken_markdown` binaries over one shared CLI entrypoint,
 - typed render errors so callers can handle future incomplete/invalid render
   paths deterministically.
@@ -134,9 +139,10 @@ Implemented today:
 Planned:
 
 - full CommonMark/GFM conformance ladder,
-- embedded curated font families and per-document font subsetting,
 - Knuth-Plass paragraph layout and TeX/Liang hyphenation,
-- high-quality PDF layout, tables, code pagination, and visual fixtures,
+- high-quality PDF page layout, tables, code pagination, stream compression,
+  and visual fixtures,
+- browser HTML `@font-face` embedding/subsetting,
 - browser/WASM package and examples,
 - Asupersync-backed native batch renderer with cancellation and budgets.
 
@@ -249,9 +255,9 @@ The core modules are:
 | `parse` | Clean-room Markdown block and inline parser |
 | `theme` | Shared typed style model: fonts, colors, spacing, code theme, dark mode, and page contract |
 | `html` | All-in-one HTML emitter |
-| `text` | Planned font reader/shaper/subsetter |
+| `text` | Clean-room TrueType reader, metrics, subsetter, focused GPOS kerning, and GSUB ligatures |
 | `layout` | Planned Knuth-Plass and pagination engine |
-| `pdf` | Compact deterministic PDF v0; full typography/font subsetting roadmap remains open |
+| `pdf` | Compact deterministic embedded-font PDF v0; full paragraph/page-layout roadmap remains open |
 | `cli` | Feature-gated `fmd` command surface |
 
 ## Installation
@@ -324,16 +330,22 @@ browser/WASM package.
 
 ## Configuration
 
-There is no config file yet. All current rendering choices are explicit flags:
+Native config is available for CLI defaults and intentionally remains outside
+the WASM/core renderer:
 
 ```bash
 fmd document.md --font serif --css custom.css --title "Quarterly Memo" --out memo.html
+fmd config show --json
+fmd config get font --json
+fmd config set font serif --json
+fmd config path --json
 ```
 
-Planned native config will cover default font family, output policy, theme
-selection, PDF page size/margins, and batch-render behavior. Browser/WASM callers
-will pass equivalent options through the library API rather than reading a local
-config file.
+The config file is dependency-free `key=value` text. Resolution order is:
+`$FMD_CONFIG`, then XDG/platform defaults, then `~/.config/fmd/config`.
+Supported keys are `font`, `dark_mode`, `custom_css`, `page_size`, and
+individual page margins such as `margin_top_pt`. Browser/WASM callers pass
+equivalent options through the library API rather than reading local config.
 
 ## Comparison
 
@@ -350,19 +362,20 @@ config file.
 | Symptom | Fix |
 |---|---|
 | `PDF output requires --out <path>` | PDF writes binary bytes and must have a path: `fmd doc.md --to pdf --out doc.pdf` |
-| PDF looks simpler than the HTML preview | Expected for the v0 PDF writer; high-typography layout and embedded fonts are still roadmap work |
+| PDF looks simpler than the HTML preview | Expected for the v0 PDF writer; embedded fonts are available, but high-typography paragraph/page layout is still roadmap work |
 | HTML printed to terminal | Pass `--out file.html` or redirect stdout |
 | Custom CSS removed the default styling | `--css` intentionally replaces the stylesheet; include every rule you want |
 | Raw HTML appears escaped | Default is safe escaping; pass `--allow-html` only for trusted input |
 
 ## Limitations
 
-- PDF output is implemented as a v0 deterministic writer using Base-14 fonts,
-  approximate metrics, and greedy wrapping. The final typography engine is not
-  implemented yet.
+- PDF output is implemented as a v0 deterministic writer with embedded subset
+  fonts, real metrics, focused kerning/ligatures, selectable text, and greedy
+  wrapping. Knuth-Plass paragraph breaking, hyphenation, full pagination
+  controls, stream compression, and richer block layout are not implemented yet.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
-- Fonts are currently CSS stacks in HTML; embedded font bytes and PDF subsetting
-  are planned.
+- HTML fonts are currently CSS stacks; browser `@font-face` embedding/subsetting
+  is planned.
 - WASM packaging and browser examples are not present yet.
 - There is no installer or published release yet.
 
@@ -378,8 +391,9 @@ model will expose controlled theme/page options rather than arbitrary browser CS
 
 **Will PDFs really look better than browser print output?**  
 That is the intent. The planned PDF path uses TeX-style paragraph breaking,
-kerning, ligatures, hyphenation, leading, pagination controls, and font
-subsetting rather than a browser print pipeline.
+hyphenation, leading, pagination controls, and stream compression rather than a
+browser print pipeline. The current v0 already embeds subset fonts with real
+metrics, focused kerning, GSUB ligatures, and selectable text.
 
 **Does the core work in WASM?**  
 That is a first-class design goal. The core must build without the CLI feature;

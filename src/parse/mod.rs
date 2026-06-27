@@ -880,6 +880,10 @@ fn split_table_row(line: &str) -> Vec<String> {
 fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
     let header = split_table_row(lines[0]);
     let align_cells = split_table_row(lines[1]);
+    let cols = header.len();
+    if cols == 0 || align_cells.len() != cols {
+        return None;
+    }
     let align: Vec<Align> = align_cells
         .iter()
         .map(|c| {
@@ -893,7 +897,6 @@ fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
             }
         })
         .collect();
-    let cols = header.len();
     let head: Vec<Vec<Inline>> = header
         .iter()
         .map(|c| parse_inlines_with_refs(c, refs))

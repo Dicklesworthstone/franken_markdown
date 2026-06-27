@@ -149,6 +149,24 @@ fn blockquote_lists_can_contain_nested_lists() {
 }
 
 #[test]
+fn gfm_table_requires_header_and_delimiter_width_to_match() {
+    let out = html("Name | Score\n--- | --- | ---\nthis stays paragraph");
+
+    assert!(!out.contains("<table>"));
+    assert!(out.contains("<p>Name | Score\n--- | --- | ---\nthis stays paragraph</p>"));
+}
+
+#[test]
+fn gfm_table_body_rows_still_pad_and_truncate_to_header_width() {
+    let out = html("Name | Score\n--- | ---\nalpha |\nbeta | 20 | ignored");
+
+    assert!(out.contains("<table>"));
+    assert!(out.contains("<tr><td>alpha</td><td></td></tr>"));
+    assert!(out.contains("<tr><td>beta</td><td>20</td></tr>"));
+    assert!(!out.contains("ignored"));
+}
+
+#[test]
 fn html_blocks_escape_by_default_and_pass_through_when_allowed() {
     let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
     let escaped = html(md);

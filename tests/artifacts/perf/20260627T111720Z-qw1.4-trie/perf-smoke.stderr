@@ -1,0 +1,12 @@
+
+ Performance counter stats for '/data/tmp/cargo-target/release-perf/fmd --version':
+
+           2477000      cycles                                                                
+           1786315      instructions                     #    0.72  insn per cycle            
+
+       0.001699181 seconds time elapsed
+
+       0.001863000 seconds user
+       0.000000000 seconds sys
+
+

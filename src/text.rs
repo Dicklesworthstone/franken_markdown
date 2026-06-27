@@ -1256,3 +1256,217 @@ impl Font {
         Some(Kerning { subtables })
     }
 }
+
+// ===========================================================================
+// GSUB ligature substitution (vxi.3). Reuses parse_coverage_glyphs +
+// resolve_extension + be_u16 + find_table_full. No unsafe/unwrap/panic.
+// ===========================================================================
+
+/// One ligature rule: a first glyph (the map key) followed by `components`
+/// (the remaining component glyph ids) substitutes to `ligature`.
+#[derive(Clone, Debug)]
+struct LigRule {
+    components: Vec<u16>,
+    ligature: u16,
+}
+
+/// Parsed GSUB `liga` standard ligatures for a font. Built once via
+/// [`Font::gsub_ligatures`]; [`Ligatures::substitute`] applies them.
+#[derive(Clone, Debug, Default)]
+pub struct Ligatures {
+    /// first glyph id -> rules, sorted longest-component-run first.
+    rules: std::collections::BTreeMap<u16, Vec<LigRule>>,
+}
+
+impl Ligatures {
+    /// True when the font defines no standard ligatures.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Apply ligature substitution to a glyph-id sequence (greedy longest match),
+    /// returning the shaped sequence (which may contain ligature glyph ids that
+    /// no single character maps to).
+    #[must_use]
+    pub fn substitute(&self, gids: &[u16]) -> Vec<u16> {
+        let mut out = Vec::with_capacity(gids.len());
+        let mut i = 0;
+        while i < gids.len() {
+            let mut applied = false;
+            if let Some(rules) = self.rules.get(&gids[i]) {
+                for r in rules {
+                    let n = r.components.len();
+                    if i + 1 + n <= gids.len() && gids[i + 1..i + 1 + n] == r.components[..] {
+                        out.push(r.ligature);
+                        i += n + 1;
+                        applied = true;
+                        break;
+                    }
+                }
+            }
+            if !applied {
+                out.push(gids[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+}
+
+impl Font {
+    /// Parse the GSUB `liga` standard-ligature substitutions once.
+    ///
+    /// Returns empty [`Ligatures`] when the font has no GSUB / no `liga` feature
+    /// or the relevant offsets are malformed.
+    #[must_use]
+    pub fn gsub_ligatures(&self) -> Ligatures {
+        self.parse_gsub_ligatures().unwrap_or_default()
+    }
+
+    fn parse_gsub_ligatures(&self) -> Option<Ligatures> {
+        let d = &self.data;
+        let (gsub, _) = find_table_full(d, b"GSUB")?;
+        let feature_list = gsub + be_u16(d, gsub + 6)? as usize;
+        let lookup_list = gsub + be_u16(d, gsub + 8)? as usize;
+
+        // Collect every 'liga' feature's lookup indices.
+        let feature_count = be_u16(d, feature_list)? as usize;
+        let mut lookup_indices: Vec<u16> = Vec::new();
+        for i in 0..feature_count {
+            let rec = feature_list + 2 + i * 6;
+            let Some(tag) = d.get(rec..rec + 4) else {
+                break;
+            };
+            if tag != b"liga" {
+                continue;
+            }
+            let Some(feat_off) = be_u16(d, rec + 4) else {
+                continue;
+            };
+            let feat = feature_list + feat_off as usize;
+            let Some(n) = be_u16(d, feat + 2) else {
+                continue;
+            };
+            for j in 0..n as usize {
+                if let Some(idx) = be_u16(d, feat + 4 + j * 2) {
+                    if !lookup_indices.contains(&idx) {
+                        lookup_indices.push(idx);
+                    }
+                }
+            }
+        }
+
+        let lookup_count = be_u16(d, lookup_list)? as usize;
+        let mut rules: std::collections::BTreeMap<u16, Vec<LigRule>> =
+            std::collections::BTreeMap::new();
+        for &li in &lookup_indices {
+            let li = li as usize;
+            if li >= lookup_count {
+                continue;
+            }
+            let Some(lookup_off) = be_u16(d, lookup_list + 2 + li * 2) else {
+                continue;
+            };
+            let lookup = lookup_list + lookup_off as usize;
+            let Some(lookup_type) = be_u16(d, lookup) else {
+                continue;
+            };
+            let Some(sub_count) = be_u16(d, lookup + 4) else {
+                continue;
+            };
+            for s in 0..sub_count as usize {
+                let Some(sub_off) = be_u16(d, lookup + 6 + s * 2) else {
+                    continue;
+                };
+                let sub = lookup + sub_off as usize;
+                match lookup_type {
+                    4 => parse_ligature_subst(d, sub, &mut rules),
+                    // Extension Substitution -> a real type-4 subtable.
+                    7 => {
+                        if let Some((ext_type, real)) = resolve_extension(d, sub) {
+                            if ext_type == 4 {
+                                parse_ligature_subst(d, real, &mut rules);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Greedy longest match: try the longest ligature first.
+        for v in rules.values_mut() {
+            v.sort_by_key(|r| std::cmp::Reverse(r.components.len()));
+        }
+        Some(Ligatures { rules })
+    }
+}
+
+/// Parse one Ligature Substitution subtable (GSUB `lookupType` 4) at `sub`.
+fn parse_ligature_subst(
+    d: &[u8],
+    sub: usize,
+    rules: &mut std::collections::BTreeMap<u16, Vec<LigRule>>,
+) {
+    let Some(format) = be_u16(d, sub) else {
+        return;
+    };
+    if format != 1 {
+        return;
+    }
+    let Some(cov_off) = be_u16(d, sub + 2) else {
+        return;
+    };
+    let Some(set_count) = be_u16(d, sub + 4) else {
+        return;
+    };
+    let Some(coverage) = parse_coverage_glyphs(d, sub + cov_off as usize) else {
+        return;
+    };
+    for i in 0..set_count as usize {
+        // LigatureSet i is for coverage glyph i (the ligature's first component).
+        let Some(first) = coverage.get(i).copied() else {
+            continue;
+        };
+        let Some(set_off) = be_u16(d, sub + 6 + i * 2) else {
+            continue;
+        };
+        let lig_set = sub + set_off as usize;
+        let Some(lig_count) = be_u16(d, lig_set) else {
+            continue;
+        };
+        for j in 0..lig_count as usize {
+            let Some(lig_off) = be_u16(d, lig_set + 2 + j * 2) else {
+                continue;
+            };
+            let lig = lig_set + lig_off as usize;
+            let Some(lig_glyph) = be_u16(d, lig) else {
+                continue;
+            };
+            let Some(comp_count) = be_u16(d, lig + 2) else {
+                continue;
+            };
+            if comp_count == 0 {
+                continue;
+            }
+            // componentGlyphIDs holds comp_count-1 entries (the first is `first`).
+            let mut components = Vec::with_capacity(comp_count as usize - 1);
+            let mut ok = true;
+            for k in 0..(comp_count as usize - 1) {
+                match be_u16(d, lig + 4 + k * 2) {
+                    Some(g) => components.push(g),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                rules.entry(first).or_default().push(LigRule {
+                    components,
+                    ligature: lig_glyph,
+                });
+            }
+        }
+    }
+}

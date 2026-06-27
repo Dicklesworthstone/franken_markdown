@@ -158,6 +158,81 @@ fn parses_bundled_plex_and_cm_fonts() {
     );
 }
 
+/// The subsetter must produce a much smaller font that our OWN reader can
+/// re-parse, with the kept characters' glyphs + metrics preserved and dropped
+/// characters mapping to `.notdef`.
+#[test]
+fn subsets_plex_sans_and_reparses() {
+    let orig = std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
+    let font = Font::parse(orig.clone()).unwrap();
+    let keep = ['H', 'e', 'l', 'o', ' ', 'W', 'r', 'd', 'A', 'g', 'é'];
+    let sub = font.subset(&keep).expect("subset produced");
+
+    assert!(
+        sub.len() < orig.len() / 3,
+        "subset should be much smaller: {} vs {}",
+        sub.len(),
+        orig.len()
+    );
+
+    let re = Font::parse(sub).expect("subset re-parses with our reader");
+    assert_eq!(re.units_per_em, font.units_per_em, "upm preserved");
+
+    for &ch in &keep {
+        if ch == ' ' {
+            continue;
+        }
+        let g = re.glyph_index(ch);
+        assert_ne!(g, 0, "subset still maps {ch:?}");
+        assert!(
+            re.glyph_data(g).is_some_and(|d| !d.is_empty()),
+            "{ch:?} keeps its outline"
+        );
+        assert_eq!(
+            re.advance_1000(ch),
+            font.advance_1000(ch),
+            "{ch:?} advance preserved"
+        );
+    }
+    assert_eq!(re.glyph_index('Z'), 0, "dropped char -> .notdef");
+    // notdef + kept glyphs (+ any composite components), but nowhere near the
+    // full face.
+    assert!(
+        re.num_glyphs >= 9 && re.num_glyphs < 60,
+        "glyph count {}",
+        re.num_glyphs
+    );
+}
+
+/// DejaVu's accented letters are composite glyphs — exercise the transitive
+/// closure + component-id rewriting end to end.
+#[test]
+fn subsets_composite_glyphs_when_dejavu_available() {
+    let path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    let Ok(orig) = std::fs::read(path) else {
+        eprintln!("skipping: {path} not present (composite subset validation)");
+        return;
+    };
+    let font = Font::parse(orig).unwrap();
+    let g_old = font.glyph_index('é');
+    let was_composite = font.is_composite(g_old);
+
+    let sub = font.subset(&['é', 'A']).expect("subset produced");
+    let re = Font::parse(sub).expect("subset re-parses");
+    let g = re.glyph_index('é');
+    assert_ne!(g, 0, "subset maps 'é'");
+    if was_composite {
+        assert!(re.is_composite(g), "'é' stays composite after subsetting");
+        // Renumbered component ids must be valid within the subset.
+        let comps = re.glyph_components(g);
+        assert!(!comps.is_empty());
+        assert!(
+            comps.iter().all(|&c| c < re.num_glyphs),
+            "components renumbered in range"
+        );
+    }
+}
+
 // ---- synthetic font builder -------------------------------------------------
 
 fn be16(v: u16) -> [u8; 2] {

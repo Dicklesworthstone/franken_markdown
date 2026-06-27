@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::layout::{
-    AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, LayoutUnit, PairMetrics,
-    ParagraphItem, UNITS_PER_POINT, adjustment_to_layout_units, advance_to_layout_units,
-    break_paragraph, measure_advances, measure_text, measure_text_with_pairs,
-    paragraph_items_from_text,
+    AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
+    LayoutUnit, PairMetrics, ParagraphItem, UNITS_PER_POINT, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph, hyphenated_paragraph_items_from_text,
+    measure_advances, measure_text, measure_text_with_pairs, paragraph_items_from_text,
 };
 
 struct StubMetrics;
@@ -172,6 +172,64 @@ fn break_paragraph_returns_empty_for_no_candidates() {
     let breaks = break_paragraph(&[], LayoutUnit::from_points(72));
 
     assert!(breaks.is_empty());
+}
+
+#[test]
+fn english_hyphenator_uses_exceptions_and_minima() {
+    let hyphenator = Hyphenator::english();
+
+    assert_eq!(
+        hyphenator.hyphenation_points("hyphenation", HyphenationOptions::default()),
+        vec![2, 6]
+    );
+    assert_eq!(
+        hyphenator.hyphenation_points(
+            "hyphenation",
+            HyphenationOptions {
+                min_left: 3,
+                min_right: 6,
+            },
+        ),
+        Vec::<usize>::new()
+    );
+    assert!(
+        hyphenator
+            .hyphenation_points("not-a-word", HyphenationOptions::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn hyphenated_paragraph_items_emit_flagged_discretionary_penalties() {
+    let metrics = StubMetrics;
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let items = hyphenated_paragraph_items_from_text(&metrics, &hyphenator, "hyphenation", size);
+
+    assert_eq!(line_text(&items, 0, items.len()), "hy phen ation");
+    let flagged = items
+        .iter()
+        .filter_map(|item| match item {
+            ParagraphItem::Penalty(p) if p.flagged => Some(p),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(flagged.len(), 2);
+    assert!(flagged.iter().all(|p| p.penalty > 0));
+    assert!(flagged.iter().all(|p| p.width > LayoutUnit::ZERO));
+}
+
+#[test]
+fn hyphen_penalty_width_applies_only_when_the_break_is_chosen() {
+    let metrics = StubMetrics;
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let items = hyphenated_paragraph_items_from_text(&metrics, &hyphenator, "hyphenation", size);
+    let breaks = break_paragraph(&items, LayoutUnit::from_milli_points(35_000));
+
+    assert_eq!(breaks.len(), 2);
+    assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "hy phen");
+    assert!(breaks[0].natural_width > measure_text_with_pairs(&metrics, "hyphen", size));
 }
 
 fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {

@@ -307,6 +307,84 @@ pub fn paragraph_items_from_text<M: PairMetrics>(
     items
 }
 
+/// Convert plain text into paragraph items with discretionary hyphen penalties.
+#[must_use]
+pub fn hyphenated_paragraph_items_from_text<M: PairMetrics>(
+    metrics: &M,
+    hyphenator: &Hyphenator,
+    text: &str,
+    size: FontSize,
+) -> Vec<ParagraphItem> {
+    let mut items = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    let space = measure_text_with_pairs(metrics, " ", size);
+    let hyphen_width = measure_text_with_pairs(metrics, "-", size);
+    while let Some(word) = words.next() {
+        push_hyphenated_word_items(&mut items, metrics, hyphenator, word, size, hyphen_width);
+        if words.peek().is_some() {
+            items.push(ParagraphItem::Glue(default_interword_glue(space)));
+        }
+    }
+    items.push(ParagraphItem::Penalty(Penalty {
+        width: LayoutUnit::ZERO,
+        penalty: FORCED_BREAK_PENALTY,
+        flagged: false,
+    }));
+    items
+}
+
+fn push_hyphenated_word_items<M: PairMetrics>(
+    out: &mut Vec<ParagraphItem>,
+    metrics: &M,
+    hyphenator: &Hyphenator,
+    word: &str,
+    size: FontSize,
+    hyphen_width: LayoutUnit,
+) {
+    let points = hyphenator.hyphenation_points(word, HyphenationOptions::default());
+    if points.is_empty() {
+        out.push(ParagraphItem::Box(TextBox {
+            text: word.to_string(),
+            width: measure_text_with_pairs(metrics, word, size),
+        }));
+        return;
+    }
+
+    let mut start = 0usize;
+    for point in points {
+        let end = byte_index_for_char_boundary(word, point);
+        if end > start {
+            let part = &word[start..end];
+            out.push(ParagraphItem::Box(TextBox {
+                text: part.to_string(),
+                width: measure_text_with_pairs(metrics, part, size),
+            }));
+            out.push(ParagraphItem::Penalty(Penalty {
+                width: hyphen_width,
+                penalty: 50,
+                flagged: true,
+            }));
+        }
+        start = end;
+    }
+    if start < word.len() {
+        let part = &word[start..];
+        out.push(ParagraphItem::Box(TextBox {
+            text: part.to_string(),
+            width: measure_text_with_pairs(metrics, part, size),
+        }));
+    }
+}
+
+fn byte_index_for_char_boundary(s: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(char_idx)
+        .map_or_else(|| s.len(), |(idx, _)| idx)
+}
+
 /// Default TeX-like interword glue for the first paragraph builder.
 #[must_use]
 pub fn default_interword_glue(space: LayoutUnit) -> Glue {
@@ -316,6 +394,165 @@ pub fn default_interword_glue(space: LayoutUnit) -> Glue {
         shrink: LayoutUnit::from_milli_points(space.milli_points() / 3),
     }
 }
+
+/// Hyphenation controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HyphenationOptions {
+    /// Minimum characters before the first hyphen.
+    pub min_left: usize,
+    /// Minimum characters after the last hyphen.
+    pub min_right: usize,
+}
+
+impl Default for HyphenationOptions {
+    fn default() -> Self {
+        Self {
+            min_left: 2,
+            min_right: 3,
+        }
+    }
+}
+
+/// A compiled Liang hyphenation pattern.
+#[derive(Debug, Clone, Copy)]
+pub struct HyphenPattern {
+    letters: &'static str,
+    values: &'static [u8],
+}
+
+/// A deterministic exception entry. Break positions are character offsets.
+#[derive(Debug, Clone, Copy)]
+pub struct HyphenException {
+    word: &'static str,
+    points: &'static [usize],
+}
+
+/// Dependency-free Liang-style hyphenator.
+#[derive(Debug, Clone, Copy)]
+pub struct Hyphenator {
+    patterns: &'static [HyphenPattern],
+    exceptions: &'static [HyphenException],
+}
+
+impl Hyphenator {
+    /// English starter hyphenator. It includes a compact pattern subset plus
+    /// high-value exceptions for documentation-heavy words; full TeX pattern
+    /// import remains a follow-up data expansion, not an algorithm change.
+    #[must_use]
+    pub const fn english() -> Self {
+        Self {
+            patterns: ENGLISH_STARTER_PATTERNS,
+            exceptions: ENGLISH_EXCEPTIONS,
+        }
+    }
+
+    /// Return legal hyphenation points as character offsets in `word`.
+    #[must_use]
+    pub fn hyphenation_points(&self, word: &str, opts: HyphenationOptions) -> Vec<usize> {
+        if !word.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Vec::new();
+        }
+        let lower = word.to_ascii_lowercase();
+        let len = lower.chars().count();
+        if len <= opts.min_left.saturating_add(opts.min_right) {
+            return Vec::new();
+        }
+        if let Some(exception) = self
+            .exceptions
+            .iter()
+            .find(|exception| exception.word == lower)
+        {
+            return exception
+                .points
+                .iter()
+                .copied()
+                .filter(|&p| legal_hyphen_point(p, len, opts))
+                .collect();
+        }
+
+        let dotted = format!(".{lower}.");
+        let dotted_chars = dotted.chars().collect::<Vec<_>>();
+        let mut scores = vec![0u8; dotted_chars.len() + 1];
+        for pattern in self.patterns {
+            apply_hyphen_pattern(pattern, &dotted_chars, &mut scores);
+        }
+        scores
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &score)| {
+                let point = idx.checked_sub(1)?;
+                if score % 2 == 1 && legal_hyphen_point(point, len, opts) {
+                    Some(point)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+fn legal_hyphen_point(point: usize, len: usize, opts: HyphenationOptions) -> bool {
+    point >= opts.min_left && len.saturating_sub(point) >= opts.min_right
+}
+
+fn apply_hyphen_pattern(pattern: &HyphenPattern, word: &[char], scores: &mut [u8]) {
+    let letters = pattern.letters.chars().collect::<Vec<_>>();
+    if letters.is_empty() || pattern.values.len() != letters.len() + 1 {
+        return;
+    }
+    for start in 0..=word.len().saturating_sub(letters.len()) {
+        if word[start..start + letters.len()] == letters {
+            for (offset, &value) in pattern.values.iter().enumerate() {
+                let idx = start + offset;
+                if let Some(score) = scores.get_mut(idx) {
+                    *score = (*score).max(value);
+                }
+            }
+        }
+    }
+}
+
+const ENGLISH_STARTER_PATTERNS: &[HyphenPattern] = &[
+    HyphenPattern {
+        letters: "tion",
+        values: &[0, 0, 0, 4, 0],
+    },
+    HyphenPattern {
+        letters: "ing",
+        values: &[0, 0, 4, 0],
+    },
+    HyphenPattern {
+        letters: "ment",
+        values: &[0, 0, 0, 4, 0],
+    },
+    HyphenPattern {
+        letters: "able",
+        values: &[0, 0, 4, 0, 0],
+    },
+];
+
+const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
+    HyphenException {
+        word: "hyphenation",
+        points: &[2, 6],
+    },
+    HyphenException {
+        word: "typography",
+        points: &[2, 5, 7],
+    },
+    HyphenException {
+        word: "optimization",
+        points: &[2, 4, 6, 8],
+    },
+    HyphenException {
+        word: "deterministic",
+        points: &[2, 5, 8],
+    },
+    HyphenException {
+        word: "documentation",
+        points: &[3, 5, 8],
+    },
+];
 
 /// One chosen line from the paragraph optimizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,7 +731,7 @@ fn segment_metrics(
                 metrics.stretch += g.stretch;
                 metrics.shrink += g.shrink;
             }
-            ParagraphItem::Penalty(p) => metrics.width += p.width,
+            ParagraphItem::Penalty(_) => {}
         }
     }
     metrics.width += candidate.penalty_width;

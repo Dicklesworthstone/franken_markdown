@@ -62,7 +62,8 @@ details easy to scan while implementation is moving quickly.
      - fixtures where optimal breaks differ from greedy wrapping.
 
 6. **Add Liang/TeX hyphenation.**
-   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.4`
+   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.4` (**starter core done**)
+   - Follow-up corpus bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.6`
    - Acceptance:
      - compact deterministic pattern trie or equivalent table,
      - English patterns initially,
@@ -146,7 +147,8 @@ details easy to scan while implementation is moving quickly.
 - [x] Wire pair kerning into fixed-point layout measurement.
 - [x] Implement `dy5.2` box/glue/penalty primitives in `src/layout.rs`.
 - [x] Implement `dy5.3` first Knuth-Plass active breakpoint optimizer.
-- [ ] Claim and implement `dy5.4` Liang hyphenation.
+- [x] Implement `dy5.4` Liang-style hyphenation core with starter English corpus.
+- [ ] Expand to full TeX English hyphenation corpus (`dy5.6`).
 - [ ] Sync beads and commit only owned files.
 - [ ] Re-check Agent Mail before touching `src/pdf.rs`.
 

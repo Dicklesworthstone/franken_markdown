@@ -507,19 +507,22 @@ fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec
                 ff = file_obj(k),
             ),
         );
-        // FontFile2: raw subset bytes (binary stream).
+        // FontFile2: FlateDecode-compressed subset font program. /Length1 is the
+        // UNCOMPRESSED program length per the PDF spec.
         offsets[file_obj(k)] = buf.len();
+        let font_comp = crate::compress::zlib_compress(&face.bytes);
         buf.extend_from_slice(
             format!(
-                "{n} 0 obj\n<< /Length {len} /Length1 {len} >>\nstream\n",
+                "{n} 0 obj\n<< /Length {clen} /Length1 {olen} /Filter /FlateDecode >>\nstream\n",
                 n = file_obj(k),
-                len = face.bytes.len(),
+                clen = font_comp.len(),
+                olen = face.bytes.len(),
             )
             .as_bytes(),
         );
-        buf.extend_from_slice(&face.bytes);
+        buf.extend_from_slice(&font_comp);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
-        // ToUnicode CMap.
+        // ToUnicode CMap (left uncompressed so it stays greppable + tiny).
         let cmap = tounicode_cmap(&face.font, &face.lig_uni);
         offsets[touni_obj(k)] = buf.len();
         buf.extend_from_slice(

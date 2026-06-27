@@ -28,6 +28,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod compress;
 pub mod fonts;
 pub mod highlight;
 pub mod html;

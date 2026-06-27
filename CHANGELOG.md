@@ -93,6 +93,8 @@ project has no tags or GitHub Releases yet.
   approved article-body fixture snapshots under `tests/fixtures/parser/`.
 - Added `parse_markdown_spanned`, source-span wrapper types, and recoverable
   parser diagnostics for malformed reference definitions and unclosed fences.
+- Added conservative raw HTML block/inline parsing with default escaping and
+  trusted pass-through only when `allow_raw_html` / `--allow-html` is enabled.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

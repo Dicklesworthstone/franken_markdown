@@ -7,6 +7,17 @@ fn html(md: &str) -> String {
     render_html(md, &HtmlOptions::default()).unwrap()
 }
 
+fn html_allowing_raw(md: &str) -> String {
+    render_html(
+        md,
+        &HtmlOptions {
+            allow_raw_html: true,
+            ..HtmlOptions::default()
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn setext_equals_underline_renders_level_one_heading() {
     let out = html("Main Title\n==========\n\nbody");
@@ -135,4 +146,36 @@ fn blockquote_lists_can_contain_nested_lists() {
 
     assert!(out.contains("<blockquote>\n<ul>"));
     assert!(out.contains("<p>quoted</p>\n<ul>\n<li>nested</li>"));
+}
+
+#[test]
+fn html_blocks_escape_by_default_and_pass_through_when_allowed() {
+    let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
+    let escaped = html(md);
+
+    assert!(escaped.contains("&lt;div class=\"note\"&gt;"));
+    assert!(escaped.contains("&lt;strong&gt;trusted&lt;/strong&gt;"));
+    assert!(!escaped.contains("<div class=\"note\">"));
+
+    let raw = html_allowing_raw(md);
+    assert!(raw.contains("<div class=\"note\">\n<strong>trusted</strong>\n</div>\n"));
+}
+
+#[test]
+fn inline_html_escapes_by_default_and_passes_through_when_allowed() {
+    let md = "A <span class=\"pill\">trusted</span> word.";
+    let escaped = html(md);
+
+    assert!(escaped.contains("A &lt;span class=\"pill\"&gt;trusted&lt;/span&gt; word."));
+    assert!(!escaped.contains("<span class=\"pill\">"));
+
+    let raw = html_allowing_raw(md);
+    assert!(raw.contains("A <span class=\"pill\">trusted</span> word."));
+}
+
+#[test]
+fn malformed_angle_bracket_text_stays_escaped_text() {
+    let out = html("2 < 3 and <not closed");
+
+    assert!(out.contains("2 &lt; 3 and &lt;not closed"));
 }

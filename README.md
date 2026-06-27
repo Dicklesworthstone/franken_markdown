@@ -119,6 +119,8 @@ Implemented today:
 - additive spanned parse API with recoverable diagnostics for editor/WASM
   integrations,
 - structured shared theme model for HTML, PDF, CLI JSON, and WASM callers,
+- conservative raw HTML block/inline parsing that escapes by default and only
+  passes through with `--allow-html`,
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,

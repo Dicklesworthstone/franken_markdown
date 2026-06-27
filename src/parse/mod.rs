@@ -126,6 +126,16 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
             continue;
         }
 
+        if html_block_start(line) {
+            let start = i;
+            i += 1;
+            while i < lines.len() && !lines[i].text.trim().is_empty() {
+                i += 1;
+            }
+            spans.push(span_for_lines(&lines, start, i));
+            continue;
+        }
+
         if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1].text) {
             let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
             if let Some((_table, used)) = parse_table(&rest, &refs) {
@@ -154,6 +164,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
                 || atx_heading(lines[i].text).is_some()
                 || open_fence(lines[i].text).is_some()
                 || lines[i].text.trim_start().starts_with('>')
+                || html_block_start(lines[i].text)
                 || list_marker(lines[i].text).is_some()
             {
                 break;
@@ -293,6 +304,15 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             blocks.push(Block::BlockQuote(parse_blocks_with_refs(&inner_refs, refs)));
             continue;
         }
+        if html_block_start(line) {
+            let start = i;
+            i += 1;
+            while i < lines.len() && !lines[i].trim().is_empty() {
+                i += 1;
+            }
+            blocks.push(Block::HtmlBlock(lines[start..i].join("\n")));
+            continue;
+        }
         if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1]) {
             if let Some((table, used)) = parse_table(&lines[i..], refs) {
                 blocks.push(Block::Table(table));
@@ -324,6 +344,7 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
                 || atx_heading(lines[i]).is_some()
                 || open_fence(lines[i]).is_some()
                 || lines[i].trim_start().starts_with('>')
+                || html_block_start(lines[i])
                 || list_marker(lines[i]).is_some()
             {
                 break;
@@ -484,6 +505,103 @@ fn strip_blockquote(line: &str) -> String {
     let t = line.trim_start();
     let rest = t.strip_prefix('>').unwrap_or(t);
     rest.strip_prefix(' ').unwrap_or(rest).to_string()
+}
+
+fn html_block_start(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.starts_with("<!--") || t.starts_with("<!") || t.starts_with("<?") {
+        return true;
+    }
+    let Some(name) = html_tag_name(t) else {
+        return false;
+    };
+    is_html_block_tag(name)
+}
+
+fn html_tag_name(t: &str) -> Option<&str> {
+    let rest = t.strip_prefix("</").or_else(|| t.strip_prefix('<'))?;
+    let mut end = 0usize;
+    for (idx, ch) in rest.char_indices() {
+        if idx == 0 && !ch.is_ascii_alphabetic() {
+            return None;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 { None } else { Some(&rest[..end]) }
+}
+
+fn is_html_block_tag(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "address"
+            | "article"
+            | "aside"
+            | "base"
+            | "basefont"
+            | "blockquote"
+            | "body"
+            | "caption"
+            | "center"
+            | "col"
+            | "colgroup"
+            | "dd"
+            | "details"
+            | "dialog"
+            | "dir"
+            | "div"
+            | "dl"
+            | "dt"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "frame"
+            | "frameset"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "head"
+            | "header"
+            | "hr"
+            | "html"
+            | "iframe"
+            | "legend"
+            | "li"
+            | "link"
+            | "main"
+            | "menu"
+            | "menuitem"
+            | "nav"
+            | "noframes"
+            | "ol"
+            | "optgroup"
+            | "option"
+            | "p"
+            | "param"
+            | "pre"
+            | "script"
+            | "section"
+            | "style"
+            | "summary"
+            | "table"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "title"
+            | "tr"
+            | "track"
+            | "ul"
+    )
 }
 
 // ---- lists ------------------------------------------------------------------
@@ -816,6 +934,10 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                         content,
                     });
                     i = next;
+                } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
+                    flush(&mut buf, &mut out);
+                    out.push(Inline::Html(html));
+                    i = next;
                 } else {
                     buf.push(c);
                     i += 1;
@@ -829,6 +951,10 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                         title: None,
                         content: vec![Inline::Text(url)],
                     });
+                    i = next;
+                } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
+                    flush(&mut buf, &mut out);
+                    out.push(Inline::Html(html));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1029,6 +1155,45 @@ fn parse_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
     } else {
         None
     }
+}
+
+fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
+    if chars.get(i) != Some(&'<') {
+        return None;
+    }
+    if chars.get(i + 1) == Some(&'!')
+        && chars.get(i + 2) == Some(&'-')
+        && chars.get(i + 3) == Some(&'-')
+    {
+        let mut j = i + 4;
+        while j + 2 < chars.len() {
+            if chars[j] == '-' && chars[j + 1] == '-' && chars[j + 2] == '>' {
+                let html: String = chars[i..=j + 2].iter().collect();
+                return Some((html, j + 3));
+            }
+            j += 1;
+        }
+        return None;
+    }
+
+    let first = chars.get(i + 1).copied()?;
+    let tag_like = first.is_ascii_alphabetic()
+        || first == '!'
+        || first == '?'
+        || (first == '/' && chars.get(i + 2).is_some_and(|ch| ch.is_ascii_alphabetic()));
+    if !tag_like {
+        return None;
+    }
+
+    let mut j = i + 1;
+    while j < chars.len() && chars[j] != '>' && chars[j] != '\n' {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'>') {
+        return None;
+    }
+    let html: String = chars[i..=j].iter().collect();
+    Some((html, j + 1))
 }
 
 fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {

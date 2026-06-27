@@ -231,6 +231,7 @@ For local development:
 cargo test
 cargo run -- examples/showcase.md --out showcase.html
 scripts/check-policy.sh
+scripts/check-determinism.sh
 ```
 
 WASM/core portability gate:
@@ -254,6 +255,16 @@ That script verifies the no-default core still has zero third-party normal
 dependencies, banned renderer/browser/runtime dependency forests are absent, no
 native build script has appeared, and unsafe-code lint enforcement is still in
 place.
+
+Determinism gate:
+
+```bash
+scripts/check-determinism.sh
+```
+
+That script compares byte-for-byte output across repeated runs for the
+agent-readable JSON surfaces and the current HTML renderer. PDF determinism will
+join the gate once PDF output exists.
 
 Future release channels are expected to include standalone binaries and a
 browser/WASM package.

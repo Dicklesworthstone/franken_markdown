@@ -46,6 +46,8 @@ project has no tags or GitHub Releases yet.
   native no-default-features core check plus `wasm32-unknown-unknown`.
 - Added `scripts/check-policy.sh` to enforce the clean-room dependency and
   unsafe-code boundary in CI.
+- Added `scripts/check-determinism.sh` to compare repeated agent JSON and HTML
+  render outputs byte-for-byte in CI.
 - Clarified that Asupersync belongs in native batch orchestration,
   cancellation, budgets, and deterministic tests, not in the pure synchronous
   render core.

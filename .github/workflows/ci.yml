@@ -35,6 +35,9 @@ jobs:
       - name: Check WASM core
         run: scripts/check-wasm-core.sh
 
+      - name: Check deterministic output
+        run: scripts/check-determinism.sh
+
       - name: Test
         run: cargo test
 

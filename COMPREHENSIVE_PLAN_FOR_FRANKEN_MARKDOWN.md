@@ -370,6 +370,7 @@ boundary:
 - `cargo check --no-default-features --lib`
 - `scripts/check-policy.sh`
 - `scripts/check-wasm-core.sh`
+- `scripts/check-determinism.sh`
 - `cargo test`
 - `cargo clippy --all-targets -- -D warnings`
 
@@ -382,6 +383,10 @@ core must have zero third-party normal dependencies, banned renderer/browser
 dependency forests must stay out of the full graph, native build scripts require
 an explicit architecture decision, and unsafe-code lint enforcement must remain
 active.
+
+The determinism gate starts with the surfaces that exist today: CLI discovery
+JSON and HTML rendering. It should expand to PDF bytes, output-size ledgers, and
+visual fixture hashes as those subsystems land.
 
 ## 11. Current State
 

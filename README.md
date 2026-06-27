@@ -13,10 +13,11 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 
 </div>
 
-> **Status: pre-Phase-0 scaffold.** The Markdown-to-HTML path works today. The
-> PDF engine, syntax highlighter, font subsetter, and WASM package are planned
-> work tracked in beads. The repository is intentionally early and not yet a
-> released package.
+> **Status: pre-Phase-0 scaffold.** The Markdown-to-HTML path works today,
+> including clean-room syntax highlighting for common documentation languages.
+> The PDF path also works as a compact deterministic v0 using built-in PDF
+> base-14 fonts. The final high-typography PDF engine, font subsetting, and
+> WASM package remain active roadmap work tracked in beads.
 
 ## TL;DR
 
@@ -35,7 +36,7 @@ browser/WASM.
 |---|---|
 | Beautiful default output | Cursor/GitHub-style theme, high-readable measure, polished tables, blockquotes, code blocks |
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
-| PDF quality | Planned Knuth-Plass line breaking, kerning, ligatures, leading, hyphenation, pagination, and font subsetting |
+| PDF quality | Compact deterministic Base-14 PDF v0 now; planned Knuth-Plass line breaking, kerning, ligatures, leading, hyphenation, pagination, and font subsetting |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
 | Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage` |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are product targets |
@@ -58,6 +59,9 @@ target/release/fmd --text '# Hello from fmd' --out hello.html
 # Use the serif theme
 target/release/fmd examples/showcase.md --font serif --out showcase-serif.html
 
+# Render the current compact PDF MVP
+target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
+
 # Discover the agent-readable contract
 target/release/fmd capabilities --json
 target/release/fmd doctor --json
@@ -65,11 +69,15 @@ target/release/fmd robot-docs guide
 target/release/fmd --robot-triage
 ```
 
-PDF is wired but intentionally refuses until the clean-room PDF stack lands:
+The PDF path is intentionally honest about its stage: it produces valid,
+deterministic PDFs today, but the v0 writer uses Base-14 fonts and greedy
+wrapping. The beads for embedded curated fonts, font subsetting, Knuth-Plass
+line breaking, kerning, ligatures, hyphenation, and pagination quality remain
+open.
 
 ```bash
 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
-# exits 70 today: not yet implemented: pdf pipeline ...
+# writes a compact deterministic PDF
 ```
 
 ## Design Philosophy
@@ -100,18 +108,20 @@ Implemented today:
   hard and soft breaks,
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
+- clean-room syntax highlighting for common documentation languages,
 - default sans and serif font stacks,
 - custom stylesheet replacement,
+- compact deterministic PDF v0 using PDF base-14 fonts,
 - `fmd` and `franken_markdown` binaries over one shared CLI entrypoint,
-- typed PDF refusal so callers can handle the incomplete path deterministically.
+- typed render errors so callers can handle future incomplete/invalid render
+  paths deterministically.
 
 Planned:
 
 - full CommonMark/GFM conformance ladder,
-- clean-room syntax highlighting for code blocks,
 - embedded curated font families and per-document font subsetting,
 - Knuth-Plass paragraph layout and TeX/Liang hyphenation,
-- deterministic compact PDF writer,
+- high-quality PDF layout, tables, code pagination, and visual fixtures,
 - browser/WASM package and examples,
 - Asupersync-backed native batch renderer with cancellation and budgets.
 
@@ -130,7 +140,7 @@ Useful flags:
 | Flag | Meaning |
 |---|---|
 | `--to html` | Write HTML; default |
-| `--to pdf` | Write PDF; planned, currently exits 70 |
+| `--to pdf` | Write the current compact deterministic PDF v0 |
 | `--to both` | Write both outputs, deriving extensions from `--out` |
 | `--out <path>` | Output path; HTML without `--out` writes to stdout |
 | `--font sans` | Default high-readability sans stack |
@@ -209,7 +219,7 @@ The core modules are:
 | `html` | All-in-one HTML emitter |
 | `text` | Planned font reader/shaper/subsetter |
 | `layout` | Planned Knuth-Plass and pagination engine |
-| `pdf` | Planned compact PDF writer |
+| `pdf` | Compact deterministic PDF v0; full typography/font subsetting roadmap remains open |
 | `cli` | Feature-gated `fmd` command surface |
 
 ## Installation
@@ -263,8 +273,8 @@ scripts/check-determinism.sh
 ```
 
 That script compares byte-for-byte output across repeated runs for the
-agent-readable JSON surfaces and the current HTML renderer. PDF determinism will
-join the gate once PDF output exists.
+agent-readable JSON surfaces, the current HTML renderer, and the current PDF
+writer.
 
 Future release channels are expected to include standalone binaries and a
 browser/WASM package.
@@ -297,16 +307,17 @@ config file.
 | Symptom | Fix |
 |---|---|
 | `PDF output requires --out <path>` | PDF writes binary bytes and must have a path: `fmd doc.md --to pdf --out doc.pdf` |
-| `not yet implemented: pdf pipeline` | Expected today; use HTML while PDF beads land |
+| PDF looks simpler than the HTML preview | Expected for the v0 PDF writer; high-typography layout and embedded fonts are still roadmap work |
 | HTML printed to terminal | Pass `--out file.html` or redirect stdout |
 | Custom CSS removed the default styling | `--css` intentionally replaces the stylesheet; include every rule you want |
 | Raw HTML appears escaped | Default is safe escaping; pass `--allow-html` only for trusted input |
 
 ## Limitations
 
-- PDF output is not implemented yet.
+- PDF output is implemented as a v0 deterministic writer using Base-14 fonts,
+  approximate metrics, and greedy wrapping. The final typography engine is not
+  implemented yet.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
-- Syntax highlighting is planned but not implemented.
 - Fonts are currently CSS stacks in HTML; embedded font bytes and PDF subsetting
   are planned.
 - WASM packaging and browser examples are not present yet.

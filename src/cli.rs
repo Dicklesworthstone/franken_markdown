@@ -16,7 +16,7 @@ use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html
     name = "fmd",
     version,
     about,
-    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML today and optimized PDF as the clean-room layout engine lands.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
+    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path is an early base-14-font MVP; the high-typography engine is still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
 )]
 struct Cli {
     /// Emit stable machine-readable JSON for command metadata/status.
@@ -248,8 +248,8 @@ fn run_render(args: RenderArgs, global_json: bool) -> ExitCode {
                     return fail_json(64, "usage_error", "PDF output requires --out <path>", json);
                 }
             },
-            // The PDF subsystem is still being built; surface it as a typed,
-            // non-crashing refusal with a distinct exit code (70 = unavailable).
+            // Keep render errors typed with a distinct exit code (70 = render
+            // failure/unavailable subsystem) as richer PDF validation lands.
             Err(e) => return fail_render(e, json),
         }
     }
@@ -346,13 +346,14 @@ fn report_write(kind: &str, path: &Path, bytes: usize, json: bool) {
 fn run_doctor(json: bool) -> ExitCode {
     if json {
         println!(
-            "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"planned\",\"wasm_core\":\"no-default-features\"}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
+            "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
             env!("CARGO_PKG_VERSION")
         );
     } else {
         println!("fmd doctor");
         println!("  html: available");
-        println!("  pdf: planned (text/layout/font/PDF writer beads)");
+        println!("  pdf: available v0 (base-14 fonts, deterministic writer)");
+        println!("  syntax highlighting: available for common documentation languages");
         println!("  core dependencies: std-only");
         println!("  cli dependency: clap");
         println!("  wasm posture: core builds with --no-default-features");
@@ -363,21 +364,21 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"planned\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"syntax_highlighting\":\"planned\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"planned via --no-default-features\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"syntax_highlighting\":\"available\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn print_robot_triage() {
     println!(
-        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"planned\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render a file and receive machine-readable write status on stderr\"}}]}}",
+        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current compact PDF MVP and receive machine-readable write status on stderr\"}}]}}",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn print_robot_docs() {
     println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF currently refuses with exit 70 until the clean-room text/layout/PDF pipeline lands.\n  Use --css <file> for a full custom stylesheet replacement and --font serif for long-form prose."
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF output is available as a compact deterministic v0 using base-14 fonts; Knuth-Plass layout and embedded subset fonts are still planned.\n  Use --css <file> for a full custom stylesheet replacement and --font serif for long-form prose."
     );
 }
 

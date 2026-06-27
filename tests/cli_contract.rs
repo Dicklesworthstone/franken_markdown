@@ -162,8 +162,8 @@ fn first_try_file_and_stdin_renders_work() {
 }
 
 #[test]
-fn pdf_refusal_is_typed_json_on_stderr_with_exit_70() {
-    let out_path = temp_file("planned-pdf", "pdf");
+fn pdf_render_writes_valid_mvp_pdf_and_json_status_to_stderr() {
+    let out_path = temp_file("mvp-pdf", "pdf");
     let out_path_s = out_path.display().to_string();
     let out = fmd(&[
         "--text",
@@ -175,12 +175,24 @@ fn pdf_refusal_is_typed_json_on_stderr_with_exit_70() {
         "--json",
     ]);
 
-    assert_eq!(out.status.code(), Some(70));
+    assert!(out.status.success());
     assert!(out.stdout.is_empty());
     let stderr = text(&out.stderr);
-    assert!(stderr.contains("\"ok\":false"));
-    assert!(stderr.contains("\"code\":\"not_yet_implemented\""));
-    assert!(stderr.contains("\"exit_code\":70"));
+    assert!(stderr.contains("\"ok\":true"));
+    assert!(stderr.contains("\"event\":\"wrote\""));
+    assert!(stderr.contains("\"format\":\"pdf\""));
+
+    let pdf = fs::read(&out_path).unwrap();
+    assert!(pdf.starts_with(b"%PDF-1.7\n"));
+    assert!(pdf.ends_with(b"%%EOF\n"));
+    assert!(pdf.windows(b"startxref".len()).any(|w| w == b"startxref"));
+    assert!(
+        pdf.windows(b"/Type /Catalog".len())
+            .any(|w| w == b"/Type /Catalog")
+    );
+    assert!(pdf.len() > 500);
+
+    let _ = fs::remove_file(out_path);
 }
 
 #[test]

@@ -90,8 +90,14 @@ fn custom_stylesheet_replaces_default() {
 }
 
 #[test]
-fn pdf_path_is_typed_not_yet_implemented() {
+fn pdf_path_returns_valid_mvp_pdf_bytes() {
     use franken_markdown::{PdfOptions, render_pdf};
-    let err = render_pdf("# Hi", &PdfOptions::default()).unwrap_err();
-    assert_eq!(err.code(), "not_yet_implemented");
+    let pdf = render_pdf("# Hi", &PdfOptions::default()).unwrap();
+    assert!(pdf.starts_with(b"%PDF-1.7\n"));
+    assert!(pdf.ends_with(b"%%EOF\n"));
+    assert!(
+        pdf.windows(b"/Type /Catalog".len())
+            .any(|w| w == b"/Type /Catalog")
+    );
+    assert!(pdf.len() > 500);
 }

@@ -36,7 +36,7 @@ project has no tags or GitHub Releases yet.
   `fmd robot-docs guide`.
 - Kept stdout as document data and stderr as diagnostics/status.
 - Added binary-level contract tests for help, file/stdin/text render paths,
-  discovery JSON, typed PDF refusal, usage errors, typo inference, and
+  discovery JSON, PDF rendering, usage errors, typo inference, and
   `NO_COLOR`/CI/`TERM=dumb` expectations.
 
 ### Planning
@@ -46,11 +46,26 @@ project has no tags or GitHub Releases yet.
   native no-default-features core check plus `wasm32-unknown-unknown`.
 - Added `scripts/check-policy.sh` to enforce the clean-room dependency and
   unsafe-code boundary in CI.
-- Added `scripts/check-determinism.sh` to compare repeated agent JSON and HTML
-  render outputs byte-for-byte in CI.
+- Added `scripts/check-determinism.sh` to compare repeated agent JSON, HTML,
+  and PDF render outputs byte-for-byte in CI.
 - Clarified that Asupersync belongs in native batch orchestration,
   cancellation, budgets, and deterministic tests, not in the pure synchronous
   render core.
+
+### Rendering Engine
+
+- Added a clean-room syntax highlighter for common documentation languages,
+  wired into the HTML emitter with token CSS and regression tests.
+- Added document-centric library entrypoints:
+  `parse_markdown`, `render_html_document`, and `render_pdf_document`, so callers
+  can parse once and render multiple outputs from one AST.
+- Landed the first deterministic PDF writer: valid PDF 1.7 output, Base-14
+  fonts, automatic pagination, headings, paragraphs, code blocks, lists,
+  blockquotes, thematic rules, simple table text, xref/startxref output, and
+  byte-level structural tests.
+- Updated `fmd doctor`, `capabilities --json`, `robot-docs guide`, and
+  `--robot-triage` to report the PDF path as `available_v0_base14` while keeping
+  Knuth-Plass layout and font subsetting marked as planned.
 
 ### Parser Conformance
 
@@ -74,8 +89,9 @@ project has no tags or GitHub Releases yet.
 - Implemented all-in-one HTML output with inlined default CSS, custom stylesheet
   replacement, sans/serif font stacks, table styling, blockquotes, code blocks,
   task lists, and dark-mode CSS.
-- Added typed `not_yet_implemented` PDF behavior so callers get deterministic
-  failure instead of a panic or silent empty file.
+- Added typed `not_yet_implemented` PDF behavior so callers initially got
+  deterministic failure instead of a panic or silent empty file. This has since
+  been superseded by the v0 deterministic PDF writer in Unreleased.
 - Added smoke tests and `examples/showcase.md`.
 
 ### Notes For Agents

@@ -5,9 +5,10 @@
 //!
 //! * a **self-contained ("all-in-one") HTML** document that looks incredible by
 //!   default (Cursor/GitHub-preview-like) and accepts a custom stylesheet, or
-//! * a **tiny, optimized PDF** with beautiful styling, colours, and fonts and
-//!   LaTeX-grade typesetting (Knuth–Plass optimal line breaking, real kerning,
-//!   ligatures, leading, hyphenation).
+//! * a **tiny, deterministic PDF**. The current v0 writer uses built-in PDF
+//!   base-14 fonts; the roadmap adds embedded curated fonts and LaTeX-grade
+//!   typesetting (Knuth-Plass optimal line breaking, real kerning, ligatures,
+//!   leading, hyphenation).
 //!
 //! The library has **zero third-party dependencies** — every component (the
 //! Markdown parser, the HTML emitter, the font/text subsystem, the line-breaking
@@ -16,9 +17,10 @@
 //!
 //! ## Status
 //!
-//! Pre-Phase-0 scaffold. The HTML path renders today; the PDF path is wired as a
-//! typed `not-yet-implemented` refusal while the layout/text/PDF subsystems are
-//! built out (tracked in beads). Nothing here is final.
+//! Pre-Phase-0 scaffold. The HTML path renders today with clean-room syntax
+//! highlighting for common documentation languages. The PDF path renders a
+//! compact deterministic v0; the high-typography layout/text/font subsystems
+//! are still being built out (tracked in beads). Nothing here is final.
 #![forbid(unsafe_code)]
 #![cfg_attr(not(feature = "cli"), allow(dead_code))]
 
@@ -54,7 +56,7 @@ pub struct HtmlOptions {
     pub allow_raw_html: bool,
 }
 
-/// Options for the PDF renderer (the layout/text/PDF subsystems are in build-out).
+/// Options for the PDF renderer.
 #[derive(Debug, Clone, Default)]
 pub struct PdfOptions {
     /// Typography + colour theme.
@@ -71,22 +73,48 @@ pub fn parse(src: &str) -> Document {
     parse::parse_document(src)
 }
 
-/// Render Markdown source to a complete, self-contained HTML document string.
+/// Parse Markdown source into the document AST (alias of [`parse`]).
+#[must_use]
+pub fn parse_markdown(src: &str) -> Document {
+    parse::parse_document(src)
+}
+
+/// Render an already-parsed document to a complete, self-contained HTML string.
+///
+/// Use this with [`parse_markdown`] to parse once and render multiple targets
+/// (HTML and PDF) from one AST — the document-centric pipeline.
 ///
 /// # Errors
 /// Currently infallible for the HTML path, but returns [`Result`] so callers do
 /// not have to change signatures as richer validation lands.
+pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
+    Ok(html::render(doc, opts))
+}
+
+/// Render an already-parsed document to optimized PDF bytes.
+///
+/// # Errors
+/// Propagates renderer errors; the HTML and PDF renderers share this one AST.
+pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
+    pdf::render(doc, opts)
+}
+
+/// Render Markdown source to a complete, self-contained HTML document string.
+///
+/// Convenience wrapper over [`parse_markdown`] + [`render_html_document`].
+///
+/// # Errors
+/// See [`render_html_document`].
 pub fn render_html(src: &str, opts: &HtmlOptions) -> Result<String> {
-    let doc = parse(src);
-    Ok(html::render(&doc, opts))
+    render_html_document(&parse_markdown(src), opts)
 }
 
 /// Render Markdown source to optimized PDF bytes.
 ///
+/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document`].
+///
 /// # Errors
-/// Returns [`RenderError::NotYetImplemented`] until the layout/text/PDF
-/// subsystems land (tracked in beads); the AST + theme plumbing is already wired.
+/// See [`render_pdf_document`].
 pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
-    let doc = parse(src);
-    pdf::render(&doc, opts)
+    render_pdf_document(&parse_markdown(src), opts)
 }

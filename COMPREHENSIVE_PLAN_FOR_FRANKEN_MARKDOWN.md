@@ -1,7 +1,7 @@
 # Comprehensive Plan For franken_markdown
 
 Date: 2026-06-26  
-Status: pre-Phase-0 plan, scaffold exists  
+Status: pre-Phase-0 plan, scaffold exists with HTML, syntax highlighting, and PDF v0
 Product shape: Rust library + `fmd` CLI + first-class WASM renderer
 
 ## 1. Goal
@@ -34,12 +34,14 @@ hyphenation, pagination, and embedded subset fonts.
 The library exposes:
 
 - `parse(&str) -> Document`
+- `parse_markdown(&str) -> Document`
+- `render_html_document(&Document, &HtmlOptions) -> Result<String>`
+- `render_pdf_document(&Document, &PdfOptions) -> Result<Vec<u8>>`
 - `render_html(&str, &HtmlOptions) -> Result<String>`
 - `render_pdf(&str, &PdfOptions) -> Result<Vec<u8>>`
 
 Planned additions:
 
-- render from an already parsed `Document`,
 - incremental parse/render APIs for large inputs,
 - stable option structs for page size, margins, font family, syntax theme, and
   output determinism,
@@ -295,7 +297,8 @@ basic render API.
 ### Phase 2 - HTML Excellence
 
 - Refine default theme.
-- Syntax highlighting.
+- Syntax highlighting. (Initial clean-room highlighter is landed; broaden
+  language coverage and visual fixtures next.)
 - Embedded font CSS path.
 - HTML snapshot tests.
 - Browser visual regression harness.
@@ -316,7 +319,7 @@ basic render API.
 
 ### Phase 5 - PDF Writer
 
-- Minimal deterministic PDF writer.
+- Minimal deterministic PDF writer. (Initial Base-14 PDF v0 is landed.)
 - Fonts and content streams.
 - Validation and size benchmarks.
 
@@ -384,8 +387,8 @@ dependency forests must stay out of the full graph, native build scripts require
 an explicit architecture decision, and unsafe-code lint enforcement must remain
 active.
 
-The determinism gate starts with the surfaces that exist today: CLI discovery
-JSON and HTML rendering. It should expand to PDF bytes, output-size ledgers, and
+The determinism gate covers the surfaces that exist today: CLI discovery JSON,
+HTML rendering, and PDF rendering. It should expand to output-size ledgers and
 visual fixture hashes as those subsystems land.
 
 ## 11. Current State
@@ -394,14 +397,16 @@ Working:
 
 - parser subset,
 - HTML output,
+- syntax highlighting for common documentation languages,
 - CLI render,
+- compact deterministic PDF v0 using built-in PDF base-14 fonts,
 - tests for core HTML behavior,
-- typed PDF refusal.
+- PDF structural tests and byte determinism gate.
 
 Not working yet:
 
-- real PDF,
-- syntax highlighting,
+- high-typography PDF output with Knuth-Plass line breaking, kerning,
+  ligatures, hyphenation, embedded fonts, and font subsetting,
 - embedded fonts,
 - WASM package,
 - Asupersync batch mode,

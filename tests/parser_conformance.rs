@@ -199,6 +199,24 @@ fn malformed_angle_bracket_text_stays_escaped_text() {
 }
 
 #[test]
+fn intraword_underscores_remain_literal_text() {
+    let out = html("foo_bar_baz foo__bar__baz foo___bar___baz");
+
+    assert!(out.contains("<p>foo_bar_baz foo__bar__baz foo___bar___baz</p>"));
+    assert!(!out.contains("<em>"));
+    assert!(!out.contains("<strong>"));
+}
+
+#[test]
+fn underscore_emphasis_still_works_at_word_boundaries() {
+    let out = html("_em_ and __strong__ and _foo_bar_");
+
+    assert!(out.contains("<em>em</em>"));
+    assert!(out.contains("<strong>strong</strong>"));
+    assert!(out.contains("<em>foo_bar</em>"));
+}
+
+#[test]
 fn uri_and_email_autolinks_render_with_commonmark_display_text() {
     let out = html("Visit <https://example.com/docs?q=1> or <team@example.com>.");
 

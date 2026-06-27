@@ -1061,6 +1061,13 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
             }
             '*' | '_' => {
                 let n = run_len(&bytes, i, c);
+                if is_intraword_underscore_run(&bytes, i, n) {
+                    for _ in 0..n {
+                        buf.push(c);
+                    }
+                    i += n;
+                    continue;
+                }
                 let want = if n >= 2 { 2 } else { 1 };
                 if let Some((inner, next)) = parse_delim(&bytes, i, c, want) {
                     flush(&mut buf, &mut out);
@@ -1098,6 +1105,15 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
 
 fn run_len(chars: &[char], i: usize, ch: char) -> usize {
     chars[i..].iter().take_while(|&&c| c == ch).count()
+}
+
+fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
+    if chars.get(i) != Some(&'_') {
+        return false;
+    }
+    let before = i.checked_sub(1).and_then(|idx| chars.get(idx));
+    let after = chars.get(i + run);
+    before.is_some_and(|ch| ch.is_alphanumeric()) && after.is_some_and(|ch| ch.is_alphanumeric())
 }
 
 fn find_code_close(chars: &[char], from: usize, ch: char, n: usize) -> Option<usize> {
@@ -1138,7 +1154,11 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
     while j < chars.len() {
         if chars[j] == ch {
             let run = run_len(chars, j, ch);
-            if run >= want && j > after && chars[j - 1] != ' ' {
+            if run >= want
+                && j > after
+                && chars[j - 1] != ' '
+                && !is_intraword_underscore_run(chars, j, run)
+            {
                 let inner: String = chars[after..j].iter().collect();
                 return Some((inner, j + want));
             }

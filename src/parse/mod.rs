@@ -65,7 +65,10 @@ struct SourceLine<'a> {
 
 fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
     let mut lines = Vec::new();
-    let mut start = 0usize;
+    let (src, mut start) = src
+        .strip_prefix('\u{feff}')
+        .map_or((src, 0usize), |stripped| (stripped, '\u{feff}'.len_utf8()));
+
     for raw in src.split_inclusive('\n') {
         let raw_start = start;
         start += raw.len();
@@ -82,9 +85,15 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
 }
 
 fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
-    let lines: Vec<SourceLine<'_>> = source_lines(src)
+    let raw_lines = source_lines(src);
+    let consumed_reference_lines = {
+        let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
+        collect_link_reference_metadata(&line_texts).0
+    };
+    let lines: Vec<SourceLine<'_>> = raw_lines
         .into_iter()
-        .filter(|line| parse_reference_definition(line.text).is_none())
+        .enumerate()
+        .filter_map(|(idx, line)| (!consumed_reference_lines[idx]).then_some(line))
         .collect();
     let refs = ReferenceMap::new();
     let mut spans = Vec::new();
@@ -247,16 +256,44 @@ fn looks_like_reference_definition(line: &str) -> bool {
 }
 
 fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap) {
-    let mut refs = ReferenceMap::new();
+    let (consumed, refs) = collect_link_reference_metadata(lines);
     let mut kept = Vec::with_capacity(lines.len());
-    for line in lines {
-        if let Some((label, reference)) = parse_reference_definition(line) {
-            refs.entry(label).or_insert(reference);
-        } else {
+    for (idx, line) in lines.iter().enumerate() {
+        if !consumed[idx] {
             kept.push(*line);
         }
     }
     (kept, refs)
+}
+
+fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) {
+    let mut refs = ReferenceMap::new();
+    let mut consumed = vec![false; lines.len()];
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let Some((label, mut reference)) = parse_reference_definition(lines[i]) else {
+            i += 1;
+            continue;
+        };
+
+        let mut used = 1usize;
+        if reference.title.is_none()
+            && let Some(title_line) = lines.get(i + 1)
+            && let Some(title) = parse_reference_title_line(title_line)
+        {
+            reference.title = Some(title);
+            used = 2;
+        }
+
+        refs.entry(label).or_insert(reference);
+        for consumed_line in consumed.iter_mut().skip(i).take(used) {
+            *consumed_line = true;
+        }
+        i += used;
+    }
+
+    (consumed, refs)
 }
 
 fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
@@ -445,6 +482,21 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     };
 
     Some((label, LinkReference { dest, title }))
+}
+
+fn parse_reference_title_line(line: &str) -> Option<String> {
+    if leading_spaces(line) > 3 {
+        return None;
+    }
+    let t = line.trim_start();
+    if t.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = t.chars().collect();
+    let mut i = 0usize;
+    let title = parse_link_title(&chars, &mut i)?;
+    skip_spaces(&chars, &mut i);
+    (i == chars.len()).then_some(title)
 }
 
 // ---- block detectors --------------------------------------------------------
@@ -1118,6 +1170,18 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                         buf.push(c);
                     }
                     i += n;
+                    continue;
+                }
+                // Triple delimiter run: `***x***` / `___x___` is emphasis *and*
+                // strong (bold-italic). Try it before the 2/1 split so the run is
+                // not greedily consumed as `**` + a stray `*`.
+                if n >= 3
+                    && let Some((inner, next)) = parse_delim(&bytes, i, c, 3)
+                {
+                    flush(&mut buf, &mut out);
+                    let parsed = parse_inlines_with_refs(&inner, refs);
+                    out.push(Inline::Strong(vec![Inline::Emphasis(parsed)]));
+                    i = next;
                     continue;
                 }
                 let want = if n >= 2 { 2 } else { 1 };

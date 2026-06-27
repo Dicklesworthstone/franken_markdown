@@ -116,6 +116,48 @@ fn reads_dejavu_glyf_outlines_when_available() {
     assert!(found_composite, "DejaVu should contain composite glyphs");
 }
 
+/// The vendored Plex + Computer Modern fonts (committed under fonts/) must parse
+/// with the clean-room reader — this is what the PDF embedder will subset.
+#[test]
+fn parses_bundled_plex_and_cm_fonts() {
+    for (path, name) in [
+        ("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf", "Plex Sans"),
+        ("fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf", "Plex Sans Bold"),
+        ("fonts/computer-modern/cmunrm.ttf", "CM Roman"),
+        ("fonts/computer-modern/cmuntt.ttf", "CM Typewriter"),
+    ] {
+        let bytes = std::fs::read(path).unwrap_or_else(|_| panic!("missing bundled font {path}"));
+        let font = Font::parse(bytes).unwrap_or_else(|_| panic!("{name} should parse"));
+        assert!(font.units_per_em > 0, "{name} upm");
+        assert!(font.num_glyphs > 100, "{name} glyph count");
+        assert!(
+            font.has_glyf_outlines(),
+            "{name} has glyf outlines (subsettable)"
+        );
+        let a = font.glyph_index('A');
+        assert_ne!(a, 0, "{name} maps 'A'");
+        assert!(
+            font.glyph_data(a).is_some_and(|d| !d.is_empty()),
+            "{name} 'A' has outline data"
+        );
+        assert!(font.advance_1000('A') > 0, "{name} 'A' advance");
+    }
+    // CM Typewriter is a monospaced typewriter face: every advance is equal.
+    let mono = Font::parse(std::fs::read("fonts/computer-modern/cmuntt.ttf").unwrap()).unwrap();
+    assert_eq!(
+        mono.advance_1000('i'),
+        mono.advance_1000('M'),
+        "CM Typewriter is monospaced"
+    );
+    // Plex Sans is proportional: 'i' is narrower than 'M'.
+    let sans =
+        Font::parse(std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap()).unwrap();
+    assert!(
+        sans.advance_1000('i') < sans.advance_1000('M'),
+        "Plex Sans is proportional"
+    );
+}
+
 // ---- synthetic font builder -------------------------------------------------
 
 fn be16(v: u16) -> [u8; 2] {

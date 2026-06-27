@@ -1,19 +1,244 @@
-//! Text + font subsystem (in build-out): the clean-room font reader and shaper
-//! that feeds glyph runs to the layout engine and the PDF writer.
+//! Clean-room TrueType / OpenType font reader.
 //!
-//! Planned design (dependency-free, Latin-first — the focused subset we need):
+//! Parses the sfnt table directory plus the metric and character-map tables we
+//! need to lay out and (later) embed text: `head` (units per em), `maxp` (glyph
+//! count), `hhea`/`hmtx` (vertical metrics + advance widths), and `cmap`
+//! (character → glyph, formats 4 and 12). Latin-first, zero-dependency, and free
+//! of `unsafe`/`unwrap`/`panic` — every read is bounds-checked.
 //!
-//! * **Font reader** — parse just the tables we use from TTF/OTF: `head`,
-//!   `cmap` (char → glyph), `hmtx` (advances), `kern` and GPOS pair-adjust
-//!   (kerning), GSUB `liga` (ligatures), `glyf`/`loca` or `CFF ` (outlines for
-//!   PDF embedding), `name`/`OS2` metadata.
-//! * **Shaping** — character-to-glyph mapping with kerning and common ligatures;
-//!   no complex-script/bidi shaping in v0 (added later if needed), which keeps
-//!   the path tiny and fast for the Latin documents that dominate Markdown.
-//! * **Subsetting** — keep only the glyphs a document uses, rewriting `cmap`,
-//!   `glyf`/`loca`/`CFF `, and `hmtx`, for a **tiny embedded font** in the PDF.
-//! * **Embedded curated fonts** — a small set of OFL families (sans / serif /
-//!   mono) shipped as data so output is byte-identical on every OS and in WASM
-//!   (no system-font discovery, hence no `fontconfig`/C dependency).
-//!
-//! Implementation is tracked in beads.
+//! Outline parsing (`glyf`/`loca`/`CFF`) for PDF embedding + subsetting, and
+//! kerning/ligatures (`kern`/GPOS/GSUB), are later increments. This module gives
+//! the real advance metrics the layout engine needs to replace the base-14
+//! approximations, and the `cmap` needed to map text to glyphs for embedding.
+
+/// A parsed font, owning its backing bytes.
+#[derive(Debug, Clone)]
+pub struct Font {
+    data: Vec<u8>,
+    /// Font design units per em (the coordinate scale; advances are in these).
+    pub units_per_em: u16,
+    /// Number of glyphs in the font.
+    pub num_glyphs: u16,
+    /// Typographic ascender (design units).
+    pub ascent: i16,
+    /// Typographic descender (design units, usually negative).
+    pub descent: i16,
+    /// Recommended extra line gap (design units).
+    pub line_gap: i16,
+    num_h_metrics: u16,
+    hmtx_off: usize,
+    cmap_off: usize,
+    cmap_format: u16,
+}
+
+/// Why a font failed to parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontError {
+    /// Not a recognized sfnt (`0x00010000`, `true`, or `OTTO`).
+    BadMagic,
+    /// A required table was absent.
+    MissingTable(&'static str),
+    /// The file ended before a required field could be read.
+    Truncated,
+    /// No usable Unicode `cmap` subtable (format 4 or 12) was found.
+    NoUnicodeCmap,
+}
+
+impl core::fmt::Display for FontError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BadMagic => write!(f, "not a TrueType/OpenType font"),
+            Self::MissingTable(t) => write!(f, "missing required font table: {t}"),
+            Self::Truncated => write!(f, "font data is truncated"),
+            Self::NoUnicodeCmap => write!(f, "no usable Unicode cmap (format 4/12)"),
+        }
+    }
+}
+
+impl std::error::Error for FontError {}
+
+fn be_u16(d: &[u8], o: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*d.get(o)?, *d.get(o + 1)?]))
+}
+fn be_i16(d: &[u8], o: usize) -> Option<i16> {
+    be_u16(d, o).map(|v| v as i16)
+}
+fn be_u32(d: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_be_bytes([
+        *d.get(o)?,
+        *d.get(o + 1)?,
+        *d.get(o + 2)?,
+        *d.get(o + 3)?,
+    ]))
+}
+
+fn find_table(d: &[u8], tag: &[u8; 4]) -> Option<usize> {
+    let num_tables = be_u16(d, 4)? as usize;
+    for i in 0..num_tables {
+        let rec = 12 + i * 16;
+        if d.get(rec..rec + 4)? == tag {
+            return Some(be_u32(d, rec + 8)? as usize);
+        }
+    }
+    None
+}
+
+impl Font {
+    /// Parse a font from its raw bytes (e.g. an `include_bytes!` blob).
+    ///
+    /// # Errors
+    /// Returns a [`FontError`] for a non-sfnt file, a missing required table, a
+    /// truncated file, or the absence of a usable Unicode `cmap`.
+    pub fn parse(data: Vec<u8>) -> Result<Self, FontError> {
+        let d = data.as_slice();
+        let magic = be_u32(d, 0).ok_or(FontError::Truncated)?;
+        // 0x00010000 = TrueType outlines; "true"; "OTTO" = CFF/OpenType.
+        if magic != 0x0001_0000 && magic != 0x7472_7565 && magic != 0x4F54_544F {
+            return Err(FontError::BadMagic);
+        }
+
+        let head = find_table(d, b"head").ok_or(FontError::MissingTable("head"))?;
+        let maxp = find_table(d, b"maxp").ok_or(FontError::MissingTable("maxp"))?;
+        let hhea = find_table(d, b"hhea").ok_or(FontError::MissingTable("hhea"))?;
+        let hmtx = find_table(d, b"hmtx").ok_or(FontError::MissingTable("hmtx"))?;
+        let cmap = find_table(d, b"cmap").ok_or(FontError::MissingTable("cmap"))?;
+
+        let units_per_em = be_u16(d, head + 18).ok_or(FontError::Truncated)?;
+        let num_glyphs = be_u16(d, maxp + 4).ok_or(FontError::Truncated)?;
+        let ascent = be_i16(d, hhea + 4).ok_or(FontError::Truncated)?;
+        let descent = be_i16(d, hhea + 6).ok_or(FontError::Truncated)?;
+        let line_gap = be_i16(d, hhea + 8).ok_or(FontError::Truncated)?;
+        let num_h_metrics = be_u16(d, hhea + 34).ok_or(FontError::Truncated)?;
+
+        let (cmap_off, cmap_format) = select_cmap(d, cmap).ok_or(FontError::NoUnicodeCmap)?;
+
+        Ok(Self {
+            data,
+            units_per_em,
+            num_glyphs,
+            ascent,
+            descent,
+            line_gap,
+            num_h_metrics,
+            hmtx_off: hmtx,
+            cmap_off,
+            cmap_format,
+        })
+    }
+
+    /// The advance width of glyph `gid` in design units. Glyphs past the
+    /// `hmtx` metric run share the last advance (monospaced trailing run).
+    #[must_use]
+    pub fn advance_width(&self, gid: u16) -> u16 {
+        let last = self.num_h_metrics.saturating_sub(1);
+        let idx = gid.min(last) as usize;
+        be_u16(&self.data, self.hmtx_off + idx * 4).unwrap_or(0)
+    }
+
+    /// The glyph id for a character, or `0` (`.notdef`) if unmapped.
+    #[must_use]
+    pub fn glyph_index(&self, ch: char) -> u16 {
+        let cp = ch as u32;
+        match self.cmap_format {
+            4 => self.cmap4_lookup(cp).unwrap_or(0),
+            12 => self.cmap12_lookup(cp).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    /// Advance width of `ch` in 1/1000 em (PDF text-space units), `0` if unmapped.
+    #[must_use]
+    pub fn advance_1000(&self, ch: char) -> u32 {
+        if self.units_per_em == 0 {
+            return 0;
+        }
+        let aw = self.advance_width(self.glyph_index(ch)) as u32;
+        aw * 1000 / self.units_per_em as u32
+    }
+
+    fn cmap4_lookup(&self, cp: u32) -> Option<u16> {
+        if cp > 0xFFFF {
+            return Some(0);
+        }
+        let c = cp as u16;
+        let d = &self.data;
+        let base = self.cmap_off;
+        let seg_x2 = be_u16(d, base + 6)? as usize;
+        let seg_count = seg_x2 / 2;
+        let end_codes = base + 14;
+        let start_codes = end_codes + seg_x2 + 2; // +2 for reservedPad
+        let id_deltas = start_codes + seg_x2;
+        let id_range_offsets = id_deltas + seg_x2;
+        for i in 0..seg_count {
+            let end = be_u16(d, end_codes + i * 2)?;
+            if c > end {
+                continue;
+            }
+            let start = be_u16(d, start_codes + i * 2)?;
+            if c < start {
+                return Some(0);
+            }
+            let id_delta = be_u16(d, id_deltas + i * 2)?;
+            let iro_pos = id_range_offsets + i * 2;
+            let id_range_offset = be_u16(d, iro_pos)?;
+            if id_range_offset == 0 {
+                return Some(c.wrapping_add(id_delta));
+            }
+            let gi_addr = iro_pos + id_range_offset as usize + 2 * (c - start) as usize;
+            let g = be_u16(d, gi_addr)?;
+            return Some(if g == 0 { 0 } else { g.wrapping_add(id_delta) });
+        }
+        Some(0)
+    }
+
+    fn cmap12_lookup(&self, cp: u32) -> Option<u16> {
+        let d = &self.data;
+        let base = self.cmap_off;
+        let num_groups = be_u32(d, base + 12)? as usize;
+        for i in 0..num_groups {
+            let g = base + 16 + i * 12;
+            let start = be_u32(d, g)?;
+            let end = be_u32(d, g + 4)?;
+            if cp >= start && cp <= end {
+                let start_gid = be_u32(d, g + 8)?;
+                let gid = start_gid + (cp - start);
+                return Some((gid & 0xFFFF) as u16);
+            }
+        }
+        Some(0)
+    }
+}
+
+/// Choose the best Unicode `cmap` subtable, returning its absolute offset and
+/// format. Prefers a full-repertoire format-12 `(3,10)`/`(0,*)` table, then a
+/// BMP format-4 `(3,1)`/`(0,*)` table.
+fn select_cmap(d: &[u8], cmap: usize) -> Option<(usize, u16)> {
+    let num = be_u16(d, cmap + 2)? as usize;
+    let mut best: Option<(usize, u16, u8)> = None; // (offset, format, rank)
+    for i in 0..num {
+        let rec = cmap + 4 + i * 8;
+        let platform = be_u16(d, rec)?;
+        let encoding = be_u16(d, rec + 2)?;
+        let sub = cmap + be_u32(d, rec + 4)? as usize;
+        let format = be_u16(d, sub)?;
+        let unicode = matches!((platform, encoding), (0, _) | (3, 1) | (3, 10));
+        if !unicode {
+            continue;
+        }
+        let rank = match format {
+            12 => 3,
+            4 => {
+                if (platform, encoding) == (3, 1) || platform == 0 {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => continue,
+        };
+        if best.is_none_or(|(_, _, r)| rank > r) {
+            best = Some((sub, format, rank));
+        }
+    }
+    best.map(|(off, fmt, _)| (off, fmt))
+}

@@ -37,7 +37,7 @@ browser/WASM.
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
 | PDF quality | Planned Knuth-Plass line breaking, kerning, ligatures, leading, hyphenation, pagination, and font subsetting |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
-| Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide` |
+| Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage` |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are product targets |
 
 ## Quick Example
@@ -62,6 +62,7 @@ target/release/fmd examples/showcase.md --font serif --out showcase-serif.html
 target/release/fmd capabilities --json
 target/release/fmd doctor --json
 target/release/fmd robot-docs guide
+target/release/fmd --robot-triage
 ```
 
 PDF is wired but intentionally refuses until the clean-room PDF stack lands:
@@ -155,6 +156,15 @@ fmd robot-docs guide
 ```
 
 Prints a short in-tool guide for coding agents.
+
+### Robot Triage
+
+```bash
+fmd --robot-triage
+```
+
+Prints one JSON envelope with quick reference commands, current subsystem
+health, and recommended next actions.
 
 ### Doctor
 
@@ -312,4 +322,3 @@ sanity.
 
 `franken_markdown` is licensed under the MIT License with OpenAI/Anthropic rider.
 See [`LICENSE`](./LICENSE).
-

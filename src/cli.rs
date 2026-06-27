@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html, render_pdf};
 
@@ -16,7 +16,7 @@ use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html
     name = "fmd",
     version,
     about,
-    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML today and optimized PDF as the clean-room layout engine lands.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd robot-docs guide"
+    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML today and optimized PDF as the clean-room layout engine lands.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
 )]
 struct Cli {
     /// Emit stable machine-readable JSON for command metadata/status.
@@ -26,6 +26,10 @@ struct Cli {
     /// current output is already plain.
     #[arg(long, global = true)]
     no_color: bool,
+    /// Print one machine-readable triage envelope: quick reference, health,
+    /// commands, and next recommended actions.
+    #[arg(long, global = true)]
+    robot_triage: bool,
     /// Command to run. If omitted, fmd prints help and exits successfully.
     #[command(subcommand)]
     command: Option<Command>,
@@ -119,9 +123,16 @@ impl From<FontArg> for FontFamily {
 /// Entry point shared by `src/main.rs` and `src/bin/fmd.rs`.
 #[must_use]
 pub fn main() -> ExitCode {
-    let cli = Cli::parse_from(normalized_args());
+    let cli = match Cli::try_parse_from(normalized_args()) {
+        Ok(cli) => cli,
+        Err(err) => return handle_parse_error(err),
+    };
     let json = cli.json;
     let _no_color = cli.no_color;
+    if cli.robot_triage {
+        print_robot_triage();
+        return ExitCode::SUCCESS;
+    }
     match cli.command {
         Some(Command::Render(args)) => run_render(args, json),
         Some(Command::Capabilities) => {
@@ -136,7 +147,7 @@ pub fn main() -> ExitCode {
         Some(Command::Doctor(args)) => run_doctor(json || args.json),
         None => {
             let mut cmd = Cli::command();
-            if cmd.print_help().is_err() {
+            if cmd.print_long_help().is_err() {
                 return fail(74, "writing help to stdout");
             }
             println!();
@@ -285,6 +296,22 @@ fn fail(code: u8, msg: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
+fn handle_parse_error(err: clap::Error) -> ExitCode {
+    let kind = err.kind();
+    if err.print().is_err() {
+        return fail(74, "writing command-line diagnostics");
+    }
+    match kind {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => ExitCode::SUCCESS,
+        _ => {
+            eprintln!(
+                "fmd: try `fmd --help`, `fmd capabilities --json`, or `fmd robot-docs guide`."
+            );
+            ExitCode::from(64)
+        }
+    }
+}
+
 fn fail_json(code: u8, err_code: &str, msg: &str, json: bool) -> ExitCode {
     if json {
         eprintln!(
@@ -336,14 +363,21 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"planned\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"syntax_highlighting\":\"planned\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"wasm_core\":\"planned via --no-default-features\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"planned\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"syntax_highlighting\":\"planned\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"planned via --no-default-features\"}}}}",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+fn print_robot_triage() {
+    println!(
+        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"planned\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render a file and receive machine-readable write status on stderr\"}}]}}",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn print_robot_docs() {
     println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF currently refuses with exit 70 until the clean-room text/layout/PDF pipeline lands.\n  Use --css <file> for a full custom stylesheet replacement and --font serif for long-form prose."
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF currently refuses with exit 70 until the clean-room text/layout/PDF pipeline lands.\n  Use --css <file> for a full custom stylesheet replacement and --font serif for long-form prose."
     );
 }
 
@@ -353,8 +387,10 @@ fn normalized_args() -> Vec<String> {
         return args;
     }
 
+    normalize_agent_typos(&mut args);
+
     let known = ["render", "capabilities", "robot-docs", "doctor", "help"];
-    let global_no_value = ["--json", "--no-color"];
+    let global_no_value = ["--json", "--no-color", "--robot-triage"];
     let global_with_value: [&str; 0] = [];
     let root_flags = ["--help", "-h", "--version", "-V"];
 
@@ -376,6 +412,18 @@ fn normalized_args() -> Vec<String> {
         return args;
     }
     args
+}
+
+fn normalize_agent_typos(args: &mut [String]) {
+    for arg in args.iter_mut().skip(1) {
+        match arg.as_str() {
+            "--jsno" | "--jsoon" | "--jason" | "--json=true" => *arg = "--json".to_string(),
+            "--no-colour" | "--colour=never" | "--color=never" => {
+                *arg = "--no-color".to_string();
+            }
+            _ => {}
+        }
+    }
 }
 
 fn json_escape(s: &str) -> String {

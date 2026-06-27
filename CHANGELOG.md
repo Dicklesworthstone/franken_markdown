@@ -9,6 +9,7 @@ project has no tags or GitHub Releases yet.
 | Date | Version / phase | Evidence | Summary |
 |---|---|---|---|
 | 2026-06-26 | Pre-Phase-0 scaffold | `8b66477` | Working clean-room Markdown-to-HTML scaffold with `fmd` CLI and typed PDF refusal |
+| 2026-06-26 | Governance and CLI hardening | `e3cd358`, `98c7f0b`, `d694c86` | License rider, project docs, agent-friendly CLI surfaces, and roadmap Beads |
 
 ## Unreleased
 
@@ -27,8 +28,16 @@ project has no tags or GitHub Releases yet.
 - Added first-try render aliases so `fmd README.md`, `fmd -`, and
   `fmd --text '# Hi' --out hi.html` route to `render`.
 - Added `capabilities`, `doctor`, and `robot-docs guide` surfaces.
+- Added `--robot-triage` as a one-call JSON quick reference and health envelope.
 - Added `--json` status/error output for render operations.
+- Normalized common `--json` typos before parsing.
+- Returned documented exit code 64 for usage errors and added a teaching hint
+  that names `fmd --help`, `fmd capabilities --json`, and
+  `fmd robot-docs guide`.
 - Kept stdout as document data and stderr as diagnostics/status.
+- Added binary-level contract tests for help, file/stdin/text render paths,
+  discovery JSON, typed PDF refusal, usage errors, typo inference, and
+  `NO_COLOR`/CI/`TERM=dumb` expectations.
 
 ### Planning
 
@@ -59,5 +68,4 @@ project has no tags or GitHub Releases yet.
 
 - `CHANGELOG_RESEARCH.md` contains the evidence summary.
 - There are no release tags yet.
-- The next useful history source should be `.beads/issues.jsonl` once the
-  roadmap has been converted into beads.
+- `.beads/issues.jsonl` contains the initial roadmap issue graph.

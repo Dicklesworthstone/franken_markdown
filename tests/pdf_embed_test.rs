@@ -107,6 +107,25 @@ fn pdf_shapes_ligatures_and_keeps_them_selectable() {
 }
 
 #[test]
+fn pdf_renders_inline_styles_in_distinct_faces() {
+    // One paragraph exercising body, bold, italic, code, and bold-italic.
+    let pdf = render_pdf(
+        "Plain **bold** *italic* `code` and **_both_** words.",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+    // Each inline style selects its own font slot: F2 bold, F3 italic, F4 mono,
+    // F5 bold-italic (alongside F1 body).
+    for slot in ['2', '3', '4', '5'] {
+        assert!(
+            s.contains(&format!("/F{slot} ")),
+            "expected font slot F{slot} for inline styling"
+        );
+    }
+}
+
+#[test]
 fn embedded_pdf_is_tiny_and_deterministic() {
     let a = render_pdf(DOC, &PdfOptions::default()).unwrap();
     let b = render_pdf(DOC, &PdfOptions::default()).unwrap();

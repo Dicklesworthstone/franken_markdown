@@ -9,9 +9,11 @@
 //! selectable / copy-pasteable.
 //!
 //! Greedy line wrapping + automatic pagination over headings, paragraphs, code
-//! blocks, lists, blockquotes, tables (simple), and rules. Focused GPOS kerning
-//! and GSUB ligatures are applied today; Knuth-Plass optimal breaking, richer
-//! page layout, and FlateDecode compression are the next increments.
+//! blocks, lists, blockquotes, tables (simple), and rules, with styled inline
+//! runs (bold / italic / code / bold-italic in their own embedded faces). Focused
+//! GPOS kerning, GSUB ligatures, and FlateDecode stream compression are applied
+//! today; Knuth-Plass optimal breaking and richer page layout are the next
+//! increments.
 //!
 //! Pure computation (no `std::fs`, no deps) so it stays WASM / `--no-default-features`
 //! clean; the font bytes come from `include_bytes!`, not the filesystem.
@@ -28,28 +30,37 @@ const PAGE_H: f32 = 792.0;
 const MARGIN: f32 = 72.0;
 const CONTENT_W: f32 = PAGE_W - 2.0 * MARGIN;
 
-// Font slots referenced in page Resources as /F1../F4.
+// Font slots referenced in page Resources as /F1../F5.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
 const F_MONO: u8 = 4;
-const SLOTS: [u8; 4] = [F_BODY, F_BOLD, F_ITALIC, F_MONO];
+const F_BOLDITALIC: u8 = 5;
+const SLOTS: [u8; 5] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC];
 
-/// One laid-out, pre-wrapped line of text positioned by the paginator.
-struct Line {
+/// A positioned run of single-face text within a laid-out line.
+struct Seg {
     x: f32,
-    size: f32,
-    font: u8,
+    slot: u8,
     text: String,
-    gap_after: f32,
-    rule: bool,
 }
 
-/// The four source faces resolved from the theme family + the registry.
+/// One laid-out line: a baseline-aligned row of styled segments, or a rule.
+struct Line {
+    size: f32,
+    gap_after: f32,
+    rule: bool,
+    /// Left x of a horizontal rule (only meaningful when `rule`).
+    rule_x: f32,
+    segs: Vec<Seg>,
+}
+
+/// The source faces resolved from the theme family + the registry.
 struct Faces {
     body: Font,
     bold: Font,
     italic: Font,
+    bolditalic: Font,
     mono: Font,
 }
 
@@ -60,6 +71,7 @@ impl Faces {
             body: fonts::load_body(fam, FontStyle::Regular).ok()?,
             bold: fonts::load_body(fam, FontStyle::Bold).ok()?,
             italic: fonts::load_body(fam, FontStyle::Italic).ok()?,
+            bolditalic: fonts::load_body(fam, FontStyle::BoldItalic).ok()?,
             mono: fonts::load_mono(FontStyle::Regular).ok()?,
         })
     }
@@ -68,6 +80,7 @@ impl Faces {
         match slot {
             F_BOLD => &self.bold,
             F_ITALIC => &self.italic,
+            F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
             _ => &self.body,
         }
@@ -77,6 +90,29 @@ impl Faces {
     fn advance(&self, slot: u8, c: char) -> f32 {
         self.get(slot).advance_1000(c) as f32
     }
+}
+
+/// Resolve a font slot from inline style flags.
+fn slot_of(bold: bool, italic: bool, mono: bool) -> u8 {
+    if mono {
+        F_MONO
+    } else if bold && italic {
+        F_BOLDITALIC
+    } else if bold {
+        F_BOLD
+    } else if italic {
+        F_ITALIC
+    } else {
+        F_BODY
+    }
+}
+
+/// A line-breaking token: a maximal run of non-space chars (a word) or a single
+/// inter-word space, each carrying a font slot.
+struct Tok {
+    text: String,
+    slot: u8,
+    space: bool,
 }
 
 /// Render a document to PDF bytes.
@@ -125,21 +161,29 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptio
                 5 => 12.0,
                 _ => 11.0,
             };
-            push_wrapped(&inline_text(inlines), indent, size, F_BOLD, 6.0, out, faces);
+            // Headings render bold; inner emphasis becomes bold-italic.
+            let mut toks = Vec::new();
+            tokenize(inlines, true, false, &mut toks);
+            layout_inlines(toks, indent, size, 6.0, faces, out);
         }
         Block::Paragraph(inlines) => {
-            push_wrapped(&inline_text(inlines), indent, 11.0, F_BODY, 7.0, out, faces);
+            let mut toks = Vec::new();
+            tokenize(inlines, false, false, &mut toks);
+            layout_inlines(toks, indent, 11.0, 7.0, faces, out);
         }
         Block::CodeBlock { code, .. } => {
             for raw in code.lines() {
                 let clipped = clip_to_width(raw, CONTENT_W - indent - 8.0, 9.5, F_MONO, faces);
                 out.push(Line {
-                    x: MARGIN + indent + 8.0,
                     size: 9.5,
-                    font: F_MONO,
-                    text: clipped,
                     gap_after: 1.5,
                     rule: false,
+                    rule_x: 0.0,
+                    segs: vec![Seg {
+                        x: MARGIN + indent + 8.0,
+                        slot: F_MONO,
+                        text: clipped,
+                    }],
                 });
             }
             gap(out, 6.0);
@@ -150,47 +194,42 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptio
         }
         Block::List(list) => layout_list(list, indent, out, opts, faces),
         Block::Table(table) => {
+            // v0: tab-joined rows; header bold, cells body (inline styling TBD).
             let header = table
                 .head
                 .iter()
                 .map(|c| inline_text(c))
-                .collect::<Vec<_>>();
-            push_wrapped(
-                &header.join("   |   "),
-                indent,
-                11.0,
-                F_BOLD,
-                2.0,
-                out,
-                faces,
-            );
+                .collect::<Vec<_>>()
+                .join("   |   ");
+            let mut toks = Vec::new();
+            push_text_tokens(&header, F_BOLD, &mut toks);
+            layout_inlines(toks, indent, 11.0, 2.0, faces, out);
             for row in &table.rows {
-                let cells = row.iter().map(|c| inline_text(c)).collect::<Vec<_>>();
-                push_wrapped(
-                    &cells.join("   |   "),
-                    indent,
-                    11.0,
-                    F_BODY,
-                    2.0,
-                    out,
-                    faces,
-                );
+                let cells = row
+                    .iter()
+                    .map(|c| inline_text(c))
+                    .collect::<Vec<_>>()
+                    .join("   |   ");
+                let mut toks = Vec::new();
+                push_text_tokens(&cells, F_BODY, &mut toks);
+                layout_inlines(toks, indent, 11.0, 2.0, faces, out);
             }
             gap(out, 6.0);
         }
         Block::ThematicBreak => {
             out.push(Line {
-                x: MARGIN + indent,
                 size: 6.0,
-                font: F_BODY,
-                text: String::new(),
                 gap_after: 8.0,
                 rule: true,
+                rule_x: MARGIN + indent,
+                segs: Vec::new(),
             });
         }
         Block::HtmlBlock(html) => {
             if !opts.allow_raw_html {
-                push_wrapped(html, indent, 11.0, F_BODY, 7.0, out, faces);
+                let mut toks = Vec::new();
+                push_text_tokens(html, F_BODY, &mut toks);
+                layout_inlines(toks, indent, 11.0, 7.0, faces, out);
             }
         }
     }
@@ -204,47 +243,166 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions
             None if list.ordered => format!("{}.", list.start + i as u64),
             None => "•".to_string(),
         };
-        let body = item
-            .blocks
-            .iter()
-            .map(|b| match b {
-                Block::Paragraph(inl) => inline_text(inl),
-                other => block_plain(other),
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        let text = format!("{marker}  {body}");
-        push_wrapped(&text, indent + 16.0, 11.0, F_BODY, 2.0, out, faces);
+        let mut toks = Vec::new();
+        // Marker in the body face, then a space, then the styled item content.
+        push_text_tokens(&format!("{marker} "), F_BODY, &mut toks);
+        for b in &item.blocks {
+            match b {
+                Block::Paragraph(inl) => tokenize(inl, false, false, &mut toks),
+                other => push_text_tokens(&block_plain(other), F_BODY, &mut toks),
+            }
+        }
+        layout_inlines(toks, indent + 16.0, 11.0, 2.0, faces, out);
     }
     gap(out, 6.0);
 }
 
-fn push_wrapped(
-    text: &str,
+/// Tokenize inlines into styled line-breaking tokens, tracking inherited style.
+fn tokenize(inlines: &[Inline], bold: bool, italic: bool, out: &mut Vec<Tok>) {
+    for inl in inlines {
+        match inl {
+            Inline::Text(t) => push_text_tokens(t, slot_of(bold, italic, false), out),
+            Inline::Code(t) => push_text_tokens(t, F_MONO, out),
+            Inline::Strong(c) => tokenize(c, true, italic, out),
+            Inline::Emphasis(c) => tokenize(c, bold, true, out),
+            Inline::Strikethrough(c) => tokenize(c, bold, italic, out),
+            Inline::Link { content, .. } => tokenize(content, bold, italic, out),
+            Inline::Image { alt, .. } => push_text_tokens(alt, slot_of(bold, italic, false), out),
+            Inline::SoftBreak | Inline::HardBreak => out.push(Tok {
+                text: " ".to_string(),
+                slot: slot_of(bold, italic, false),
+                space: true,
+            }),
+            Inline::Html(_) => {}
+        }
+    }
+}
+
+/// Split `text` into word + single-space tokens (preserving spaces) with `slot`.
+fn push_text_tokens(text: &str, slot: u8, out: &mut Vec<Tok>) {
+    let mut word = String::new();
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !word.is_empty() {
+                out.push(Tok {
+                    text: std::mem::take(&mut word),
+                    slot,
+                    space: false,
+                });
+            }
+            out.push(Tok {
+                text: " ".to_string(),
+                slot,
+                space: true,
+            });
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        out.push(Tok {
+            text: word,
+            slot,
+            space: false,
+        });
+    }
+}
+
+/// Greedy-wrap styled tokens into baseline lines of positioned segments.
+fn layout_inlines(
+    toks: Vec<Tok>,
     indent: f32,
     size: f32,
-    font: u8,
     gap_after: f32,
-    out: &mut Vec<Line>,
     faces: &Faces,
+    out: &mut Vec<Line>,
 ) {
+    let left = MARGIN + indent;
     let max = (CONTENT_W - indent).max(40.0);
-    let wrapped = wrap(text, max, size, font, faces);
-    let n = wrapped.len();
-    if n == 0 {
+    let mut lines: Vec<Vec<Tok>> = Vec::new();
+    let mut cur: Vec<Tok> = Vec::new();
+    let mut cur_w = 0.0_f32;
+    for tok in toks {
+        let tw = token_width(&tok, size, faces);
+        if tok.space {
+            if !cur.is_empty() {
+                cur.push(tok);
+                cur_w += tw;
+            }
+        } else {
+            if !cur.is_empty() && cur_w + tw > max {
+                trim_trailing_spaces(&mut cur, &mut cur_w, size, faces);
+                lines.push(std::mem::take(&mut cur));
+                cur_w = 0.0;
+            }
+            cur.push(tok);
+            cur_w += tw;
+        }
+    }
+    if !cur.is_empty() {
+        trim_trailing_spaces(&mut cur, &mut cur_w, size, faces);
+        lines.push(cur);
+    }
+
+    if lines.is_empty() {
         gap(out, gap_after);
         return;
     }
-    for (idx, l) in wrapped.into_iter().enumerate() {
+    let n = lines.len();
+    for (i, line) in lines.into_iter().enumerate() {
+        let segs = build_segs(&line, left, size, faces);
         out.push(Line {
-            x: MARGIN + indent,
             size,
-            font,
-            text: l,
-            gap_after: if idx + 1 == n { gap_after } else { 0.0 },
+            gap_after: if i + 1 == n { gap_after } else { 0.0 },
             rule: false,
+            rule_x: 0.0,
+            segs,
         });
     }
+}
+
+fn trim_trailing_spaces(cur: &mut Vec<Tok>, cur_w: &mut f32, size: f32, faces: &Faces) {
+    while cur.last().is_some_and(|t| t.space) {
+        if let Some(t) = cur.pop() {
+            *cur_w -= token_width(&t, size, faces);
+        }
+    }
+}
+
+/// Group consecutive same-slot tokens into positioned segments.
+fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut x = left;
+    let mut cur: Option<Seg> = None;
+    for tok in toks {
+        match &mut cur {
+            Some(s) if s.slot == tok.slot => s.text.push_str(&tok.text),
+            _ => {
+                if let Some(s) = cur.take() {
+                    segs.push(s);
+                }
+                cur = Some(Seg {
+                    x,
+                    slot: tok.slot,
+                    text: tok.text.clone(),
+                });
+            }
+        }
+        x += token_width(tok, size, faces);
+    }
+    if let Some(s) = cur {
+        segs.push(s);
+    }
+    segs
+}
+
+fn token_width(tok: &Tok, size: f32, faces: &Faces) -> f32 {
+    tok.text
+        .chars()
+        .map(|c| faces.advance(tok.slot, c))
+        .sum::<f32>()
+        * size
+        / 1000.0
 }
 
 fn gap(out: &mut [Line], amount: f32) {
@@ -262,7 +420,8 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         .filter(|&s| {
             lines
                 .iter()
-                .any(|l| !l.rule && !l.text.is_empty() && l.font == s)
+                .flat_map(|l| l.segs.iter())
+                .any(|seg| seg.slot == s && !seg.text.is_empty())
         })
         .collect();
     if used_slots.is_empty() {
@@ -278,9 +437,13 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         let mut chars: BTreeSet<char> = BTreeSet::new();
         let mut shaped_glyphs: BTreeSet<u16> = BTreeSet::new();
         let mut lig_src_uni: BTreeMap<u16, String> = BTreeMap::new();
-        for l in lines.iter().filter(|l| !l.rule && l.font == slot) {
-            chars.extend(l.text.chars());
-            let (shaped, ligs) = shape(source, &lig, &l.text);
+        for seg in lines
+            .iter()
+            .flat_map(|l| l.segs.iter())
+            .filter(|seg| seg.slot == slot)
+        {
+            chars.extend(seg.text.chars());
+            let (shaped, ligs) = shape(source, &lig, &seg.text);
             shaped_glyphs.extend(shaped);
             for (g, s) in ligs {
                 lig_src_uni.entry(g).or_insert(s);
@@ -331,22 +494,27 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
             let x2 = PAGE_W - MARGIN;
             content.push_str(&format!(
                 "0.82 0.82 0.84 RG 0.7 w {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\n",
-                x = line.x,
+                x = line.rule_x,
                 yy = y + line.size * 0.5,
             ));
-        } else if !line.text.is_empty() {
-            if let Some(face) = subsets.iter().find(|f| f.slot == line.font) {
-                let source = faces.get(line.font);
-                let gids: Vec<u16> = line.text.chars().map(|c| source.glyph_index(c)).collect();
-                let shaped = face.lig.substitute(&gids);
-                content.push_str(&format!(
-                    "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
-                    f = line.font,
-                    s = line.size,
-                    x = line.x,
-                    y = y,
-                    tj = kerned_tj(&face.map, source, &face.kern, &shaped),
-                ));
+        } else {
+            for seg in &line.segs {
+                if seg.text.is_empty() {
+                    continue;
+                }
+                if let Some(face) = subsets.iter().find(|f| f.slot == seg.slot) {
+                    let source = faces.get(seg.slot);
+                    let gids: Vec<u16> = seg.text.chars().map(|c| source.glyph_index(c)).collect();
+                    let shaped = face.lig.substitute(&gids);
+                    content.push_str(&format!(
+                        "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
+                        f = seg.slot,
+                        s = line.size,
+                        x = seg.x,
+                        y = y,
+                        tj = kerned_tj(&face.map, source, &face.kern, &shaped),
+                    ));
+                }
             }
         }
         y -= line.gap_after;
@@ -735,36 +903,6 @@ fn pdf_escape(s: &str) -> String {
         }
     }
     o
-}
-
-/// Greedy word-wrap to a max width (points) using the face's real metrics.
-fn wrap(text: &str, max_width: f32, size: f32, font: u8, faces: &Faces) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0.0_f32;
-    let sw = text_width(" ", size, font, faces);
-    for word in text.split_whitespace() {
-        let ww = text_width(word, size, font, faces);
-        if !cur.is_empty() && cur_w + sw + ww > max_width {
-            lines.push(std::mem::take(&mut cur));
-            cur_w = 0.0;
-        }
-        if cur.is_empty() {
-            cur.push_str(word);
-            cur_w = ww;
-        } else {
-            cur.push(' ');
-            cur.push_str(word);
-            cur_w += sw + ww;
-        }
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
 }
 
 fn clip_to_width(text: &str, max_width: f32, size: f32, font: u8, faces: &Faces) -> String {

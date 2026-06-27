@@ -132,6 +132,30 @@ fn nested_ordered_lists_preserve_start_numbers() {
 }
 
 #[test]
+fn ordered_list_start_other_than_one_does_not_interrupt_paragraph() {
+    let out = html("The year\n1986. was memorable");
+
+    assert!(out.contains("<p>The year\n1986. was memorable</p>"));
+    assert!(!out.contains("<ol"));
+}
+
+#[test]
+fn ordered_list_start_other_than_one_can_start_a_block() {
+    let out = html("1986. was memorable");
+
+    assert!(out.contains("<ol start=\"1986\">"));
+    assert!(out.contains("<li>was memorable</li>"));
+}
+
+#[test]
+fn lazy_ordered_marker_start_other_than_one_stays_in_list_paragraph() {
+    let out = html("- The year\n1986. was memorable");
+
+    assert!(out.contains("<li>The year\n1986. was memorable</li>"));
+    assert!(!out.contains("<ol start=\"1986\">"));
+}
+
+#[test]
 fn task_list_items_preserve_lazy_continuation_text() {
     let out = html("- [x] done\ncontinues here");
 

@@ -174,7 +174,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
                 || indented_code_start(lines[i].text)
                 || lines[i].text.trim_start().starts_with('>')
                 || html_block_start(lines[i].text)
-                || list_marker(lines[i].text).is_some()
+                || list_marker_interrupts_paragraph(lines[i].text)
             {
                 break;
             }
@@ -361,7 +361,7 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
                 || indented_code_start(lines[i])
                 || lines[i].trim_start().starts_with('>')
                 || html_block_start(lines[i])
-                || list_marker(lines[i]).is_some()
+                || list_marker_interrupts_paragraph(lines[i])
             {
                 break;
             }
@@ -726,6 +726,10 @@ fn list_marker(line: &str) -> Option<Marker> {
     None
 }
 
+fn list_marker_interrupts_paragraph(line: &str) -> bool {
+    list_marker(line).is_some_and(|m| !m.ordered || m.start == 1)
+}
+
 fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
     let Some(first) = list_marker(lines[0]) else {
         return (
@@ -783,12 +787,21 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
 
             if let Some(next) = list_marker(lines[i])
                 && next.indent <= m.indent
+                && (next.ordered == ordered || !next.ordered || next.start == 1)
             {
                 break;
             }
 
             if leading_spaces(lines[i]) >= m.content_indent {
-                item_lines.push(strip_n(lines[i], m.content_indent).to_string());
+                let stripped = strip_n(lines[i], m.content_indent).to_string();
+                if list_marker(&stripped).is_some_and(|marker| marker.ordered && marker.start != 1)
+                    && item_lines
+                        .last()
+                        .is_some_and(|prev| !prev.trim().is_empty())
+                {
+                    item_lines.push(String::new());
+                }
+                item_lines.push(stripped);
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
                 // continues the current paragraph/list item.

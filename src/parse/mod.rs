@@ -18,7 +18,9 @@ pub fn parse_document(src: &str) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let lines: Vec<&str> = src.lines().collect();
-    Document { blocks: parse_blocks(&lines) }
+    Document {
+        blocks: parse_blocks(&lines),
+    }
 }
 
 fn parse_blocks(lines: &[&str]) -> Vec<Block> {
@@ -36,14 +38,20 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
             continue;
         }
         if let Some((level, text)) = atx_heading(line) {
-            blocks.push(Block::Heading { level, inlines: parse_inlines(text) });
+            blocks.push(Block::Heading {
+                level,
+                inlines: parse_inlines(text),
+            });
             i += 1;
             continue;
         }
         if let Some((fence_ch, fence_len, info)) = open_fence(line) {
             let lang = {
                 let t = info.trim();
-                t.split_whitespace().next().filter(|s| !s.is_empty()).map(str::to_string)
+                t.split_whitespace()
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
             };
             let mut code = String::new();
             i += 1;
@@ -174,15 +182,27 @@ fn list_marker(line: &str) -> Option<Marker> {
         && t[first.len_utf8()..].starts_with(' ')
     {
         let rest = t[first.len_utf8() + 1..].to_string();
-        return Some(Marker { ordered: false, start: 1, content_indent: indent + 2, rest });
+        return Some(Marker {
+            ordered: false,
+            start: 1,
+            content_indent: indent + 2,
+            rest,
+        });
     }
     // Ordered: digits then `.` or `)` then space.
     let digits: String = t.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() && digits.len() <= 9 {
         let after = &t[digits.len()..];
-        if (after.starts_with(". ") || after.starts_with(") ")) && let Ok(start) = digits.parse() {
+        if (after.starts_with(". ") || after.starts_with(") "))
+            && let Ok(start) = digits.parse()
+        {
             let rest = after[2..].to_string();
-            return Some(Marker { ordered: true, start, content_indent: indent + digits.len() + 2, rest });
+            return Some(Marker {
+                ordered: true,
+                start,
+                content_indent: indent + digits.len() + 2,
+                rest,
+            });
         }
     }
     None
@@ -190,7 +210,15 @@ fn list_marker(line: &str) -> Option<Marker> {
 
 fn parse_list(lines: &[&str]) -> (List, usize) {
     let Some(first) = list_marker(lines[0]) else {
-        return (List { ordered: false, start: 1, tight: true, items: Vec::new() }, 1);
+        return (
+            List {
+                ordered: false,
+                start: 1,
+                tight: true,
+                items: Vec::new(),
+            },
+            1,
+        );
     };
     let ordered = first.ordered;
     let start = first.start;
@@ -225,14 +253,28 @@ fn parse_list(lines: &[&str]) -> (List, usize) {
             i += 1;
         }
         let (task, body) = split_task_marker(&text);
-        items.push(ListItem { task, blocks: vec![Block::Paragraph(parse_inlines(body))] });
+        items.push(ListItem {
+            task,
+            blocks: vec![Block::Paragraph(parse_inlines(body))],
+        });
     }
-    (List { ordered, start, tight, items }, i)
+    (
+        List {
+            ordered,
+            start,
+            tight,
+            items,
+        },
+        i,
+    )
 }
 
 fn split_task_marker(text: &str) -> (Option<bool>, &str) {
     let trimmed = text.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("[ ] ").or_else(|| trimmed.strip_prefix("[ ]")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("[ ] ")
+        .or_else(|| trimmed.strip_prefix("[ ]"))
+    {
         return (Some(false), rest);
     }
     for open in ["[x] ", "[X] ", "[x]", "[X]"] {
@@ -307,8 +349,10 @@ fn parse_table(lines: &[&str]) -> Option<(Table, usize)> {
     let mut rows = Vec::new();
     let mut i = 2;
     while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
-        let mut cells: Vec<Vec<Inline>> =
-            split_table_row(lines[i]).iter().map(|c| parse_inlines(c)).collect();
+        let mut cells: Vec<Vec<Inline>> = split_table_row(lines[i])
+            .iter()
+            .map(|c| parse_inlines(c))
+            .collect();
         cells.resize_with(cols, Vec::new);
         cells.truncate(cols);
         rows.push(cells);
@@ -348,7 +392,11 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
                     buf.pop();
                 }
                 flush(&mut buf, &mut out);
-                out.push(if hard { Inline::HardBreak } else { Inline::SoftBreak });
+                out.push(if hard {
+                    Inline::HardBreak
+                } else {
+                    Inline::SoftBreak
+                });
                 i += 1;
             }
             '`' => {
@@ -366,7 +414,11 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
                 if let Some((alt, dest, title, next)) = parse_link_like(&bytes, i + 1) {
                     flush(&mut buf, &mut out);
-                    out.push(Inline::Image { dest, title, alt: inlines_to_plain(&alt) });
+                    out.push(Inline::Image {
+                        dest,
+                        title,
+                        alt: inlines_to_plain(&alt),
+                    });
                     i = next;
                 } else {
                     buf.push(c);
@@ -376,7 +428,11 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             '[' => {
                 if let Some((content, dest, title, next)) = parse_link_like(&bytes, i) {
                     flush(&mut buf, &mut out);
-                    out.push(Inline::Link { dest, title, content });
+                    out.push(Inline::Link {
+                        dest,
+                        title,
+                        content,
+                    });
                     i = next;
                 } else {
                     buf.push(c);
@@ -489,7 +545,10 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
 }
 
 /// Parse `[content](dest "title")` starting at the `[`.
-fn parse_link_like(chars: &[char], i: usize) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
+fn parse_link_like(
+    chars: &[char],
+    i: usize,
+) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }

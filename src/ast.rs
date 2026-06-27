@@ -94,9 +94,17 @@ pub enum Inline {
     /// `` `code span` ``.
     Code(String),
     /// `[text](dest "title")` link.
-    Link { dest: String, title: Option<String>, content: Vec<Inline> },
+    Link {
+        dest: String,
+        title: Option<String>,
+        content: Vec<Inline>,
+    },
     /// `![alt](dest "title")` image.
-    Image { dest: String, title: Option<String>, alt: String },
+    Image {
+        dest: String,
+        title: Option<String>,
+        alt: String,
+    },
     /// A soft line break (source newline within a paragraph).
     SoftBreak,
     /// A hard line break (two trailing spaces or a trailing backslash).

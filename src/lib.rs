@@ -39,7 +39,7 @@ pub use error::{RenderError, Result};
 pub use theme::{FontFamily, Theme};
 
 /// Options for the all-in-one HTML renderer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HtmlOptions {
     /// Typography + colour theme used to build the default stylesheet.
     pub theme: Theme,
@@ -51,12 +51,6 @@ pub struct HtmlOptions {
     /// When false (default), raw inline/block HTML in the source is escaped and
     /// rendered as text rather than passed through — safe for untrusted input.
     pub allow_raw_html: bool,
-}
-
-impl Default for HtmlOptions {
-    fn default() -> Self {
-        Self { theme: Theme::default(), title: None, custom_css: None, allow_raw_html: false }
-    }
 }
 
 /// Options for the PDF renderer (the layout/text/PDF subsystems are in build-out).

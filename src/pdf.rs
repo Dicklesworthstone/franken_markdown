@@ -20,9 +20,9 @@
 //! Until those subsystems land (tracked in beads), this returns a typed
 //! `not-yet-implemented` refusal — the AST + theme plumbing is already wired.
 
+use crate::PdfOptions;
 use crate::ast::Document;
 use crate::error::{RenderError, Result};
-use crate::PdfOptions;
 
 /// Render a document to optimized PDF bytes.
 ///

@@ -2,7 +2,7 @@
 //! brevity, so opt out of the crate-wide restriction lints here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::{render_html, HtmlOptions, Theme};
+use franken_markdown::{HtmlOptions, Theme, render_html};
 
 fn render(md: &str) -> String {
     render_html(md, &HtmlOptions::default()).unwrap()
@@ -69,7 +69,10 @@ fn html_escaping_is_safe() {
 
 #[test]
 fn serif_theme_changes_font_stack() {
-    let opts = HtmlOptions { theme: Theme::serif(), ..HtmlOptions::default() };
+    let opts = HtmlOptions {
+        theme: Theme::serif(),
+        ..HtmlOptions::default()
+    };
     let html = render_html("# Hi", &opts).unwrap();
     assert!(html.contains("serif"));
     assert!(html.contains("Source Serif"));
@@ -88,7 +91,7 @@ fn custom_stylesheet_replaces_default() {
 
 #[test]
 fn pdf_path_is_typed_not_yet_implemented() {
-    use franken_markdown::{render_pdf, PdfOptions};
+    use franken_markdown::{PdfOptions, render_pdf};
     let err = render_pdf("# Hi", &PdfOptions::default()).unwrap_err();
     assert_eq!(err.code(), "not_yet_implemented");
 }

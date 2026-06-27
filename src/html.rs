@@ -4,9 +4,9 @@
 //! readable measure and leading, gorgeous tables with subtle striping, elegant
 //! blockquotes, and code blocks ready for syntax highlighting.
 
+use crate::HtmlOptions;
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::theme::Theme;
-use crate::HtmlOptions;
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
@@ -67,7 +67,10 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions) {
                 .as_deref()
                 .map(|l| format!(" class=\"language-{}\"", escape_attr(l)))
                 .unwrap_or_default();
-            out.push_str(&format!("<pre><code{cls}>{}</code></pre>\n", escape_text(code)));
+            out.push_str(&format!(
+                "<pre><code{cls}>{}</code></pre>\n",
+                escape_text(code)
+            ));
         }
         Block::BlockQuote(inner) => {
             out.push_str("<blockquote>\n");
@@ -158,7 +161,11 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             Inline::Strong(c) => wrap(out, "strong", c, opts),
             Inline::Strikethrough(c) => wrap(out, "del", c, opts),
             Inline::Code(t) => out.push_str(&format!("<code>{}</code>", escape_text(t))),
-            Inline::Link { dest, title, content } => {
+            Inline::Link {
+                dest,
+                title,
+                content,
+            } => {
                 let t = title
                     .as_deref()
                     .map(|s| format!(" title=\"{}\"", escape_attr(s)))
@@ -264,11 +271,7 @@ fn default_css(theme: &Theme) -> String {
     let base = theme.base_px;
     let measure = theme.max_width_px;
 
-    let dark = if theme.dark_mode {
-        DARK_MODE_CSS
-    } else {
-        ""
-    };
+    let dark = if theme.dark_mode { DARK_MODE_CSS } else { "" };
 
     format!(
         "{LIGHT_VARS}\n\

@@ -61,7 +61,10 @@ impl Theme {
     /// A serif variant of the default theme.
     #[must_use]
     pub fn serif() -> Self {
-        Self { font: FontFamily::Serif, ..Self::default() }
+        Self {
+            font: FontFamily::Serif,
+            ..Self::default()
+        }
     }
 
     /// CSS body font stack. Until the embedded-subset-font subsystem lands (a

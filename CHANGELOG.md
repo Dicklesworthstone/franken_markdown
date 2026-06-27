@@ -83,6 +83,8 @@ project has no tags or GitHub Releases yet.
   including task-list continuation and blockquote/list nesting regressions.
 - Added `scripts/parser-diff.sh`, dependency-free parser metamorphic tests, and
   approved article-body fixture snapshots under `tests/fixtures/parser/`.
+- Added `parse_markdown_spanned`, source-span wrapper types, and recoverable
+  parser diagnostics for malformed reference definitions and unclosed fences.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

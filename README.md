@@ -110,6 +110,8 @@ Implemented today:
 - reference-style links and images (`[text][id]`, `[text][]`, shortcut
   `[text]`, and matching image forms),
 - parser conformance, metamorphic, and approved fixture snapshot harnesses,
+- additive spanned parse API with recoverable diagnostics for editor/WASM
+  integrations,
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,
@@ -218,6 +220,7 @@ The core modules are:
 | Module | Purpose |
 |---|---|
 | `ast` | Renderer-neutral document model |
+| `span` | Source-span wrappers and parser diagnostics for tooling/editor/WASM callers |
 | `parse` | Clean-room Markdown block and inline parser |
 | `theme` | Shared typography/color model |
 | `html` | All-in-one HTML emitter |

@@ -31,6 +31,7 @@ pub mod html;
 pub mod layout;
 pub mod parse;
 pub mod pdf;
+pub mod span;
 pub mod text;
 pub mod theme;
 
@@ -39,6 +40,10 @@ pub mod cli;
 
 pub use ast::Document;
 pub use error::{RenderError, Result};
+pub use span::{
+    DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
+    SpannedInline, SpannedListItem, SpannedTable,
+};
 pub use theme::{FontFamily, Theme};
 
 /// Options for the all-in-one HTML renderer.
@@ -77,6 +82,15 @@ pub fn parse(src: &str) -> Document {
 #[must_use]
 pub fn parse_markdown(src: &str) -> Document {
     parse::parse_document(src)
+}
+
+/// Parse Markdown source into a spanned document with recoverable diagnostics.
+///
+/// This additive API is for editor/WASM integrations, diagnostics, and
+/// conformance tooling. Renderer APIs continue to use [`Document`] directly.
+#[must_use]
+pub fn parse_markdown_spanned(src: &str) -> SpannedDocument {
+    parse::parse_document_spanned(src)
 }
 
 /// Render an already-parsed document to a complete, self-contained HTML string.

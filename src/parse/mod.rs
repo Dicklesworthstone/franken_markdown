@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
+use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 #[derive(Debug, Clone)]
 struct LinkReference {
@@ -31,6 +32,198 @@ pub fn parse_document(src: &str) -> Document {
     Document {
         blocks: parse_blocks_with_refs(&lines, &refs),
     }
+}
+
+/// Parse a document and attach top-level source spans plus recoverable parser
+/// diagnostics. This is intentionally additive: the normal renderer AST remains
+/// span-free.
+#[must_use]
+pub fn parse_document_spanned(src: &str) -> SpannedDocument {
+    let document = parse_document(src);
+    let spans = collect_top_level_spans(src);
+    let fallback = SourceSpan::new(0, src.len());
+    let blocks = document
+        .blocks
+        .into_iter()
+        .enumerate()
+        .map(|(idx, block)| Spanned::new(block, spans.get(idx).copied().unwrap_or(fallback)))
+        .collect();
+
+    SpannedDocument {
+        blocks,
+        diagnostics: collect_parse_diagnostics(src),
+        source_len: src.len(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceLine<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for raw in src.split_inclusive('\n') {
+        let raw_start = start;
+        start += raw.len();
+
+        let without_lf = raw.strip_suffix('\n').unwrap_or(raw);
+        let text = without_lf.strip_suffix('\r').unwrap_or(without_lf);
+        lines.push(SourceLine {
+            text,
+            start: raw_start,
+            end: raw_start + text.len(),
+        });
+    }
+    lines
+}
+
+fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
+    let lines: Vec<SourceLine<'_>> = source_lines(src)
+        .into_iter()
+        .filter(|line| parse_reference_definition(line.text).is_none())
+        .collect();
+    let refs = ReferenceMap::new();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+
+    'blocks: while i < lines.len() {
+        let line = lines[i].text;
+        if line.trim().is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if is_thematic_break(line) || atx_heading(line).is_some() {
+            spans.push(span_for_lines(&lines, i, i + 1));
+            i += 1;
+            continue;
+        }
+
+        if let Some((fence_ch, fence_len, _info)) = open_fence(line) {
+            let mut end = i + 1;
+            while end < lines.len() {
+                if is_close_fence(lines[end].text, fence_ch, fence_len) {
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            spans.push(span_for_lines(&lines, i, end));
+            i = end;
+            continue;
+        }
+
+        if line.trim_start().starts_with('>') {
+            let start = i;
+            while i < lines.len() && lines[i].text.trim_start().starts_with('>') {
+                i += 1;
+            }
+            spans.push(span_for_lines(&lines, start, i));
+            continue;
+        }
+
+        if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1].text) {
+            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
+            if let Some((_table, used)) = parse_table(&rest, &refs) {
+                spans.push(span_for_lines(&lines, i, i + used));
+                i += used;
+                continue;
+            }
+        }
+
+        if list_marker(line).is_some() {
+            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
+            let (_list, used) = parse_list(&rest, &refs);
+            spans.push(span_for_lines(&lines, i, i + used));
+            i += used;
+            continue;
+        }
+
+        let start = i;
+        while i < lines.len() && !lines[i].text.trim().is_empty() {
+            if i > start && setext_underline(lines[i].text).is_some() {
+                spans.push(span_for_lines(&lines, start, i + 1));
+                i += 1;
+                continue 'blocks;
+            }
+            if is_thematic_break(lines[i].text)
+                || atx_heading(lines[i].text).is_some()
+                || open_fence(lines[i].text).is_some()
+                || lines[i].text.trim_start().starts_with('>')
+                || list_marker(lines[i].text).is_some()
+            {
+                break;
+            }
+            i += 1;
+        }
+        spans.push(span_for_lines(&lines, start, i));
+    }
+
+    spans
+}
+
+fn span_for_lines(lines: &[SourceLine<'_>], start: usize, end: usize) -> SourceSpan {
+    let Some(first) = lines.get(start) else {
+        return SourceSpan::default();
+    };
+    let Some(last) = end.checked_sub(1).and_then(|idx| lines.get(idx)) else {
+        return SourceSpan::new(first.start, first.end);
+    };
+    SourceSpan::new(first.start, last.end)
+}
+
+fn collect_parse_diagnostics(src: &str) -> Vec<ParseDiagnostic> {
+    let lines = source_lines(src);
+    let mut diagnostics = Vec::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let line = lines[i];
+        if looks_like_reference_definition(line.text)
+            && parse_reference_definition(line.text).is_none()
+        {
+            diagnostics.push(ParseDiagnostic::warning(
+                SourceSpan::new(line.start, line.end),
+                "malformed link reference definition rendered as text",
+            ));
+        }
+
+        if let Some((fence_ch, fence_len, _info)) = open_fence(line.text) {
+            let mut end = i + 1;
+            let mut closed = false;
+            while end < lines.len() {
+                if is_close_fence(lines[end].text, fence_ch, fence_len) {
+                    closed = true;
+                    break;
+                }
+                end += 1;
+            }
+            if !closed {
+                diagnostics.push(ParseDiagnostic::warning(
+                    SourceSpan::new(line.start, src.len()),
+                    "unclosed fenced code block reaches end of document",
+                ));
+                break;
+            }
+            i = end;
+        }
+
+        i += 1;
+    }
+
+    diagnostics
+}
+
+fn looks_like_reference_definition(line: &str) -> bool {
+    if leading_spaces(line) > 3 {
+        return false;
+    }
+    let t = line.trim_start();
+    t.starts_with('[') && t.contains("]:")
 }
 
 fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap) {

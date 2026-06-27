@@ -42,6 +42,8 @@ project has no tags or GitHub Releases yet.
 ### Planning
 
 - Tightened the roadmap around first-class browser/WASM support.
+- Added `scripts/check-wasm-core.sh` and a GitHub Actions workflow plan for the
+  native no-default-features core check plus `wasm32-unknown-unknown`.
 - Clarified that Asupersync belongs in native batch orchestration,
   cancellation, budgets, and deterministic tests, not in the pure synchronous
   render core.

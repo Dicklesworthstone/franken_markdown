@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Rust quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Check all native targets
+        run: cargo check --all-targets
+
+      - name: Check std-only core
+        run: cargo check --no-default-features --lib
+
+      - name: Check WASM core
+        run: scripts/check-wasm-core.sh
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  platform-check:
+    name: Cross-platform check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check all native targets
+        run: cargo check --all-targets
+
+      - name: Test
+        run: cargo test

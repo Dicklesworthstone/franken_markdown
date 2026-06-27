@@ -282,7 +282,8 @@ basic render API.
 - License rider.
 - CLI capabilities/doctor/robot-docs.
 - Core build and test gates.
-- WASM target proof for `--no-default-features`.
+- WASM target proof for `--no-default-features` through
+  `scripts/check-wasm-core.sh` and CI.
 
 ### Phase 1 - Parser Conformance
 
@@ -358,6 +359,22 @@ basic render API.
    text-only, table, code block, blockquote, image, multipage.
 8. **No silent fallbacks:** if a feature is not implemented, return typed errors
    with stable codes and exact next steps.
+
+## 11. CI And Boundary Gates
+
+The repository should fail fast when a change weakens the clean-room or WASM
+boundary:
+
+- `cargo fmt --check`
+- `cargo check --all-targets`
+- `cargo check --no-default-features --lib`
+- `scripts/check-wasm-core.sh`
+- `cargo test`
+- `cargo clippy --all-targets -- -D warnings`
+
+The WASM gate intentionally checks the library only. CLI features may depend on
+native process, stdin/stdout, and filesystem behavior, but the render core must
+keep compiling for `wasm32-unknown-unknown` without default features.
 
 ## 11. Current State
 

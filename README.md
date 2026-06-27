@@ -232,6 +232,17 @@ cargo test
 cargo run -- examples/showcase.md --out showcase.html
 ```
 
+WASM/core portability gate:
+
+```bash
+rustup target add wasm32-unknown-unknown
+scripts/check-wasm-core.sh
+```
+
+That script checks the library with `--no-default-features` for both native Rust
+and `wasm32-unknown-unknown`. It must stay green before the project claims any
+browser/WASM readiness.
+
 Future release channels are expected to include standalone binaries and a
 browser/WASM package.
 

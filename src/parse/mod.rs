@@ -695,35 +695,48 @@ fn list_marker(line: &str) -> Option<Marker> {
     let t = &line[indent..];
     if let Some(first) = t.chars().next()
         && (first == '-' || first == '*' || first == '+')
-        && t[first.len_utf8()..].starts_with(' ')
     {
-        let rest = t[first.len_utf8() + 1..].to_string();
+        let after_marker = &t[first.len_utf8()..];
+        let (rest, padding) = marker_padding(after_marker)?;
         return Some(Marker {
             indent,
             ordered: false,
             start: 1,
-            content_indent: indent + 2,
-            rest,
+            content_indent: indent + first.len_utf8() + padding,
+            rest: rest.to_string(),
         });
     }
     // Ordered: digits then `.` or `)` then space.
     let digits: String = t.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() && digits.len() <= 9 {
         let after = &t[digits.len()..];
-        if (after.starts_with(". ") || after.starts_with(") "))
+        if (after.starts_with('.') || after.starts_with(')'))
             && let Ok(start) = digits.parse()
+            && let Some((rest, padding)) = marker_padding(&after[1..])
         {
-            let rest = after[2..].to_string();
             return Some(Marker {
                 indent,
                 ordered: true,
                 start,
-                content_indent: indent + digits.len() + 2,
-                rest,
+                content_indent: indent + digits.len() + 1 + padding,
+                rest: rest.to_string(),
             });
         }
     }
     None
+}
+
+fn marker_padding(after_marker: &str) -> Option<(&str, usize)> {
+    if after_marker.is_empty() {
+        return Some(("", 1));
+    }
+    let first = after_marker.chars().next()?;
+    if first == ' ' || first == '\t' {
+        let width = first.len_utf8();
+        Some((&after_marker[width..], 1))
+    } else {
+        None
+    }
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {

@@ -156,6 +156,32 @@ fn lazy_ordered_marker_start_other_than_one_stays_in_list_paragraph() {
 }
 
 #[test]
+fn empty_list_markers_are_valid_empty_items() {
+    let unordered = html("-\n- filled");
+    let ordered = html("1.\n2. filled");
+
+    assert!(unordered.contains("<ul>\n<li></li>\n<li>filled</li>\n</ul>"));
+    assert!(ordered.contains("<ol>\n<li></li>\n<li>filled</li>\n</ol>"));
+}
+
+#[test]
+fn tab_after_list_marker_starts_list_item_text() {
+    let out = html("-\ttabbed\n1.\tordered");
+
+    assert!(out.contains("<ul>\n<li>tabbed</li>\n</ul>"));
+    assert!(out.contains("<ol>\n<li>ordered</li>\n</ol>"));
+}
+
+#[test]
+fn list_markers_without_padding_stay_paragraph_text() {
+    let out = html("-not a list\n1.not a list");
+
+    assert!(out.contains("<p>-not a list\n1.not a list</p>"));
+    assert!(!out.contains("<ul>"));
+    assert!(!out.contains("<ol>"));
+}
+
+#[test]
 fn task_list_items_preserve_lazy_continuation_text() {
     let out = html("- [x] done\ncontinues here");
 

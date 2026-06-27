@@ -6,9 +6,9 @@
 //!
 //! It is deliberately not (yet) a full CommonMark implementation — full
 //! reference conformance (nested-list edge cases, link reference definitions,
-//! HTML blocks, setext headings, lazy continuation) is tracked in beads. The
-//! design priority is correct, fast handling of the common 95% with zero
-//! dependencies and no `unwrap`/`panic`.
+//! HTML blocks, lazy continuation) is tracked in beads. The design priority is
+//! correct, fast handling of the common 95% with zero dependencies and no
+//! `unwrap`/`panic`.
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 
@@ -26,7 +26,7 @@ pub fn parse_document(src: &str) -> Document {
 fn parse_blocks(lines: &[&str]) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
-    while i < lines.len() {
+    'blocks: while i < lines.len() {
         let line = lines[i];
         if line.trim().is_empty() {
             i += 1;
@@ -92,14 +92,26 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
         }
         // Paragraph: collect until a blank line or the start of another block.
         let start = i;
-        while i < lines.len()
-            && !lines[i].trim().is_empty()
-            && !is_thematic_break(lines[i])
-            && atx_heading(lines[i]).is_none()
-            && open_fence(lines[i]).is_none()
-            && !lines[i].trim_start().starts_with('>')
-            && list_marker(lines[i]).is_none()
-        {
+        while i < lines.len() && !lines[i].trim().is_empty() {
+            if i > start
+                && let Some(level) = setext_underline(lines[i])
+            {
+                let text = lines[start..i].join("\n");
+                blocks.push(Block::Heading {
+                    level,
+                    inlines: parse_inlines(&text),
+                });
+                i += 1;
+                continue 'blocks;
+            }
+            if is_thematic_break(lines[i])
+                || atx_heading(lines[i]).is_some()
+                || open_fence(lines[i]).is_some()
+                || lines[i].trim_start().starts_with('>')
+                || list_marker(lines[i]).is_some()
+            {
+                break;
+            }
             i += 1;
         }
         let text = lines[start..i].join("\n");
@@ -123,6 +135,25 @@ fn atx_heading(line: &str) -> Option<(u8, &str)> {
     // Strip an optional closing run of `#` and surrounding spaces.
     let content = rest.trim().trim_end_matches('#').trim_end();
     Some((hashes as u8, content))
+}
+
+fn setext_underline(line: &str) -> Option<u8> {
+    if leading_spaces(line) > 3 {
+        return None;
+    }
+    let t = line.trim();
+    let first = t.chars().next()?;
+    let level = match first {
+        '=' => 1,
+        '-' => 2,
+        _ => return None,
+    };
+    let marker_count = t.chars().filter(|&c| c == first).count();
+    if marker_count > 0 && t.chars().all(|c| c == first || c == ' ') {
+        Some(level)
+    } else {
+        None
+    }
 }
 
 fn is_thematic_break(line: &str) -> bool {

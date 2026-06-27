@@ -48,6 +48,14 @@ project has no tags or GitHub Releases yet.
   cancellation, budgets, and deterministic tests, not in the pure synchronous
   render core.
 
+### Parser Conformance
+
+- Added setext heading support for `===`, `---`, and single-dash paragraph
+  underlines while preserving standalone thematic breaks.
+- Added focused parser conformance tests for level-one setext headings,
+  level-two setext headings, single-dash setext headings, thematic breaks, and
+  indented non-underlines.
+
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 
 ### Delivered

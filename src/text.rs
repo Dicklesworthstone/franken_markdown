@@ -809,3 +809,450 @@ fn select_cmap(d: &[u8], cmap: usize) -> Option<(usize, u16)> {
     }
     best.map(|(off, fmt, _)| (off, fmt))
 }
+
+// ===========================================================================
+// OpenType GPOS pair-kerning parser (clean-room). Corrected version.
+//
+// Reuses existing module helpers be_u16/be_i16/be_u32/find_table_full.
+// No unsafe, no unwrap/expect/panic; every read AND every allocation is
+// bounds-checked against the font data.
+// ===========================================================================
+
+/// A class-definition table (`ClassDef`), used by Pair Adjustment format 2.
+#[derive(Clone, Debug)]
+enum ClassDef {
+    /// `startGlyphID` + dense `classValueArray`.
+    Format1 { start: u16, classes: Vec<u16> },
+    /// Sorted `(startGlyphID, endGlyphID, class)` ranges.
+    Format2 { ranges: Vec<(u16, u16, u16)> },
+}
+
+impl ClassDef {
+    /// Class of `g`; glyphs not covered by any entry are class 0.
+    fn class(&self, g: u16) -> u16 {
+        match self {
+            ClassDef::Format1 { start, classes } => {
+                if g >= *start {
+                    let i = (g - *start) as usize;
+                    if i < classes.len() {
+                        return classes[i];
+                    }
+                }
+                0
+            }
+            ClassDef::Format2 { ranges } => {
+                for &(s, e, c) in ranges {
+                    if g >= s && g <= e {
+                        return c;
+                    }
+                }
+                0
+            }
+        }
+    }
+}
+
+/// One parsed Pair Adjustment subtable (`lookupType` 2), reduced to the
+/// `xAdvance` of `valueRecord1` (the only field we apply).
+#[derive(Clone, Debug)]
+enum KernSubtable {
+    /// Specific-pair kerning: `(leftGlyph, rightGlyph) -> xAdvance`.
+    Format1 {
+        pairs: std::collections::BTreeMap<(u16, u16), i16>,
+    },
+    /// Class-based kerning.
+    Format2 {
+        /// First-glyph coverage, sorted ascending for `binary_search`.
+        coverage: Vec<u16>,
+        class1: ClassDef,
+        class2: ClassDef,
+        /// Declared matrix dimensions; needed to reject out-of-range class
+        /// values that would otherwise index a wrong matrix cell.
+        class1_count: u16,
+        class2_count: u16,
+        /// Row-major `xAdvance` matrix: `matrix[c1 * class2_count + c2]`.
+        /// Empty iff both value formats are empty (all adjustments are 0).
+        matrix: Vec<i16>,
+    },
+}
+
+impl KernSubtable {
+    /// Returns `Some(xAdvance)` if this subtable defines `(left, right)`.
+    ///
+    /// For format 2 a `Some(0)` is returned when `left` is covered but the
+    /// resolved record is zero or the classes fall outside the declared
+    /// dimensions — that still counts as a defined (first) match.
+    fn lookup(&self, left: u16, right: u16) -> Option<i16> {
+        match self {
+            KernSubtable::Format1 { pairs } => pairs.get(&(left, right)).copied(),
+            KernSubtable::Format2 {
+                coverage,
+                class1,
+                class2,
+                class1_count,
+                class2_count,
+                matrix,
+            } => {
+                // Format 2 only applies when `left` is in coverage.
+                if coverage.binary_search(&left).is_err() {
+                    return None;
+                }
+                let c1 = class1.class(left) as usize;
+                let c2 = class2.class(right) as usize;
+                let c1_count = *class1_count as usize;
+                let c2_count = *class2_count as usize;
+                // Out-of-range class values must NOT wrap into another row.
+                if c1 >= c1_count || c2 >= c2_count {
+                    return Some(0);
+                }
+                // Zero-length value records => every adjustment is 0.
+                if matrix.is_empty() {
+                    return Some(0);
+                }
+                let idx = c1.checked_mul(c2_count)?.checked_add(c2)?;
+                // idx is guaranteed < matrix.len() given the bounds above, but
+                // fall back to 0 defensively rather than ever returning None.
+                Some(matrix.get(idx).copied().unwrap_or(0))
+            }
+        }
+    }
+}
+
+/// Parsed GPOS `kern`-feature pair positioning for a font.
+///
+/// Built once via [`Font::gpos_kerning`]; [`Kerning::pair`] is a cheap,
+/// allocation-free lookup. An empty `Kerning` (no GPOS / no kern feature /
+/// malformed) makes every `pair()` return 0.
+#[derive(Clone, Debug, Default)]
+pub struct Kerning {
+    subtables: Vec<KernSubtable>,
+}
+
+impl Kerning {
+    /// x-advance adjustment (font design units) applied between `left` and
+    /// `right` glyph ids; 0 if no kern pair applies. First matching subtable
+    /// wins.
+    #[must_use]
+    pub fn pair(&self, left: u16, right: u16) -> i16 {
+        for st in &self.subtables {
+            if let Some(v) = st.lookup(left, right) {
+                return v;
+            }
+        }
+        0
+    }
+}
+
+/// ValueRecord byte size = popcount(valueFormat) * 2.
+fn value_record_size(value_format: u16) -> usize {
+    value_format.count_ones() as usize * 2
+}
+
+/// Reads the `xAdvance` (0x0004) i16 of a ValueRecord starting at `off`.
+///
+/// Returns `Some(0)` when X_ADVANCE is not present, `None` only when the bytes
+/// are missing. The field offset within the record is `2 * popcount(vf & 0x0003)`
+/// (skip X/Y placement if set).
+fn value_record_x_advance(d: &[u8], off: usize, value_format: u16) -> Option<i16> {
+    const X_ADVANCE: u16 = 0x0004;
+    if value_format & X_ADVANCE == 0 {
+        return Some(0);
+    }
+    let skip = (value_format & 0x0003).count_ones() as usize * 2;
+    be_i16(d, off.checked_add(skip)?)
+}
+
+/// Parses a Coverage table at `cov`, returning glyph ids ordered by coverage
+/// index (index `i` -> returned vec position `i`).
+fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
+    let format = be_u16(d, cov)?;
+    match format {
+        1 => {
+            let count = be_u16(d, cov + 2)? as usize;
+            let mut v = Vec::with_capacity(count.min(d.len() / 2 + 1));
+            for i in 0..count {
+                v.push(be_u16(d, cov + 4 + i * 2)?);
+            }
+            Some(v)
+        }
+        2 => {
+            let range_count = be_u16(d, cov + 2)? as usize;
+            // Key by coverage index so the result is correctly ordered even if
+            // ranges are listed out of order.
+            let mut by_index: std::collections::BTreeMap<u32, u16> =
+                std::collections::BTreeMap::new();
+            for i in 0..range_count {
+                let rec = cov + 4 + i * 6;
+                let start = be_u16(d, rec)? as u32;
+                let end = be_u16(d, rec + 2)? as u32;
+                let start_idx = be_u16(d, rec + 4)? as u32;
+                if end < start {
+                    continue;
+                }
+                let mut g = start;
+                let mut idx = start_idx;
+                while g <= end {
+                    by_index.insert(idx, g as u16);
+                    g += 1;
+                    idx += 1;
+                }
+            }
+            Some(by_index.into_values().collect())
+        }
+        _ => None,
+    }
+}
+
+/// Parses a ClassDef table at `cd`.
+fn parse_class_def(d: &[u8], cd: usize) -> Option<ClassDef> {
+    let format = be_u16(d, cd)?;
+    match format {
+        1 => {
+            let start = be_u16(d, cd + 2)?;
+            let count = be_u16(d, cd + 4)? as usize;
+            let mut classes = Vec::with_capacity(count.min(d.len() / 2 + 1));
+            for i in 0..count {
+                classes.push(be_u16(d, cd + 6 + i * 2)?);
+            }
+            Some(ClassDef::Format1 { start, classes })
+        }
+        2 => {
+            let range_count = be_u16(d, cd + 2)? as usize;
+            let mut ranges = Vec::with_capacity(range_count.min(d.len() / 6 + 1));
+            for i in 0..range_count {
+                let rec = cd + 4 + i * 6;
+                let s = be_u16(d, rec)?;
+                let e = be_u16(d, rec + 2)?;
+                let c = be_u16(d, rec + 4)?;
+                ranges.push((s, e, c));
+            }
+            Some(ClassDef::Format2 { ranges })
+        }
+        _ => None,
+    }
+}
+
+/// Parses a Pair Adjustment subtable (`lookupType` 2) whose start is `sub`.
+fn parse_pair_subtable(d: &[u8], sub: usize) -> Option<KernSubtable> {
+    let pos_format = be_u16(d, sub)?;
+    match pos_format {
+        1 => parse_pair_format1(d, sub),
+        2 => parse_pair_format2(d, sub),
+        _ => None,
+    }
+}
+
+/// Pair Adjustment format 1 (specific pairs).
+fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
+    let cov_off = be_u16(d, sub + 2)? as usize;
+    let vf1 = be_u16(d, sub + 4)?;
+    let vf2 = be_u16(d, sub + 6)?;
+    let pair_set_count = be_u16(d, sub + 8)? as usize;
+
+    let rec1_size = value_record_size(vf1);
+    let rec2_size = value_record_size(vf2);
+    // Each PairValueRecord: secondGlyph(2) + valueRecord1 + valueRecord2.
+    let pair_rec_size = 2 + rec1_size + rec2_size;
+
+    let coverage = parse_coverage_glyphs(d, sub + cov_off)?;
+
+    let mut pairs: std::collections::BTreeMap<(u16, u16), i16> = std::collections::BTreeMap::new();
+
+    for i in 0..pair_set_count {
+        // PairSet for coverage-index i is for coverage glyph at position i.
+        let Some(left_glyph) = coverage.get(i).copied() else {
+            continue;
+        };
+        let Some(ps_off) = be_u16(d, sub + 10 + i * 2) else {
+            continue;
+        };
+        let ps = sub + ps_off as usize;
+        let Some(pair_value_count) = be_u16(d, ps) else {
+            continue;
+        };
+        let mut p = ps + 2;
+        for _ in 0..pair_value_count {
+            let Some(second) = be_u16(d, p) else {
+                break;
+            };
+            let x_adv = value_record_x_advance(d, p + 2, vf1).unwrap_or(0);
+            // First subtable / first record wins for a given pair.
+            pairs.entry((left_glyph, second)).or_insert(x_adv);
+            let Some(np) = p.checked_add(pair_rec_size) else {
+                break;
+            };
+            p = np;
+        }
+    }
+
+    Some(KernSubtable::Format1 { pairs })
+}
+
+/// Pair Adjustment format 2 (class-based).
+fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
+    let cov_off = be_u16(d, sub + 2)? as usize;
+    let vf1 = be_u16(d, sub + 4)?;
+    let vf2 = be_u16(d, sub + 6)?;
+    let class_def1_off = be_u16(d, sub + 8)? as usize;
+    let class_def2_off = be_u16(d, sub + 10)? as usize;
+    let class1_count = be_u16(d, sub + 12)? as usize;
+    let class2_count = be_u16(d, sub + 14)? as usize;
+
+    let rec1_size = value_record_size(vf1);
+    let rec2_size = value_record_size(vf2);
+    let class_rec_size = rec1_size + rec2_size;
+
+    // Class1Record[]: each holds class2_count Class2Records (record[c1][c2]).
+    let matrix_base = sub + 16;
+    let cell_count = class1_count.checked_mul(class2_count)?;
+
+    // BUG 1 FIX: never allocate/iterate based on untrusted class counts unless
+    // the declared matrix actually fits within the font data.
+    let matrix: Vec<i16> = if class_rec_size == 0 {
+        // Both value formats empty => every xAdvance is 0; store nothing.
+        Vec::new()
+    } else {
+        let needed = cell_count.checked_mul(class_rec_size)?;
+        let end = matrix_base.checked_add(needed)?;
+        if end > d.len() {
+            // Matrix cannot fit -> malformed; drop this subtable.
+            return None;
+        }
+        let mut m = Vec::with_capacity(cell_count);
+        for idx in 0..cell_count {
+            let off = matrix_base + idx * class_rec_size;
+            // In-bounds by the check above; reads only xAdvance of record1.
+            let x_adv = value_record_x_advance(d, off, vf1).unwrap_or(0);
+            m.push(x_adv);
+        }
+        m
+    };
+
+    let mut coverage = parse_coverage_glyphs(d, sub + cov_off)?;
+    coverage.sort_unstable();
+
+    let class1 = parse_class_def(d, sub + class_def1_off)?;
+    let class2 = parse_class_def(d, sub + class_def2_off)?;
+
+    Some(KernSubtable::Format2 {
+        coverage,
+        class1,
+        class2,
+        class1_count: class1_count as u16,
+        class2_count: class2_count as u16,
+        matrix,
+    })
+}
+
+/// Resolves an Extension Positioning subtable (`lookupType` 9), returning
+/// `(extensionLookupType, realSubtableOffset)`.
+fn resolve_extension(d: &[u8], sub: usize) -> Option<(u16, usize)> {
+    let pos_format = be_u16(d, sub)?;
+    if pos_format != 1 {
+        return None;
+    }
+    let ext_type = be_u16(d, sub + 2)?;
+    let ext_off = be_u32(d, sub + 4)? as usize;
+    Some((ext_type, sub.checked_add(ext_off)?))
+}
+
+impl Font {
+    /// Parses the GPOS `kern` feature once into a [`Kerning`] structure.
+    ///
+    /// Returns an empty `Kerning` (every `pair()` -> 0) when the font has no
+    /// GPOS table, no `kern` feature, or the relevant offsets are malformed.
+    #[must_use]
+    pub fn gpos_kerning(&self) -> Kerning {
+        self.parse_gpos_kerning().unwrap_or_default()
+    }
+
+    fn parse_gpos_kerning(&self) -> Option<Kerning> {
+        let d = &self.data;
+        let (gpos, _gpos_len) = find_table_full(d, b"GPOS")?;
+
+        // GPOS header: major(0) minor(2) scriptList(4) featureList(6) lookupList(8).
+        let feature_list_off = be_u16(d, gpos + 6)? as usize;
+        let lookup_list_off = be_u16(d, gpos + 8)? as usize;
+        let feature_list = gpos + feature_list_off;
+        let lookup_list = gpos + lookup_list_off;
+
+        // --- Collect every 'kern' feature's lookup indices (deduplicated). ---
+        let feature_count = be_u16(d, feature_list)? as usize;
+        let mut lookup_indices: Vec<u16> = Vec::new();
+        for i in 0..feature_count {
+            // FeatureRecord: tag[4] + featureOffset(2), from FeatureList.
+            let rec = feature_list + 2 + i * 6;
+            let Some(tag) = d.get(rec..rec + 4) else {
+                break;
+            };
+            if tag != b"kern" {
+                continue;
+            }
+            let Some(feat_off) = be_u16(d, rec + 4) else {
+                continue;
+            };
+            let feat = feature_list + feat_off as usize;
+            // Feature: featureParams(0) lookupIndexCount(2) lookupIndices(4..).
+            let Some(lookup_index_count) = be_u16(d, feat + 2) else {
+                continue;
+            };
+            for j in 0..lookup_index_count as usize {
+                if let Some(idx) = be_u16(d, feat + 4 + j * 2) {
+                    if !lookup_indices.contains(&idx) {
+                        lookup_indices.push(idx);
+                    }
+                }
+            }
+        }
+
+        // --- Walk the gathered lookups, collecting pair subtables. ---
+        let lookup_count = be_u16(d, lookup_list)? as usize;
+        let mut subtables: Vec<KernSubtable> = Vec::new();
+
+        for &li in &lookup_indices {
+            let li = li as usize;
+            if li >= lookup_count {
+                continue;
+            }
+            let Some(lookup_off) = be_u16(d, lookup_list + 2 + li * 2) else {
+                continue;
+            };
+            let lookup = lookup_list + lookup_off as usize;
+            // Lookup: lookupType(0) lookupFlag(2) subTableCount(4) offsets(6..).
+            let Some(lookup_type) = be_u16(d, lookup) else {
+                continue;
+            };
+            let Some(sub_count) = be_u16(d, lookup + 4) else {
+                continue;
+            };
+
+            for s in 0..sub_count as usize {
+                let Some(sub_off) = be_u16(d, lookup + 6 + s * 2) else {
+                    continue;
+                };
+                let sub = lookup + sub_off as usize;
+
+                match lookup_type {
+                    2 => {
+                        if let Some(st) = parse_pair_subtable(d, sub) {
+                            subtables.push(st);
+                        }
+                    }
+                    9 => {
+                        // Extension: resolve, then handle a real type-2 subtable.
+                        if let Some((ext_type, real_sub)) = resolve_extension(d, sub) {
+                            if ext_type == 2 {
+                                if let Some(st) = parse_pair_subtable(d, real_sub) {
+                                    subtables.push(st);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Some(Kerning { subtables })
+    }
+}

@@ -1131,30 +1131,20 @@ fn parse_link_like(
         return None;
     }
     let text: String = chars[i + 1..j].iter().collect();
-    // Parse the destination + optional "title" up to the matching ')'.
     let mut k = j + 2;
-    let mut dest = String::new();
-    while k < chars.len() && chars[k] != ')' && chars[k] != ' ' && chars[k] != '"' {
-        dest.push(chars[k]);
-        k += 1;
-    }
-    let mut title = None;
-    while k < chars.len() && chars[k] == ' ' {
-        k += 1;
-    }
-    if chars.get(k) == Some(&'"') {
-        let mut t = String::new();
-        k += 1;
-        while k < chars.len() && chars[k] != '"' {
-            t.push(chars[k]);
-            k += 1;
-        }
-        title = Some(t);
-        k += 1;
-        while k < chars.len() && chars[k] == ' ' {
-            k += 1;
-        }
-    }
+
+    skip_spaces(chars, &mut k);
+    let dest = parse_link_destination(chars, &mut k)?;
+    skip_spaces(chars, &mut k);
+
+    let title = if chars.get(k) == Some(&')') {
+        None
+    } else {
+        let title = parse_link_title(chars, &mut k)?;
+        skip_spaces(chars, &mut k);
+        Some(title)
+    };
+
     if chars.get(k) != Some(&')') {
         return None;
     }
@@ -1164,6 +1154,106 @@ fn parse_link_like(
         title,
         k + 1,
     ))
+}
+
+fn parse_link_destination(chars: &[char], i: &mut usize) -> Option<String> {
+    if chars.get(*i) == Some(&'<') {
+        parse_angle_link_destination(chars, i)
+    } else {
+        parse_bare_link_destination(chars, i)
+    }
+}
+
+fn parse_angle_link_destination(chars: &[char], i: &mut usize) -> Option<String> {
+    if chars.get(*i) != Some(&'<') {
+        return None;
+    }
+    *i += 1;
+    let mut dest = String::new();
+    while let Some(&ch) = chars.get(*i) {
+        match ch {
+            '>' => {
+                *i += 1;
+                return Some(dest);
+            }
+            '\n' | '<' => return None,
+            '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
+                dest.push(chars[*i + 1]);
+                *i += 2;
+            }
+            _ => {
+                dest.push(ch);
+                *i += 1;
+            }
+        }
+    }
+    None
+}
+
+fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> {
+    let mut dest = String::new();
+    let mut paren_depth = 0usize;
+
+    while let Some(&ch) = chars.get(*i) {
+        match ch {
+            ')' if paren_depth == 0 => break,
+            ')' => {
+                paren_depth -= 1;
+                dest.push(ch);
+                *i += 1;
+            }
+            '(' => {
+                paren_depth += 1;
+                dest.push(ch);
+                *i += 1;
+            }
+            '<' | '\n' => return None,
+            ch if ch.is_whitespace() => break,
+            '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
+                dest.push(chars[*i + 1]);
+                *i += 2;
+            }
+            _ => {
+                dest.push(ch);
+                *i += 1;
+            }
+        }
+    }
+
+    if paren_depth == 0 { Some(dest) } else { None }
+}
+
+fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
+    let (open, close) = match chars.get(*i).copied()? {
+        '"' => ('"', '"'),
+        '\'' => ('\'', '\''),
+        '(' => ('(', ')'),
+        _ => return None,
+    };
+    if chars.get(*i) != Some(&open) {
+        return None;
+    }
+    *i += 1;
+
+    let mut title = String::new();
+    while let Some(&ch) = chars.get(*i) {
+        match ch {
+            c if c == close => {
+                *i += 1;
+                return Some(title);
+            }
+            '\n' => return None,
+            '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
+                title.push(chars[*i + 1]);
+                *i += 2;
+            }
+            _ => {
+                title.push(ch);
+                *i += 1;
+            }
+        }
+    }
+    None
 }
 
 fn parse_reference_link_like(

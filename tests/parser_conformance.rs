@@ -219,6 +219,43 @@ fn gfm_bare_urls_require_a_reasonable_left_boundary() {
 }
 
 #[test]
+fn inline_links_support_balanced_destinations_and_title_forms() {
+    let out = html(
+        "[wiki](https://example.test/wiki/Markdown_(syntax)) \
+         [nested](https://example.test/a(b(c)d)e) \
+         [angle](<https://example.test/a b?q=1> 'Angle title') \
+         [paren](dest (Paren title)) \
+         [escaped](foo\\)bar \"T\\\"x\")",
+    );
+
+    assert!(out.contains("<a href=\"https://example.test/wiki/Markdown_(syntax)\">wiki</a>"));
+    assert!(out.contains("<a href=\"https://example.test/a(b(c)d)e\">nested</a>"));
+    assert!(
+        out.contains("<a href=\"https://example.test/a b?q=1\" title=\"Angle title\">angle</a>")
+    );
+    assert!(out.contains("<a href=\"dest\" title=\"Paren title\">paren</a>"));
+    assert!(out.contains("<a href=\"foo)bar\" title=\"T&quot;x\">escaped</a>"));
+}
+
+#[test]
+fn inline_images_share_robust_destination_and_title_parsing() {
+    let out = html("![alt](<images/final diagram.svg> 'Final diagram')");
+
+    assert!(
+        out.contains("<img src=\"images/final diagram.svg\" alt=\"alt\" title=\"Final diagram\">")
+    );
+}
+
+#[test]
+fn malformed_inline_link_destinations_remain_literal_text() {
+    let out = html("[bad](foo(bar) and [angle](<broken)");
+
+    assert!(out.contains("[bad](foo(bar) and [angle](&lt;broken)"));
+    assert!(!out.contains("<a href=\"foo(bar\""));
+    assert!(!out.contains("<a href=\"broken\""));
+}
+
+#[test]
 fn top_level_indented_code_blocks_strip_one_code_indent() {
     let out = html("    let x = 1;\n        let y = 2;\n    <tag>\n\nnext");
 

@@ -1456,6 +1456,7 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
     while end > i && bare_url_trailing_punctuation(chars[end - 1]) {
         end -= 1;
     }
+    end = trim_unmatched_trailing_parens(chars, i, end);
     if end == i || (is_www && end <= i + 4) {
         return None;
     }
@@ -1489,6 +1490,26 @@ fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
 
 const fn bare_url_trailing_punctuation(ch: char) -> bool {
     matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
+}
+
+fn trim_unmatched_trailing_parens(chars: &[char], start: usize, mut end: usize) -> usize {
+    while end > start && chars[end - 1] == ')' && has_unmatched_closing_paren(chars, start, end) {
+        end -= 1;
+    }
+    end
+}
+
+fn has_unmatched_closing_paren(chars: &[char], start: usize, end: usize) -> bool {
+    let mut opens = 0usize;
+    let mut closes = 0usize;
+    for ch in &chars[start..end] {
+        match ch {
+            '(' => opens += 1,
+            ')' => closes += 1,
+            _ => {}
+        }
+    }
+    closes > opens
 }
 
 fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {

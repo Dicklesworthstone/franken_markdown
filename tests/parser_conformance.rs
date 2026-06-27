@@ -320,6 +320,21 @@ fn gfm_bare_urls_require_a_reasonable_left_boundary() {
 }
 
 #[test]
+fn gfm_bare_urls_leave_unmatched_closing_parens_outside() {
+    let out = html("See (https://example.com/a).");
+
+    assert!(out.contains("(<a href=\"https://example.com/a\">https://example.com/a</a>)."));
+    assert!(!out.contains("href=\"https://example.com/a)\""));
+}
+
+#[test]
+fn gfm_bare_urls_keep_balanced_parentheses_inside() {
+    let out = html("See https://example.com/a(b).");
+
+    assert!(out.contains("<a href=\"https://example.com/a(b)\">https://example.com/a(b)</a>."));
+}
+
+#[test]
 fn inline_links_support_balanced_destinations_and_title_forms() {
     let out = html(
         "[wiki](https://example.test/wiki/Markdown_(syntax)) \

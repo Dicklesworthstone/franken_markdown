@@ -34,6 +34,19 @@ fn parses_synthetic_format12_font() {
     assert_eq!(font.advance_width(2), 700);
     // 'A' is gid1 -> 600/1000 em -> 600/1000.
     assert_eq!(font.advance_1000('A'), 600);
+    assert_eq!(font.kerning('A', 'B'), 0);
+}
+
+#[test]
+fn parses_synthetic_kern_format0_pair() {
+    let font = Font::parse(build_synthetic_font_with_kern()).expect("synthetic font parses");
+
+    assert_eq!(font.glyph_index('A'), 1);
+    assert_eq!(font.glyph_index('B'), 2);
+    assert_eq!(font.kerning_between_glyphs(1, 2), -80);
+    assert_eq!(font.kerning('A', 'B'), -80);
+    assert_eq!(font.kerning_1000('A', 'B'), -80);
+    assert_eq!(font.kerning('B', 'A'), 0);
 }
 
 #[test]
@@ -243,6 +256,14 @@ fn be32(v: u32) -> [u8; 4] {
 }
 
 fn build_synthetic_font() -> Vec<u8> {
+    build_synthetic_font_with_extra_tables(Vec::new())
+}
+
+fn build_synthetic_font_with_kern() -> Vec<u8> {
+    build_synthetic_font_with_extra_tables(vec![(b"kern", build_synthetic_kern_table())])
+}
+
+fn build_synthetic_font_with_extra_tables(extra: Vec<(&'static [u8; 4], Vec<u8>)>) -> Vec<u8> {
     // head: 54 bytes, unitsPerEm (u16) at offset 18.
     let mut head = vec![0u8; 54];
     head[18..20].copy_from_slice(&be16(1000));
@@ -282,13 +303,14 @@ fn build_synthetic_font() -> Vec<u8> {
     cmap.extend_from_slice(&be32(66)); // endCharCode   'B'
     cmap.extend_from_slice(&be32(1)); // startGlyphID
 
-    let tables: [(&[u8; 4], Vec<u8>); 5] = [
+    let mut tables: Vec<(&'static [u8; 4], Vec<u8>)> = vec![
         (b"cmap", cmap),
         (b"head", head),
         (b"hhea", hhea),
         (b"hmtx", hmtx),
         (b"maxp", maxp),
     ];
+    tables.extend(extra);
 
     let n = tables.len() as u16;
     let dir_len = 12 + tables.len() * 16;
@@ -318,4 +340,23 @@ fn build_synthetic_font() -> Vec<u8> {
     }
     out.extend_from_slice(&body);
     out
+}
+
+fn build_synthetic_kern_table() -> Vec<u8> {
+    let mut kern = Vec::new();
+    kern.extend_from_slice(&be16(0)); // table version
+    kern.extend_from_slice(&be16(1)); // subtable count
+
+    let subtable_len = 6 + 8 + 6;
+    kern.extend_from_slice(&be16(0)); // subtable version
+    kern.extend_from_slice(&be16(subtable_len));
+    kern.extend_from_slice(&be16(0x0001)); // format 0 + horizontal
+    kern.extend_from_slice(&be16(1)); // nPairs
+    kern.extend_from_slice(&be16(6)); // searchRange
+    kern.extend_from_slice(&be16(0)); // entrySelector
+    kern.extend_from_slice(&be16(0)); // rangeShift
+    kern.extend_from_slice(&be16(1)); // left glyph A
+    kern.extend_from_slice(&be16(2)); // right glyph B
+    kern.extend_from_slice(&(-80i16).to_be_bytes());
+    kern
 }

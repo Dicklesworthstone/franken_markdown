@@ -3,13 +3,15 @@
 //! Parses the sfnt table directory plus the metric and character-map tables we
 //! need to lay out and (later) embed text: `head` (units per em), `maxp` (glyph
 //! count), `hhea`/`hmtx` (vertical metrics + advance widths), and `cmap`
-//! (character → glyph, formats 4 and 12). Latin-first, zero-dependency, and free
-//! of `unsafe`/`unwrap`/`panic` — every read is bounds-checked.
+//! (character → glyph, formats 4 and 12), and legacy `kern` format-0 pair
+//! kerning. Latin-first, zero-dependency, and free of `unsafe`/`unwrap`/`panic`
+//! — every read is bounds-checked.
 //!
 //! Outline parsing (`glyf`/`loca`/`CFF`) for PDF embedding + subsetting, and
-//! kerning/ligatures (`kern`/GPOS/GSUB), are later increments. This module gives
-//! the real advance metrics the layout engine needs to replace the base-14
-//! approximations, and the `cmap` needed to map text to glyphs for embedding.
+//! ligatures / richer positioning (GPOS/GSUB), are later increments. This
+//! module gives the real advance metrics the layout engine needs to replace the
+//! base-14 approximations, and the `cmap` needed to map text to glyphs for
+//! embedding.
 
 /// A parsed font, owning its backing bytes.
 #[derive(Debug, Clone)]
@@ -36,6 +38,8 @@ pub struct Font {
     loca_off: Option<usize>,
     /// True when `loca` uses the 32-bit (long) offset format.
     loca_long: bool,
+    /// `(pair_record_offset, pair_count)` for a legacy `kern` format-0 table.
+    kern0: Option<(usize, u16)>,
 }
 
 /// Why a font failed to parse.
@@ -130,6 +134,47 @@ fn find_table_full(d: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
     None
 }
 
+/// Locate a legacy TrueType `kern` v0 format-0 horizontal pair table.
+fn find_kern0(d: &[u8]) -> Option<(usize, u16)> {
+    let (kern, kern_len) = find_table_full(d, b"kern")?;
+    let table_end = kern.checked_add(kern_len)?;
+    let version = be_u16(d, kern)?;
+    let n_tables = be_u16(d, kern + 2)? as usize;
+    if version != 0 {
+        return None;
+    }
+
+    let mut sub = kern + 4;
+    for _ in 0..n_tables {
+        if sub.checked_add(6)? > table_end {
+            return None;
+        }
+        let length = be_u16(d, sub + 2)? as usize;
+        let coverage = be_u16(d, sub + 4)?;
+        let format = coverage >> 8;
+        let horizontal = coverage & 0x0001 != 0;
+        let minimum = coverage & 0x0002 != 0;
+        let pairs = sub + 14;
+        if format == 0 && horizontal && !minimum && length >= 14 {
+            let sub_end = sub.checked_add(length)?;
+            if sub_end > table_end {
+                return None;
+            }
+            let n_pairs = be_u16(d, sub + 6)?;
+            let bytes_needed = (n_pairs as usize).checked_mul(6)?;
+            if pairs.checked_add(bytes_needed)? <= sub_end {
+                return Some((pairs, n_pairs));
+            }
+            return None;
+        }
+        if length == 0 {
+            return None;
+        }
+        sub = sub.checked_add(length)?;
+    }
+    None
+}
+
 impl Font {
     /// Parse a font from its raw bytes (e.g. an `include_bytes!` blob).
     ///
@@ -164,6 +209,7 @@ impl Font {
         let loca_long = be_i16(d, head + 50).unwrap_or(0) != 0;
         let loca_off = find_table(d, b"loca");
         let glyf = find_table_full(d, b"glyf");
+        let kern0 = find_kern0(d);
 
         Ok(Self {
             data,
@@ -179,6 +225,7 @@ impl Font {
             glyf,
             loca_off,
             loca_long,
+            kern0,
         })
     }
 
@@ -313,6 +360,56 @@ impl Font {
         }
         let aw = self.advance_width(self.glyph_index(ch)) as u32;
         aw * 1000 / self.units_per_em as u32
+    }
+
+    /// Kerning adjustment between two glyph ids in design units.
+    ///
+    /// Unsupported or absent kerning tables return zero. This currently supports
+    /// legacy TrueType/Microsoft `kern` table version 0, format 0, horizontal
+    /// pairs. GPOS pair positioning is tracked separately.
+    #[must_use]
+    pub fn kerning_between_glyphs(&self, left: u16, right: u16) -> i16 {
+        let Some((pairs, n_pairs)) = self.kern0 else {
+            return 0;
+        };
+        let target = ((left as u32) << 16) | right as u32;
+        let mut lo = 0usize;
+        let mut hi = n_pairs as usize;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let rec = pairs + mid * 6;
+            let Some(l) = be_u16(&self.data, rec) else {
+                return 0;
+            };
+            let Some(r) = be_u16(&self.data, rec + 2) else {
+                return 0;
+            };
+            let key = ((l as u32) << 16) | r as u32;
+            if key == target {
+                return be_i16(&self.data, rec + 4).unwrap_or(0);
+            }
+            if key < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        0
+    }
+
+    /// Kerning adjustment between two characters in design units.
+    #[must_use]
+    pub fn kerning(&self, left: char, right: char) -> i16 {
+        self.kerning_between_glyphs(self.glyph_index(left), self.glyph_index(right))
+    }
+
+    /// Kerning adjustment between two characters in 1/1000 em units.
+    #[must_use]
+    pub fn kerning_1000(&self, left: char, right: char) -> i32 {
+        if self.units_per_em == 0 {
+            return 0;
+        }
+        self.kerning(left, right) as i32 * 1000 / self.units_per_em as i32
     }
 
     fn cmap4_lookup(&self, cp: u32) -> Option<u16> {
@@ -643,8 +740,9 @@ impl Font {
         for &(code, ng) in &entries {
             sub.extend_from_slice(&ng.wrapping_sub(code).to_be_bytes());
         }
-        sub.extend_from_slice(&1u16.to_be_bytes()); // final seg idDelta = 1
-        // idRangeOffset[] (all zero, glyphIdArray empty)
+        // Final segment idDelta = 1.
+        sub.extend_from_slice(&1u16.to_be_bytes());
+        // idRangeOffset[] (all zero, glyphIdArray empty).
         for _ in &entries {
             sub.extend_from_slice(&0u16.to_be_bytes());
         }

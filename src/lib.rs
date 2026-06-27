@@ -37,6 +37,8 @@ pub mod theme;
 
 #[cfg(feature = "cli")]
 pub mod cli;
+#[cfg(feature = "cli")]
+pub mod config;
 
 pub use ast::Document;
 pub use error::{RenderError, Result};

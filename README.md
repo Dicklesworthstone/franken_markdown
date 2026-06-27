@@ -68,6 +68,11 @@ target/release/fmd capabilities --json
 target/release/fmd doctor --json
 target/release/fmd robot-docs guide
 target/release/fmd --robot-triage
+
+# Persist native CLI defaults, or bypass them for reproducibility
+target/release/fmd config show --json
+target/release/fmd config set font serif --json
+target/release/fmd --no-config examples/showcase.md --out showcase.html
 ```
 
 The PDF path is intentionally honest about its stage: it produces valid,
@@ -157,6 +162,22 @@ Useful flags:
 | `--title <text>` | Override the document title |
 | `--allow-html` | Pass raw HTML through instead of escaping it |
 | `--json` | Emit stable status/error JSON to stderr for render commands |
+| `--no-config` | Ignore native config for a reproducible config-free render |
+
+### Config
+
+```bash
+fmd config show --json
+fmd config get font --json
+fmd config set font serif --json
+fmd config path --json
+```
+
+Native config is intentionally outside the WASM/core renderer. It uses a small
+dependency-free `key=value` file at `$FMD_CONFIG`, then XDG/platform defaults,
+then `~/.config/fmd/config`. Supported keys are `font`, `dark_mode`,
+`custom_css`, `page_size`, and individual page margins such as
+`margin_top_pt`.
 
 ### Capabilities
 

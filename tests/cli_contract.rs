@@ -71,6 +71,7 @@ fn bare_invocation_prints_help_and_exits_successfully() {
     let stdout = text(&out.stdout);
     assert!(stdout.contains("First tries that work:"));
     assert!(stdout.contains("fmd README.md"));
+    assert!(stdout.contains("fmd config show --json"));
     assert!(stdout.contains("fmd capabilities --json"));
     assert!(stdout.contains("fmd robot-docs guide"));
 }
@@ -85,6 +86,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"contract_version\":\"0.1.0\""));
     assert!(stdout.contains("\"64\":\"usage error\""));
     assert!(stdout.contains("\"robot_triage\":\"available\""));
+    assert!(stdout.contains("\"native_config\":\"available\""));
     assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
     assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
 

@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
+use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html, render_pdf};
 
 /// franken_markdown — Markdown to beautiful all-in-one HTML & tiny PDF.
@@ -16,7 +17,7 @@ use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html
     name = "fmd",
     version,
     about,
-    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path is an early base-14-font MVP; the high-typography engine is still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
+    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path is an early base-14-font MVP; the high-typography engine is still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
 )]
 struct Cli {
     /// Emit stable machine-readable JSON for command metadata/status.
@@ -26,6 +27,9 @@ struct Cli {
     /// current output is already plain.
     #[arg(long, global = true)]
     no_color: bool,
+    /// Ignore native config files for this invocation.
+    #[arg(long, global = true)]
+    no_config: bool,
     /// Print one machine-readable triage envelope: quick reference, health,
     /// commands, and next recommended actions.
     #[arg(long, global = true)]
@@ -45,6 +49,8 @@ enum Command {
     RobotDocs(RobotDocsArgs),
     /// Check local build/runtime capabilities and report implementation status.
     Doctor(DoctorArgs),
+    /// Read or edit native fmd config (never used by the WASM/core library).
+    Config(ConfigArgs),
 }
 
 #[derive(Args)]
@@ -62,9 +68,9 @@ struct RenderArgs {
     /// the extension is swapped per format.
     #[arg(long, short)]
     out: Option<PathBuf>,
-    /// Default body font.
-    #[arg(long, value_enum, default_value_t = FontArg::Sans)]
-    font: FontArg,
+    /// Override the configured/default body font.
+    #[arg(long, value_enum)]
+    font: Option<FontArg>,
     /// Path to a custom stylesheet that fully replaces the default theme CSS.
     #[arg(long)]
     css: Option<PathBuf>,
@@ -94,6 +100,58 @@ enum RobotDocsCommand {
 #[derive(Args)]
 struct DoctorArgs {
     /// Emit a stable JSON health report.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: Option<ConfigCommand>,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Show the resolved native config and equivalent theme.
+    Show(ConfigShowArgs),
+    /// Print the resolved value for one key.
+    Get(ConfigGetArgs),
+    /// Set one key in the native config file.
+    Set(ConfigSetArgs),
+    /// Print the native config path.
+    Path(ConfigPathArgs),
+}
+
+#[derive(Args)]
+struct ConfigShowArgs {
+    /// Emit stable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ConfigGetArgs {
+    /// Config key to read.
+    key: String,
+    /// Emit stable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ConfigSetArgs {
+    /// Config key to write.
+    key: String,
+    /// Config value to write.
+    value: String,
+    /// Emit stable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ConfigPathArgs {
+    /// Emit stable JSON.
     #[arg(long)]
     json: bool,
 }
@@ -129,12 +187,13 @@ pub fn main() -> ExitCode {
     };
     let json = cli.json;
     let _no_color = cli.no_color;
+    let no_config = cli.no_config;
     if cli.robot_triage {
         print_robot_triage();
         return ExitCode::SUCCESS;
     }
     match cli.command {
-        Some(Command::Render(args)) => run_render(args, json),
+        Some(Command::Render(args)) => run_render(args, json, no_config),
         Some(Command::Capabilities) => {
             print_capabilities();
             ExitCode::SUCCESS
@@ -145,6 +204,7 @@ pub fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(Command::Doctor(args)) => run_doctor(json || args.json),
+        Some(Command::Config(args)) => run_config(args, json, no_config),
         None => {
             let mut cmd = Cli::command();
             if cmd.print_long_help().is_err() {
@@ -156,16 +216,25 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn run_render(args: RenderArgs, global_json: bool) -> ExitCode {
+fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     let src = match read_input(args.input.as_deref(), args.text.as_deref()) {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
 
-    let theme = Theme::default().with_font(args.font.into());
+    let config = match load_config(no_config) {
+        Ok(config) => config,
+        Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
+    };
 
-    let custom_css = match args.css.as_deref() {
+    let mut theme = config.to_theme();
+    if let Some(font) = args.font {
+        theme = theme.with_font(font.into());
+    }
+
+    let css_path = args.css.clone().or_else(|| config.custom_css.clone());
+    let custom_css = match css_path.as_deref() {
         Some(p) => match std::fs::read_to_string(p) {
             Ok(s) => Some(s),
             Err(e) => {
@@ -252,6 +321,136 @@ fn run_render(args: RenderArgs, global_json: bool) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_config(args: ConfigArgs, global_json: bool, no_config: bool) -> ExitCode {
+    let command = args
+        .command
+        .unwrap_or(ConfigCommand::Show(ConfigShowArgs { json: false }));
+    match command {
+        ConfigCommand::Show(args) => {
+            let json = global_json || args.json;
+            let config = match load_config(no_config) {
+                Ok(config) => config,
+                Err(e) => {
+                    return fail_json(66, "config_error", &format!("reading config: {e}"), json);
+                }
+            };
+            print_config_show(&config, json);
+            ExitCode::SUCCESS
+        }
+        ConfigCommand::Get(args) => {
+            let json = global_json || args.json;
+            let config = match load_config(no_config) {
+                Ok(config) => config,
+                Err(e) => {
+                    return fail_json(66, "config_error", &format!("reading config: {e}"), json);
+                }
+            };
+            let Some(value) = config.get_resolved(&args.key) else {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    &format!(
+                        "unknown config key `{}`; supported keys: {}",
+                        args.key,
+                        CONFIG_KEYS.join(", ")
+                    ),
+                    json,
+                );
+            };
+            if json {
+                println!(
+                    "{{\"ok\":true,\"key\":\"{}\",\"value\":\"{}\",\"path\":\"{}\"}}",
+                    json_escape(&args.key),
+                    json_escape(&value),
+                    json_escape(&config_path().display().to_string())
+                );
+            } else {
+                println!("{value}");
+            }
+            ExitCode::SUCCESS
+        }
+        ConfigCommand::Set(args) => {
+            let json = global_json || args.json;
+            if no_config {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    "`config set` cannot be combined with --no-config",
+                    json,
+                );
+            }
+            let mut config = match FmdConfig::load_default() {
+                Ok(config) => config,
+                Err(e) => {
+                    return fail_json(66, "config_error", &format!("reading config: {e}"), json);
+                }
+            };
+            if let Err(e) = config.set_key_value(&args.key, &args.value) {
+                return fail_json(64, "usage_error", &e, json);
+            }
+            let path = match config.save_default() {
+                Ok(path) => path,
+                Err(e) => {
+                    return fail_json(73, "config_error", &format!("writing config: {e}"), json);
+                }
+            };
+            let value = config.get_resolved(&args.key).unwrap_or_default();
+            if json {
+                println!(
+                    "{{\"ok\":true,\"event\":\"config_set\",\"key\":\"{}\",\"value\":\"{}\",\"path\":\"{}\"}}",
+                    json_escape(&args.key),
+                    json_escape(&value),
+                    json_escape(&path.display().to_string())
+                );
+            } else {
+                println!("fmd: set {}={} in {}", args.key, value, path.display());
+            }
+            ExitCode::SUCCESS
+        }
+        ConfigCommand::Path(args) => {
+            let json = global_json || args.json;
+            let path = config_path();
+            if json {
+                println!(
+                    "{{\"ok\":true,\"path\":\"{}\"}}",
+                    json_escape(&path.display().to_string())
+                );
+            } else {
+                println!("{}", path.display());
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn print_config_show(config: &FmdConfig, json: bool) {
+    let path = config_path();
+    if json {
+        println!(
+            "{{\"ok\":true,\"path\":\"{}\",\"config\":{},\"theme\":{}}}",
+            json_escape(&path.display().to_string()),
+            config.to_json(),
+            config.to_theme().to_config_json()
+        );
+    } else {
+        println!("fmd config");
+        println!("  path: {}", path.display());
+        for key in CONFIG_KEYS {
+            if let Some(value) = config.get_resolved(key) {
+                println!("  {key}: {value}");
+            }
+        }
+    }
+}
+
+fn load_config(no_config: bool) -> std::result::Result<FmdConfig, crate::config::ConfigError> {
+    if no_config {
+        Ok(FmdConfig::default())
+    } else {
+        FmdConfig::load_default()
+    }
 }
 
 fn read_input(input: Option<&str>, text: Option<&str>) -> std::io::Result<String> {
@@ -363,7 +562,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     );
@@ -371,14 +570,14 @@ fn print_capabilities() {
 
 fn print_robot_triage() {
     println!(
-        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"theme_model\":\"structured_v1\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current compact PDF MVP and receive machine-readable write status on stderr\"}}]}}",
+        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd config show --json\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"theme_model\":\"structured_v1\",\"native_config\":\"available\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd config show --json\",\"reason\":\"inspect native defaults without reading external docs\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current compact PDF MVP and receive machine-readable write status on stderr\"}}]}}",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn print_robot_docs() {
     println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF output is available as a compact deterministic v0 using base-14 fonts; Knuth-Plass layout and embedded subset fonts are still planned.\n  Use --css <file> for a full custom stylesheet replacement and --font serif for long-form prose."
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF output is available as a compact deterministic v0 using base-14 fonts; Knuth-Plass layout and embedded subset fonts are still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
     );
 }
 
@@ -390,8 +589,15 @@ fn normalized_args() -> Vec<String> {
 
     normalize_agent_typos(&mut args);
 
-    let known = ["render", "capabilities", "robot-docs", "doctor", "help"];
-    let global_no_value = ["--json", "--no-color", "--robot-triage"];
+    let known = [
+        "render",
+        "capabilities",
+        "robot-docs",
+        "doctor",
+        "config",
+        "help",
+    ];
+    let global_no_value = ["--json", "--no-color", "--no-config", "--robot-triage"];
     let global_with_value: [&str; 0] = [];
     let root_flags = ["--help", "-h", "--version", "-V"];
 

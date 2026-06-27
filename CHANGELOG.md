@@ -25,6 +25,10 @@ project has no tags or GitHub Releases yet.
 
 ### CLI Ergonomics
 
+- Added native `fmd config show/get/set/path --json` using a dependency-free
+  `key=value` file with `FMD_CONFIG`, XDG/platform path resolution, persistent
+  font/custom-CSS/theme defaults, page-margin keys, and `--no-config` for
+  reproducible config-free renders.
 - Added first-try render aliases so `fmd README.md`, `fmd -`, and
   `fmd --text '# Hi' --out hi.html` route to `render`.
 - Added `capabilities`, `doctor`, and `robot-docs guide` surfaces.

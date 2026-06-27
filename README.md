@@ -109,6 +109,7 @@ Implemented today:
   hard and soft breaks,
 - reference-style links and images (`[text][id]`, `[text][]`, shortcut
   `[text]`, and matching image forms),
+- parser conformance, metamorphic, and approved fixture snapshot harnesses,
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,
@@ -243,6 +244,7 @@ For local development:
 ```bash
 cargo test
 cargo run -- examples/showcase.md --out showcase.html
+scripts/parser-diff.sh
 scripts/check-policy.sh
 scripts/check-determinism.sh
 ```
@@ -278,6 +280,16 @@ scripts/check-determinism.sh
 That script compares byte-for-byte output across repeated runs for the
 agent-readable JSON surfaces, the current HTML renderer, and the current PDF
 writer.
+
+Parser conformance gate:
+
+```bash
+scripts/parser-diff.sh
+```
+
+That script runs the focused parser regressions, dependency-free metamorphic
+pseudo-fuzz tests, and approved article-body fixture snapshots under
+`tests/fixtures/parser/`.
 
 Future release channels are expected to include standalone binaries and a
 browser/WASM package.

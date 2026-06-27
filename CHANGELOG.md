@@ -81,6 +81,8 @@ project has no tags or GitHub Releases yet.
   visible as normal text.
 - Added lazy list-item continuation and nested ordered/unordered list parsing,
   including task-list continuation and blockquote/list nesting regressions.
+- Added `scripts/parser-diff.sh`, dependency-free parser metamorphic tests, and
+  approved article-body fixture snapshots under `tests/fixtures/parser/`.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

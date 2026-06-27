@@ -21,23 +21,24 @@
 //! clean; the font bytes come from `include_bytes!`, not the filesystem.
 
 use crate::PdfOptions;
-use crate::ast::{Block, Document, Inline, List};
+use crate::ast::{Align, Block, Document, Inline, List, Table};
 use crate::error::Result;
 use crate::fonts::{self, FontStyle};
+use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FontSize, LayoutUnit, ParagraphItem, Penalty, StyledText, TextBox, break_paragraph,
     default_interword_glue, measure_text_with_pairs,
 };
 use crate::text::{Font, Kerning, Ligatures};
+use crate::theme::Theme;
 use std::collections::{BTreeMap, BTreeSet};
 
-const PAGE_W: f32 = 612.0; // US Letter, points
-const PAGE_H: f32 = 792.0;
-const MARGIN: f32 = 72.0;
-const CONTENT_W: f32 = PAGE_W - 2.0 * MARGIN;
+const MIN_PAGE_DIM: f32 = 80.0;
+const MIN_CONTENT_DIM: f32 = 40.0;
 
 // Inline-link styling: hyperlink blue (`rg` fill + `RG` underline stroke).
 const LINK_COLOR: (f32, f32, f32) = (0.07, 0.20, 0.55);
+const BLACK: (f32, f32, f32) = (0.0, 0.0, 0.0);
 
 // Fenced-code panel + inline-code chip backgrounds.
 const CODE_PAD_X: f32 = 8.0; // text inset inside a fenced-code line
@@ -65,8 +66,21 @@ struct Seg {
     text: String,
     /// True if this run is part of an inline link (colored + underlined).
     link: bool,
+    /// Fill color for text. Link runs use [`Fill::Link`]; syntax-highlighted
+    /// fenced code uses [`Fill::Syntax`]. Normal text stays black.
+    fill: Fill,
     /// Layout (non-kerned) advance sum, used to size the link underline.
     width: f32,
+}
+
+/// Deterministic text fill color class. This enum, rather than raw floats, lets
+/// serialization track the current color exactly and avoid redundant `rg`
+/// operators while still resetting after colored code/link runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fill {
+    Black,
+    Link,
+    Syntax(HighlightTok),
 }
 
 /// One laid-out line: a baseline-aligned row of styled segments, or a rule.
@@ -92,6 +106,78 @@ struct Faces {
     italic: Font,
     bolditalic: Font,
     mono: Font,
+}
+
+/// Sanitized page geometry derived from the shared theme model.
+///
+/// CLI config validates page margins before they reach the renderer, but the
+/// public library API can construct arbitrary `Theme` values. Keep the PDF
+/// writer total by clamping malformed dimensions/margins into a printable box.
+#[derive(Clone, Copy)]
+struct PageGeom {
+    width: f32,
+    height: f32,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    content_w: f32,
+}
+
+impl PageGeom {
+    fn from_theme(theme: &Theme) -> Self {
+        let default_page = Theme::default().page;
+        let width =
+            positive_finite(theme.page.size.width_pt, default_page.size.width_pt).max(MIN_PAGE_DIM);
+        let height = positive_finite(theme.page.size.height_pt, default_page.size.height_pt)
+            .max(MIN_PAGE_DIM);
+
+        let mut left = nonnegative_finite(theme.page.margins.left_pt, default_page.margins.left_pt);
+        let mut right =
+            nonnegative_finite(theme.page.margins.right_pt, default_page.margins.right_pt);
+        let mut top = nonnegative_finite(theme.page.margins.top_pt, default_page.margins.top_pt);
+        let mut bottom =
+            nonnegative_finite(theme.page.margins.bottom_pt, default_page.margins.bottom_pt);
+
+        left = left.min((width - MIN_CONTENT_DIM).max(0.0));
+        right = right.min((width - left - MIN_CONTENT_DIM).max(0.0));
+        top = top.min((height - MIN_CONTENT_DIM).max(0.0));
+        bottom = bottom.min((height - top - MIN_CONTENT_DIM).max(0.0));
+
+        Self {
+            width,
+            height,
+            left,
+            right,
+            top,
+            bottom,
+            content_w: (width - left - right).max(MIN_CONTENT_DIM),
+        }
+    }
+
+    fn top_y(self) -> f32 {
+        self.height - self.top
+    }
+
+    fn right_x(self) -> f32 {
+        self.width - self.right
+    }
+}
+
+fn positive_finite(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn nonnegative_finite(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
 }
 
 impl Faces {
@@ -144,6 +230,7 @@ struct Tok {
     text: String,
     slot: u8,
     space: bool,
+    hard_break: bool,
     /// True if this token came from inline link content.
     link: bool,
 }
@@ -154,21 +241,22 @@ struct Tok {
 /// Infallible in practice (the bundled fonts always parse); returns [`Result`]
 /// to leave room for future validation without a signature change.
 pub fn render(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
+    let page = PageGeom::from_theme(&opts.theme);
     let Some(faces) = Faces::load(opts) else {
         // The bundled fonts are tested to parse, so this is unreachable in
         // practice; emit a valid empty document rather than failing.
-        return Ok(empty_pdf());
+        return Ok(empty_pdf(page));
     };
-    let lines = layout(&doc.blocks, opts, &faces);
-    Ok(serialize(&lines, opts, &faces))
+    let lines = layout(&doc.blocks, opts, &faces, page);
+    Ok(serialize(&lines, opts, &faces, page))
 }
 
 // ---- layout -----------------------------------------------------------------
 
-fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces) -> Vec<Line> {
+fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
     let mut out = Vec::new();
     let mut next_bg = 0u32;
-    layout_blocks(blocks, 0.0, &mut out, &mut next_bg, opts, faces);
+    layout_blocks(blocks, 0.0, &mut out, &mut next_bg, opts, faces, page);
     out
 }
 
@@ -179,9 +267,10 @@ fn layout_blocks(
     next_bg: &mut u32,
     opts: &PdfOptions,
     faces: &Faces,
+    page: PageGeom,
 ) {
     for block in blocks {
-        layout_block(block, indent, out, next_bg, opts, faces);
+        layout_block(block, indent, out, next_bg, opts, faces, page);
     }
 }
 
@@ -192,6 +281,7 @@ fn layout_block(
     next_bg: &mut u32,
     opts: &PdfOptions,
     faces: &Faces,
+    page: PageGeom,
 ) {
     match block {
         Block::Heading { level, inlines } => {
@@ -206,21 +296,27 @@ fn layout_block(
             // Headings render bold; inner emphasis becomes bold-italic.
             let mut toks = Vec::new();
             tokenize(inlines, true, false, false, &mut toks);
-            layout_inlines(toks, indent, size, 6.0, faces, out);
+            layout_inlines(toks, indent, size, 6.0, faces, page, out);
         }
         Block::Paragraph(inlines) => {
             let mut toks = Vec::new();
             tokenize(inlines, false, false, false, &mut toks);
-            layout_inlines(toks, indent, 11.0, 7.0, faces, out);
+            layout_inlines(toks, indent, 11.0, 7.0, faces, page, out);
         }
-        Block::CodeBlock { code, .. } => {
+        Block::CodeBlock { lang, code } => {
             *next_bg += 1;
             let gid = *next_bg;
             let mut any = false;
             for raw in code.lines() {
                 any = true;
-                let clipped =
-                    clip_to_width(raw, CONTENT_W - indent - CODE_PAD_X, 9.5, F_MONO, faces);
+                let clipped = clip_to_width(
+                    raw,
+                    page.content_w - indent - CODE_PAD_X,
+                    9.5,
+                    F_MONO,
+                    faces,
+                );
+                let x = page.left + indent + CODE_PAD_X;
                 out.push(Line {
                     size: 9.5,
                     gap_after: 1.5,
@@ -228,17 +324,12 @@ fn layout_block(
                     rule_x: 0.0,
                     quote_bars: Vec::new(),
                     bg: gid,
-                    segs: vec![Seg {
-                        x: MARGIN + indent + CODE_PAD_X,
-                        slot: F_MONO,
-                        text: clipped,
-                        link: false,
-                        width: 0.0,
-                    }],
+                    segs: code_line_segs(lang.as_deref(), &clipped, x, 9.5, faces),
                 });
             }
             if !any {
                 // An empty fence still gets a one-line-tall panel.
+                let x = page.left + indent + CODE_PAD_X;
                 out.push(Line {
                     size: 9.5,
                     gap_after: 1.5,
@@ -247,10 +338,11 @@ fn layout_block(
                     quote_bars: Vec::new(),
                     bg: gid,
                     segs: vec![Seg {
-                        x: MARGIN + indent + CODE_PAD_X,
+                        x,
                         slot: F_MONO,
                         text: String::new(),
                         link: false,
+                        fill: Fill::Black,
                         width: 0.0,
                     }],
                 });
@@ -259,8 +351,8 @@ fn layout_block(
         }
         Block::BlockQuote(inner) => {
             let start = out.len();
-            layout_blocks(inner, indent + 18.0, out, next_bg, opts, faces);
-            let bar_x = MARGIN + indent + 6.0; // sits in the reserved 18pt gutter
+            layout_blocks(inner, indent + 18.0, out, next_bg, opts, faces, page);
+            let bar_x = page.left + indent + 6.0; // sits in the reserved 18pt gutter
             if let Some(lines) = out.get_mut(start..) {
                 for line in lines {
                     line.quote_bars.push((start, bar_x)); // `start` = unique quote id
@@ -268,36 +360,14 @@ fn layout_block(
             }
             gap(out, 3.0);
         }
-        Block::List(list) => layout_list(list, indent, out, opts, faces),
-        Block::Table(table) => {
-            // v0: tab-joined rows; header bold, cells body (inline styling TBD).
-            let header = table
-                .head
-                .iter()
-                .map(|c| inline_text(c))
-                .collect::<Vec<_>>()
-                .join("   |   ");
-            let mut toks = Vec::new();
-            push_text_tokens(&header, F_BOLD, false, &mut toks);
-            layout_inlines(toks, indent, 11.0, 2.0, faces, out);
-            for row in &table.rows {
-                let cells = row
-                    .iter()
-                    .map(|c| inline_text(c))
-                    .collect::<Vec<_>>()
-                    .join("   |   ");
-                let mut toks = Vec::new();
-                push_text_tokens(&cells, F_BODY, false, &mut toks);
-                layout_inlines(toks, indent, 11.0, 2.0, faces, out);
-            }
-            gap(out, 6.0);
-        }
+        Block::List(list) => layout_list(list, indent, out, opts, faces, page),
+        Block::Table(table) => layout_table(table, indent, faces, page, out),
         Block::ThematicBreak => {
             out.push(Line {
                 size: 6.0,
                 gap_after: 8.0,
                 rule: true,
-                rule_x: MARGIN + indent,
+                rule_x: page.left + indent,
                 quote_bars: Vec::new(),
                 bg: 0,
                 segs: Vec::new(),
@@ -307,13 +377,129 @@ fn layout_block(
             if !opts.allow_raw_html {
                 let mut toks = Vec::new();
                 push_text_tokens(html, F_BODY, false, &mut toks);
-                layout_inlines(toks, indent, 11.0, 7.0, faces, out);
+                layout_inlines(toks, indent, 11.0, 7.0, faces, page, out);
             }
         }
     }
 }
 
-fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions, faces: &Faces) {
+/// Lay out a GFM pipe table as a measured-column grid: a bold header row with a
+/// rule beneath it and a closing rule (booktabs-style), columns sized to their
+/// content and scaled to fill the measure, with per-cell alignment.
+fn layout_table(table: &Table, indent: f32, faces: &Faces, page: PageGeom, out: &mut Vec<Line>) {
+    let size = 10.0;
+    let ncol = table
+        .head
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    if ncol == 0 {
+        return;
+    }
+    let left = page.left + indent;
+    let avail = (page.content_w - indent).max(72.0);
+    let pad = 14.0; // inter-column gutter (half on each side of a column)
+
+    // Natural (unwrapped) text width per column across the header + every row.
+    let mut natural = vec![0f32; ncol];
+    for (k, cell) in table.head.iter().enumerate() {
+        if let Some(w) = natural.get_mut(k) {
+            *w = w.max(text_width(&inline_text(cell), size, F_BOLD, faces));
+        }
+    }
+    for row in &table.rows {
+        for (k, cell) in row.iter().enumerate() {
+            if let Some(w) = natural.get_mut(k) {
+                *w = w.max(text_width(&inline_text(cell), size, F_BODY, faces));
+            }
+        }
+    }
+
+    // Scale columns so (text widths + gutters) fill the available measure.
+    let natural_sum: f32 = natural.iter().sum();
+    let gutters = pad * ncol as f32;
+    let target = (avail - gutters).max(ncol as f32 * 12.0);
+    let scale = if natural_sum > 0.0 {
+        target / natural_sum
+    } else {
+        1.0
+    };
+    let colw: Vec<f32> = natural.iter().map(|&w| (w * scale).max(12.0)).collect();
+
+    // Text-left x for each column (inset by half a gutter).
+    let mut tx = Vec::with_capacity(ncol);
+    let mut cx = left;
+    for &w in &colw {
+        tx.push(cx + pad / 2.0);
+        cx += w + pad;
+    }
+
+    let row_line = |cells: &[Vec<Inline>], slot: u8, gap_after: f32| -> Line {
+        let mut segs = Vec::new();
+        for k in 0..ncol {
+            let text = cells.get(k).map(|c| inline_text(c)).unwrap_or_default();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let w = text_width(&text, size, slot, faces);
+            let cw = colw.get(k).copied().unwrap_or(0.0);
+            let base = tx.get(k).copied().unwrap_or(left);
+            let x = match table.align.get(k) {
+                Some(Align::Right) => base + (cw - w),
+                Some(Align::Center) => base + (cw - w) / 2.0,
+                _ => base,
+            };
+            segs.push(Seg {
+                x: x.max(base),
+                slot,
+                text,
+                link: false,
+                fill: Fill::Black,
+                width: w,
+            });
+        }
+        Line {
+            size,
+            gap_after,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            segs,
+        }
+    };
+
+    let rule = |gap_after: f32| Line {
+        size: 4.0,
+        gap_after,
+        rule: true,
+        rule_x: left,
+        quote_bars: Vec::new(),
+        bg: 0,
+        segs: Vec::new(),
+    };
+
+    out.push(row_line(&table.head, F_BOLD, 3.0));
+    out.push(rule(3.0));
+    let nrows = table.rows.len();
+    for (i, row) in table.rows.iter().enumerate() {
+        out.push(row_line(
+            row,
+            F_BODY,
+            if i + 1 == nrows { 3.0 } else { 2.5 },
+        ));
+    }
+    out.push(rule(0.0));
+    gap(out, 8.0);
+}
+
+fn layout_list(
+    list: &List,
+    indent: f32,
+    out: &mut Vec<Line>,
+    _opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+) {
     for (i, item) in list.items.iter().enumerate() {
         let marker = match item.task {
             Some(true) => "[x]".to_string(),
@@ -330,7 +516,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions
                 other => push_text_tokens(&block_plain(other), F_BODY, false, &mut toks),
             }
         }
-        layout_inlines(toks, indent + 16.0, 11.0, 2.0, faces, out);
+        layout_inlines(toks, indent + 16.0, 11.0, 2.0, faces, page, out);
     }
     gap(out, 6.0);
 }
@@ -351,10 +537,18 @@ fn tokenize(inlines: &[Inline], bold: bool, italic: bool, link: bool, out: &mut 
             Inline::Image { alt, .. } => {
                 push_text_tokens(alt, slot_of(bold, italic, false), link, out);
             }
-            Inline::SoftBreak | Inline::HardBreak => out.push(Tok {
+            Inline::SoftBreak => out.push(Tok {
                 text: " ".to_string(),
                 slot: slot_of(bold, italic, false),
                 space: true,
+                hard_break: false,
+                link,
+            }),
+            Inline::HardBreak => out.push(Tok {
+                text: "\n".to_string(),
+                slot: slot_of(bold, italic, false),
+                space: true,
+                hard_break: true,
                 link,
             }),
             Inline::Html(_) => {}
@@ -372,6 +566,7 @@ fn push_text_tokens(text: &str, slot: u8, link: bool, out: &mut Vec<Tok>) {
                     text: std::mem::take(&mut word),
                     slot,
                     space: false,
+                    hard_break: false,
                     link,
                 });
             }
@@ -379,6 +574,7 @@ fn push_text_tokens(text: &str, slot: u8, link: bool, out: &mut Vec<Tok>) {
                 text: " ".to_string(),
                 slot,
                 space: true,
+                hard_break: false,
                 link,
             });
         } else {
@@ -390,6 +586,7 @@ fn push_text_tokens(text: &str, slot: u8, link: bool, out: &mut Vec<Tok>) {
             text: word,
             slot,
             space: false,
+            hard_break: false,
             link,
         });
     }
@@ -449,6 +646,18 @@ fn build_paragraph(
 
     for tok in toks {
         if tok.space {
+            if tok.hard_break {
+                if !word.is_empty() {
+                    flush_word(&mut items, &mut item_toks, &mut word);
+                }
+                items.push(ParagraphItem::Penalty(Penalty {
+                    width: LayoutUnit::ZERO,
+                    penalty: crate::layout::FORCED_BREAK_PENALTY,
+                    flagged: false,
+                }));
+                item_toks.push(Vec::new());
+                continue;
+            }
             if !word.is_empty() {
                 flush_word(&mut items, &mut item_toks, &mut word);
             }
@@ -464,12 +673,20 @@ fn build_paragraph(
     }
     flush_word(&mut items, &mut item_toks, &mut word);
 
-    items.push(ParagraphItem::Penalty(Penalty {
-        width: LayoutUnit::ZERO,
-        penalty: crate::layout::FORCED_BREAK_PENALTY,
-        flagged: false,
-    }));
-    item_toks.push(Vec::new());
+    if !matches!(
+        items.last(),
+        Some(ParagraphItem::Penalty(Penalty {
+            penalty: crate::layout::FORCED_BREAK_PENALTY,
+            ..
+        }))
+    ) {
+        items.push(ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: crate::layout::FORCED_BREAK_PENALTY,
+            flagged: false,
+        }));
+        item_toks.push(Vec::new());
+    }
     (items, item_toks)
 }
 
@@ -482,9 +699,10 @@ fn layout_inlines(
     size: f32,
     gap_after: f32,
     faces: &Faces,
+    page: PageGeom,
     out: &mut Vec<Line>,
 ) {
-    let left = MARGIN + indent;
+    let left = page.left + indent;
     let fs = font_size_of(size);
     let (items, item_toks) = build_paragraph(&toks, fs, faces);
 
@@ -494,11 +712,11 @@ fn layout_inlines(
         return;
     }
 
-    let content_w = lu_from_points_f32((CONTENT_W - indent).max(40.0));
+    let content_w = lu_from_points_f32((page.content_w - indent).max(MIN_CONTENT_DIM));
     let breaks = break_paragraph(&items, content_w);
     if breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
-        layout_inlines_greedy(toks, indent, size, gap_after, faces, out);
+        layout_inlines_greedy(toks, indent, size, gap_after, faces, page, out);
         return;
     }
 
@@ -535,10 +753,11 @@ fn layout_inlines_greedy(
     size: f32,
     gap_after: f32,
     faces: &Faces,
+    page: PageGeom,
     out: &mut Vec<Line>,
 ) {
-    let left = MARGIN + indent;
-    let max = (CONTENT_W - indent).max(40.0);
+    let left = page.left + indent;
+    let max = (page.content_w - indent).max(MIN_CONTENT_DIM);
     let mut lines: Vec<Vec<Tok>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;
@@ -613,6 +832,7 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
                     slot: tok.slot,
                     text: tok.text.clone(),
                     link: tok.link,
+                    fill: if tok.link { Fill::Link } else { Fill::Black },
                     width: tw,
                 });
             }
@@ -623,6 +843,83 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
         segs.push(s);
     }
     segs
+}
+
+fn code_line_segs(lang: Option<&str>, text: &str, x0: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+    if text.is_empty() {
+        return vec![Seg {
+            x: x0,
+            slot: F_MONO,
+            text: String::new(),
+            link: false,
+            fill: Fill::Black,
+            width: 0.0,
+        }];
+    }
+
+    let Some(lang) = lang.filter(|l| highlight::is_supported(l)) else {
+        return vec![plain_code_seg(text, x0, size, faces)];
+    };
+
+    let mut segs = Vec::new();
+    let mut x = x0;
+    for span in highlight::highlight(lang, text) {
+        let Some(slice) = text.get(span.start..span.end) else {
+            continue;
+        };
+        if slice.is_empty() {
+            continue;
+        }
+        let width = text_width(slice, size, F_MONO, faces);
+        segs.push(Seg {
+            x,
+            slot: F_MONO,
+            text: slice.to_string(),
+            link: false,
+            fill: fill_for_highlight(span.kind),
+            width,
+        });
+        x += width;
+    }
+
+    if segs.is_empty() {
+        vec![plain_code_seg(text, x0, size, faces)]
+    } else {
+        segs
+    }
+}
+
+fn plain_code_seg(text: &str, x: f32, size: f32, faces: &Faces) -> Seg {
+    Seg {
+        x,
+        slot: F_MONO,
+        text: text.to_string(),
+        link: false,
+        fill: Fill::Black,
+        width: text_width(text, size, F_MONO, faces),
+    }
+}
+
+fn fill_for_highlight(kind: HighlightTok) -> Fill {
+    match kind {
+        HighlightTok::Plain | HighlightTok::Punct => Fill::Black,
+        other => Fill::Syntax(other),
+    }
+}
+
+fn fill_rgb(fill: Fill) -> (f32, f32, f32) {
+    match fill {
+        Fill::Black => BLACK,
+        Fill::Link => LINK_COLOR,
+        Fill::Syntax(HighlightTok::Keyword) => (0.812, 0.133, 0.180),
+        Fill::Syntax(HighlightTok::Type) => (0.584, 0.220, 0.000),
+        Fill::Syntax(HighlightTok::Func) => (0.400, 0.224, 0.729),
+        Fill::Syntax(HighlightTok::Str) => (0.039, 0.188, 0.412),
+        Fill::Syntax(HighlightTok::Number) => (0.020, 0.314, 0.682),
+        Fill::Syntax(HighlightTok::Comment) => (0.431, 0.467, 0.506),
+        Fill::Syntax(HighlightTok::Operator) => (0.020, 0.314, 0.682),
+        Fill::Syntax(HighlightTok::Plain | HighlightTok::Punct) => BLACK,
+    }
 }
 
 fn token_width(tok: &Tok, size: f32, faces: &Faces) -> f32 {
@@ -642,7 +939,7 @@ fn gap(out: &mut [Line], amount: f32) {
 
 // ---- pagination + serialization --------------------------------------------
 
-fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
+fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<u8> {
     // Which slots actually appear (skip embedding unused faces).
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()
@@ -684,10 +981,10 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         let mut seed: Vec<u16> = keep.iter().map(|&c| source.glyph_index(c)).collect();
         seed.extend(shaped_glyphs);
         let Some((bytes, map)) = source.subset_glyphs(&seed, &keep) else {
-            return empty_pdf();
+            return empty_pdf(page);
         };
         let Ok(font) = Font::parse(bytes.clone()) else {
-            return empty_pdf();
+            return empty_pdf(page);
         };
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
@@ -710,12 +1007,12 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
     // PASS 1 — place every line on a page with its baseline `y` (identical
     // pagination math to the single-pass writer). Backgrounds need each panel's
     // full vertical extent, which is only known once all its lines are placed.
-    let top = PAGE_H - MARGIN;
+    let top = page.top_y();
     let mut pages_placed: Vec<Vec<Placed>> = vec![Vec::new()];
     let mut y = top;
     for line in lines {
         let leading = line.size * 1.32;
-        if y - leading < MARGIN {
+        if y - leading < page.bottom {
             pages_placed.push(Vec::new());
             y = top;
         }
@@ -748,9 +1045,9 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
             }
             if let (Some(head), Some(tail)) = (placed.get(i), placed.get(j.saturating_sub(1))) {
                 let size = head.line.size;
-                let x_text = head.line.segs.first().map_or(MARGIN, |s| s.x);
+                let x_text = head.line.segs.first().map_or(page.left, |s| s.x);
                 let x0 = x_text - CODE_PAD_X;
-                let x1 = PAGE_W - MARGIN;
+                let x1 = page.right_x();
                 let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
                 let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
                 bg.push_str(&rounded_rect_fill(
@@ -791,11 +1088,12 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         }
 
         // (c) Text + rules.
+        let mut current_fill = Fill::Black;
         for p in placed {
             let line = p.line;
             let y = p.y;
             if line.rule {
-                let x2 = PAGE_W - MARGIN;
+                let x2 = page.right_x();
                 body.push_str(&format!(
                     "0.82 0.82 0.84 RG 0.7 w {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\n",
                     x = line.rule_x,
@@ -811,9 +1109,10 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
                         let gids: Vec<u16> =
                             seg.text.chars().map(|c| source.glyph_index(c)).collect();
                         let shaped = face.lig.substitute(&gids);
-                        if seg.link {
-                            let (r, g, b) = LINK_COLOR;
+                        if seg.fill != current_fill {
+                            let (r, g, b) = fill_rgb(seg.fill);
                             body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
+                            current_fill = seg.fill;
                         }
                         body.push_str(&format!(
                             "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
@@ -833,6 +1132,7 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
                                 x1 = seg.x,
                                 x2 = seg.x + seg.width,
                             ));
+                            current_fill = Fill::Black;
                         }
                     }
                 }
@@ -860,7 +1160,7 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
         pages.push(String::new());
     }
 
-    build_pdf(&pages, &subsets, opts)
+    build_pdf(&pages, &subsets, opts, page)
 }
 
 /// A line placed on a page with its computed baseline `y`.
@@ -931,7 +1231,12 @@ struct EmbeddedFace {
     lig_uni: BTreeMap<u16, String>,
 }
 
-fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec<u8> {
+fn build_pdf(
+    pages: &[String],
+    faces: &[EmbeddedFace],
+    opts: &PdfOptions,
+    page_geom: PageGeom,
+) -> Vec<u8> {
     let p = pages.len();
     let nf = faces.len();
     let title = opts.title.clone().unwrap_or_default();
@@ -990,13 +1295,15 @@ fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec
         .map(|(k, f)| format!("/F{} {} 0 R", f.slot, type0_obj(k)))
         .collect::<Vec<_>>()
         .join(" ");
+    let media_w = pdf_num(page_geom.width);
+    let media_h = pdf_num(page_geom.height);
     for i in 0..p {
         emit(
             &mut buf,
             &mut offsets,
             page_obj(i),
             &format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W:.0} {PAGE_H:.0}] \
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
                  /Resources << /Font << {font_res} >> >> /Contents {c} 0 R >>",
                 c = content_obj(i),
             ),
@@ -1043,7 +1350,11 @@ fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec
                 w = widths_array(&face.font),
             ),
         );
-        let italic_angle = if face.slot == F_ITALIC { -12 } else { 0 };
+        let italic_angle = if matches!(face.slot, F_ITALIC | F_BOLDITALIC) {
+            -12
+        } else {
+            0
+        };
         emit(
             &mut buf,
             &mut offsets,
@@ -1248,14 +1559,16 @@ fn subset_psname(k: usize, slot: u8) -> String {
 }
 
 /// A minimal but valid empty single-page PDF (degenerate fallback).
-fn empty_pdf() -> Vec<u8> {
+fn empty_pdf(page: PageGeom) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
     let mut offsets = [0usize; 4];
+    let media_w = pdf_num(page.width);
+    let media_h = pdf_num(page.height);
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
     for (n, body) in [
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
-        &format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W:.0} {PAGE_H:.0}] >>"),
+        &format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] >>"),
     ]
     .into_iter()
     .enumerate()
@@ -1290,6 +1603,17 @@ fn pdf_escape(s: &str) -> String {
         }
     }
     o
+}
+
+fn pdf_num(value: f32) -> String {
+    let mut s = format!("{value:.2}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    if s.is_empty() { "0".to_string() } else { s }
 }
 
 fn clip_to_width(text: &str, max_width: f32, size: f32, font: u8, faces: &Faces) -> String {

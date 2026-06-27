@@ -121,7 +121,7 @@ Current parser covers the common document subset. Target:
 
 - full CommonMark block and inline conformance ladder,
 - GFM tables, task lists, strikethrough, autolinks,
-- reference links,
+- reference links (initial full, collapsed, shortcut, and image forms landed),
 - raw HTML policy with safe defaults,
 - source spans for diagnostics and future editor integrations,
 - zero panics on malformed input,

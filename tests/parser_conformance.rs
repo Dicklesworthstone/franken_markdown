@@ -46,3 +46,53 @@ fn indented_dash_line_is_not_setext_underline() {
     assert!(!out.contains("<h2 id=\"not-a-heading\">"));
     assert!(out.contains("<p>Not a heading"));
 }
+
+#[test]
+fn full_reference_link_definitions_are_collected_and_not_rendered() {
+    let out = html("[docs]: https://example.com/docs \"Docs\"\n\nRead [the docs][docs].");
+
+    assert!(out.contains("<a href=\"https://example.com/docs\" title=\"Docs\">the docs</a>"));
+    assert!(!out.contains("[docs]:"));
+}
+
+#[test]
+fn collapsed_and_shortcut_reference_links_resolve() {
+    let out = html("[Guide]: https://example.com/guide\n\nRead [Guide][] and [Guide].");
+
+    assert_eq!(
+        out.matches("<a href=\"https://example.com/guide\">Guide</a>")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn reference_labels_are_case_insensitive_and_collapse_whitespace() {
+    let out = html("[Multi   Word]: /ok\n\nSee [this][multi word].");
+
+    assert!(out.contains("<a href=\"/ok\">this</a>"));
+}
+
+#[test]
+fn first_reference_definition_wins() {
+    let out = html("[id]: /first\n[id]: /second\n\nSee [id].");
+
+    assert!(out.contains("<a href=\"/first\">id</a>"));
+    assert!(!out.contains("/second"));
+}
+
+#[test]
+fn malformed_reference_definitions_remain_visible_text() {
+    let out = html("[bad]:\n\n[good]: /ok extra garbage\n\nUse [bad] and [good].");
+
+    assert!(out.contains("<p>[bad]:</p>"));
+    assert!(out.contains("[good]: /ok extra garbage"));
+    assert!(out.contains("Use [bad] and [good]."));
+}
+
+#[test]
+fn reference_images_resolve_alt_dest_and_title() {
+    let out = html("[logo]: /logo.png 'Logo mark'\n\n![Project Logo][logo]");
+
+    assert!(out.contains("<img src=\"/logo.png\" alt=\"Project Logo\" title=\"Logo mark\">"));
+}

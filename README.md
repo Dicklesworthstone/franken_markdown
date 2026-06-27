@@ -106,6 +106,8 @@ Implemented today:
   pipe tables with alignment, thematic breaks,
 - inline emphasis, strong, strikethrough, code spans, links, images, autolinks,
   hard and soft breaks,
+- reference-style links and images (`[text][id]`, `[text][]`, shortcut
+  `[text]`, and matching image forms),
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,

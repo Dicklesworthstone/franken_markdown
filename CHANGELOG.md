@@ -74,6 +74,11 @@ project has no tags or GitHub Releases yet.
 - Added focused parser conformance tests for level-one setext headings,
   level-two setext headings, single-dash setext headings, thematic breaks, and
   indented non-underlines.
+- Added a reference-definition collection pass with normalized labels and
+  first-definition-wins behavior.
+- Added full, collapsed, and shortcut reference links plus matching reference
+  images, with malformed-definition regressions that keep bad definitions
+  visible as normal text.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

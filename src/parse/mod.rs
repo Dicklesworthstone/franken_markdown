@@ -5,12 +5,21 @@
 //! code spans, links, images, autolinks, hard/soft breaks).
 //!
 //! It is deliberately not (yet) a full CommonMark implementation — full
-//! reference conformance (nested-list edge cases, link reference definitions,
-//! HTML blocks, lazy continuation) is tracked in beads. The design priority is
-//! correct, fast handling of the common 95% with zero dependencies and no
-//! `unwrap`/`panic`.
+//! reference conformance (nested-list edge cases, HTML blocks, lazy
+//! continuation) is tracked in beads. The design priority is correct, fast
+//! handling of the common 95% with zero dependencies and no `unwrap`/`panic`.
+
+use std::collections::BTreeMap;
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
+
+#[derive(Debug, Clone)]
+struct LinkReference {
+    dest: String,
+    title: Option<String>,
+}
+
+type ReferenceMap = BTreeMap<String, LinkReference>;
 
 /// Parse a full Markdown document.
 #[must_use]
@@ -18,12 +27,26 @@ pub fn parse_document(src: &str) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let lines: Vec<&str> = src.lines().collect();
+    let (lines, refs) = collect_link_references(&lines);
     Document {
-        blocks: parse_blocks(&lines),
+        blocks: parse_blocks_with_refs(&lines, &refs),
     }
 }
 
-fn parse_blocks(lines: &[&str]) -> Vec<Block> {
+fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap) {
+    let mut refs = ReferenceMap::new();
+    let mut kept = Vec::with_capacity(lines.len());
+    for line in lines {
+        if let Some((label, reference)) = parse_reference_definition(line) {
+            refs.entry(label).or_insert(reference);
+        } else {
+            kept.push(*line);
+        }
+    }
+    (kept, refs)
+}
+
+fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
     'blocks: while i < lines.len() {
@@ -40,7 +63,7 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
         if let Some((level, text)) = atx_heading(line) {
             blocks.push(Block::Heading {
                 level,
-                inlines: parse_inlines(text),
+                inlines: parse_inlines_with_refs(text, refs),
             });
             i += 1;
             continue;
@@ -74,18 +97,18 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
                 i += 1;
             }
             let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
-            blocks.push(Block::BlockQuote(parse_blocks(&inner_refs)));
+            blocks.push(Block::BlockQuote(parse_blocks_with_refs(&inner_refs, refs)));
             continue;
         }
         if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1]) {
-            if let Some((table, used)) = parse_table(&lines[i..]) {
+            if let Some((table, used)) = parse_table(&lines[i..], refs) {
                 blocks.push(Block::Table(table));
                 i += used;
                 continue;
             }
         }
         if list_marker(line).is_some() {
-            let (list, used) = parse_list(&lines[i..]);
+            let (list, used) = parse_list(&lines[i..], refs);
             blocks.push(Block::List(list));
             i += used;
             continue;
@@ -99,7 +122,7 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
                 let text = lines[start..i].join("\n");
                 blocks.push(Block::Heading {
                     level,
-                    inlines: parse_inlines(&text),
+                    inlines: parse_inlines_with_refs(&text, refs),
                 });
                 i += 1;
                 continue 'blocks;
@@ -115,9 +138,83 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
             i += 1;
         }
         let text = lines[start..i].join("\n");
-        blocks.push(Block::Paragraph(parse_inlines(&text)));
+        blocks.push(Block::Paragraph(parse_inlines_with_refs(&text, refs)));
     }
     blocks
+}
+
+fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
+    if leading_spaces(line) > 3 {
+        return None;
+    }
+    let t = line.trim_start();
+    let chars: Vec<char> = t.chars().collect();
+    if chars.first() != Some(&'[') {
+        return None;
+    }
+    let close = find_closing_bracket(&chars, 0)?;
+    if chars.get(close + 1) != Some(&':') {
+        return None;
+    }
+    let raw_label: String = chars[1..close].iter().collect();
+    let label = normalize_reference_label(&raw_label)?;
+    let mut i = close + 2;
+    skip_spaces(&chars, &mut i);
+    if i >= chars.len() {
+        return None;
+    }
+
+    let dest = if chars[i] == '<' {
+        i += 1;
+        let start = i;
+        while i < chars.len() && chars[i] != '>' {
+            i += 1;
+        }
+        if i >= chars.len() {
+            return None;
+        }
+        let dest: String = chars[start..i].iter().collect();
+        i += 1;
+        dest
+    } else {
+        let start = i;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        chars[start..i].iter().collect()
+    };
+    if dest.is_empty() {
+        return None;
+    }
+
+    skip_spaces(&chars, &mut i);
+    let title = if i >= chars.len() {
+        None
+    } else {
+        let close_ch = match chars[i] {
+            '"' => '"',
+            '\'' => '\'',
+            '(' => ')',
+            _ => return None,
+        };
+        i += 1;
+        let start = i;
+        while i < chars.len() && chars[i] != close_ch {
+            i += 1;
+        }
+        if i >= chars.len() {
+            return None;
+        }
+        let title: String = chars[start..i].iter().collect();
+        i += 1;
+        skip_spaces(&chars, &mut i);
+        if i != chars.len() {
+            return None;
+        }
+        Some(title)
+    };
+
+    Some((label, LinkReference { dest, title }))
 }
 
 // ---- block detectors --------------------------------------------------------
@@ -239,7 +336,7 @@ fn list_marker(line: &str) -> Option<Marker> {
     None
 }
 
-fn parse_list(lines: &[&str]) -> (List, usize) {
+fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
     let Some(first) = list_marker(lines[0]) else {
         return (
             List {
@@ -286,7 +383,7 @@ fn parse_list(lines: &[&str]) -> (List, usize) {
         let (task, body) = split_task_marker(&text);
         items.push(ListItem {
             task,
-            blocks: vec![Block::Paragraph(parse_inlines(body))],
+            blocks: vec![Block::Paragraph(parse_inlines_with_refs(body, refs))],
         });
     }
     (
@@ -359,7 +456,7 @@ fn split_table_row(line: &str) -> Vec<String> {
     cells
 }
 
-fn parse_table(lines: &[&str]) -> Option<(Table, usize)> {
+fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
     let header = split_table_row(lines[0]);
     let align_cells = split_table_row(lines[1]);
     let align: Vec<Align> = align_cells
@@ -376,13 +473,16 @@ fn parse_table(lines: &[&str]) -> Option<(Table, usize)> {
         })
         .collect();
     let cols = header.len();
-    let head: Vec<Vec<Inline>> = header.iter().map(|c| parse_inlines(c)).collect();
+    let head: Vec<Vec<Inline>> = header
+        .iter()
+        .map(|c| parse_inlines_with_refs(c, refs))
+        .collect();
     let mut rows = Vec::new();
     let mut i = 2;
     while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
         let mut cells: Vec<Vec<Inline>> = split_table_row(lines[i])
             .iter()
-            .map(|c| parse_inlines(c))
+            .map(|c| parse_inlines_with_refs(c, refs))
             .collect();
         cells.resize_with(cols, Vec::new);
         cells.truncate(cols);
@@ -397,6 +497,10 @@ fn parse_table(lines: &[&str]) -> Option<(Table, usize)> {
 /// Parse a run of text (which may contain `\n`) into inline elements.
 #[must_use]
 pub fn parse_inlines(text: &str) -> Vec<Inline> {
+    parse_inlines_with_refs(text, &ReferenceMap::new())
+}
+
+fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
     let mut out = Vec::new();
     let bytes: Vec<char> = text.chars().collect();
     let mut buf = String::new();
@@ -443,7 +547,17 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
-                if let Some((alt, dest, title, next)) = parse_link_like(&bytes, i + 1) {
+                if let Some((alt, dest, title, next)) = parse_link_like(&bytes, i + 1, refs) {
+                    flush(&mut buf, &mut out);
+                    out.push(Inline::Image {
+                        dest,
+                        title,
+                        alt: inlines_to_plain(&alt),
+                    });
+                    i = next;
+                } else if let Some((alt, dest, title, next)) =
+                    parse_reference_link_like(&bytes, i + 1, refs)
+                {
                     flush(&mut buf, &mut out);
                     out.push(Inline::Image {
                         dest,
@@ -457,7 +571,17 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
                 }
             }
             '[' => {
-                if let Some((content, dest, title, next)) = parse_link_like(&bytes, i) {
+                if let Some((content, dest, title, next)) = parse_link_like(&bytes, i, refs) {
+                    flush(&mut buf, &mut out);
+                    out.push(Inline::Link {
+                        dest,
+                        title,
+                        content,
+                    });
+                    i = next;
+                } else if let Some((content, dest, title, next)) =
+                    parse_reference_link_like(&bytes, i, refs)
+                {
                     flush(&mut buf, &mut out);
                     out.push(Inline::Link {
                         dest,
@@ -487,7 +611,7 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             '~' if run_len(&bytes, i, '~') >= 2 => {
                 if let Some((inner, next)) = parse_delim(&bytes, i, '~', 2) {
                     flush(&mut buf, &mut out);
-                    out.push(Inline::Strikethrough(parse_inlines(&inner)));
+                    out.push(Inline::Strikethrough(parse_inlines_with_refs(&inner, refs)));
                     i = next;
                 } else {
                     buf.push(c);
@@ -499,7 +623,7 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
                 let want = if n >= 2 { 2 } else { 1 };
                 if let Some((inner, next)) = parse_delim(&bytes, i, c, want) {
                     flush(&mut buf, &mut out);
-                    let parsed = parse_inlines(&inner);
+                    let parsed = parse_inlines_with_refs(&inner, refs);
                     out.push(if want == 2 {
                         Inline::Strong(parsed)
                     } else {
@@ -579,25 +703,13 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
 fn parse_link_like(
     chars: &[char],
     i: usize,
+    refs: &ReferenceMap,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let mut depth = 1;
-    let mut j = i + 1;
-    while j < chars.len() && depth > 0 {
-        match chars[j] {
-            '\\' => j += 1,
-            '[' => depth += 1,
-            ']' => depth -= 1,
-            _ => {}
-        }
-        if depth == 0 {
-            break;
-        }
-        j += 1;
-    }
-    if depth != 0 || chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
+    let j = find_closing_bracket(chars, i)?;
+    if chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
         return None;
     }
     let text: String = chars[i + 1..j].iter().collect();
@@ -628,7 +740,46 @@ fn parse_link_like(
     if chars.get(k) != Some(&')') {
         return None;
     }
-    Some((parse_inlines(&text), dest.trim().to_string(), title, k + 1))
+    Some((
+        parse_inlines_with_refs(&text, refs),
+        dest.trim().to_string(),
+        title,
+        k + 1,
+    ))
+}
+
+fn parse_reference_link_like(
+    chars: &[char],
+    i: usize,
+    refs: &ReferenceMap,
+) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
+    if chars.get(i) != Some(&'[') {
+        return None;
+    }
+    let close = find_closing_bracket(chars, i)?;
+    let text: String = chars[i + 1..close].iter().collect();
+
+    let (label, next) = if chars.get(close + 1) == Some(&'[') {
+        let label_start = close + 2;
+        let label_close = find_closing_bracket(chars, close + 1)?;
+        let raw_label: String = chars[label_start..label_close].iter().collect();
+        let label = if raw_label.is_empty() {
+            normalize_reference_label(&text)?
+        } else {
+            normalize_reference_label(&raw_label)?
+        };
+        (label, label_close + 1)
+    } else {
+        (normalize_reference_label(&text)?, close + 1)
+    };
+
+    let reference = refs.get(&label)?;
+    Some((
+        parse_inlines_with_refs(&text, refs),
+        reference.dest.clone(),
+        reference.title.clone(),
+        next,
+    ))
 }
 
 fn parse_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
@@ -650,6 +801,54 @@ fn parse_autolink(chars: &[char], i: usize) -> Option<(String, usize)> {
         Some((dest, j + 1))
     } else {
         None
+    }
+}
+
+fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {
+    if chars.get(open) != Some(&'[') {
+        return None;
+    }
+    let mut depth = 1;
+    let mut i = open + 1;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn normalize_reference_label(label: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for ch in label.trim().chars() {
+        if ch.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+        pending_space = false;
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn skip_spaces(chars: &[char], i: &mut usize) {
+    while *i < chars.len() && (chars[*i] == ' ' || chars[*i] == '\t') {
+        *i += 1;
     }
 }
 

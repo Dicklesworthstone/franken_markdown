@@ -241,6 +241,37 @@ fn break_paragraph_optimizes_across_the_whole_paragraph() {
 }
 
 #[test]
+fn line_break_certificate_locks_prefix_metric_behavior() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let items = paragraph_items_from_text(&metrics, "A A A A A", size);
+    let breaks = break_paragraph(&items, LayoutUnit::from_milli_points(18_000));
+
+    let certificate = breaks
+        .iter()
+        .map(|line| {
+            (
+                line.start,
+                line.end,
+                line.next,
+                line.natural_width.milli_points(),
+                line.badness,
+                line.fitness,
+                line.demerits,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        certificate,
+        vec![
+            (0, 5, 6, 20_000, 172, FitnessClass::Tight, 29_929),
+            (6, 9, 10, 12_500, 0, FitnessClass::Decent, 29_930),
+        ]
+    );
+}
+
+#[test]
 fn break_paragraph_returns_empty_for_no_candidates() {
     let breaks = break_paragraph(&[], LayoutUnit::from_points(72));
 
@@ -313,7 +344,15 @@ fn hyphen_penalty_width_applies_only_when_the_break_is_chosen() {
 
     assert_eq!(breaks.len(), 2);
     assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "hy phen");
-    assert!(breaks[0].natural_width > measure_text_with_pairs(&metrics, "hyphen", size));
+    assert_eq!(
+        breaks[0].natural_width,
+        LayoutUnit::from_milli_points(35_000)
+    );
+    assert_eq!(
+        breaks[0].natural_width,
+        measure_text_with_pairs(&metrics, "hyphen", size)
+            + measure_text_with_pairs(&metrics, "-", size)
+    );
 }
 
 #[test]

@@ -23,6 +23,7 @@
 
 use crate::ast::Inline;
 use crate::text::Font;
+use std::sync::OnceLock;
 
 /// Number of fixed layout units in one PDF point.
 ///
@@ -646,7 +647,6 @@ pub struct HyphenException {
 /// Dependency-free Liang-style hyphenator.
 #[derive(Debug, Clone, Copy)]
 pub struct Hyphenator {
-    patterns: &'static [HyphenPattern],
     encoded_patterns: &'static str,
     exceptions: &'static [HyphenException],
 }
@@ -658,7 +658,6 @@ impl Hyphenator {
     #[must_use]
     pub const fn english() -> Self {
         Self {
-            patterns: ENGLISH_STARTER_PATTERNS,
             encoded_patterns: EN_US_TEX_PATTERNS,
             exceptions: ENGLISH_EXCEPTIONS,
         }
@@ -677,7 +676,7 @@ impl Hyphenator {
             return Vec::new();
         }
         let lower = word.to_ascii_lowercase();
-        let len = lower.chars().count();
+        let len = lower.len();
         if len <= opts.min_left.saturating_add(opts.min_right) {
             return Vec::new();
         }
@@ -695,14 +694,8 @@ impl Hyphenator {
         }
 
         let dotted = format!(".{lower}.");
-        let dotted_chars = dotted.chars().collect::<Vec<_>>();
-        let mut scores = vec![0u8; dotted_chars.len() + 1];
-        for pattern in self.patterns {
-            apply_hyphen_pattern(pattern, &dotted_chars, &mut scores);
-        }
-        for pattern in self.encoded_patterns.split_ascii_whitespace() {
-            apply_encoded_hyphen_pattern(pattern, &dotted_chars, &mut scores);
-        }
+        let mut scores = vec![0u8; dotted.len() + 1];
+        english_hyphen_trie().apply(dotted.as_bytes(), &mut scores);
         scores
             .iter()
             .enumerate()
@@ -724,53 +717,189 @@ fn legal_hyphen_point(point: usize, len: usize, opts: HyphenationOptions) -> boo
     point >= opts.min_left && len.saturating_sub(point) >= opts.min_right
 }
 
-fn apply_hyphen_pattern(pattern: &HyphenPattern, word: &[char], scores: &mut [u8]) {
-    let letters = pattern.letters.chars().collect::<Vec<_>>();
-    if letters.is_empty() || pattern.values.len() != letters.len() + 1 {
-        return;
-    }
-    for start in 0..=word.len().saturating_sub(letters.len()) {
-        if word[start..start + letters.len()] == letters {
-            for (offset, &value) in pattern.values.iter().enumerate() {
-                let idx = start + offset;
-                if let Some(score) = scores.get_mut(idx) {
-                    *score = (*score).max(value);
+#[derive(Debug)]
+struct HyphenTrie {
+    nodes: Vec<HyphenTrieNode>,
+    edges: Vec<HyphenTrieEdge>,
+    values: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HyphenTrieNode {
+    first_edge: u32,
+    edge_count: u16,
+    values_start: u32,
+    values_len: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HyphenTrieEdge {
+    byte: u8,
+    target: u32,
+}
+
+impl HyphenTrie {
+    fn apply(&self, word: &[u8], scores: &mut [u8]) {
+        for start in 0..word.len() {
+            let mut node = 0u32;
+            for &byte in &word[start..] {
+                let Some(next) = self.child(node, byte) else {
+                    break;
+                };
+                node = next;
+                if let Some(values) = self.terminal_values(node) {
+                    for (offset, &value) in values.iter().enumerate() {
+                        if let Some(score) = scores.get_mut(start + offset) {
+                            *score = (*score).max(value);
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    fn child(&self, node_idx: u32, byte: u8) -> Option<u32> {
+        let node = self.nodes.get(node_idx as usize)?;
+        let start = node.first_edge as usize;
+        let end = start.saturating_add(node.edge_count as usize);
+        let edges = self.edges.get(start..end)?;
+        edges
+            .binary_search_by_key(&byte, |edge| edge.byte)
+            .ok()
+            .and_then(|idx| edges.get(idx).map(|edge| edge.target))
+    }
+
+    fn terminal_values(&self, node_idx: u32) -> Option<&[u8]> {
+        let node = self.nodes.get(node_idx as usize)?;
+        if node.values_len == 0 {
+            return None;
+        }
+        let start = node.values_start as usize;
+        let end = start.saturating_add(node.values_len as usize);
+        self.values.get(start..end)
+    }
+}
+
+#[derive(Debug, Default)]
+struct BuildHyphenNode {
+    children: Vec<(u8, usize)>,
+    values: Vec<u8>,
+}
+
+fn english_hyphen_trie() -> &'static HyphenTrie {
+    static TRIE: OnceLock<HyphenTrie> = OnceLock::new();
+    TRIE.get_or_init(|| {
+        build_hyphen_trie(
+            ENGLISH_STARTER_PATTERNS,
+            EN_US_TEX_PATTERNS.split_ascii_whitespace(),
+        )
+    })
+}
+
+fn build_hyphen_trie<'a>(
+    starter_patterns: &[HyphenPattern],
+    encoded_patterns: impl IntoIterator<Item = &'a str>,
+) -> HyphenTrie {
+    let mut nodes = vec![BuildHyphenNode::default()];
+    for pattern in starter_patterns {
+        insert_hyphen_pattern(&mut nodes, pattern.letters.as_bytes(), pattern.values);
+    }
+    for pattern in encoded_patterns {
+        insert_encoded_hyphen_pattern(&mut nodes, pattern);
+    }
+    flatten_hyphen_trie(nodes)
+}
+
+fn insert_encoded_hyphen_pattern(nodes: &mut Vec<BuildHyphenNode>, pattern: &str) {
+    let mut letters = Vec::with_capacity(pattern.len());
+    let mut values = vec![0u8];
+    for byte in pattern.bytes() {
+        if byte.is_ascii_digit() {
+            if let Some(slot) = values.get_mut(letters.len()) {
+                *slot = byte.saturating_sub(b'0');
+            }
+        } else {
+            if letters.len() == 64 {
+                return;
+            }
+            letters.push(byte);
+            if values.len() < letters.len() + 1 {
+                values.push(0);
+            }
+        }
+    }
+    if letters.is_empty() {
+        return;
+    }
+    insert_hyphen_pattern(nodes, &letters, &values);
+}
+
+fn insert_hyphen_pattern(nodes: &mut Vec<BuildHyphenNode>, letters: &[u8], values: &[u8]) {
+    if letters.is_empty() || values.len() != letters.len() + 1 {
+        return;
+    }
+    let mut node_idx = 0usize;
+    for &byte in letters {
+        let next_idx = find_or_insert_child(nodes, node_idx, byte);
+        node_idx = next_idx;
+    }
+    merge_hyphen_values(&mut nodes[node_idx].values, values);
+}
+
+fn find_or_insert_child(nodes: &mut Vec<BuildHyphenNode>, node_idx: usize, byte: u8) -> usize {
+    if let Some((_, child_idx)) = nodes[node_idx]
+        .children
+        .iter()
+        .find(|(existing, _)| *existing == byte)
+    {
+        return *child_idx;
+    }
+    let child_idx = nodes.len();
+    nodes.push(BuildHyphenNode::default());
+    nodes[node_idx].children.push((byte, child_idx));
+    child_idx
+}
+
+fn merge_hyphen_values(out: &mut Vec<u8>, values: &[u8]) {
+    if out.len() < values.len() {
+        out.resize(values.len(), 0);
+    }
+    for (idx, &value) in values.iter().enumerate() {
+        if let Some(slot) = out.get_mut(idx) {
+            *slot = (*slot).max(value);
         }
     }
 }
 
-fn apply_encoded_hyphen_pattern(pattern: &str, word: &[char], scores: &mut [u8]) {
-    let mut letters = ['\0'; 64];
-    let mut values = [0u8; 65];
-    let mut len = 0usize;
+fn flatten_hyphen_trie(build_nodes: Vec<BuildHyphenNode>) -> HyphenTrie {
+    let mut nodes = Vec::with_capacity(build_nodes.len());
+    let mut edges = Vec::new();
+    let mut values = Vec::new();
+    for node in build_nodes {
+        let values_start = values.len();
+        values.extend_from_slice(&node.values);
 
-    for ch in pattern.chars() {
-        if let Some(value) = ch.to_digit(10) {
-            values[len] = value as u8;
-        } else {
-            if len == letters.len() {
-                return;
-            }
-            letters[len] = ch;
-            len += 1;
+        let first_edge = edges.len();
+        let mut children = node.children;
+        children.sort_unstable_by_key(|(byte, _)| *byte);
+        for (byte, target) in children {
+            edges.push(HyphenTrieEdge {
+                byte,
+                target: clamp_usize_to_u32(target),
+            });
         }
-    }
 
-    if len == 0 || len > word.len() {
-        return;
+        nodes.push(HyphenTrieNode {
+            first_edge: clamp_usize_to_u32(first_edge),
+            edge_count: clamp_usize_to_u16(edges.len().saturating_sub(first_edge)),
+            values_start: clamp_usize_to_u32(values_start),
+            values_len: clamp_usize_to_u8(values.len().saturating_sub(values_start)),
+        });
     }
-
-    for start in 0..=word.len() - len {
-        if (0..len).all(|offset| word[start + offset] == letters[offset]) {
-            for (offset, value) in values.iter().take(len + 1).enumerate() {
-                let idx = start + offset;
-                if let Some(score) = scores.get_mut(idx) {
-                    *score = (*score).max(*value);
-                }
-            }
-        }
+    HyphenTrie {
+        nodes,
+        edges,
+        values,
     }
 }
 
@@ -967,6 +1096,78 @@ struct SegmentMetrics {
     shrink: LayoutUnit,
 }
 
+#[derive(Debug, Clone)]
+struct MetricPrefixes {
+    width: Vec<i128>,
+    stretch: Vec<i128>,
+    shrink: Vec<i128>,
+}
+
+impl MetricPrefixes {
+    fn from_items(items: &[ParagraphItem]) -> Self {
+        let mut width = Vec::with_capacity(items.len() + 1);
+        let mut stretch = Vec::with_capacity(items.len() + 1);
+        let mut shrink = Vec::with_capacity(items.len() + 1);
+        width.push(0);
+        stretch.push(0);
+        shrink.push(0);
+
+        let mut running_width = 0i128;
+        let mut running_stretch = 0i128;
+        let mut running_shrink = 0i128;
+        for item in items {
+            match item {
+                ParagraphItem::Box(item) => {
+                    running_width += item.width.milli_points() as i128;
+                }
+                ParagraphItem::Glue(item) => {
+                    running_width += item.width.milli_points() as i128;
+                    running_stretch += item.stretch.milli_points() as i128;
+                    running_shrink += item.shrink.milli_points() as i128;
+                }
+                ParagraphItem::Penalty(_) => {}
+            }
+            width.push(running_width);
+            stretch.push(running_stretch);
+            shrink.push(running_shrink);
+        }
+
+        Self {
+            width,
+            stretch,
+            shrink,
+        }
+    }
+
+    fn segment_metrics(&self, start: usize, candidate: BreakCandidate) -> SegmentMetrics {
+        let width = prefix_diff(&self.width, start, candidate.item_index)
+            + candidate.penalty_width.milli_points() as i128;
+        SegmentMetrics {
+            width: LayoutUnit(clamp_i128_to_i32(width)),
+            stretch: LayoutUnit(clamp_i128_to_i32(prefix_diff(
+                &self.stretch,
+                start,
+                candidate.item_index,
+            ))),
+            shrink: LayoutUnit(clamp_i128_to_i32(prefix_diff(
+                &self.shrink,
+                start,
+                candidate.item_index,
+            ))),
+        }
+    }
+}
+
+fn prefix_diff(values: &[i128], start: usize, end: usize) -> i128 {
+    let start_value = values.get(start).copied().unwrap_or(0);
+    let end_value = values
+        .get(end)
+        .copied()
+        .or_else(|| values.last().copied())
+        .unwrap_or(0);
+    end_value - start_value
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BreakState {
     prev: Option<usize>,
@@ -988,6 +1189,7 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
     if candidates.is_empty() {
         return Vec::new();
     }
+    let metrics = MetricPrefixes::from_items(items);
 
     let mut states: Vec<Option<BreakState>> = vec![None; candidates.len()];
     for (j, candidate) in candidates.iter().enumerate() {
@@ -1005,9 +1207,9 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
             if start > candidate.item_index {
                 continue;
             }
-            let metrics = segment_metrics(items, start, *candidate);
-            let badness = candidate_badness(*candidate, metrics, line_width);
-            let fitness = candidate_fitness(*candidate, metrics, line_width);
+            let segment = metrics.segment_metrics(start, *candidate);
+            let badness = candidate_badness(*candidate, segment, line_width);
+            let fitness = candidate_fitness(*candidate, segment, line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
             let demerits = prev_demerits.saturating_add(line_demerits(
                 badness,
@@ -1023,7 +1225,7 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
                     start,
                     end: candidate.item_index,
                     next: candidate.next,
-                    natural_width: metrics.width.saturating_add(candidate.penalty_width),
+                    natural_width: segment.width,
                     badness,
                     fitness,
                     demerits,
@@ -1042,7 +1244,7 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
         return Vec::new();
     };
     if states[idx].is_none() {
-        return greedy_break_paragraph(items, line_width);
+        return greedy_break_paragraph(items, line_width, &metrics);
     }
     let mut out = Vec::new();
     while let Some(state) = states[idx] {
@@ -1078,31 +1280,6 @@ fn break_candidates(items: &[ParagraphItem]) -> Vec<BreakCandidate> {
         }
     }
     out
-}
-
-fn segment_metrics(
-    items: &[ParagraphItem],
-    start: usize,
-    candidate: BreakCandidate,
-) -> SegmentMetrics {
-    let mut metrics = SegmentMetrics {
-        width: LayoutUnit::ZERO,
-        stretch: LayoutUnit::ZERO,
-        shrink: LayoutUnit::ZERO,
-    };
-    for item in &items[start..candidate.item_index] {
-        match item {
-            ParagraphItem::Box(b) => metrics.width += b.width,
-            ParagraphItem::Glue(g) => {
-                metrics.width += g.width;
-                metrics.stretch += g.stretch;
-                metrics.shrink += g.shrink;
-            }
-            ParagraphItem::Penalty(_) => {}
-        }
-    }
-    metrics.width += candidate.penalty_width;
-    metrics
 }
 
 fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
@@ -1216,15 +1393,19 @@ const fn fitness_rank(class: FitnessClass) -> i32 {
     }
 }
 
-fn greedy_break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<LineBreak> {
+fn greedy_break_paragraph(
+    items: &[ParagraphItem],
+    line_width: LayoutUnit,
+    metrics: &MetricPrefixes,
+) -> Vec<LineBreak> {
     let mut out = Vec::new();
     let mut start = 0usize;
     let mut last_candidate: Option<BreakCandidate> = None;
     for candidate in break_candidates(items) {
-        let metrics = segment_metrics(items, start, candidate);
-        if metrics.width > line_width {
+        let segment = metrics.segment_metrics(start, candidate);
+        if segment.width > line_width {
             if let Some(prev) = last_candidate {
-                let prev_metrics = segment_metrics(items, start, prev);
+                let prev_metrics = metrics.segment_metrics(start, prev);
                 out.push(LineBreak {
                     start,
                     end: prev.item_index,
@@ -1240,7 +1421,7 @@ fn greedy_break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Ve
         last_candidate = Some(candidate);
     }
     if let Some(candidate) = last_candidate {
-        let metrics = segment_metrics(items, start, candidate);
+        let metrics = metrics.segment_metrics(start, candidate);
         out.push(LineBreak {
             start,
             end: candidate.item_index,
@@ -1269,5 +1450,29 @@ const fn clamp_i128_to_i32(value: i128) -> i32 {
         i32::MIN
     } else {
         value as i32
+    }
+}
+
+const fn clamp_usize_to_u32(value: usize) -> u32 {
+    if value > u32::MAX as usize {
+        u32::MAX
+    } else {
+        value as u32
+    }
+}
+
+const fn clamp_usize_to_u16(value: usize) -> u16 {
+    if value > u16::MAX as usize {
+        u16::MAX
+    } else {
+        value as u16
+    }
+}
+
+const fn clamp_usize_to_u8(value: usize) -> u8 {
+    if value > u8::MAX as usize {
+        u8::MAX
+    } else {
+        value as u8
     }
 }

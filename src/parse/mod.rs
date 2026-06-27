@@ -815,9 +815,15 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
                     item_lines.push(String::new());
                 }
                 item_lines.push(stripped);
+            } else if item_lines.last().is_some_and(|prev| prev.trim().is_empty()) {
+                // A blank line separates this unindented line from the item, so
+                // there is no open paragraph to lazily continue: it begins a new
+                // top-level block and ends the list. (CommonMark lazy continuation
+                // only extends an *open* paragraph — never after a blank line.)
+                break;
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
-                // continues the current paragraph/list item.
+                // continues the current OPEN paragraph/list item.
                 item_lines.push(lines[i].trim_start().to_string());
             }
             i += 1;

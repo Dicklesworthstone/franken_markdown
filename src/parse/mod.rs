@@ -1044,8 +1044,18 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 }
             }
             _ => {
-                buf.push(c);
-                i += 1;
+                if let Some((label, dest, next)) = parse_bare_url_autolink(&bytes, i) {
+                    flush(&mut buf, &mut out);
+                    out.push(Inline::Link {
+                        dest,
+                        title: None,
+                        content: vec![Inline::Text(label)],
+                    });
+                    i = next;
+                } else {
+                    buf.push(c);
+                    i += 1;
+                }
             }
         }
     }
@@ -1234,6 +1244,64 @@ fn parse_character_reference(chars: &[char], i: usize) -> Option<(char, usize)> 
         decode_named_reference(&body)
     }?;
     Some((decoded, semi + 1))
+}
+
+fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
+    if !bare_url_left_boundary(chars, i) {
+        return None;
+    }
+
+    let is_www = starts_with_chars(chars, i, "www.");
+    if !(starts_with_chars(chars, i, "http://")
+        || starts_with_chars(chars, i, "https://")
+        || is_www)
+    {
+        return None;
+    }
+
+    let mut end = i;
+    while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '<' && chars[end] != '>'
+    {
+        end += 1;
+    }
+    while end > i && bare_url_trailing_punctuation(chars[end - 1]) {
+        end -= 1;
+    }
+    if end == i || (is_www && end <= i + 4) {
+        return None;
+    }
+
+    let label = chars[i..end].iter().collect::<String>();
+    let dest = if is_www {
+        format!("http://{label}")
+    } else {
+        label.clone()
+    };
+    Some((label, dest, end))
+}
+
+fn starts_with_chars(chars: &[char], i: usize, needle: &str) -> bool {
+    let mut offset = 0usize;
+    for expected in needle.chars() {
+        if chars.get(i + offset) != Some(&expected) {
+            return false;
+        }
+        offset += 1;
+    }
+    true
+}
+
+fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
+    if i == 0 {
+        return true;
+    }
+    chars
+        .get(i - 1)
+        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '"' | '\''))
+}
+
+const fn bare_url_trailing_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
 }
 
 fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {

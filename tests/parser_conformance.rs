@@ -201,6 +201,24 @@ fn character_references_decode_named_decimal_and_hex_forms() {
 }
 
 #[test]
+fn gfm_bare_urls_autolink_with_punctuation_outside() {
+    let out = html("See https://example.com/a?b=1&c=2, then www.example.org.");
+
+    assert!(out.contains(
+        "<a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a>, then"
+    ));
+    assert!(out.contains("<a href=\"http://www.example.org\">www.example.org</a>."));
+}
+
+#[test]
+fn gfm_bare_urls_require_a_reasonable_left_boundary() {
+    let out = html("prefixhttps://example.com should stay text");
+
+    assert!(!out.contains("<a href=\"https://example.com\""));
+    assert!(out.contains("prefixhttps://example.com should stay text"));
+}
+
+#[test]
 fn top_level_indented_code_blocks_strip_one_code_indent() {
     let out = html("    let x = 1;\n        let y = 2;\n    <tag>\n\nnext");
 

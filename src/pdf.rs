@@ -19,8 +19,8 @@ use crate::PdfOptions;
 use crate::ast::{Block, Document, Inline, List};
 use crate::error::Result;
 use crate::fonts::{self, FontStyle};
-use crate::text::{Font, Kerning};
-use std::collections::BTreeSet;
+use crate::text::{Font, Kerning, Ligatures};
+use std::collections::{BTreeMap, BTreeSet};
 
 const PAGE_W: f32 = 612.0; // US Letter, points
 const PAGE_H: f32 = 792.0;
@@ -272,23 +272,45 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
     // subset (its cmap gives the new glyph ids we encode in the content stream).
     let mut subsets: Vec<EmbeddedFace> = Vec::new();
     for &slot in &used_slots {
+        let source = faces.get(slot);
+        let lig = source.gsub_ligatures();
         let mut chars: BTreeSet<char> = BTreeSet::new();
+        let mut shaped_glyphs: BTreeSet<u16> = BTreeSet::new();
+        let mut lig_src_uni: BTreeMap<u16, String> = BTreeMap::new();
         for l in lines.iter().filter(|l| !l.rule && l.font == slot) {
             chars.extend(l.text.chars());
+            let (shaped, ligs) = shape(source, &lig, &l.text);
+            shaped_glyphs.extend(shaped);
+            for (g, s) in ligs {
+                lig_src_uni.entry(g).or_insert(s);
+            }
         }
         let keep: Vec<char> = chars.into_iter().collect();
-        let source = faces.get(slot);
-        let Some(bytes) = source.subset(&keep) else {
+        // Seed the subset with the chars' glyphs (so the cmap resolves) plus the
+        // shaped glyphs (which add ligature glyphs no character maps to).
+        let mut seed: Vec<u16> = keep.iter().map(|&c| source.glyph_index(c)).collect();
+        seed.extend(shaped_glyphs);
+        let Some((bytes, map)) = source.subset_glyphs(&seed, &keep) else {
             return empty_pdf();
         };
         let Ok(font) = Font::parse(bytes.clone()) else {
             return empty_pdf();
         };
+        // Re-key ligature ToUnicode entries by the new (subset) glyph id.
+        let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
+        for (src, s) in lig_src_uni {
+            if let Some(&new) = map.get(&src) {
+                lig_uni.insert(new, s);
+            }
+        }
         subsets.push(EmbeddedFace {
             slot,
             bytes,
             font,
             kern: source.gpos_kerning(),
+            lig,
+            map,
+            lig_uni,
         });
     }
 
@@ -313,13 +335,16 @@ fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
             ));
         } else if !line.text.is_empty() {
             if let Some(face) = subsets.iter().find(|f| f.slot == line.font) {
+                let source = faces.get(line.font);
+                let gids: Vec<u16> = line.text.chars().map(|c| source.glyph_index(c)).collect();
+                let shaped = face.lig.substitute(&gids);
                 content.push_str(&format!(
                     "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
                     f = line.font,
                     s = line.size,
                     x = line.x,
                     y = y,
-                    tj = kerned_tj(&face.font, faces.get(line.font), &face.kern, &line.text),
+                    tj = kerned_tj(&face.map, source, &face.kern, &shaped),
                 ));
             }
         }
@@ -341,6 +366,13 @@ struct EmbeddedFace {
     /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
     /// original glyph ids — used to position glyphs in the content stream.
     kern: Kerning,
+    /// GSUB ligatures of the SOURCE face, applied to shape content lines.
+    lig: Ligatures,
+    /// Source glyph id -> subset (renumbered) glyph id.
+    map: BTreeMap<u16, u16>,
+    /// Subset glyph id -> its source characters, for ligature glyphs that no
+    /// character maps to (keeps ligated text selectable via ToUnicode).
+    lig_uni: BTreeMap<u16, String>,
 }
 
 fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec<u8> {
@@ -487,7 +519,7 @@ fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec
         buf.extend_from_slice(&face.bytes);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
         // ToUnicode CMap.
-        let cmap = tounicode_cmap(&face.font);
+        let cmap = tounicode_cmap(&face.font, &face.lig_uni);
         offsets[touni_obj(k)] = buf.len();
         buf.extend_from_slice(
             format!(
@@ -559,19 +591,36 @@ fn widths_array(font: &Font) -> String {
     s
 }
 
-/// Build a `TJ` array of Identity-H glyph ids for `text`, inserting GPOS pair
-/// kerning between glyphs. `subset` gives the emitted (renumbered) glyph ids;
-/// `source` + `kern` provide the original-gid kern lookup the subset no longer
-/// carries. The bracketed array `[<hex> adj <hex> ...]` is returned without the
-/// trailing `TJ` operator.
-fn kerned_tj(subset: &Font, source: &Font, kern: &Kerning, text: &str) -> String {
-    let upm = i32::from(source.units_per_em.max(1));
+/// Shape `text` with `source`'s ligatures, returning the shaped SOURCE glyph ids
+/// and, for each emitted ligature, its source characters (so a `ToUnicode` entry
+/// can keep the ligated text selectable).
+fn shape(source: &Font, lig: &Ligatures, text: &str) -> (Vec<u16>, Vec<(u16, String)>) {
     let chars: Vec<char> = text.chars().collect();
+    let gids: Vec<u16> = chars.iter().map(|&c| source.glyph_index(c)).collect();
+    let mut shaped = Vec::with_capacity(gids.len());
+    let mut lig_uni = Vec::new();
+    let mut ci = 0;
+    for (gid, count) in lig.substitute_with_spans(&gids) {
+        shaped.push(gid);
+        if count > 1 {
+            let s: String = chars.get(ci..ci + count).unwrap_or(&[]).iter().collect();
+            lig_uni.push((gid, s));
+        }
+        ci += count;
+    }
+    (shaped, lig_uni)
+}
+
+/// Build a `TJ` array (without the trailing `TJ`) from a pre-shaped SOURCE glyph
+/// sequence: each glyph is emitted as its subset id via `map`, with GPOS pair
+/// kerning (looked up on the original ids) inserted between glyphs.
+fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
+    let upm = i32::from(source.units_per_em.max(1));
     let mut out = String::from("[<");
-    for (i, &c) in chars.iter().enumerate() {
-        out.push_str(&format!("{:04X}", subset.glyph_index(c)));
-        if let Some(&next) = chars.get(i + 1) {
-            let k = kern.pair(source.glyph_index(c), source.glyph_index(next));
+    for (i, &g) in shaped.iter().enumerate() {
+        out.push_str(&format!("{:04X}", map.get(&g).copied().unwrap_or(0)));
+        if let Some(&next) = shaped.get(i + 1) {
+            let k = kern.pair(g, next);
             if k != 0 {
                 // A TJ number shifts the next glyph left by number/1000 em, so a
                 // tightening (negative) kern becomes a positive number.
@@ -586,25 +635,30 @@ fn kerned_tj(subset: &Font, source: &Font, kern: &Kerning, text: &str) -> String
 
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
 /// stays selectable. Only the glyphs the document uses appear.
-fn tounicode_cmap(font: &Font) -> String {
-    // Collect (gid, char) over the Latin-1 + common range present in the subset.
-    let mut entries: Vec<(u16, char)> = Vec::new();
+fn tounicode_cmap(font: &Font, lig_uni: &BTreeMap<u16, String>) -> String {
+    // (gid, UTF-16BE hex) over the chars present in the subset cmap, plus the
+    // ligature glyphs (which no character maps to) so ligated text stays
+    // selectable.
+    let mut entries: Vec<(u16, String)> = Vec::new();
     for cp in 0x20u32..0x2C00 {
         if let Some(c) = char::from_u32(cp) {
             let g = font.glyph_index(c);
             if g != 0 {
-                entries.push((g, c));
+                entries.push((g, utf16be_hex(c)));
             }
         }
     }
-    entries.sort_unstable();
+    for (g, s) in lig_uni {
+        entries.push((*g, s.chars().map(utf16be_hex).collect()));
+    }
+    entries.sort_by_key(|&(g, _)| g);
     entries.dedup_by_key(|(g, _)| *g);
 
     let mut body = String::new();
     for chunk in entries.chunks(100) {
         body.push_str(&format!("{} beginbfchar\n", chunk.len()));
-        for (g, c) in chunk {
-            body.push_str(&format!("<{g:04X}> <{}>\n", utf16be_hex(*c)));
+        for (g, hex) in chunk {
+            body.push_str(&format!("<{g:04X}> <{hex}>\n"));
         }
         body.push_str("endbfchar\n");
     }

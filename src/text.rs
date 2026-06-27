@@ -455,6 +455,31 @@ impl Font {
     /// table, or a malformed read).
     #[must_use]
     pub fn subset(&self, keep: &[char]) -> Option<Vec<u8>> {
+        let seed: Vec<u16> = keep.iter().map(|&c| self.glyph_index(c)).collect();
+        self.subset_core(&seed, keep).map(|(bytes, _)| bytes)
+    }
+
+    /// Subset to an explicit glyph set (the closure still pulls in composite
+    /// components), building the `cmap` from `cmap_chars`. Returns the font bytes
+    /// plus the old->new glyph id remap — for callers that pre-shaped a glyph
+    /// sequence (e.g. GSUB ligatures) and must emit the renumbered ids.
+    ///
+    /// # Errors
+    /// Returns `None` for a font without `glyf`/`loca` outlines or on a malformed
+    /// read (same conditions as [`Font::subset`]).
+    pub fn subset_glyphs(
+        &self,
+        glyphs: &[u16],
+        cmap_chars: &[char],
+    ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
+        self.subset_core(glyphs, cmap_chars)
+    }
+
+    fn subset_core(
+        &self,
+        seed_glyphs: &[u16],
+        cmap_chars: &[char],
+    ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
         // --- 1. Glyph closure ------------------------------------------------
         // Require TrueType outlines; CFF/`OTTO` fonts cannot be subset here.
         if !self.has_glyf_outlines() {
@@ -462,8 +487,7 @@ impl Font {
         }
         let mut set: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
         set.insert(0);
-        for &ch in keep {
-            let gid = self.glyph_index(ch);
+        for &gid in seed_glyphs {
             if gid != 0 {
                 set.insert(gid);
             }
@@ -541,7 +565,7 @@ impl Font {
         write_u16(&mut head, 50, 1)?; // indexToLocFormat = 1 (long)
 
         // cmap: fresh single format-4 (3,1) subtable.
-        let cmap = self.build_cmap4(keep, &new_of)?;
+        let cmap = self.build_cmap4(cmap_chars, &new_of)?;
 
         // name: minimal valid table (format 0, count 0, stringOffset 6).
         let mut name: Vec<u8> = Vec::with_capacity(6);
@@ -630,7 +654,7 @@ impl Font {
         let adj = 0xB1B0_AFBAu32.wrapping_sub(file_checksum);
         write_u32(&mut out, head_offset + 8, adj)?;
 
-        Some(out)
+        Some((out, new_of))
     }
 
     /// Glyph bytes for the subset: simple glyphs are copied verbatim; composite
@@ -1290,6 +1314,18 @@ impl Ligatures {
     /// no single character maps to).
     #[must_use]
     pub fn substitute(&self, gids: &[u16]) -> Vec<u16> {
+        self.substitute_with_spans(gids)
+            .into_iter()
+            .map(|(g, _)| g)
+            .collect()
+    }
+
+    /// Like [`Ligatures::substitute`] but pairs each output glyph with the number
+    /// of input glyphs it consumed (1 for a pass-through, N for an N-component
+    /// ligature) — so callers can map a ligature back to its source characters
+    /// (e.g. to build a `ToUnicode` entry).
+    #[must_use]
+    pub fn substitute_with_spans(&self, gids: &[u16]) -> Vec<(u16, usize)> {
         let mut out = Vec::with_capacity(gids.len());
         let mut i = 0;
         while i < gids.len() {
@@ -1298,7 +1334,7 @@ impl Ligatures {
                 for r in rules {
                     let n = r.components.len();
                     if i + 1 + n <= gids.len() && gids[i + 1..i + 1 + n] == r.components[..] {
-                        out.push(r.ligature);
+                        out.push((r.ligature, n + 1));
                         i += n + 1;
                         applied = true;
                         break;
@@ -1306,7 +1342,7 @@ impl Ligatures {
                 }
             }
             if !applied {
-                out.push(gids[i]);
+                out.push((gids[i], 1));
                 i += 1;
             }
         }

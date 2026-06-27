@@ -98,6 +98,43 @@ fn pdf_applies_gpos_kerning_via_tj() {
 }
 
 #[test]
+fn pdf_shapes_ligatures_and_keeps_them_selectable() {
+    // Default (Plex) ligates fi; the ToUnicode must map the ligature glyph back to
+    // its component characters, i.e. a bfchar value with >= 2 UTF-16 units (>= 8
+    // hex digits) — a single character would be 4.
+    let pdf = render_pdf(
+        "find the difficult files efficiently",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+    let b = s.as_bytes();
+    let mut found = false;
+    let mut i = 0;
+    while i + 3 < b.len() {
+        if &b[i..i + 3] == b"> <" {
+            let start = i + 3;
+            let mut j = start;
+            while j < b.len() && b[j] != b'>' {
+                j += 1;
+            }
+            let val = &b[start..j];
+            if val.len() >= 8 && val.iter().all(u8::is_ascii_hexdigit) {
+                found = true;
+                break;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        found,
+        "expected a ligature ToUnicode entry (glyph -> 2+ characters)"
+    );
+}
+
+#[test]
 fn embedded_pdf_is_tiny_and_deterministic() {
     let a = render_pdf(DOC, &PdfOptions::default()).unwrap();
     let b = render_pdf(DOC, &PdfOptions::default()).unwrap();

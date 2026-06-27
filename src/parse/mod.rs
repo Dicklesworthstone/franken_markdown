@@ -450,18 +450,36 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
 // ---- block detectors --------------------------------------------------------
 
 fn atx_heading(line: &str) -> Option<(u8, &str)> {
-    let t = line.trim_start();
+    let indent = leading_spaces(line);
+    if indent > 3 {
+        return None;
+    }
+    let t = &line[indent..];
     let hashes = t.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > 6 {
         return None;
     }
     let rest = &t[hashes..];
-    if !rest.is_empty() && !rest.starts_with(' ') {
+    if !rest.is_empty() && !starts_space_or_tab(rest) {
         return None; // `#text` is not a heading
     }
-    // Strip an optional closing run of `#` and surrounding spaces.
-    let content = rest.trim().trim_end_matches('#').trim_end();
+    let content = atx_heading_content(rest);
     Some((hashes as u8, content))
+}
+
+fn atx_heading_content(rest: &str) -> &str {
+    let raw = trim_end_space_tab(rest);
+    let bytes = raw.as_bytes();
+    let mut hash_start = bytes.len();
+    while hash_start > 0 && bytes[hash_start - 1] == b'#' {
+        hash_start -= 1;
+    }
+
+    if hash_start < bytes.len() && hash_start > 0 && is_space_or_tab_byte(bytes[hash_start - 1]) {
+        return trim_space_tab(&raw[..hash_start]);
+    }
+
+    trim_space_tab(raw)
 }
 
 fn setext_underline(line: &str) -> Option<u8> {
@@ -484,6 +502,9 @@ fn setext_underline(line: &str) -> Option<u8> {
 }
 
 fn is_thematic_break(line: &str) -> bool {
+    if leading_spaces(line) > 3 {
+        return false;
+    }
     let t = line.trim();
     if t.len() < 3 {
         return false;
@@ -497,7 +518,11 @@ fn is_thematic_break(line: &str) -> bool {
 }
 
 fn open_fence(line: &str) -> Option<(char, usize, &str)> {
-    let t = line.trim_start();
+    let indent = leading_spaces(line);
+    if indent > 3 {
+        return None;
+    }
+    let t = &line[indent..];
     for ch in ['`', '~'] {
         let n = t.chars().take_while(|&c| c == ch).count();
         if n >= 3 {
@@ -513,8 +538,13 @@ fn open_fence(line: &str) -> Option<(char, usize, &str)> {
 }
 
 fn is_close_fence(line: &str, ch: char, len: usize) -> bool {
-    let t = line.trim();
-    t.chars().all(|c| c == ch) && t.chars().count() >= len && !t.is_empty()
+    let indent = leading_spaces(line);
+    if indent > 3 {
+        return false;
+    }
+    let t = &line[indent..];
+    let marker_len = t.chars().take_while(|&c| c == ch).count();
+    marker_len >= len && t[marker_len..].chars().all(is_space_or_tab)
 }
 
 fn indented_code_start(line: &str) -> bool {
@@ -1525,6 +1555,32 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
 
 fn leading_spaces(line: &str) -> usize {
     line.chars().take_while(|&c| c == ' ').count()
+}
+
+fn trim_space_tab(s: &str) -> &str {
+    trim_start_space_tab(trim_end_space_tab(s))
+}
+
+fn trim_start_space_tab(s: &str) -> &str {
+    s.trim_start_matches(is_space_or_tab)
+}
+
+fn trim_end_space_tab(s: &str) -> &str {
+    s.trim_end_matches(is_space_or_tab)
+}
+
+fn starts_space_or_tab(s: &str) -> bool {
+    s.as_bytes()
+        .first()
+        .is_some_and(|&byte| is_space_or_tab_byte(byte))
+}
+
+fn is_space_or_tab(ch: char) -> bool {
+    ch == ' ' || ch == '\t'
+}
+
+fn is_space_or_tab_byte(byte: u8) -> bool {
+    byte == b' ' || byte == b'\t'
 }
 
 fn strip_n(line: &str, n: usize) -> &str {

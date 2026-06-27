@@ -270,3 +270,46 @@ fn list_item_indentation_still_belongs_to_the_list_item() {
     assert!(out.contains("<li>item\n  still item text</li>"));
     assert!(!out.contains("<pre><code>still item text"));
 }
+
+#[test]
+fn four_space_atx_heading_is_indented_code_not_a_heading() {
+    let out = html("    # not a heading\n\nnext");
+
+    assert!(out.contains("<pre><code># not a heading\n</code></pre>"));
+    assert!(!out.contains("<h1"));
+    assert!(out.contains("<p>next</p>"));
+}
+
+#[test]
+fn four_space_fence_is_indented_code_not_a_fenced_code_block() {
+    let out = html("    ```rust\n    let x = 1;\n    ```\n");
+
+    assert!(out.contains("<pre><code>```rust\nlet x = 1;\n```\n</code></pre>"));
+    assert!(!out.contains("class=\"language-rust\""));
+}
+
+#[test]
+fn four_space_thematic_break_is_indented_code_not_a_rule() {
+    let out = html("    ---\n\nnext");
+
+    assert!(out.contains("<pre><code>---\n</code></pre>"));
+    assert!(!out.contains("<hr>"));
+    assert!(out.contains("<p>next</p>"));
+}
+
+#[test]
+fn atx_closing_hashes_must_be_space_separated() {
+    let out = html("# title#\n\n# title ###\n\n# ###\n");
+
+    assert!(out.contains("<h1 id=\"title\">title#</h1>"));
+    assert!(out.contains("<h1 id=\"title\">title</h1>"));
+    assert!(out.contains("<h1 id=\"\"></h1>"));
+}
+
+#[test]
+fn fenced_code_closer_allows_three_spaces_but_not_four() {
+    let out = html("```text\ninside\n   ```\n\n```text\ninside\n    ```\nstill code\n");
+
+    assert!(out.contains("<pre><code class=\"language-text\">inside\n</code></pre>"));
+    assert!(out.contains("inside\n    ```\nstill code\n</code></pre>"));
+}

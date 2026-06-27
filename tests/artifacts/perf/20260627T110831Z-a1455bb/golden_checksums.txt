@@ -1,0 +1,7 @@
+976c5318b4d3e17a5199ad86d43144df907bf24271ef11004e35b37fabb0005d  ./font-subset.ttf
+cefe99e64e6de44529de599504f2b049b0da7acd830ccc4f07a68ef9fc3e0896  ./html-showcase.html
+e8caf211e32abbec328e65e70125da72e5022435cda24dffb5d1cf0908e33861  ./hyphen-corpus.points
+80bf954d556dc7cfd7732a1530c201448cb8480dcfe69c80b429757ba418f80f  ./paragraph-1k.breaks
+32d59fd1215d54b838904d55cbfb4f2d43f36d428351eec04a568430c0479b28  ./parser-large.html
+f8a8a0822ef8bf1f761a0f8af58eaaeb30590b71b7efdee43b02d9b351e9211d  ./pdf-large.pdf
+7da42ccd7b4ede04c8c939d0da47bfef038e642da6010c820507d420e6c081d6  ./pdf-showcase.pdf

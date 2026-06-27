@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>franken_markdown showcase</title>
+<style>
+:root {
+  --fmd-fg: #1f2328;
+  --fmd-fg-muted: #59636e;
+  --fmd-bg: #ffffff;
+  --fmd-bg-subtle: #f6f8fa;
+  --fmd-border: #d1d9e0;
+  --fmd-border-muted: #e6e8eb;
+  --fmd-code-bg: #f6f8fa;
+  --fmd-stripe: #f6f8fa;
+  --fmd-quote-fg: #59636e;
+  --fmd-quote-bar: #d1d9e0;
+  --fmd-accent: #0969da;
+}
+:root { --fmd-base: 16px; --fmd-measure: 760px; --fmd-line-height: 1.7; --fmd-radius: 8px; --fmd-table-pad-y: 0.55em; --fmd-table-pad-x: 0.85em; --fmd-font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif; --fmd-font-mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--fmd-bg);
+  color: var(--fmd-fg);
+  font-family: var(--fmd-font-body);
+  font-size: var(--fmd-base);
+  line-height: var(--fmd-line-height);
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+  hyphens: auto;
+}
+main.fmd {
+  max-width: var(--fmd-measure);
+  margin: 0 auto;
+  padding: 3rem 1.25rem 6rem;
+}
+main.fmd > :first-child { margin-top: 0; }
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 2.2em 0 0.7em;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+h1 { font-size: 2.05em; padding-bottom: 0.3em; border-bottom: 1px solid var(--fmd-border-muted); }
+h2 { font-size: 1.55em; padding-bottom: 0.3em; border-bottom: 1px solid var(--fmd-border-muted); }
+h3 { font-size: 1.27em; }
+h4 { font-size: 1.05em; }
+h5 { font-size: 0.95em; color: var(--fmd-fg-muted); }
+h6 { font-size: 0.88em; color: var(--fmd-fg-muted); }
+
+p { margin: 0 0 1.1em; }
+a { color: var(--fmd-accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+ul, ol { margin: 0 0 1.1em; padding-left: 1.7em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin: 0.25em 0; }
+li.task { list-style: none; margin-left: -1.5em; }
+li.task input { margin-right: 0.5em; transform: translateY(1px); }
+
+blockquote {
+  margin: 0 0 1.2em;
+  padding: 0.25em 1.1em;
+  color: var(--fmd-quote-fg);
+  border-left: 0.28em solid var(--fmd-quote-bar);
+  background: linear-gradient(90deg, var(--fmd-bg-subtle), transparent 60%);
+  border-radius: 0 var(--fmd-radius) var(--fmd-radius) 0;
+}
+blockquote > :last-child { margin-bottom: 0; }
+
+code {
+  font-family: var(--fmd-font-mono);
+  font-size: 0.88em;
+  background: var(--fmd-code-bg);
+  padding: 0.18em 0.4em;
+  border-radius: calc(var(--fmd-radius) * 0.75);
+}
+pre {
+  margin: 0 0 1.3em;
+  padding: 1em 1.15em;
+  background: var(--fmd-code-bg);
+  border: 1px solid var(--fmd-border-muted);
+  border-radius: calc(var(--fmd-radius) + 2px);
+  overflow: auto;
+  line-height: 1.55;
+}
+pre code { background: none; padding: 0; font-size: 0.86em; }
+
+hr { height: 1px; border: 0; background: var(--fmd-border); margin: 2.4em 0; }
+
+img { max-width: 100%; border-radius: var(--fmd-radius); }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 1.4em;
+  font-size: 0.95em;
+  overflow: hidden;
+  border-radius: calc(var(--fmd-radius) + 2px);
+  border: 1px solid var(--fmd-border);
+}
+thead th {
+  background: var(--fmd-bg-subtle);
+  font-weight: 650;
+  text-align: left;
+}
+th, td { padding: var(--fmd-table-pad-y) var(--fmd-table-pad-x); border-bottom: 1px solid var(--fmd-border-muted); }
+tbody tr:nth-child(even) { background: var(--fmd-stripe); }
+tbody tr:last-child td { border-bottom: 0; }
+
+del { color: var(--fmd-fg-muted); }
+strong { font-weight: 680; }
+
+
+.tok-kw { color: #cf222e; }
+.tok-ty { color: #953800; }
+.tok-fn { color: #6639ba; }
+.tok-st { color: #0a3069; }
+.tok-nu { color: #0550ae; }
+.tok-cm { color: #6e7781; font-style: italic; }
+.tok-op { color: #0550ae; }
+.tok-pn { color: inherit; }
+
+
+@media (prefers-color-scheme: dark) {
+  :root {
+  --fmd-fg: #e6edf3;
+  --fmd-fg-muted: #9198a1;
+  --fmd-bg: #0d1117;
+  --fmd-bg-subtle: #161b22;
+  --fmd-border: #2f3742;
+  --fmd-border-muted: #21262d;
+  --fmd-code-bg: #161b22;
+  --fmd-stripe: #12171e;
+  --fmd-quote-fg: #9198a1;
+  --fmd-quote-bar: #2f3742;
+  --fmd-accent: #4493f8;
+}
+}
+
+@media (prefers-color-scheme: dark) {
+  .tok-kw { color: #ff7b72; }
+  .tok-ty { color: #ffa657; }
+  .tok-fn { color: #d2a8ff; }
+  .tok-st { color: #a5d6ff; }
+  .tok-nu { color: #79c0ff; }
+  .tok-cm { color: #8b949e; }
+  .tok-op { color: #79c0ff; }
+}
+</style>
+</head>
+<body>
+<main class="fmd">
+<h1 id="franken-markdown-showcase">franken_markdown showcase</h1>
+<p>A quick tour of what the renderer handles today. The default theme is tuned to
+look like a high-quality preview: comfortable measure, generous <strong>leading</strong>, and
+careful typography.</p>
+<h2 id="inline-formatting">Inline formatting</h2>
+<p>You get <strong>bold</strong>, <em>italic</em>, <strong>*both</strong>*, <code>inline code</code>, <del>strikethrough</del>, and
+<a href="https://github.com/Dicklesworthstone/franken_markdown">links</a> with an autolink
+fallback like <a href="https://example.com">https://example.com</a>. Hard breaks work too —
+this line ends with two spaces.</p>
+<h2 id="lists">Lists</h2>
+<ul>
+<li><p>Clean, readable bullets</p>
+</li>
+<li><p>With nested-friendly spacing</p>
+</li>
+<li><p>And task items:</p>
+</li>
+<li class="task"><input type="checkbox" disabled checked> <p>parse the document</p>
+</li>
+<li class="task"><input type="checkbox" disabled> <p>shape the glyphs</p>
+</li>
+<li class="task"><input type="checkbox" disabled> <p>break the lines (Knuth–Plass)</p>
+<p>Ordered lists too:</p>
+</li>
+</ul>
+<ol>
+<li>First</li>
+<li>Second</li>
+<li><p>Third</p>
+<h2 id="a-table">A table</h2>
+<table>
+<thead>
+<tr><th style="text-align:left">Feature</th><th style="text-align:center">Status</th><th style="text-align:right">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align:left">HTML output</td><td style="text-align:center">working</td><td style="text-align:right">all-in-one, themeable</td></tr>
+<tr><td style="text-align:left">PDF output</td><td style="text-align:center">building</td><td style="text-align:right">LaTeX-grade typesetting</td></tr>
+<tr><td style="text-align:left">Zero deps</td><td style="text-align:center">yes</td><td style="text-align:right">engine has no external crates</td></tr>
+</tbody>
+</table>
+<blockquote>
+<p>Blockquotes look elegant, with a soft accent bar and tinted background.
+They wrap nicely across multiple lines.</p>
+</blockquote>
+<h2 id="code-blocks">Code blocks</h2>
+<pre><code class="language-rust"><span class="tok-kw">fn</span> <span class="tok-fn">main</span><span class="tok-pn">(</span><span class="tok-pn">)</span> <span class="tok-pn">{</span>
+ println<span class="tok-op">!</span><span class="tok-pn">(</span><span class="tok-st">"franken_markdown: pure-Rust, dependency-lean."</span><span class="tok-pn">)</span><span class="tok-pn">;</span>
+<span class="tok-pn">}</span>
+</code></pre>
+<hr>
+<p>That's the showcase. Run <code>fmd render examples/showcase.md --out showcase.html</code>.</p>
+</li>
+</ol>
+</main>
+</body>
+</html>

@@ -1,0 +1,26 @@
+Benchmark 1: /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/showcase.html
+  Time (mean ± σ):       2.0 ms ±   1.0 ms    [User: 0.4 ms, System: 1.4 ms]
+  Range (min … max):     1.5 ms …   6.2 ms    20 runs
+ 
+Benchmark 2: /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --to pdf --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/showcase.pdf
+  Time (mean ± σ):       6.0 ms ±   1.5 ms    [User: 3.2 ms, System: 2.5 ms]
+  Range (min … max):     5.4 ms …  12.5 ms    20 runs
+ 
+Benchmark 3: /data/tmp/cargo-target/release-perf/fmd README.md --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/readme.html
+  Time (mean ± σ):       2.5 ms ±   0.1 ms    [User: 1.1 ms, System: 1.4 ms]
+  Range (min … max):     2.3 ms …   2.9 ms    20 runs
+ 
+Benchmark 4: /data/tmp/cargo-target/release-perf/fmd README.md --to pdf --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/readme.pdf
+  Time (mean ± σ):      13.0 ms ±   0.3 ms    [User: 9.9 ms, System: 3.1 ms]
+  Range (min … max):    12.5 ms …  13.7 ms    20 runs
+ 
+Benchmark 5: for f in /data/tmp/fmd-perf-20260627T110831Z-a1455bb/batch-in/*.md; do /data/tmp/cargo-target/release-perf/fmd "$f" --out "/data/tmp/fmd-perf-20260627T110831Z-a1455bb/batch-out/$(basename "$f" .md).html" >/dev/null; done
+  Time (mean ± σ):     506.6 ms ±   2.7 ms    [User: 104.5 ms, System: 410.5 ms]
+  Range (min … max):   501.8 ms … 511.3 ms    20 runs
+ 
+Summary
+  /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/showcase.html ran
+    1.23 ± 0.62 times faster than /data/tmp/cargo-target/release-perf/fmd README.md --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/readme.html
+    3.01 ± 1.69 times faster than /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --to pdf --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/showcase.pdf
+    6.49 ± 3.25 times faster than /data/tmp/cargo-target/release-perf/fmd README.md --to pdf --out /data/tmp/fmd-perf-20260627T110831Z-a1455bb/readme.pdf
+  253.59 ± 126.90 times faster than for f in /data/tmp/fmd-perf-20260627T110831Z-a1455bb/batch-in/*.md; do /data/tmp/cargo-target/release-perf/fmd "$f" --out "/data/tmp/fmd-perf-20260627T110831Z-a1455bb/batch-out/$(basename "$f" .md).html" >/dev/null; done

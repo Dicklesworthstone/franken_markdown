@@ -1,0 +1,12 @@
+
+ Performance counter stats for '/data/tmp/cargo-target/release-perf/examples/fmd_perf_harness --scenario pdf-large --iters 10 --out-dir /data/tmp/fmd-perf-20260627T110831Z-a1455bb/perf-golden' (10 runs):
+
+        1629750372      cycles                                                                  ( +-  0.21% )
+        5942787551      instructions                     #    3.65  insn per cycle              ( +-  0.03% )
+        1324946069      branches                                                                ( +-  0.03% )
+           7335147      branch-misses                    #    0.55% of all branches             ( +-  1.33% )
+          19162924      cache-references                                                        ( +-  1.86% )
+           1729544      cache-misses                     #    9.03% of all cache refs           ( +-  2.73% )
+
+           0.61293 +- 0.00125 seconds time elapsed  ( +-  0.20% )
+

@@ -1281,12 +1281,10 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
 }
 
 fn starts_with_chars(chars: &[char], i: usize, needle: &str) -> bool {
-    let mut offset = 0usize;
-    for expected in needle.chars() {
+    for (offset, expected) in needle.chars().enumerate() {
         if chars.get(i + offset) != Some(&expected) {
             return false;
         }
-        offset += 1;
     }
     true
 }

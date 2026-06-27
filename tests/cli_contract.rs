@@ -89,6 +89,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"native_config\":\"available\""));
     assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
     assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
+    assert!(stdout.contains("\"font_subsetting_pdf\":\"available\""));
     assert!(stdout.contains("\"embedded_subset_fonts_pdf\":\"available\""));
     assert!(stdout.contains("\"gpos_kerning_pdf\":\"available_focused\""));
     assert!(stdout.contains("\"gsub_ligatures_pdf\":\"available_focused\""));

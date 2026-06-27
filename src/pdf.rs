@@ -9,8 +9,9 @@
 //! selectable / copy-pasteable.
 //!
 //! Greedy line wrapping + automatic pagination over headings, paragraphs, code
-//! blocks, lists, blockquotes, tables (simple), and rules. Knuth-Plass optimal
-//! breaking + kerning + FlateDecode compression are the next increments.
+//! blocks, lists, blockquotes, tables (simple), and rules. Focused GPOS kerning
+//! and GSUB ligatures are applied today; Knuth-Plass optimal breaking, richer
+//! page layout, and FlateDecode compression are the next increments.
 //!
 //! Pure computation (no `std::fs`, no deps) so it stays WASM / `--no-default-features`
 //! clean; the font bytes come from `include_bytes!`, not the filesystem.

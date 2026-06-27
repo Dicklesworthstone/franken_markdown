@@ -1,0 +1,6 @@
+.write.lock
+.sync.lock
+last-touched
+*.tmp
+*.db-wal
+*.db-shm

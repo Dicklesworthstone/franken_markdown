@@ -163,10 +163,7 @@ fn run_render(args: RenderArgs, global_json: bool) -> ExitCode {
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
 
-    let theme = Theme {
-        font: args.font.into(),
-        ..Theme::default()
-    };
+    let theme = Theme::default().with_font(args.font.into());
 
     let custom_css = match args.css.as_deref() {
         Some(p) => match std::fs::read_to_string(p) {
@@ -346,14 +343,16 @@ fn report_write(kind: &str, path: &Path, bytes: usize, json: bool) {
 fn run_doctor(json: bool) -> ExitCode {
     if json {
         println!(
-            "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
-            env!("CARGO_PKG_VERSION")
+            "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
+            env!("CARGO_PKG_VERSION"),
+            Theme::default().to_config_json()
         );
     } else {
         println!("fmd doctor");
         println!("  html: available");
         println!("  pdf: available v0 (base-14 fonts, deterministic writer)");
         println!("  syntax highlighting: available for common documentation languages");
+        println!("  theme model: structured v1");
         println!("  core dependencies: std-only");
         println!("  cli dependency: clap");
         println!("  wasm posture: core builds with --no-default-features");
@@ -364,14 +363,15 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"syntax_highlighting\":\"available\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
-        env!("CARGO_PKG_VERSION")
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"knuth_plass_pdf\":\"planned\",\"font_subsetting_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
+        env!("CARGO_PKG_VERSION"),
+        Theme::default().to_config_json()
     );
 }
 
 fn print_robot_triage() {
     println!(
-        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current compact PDF MVP and receive machine-readable write status on stderr\"}}]}}",
+        "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_base14\",\"syntax_highlighting\":\"available\",\"theme_model\":\"structured_v1\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current compact PDF MVP and receive machine-readable write status on stderr\"}}]}}",
         env!("CARGO_PKG_VERSION")
     );
 }

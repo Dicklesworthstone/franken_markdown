@@ -85,6 +85,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"contract_version\":\"0.1.0\""));
     assert!(stdout.contains("\"64\":\"usage error\""));
     assert!(stdout.contains("\"robot_triage\":\"available\""));
+    assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
+    assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
 
     let doctor = fmd(&["doctor", "--json"]);
     assert!(doctor.status.success());
@@ -92,6 +94,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     let stdout = text(&doctor.stdout);
     assert!(stdout.contains("\"ok\":true"));
     assert!(stdout.contains("\"html\":\"available\""));
+    assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
     assert!(stdout.contains("\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\""));
 
     let triage = fmd(&["--robot-triage"]);

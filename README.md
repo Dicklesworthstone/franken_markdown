@@ -35,6 +35,7 @@ browser/WASM.
 | Goal | Design choice |
 |---|---|
 | Beautiful default output | Cursor/GitHub-style theme, high-readable measure, polished tables, blockquotes, code blocks |
+| Shared style model | Typed theme v1 for font family, mono family, colors, spacing, table density, code theme, dark mode, and page contract |
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
 | PDF quality | Compact deterministic Base-14 PDF v0 now; planned Knuth-Plass line breaking, kerning, ligatures, leading, hyphenation, pagination, and font subsetting |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
@@ -112,6 +113,7 @@ Implemented today:
 - parser conformance, metamorphic, and approved fixture snapshot harnesses,
 - additive spanned parse API with recoverable diagnostics for editor/WASM
   integrations,
+- structured shared theme model for HTML, PDF, CLI JSON, and WASM callers,
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,
@@ -222,7 +224,7 @@ The core modules are:
 | `ast` | Renderer-neutral document model |
 | `span` | Source-span wrappers and parser diagnostics for tooling/editor/WASM callers |
 | `parse` | Clean-room Markdown block and inline parser |
-| `theme` | Shared typography/color model |
+| `theme` | Shared typed style model: fonts, colors, spacing, code theme, dark mode, and page contract |
 | `html` | All-in-one HTML emitter |
 | `text` | Planned font reader/shaper/subsetter |
 | `layout` | Planned Knuth-Plass and pagination engine |

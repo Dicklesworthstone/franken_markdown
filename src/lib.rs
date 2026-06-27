@@ -44,7 +44,10 @@ pub use span::{
     DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
     SpannedInline, SpannedListItem, SpannedTable,
 };
-pub use theme::{FontFamily, Theme};
+pub use theme::{
+    CodeTheme, DarkModePolicy, FontFamily, MonoFontFamily, PageMargins, PageSize, PageStyle, Theme,
+    ThemeColors, ThemeSpacing,
+};
 
 /// Options for the all-in-one HTML renderer.
 #[derive(Debug, Clone, Default)]

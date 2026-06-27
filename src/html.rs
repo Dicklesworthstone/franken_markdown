@@ -6,7 +6,7 @@
 
 use crate::HtmlOptions;
 use crate::ast::{Align, Block, Document, Inline, List};
-use crate::theme::Theme;
+use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
@@ -288,21 +288,87 @@ fn escape_attr(s: &str) -> String {
 fn default_css(theme: &Theme) -> String {
     let body_font = theme.body_font_stack();
     let mono_font = theme.mono_font_stack();
-    let accent = escape_attr(&theme.accent);
-    let base = theme.base_px;
-    let measure = theme.max_width_px;
+    let colors = &theme.colors;
+    let spacing = &theme.spacing;
 
-    let dark = if theme.dark_mode { DARK_MODE_CSS } else { "" };
+    let dark = match theme.dark_mode {
+        DarkModePolicy::Auto => dark_mode_css(&theme.dark_colors),
+        DarkModePolicy::Disabled => String::new(),
+    };
+    let token_dark = match theme.dark_mode {
+        DarkModePolicy::Auto => TOKEN_DARK_CSS,
+        DarkModePolicy::Disabled => "",
+    };
 
     format!(
-        "{LIGHT_VARS}\n\
-:root {{ --fmd-base: {base}px; --fmd-measure: {measure}px; --fmd-accent: {accent}; \
+        "{}\n\
+:root {{ --fmd-base: {}px; --fmd-measure: {}px; --fmd-line-height: {}; \
+--fmd-radius: {}px; --fmd-table-pad-y: {}em; --fmd-table-pad-x: {}em; \
 --fmd-font-body: {body_font}; --fmd-font-mono: {mono_font}; }}\n\
-{BASE_CSS}\n{TOKEN_CSS}\n{dark}"
+{BASE_CSS}\n{TOKEN_CSS}\n{dark}{token_dark}",
+        color_vars(colors),
+        spacing.base_px,
+        spacing.max_width_px,
+        css_num(spacing.line_height),
+        spacing.radius_px,
+        css_num(spacing.table_cell_padding_y_em),
+        css_num(spacing.table_cell_padding_x_em),
     )
 }
 
-const LIGHT_VARS: &str = ":root {\n  --fmd-fg: #1f2328;\n  --fmd-fg-muted: #59636e;\n  --fmd-bg: #ffffff;\n  --fmd-bg-subtle: #f6f8fa;\n  --fmd-border: #d1d9e0;\n  --fmd-border-muted: #e6e8eb;\n  --fmd-code-bg: #f6f8fa;\n  --fmd-stripe: #f6f8fa;\n  --fmd-quote-fg: #59636e;\n  --fmd-quote-bar: #d1d9e0;\n}";
+fn color_vars(colors: &ThemeColors) -> String {
+    format!(
+        ":root {{\n  --fmd-fg: {};\n  --fmd-fg-muted: {};\n  --fmd-bg: {};\n  \
+         --fmd-bg-subtle: {};\n  --fmd-border: {};\n  --fmd-border-muted: {};\n  \
+         --fmd-code-bg: {};\n  --fmd-stripe: {};\n  --fmd-quote-fg: {};\n  \
+         --fmd-quote-bar: {};\n  --fmd-accent: {};\n}}",
+        css_token(&colors.fg),
+        css_token(&colors.fg_muted),
+        css_token(&colors.bg),
+        css_token(&colors.bg_subtle),
+        css_token(&colors.border),
+        css_token(&colors.border_muted),
+        css_token(&colors.code_bg),
+        css_token(&colors.stripe),
+        css_token(&colors.quote_fg),
+        css_token(&colors.quote_bar),
+        css_token(&colors.accent),
+    )
+}
+
+fn dark_mode_css(colors: &ThemeColors) -> String {
+    let vars = color_vars(colors);
+    format!("\n@media (prefers-color-scheme: dark) {{\n  {vars}\n}}\n")
+}
+
+fn css_token(s: &str) -> String {
+    let out: String = s
+        .chars()
+        .filter(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '#' | '-' | '_' | ',' | '.' | '%' | '(' | ')' | ' ' | '/' | '"'
+                )
+        })
+        .collect();
+    if out.trim().is_empty() {
+        "initial".to_string()
+    } else {
+        out
+    }
+}
+
+fn css_num(value: f32) -> String {
+    let mut s = format!("{value:.3}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    if s.is_empty() { "0".to_string() } else { s }
+}
 
 const TOKEN_CSS: &str = r#"
 .tok-kw { color: #cf222e; }
@@ -313,6 +379,9 @@ const TOKEN_CSS: &str = r#"
 .tok-cm { color: #6e7781; font-style: italic; }
 .tok-op { color: #0550ae; }
 .tok-pn { color: inherit; }
+"#;
+
+const TOKEN_DARK_CSS: &str = r#"
 @media (prefers-color-scheme: dark) {
   .tok-kw { color: #ff7b72; }
   .tok-ty { color: #ffa657; }
@@ -333,7 +402,7 @@ body {
   color: var(--fmd-fg);
   font-family: var(--fmd-font-body);
   font-size: var(--fmd-base);
-  line-height: 1.7;
+  line-height: var(--fmd-line-height);
   font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -376,7 +445,7 @@ blockquote {
   color: var(--fmd-quote-fg);
   border-left: 0.28em solid var(--fmd-quote-bar);
   background: linear-gradient(90deg, var(--fmd-bg-subtle), transparent 60%);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--fmd-radius) var(--fmd-radius) 0;
 }
 blockquote > :last-child { margin-bottom: 0; }
 
@@ -385,14 +454,14 @@ code {
   font-size: 0.88em;
   background: var(--fmd-code-bg);
   padding: 0.18em 0.4em;
-  border-radius: 6px;
+  border-radius: calc(var(--fmd-radius) * 0.75);
 }
 pre {
   margin: 0 0 1.3em;
   padding: 1em 1.15em;
   background: var(--fmd-code-bg);
   border: 1px solid var(--fmd-border-muted);
-  border-radius: 10px;
+  border-radius: calc(var(--fmd-radius) + 2px);
   overflow: auto;
   line-height: 1.55;
 }
@@ -400,7 +469,7 @@ pre code { background: none; padding: 0; font-size: 0.86em; }
 
 hr { height: 1px; border: 0; background: var(--fmd-border); margin: 2.4em 0; }
 
-img { max-width: 100%; border-radius: 8px; }
+img { max-width: 100%; border-radius: var(--fmd-radius); }
 
 table {
   border-collapse: collapse;
@@ -408,7 +477,7 @@ table {
   margin: 0 0 1.4em;
   font-size: 0.95em;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: calc(var(--fmd-radius) + 2px);
   border: 1px solid var(--fmd-border);
 }
 thead th {
@@ -416,28 +485,10 @@ thead th {
   font-weight: 650;
   text-align: left;
 }
-th, td { padding: 0.55em 0.85em; border-bottom: 1px solid var(--fmd-border-muted); }
+th, td { padding: var(--fmd-table-pad-y) var(--fmd-table-pad-x); border-bottom: 1px solid var(--fmd-border-muted); }
 tbody tr:nth-child(even) { background: var(--fmd-stripe); }
 tbody tr:last-child td { border-bottom: 0; }
 
 del { color: var(--fmd-fg-muted); }
 strong { font-weight: 680; }
-"#;
-
-const DARK_MODE_CSS: &str = r#"
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fmd-fg: #e6edf3;
-    --fmd-fg-muted: #9198a1;
-    --fmd-bg: #0d1117;
-    --fmd-bg-subtle: #161b22;
-    --fmd-border: #2f3742;
-    --fmd-border-muted: #21262d;
-    --fmd-code-bg: #161b22;
-    --fmd-stripe: #12171e;
-    --fmd-quote-fg: #9198a1;
-    --fmd-quote-bar: #2f3742;
-    --fmd-accent: #4493f8;
-  }
-}
 "#;

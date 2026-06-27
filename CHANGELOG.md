@@ -54,6 +54,10 @@ project has no tags or GitHub Releases yet.
 
 ### Rendering Engine
 
+- Replaced the flat theme fields with a structured dependency-free theme model
+  covering font family, mono font, colors, spacing, table density, code theme,
+  dark-mode policy, and PDF/page contract; exposed stable hand-rolled JSON for
+  CLI/config/WASM callers.
 - Added a clean-room syntax highlighter for common documentation languages,
   wired into the HTML emitter with token CSS and regression tests.
 - Added document-centric library entrypoints:

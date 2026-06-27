@@ -2,9 +2,10 @@
 
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
-    LayoutUnit, PairMetrics, ParagraphItem, UNITS_PER_POINT, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph, hyphenated_paragraph_items_from_text,
-    measure_advances, measure_text, measure_text_with_pairs, paragraph_items_from_text,
+    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, UNITS_PER_POINT,
+    adjustment_to_layout_units, advance_to_layout_units, break_paragraph, expansion_budget,
+    hyphenated_paragraph_items_from_text, measure_advances, measure_text, measure_text_with_pairs,
+    paragraph_items_from_text, protruded_fit_width, protrusion_for_text,
 };
 
 struct StubMetrics;
@@ -230,6 +231,48 @@ fn hyphen_penalty_width_applies_only_when_the_break_is_chosen() {
     assert_eq!(breaks.len(), 2);
     assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "hy phen");
     assert!(breaks[0].natural_width > measure_text_with_pairs(&metrics, "hyphen", size));
+}
+
+#[test]
+fn microtype_hooks_are_disabled_by_default() {
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(20_000);
+
+    assert_eq!(
+        protrusion_for_text("\"Hello.\"", size, MicrotypeOptions::default()).total(),
+        LayoutUnit::ZERO
+    );
+    assert_eq!(
+        protruded_fit_width(width, "\"Hello.\"", size, MicrotypeOptions::default()),
+        width
+    );
+    assert_eq!(
+        expansion_budget(width, MicrotypeOptions::default()),
+        LayoutUnit::ZERO
+    );
+}
+
+#[test]
+fn microtype_protrusion_and_expansion_are_integer_deterministic() {
+    let size = FontSize::from_points(10);
+    let options = MicrotypeOptions::CONSERVATIVE;
+    let protrusion = protrusion_for_text("\"Hello.\"", size, options);
+
+    assert_eq!(protrusion.left, LayoutUnit::from_milli_points(3_500));
+    assert_eq!(protrusion.right, LayoutUnit::from_milli_points(3_500));
+    assert_eq!(
+        protruded_fit_width(
+            LayoutUnit::from_milli_points(50_000),
+            "\"Hello.\"",
+            size,
+            options
+        ),
+        LayoutUnit::from_milli_points(43_000)
+    );
+    assert_eq!(
+        expansion_budget(LayoutUnit::from_milli_points(50_000), options),
+        LayoutUnit::from_milli_points(750)
+    );
 }
 
 fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {

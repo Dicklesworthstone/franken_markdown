@@ -554,6 +554,111 @@ const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
     },
 ];
 
+/// Microtypography options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MicrotypeOptions {
+    /// Enable punctuation protrusion / optical margin alignment.
+    pub protrusion: bool,
+    /// Maximum font expansion/contraction budget in per-mille of line width.
+    /// `20` means up to 2%.
+    pub max_expansion_per_mille: u16,
+}
+
+impl MicrotypeOptions {
+    /// Disabled default: hooks are available but not silently active.
+    pub const DISABLED: Self = Self {
+        protrusion: false,
+        max_expansion_per_mille: 0,
+    };
+
+    /// Conservative starting policy for high-quality PDF layout experiments.
+    pub const CONSERVATIVE: Self = Self {
+        protrusion: true,
+        max_expansion_per_mille: 15,
+    };
+}
+
+impl Default for MicrotypeOptions {
+    fn default() -> Self {
+        Self::DISABLED
+    }
+}
+
+/// How far text may visually protrude past the left/right margin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Protrusion {
+    pub left: LayoutUnit,
+    pub right: LayoutUnit,
+}
+
+impl Protrusion {
+    /// Total protrusion budget.
+    #[must_use]
+    pub fn total(self) -> LayoutUnit {
+        self.left + self.right
+    }
+}
+
+/// Compute optical-margin protrusion for a text run.
+#[must_use]
+pub fn protrusion_for_text(text: &str, size: FontSize, options: MicrotypeOptions) -> Protrusion {
+    if !options.protrusion {
+        return Protrusion::default();
+    }
+    let left = text.chars().next().map_or(LayoutUnit::ZERO, |ch| {
+        protrusion_amount(left_protrusion_per_mille(ch), size)
+    });
+    let right = text.chars().next_back().map_or(LayoutUnit::ZERO, |ch| {
+        protrusion_amount(right_protrusion_per_mille(ch), size)
+    });
+    Protrusion { left, right }
+}
+
+/// Return the width used for fitting after optical margin protrusion.
+#[must_use]
+pub fn protruded_fit_width(
+    natural_width: LayoutUnit,
+    text: &str,
+    size: FontSize,
+    options: MicrotypeOptions,
+) -> LayoutUnit {
+    natural_width.saturating_sub(protrusion_for_text(text, size, options).total())
+}
+
+/// Maximum deterministic expansion/contraction budget for one line.
+#[must_use]
+pub fn expansion_budget(line_width: LayoutUnit, options: MicrotypeOptions) -> LayoutUnit {
+    let budget =
+        (line_width.milli_points() as i128 * options.max_expansion_per_mille as i128) / 1000;
+    LayoutUnit(clamp_i128_to_i32(budget))
+}
+
+fn protrusion_amount(per_mille: u16, size: FontSize) -> LayoutUnit {
+    let amount = (size.milli_points() as u128 * per_mille as u128) / 1000;
+    LayoutUnit(clamp_u128_to_i32(amount))
+}
+
+const fn left_protrusion_per_mille(ch: char) -> u16 {
+    match ch {
+        '"' | '\'' | '`' => 350,
+        '(' | '[' | '{' => 120,
+        '-' | '–' | '—' => 80,
+        _ => 0,
+    }
+}
+
+const fn right_protrusion_per_mille(ch: char) -> u16 {
+    match ch {
+        '.' | ',' => 550,
+        ':' | ';' => 420,
+        '!' | '?' => 250,
+        '"' | '\'' | '`' => 350,
+        ')' | ']' | '}' => 120,
+        '-' | '–' | '—' => 80,
+        _ => 0,
+    }
+}
+
 /// One chosen line from the paragraph optimizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineBreak {

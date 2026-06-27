@@ -71,7 +71,7 @@ details easy to scan while implementation is moving quickly.
      - discretionary hyphen penalties feed the line breaker.
 
 7. **Add microtypography hooks.**
-   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.5`
+   - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.5` (**done**)
    - Acceptance:
      - punctuation protrusion tables,
      - optional font expansion budget,
@@ -149,6 +149,7 @@ details easy to scan while implementation is moving quickly.
 - [x] Implement `dy5.3` first Knuth-Plass active breakpoint optimizer.
 - [x] Implement `dy5.4` Liang-style hyphenation core with starter English corpus.
 - [ ] Expand to full TeX English hyphenation corpus (`dy5.6`).
+- [x] Implement `dy5.5` deterministic microtypography hooks.
 - [ ] Sync beads and commit only owned files.
 - [ ] Re-check Agent Mail before touching `src/pdf.rs`.
 

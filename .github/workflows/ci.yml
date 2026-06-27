@@ -29,6 +29,9 @@ jobs:
       - name: Check std-only core
         run: cargo check --no-default-features --lib
 
+      - name: Check clean-room policy
+        run: scripts/check-policy.sh
+
       - name: Check WASM core
         run: scripts/check-wasm-core.sh
 

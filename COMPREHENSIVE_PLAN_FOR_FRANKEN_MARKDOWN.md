@@ -368,6 +368,7 @@ boundary:
 - `cargo fmt --check`
 - `cargo check --all-targets`
 - `cargo check --no-default-features --lib`
+- `scripts/check-policy.sh`
 - `scripts/check-wasm-core.sh`
 - `cargo test`
 - `cargo clippy --all-targets -- -D warnings`
@@ -375,6 +376,12 @@ boundary:
 The WASM gate intentionally checks the library only. CLI features may depend on
 native process, stdin/stdout, and filesystem behavior, but the render core must
 keep compiling for `wasm32-unknown-unknown` without default features.
+
+The policy gate intentionally checks the clean-room boundary: the no-default
+core must have zero third-party normal dependencies, banned renderer/browser
+dependency forests must stay out of the full graph, native build scripts require
+an explicit architecture decision, and unsafe-code lint enforcement must remain
+active.
 
 ## 11. Current State
 

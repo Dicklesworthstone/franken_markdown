@@ -230,6 +230,7 @@ For local development:
 ```bash
 cargo test
 cargo run -- examples/showcase.md --out showcase.html
+scripts/check-policy.sh
 ```
 
 WASM/core portability gate:
@@ -242,6 +243,17 @@ scripts/check-wasm-core.sh
 That script checks the library with `--no-default-features` for both native Rust
 and `wasm32-unknown-unknown`. It must stay green before the project claims any
 browser/WASM readiness.
+
+Clean-room policy gate:
+
+```bash
+scripts/check-policy.sh
+```
+
+That script verifies the no-default core still has zero third-party normal
+dependencies, banned renderer/browser/runtime dependency forests are absent, no
+native build script has appeared, and unsafe-code lint enforcement is still in
+place.
 
 Future release channels are expected to include standalone binaries and a
 browser/WASM package.

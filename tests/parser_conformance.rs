@@ -96,3 +96,43 @@ fn reference_images_resolve_alt_dest_and_title() {
 
     assert!(out.contains("<img src=\"/logo.png\" alt=\"Project Logo\" title=\"Logo mark\">"));
 }
+
+#[test]
+fn lazy_list_item_continuation_stays_in_the_item() {
+    let out = html("- first line\ncontinued without indentation\n- second");
+
+    assert!(out.contains("<li>first line\ncontinued without indentation</li>"));
+    assert!(out.contains("<li>second</li>"));
+}
+
+#[test]
+fn nested_unordered_lists_render_as_nested_lists() {
+    let out = html("- parent\n  - child\n- sibling");
+
+    assert!(out.contains("<p>parent</p>\n<ul>\n<li>child</li>"));
+    assert!(out.contains("<li>sibling</li>"));
+}
+
+#[test]
+fn nested_ordered_lists_preserve_start_numbers() {
+    let out = html("1. parent\n   3. child");
+
+    assert!(out.contains("<ol start=\"3\">\n<li>child</li>"));
+}
+
+#[test]
+fn task_list_items_preserve_lazy_continuation_text() {
+    let out = html("- [x] done\ncontinues here");
+
+    assert!(out.contains(
+        "<li class=\"task\"><input type=\"checkbox\" disabled checked> done\ncontinues here</li>"
+    ));
+}
+
+#[test]
+fn blockquote_lists_can_contain_nested_lists() {
+    let out = html("> - quoted\n>   - nested");
+
+    assert!(out.contains("<blockquote>\n<ul>"));
+    assert!(out.contains("<p>quoted</p>\n<ul>\n<li>nested</li>"));
+}

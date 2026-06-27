@@ -79,6 +79,8 @@ project has no tags or GitHub Releases yet.
 - Added full, collapsed, and shortcut reference links plus matching reference
   images, with malformed-definition regressions that keep bad definitions
   visible as normal text.
+- Added lazy list-item continuation and nested ordered/unordered list parsing,
+  including task-list continuation and blockquote/list nesting regressions.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

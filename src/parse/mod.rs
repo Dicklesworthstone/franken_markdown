@@ -5,9 +5,9 @@
 //! code spans, links, images, autolinks, hard/soft breaks).
 //!
 //! It is deliberately not (yet) a full CommonMark implementation — full
-//! reference conformance (nested-list edge cases, HTML blocks, lazy
-//! continuation) is tracked in beads. The design priority is correct, fast
-//! handling of the common 95% with zero dependencies and no `unwrap`/`panic`.
+//! reference conformance (remaining nested-list edge cases and HTML blocks) is
+//! tracked in beads. The design priority is correct, fast handling of the
+//! common 95% with zero dependencies and no `unwrap`/`panic`.
 
 use std::collections::BTreeMap;
 
@@ -296,6 +296,7 @@ fn strip_blockquote(line: &str) -> String {
 // ---- lists ------------------------------------------------------------------
 
 struct Marker {
+    indent: usize,
     ordered: bool,
     start: u64,
     content_indent: usize,
@@ -311,6 +312,7 @@ fn list_marker(line: &str) -> Option<Marker> {
     {
         let rest = t[first.len_utf8() + 1..].to_string();
         return Some(Marker {
+            indent,
             ordered: false,
             start: 1,
             content_indent: indent + 2,
@@ -326,6 +328,7 @@ fn list_marker(line: &str) -> Option<Marker> {
         {
             let rest = after[2..].to_string();
             return Some(Marker {
+                indent,
                 ordered: true,
                 start,
                 content_indent: indent + digits.len() + 2,
@@ -369,21 +372,52 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
         let Some(m) = list_marker(lines[i]).filter(|m| m.ordered == ordered) else {
             break;
         };
-        let mut text = m.rest.clone();
+        let mut item_lines = vec![m.rest.clone()];
         i += 1;
-        while i < lines.len()
-            && !lines[i].trim().is_empty()
-            && list_marker(lines[i]).is_none()
-            && leading_spaces(lines[i]) >= m.content_indent
-        {
-            text.push('\n');
-            text.push_str(strip_n(lines[i], m.content_indent));
+
+        while i < lines.len() {
+            if lines[i].trim().is_empty() {
+                let mut j = i + 1;
+                while j < lines.len() && lines[j].trim().is_empty() {
+                    j += 1;
+                }
+                if j < lines.len()
+                    && list_marker(lines[j])
+                        .is_some_and(|next| next.ordered == ordered && next.indent == m.indent)
+                {
+                    tight = false;
+                    i = j;
+                    break;
+                }
+                item_lines.push(String::new());
+                i += 1;
+                continue;
+            }
+
+            if let Some(next) = list_marker(lines[i])
+                && next.indent <= m.indent
+            {
+                break;
+            }
+
+            if leading_spaces(lines[i]) >= m.content_indent {
+                item_lines.push(strip_n(lines[i], m.content_indent).to_string());
+            } else {
+                // CommonMark lazy continuation: an unindented, non-marker line
+                // continues the current paragraph/list item.
+                item_lines.push(lines[i].trim_start().to_string());
+            }
             i += 1;
         }
-        let (task, body) = split_task_marker(&text);
+
+        let (task, first_body) = split_task_marker(&item_lines[0]);
+        let mut normalized = Vec::with_capacity(item_lines.len());
+        normalized.push(first_body.to_string());
+        normalized.extend(item_lines.into_iter().skip(1));
+        let item_refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
         items.push(ListItem {
             task,
-            blocks: vec![Block::Paragraph(parse_inlines_with_refs(body, refs))],
+            blocks: parse_blocks_with_refs(&item_refs, refs),
         });
     }
     (

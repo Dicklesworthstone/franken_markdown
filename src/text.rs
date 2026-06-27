@@ -29,6 +29,13 @@ pub struct Font {
     hmtx_off: usize,
     cmap_off: usize,
     cmap_format: u16,
+    /// `(offset, length)` of the `glyf` table, when the font has TrueType
+    /// outlines. Absent for CFF/OpenType (`OTTO`) fonts.
+    glyf: Option<(usize, usize)>,
+    /// Offset of the `loca` table (glyph offsets into `glyf`).
+    loca_off: Option<usize>,
+    /// True when `loca` uses the 32-bit (long) offset format.
+    loca_long: bool,
 }
 
 /// Why a font failed to parse.
@@ -73,11 +80,16 @@ fn be_u32(d: &[u8], o: usize) -> Option<u32> {
 }
 
 fn find_table(d: &[u8], tag: &[u8; 4]) -> Option<usize> {
+    find_table_full(d, tag).map(|(off, _)| off)
+}
+
+/// Locate a table by tag, returning `(offset, length)`.
+fn find_table_full(d: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
     let num_tables = be_u16(d, 4)? as usize;
     for i in 0..num_tables {
         let rec = 12 + i * 16;
         if d.get(rec..rec + 4)? == tag {
-            return Some(be_u32(d, rec + 8)? as usize);
+            return Some((be_u32(d, rec + 8)? as usize, be_u32(d, rec + 12)? as usize));
         }
     }
     None
@@ -112,6 +124,12 @@ impl Font {
 
         let (cmap_off, cmap_format) = select_cmap(d, cmap).ok_or(FontError::NoUnicodeCmap)?;
 
+        // Outline tables are optional: present for TrueType (glyf) fonts, absent
+        // for CFF/OpenType. Their absence is not an error here.
+        let loca_long = be_i16(d, head + 50).unwrap_or(0) != 0;
+        let loca_off = find_table(d, b"loca");
+        let glyf = find_table_full(d, b"glyf");
+
         Ok(Self {
             data,
             units_per_em,
@@ -123,7 +141,113 @@ impl Font {
             hmtx_off: hmtx,
             cmap_off,
             cmap_format,
+            glyf,
+            loca_off,
+            loca_long,
         })
+    }
+
+    /// True when the font carries TrueType (`glyf`) outlines we can read/subset.
+    #[must_use]
+    pub fn has_glyf_outlines(&self) -> bool {
+        self.glyf.is_some() && self.loca_off.is_some()
+    }
+
+    /// The `[start, end)` byte range of glyph `gid` within the `glyf` table.
+    /// Returns `None` if the font has no `glyf`/`loca`, or `Some((s, s))` for an
+    /// empty glyph (e.g. space).
+    fn glyph_range(&self, gid: u16) -> Option<(usize, usize)> {
+        let loca = self.loca_off?;
+        let (glyf_off, glyf_len) = self.glyf?;
+        let i = gid as usize;
+        let (start, end) = if self.loca_long {
+            (
+                be_u32(&self.data, loca + i * 4)? as usize,
+                be_u32(&self.data, loca + (i + 1) * 4)? as usize,
+            )
+        } else {
+            // Short loca stores offsets / 2.
+            (
+                be_u16(&self.data, loca + i * 2)? as usize * 2,
+                be_u16(&self.data, loca + (i + 1) * 2)? as usize * 2,
+            )
+        };
+        if end < start || end > glyf_len {
+            return None;
+        }
+        Some((glyf_off + start, glyf_off + end))
+    }
+
+    /// Raw `glyf` bytes for glyph `gid` (for subset embedding), or `None`.
+    /// An empty (zero-length) glyph yields `Some(&[])`.
+    #[must_use]
+    pub fn glyph_data(&self, gid: u16) -> Option<&[u8]> {
+        let (s, e) = self.glyph_range(gid)?;
+        self.data.get(s..e)
+    }
+
+    /// Glyph bounding box `[xMin, yMin, xMax, yMax]` (design units), or `None`
+    /// for an empty glyph / no outlines.
+    #[must_use]
+    pub fn glyph_bbox(&self, gid: u16) -> Option<[i16; 4]> {
+        let (s, e) = self.glyph_range(gid)?;
+        if e <= s {
+            return None; // empty glyph (no contours)
+        }
+        Some([
+            be_i16(&self.data, s + 2)?,
+            be_i16(&self.data, s + 4)?,
+            be_i16(&self.data, s + 6)?,
+            be_i16(&self.data, s + 8)?,
+        ])
+    }
+
+    /// True when glyph `gid` is a composite (built from component glyphs).
+    #[must_use]
+    pub fn is_composite(&self, gid: u16) -> bool {
+        match self.glyph_range(gid) {
+            Some((s, e)) if e > s => be_i16(&self.data, s).is_some_and(|n| n < 0),
+            _ => false,
+        }
+    }
+
+    /// Component glyph ids referenced by a composite glyph (for transitive
+    /// subsetting). Empty for simple or empty glyphs.
+    #[must_use]
+    pub fn glyph_components(&self, gid: u16) -> Vec<u16> {
+        const ARG_WORDS: u16 = 0x0001;
+        const WE_HAVE_SCALE: u16 = 0x0008;
+        const MORE: u16 = 0x0020;
+        const X_Y_SCALE: u16 = 0x0040;
+        const TWO_BY_TWO: u16 = 0x0080;
+
+        let mut out = Vec::new();
+        let Some((s, e)) = self.glyph_range(gid) else {
+            return out;
+        };
+        if e <= s || !be_i16(&self.data, s).is_some_and(|n| n < 0) {
+            return out;
+        }
+        let mut p = s + 10; // skip numberOfContours + bbox
+        while let Some(flags) = be_u16(&self.data, p) {
+            let Some(comp) = be_u16(&self.data, p + 2) else {
+                break;
+            };
+            out.push(comp);
+            p += 4;
+            p += if flags & ARG_WORDS != 0 { 4 } else { 2 };
+            if flags & WE_HAVE_SCALE != 0 {
+                p += 2;
+            } else if flags & X_Y_SCALE != 0 {
+                p += 4;
+            } else if flags & TWO_BY_TWO != 0 {
+                p += 8;
+            }
+            if flags & MORE == 0 || p >= e {
+                break;
+            }
+        }
+        out
     }
 
     /// The advance width of glyph `gid` in design units. Glyphs past the

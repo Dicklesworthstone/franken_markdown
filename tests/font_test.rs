@@ -61,6 +61,61 @@ fn parses_real_dejavu_when_available() {
     assert!((400..=1200).contains(&a), "unexpected 'A' advance: {a}");
 }
 
+#[test]
+fn synthetic_font_has_no_glyf_outlines() {
+    let font = Font::parse(build_synthetic_font()).unwrap();
+    assert!(!font.has_glyf_outlines());
+    assert!(font.glyph_data(1).is_none());
+    assert!(font.glyph_bbox(1).is_none());
+    assert!(!font.is_composite(1));
+    assert!(font.glyph_components(1).is_empty());
+}
+
+#[test]
+fn reads_dejavu_glyf_outlines_when_available() {
+    let path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    let Ok(bytes) = std::fs::read(path) else {
+        eprintln!("skipping: {path} not present (glyf outline validation)");
+        return;
+    };
+    let font = Font::parse(bytes).unwrap();
+    assert!(font.has_glyf_outlines(), "DejaVu has TrueType outlines");
+
+    // 'A' is a non-empty, simple glyph with a sensible bounding box.
+    let a = font.glyph_index('A');
+    let data = font.glyph_data(a).expect("'A' has glyf data");
+    assert!(!data.is_empty());
+    let bbox = font.glyph_bbox(a).expect("'A' has a bbox");
+    assert!(
+        bbox[2] > bbox[0] && bbox[3] > bbox[1],
+        "xMax>xMin, yMax>yMin"
+    );
+    assert!(!font.is_composite(a));
+    assert!(font.glyph_components(a).is_empty());
+
+    // Space is an empty glyph (advance only, no contours).
+    let sp = font.glyph_index(' ');
+    assert_eq!(font.glyph_data(sp).map(<[u8]>::len), Some(0));
+    assert!(font.glyph_bbox(sp).is_none());
+
+    // The composite parser: find a composite glyph and verify its components are
+    // valid glyph ids (accented letters are typically base + diacritic).
+    let mut found_composite = false;
+    for gid in 0..font.num_glyphs.min(2000) {
+        if font.is_composite(gid) {
+            let comps = font.glyph_components(gid);
+            assert!(
+                !comps.is_empty(),
+                "composite glyph must reference components"
+            );
+            assert!(comps.iter().all(|&c| c < font.num_glyphs));
+            found_composite = true;
+            break;
+        }
+    }
+    assert!(found_composite, "DejaVu should contain composite glyphs");
+}
+
 // ---- synthetic font builder -------------------------------------------------
 
 fn be16(v: u16) -> [u8; 2] {

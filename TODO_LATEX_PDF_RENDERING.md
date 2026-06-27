@@ -63,7 +63,7 @@ details easy to scan while implementation is moving quickly.
 
 6. **Add Liang/TeX hyphenation.**
    - Bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.4` (**starter core done**)
-   - Follow-up corpus bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.6`
+   - Follow-up corpus bead: `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-dy5.6` (**done**)
    - Acceptance:
      - compact deterministic pattern trie or equivalent table,
      - English patterns initially,
@@ -149,7 +149,7 @@ details easy to scan while implementation is moving quickly.
 - [x] Implement `dy5.2` box/glue/penalty primitives in `src/layout.rs`.
 - [x] Implement `dy5.3` first Knuth-Plass active breakpoint optimizer.
 - [x] Implement `dy5.4` Liang-style hyphenation core with starter English corpus.
-- [ ] Expand to full TeX English hyphenation corpus (`dy5.6`).
+- [x] Expand to full TeX English hyphenation corpus (`dy5.6`).
 - [x] Implement `dy5.5` deterministic microtypography hooks.
 - [x] Implement `dy5.1` styled inline runs in layout primitives.
 - [x] Sync beads and commit only owned files for the current slice.

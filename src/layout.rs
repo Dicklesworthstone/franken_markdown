@@ -647,6 +647,7 @@ pub struct HyphenException {
 #[derive(Debug, Clone, Copy)]
 pub struct Hyphenator {
     patterns: &'static [HyphenPattern],
+    encoded_patterns: &'static str,
     exceptions: &'static [HyphenException],
 }
 
@@ -658,8 +659,15 @@ impl Hyphenator {
     pub const fn english() -> Self {
         Self {
             patterns: ENGLISH_STARTER_PATTERNS,
+            encoded_patterns: EN_US_TEX_PATTERNS,
             exceptions: ENGLISH_EXCEPTIONS,
         }
+    }
+
+    /// Number of encoded TeX pattern tokens in this hyphenator.
+    #[must_use]
+    pub fn encoded_pattern_count(&self) -> usize {
+        self.encoded_patterns.split_ascii_whitespace().count()
     }
 
     /// Return legal hyphenation points as character offsets in `word`.
@@ -692,6 +700,9 @@ impl Hyphenator {
         for pattern in self.patterns {
             apply_hyphen_pattern(pattern, &dotted_chars, &mut scores);
         }
+        for pattern in self.encoded_patterns.split_ascii_whitespace() {
+            apply_encoded_hyphen_pattern(pattern, &dotted_chars, &mut scores);
+        }
         scores
             .iter()
             .enumerate()
@@ -706,6 +717,8 @@ impl Hyphenator {
             .collect()
     }
 }
+
+const EN_US_TEX_PATTERNS: &str = include_str!("../data/hyph-en-us.patterns");
 
 fn legal_hyphen_point(point: usize, len: usize, opts: HyphenationOptions) -> bool {
     point >= opts.min_left && len.saturating_sub(point) >= opts.min_right
@@ -722,6 +735,39 @@ fn apply_hyphen_pattern(pattern: &HyphenPattern, word: &[char], scores: &mut [u8
                 let idx = start + offset;
                 if let Some(score) = scores.get_mut(idx) {
                     *score = (*score).max(value);
+                }
+            }
+        }
+    }
+}
+
+fn apply_encoded_hyphen_pattern(pattern: &str, word: &[char], scores: &mut [u8]) {
+    let mut letters = ['\0'; 64];
+    let mut values = [0u8; 65];
+    let mut len = 0usize;
+
+    for ch in pattern.chars() {
+        if let Some(value) = ch.to_digit(10) {
+            values[len] = value as u8;
+        } else {
+            if len == letters.len() {
+                return;
+            }
+            letters[len] = ch;
+            len += 1;
+        }
+    }
+
+    if len == 0 || len > word.len() {
+        return;
+    }
+
+    for start in 0..=word.len() - len {
+        if (0..len).all(|offset| word[start + offset] == letters[offset]) {
+            for (offset, value) in values.iter().take(len + 1).enumerate() {
+                let idx = start + offset;
+                if let Some(score) = scores.get_mut(idx) {
+                    *score = (*score).max(*value);
                 }
             }
         }

@@ -273,6 +273,17 @@ fn english_hyphenator_uses_exceptions_and_minima() {
 }
 
 #[test]
+fn english_hyphenator_uses_full_tex_pattern_corpus() {
+    let hyphenator = Hyphenator::english();
+
+    assert_eq!(hyphenator.encoded_pattern_count(), 4_938);
+    assert_eq!(
+        hyphenator.hyphenation_points("representation", HyphenationOptions::default()),
+        vec![3, 5, 8, 10]
+    );
+}
+
+#[test]
 fn hyphenated_paragraph_items_emit_flagged_discretionary_penalties() {
     let metrics = StubMetrics;
     let hyphenator = Hyphenator::english();

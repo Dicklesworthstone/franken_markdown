@@ -191,6 +191,21 @@ fn gfm_table_body_rows_still_pad_and_truncate_to_header_width() {
 }
 
 #[test]
+fn gfm_table_pipes_inside_code_spans_stay_in_the_cell() {
+    let out = html("Name | Expr\n--- | ---\nalpha | `a|b`\nbeta | ``x|y``");
+
+    assert!(out.contains("<tr><td>alpha</td><td><code>a|b</code></td></tr>"));
+    assert!(out.contains("<tr><td>beta</td><td><code>x|y</code></td></tr>"));
+}
+
+#[test]
+fn gfm_table_escaped_pipes_still_stay_in_the_cell() {
+    let out = html("Name | Expr\n--- | ---\nalpha | a \\| b");
+
+    assert!(out.contains("<tr><td>alpha</td><td>a | b</td></tr>"));
+}
+
+#[test]
 fn html_blocks_escape_by_default_and_pass_through_when_allowed() {
     let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
     let escaped = html(md);

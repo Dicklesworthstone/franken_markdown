@@ -868,23 +868,43 @@ fn split_table_row(line: &str) -> Vec<String> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
-    // Split on unescaped `|`.
+    // Split on unescaped `|` outside inline code spans.
+    let chars: Vec<char> = t.chars().collect();
     let mut cells = Vec::new();
     let mut cur = String::new();
+    let mut code_ticks = 0usize;
     let mut prev_backslash = false;
-    for c in t.chars() {
-        if c == '|' && !prev_backslash {
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            let ticks = run_len(&chars, i, '`');
+            for _ in 0..ticks {
+                cur.push('`');
+            }
+            if code_ticks == 0 {
+                code_ticks = ticks;
+            } else if code_ticks == ticks {
+                code_ticks = 0;
+            }
+            prev_backslash = false;
+            i += ticks;
+            continue;
+        }
+        if c == '|' && !prev_backslash && code_ticks == 0 {
             cells.push(cur.trim().to_string());
             cur = String::new();
         } else {
             if c == '\\' && !prev_backslash {
                 prev_backslash = true;
                 cur.push(c);
+                i += 1;
                 continue;
             }
             cur.push(c);
         }
         prev_backslash = false;
+        i += 1;
     }
     cells.push(cur.trim().to_string());
     cells

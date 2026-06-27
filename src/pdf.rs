@@ -1,36 +1,38 @@
-//! PDF renderer.
+//! PDF renderer with embedded subset fonts.
 //!
-//! v0 (this file): a self-contained, dependency-free PDF writer that lays out the
-//! document and produces a valid, **tiny** PDF using the base-14 fonts (Helvetica
-//! family + Courier) — no embedded font data, so the file is small and opens in
-//! every viewer. Greedy line-wrapping with approximate metrics, automatic
-//! pagination, headings/paragraphs/code/lists/blockquotes/rules.
+//! Produces a deterministic, **tiny** PDF that embeds document-specific *subsets*
+//! of the bundled IBM Plex / Computer Modern faces (see [`crate::fonts`] +
+//! [`crate::text::Font::subset`]). Text is laid out with the faces' real `hmtx`
+//! metrics, then written as a composite `Type0` font with `Identity-H` encoding
+//! (2-byte glyph ids) and a `CIDFontType2` descendant carrying the subset
+//! `FontFile2`. Each face also gets a `ToUnicode` CMap so the text stays
+//! selectable / copy-pasteable.
 //!
-//! Roadmap (next increments, each clean-room + zero-dep):
-//!   * embed **IBM Plex** (Sans/Serif/Mono) + **Computer Modern / Latin Modern**
-//!     as `include_bytes!` subsets so the default output is beautiful and the
-//!     binary stays self-contained (the metrics then come from the real `hmtx`);
-//!   * **Knuth-Plass** optimal line breaking + kerning + ligatures + hyphenation
-//!     (`layout.rs`, `text.rs`);
-//!   * FlateDecode stream compression + font subsetting for a minimal file size.
+//! Greedy line wrapping + automatic pagination over headings, paragraphs, code
+//! blocks, lists, blockquotes, tables (simple), and rules. Knuth-Plass optimal
+//! breaking + kerning + FlateDecode compression are the next increments.
 //!
-//! The renderer is pure computation (no `std::fs`, no deps) so it compiles for
-//! `wasm32-unknown-unknown` and `--no-default-features --lib`.
+//! Pure computation (no `std::fs`, no deps) so it stays WASM / `--no-default-features`
+//! clean; the font bytes come from `include_bytes!`, not the filesystem.
 
 use crate::PdfOptions;
 use crate::ast::{Block, Document, Inline, List};
 use crate::error::Result;
+use crate::fonts::{self, FontStyle};
+use crate::text::Font;
+use std::collections::BTreeSet;
 
 const PAGE_W: f32 = 612.0; // US Letter, points
 const PAGE_H: f32 = 792.0;
 const MARGIN: f32 = 72.0;
 const CONTENT_W: f32 = PAGE_W - 2.0 * MARGIN;
 
-// Font ids used in the page Resources: F1 body, F2 bold, F3 italic, F4 mono.
+// Font slots referenced in page Resources as /F1../F4.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
 const F_MONO: u8 = 4;
+const SLOTS: [u8; 4] = [F_BODY, F_BOLD, F_ITALIC, F_MONO];
 
 /// One laid-out, pre-wrapped line of text positioned by the paginator.
 struct Line {
@@ -38,37 +40,80 @@ struct Line {
     size: f32,
     font: u8,
     text: String,
-    /// Extra vertical gap to leave after this line (block spacing).
     gap_after: f32,
-    /// True to draw a thin horizontal rule at this position instead of text.
     rule: bool,
+}
+
+/// The four source faces resolved from the theme family + the registry.
+struct Faces {
+    body: Font,
+    bold: Font,
+    italic: Font,
+    mono: Font,
+}
+
+impl Faces {
+    fn load(opts: &PdfOptions) -> Option<Self> {
+        let fam = opts.theme.font;
+        Some(Self {
+            body: fonts::load_body(fam, FontStyle::Regular).ok()?,
+            bold: fonts::load_body(fam, FontStyle::Bold).ok()?,
+            italic: fonts::load_body(fam, FontStyle::Italic).ok()?,
+            mono: fonts::load_mono(FontStyle::Regular).ok()?,
+        })
+    }
+
+    fn get(&self, slot: u8) -> &Font {
+        match slot {
+            F_BOLD => &self.bold,
+            F_ITALIC => &self.italic,
+            F_MONO => &self.mono,
+            _ => &self.body,
+        }
+    }
+
+    /// Advance of `c` in 1/1000 em (PDF text space) for the slot's face.
+    fn advance(&self, slot: u8, c: char) -> f32 {
+        self.get(slot).advance_1000(c) as f32
+    }
 }
 
 /// Render a document to PDF bytes.
 ///
 /// # Errors
-/// Infallible today, but returns [`Result`] so richer validation can be added
-/// without changing the signature.
+/// Infallible in practice (the bundled fonts always parse); returns [`Result`]
+/// to leave room for future validation without a signature change.
 pub fn render(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
-    let lines = layout(&doc.blocks, opts);
-    Ok(serialize(&lines, opts))
+    let Some(faces) = Faces::load(opts) else {
+        // The bundled fonts are tested to parse, so this is unreachable in
+        // practice; emit a valid empty document rather than failing.
+        return Ok(empty_pdf());
+    };
+    let lines = layout(&doc.blocks, opts, &faces);
+    Ok(serialize(&lines, opts, &faces))
 }
 
 // ---- layout -----------------------------------------------------------------
 
-fn layout(blocks: &[Block], opts: &PdfOptions) -> Vec<Line> {
+fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces) -> Vec<Line> {
     let mut out = Vec::new();
-    layout_blocks(blocks, 0.0, &mut out, opts);
+    layout_blocks(blocks, 0.0, &mut out, opts, faces);
     out
 }
 
-fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, opts: &PdfOptions) {
+fn layout_blocks(
+    blocks: &[Block],
+    indent: f32,
+    out: &mut Vec<Line>,
+    opts: &PdfOptions,
+    faces: &Faces,
+) {
     for block in blocks {
-        layout_block(block, indent, out, opts);
+        layout_block(block, indent, out, opts, faces);
     }
 }
 
-fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptions) {
+fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptions, faces: &Faces) {
     match block {
         Block::Heading { level, inlines } => {
             let size = match level {
@@ -79,15 +124,14 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptio
                 5 => 12.0,
                 _ => 11.0,
             };
-            push_wrapped(&inline_text(inlines), indent, size, F_BOLD, 6.0, out);
+            push_wrapped(&inline_text(inlines), indent, size, F_BOLD, 6.0, out, faces);
         }
         Block::Paragraph(inlines) => {
-            push_wrapped(&inline_text(inlines), indent, 11.0, F_BODY, 7.0, out);
+            push_wrapped(&inline_text(inlines), indent, 11.0, F_BODY, 7.0, out, faces);
         }
         Block::CodeBlock { code, .. } => {
             for raw in code.lines() {
-                // Code is not reflowed; long lines are hard-clipped at the margin.
-                let clipped = clip_to_width(raw, CONTENT_W - indent - 8.0, 9.5, F_MONO);
+                let clipped = clip_to_width(raw, CONTENT_W - indent - 8.0, 9.5, F_MONO, faces);
                 out.push(Line {
                     x: MARGIN + indent + 8.0,
                     size: 9.5,
@@ -100,21 +144,36 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptio
             gap(out, 6.0);
         }
         Block::BlockQuote(inner) => {
-            layout_blocks(inner, indent + 18.0, out, opts);
+            layout_blocks(inner, indent + 18.0, out, opts, faces);
             gap(out, 3.0);
         }
-        Block::List(list) => layout_list(list, indent, out, opts),
+        Block::List(list) => layout_list(list, indent, out, opts, faces),
         Block::Table(table) => {
-            // v0: render each row as a tab-joined text line (real grid is a bead).
             let header = table
                 .head
                 .iter()
                 .map(|c| inline_text(c))
                 .collect::<Vec<_>>();
-            push_wrapped(&header.join("   |   "), indent, 11.0, F_BOLD, 2.0, out);
+            push_wrapped(
+                &header.join("   |   "),
+                indent,
+                11.0,
+                F_BOLD,
+                2.0,
+                out,
+                faces,
+            );
             for row in &table.rows {
                 let cells = row.iter().map(|c| inline_text(c)).collect::<Vec<_>>();
-                push_wrapped(&cells.join("   |   "), indent, 11.0, F_BODY, 2.0, out);
+                push_wrapped(
+                    &cells.join("   |   "),
+                    indent,
+                    11.0,
+                    F_BODY,
+                    2.0,
+                    out,
+                    faces,
+                );
             }
             gap(out, 6.0);
         }
@@ -130,13 +189,13 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, opts: &PdfOptio
         }
         Block::HtmlBlock(html) => {
             if !opts.allow_raw_html {
-                push_wrapped(html, indent, 11.0, F_BODY, 7.0, out);
+                push_wrapped(html, indent, 11.0, F_BODY, 7.0, out, faces);
             }
         }
     }
 }
 
-fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions) {
+fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions, faces: &Faces) {
     for (i, item) in list.items.iter().enumerate() {
         let marker = match item.task {
             Some(true) => "[x]".to_string(),
@@ -154,14 +213,22 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, _opts: &PdfOptions
             .collect::<Vec<_>>()
             .join(" ");
         let text = format!("{marker}  {body}");
-        push_wrapped(&text, indent + 16.0, 11.0, F_BODY, 2.0, out);
+        push_wrapped(&text, indent + 16.0, 11.0, F_BODY, 2.0, out, faces);
     }
     gap(out, 6.0);
 }
 
-fn push_wrapped(text: &str, indent: f32, size: f32, font: u8, gap_after: f32, out: &mut Vec<Line>) {
+fn push_wrapped(
+    text: &str,
+    indent: f32,
+    size: f32,
+    font: u8,
+    gap_after: f32,
+    out: &mut Vec<Line>,
+    faces: &Faces,
+) {
     let max = (CONTENT_W - indent).max(40.0);
-    let wrapped = wrap(text, max, size, font);
+    let wrapped = wrap(text, max, size, font, faces);
     let n = wrapped.len();
     if n == 0 {
         gap(out, gap_after);
@@ -187,8 +254,40 @@ fn gap(out: &mut [Line], amount: f32) {
 
 // ---- pagination + serialization --------------------------------------------
 
-fn serialize(lines: &[Line], opts: &PdfOptions) -> Vec<u8> {
-    // Build per-page content streams.
+fn serialize(lines: &[Line], opts: &PdfOptions, faces: &Faces) -> Vec<u8> {
+    // Which slots actually appear (skip embedding unused faces).
+    let mut used_slots: Vec<u8> = SLOTS
+        .into_iter()
+        .filter(|&s| {
+            lines
+                .iter()
+                .any(|l| !l.rule && !l.text.is_empty() && l.font == s)
+        })
+        .collect();
+    if used_slots.is_empty() {
+        used_slots.push(F_BODY); // always embed at least one face
+    }
+
+    // Subset each used face to the characters it renders, and keep the parsed
+    // subset (its cmap gives the new glyph ids we encode in the content stream).
+    let mut subsets: Vec<EmbeddedFace> = Vec::new();
+    for &slot in &used_slots {
+        let mut chars: BTreeSet<char> = BTreeSet::new();
+        for l in lines.iter().filter(|l| !l.rule && l.font == slot) {
+            chars.extend(l.text.chars());
+        }
+        let keep: Vec<char> = chars.into_iter().collect();
+        let source = faces.get(slot);
+        let Some(bytes) = source.subset(&keep) else {
+            return empty_pdf();
+        };
+        let Ok(font) = Font::parse(bytes.clone()) else {
+            return empty_pdf();
+        };
+        subsets.push(EmbeddedFace { slot, bytes, font });
+    }
+
+    // Build per-page content streams, encoding text as Identity-H glyph ids.
     let mut pages: Vec<String> = Vec::new();
     let mut content = String::new();
     let mut y = PAGE_H - MARGIN;
@@ -208,14 +307,16 @@ fn serialize(lines: &[Line], opts: &PdfOptions) -> Vec<u8> {
                 yy = y + line.size * 0.5,
             ));
         } else if !line.text.is_empty() {
-            content.push_str(&format!(
-                "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm ({t}) Tj ET\n",
-                f = line.font,
-                s = line.size,
-                x = line.x,
-                y = y,
-                t = pdf_escape(&line.text),
-            ));
+            if let Some(face) = subsets.iter().find(|f| f.slot == line.font) {
+                content.push_str(&format!(
+                    "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm <{hex}> Tj ET\n",
+                    f = line.font,
+                    s = line.size,
+                    x = line.x,
+                    y = y,
+                    hex = glyph_hex(&face.font, &line.text),
+                ));
+            }
         }
         y -= line.gap_after;
     }
@@ -224,27 +325,42 @@ fn serialize(lines: &[Line], opts: &PdfOptions) -> Vec<u8> {
         pages = vec![String::new()];
     }
 
-    build_pdf(&pages, opts)
+    build_pdf(&pages, &subsets, opts)
 }
 
-fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
-    // Object layout:
-    //   1 Catalog, 2 Pages, 3..3+P-1 Page objects, then P content streams,
-    //   then 4 font objects.
+/// A subset face ready to embed.
+struct EmbeddedFace {
+    slot: u8,
+    bytes: Vec<u8>,
+    font: Font,
+}
+
+fn build_pdf(pages: &[String], faces: &[EmbeddedFace], opts: &PdfOptions) -> Vec<u8> {
     let p = pages.len();
-    let page_obj = |i: usize| 3 + i; // page object numbers
-    let content_obj = |i: usize| 3 + p + i; // content stream object numbers
+    let nf = faces.len();
     let title = opts.title.clone().unwrap_or_default();
-    let font_base = 3 + 2 * p; // first font object number
-    let info_obj = font_base + 4;
+
+    // Object number plan (1-indexed):
+    //   1 Catalog, 2 Pages, [3..3+p) Page objs, [3+p..3+2p) content streams,
+    //   then per face k: type0, cidfont, descriptor, fontfile, tounicode (5),
+    //   then Info (optional).
+    let page_obj = |i: usize| 3 + i;
+    let content_obj = |i: usize| 3 + p + i;
+    let face_base = 3 + 2 * p;
+    let type0_obj = |k: usize| face_base + 5 * k;
+    let cid_obj = |k: usize| face_base + 5 * k + 1;
+    let desc_obj = |k: usize| face_base + 5 * k + 2;
+    let file_obj = |k: usize| face_base + 5 * k + 3;
+    let touni_obj = |k: usize| face_base + 5 * k + 4;
+    let info_obj = face_base + 5 * nf;
     let total_objs = if title.is_empty() {
-        font_base + 3
+        info_obj - 1
     } else {
         info_obj
     };
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut offsets: Vec<usize> = vec![0; total_objs + 1]; // 1-indexed
+    let mut offsets: Vec<usize> = vec![0; total_objs + 1];
 
     let emit = |buf: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &str| {
         offsets[n] = buf.len();
@@ -253,14 +369,13 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
 
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
 
-    // 1: Catalog.
     emit(
         &mut buf,
         &mut offsets,
         1,
         "<< /Type /Catalog /Pages 2 0 R >>",
     );
-    // 2: Pages.
+
     let kids = (0..p)
         .map(|i| format!("{} 0 R", page_obj(i)))
         .collect::<Vec<_>>()
@@ -271,14 +386,14 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
         2,
         &format!("<< /Type /Pages /Count {p} /Kids [ {kids} ] >>"),
     );
-    // Page objects.
-    let fonts = format!(
-        "/F{F_BODY} {fb} 0 R /F{F_BOLD} {fo} 0 R /F{F_ITALIC} {fi} 0 R /F{F_MONO} {fm} 0 R",
-        fb = font_base,
-        fo = font_base + 1,
-        fi = font_base + 2,
-        fm = font_base + 3,
-    );
+
+    // Shared font resource dict referencing every embedded face's Type0 object.
+    let font_res = faces
+        .iter()
+        .enumerate()
+        .map(|(k, f)| format!("/F{} {} 0 R", f.slot, type0_obj(k)))
+        .collect::<Vec<_>>()
+        .join(" ");
     for i in 0..p {
         emit(
             &mut buf,
@@ -286,12 +401,12 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
             page_obj(i),
             &format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W:.0} {PAGE_H:.0}] \
-                 /Resources << /Font << {fonts} >> >> /Contents {c} 0 R >>",
+                 /Resources << /Font << {font_res} >> >> /Contents {c} 0 R >>",
                 c = content_obj(i),
             ),
         );
     }
-    // Content streams.
+
     for (i, page) in pages.iter().enumerate() {
         offsets[content_obj(i)] = buf.len();
         buf.extend_from_slice(
@@ -303,24 +418,79 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
             .as_bytes(),
         );
     }
-    // Base-14 fonts (WinAnsi so Latin-1 accents render).
-    let font_def = |name: &str| {
-        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{name} /Encoding /WinAnsiEncoding >>")
-    };
-    emit(&mut buf, &mut offsets, font_base, &font_def("Helvetica"));
-    emit(
-        &mut buf,
-        &mut offsets,
-        font_base + 1,
-        &font_def("Helvetica-Bold"),
-    );
-    emit(
-        &mut buf,
-        &mut offsets,
-        font_base + 2,
-        &font_def("Helvetica-Oblique"),
-    );
-    emit(&mut buf, &mut offsets, font_base + 3, &font_def("Courier"));
+
+    // Embedded font object groups.
+    for (k, face) in faces.iter().enumerate() {
+        let psname = subset_psname(k, face.slot);
+        let m = FaceMetrics::of(&face.font);
+
+        emit(
+            &mut buf,
+            &mut offsets,
+            type0_obj(k),
+            &format!(
+                "<< /Type /Font /Subtype /Type0 /BaseFont /{psname} /Encoding /Identity-H \
+                 /DescendantFonts [{cid} 0 R] /ToUnicode {tu} 0 R >>",
+                cid = cid_obj(k),
+                tu = touni_obj(k),
+            ),
+        );
+        emit(
+            &mut buf,
+            &mut offsets,
+            cid_obj(k),
+            &format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{psname} \
+                 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                 /FontDescriptor {desc} 0 R /CIDToGIDMap /Identity /DW 1000 /W [{w}] >>",
+                desc = desc_obj(k),
+                w = widths_array(&face.font),
+            ),
+        );
+        let italic_angle = if face.slot == F_ITALIC { -12 } else { 0 };
+        emit(
+            &mut buf,
+            &mut offsets,
+            desc_obj(k),
+            &format!(
+                "<< /Type /FontDescriptor /FontName /{psname} /Flags 4 \
+                 /FontBBox [{bx0} {by0} {bx1} {by1}] /ItalicAngle {italic_angle} \
+                 /Ascent {asc} /Descent {desc} /CapHeight {cap} /StemV 80 /FontFile2 {ff} 0 R >>",
+                bx0 = -200,
+                by0 = m.descent - 50,
+                bx1 = 1100,
+                by1 = m.ascent + 50,
+                asc = m.ascent,
+                desc = m.descent,
+                cap = m.cap_height,
+                ff = file_obj(k),
+            ),
+        );
+        // FontFile2: raw subset bytes (binary stream).
+        offsets[file_obj(k)] = buf.len();
+        buf.extend_from_slice(
+            format!(
+                "{n} 0 obj\n<< /Length {len} /Length1 {len} >>\nstream\n",
+                n = file_obj(k),
+                len = face.bytes.len(),
+            )
+            .as_bytes(),
+        );
+        buf.extend_from_slice(&face.bytes);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+        // ToUnicode CMap.
+        let cmap = tounicode_cmap(&face.font);
+        offsets[touni_obj(k)] = buf.len();
+        buf.extend_from_slice(
+            format!(
+                "{n} 0 obj\n<< /Length {len} >>\nstream\n{cmap}endstream\nendobj\n",
+                n = touni_obj(k),
+                len = cmap.len(),
+            )
+            .as_bytes(),
+        );
+    }
+
     if !title.is_empty() {
         emit(
             &mut buf,
@@ -330,7 +500,7 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
         );
     }
 
-    // xref.
+    // xref + trailer.
     let xref_pos = buf.len();
     let size = total_objs + 1;
     buf.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
@@ -349,6 +519,124 @@ fn build_pdf(pages: &[String], opts: &PdfOptions) -> Vec<u8> {
     buf
 }
 
+/// FontDescriptor metrics in 1/1000 em.
+struct FaceMetrics {
+    ascent: i32,
+    descent: i32,
+    cap_height: i32,
+}
+
+impl FaceMetrics {
+    fn of(font: &Font) -> Self {
+        let upm = font.units_per_em.max(1) as i32;
+        let scale = |v: i32| v * 1000 / upm;
+        Self {
+            ascent: scale(font.ascent as i32),
+            descent: scale(font.descent as i32),
+            cap_height: scale((font.ascent as i32 * 7) / 10),
+        }
+    }
+}
+
+/// `/W` widths array `[ 0 [w0 w1 ...] ]` (1/1000 em, indexed by glyph id = CID).
+fn widths_array(font: &Font) -> String {
+    let upm = font.units_per_em.max(1) as u32;
+    let mut s = String::from("0 [");
+    for gid in 0..font.num_glyphs {
+        let w = font.advance_width(gid) as u32 * 1000 / upm;
+        s.push_str(&w.to_string());
+        s.push(' ');
+    }
+    s.push(']');
+    s
+}
+
+/// Hex string of 2-byte glyph ids for `text` in the subset font (Identity-H).
+fn glyph_hex(font: &Font, text: &str) -> String {
+    let mut s = String::with_capacity(text.len() * 4);
+    for c in text.chars() {
+        s.push_str(&format!("{:04X}", font.glyph_index(c)));
+    }
+    s
+}
+
+/// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
+/// stays selectable. Only the glyphs the document uses appear.
+fn tounicode_cmap(font: &Font) -> String {
+    // Collect (gid, char) over the Latin-1 + common range present in the subset.
+    let mut entries: Vec<(u16, char)> = Vec::new();
+    for cp in 0x20u32..0x2C00 {
+        if let Some(c) = char::from_u32(cp) {
+            let g = font.glyph_index(c);
+            if g != 0 {
+                entries.push((g, c));
+            }
+        }
+    }
+    entries.sort_unstable();
+    entries.dedup_by_key(|(g, _)| *g);
+
+    let mut body = String::new();
+    for chunk in entries.chunks(100) {
+        body.push_str(&format!("{} beginbfchar\n", chunk.len()));
+        for (g, c) in chunk {
+            body.push_str(&format!("<{g:04X}> <{}>\n", utf16be_hex(*c)));
+        }
+        body.push_str("endbfchar\n");
+    }
+    format!(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
+         {body}endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
+    )
+}
+
+fn utf16be_hex(c: char) -> String {
+    let mut s = String::new();
+    let mut buf = [0u16; 2];
+    for u in c.encode_utf16(&mut buf) {
+        s.push_str(&format!("{u:04X}"));
+    }
+    s
+}
+
+/// Deterministic subset PostScript name, e.g. `FMDFA1+Embedded`.
+fn subset_psname(k: usize, slot: u8) -> String {
+    let tag: String = (0..6)
+        .map(|i| (b'A' + ((k as u8 + slot + i as u8) % 26)) as char)
+        .collect();
+    format!("{tag}+Embedded")
+}
+
+/// A minimal but valid empty single-page PDF (degenerate fallback).
+fn empty_pdf() -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut offsets = [0usize; 4];
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    for (n, body) in [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+        &format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W:.0} {PAGE_H:.0}] >>"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        offsets[n + 1] = buf.len();
+        buf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", n + 1).as_bytes());
+    }
+    let xref_pos = buf.len();
+    buf.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+    for off in offsets.iter().skip(1) {
+        buf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n").as_bytes(),
+    );
+    buf
+}
+
 // ---- text helpers -----------------------------------------------------------
 
 fn pdf_escape(s: &str) -> String {
@@ -358,25 +646,23 @@ fn pdf_escape(s: &str) -> String {
             '(' => o.push_str("\\("),
             ')' => o.push_str("\\)"),
             '\\' => o.push_str("\\\\"),
-            '•' => o.push_str("\\225"),
             '\r' => o.push_str("\\r"),
             '\n' => o.push(' '),
             c if (c as u32) < 256 => o.push(c),
-            // Non-Latin-1 codepoints have no WinAnsi byte; approximate.
             _ => o.push('?'),
         }
     }
     o
 }
 
-/// Greedy word-wrap to a max width (in points) using approximate metrics.
-fn wrap(text: &str, max_width: f32, size: f32, font: u8) -> Vec<String> {
+/// Greedy word-wrap to a max width (points) using the face's real metrics.
+fn wrap(text: &str, max_width: f32, size: f32, font: u8, faces: &Faces) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cur = String::new();
     let mut cur_w = 0.0_f32;
+    let sw = text_width(" ", size, font, faces);
     for word in text.split_whitespace() {
-        let ww = text_width(word, size, font);
-        let sw = text_width(" ", size, font);
+        let ww = text_width(word, size, font, faces);
         if !cur.is_empty() && cur_w + sw + ww > max_width {
             lines.push(std::mem::take(&mut cur));
             cur_w = 0.0;
@@ -399,14 +685,14 @@ fn wrap(text: &str, max_width: f32, size: f32, font: u8) -> Vec<String> {
     lines
 }
 
-fn clip_to_width(text: &str, max_width: f32, size: f32, font: u8) -> String {
-    if text_width(text, size, font) <= max_width {
+fn clip_to_width(text: &str, max_width: f32, size: f32, font: u8, faces: &Faces) -> String {
+    if text_width(text, size, font, faces) <= max_width {
         return text.to_string();
     }
     let mut out = String::new();
     let mut w = 0.0;
     for c in text.chars() {
-        let cw = char_width(c, font) * size / 1000.0;
+        let cw = faces.advance(font, c) * size / 1000.0;
         if w + cw > max_width {
             break;
         }
@@ -416,27 +702,8 @@ fn clip_to_width(text: &str, max_width: f32, size: f32, font: u8) -> String {
     out
 }
 
-fn text_width(s: &str, size: f32, font: u8) -> f32 {
-    s.chars().map(|c| char_width(c, font)).sum::<f32>() * size / 1000.0
-}
-
-/// Approximate base-14 advance width in 1/1000 em. Courier is monospaced; the
-/// Helvetica approximation is good enough for greedy wrapping (the viewer paints
-/// with the font's real metrics regardless).
-fn char_width(c: char, font: u8) -> f32 {
-    if font == F_MONO {
-        return 600.0;
-    }
-    match c {
-        ' ' => 278.0,
-        'i' | 'j' | 'l' | '.' | ',' | ':' | ';' | '\'' | '|' | '!' => 240.0,
-        'f' | 't' | 'r' | '(' | ')' | '[' | ']' | '/' | '\\' | '"' | '-' => 320.0,
-        'm' | 'w' | 'M' | 'W' => 880.0,
-        'A'..='Z' => 690.0,
-        '0'..='9' => 556.0,
-        c if c.is_ascii_lowercase() => 540.0,
-        _ => 560.0,
-    }
+fn text_width(s: &str, size: f32, font: u8, faces: &Faces) -> f32 {
+    s.chars().map(|c| faces.advance(font, c)).sum::<f32>() * size / 1000.0
 }
 
 fn inline_text(inlines: &[Inline]) -> String {

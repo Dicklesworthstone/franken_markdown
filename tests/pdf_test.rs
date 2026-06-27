@@ -29,7 +29,19 @@ fn pdf_has_valid_header_xref_and_eof_marker() {
     assert_eq!(&pdf[xref_offset..xref_offset + 4], b"xref");
     assert!(text.contains("/Type /Catalog"));
     assert!(text.contains("/Type /Pages"));
-    assert!(text.contains("/Subtype /Type1 /BaseFont /Helvetica"));
+    // Text is set in embedded subset faces (Type0/Identity-H + CIDFontType2 with
+    // a FontFile2 program), not base-14 fonts.
+    assert!(text.contains("/Subtype /Type0"), "composite Type0 font");
+    assert!(
+        text.contains("/Encoding /Identity-H"),
+        "identity glyph encoding"
+    );
+    assert!(
+        text.contains("/Subtype /CIDFontType2"),
+        "CID descendant font"
+    );
+    assert!(text.contains("/FontFile2"), "embedded subset font program");
+    assert!(text.contains("/ToUnicode"), "selectable text mapping");
 }
 
 #[test]

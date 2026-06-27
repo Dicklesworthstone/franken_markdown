@@ -169,24 +169,32 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                 title,
                 content,
             } => {
-                let t = title
-                    .as_deref()
-                    .map(|s| format!(" title=\"{}\"", escape_attr(s)))
-                    .unwrap_or_default();
-                out.push_str(&format!("<a href=\"{}\"{t}>", escape_attr(dest)));
-                render_inlines(content, out, opts);
-                out.push_str("</a>");
+                if let Some(href) = safe_url(dest, UrlContext::Link) {
+                    let t = title
+                        .as_deref()
+                        .map(|s| format!(" title=\"{}\"", escape_attr(s)))
+                        .unwrap_or_default();
+                    out.push_str(&format!("<a href=\"{}\"{t}>", escape_attr(href)));
+                    render_inlines(content, out, opts);
+                    out.push_str("</a>");
+                } else {
+                    render_inlines(content, out, opts);
+                }
             }
             Inline::Image { dest, title, alt } => {
-                let t = title
-                    .as_deref()
-                    .map(|s| format!(" title=\"{}\"", escape_attr(s)))
-                    .unwrap_or_default();
-                out.push_str(&format!(
-                    "<img src=\"{}\" alt=\"{}\"{t}>",
-                    escape_attr(dest),
-                    escape_attr(alt)
-                ));
+                if let Some(src) = safe_url(dest, UrlContext::Image) {
+                    let t = title
+                        .as_deref()
+                        .map(|s| format!(" title=\"{}\"", escape_attr(s)))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "<img src=\"{}\" alt=\"{}\"{t}>",
+                        escape_attr(src),
+                        escape_attr(alt)
+                    ));
+                } else {
+                    out.push_str(&escape_text(alt));
+                }
             }
             Inline::SoftBreak => out.push('\n'),
             Inline::HardBreak => out.push_str("<br>\n"),
@@ -282,6 +290,65 @@ fn escape_attr(s: &str) -> String {
         }
     }
     o
+}
+
+#[derive(Clone, Copy)]
+enum UrlContext {
+    Link,
+    Image,
+}
+
+enum UrlScheme {
+    None,
+    Scheme(String),
+    Suspicious,
+}
+
+fn safe_url(url: &str, context: UrlContext) -> Option<&str> {
+    let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    match url_scheme(trimmed) {
+        UrlScheme::None => Some(trimmed),
+        UrlScheme::Scheme(scheme) if allowed_url_scheme(&scheme, context) => Some(trimmed),
+        UrlScheme::Scheme(_) | UrlScheme::Suspicious => None,
+    }
+}
+
+fn url_scheme(url: &str) -> UrlScheme {
+    let mut scheme = String::new();
+    let mut skipped_gap = false;
+    for ch in url.chars() {
+        if matches!(ch, '/' | '?' | '#') {
+            return UrlScheme::None;
+        }
+        if ch == ':' {
+            if skipped_gap || !valid_url_scheme(&scheme) {
+                return UrlScheme::Suspicious;
+            }
+            return UrlScheme::Scheme(scheme.to_ascii_lowercase());
+        }
+        if ch.is_ascii_whitespace() || ch.is_control() {
+            skipped_gap = true;
+            continue;
+        }
+        scheme.push(ch);
+    }
+    UrlScheme::None
+}
+
+fn valid_url_scheme(scheme: &str) -> bool {
+    let mut chars = scheme.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
+    match context {
+        UrlContext::Link => matches!(scheme, "http" | "https" | "mailto" | "tel"),
+        UrlContext::Image => matches!(scheme, "http" | "https"),
+    }
 }
 
 /// The default, dependency-free, gorgeous stylesheet.

@@ -68,6 +68,38 @@ fn html_escaping_is_safe() {
 }
 
 #[test]
+fn unsafe_markdown_url_schemes_are_neutralized() {
+    let html = render(
+        "[bad](javascript:alert(1)) \
+         [obfuscated](<java\tscript:alert(2)>) \
+         ![image alt](data:image/svg+xml;base64,PHN2Zy8+) \
+         [web](https://example.com?q=1) \
+         [mail](mailto:hello@example.com) \
+         [phone](tel:+15551234567) \
+         [anchor](#section) \
+         [relative](docs/page.md) \
+         [network](//example.com/image.png) \
+         ![remote](https://example.com/image.png)",
+    );
+
+    assert!(!html.contains("javascript:"));
+    assert!(!html.contains("java\tscript:"));
+    assert!(!html.contains("data:image"));
+    assert!(!html.contains("<a href=\"javascript"));
+    assert!(!html.contains("<img src=\"data:"));
+    assert!(html.contains("bad"));
+    assert!(html.contains("obfuscated"));
+    assert!(html.contains("image alt"));
+    assert!(html.contains("<a href=\"https://example.com?q=1\">web</a>"));
+    assert!(html.contains("<a href=\"mailto:hello@example.com\">mail</a>"));
+    assert!(html.contains("<a href=\"tel:+15551234567\">phone</a>"));
+    assert!(html.contains("<a href=\"#section\">anchor</a>"));
+    assert!(html.contains("<a href=\"docs/page.md\">relative</a>"));
+    assert!(html.contains("<a href=\"//example.com/image.png\">network</a>"));
+    assert!(html.contains("<img src=\"https://example.com/image.png\" alt=\"remote\">"));
+}
+
+#[test]
 fn serif_theme_changes_font_stack() {
     let opts = HtmlOptions {
         theme: Theme::serif(),

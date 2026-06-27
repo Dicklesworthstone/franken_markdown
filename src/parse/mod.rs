@@ -117,6 +117,14 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
             continue;
         }
 
+        if indented_code_start(line) {
+            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
+            let (_code, used) = parse_indented_code(&rest);
+            spans.push(span_for_lines(&lines, i, i + used));
+            i += used;
+            continue;
+        }
+
         if line.trim_start().starts_with('>') {
             let start = i;
             while i < lines.len() && lines[i].text.trim_start().starts_with('>') {
@@ -163,6 +171,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
             if is_thematic_break(lines[i].text)
                 || atx_heading(lines[i].text).is_some()
                 || open_fence(lines[i].text).is_some()
+                || indented_code_start(lines[i].text)
                 || lines[i].text.trim_start().starts_with('>')
                 || html_block_start(lines[i].text)
                 || list_marker(lines[i].text).is_some()
@@ -294,6 +303,12 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             blocks.push(Block::CodeBlock { lang, code });
             continue;
         }
+        if indented_code_start(line) {
+            let (code, used) = parse_indented_code(&lines[i..]);
+            blocks.push(Block::CodeBlock { lang: None, code });
+            i += used;
+            continue;
+        }
         if line.trim_start().starts_with('>') {
             let mut inner = Vec::new();
             while i < lines.len() && lines[i].trim_start().starts_with('>') {
@@ -343,6 +358,7 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             if is_thematic_break(lines[i])
                 || atx_heading(lines[i]).is_some()
                 || open_fence(lines[i]).is_some()
+                || indented_code_start(lines[i])
                 || lines[i].trim_start().starts_with('>')
                 || html_block_start(lines[i])
                 || list_marker(lines[i]).is_some()
@@ -499,6 +515,36 @@ fn open_fence(line: &str) -> Option<(char, usize, &str)> {
 fn is_close_fence(line: &str, ch: char, len: usize) -> bool {
     let t = line.trim();
     t.chars().all(|c| c == ch) && t.chars().count() >= len && !t.is_empty()
+}
+
+fn indented_code_start(line: &str) -> bool {
+    leading_spaces(line) >= 4
+}
+
+fn parse_indented_code(lines: &[&str]) -> (String, usize) {
+    let mut code = String::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        if lines[i].trim().is_empty() {
+            let mut next = i + 1;
+            while next < lines.len() && lines[next].trim().is_empty() {
+                next += 1;
+            }
+            if next >= lines.len() || !indented_code_start(lines[next]) {
+                break;
+            }
+            code.push('\n');
+            i += 1;
+            continue;
+        }
+        if !indented_code_start(lines[i]) {
+            break;
+        }
+        code.push_str(strip_n(lines[i], 4));
+        code.push('\n');
+        i += 1;
+    }
+    (code, i)
 }
 
 fn strip_blockquote(line: &str) -> String {

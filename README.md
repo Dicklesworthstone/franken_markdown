@@ -109,7 +109,7 @@ Implemented today:
 
 - clean-room AST and parser for a useful CommonMark/GFM subset,
 - headings, paragraphs, fenced code, blockquotes, unordered/ordered/task lists,
-  pipe tables with alignment, thematic breaks,
+  indented code, pipe tables with alignment, thematic breaks,
 - lazy list-item continuation and nested ordered/unordered lists,
 - inline emphasis, strong, strikethrough, code spans, links, images, autolinks,
   hard and soft breaks,

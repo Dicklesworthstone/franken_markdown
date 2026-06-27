@@ -179,3 +179,19 @@ fn malformed_angle_bracket_text_stays_escaped_text() {
 
     assert!(out.contains("2 &lt; 3 and &lt;not closed"));
 }
+
+#[test]
+fn top_level_indented_code_blocks_strip_one_code_indent() {
+    let out = html("    let x = 1;\n        let y = 2;\n    <tag>\n\nnext");
+
+    assert!(out.contains("<pre><code>let x = 1;\n    let y = 2;\n&lt;tag&gt;\n</code></pre>"));
+    assert!(out.contains("<p>next</p>"));
+}
+
+#[test]
+fn list_item_indentation_still_belongs_to_the_list_item() {
+    let out = html("- item\n    still item text");
+
+    assert!(out.contains("<li>item\n  still item text</li>"));
+    assert!(!out.contains("<pre><code>still item text"));
+}

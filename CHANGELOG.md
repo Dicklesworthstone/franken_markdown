@@ -95,6 +95,8 @@ project has no tags or GitHub Releases yet.
   parser diagnostics for malformed reference definitions and unclosed fences.
 - Added conservative raw HTML block/inline parsing with default escaping and
   trusted pass-through only when `allow_raw_html` / `--allow-html` is enabled.
+- Added top-level four-space indented code block parsing while preserving
+  existing list-item indentation behavior.
 
 ## 2026-06-26 - Pre-Phase-0 Scaffold
 

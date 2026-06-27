@@ -1,0 +1,85 @@
+# franken_markdown — pure-Rust, dependency-lean, ultra-fast Markdown renderer.
+#
+# Philosophy (see COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md and AGENTS.md):
+#   * The ENGINE (the library) has ZERO third-party dependencies — pure std.
+#     Our own focused Markdown parser, HTML emitter, text/font subsystem, layout
+#     engine, and PDF writer. No comrak / pulldown-cmark / syntect / cosmic-text
+#     / krilla / typst / blitz, and therefore none of the hundreds of transitive
+#     crates they drag in (smaller attack surface, instant builds, full control).
+#   * Only the CLI surface pulls a tiny, audited commodity crate (`clap`), behind
+#     the default `cli` feature. A `--no-default-features` build (e.g. the wasm
+#     target) compiles the engine with no external crates at all.
+#   * `asupersync` is the orchestration/cancellation/budget foundation for batch
+#     and streaming renders, added by its owning bead (kept out of the v0 hot
+#     path so the core stays trivially auditable).
+[package]
+name = "franken_markdown"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Pure-Rust, dependency-lean, ultra-fast Markdown -> beautiful all-in-one HTML & tiny optimized PDF (library + single-binary CLI: fmd)"
+readme = "README.md"
+repository = "https://github.com/Dicklesworthstone/franken_markdown"
+homepage = "https://github.com/Dicklesworthstone/franken_markdown"
+keywords = ["markdown", "pdf", "html", "renderer", "typesetting"]
+categories = ["command-line-utilities", "text-processing"]
+authors = ["Jeffrey Emanuel"]
+publish = false
+
+[lib]
+name = "franken_markdown"
+path = "src/lib.rs"
+
+# Two binaries from one shared entrypoint (`cli::main`), each from its own thin
+# shim so no source file is shared across build targets. The long name builds
+# from src/main.rs; the short `fmd` alias — what agents and humans actually type
+# — builds from src/bin/fmd.rs.
+[[bin]]
+name = "franken_markdown"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "fmd"
+path = "src/bin/fmd.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# CLI surface only. The engine library never depends on these.
+cli = ["dep:clap"]
+
+[dependencies]
+# The ONLY third-party crate, and only for the CLI argument parser. The library
+# target (the renderer itself) compiles with zero external dependencies.
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+# Size- and speed-optimized release: tiny binaries, tiny PDFs, max throughput.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Profiling build: keep symbols/frame pointers so samplers can attribute frames.
+# NEVER profile the size-stripped `release` profile.
+[profile.release-perf]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+strip = false
+panic = "unwind"

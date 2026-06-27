@@ -60,17 +60,20 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions) {
             out.push_str("</p>\n");
         }
         Block::CodeBlock { lang, code } => {
-            // Syntax-token coloring is a clean-room subsystem (bead); for now the
-            // language is recorded as a class so highlighting can be layered on
-            // without changing the emitter.
             let cls = lang
                 .as_deref()
                 .map(|l| format!(" class=\"language-{}\"", escape_attr(l)))
                 .unwrap_or_default();
-            out.push_str(&format!(
-                "<pre><code{cls}>{}</code></pre>\n",
-                escape_text(code)
-            ));
+            out.push_str(&format!("<pre><code{cls}>"));
+            // Clean-room syntax highlighting when we have a lexer for the
+            // language; otherwise the code is rendered as escaped plain text.
+            match lang.as_deref() {
+                Some(l) if crate::highlight::is_supported(l) => {
+                    highlight_code(l, code, out);
+                }
+                _ => out.push_str(&escape_text(code)),
+            }
+            out.push_str("</code></pre>\n");
         }
         Block::BlockQuote(inner) => {
             out.push_str("<blockquote>\n");
@@ -236,6 +239,24 @@ fn slug(text: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
+/// Emit highlighted code: one `<span class="tok-...">` per classified token,
+/// always HTML-escaped; plain tokens are escaped text with no wrapping span.
+fn highlight_code(lang: &str, code: &str, out: &mut String) {
+    for span in crate::highlight::highlight(lang, code) {
+        let text = code.get(span.start..span.end).unwrap_or("");
+        match span.kind.css_class() {
+            Some(cls) => {
+                out.push_str("<span class=\"");
+                out.push_str(cls);
+                out.push_str("\">");
+                out.push_str(&escape_text(text));
+                out.push_str("</span>");
+            }
+            None => out.push_str(&escape_text(text)),
+        }
+    }
+}
+
 fn escape_text(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -277,11 +298,31 @@ fn default_css(theme: &Theme) -> String {
         "{LIGHT_VARS}\n\
 :root {{ --fmd-base: {base}px; --fmd-measure: {measure}px; --fmd-accent: {accent}; \
 --fmd-font-body: {body_font}; --fmd-font-mono: {mono_font}; }}\n\
-{BASE_CSS}\n{dark}"
+{BASE_CSS}\n{TOKEN_CSS}\n{dark}"
     )
 }
 
 const LIGHT_VARS: &str = ":root {\n  --fmd-fg: #1f2328;\n  --fmd-fg-muted: #59636e;\n  --fmd-bg: #ffffff;\n  --fmd-bg-subtle: #f6f8fa;\n  --fmd-border: #d1d9e0;\n  --fmd-border-muted: #e6e8eb;\n  --fmd-code-bg: #f6f8fa;\n  --fmd-stripe: #f6f8fa;\n  --fmd-quote-fg: #59636e;\n  --fmd-quote-bar: #d1d9e0;\n}";
+
+const TOKEN_CSS: &str = r#"
+.tok-kw { color: #cf222e; }
+.tok-ty { color: #953800; }
+.tok-fn { color: #6639ba; }
+.tok-st { color: #0a3069; }
+.tok-nu { color: #0550ae; }
+.tok-cm { color: #6e7781; font-style: italic; }
+.tok-op { color: #0550ae; }
+.tok-pn { color: inherit; }
+@media (prefers-color-scheme: dark) {
+  .tok-kw { color: #ff7b72; }
+  .tok-ty { color: #ffa657; }
+  .tok-fn { color: #d2a8ff; }
+  .tok-st { color: #a5d6ff; }
+  .tok-nu { color: #79c0ff; }
+  .tok-cm { color: #8b949e; }
+  .tok-op { color: #79c0ff; }
+}
+"#;
 
 const BASE_CSS: &str = r#"
 *, *::before, *::after { box-sizing: border-box; }

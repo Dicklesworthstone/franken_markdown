@@ -468,6 +468,18 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
     let mut i = 0usize;
 
     while i < lines.len() {
+        // Fenced code block contents are literal text, never reference
+        // definitions. Skip over the whole fence (matching the block parser's
+        // own fence handling) so a `[label]: dest`-looking code line is not
+        // extracted and silently deleted from the rendered code block.
+        if let Some((fence_ch, fence_len, _info)) = open_fence(lines[i]) {
+            i += 1;
+            while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
+                i += 1;
+            }
+            i += 1; // step past the closing fence (or past end if unclosed)
+            continue;
+        }
         let Some((label, mut reference)) = parse_reference_definition(lines[i]) else {
             i += 1;
             continue;

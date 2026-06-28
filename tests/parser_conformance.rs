@@ -202,7 +202,7 @@ fn lazy_list_item_continuation_stays_in_the_item() {
 fn nested_unordered_lists_render_as_nested_lists() {
     let out = html("- parent\n  - child\n- sibling");
 
-    assert!(out.contains("<p>parent</p>\n<ul>\n<li>child</li>"));
+    assert!(out.contains("<li>parent\n<ul>\n<li>child</li>"));
     assert!(out.contains("<li>sibling</li>"));
 }
 
@@ -277,7 +277,7 @@ fn blockquote_lists_can_contain_nested_lists() {
     let out = html("> - quoted\n>   - nested");
 
     assert!(out.contains("<blockquote>\n<ul>"));
-    assert!(out.contains("<p>quoted</p>\n<ul>\n<li>nested</li>"));
+    assert!(out.contains("<li>quoted\n<ul>\n<li>nested</li>"));
 }
 
 #[test]

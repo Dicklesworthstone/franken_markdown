@@ -1185,7 +1185,18 @@ fn parse_list_profiled(
 
             if leading_spaces(lines[i]) >= m.content_indent {
                 let stripped = strip_n(lines[i], m.content_indent).to_string();
-                if list_marker(&stripped).is_some_and(|marker| marker.ordered && marker.start != 1)
+                // A non-1-start ordered marker cannot interrupt a paragraph, so
+                // after prose it would be lazily absorbed; a blank line forces it
+                // into its own sub-list. But when the previous content line is
+                // itself a list item, this marker is just the natural 2nd/3rd/...
+                // item of an ordered sub-list (start 2, 3, ...) and must stay in
+                // one tight list — do not split it.
+                let prev_is_list_item = item_lines
+                    .last()
+                    .is_some_and(|prev| list_marker(prev).is_some());
+                if !prev_is_list_item
+                    && list_marker(&stripped)
+                        .is_some_and(|marker| marker.ordered && marker.start != 1)
                     && item_lines
                         .last()
                         .is_some_and(|prev| !prev.trim().is_empty())

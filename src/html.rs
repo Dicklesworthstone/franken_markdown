@@ -145,15 +145,22 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut Re
             }
             None => out.push_str("<li>"),
         }
-        // Tight lists: render a single paragraph item without the <p> wrapper.
-        if list.tight && item.blocks.len() == 1 {
-            if let Some(Block::Paragraph(inlines)) = item.blocks.first() {
-                render_inlines(inlines, out, opts);
-                out.push_str("</li>\n");
-                continue;
+        // Tight lists strip the <p> wrapper from every direct-child paragraph of
+        // an item (CommonMark tight-list rendering) — including items that also
+        // hold a nested list or other block. Loose lists and non-paragraph blocks
+        // render normally. A stripped paragraph followed by another block is
+        // separated by a newline so the following block opens on its own line.
+        for (idx, block) in item.blocks.iter().enumerate() {
+            match block {
+                Block::Paragraph(inlines) if list.tight => {
+                    render_inlines(inlines, out, opts);
+                    if idx + 1 < item.blocks.len() {
+                        out.push('\n');
+                    }
+                }
+                _ => render_block(block, out, opts, state),
             }
         }
-        render_blocks(&item.blocks, out, opts, state);
         out.push_str("</li>\n");
     }
     out.push_str(&format!("</{tag}>\n"));

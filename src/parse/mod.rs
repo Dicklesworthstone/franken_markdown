@@ -586,9 +586,19 @@ fn parse_blocks_with_refs_profiled(
         if line.trim_start().starts_with('>') {
             let started = profiler.checkpoint();
             let mut inner = Vec::new();
-            while i < lines.len() && lines[i].trim_start().starts_with('>') {
-                inner.push(strip_blockquote(lines[i]));
-                i += 1;
+            while i < lines.len() {
+                if lines[i].trim_start().starts_with('>') {
+                    inner.push(strip_blockquote(lines[i]));
+                    i += 1;
+                } else if blockquote_lazy_continuation(inner.last().map(String::as_str), lines[i]) {
+                    // CommonMark lazy continuation: a non-blank, non-`>` line that
+                    // does not start a new block continues the blockquote's open
+                    // paragraph instead of ending the quote.
+                    inner.push(lines[i].trim_start().to_string());
+                    i += 1;
+                } else {
+                    break;
+                }
             }
             let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
             let inner_blocks = parse_blocks_with_refs_profiled(&inner_refs, refs, profiler);
@@ -951,6 +961,40 @@ fn strip_blockquote(line: &str) -> String {
     rest.strip_prefix(' ').unwrap_or(rest).to_string()
 }
 
+/// True when `line` lazily continues an open paragraph inside a block quote.
+///
+/// CommonMark lets a block quote's paragraph be continued by a following line
+/// that omits the `>` marker ("laziness"), provided the previous quoted line was
+/// open paragraph text and the continuation line would not itself start a new
+/// block. `prev` is the previously collected (already `>`-stripped) quote line.
+fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
+    if line.trim().is_empty() {
+        return false;
+    }
+    // Only an OPEN paragraph can be lazily continued: the previous quoted line
+    // must be plain paragraph text, not a blank or another block's opener.
+    let prev_is_open_paragraph = prev.is_some_and(|p| {
+        !p.trim().is_empty()
+            && !is_thematic_break(p)
+            && atx_heading(p).is_none()
+            && open_fence(p).is_none()
+            && list_marker(p).is_none()
+            && !html_block_start(p)
+            && !p.trim_start().starts_with('>')
+    });
+    if !prev_is_open_paragraph {
+        return false;
+    }
+    // The continuation line itself must be paragraph text, not a block starter
+    // (a heading, fence, thematic break, list that interrupts, or HTML block all
+    // end the quote rather than continue it).
+    !is_thematic_break(line)
+        && atx_heading(line).is_none()
+        && open_fence(line).is_none()
+        && !html_block_start(line)
+        && !list_marker_interrupts_paragraph(line)
+}
+
 fn html_block_start(line: &str) -> bool {
     let t = line.trim_start();
     if t.starts_with("<!--") || t.starts_with("<!") || t.starts_with("<?") {
@@ -1172,15 +1216,15 @@ fn parse_list_profiled(
                     break;
                 }
                 // A blank line followed by a new DIRECT block of THIS item (a
-                // second paragraph) means the item holds two block-level elements
-                // separated by a blank line, which makes the whole list loose
-                // (CommonMark). Guard against false positives: a blank between two
-                // items of a nested sub-list (the post-blank line is itself a list
-                // marker) loosens that sub-list via recursion, not this one; and a
-                // blank followed by a dedent (the item/list ending) is a trailing
-                // blank. Only the non-marker continuation case loosens here.
+                // second paragraph at the item's content column) makes the list
+                // loose (CommonMark: an item holding two blank-separated blocks).
+                // Require the post-blank line to sit at EXACTLY the content column
+                // and to not be a list marker: deeper-indented content belongs to
+                // a nested sub-list (whose own blank loosens it via recursion), a
+                // marker continues a sub-list, and a dedent is a trailing blank —
+                // none of those loosen THIS list.
                 if j < lines.len()
-                    && leading_spaces(lines[j]) >= m.content_indent
+                    && leading_spaces(lines[j]) == m.content_indent
                     && list_marker(strip_n(lines[j], m.content_indent)).is_none()
                 {
                     tight = false;
@@ -1573,7 +1617,9 @@ fn parse_inlines_with_refs_profiled(
                 i += n;
             }
             _ => {
-                if let Some((label, dest, next)) = parse_bare_url_autolink(&bytes, i) {
+                if let Some((label, dest, next)) = parse_bare_url_autolink(&bytes, i)
+                    .or_else(|| parse_bare_email_autolink(&bytes, i))
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -1804,11 +1850,13 @@ fn process_emphasis(
             InlineEl::Delim { count, .. } => *count,
             _ => 0,
         };
-        // Prefer strong as the OUTER wrapper for a single multi-delimiter run
-        // (`***x***` -> <strong><em>x</em></strong>): consume one delimiter for
-        // the inner emphasis first when both runs still have 3+, otherwise take
-        // two for strong, otherwise one for emphasis.
-        let use_delims = if ocount >= 3 && ccount >= 3 {
+        // Pair delimiters into strong (2) or emphasis (1). A single multi-run gets
+        // strong as the OUTER wrapper (`***x***` -> <strong><em>x</em></strong>)
+        // by consuming the lone emphasis delimiter first — but ONLY when an odd
+        // delimiter is actually left over (both runs odd). Even runs pair entirely
+        // into strong, so `****x****` is <strong><strong>x</strong></strong>
+        // (bold), never nested emphasis (which would wrongly render as italic).
+        let use_delims = if ocount >= 3 && ccount >= 3 && ocount % 2 == 1 && ccount % 2 == 1 {
             1
         } else if ocount >= 2 && ccount >= 2 {
             2
@@ -2185,6 +2233,54 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
     } else {
         label.clone()
     };
+    Some((label, dest, end))
+}
+
+/// Parse a bare (scheme-less) email address into a `mailto:` autolink, GFM-style.
+///
+/// Returns `(label, dest, end)` where `label` is the matched address and `dest`
+/// is `mailto:<label>`. Conservative: the local part is alphanumeric plus
+/// `. - _ +`, the domain is dot-separated alphanumeric/`-`/`_` labels with at
+/// least one dot, trailing sentence dots are trimmed, and the domain may not end
+/// in `-`/`_` — so ordinary `@`-containing prose is not falsely linked.
+fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
+    if !bare_url_left_boundary(chars, i) {
+        return None;
+    }
+    let mut j = i;
+    while chars
+        .get(j)
+        .is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+    {
+        j += 1;
+    }
+    // Need a non-empty local part immediately followed by `@`.
+    if j == i || chars.get(j) != Some(&'@') {
+        return None;
+    }
+    j += 1;
+    let domain_start = j;
+    while chars
+        .get(j)
+        .is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        j += 1;
+    }
+    // Trim trailing dots (sentence punctuation), then require a real dotted domain
+    // that does not end in `-`/`_`.
+    let mut end = j;
+    while end > domain_start && chars[end - 1] == '.' {
+        end -= 1;
+    }
+    if end <= domain_start || matches!(chars[end - 1], '-' | '_') {
+        return None;
+    }
+    let domain: String = chars[domain_start..end].iter().collect();
+    if !domain.contains('.') {
+        return None;
+    }
+    let label: String = chars[i..end].iter().collect();
+    let dest = format!("mailto:{label}");
     Some((label, dest, end))
 }
 

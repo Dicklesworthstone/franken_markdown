@@ -1028,17 +1028,16 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             strike: false,
             width: marker_width,
         };
-        // The item's leading inline content is its run of leading paragraph
-        // blocks (rendered on the marker line, as before). Everything after the
-        // first non-paragraph block — nested lists, code, blockquotes, tables —
-        // is laid out as real child blocks at the item's content indent, so it
-        // no longer silently vanishes (nested lists/code/quotes used to be
-        // flattened to plain text or dropped entirely).
-        // Only the FIRST leading paragraph shares the marker line; any further
-        // leading paragraphs (a loose multi-paragraph item) render as their own
-        // blocks at the content indent. Otherwise consecutive leading paragraphs
-        // get tokenized back-to-back into one run and fuse — the inter-paragraph
-        // break and the joining space both disappear ("...para.Second para.").
+        // Split the item's blocks: only the FIRST block, when it is a paragraph,
+        // shares the marker line; everything else — any further (loose)
+        // paragraphs, nested lists, code, blockquotes, tables — is laid out as a
+        // real child block at the item's content indent. This holds two
+        // invariants:
+        //   * non-paragraph children no longer silently vanish (they used to be
+        //     flattened to plain text or dropped entirely); and
+        //   * consecutive leading paragraphs no longer fuse — tokenizing them
+        //     back-to-back dropped the inter-paragraph break and the joining
+        //     space, giving "...para.Second para.".
         let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
         let (leading, rest) = item.blocks.split_at(split);
 

@@ -588,3 +588,61 @@ fn fenced_code_closer_allows_three_spaces_but_not_four() {
     assert!(out.contains("<pre><code class=\"language-text\">inside\n</code></pre>"));
     assert!(out.contains("inside\n    ```\nstill code\n</code></pre>"));
 }
+
+#[test]
+fn blockquote_paragraph_continues_lazily() {
+    let out = html("> quoted line one\nlazy continuation");
+
+    assert!(out.contains("<blockquote>\n<p>quoted line one\nlazy continuation</p>\n</blockquote>"));
+}
+
+#[test]
+fn blockquote_lazy_continuation_stops_at_blank_or_block_starter() {
+    let blanked = html("> quoted\nlazy\n\noutside");
+    assert!(blanked.contains("<p>quoted\nlazy</p>"));
+    assert!(blanked.contains("</blockquote>\n<p>outside</p>"));
+
+    let heading = html("> quoted\n# Heading");
+    assert!(heading.contains("<blockquote>\n<p>quoted</p>\n</blockquote>"));
+    assert!(heading.contains("<h1 id=\"heading\">Heading</h1>"));
+}
+
+#[test]
+fn bare_email_becomes_mailto_autolink() {
+    assert!(html("Contact a@b.com today").contains("<a href=\"mailto:a@b.com\">a@b.com</a>"));
+    assert!(
+        html("me.first+tag@sub.example.org")
+            .contains("<a href=\"mailto:me.first+tag@sub.example.org\">")
+    );
+}
+
+#[test]
+fn bare_email_autolink_is_conservative() {
+    // No dot in the domain is not treated as an email.
+    assert!(!html("user@localhost stays plain").contains("mailto:"));
+    // A trailing sentence period is not part of the address.
+    let out = html("Mail a@b.com.");
+    assert!(out.contains("<a href=\"mailto:a@b.com\">a@b.com</a>"));
+    assert!(out.contains("</a>."));
+}
+
+#[test]
+fn even_length_emphasis_runs_are_bold_not_italic() {
+    // Four delimiters pair entirely into strong (bold), never nested emphasis.
+    assert!(html("****x****").contains("<p><strong><strong>x</strong></strong></p>"));
+    // Three delimiters keep the strong-outer / emphasis-inner shape (unchanged).
+    assert!(html("***x***").contains("<p><strong><em>x</em></strong></p>"));
+    // Five delimiters: bold wrappers with a single inner emphasis (odd leftover).
+    assert!(html("*****x*****").contains("<strong><strong><em>x</em></strong></strong>"));
+}
+
+#[test]
+fn blank_separated_blocks_loosen_only_their_own_list() {
+    // A second paragraph at the item's content column loosens that item's list.
+    assert!(html("- a\n\n  b").contains("<li><p>a</p>\n<p>b</p>\n</li>"));
+    // A blank inside a sub-list item loosens the INNER list, leaving the outer
+    // list tight.
+    let nested = html("- a\n  - b\n\n    cont");
+    assert!(nested.contains("<li>a\n<ul>"));
+    assert!(nested.contains("<li><p>b</p>\n<p>cont</p>"));
+}

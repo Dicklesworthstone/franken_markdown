@@ -1171,12 +1171,18 @@ fn parse_list_profiled(
                     i = j;
                     break;
                 }
-                // A blank line followed by more content that stays inside THIS
-                // item (indented to its content column) means the item holds two
-                // block-level elements separated by a blank line, which makes the
-                // whole list loose (CommonMark). A blank line followed by a dedent
-                // (the item/list ending) is a trailing blank and does not loosen.
-                if j < lines.len() && leading_spaces(lines[j]) >= m.content_indent {
+                // A blank line followed by a new DIRECT block of THIS item (a
+                // second paragraph) means the item holds two block-level elements
+                // separated by a blank line, which makes the whole list loose
+                // (CommonMark). Guard against false positives: a blank between two
+                // items of a nested sub-list (the post-blank line is itself a list
+                // marker) loosens that sub-list via recursion, not this one; and a
+                // blank followed by a dedent (the item/list ending) is a trailing
+                // blank. Only the non-marker continuation case loosens here.
+                if j < lines.len()
+                    && leading_spaces(lines[j]) >= m.content_indent
+                    && list_marker(strip_n(lines[j], m.content_indent)).is_none()
+                {
                     tight = false;
                 }
                 item_lines.push(String::new());

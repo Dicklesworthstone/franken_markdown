@@ -25,8 +25,9 @@ use crate::error::Result;
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
-    FontSize, LayoutUnit, ParagraphItem, Penalty, StyledText, TextBox, break_paragraph,
-    default_interword_glue, is_breakable_whitespace, measure_text_with_pairs,
+    FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit,
+    ParagraphItem, Penalty, StyledText, TextBox, break_paragraph, default_interword_glue,
+    is_breakable_whitespace, measure_text_with_pairs,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::Theme;
@@ -399,6 +400,54 @@ struct Tok {
     link: Option<LinkTarget>,
     /// True when this token is inside a `~~strikethrough~~` span.
     strike: bool,
+}
+
+#[derive(Clone)]
+struct LineTok {
+    tok: Tok,
+    /// Extra advance applied after this token. Used for deterministic
+    /// TeX-style glue stretch/shrink without changing the token's selectable
+    /// text bytes.
+    extra_advance: f32,
+}
+
+struct BuiltParagraph {
+    items: Vec<ParagraphItem>,
+    item_toks: Vec<Vec<Tok>>,
+    break_toks: Vec<Option<Tok>>,
+}
+
+#[derive(Clone, Copy)]
+struct PdfWordContext<'a> {
+    fs: FontSize,
+    faces: &'a Faces,
+    policy: ParagraphPolicy,
+    hyphenator: &'a Hyphenator,
+}
+
+#[derive(Clone, Copy)]
+struct ParagraphPolicy {
+    hyphenate: bool,
+    justify: bool,
+}
+
+impl ParagraphPolicy {
+    const RAGGED: Self = Self {
+        hyphenate: false,
+        justify: false,
+    };
+    const TEX_PARAGRAPH: Self = Self {
+        hyphenate: true,
+        justify: true,
+    };
+
+    const fn for_flow(kind: FlowKind) -> Self {
+        match kind {
+            FlowKind::Paragraph => Self::TEX_PARAGRAPH,
+            FlowKind::Heading => Self::RAGGED,
+            _ => Self::RAGGED,
+        }
+    }
 }
 
 /// Render a document to PDF bytes.
@@ -1470,70 +1519,210 @@ fn build_paragraph(
     toks: &[Tok],
     fs: FontSize,
     faces: &Faces,
-) -> (Vec<ParagraphItem>, Vec<Vec<Tok>>) {
+    policy: ParagraphPolicy,
+) -> BuiltParagraph {
     let mut items: Vec<ParagraphItem> = Vec::new();
     let mut item_toks: Vec<Vec<Tok>> = Vec::new();
+    let mut break_toks: Vec<Option<Tok>> = Vec::new();
     let mut word: Vec<Tok> = Vec::new();
-
-    let flush_word =
-        |items: &mut Vec<ParagraphItem>, item_toks: &mut Vec<Vec<Tok>>, word: &mut Vec<Tok>| {
-            if word.is_empty() {
-                return;
-            }
-            let plain: String = word.iter().map(|t| t.text.as_str()).collect();
-            let width = measure_word(word, fs, faces);
-            items.push(ParagraphItem::Box(TextBox {
-                text: plain.clone(),
-                runs: StyledText::plain(&plain), // unused by breaker; width is what matters
-                width,
-            }));
-            item_toks.push(std::mem::take(word));
-        };
+    let hyphenator = Hyphenator::english();
+    let word_cx = PdfWordContext {
+        fs,
+        faces,
+        policy,
+        hyphenator: &hyphenator,
+    };
 
     for tok in toks {
         if tok.space {
             if tok.hard_break {
                 if !word.is_empty() {
-                    flush_word(&mut items, &mut item_toks, &mut word);
+                    flush_pdf_word(
+                        &mut items,
+                        &mut item_toks,
+                        &mut break_toks,
+                        &mut word,
+                        word_cx,
+                    );
                 }
                 items.push(ParagraphItem::Penalty(Penalty {
                     width: LayoutUnit::ZERO,
-                    penalty: crate::layout::FORCED_BREAK_PENALTY,
+                    penalty: FORCED_BREAK_PENALTY,
                     flagged: false,
                 }));
                 item_toks.push(Vec::new());
+                break_toks.push(None);
                 continue;
             }
             if !word.is_empty() {
-                flush_word(&mut items, &mut item_toks, &mut word);
+                flush_pdf_word(
+                    &mut items,
+                    &mut item_toks,
+                    &mut break_toks,
+                    &mut word,
+                    word_cx,
+                );
             }
             // Only emit glue *between* two words (collapses runs of spaces).
             if matches!(items.last(), Some(ParagraphItem::Box(_))) {
                 let gw = measure_text_with_pairs(faces.get(tok.slot), " ", fs);
                 items.push(ParagraphItem::Glue(default_interword_glue(gw)));
                 item_toks.push(vec![tok.clone()]);
+                break_toks.push(None);
             }
         } else {
             word.push(tok.clone());
         }
     }
-    flush_word(&mut items, &mut item_toks, &mut word);
+    flush_pdf_word(
+        &mut items,
+        &mut item_toks,
+        &mut break_toks,
+        &mut word,
+        word_cx,
+    );
 
     if !matches!(
         items.last(),
         Some(ParagraphItem::Penalty(Penalty {
-            penalty: crate::layout::FORCED_BREAK_PENALTY,
+            penalty: FORCED_BREAK_PENALTY,
             ..
         }))
     ) {
         items.push(ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
-            penalty: crate::layout::FORCED_BREAK_PENALTY,
+            penalty: FORCED_BREAK_PENALTY,
             flagged: false,
         }));
         item_toks.push(Vec::new());
+        break_toks.push(None);
     }
-    (items, item_toks)
+    debug_assert_eq!(items.len(), item_toks.len());
+    debug_assert_eq!(items.len(), break_toks.len());
+    BuiltParagraph {
+        items,
+        item_toks,
+        break_toks,
+    }
+}
+
+fn flush_pdf_word(
+    items: &mut Vec<ParagraphItem>,
+    item_toks: &mut Vec<Vec<Tok>>,
+    break_toks: &mut Vec<Option<Tok>>,
+    word: &mut Vec<Tok>,
+    cx: PdfWordContext<'_>,
+) {
+    if word.is_empty() {
+        return;
+    }
+
+    let plain: String = word.iter().map(|t| t.text.as_str()).collect();
+    let points = if cx.policy.hyphenate && plain.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        cx.hyphenator
+            .hyphenation_points(&plain, HyphenationOptions::default())
+    } else {
+        Vec::new()
+    };
+
+    if points.is_empty() {
+        push_pdf_word_box(
+            items,
+            item_toks,
+            break_toks,
+            std::mem::take(word),
+            cx.fs,
+            cx.faces,
+        );
+        return;
+    }
+
+    let mut start = 0usize;
+    for point in points {
+        let part = split_pdf_word_tokens(word, start, point);
+        if !part.is_empty() {
+            let hyphen_tok = part.last().map(|tok| Tok {
+                text: "-".to_string(),
+                slot: tok.slot,
+                space: false,
+                hard_break: false,
+                link: tok.link.clone(),
+                strike: tok.strike,
+            });
+            let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
+                measure_text_with_pairs(cx.faces.get(tok.slot), "-", cx.fs)
+            });
+            push_pdf_word_box(items, item_toks, break_toks, part, cx.fs, cx.faces);
+            items.push(ParagraphItem::Penalty(Penalty {
+                width: hyphen_width,
+                penalty: 50,
+                flagged: true,
+            }));
+            item_toks.push(Vec::new());
+            break_toks.push(hyphen_tok);
+        }
+        start = point;
+    }
+
+    let tail = split_pdf_word_tokens(word, start, plain.chars().count());
+    if !tail.is_empty() {
+        push_pdf_word_box(items, item_toks, break_toks, tail, cx.fs, cx.faces);
+    }
+    word.clear();
+}
+
+fn push_pdf_word_box(
+    items: &mut Vec<ParagraphItem>,
+    item_toks: &mut Vec<Vec<Tok>>,
+    break_toks: &mut Vec<Option<Tok>>,
+    toks: Vec<Tok>,
+    fs: FontSize,
+    faces: &Faces,
+) {
+    if toks.is_empty() {
+        return;
+    }
+    let plain: String = toks.iter().map(|t| t.text.as_str()).collect();
+    let width = measure_word(&toks, fs, faces);
+    items.push(ParagraphItem::Box(TextBox {
+        text: plain.clone(),
+        runs: StyledText::plain(&plain), // unused by breaker; width is what matters
+        width,
+    }));
+    item_toks.push(toks);
+    break_toks.push(None);
+}
+
+fn split_pdf_word_tokens(word: &[Tok], start_char: usize, end_char: usize) -> Vec<Tok> {
+    if start_char >= end_char {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    for tok in word {
+        let tok_len = tok.text.chars().count();
+        let tok_start = cursor;
+        let tok_end = tok_start.saturating_add(tok_len);
+        cursor = tok_end;
+        if end_char <= tok_start || start_char >= tok_end {
+            continue;
+        }
+        let take_start = start_char.saturating_sub(tok_start);
+        let take_end = end_char.min(tok_end).saturating_sub(tok_start);
+        let text: String = tok
+            .text
+            .chars()
+            .skip(take_start)
+            .take(take_end.saturating_sub(take_start))
+            .collect();
+        if text.is_empty() {
+            continue;
+        }
+        let mut part = tok.clone();
+        part.text = text;
+        out.push(part);
+    }
+    out
 }
 
 /// Optimal-break (Knuth-Plass) styled tokens into baseline lines of positioned
@@ -1551,16 +1740,21 @@ fn layout_inlines(
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
-    let (items, item_toks) = build_paragraph(&toks, fs, cx.faces);
+    let policy = ParagraphPolicy::for_flow(flow.kind);
+    let built = build_paragraph(&toks, fs, cx.faces, policy);
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
-    if !items.iter().any(|it| matches!(it, ParagraphItem::Box(_))) {
+    if !built
+        .items
+        .iter()
+        .any(|it| matches!(it, ParagraphItem::Box(_)))
+    {
         gap(out, gap_after);
         return;
     }
 
     let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
-    let breaks = break_paragraph(&items, content_w);
+    let breaks = break_paragraph(&built.items, content_w);
     if breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
         layout_inlines_greedy(toks, indent, size, gap_after, cx.faces, cx.page, out);
@@ -1570,17 +1764,8 @@ fn layout_inlines(
 
     let n = breaks.len();
     for (i, lb) in breaks.iter().enumerate() {
-        let mut line: Vec<Tok> = Vec::new();
-        if let Some(range) = item_toks.get(lb.start..lb.end) {
-            for group in range {
-                line.extend(group.iter().cloned());
-            }
-        }
-        // Drop any trailing space tokens (e.g. an interior glue at line end).
-        while line.last().is_some_and(|t| t.space) {
-            line.pop();
-        }
-        let segs = build_segs(&line, left, size, cx.faces);
+        let line = line_tokens_for_break(&built, lb, content_w, policy.justify && i + 1 < n);
+        let segs = build_segs_adjusted(&line, left, size, cx.faces);
         out.push(Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
@@ -1618,9 +1803,14 @@ fn layout_prefixed_inlines(
     let start = out.len();
     let left = cx.page.left + spec.content_indent;
     let fs = font_size_of(spec.size);
-    let (items, item_toks) = build_paragraph(&toks, fs, cx.faces);
+    let policy = ParagraphPolicy::for_flow(spec.flow.kind);
+    let built = build_paragraph(&toks, fs, cx.faces, policy);
 
-    if !items.iter().any(|it| matches!(it, ParagraphItem::Box(_))) {
+    if !built
+        .items
+        .iter()
+        .any(|it| matches!(it, ParagraphItem::Box(_)))
+    {
         out.push(Line {
             size: spec.size,
             gap_after: spec.gap_after,
@@ -1639,7 +1829,7 @@ fn layout_prefixed_inlines(
 
     let content_w =
         lu_from_points_f32((cx.page.content_w - spec.content_indent).max(MIN_CONTENT_DIM));
-    let breaks = break_paragraph(&items, content_w);
+    let breaks = break_paragraph(&built.items, content_w);
     if breaks.is_empty() {
         let before = out.len();
         layout_inlines_greedy(
@@ -1661,16 +1851,8 @@ fn layout_prefixed_inlines(
     let n = breaks.len();
     let mut marker = Some(marker);
     for (i, lb) in breaks.iter().enumerate() {
-        let mut line: Vec<Tok> = Vec::new();
-        if let Some(range) = item_toks.get(lb.start..lb.end) {
-            for group in range {
-                line.extend(group.iter().cloned());
-            }
-        }
-        while line.last().is_some_and(|t| t.space) {
-            line.pop();
-        }
-        let mut segs = build_segs(&line, left, spec.size, cx.faces);
+        let line = line_tokens_for_break(&built, lb, content_w, policy.justify && i + 1 < n);
+        let mut segs = build_segs_adjusted(&line, left, spec.size, cx.faces);
         if i == 0 {
             if let Some(marker) = marker.take() {
                 segs.insert(0, marker);
@@ -1760,18 +1942,131 @@ fn trim_trailing_spaces(cur: &mut Vec<Tok>, cur_w: &mut f32, size: f32, faces: &
     }
 }
 
+fn line_tokens_for_break(
+    built: &BuiltParagraph,
+    lb: &crate::layout::LineBreak,
+    line_width: LayoutUnit,
+    justify: bool,
+) -> Vec<LineTok> {
+    let mut line = Vec::new();
+    let adjustments = glue_adjustments(&built.items, lb, line_width, justify);
+    let mut adjustment_pos = 0usize;
+    for idx in lb.start..lb.end {
+        while adjustment_pos < adjustments.len() && adjustments[adjustment_pos].0 < idx {
+            adjustment_pos += 1;
+        }
+        let extra = adjustments
+            .get(adjustment_pos)
+            .and_then(|(item_idx, extra)| (*item_idx == idx).then_some(*extra))
+            .unwrap_or(0.0);
+        if let Some(group) = built.item_toks.get(idx) {
+            for tok in group {
+                line.push(LineTok {
+                    tok: tok.clone(),
+                    extra_advance: if tok.space { extra } else { 0.0 },
+                });
+            }
+        }
+    }
+    while line.last().is_some_and(|t| t.tok.space) {
+        line.pop();
+    }
+    if let Some(Some(tok)) = built.break_toks.get(lb.end) {
+        line.push(LineTok {
+            tok: tok.clone(),
+            extra_advance: 0.0,
+        });
+    }
+    line
+}
+
+fn glue_adjustments(
+    items: &[ParagraphItem],
+    lb: &crate::layout::LineBreak,
+    line_width: LayoutUnit,
+    justify: bool,
+) -> Vec<(usize, f32)> {
+    if !justify || chosen_forced_break(items, lb) {
+        return Vec::new();
+    }
+    let delta = line_width.milli_points() as i64 - lb.natural_width.milli_points() as i64;
+    if delta == 0 {
+        return Vec::new();
+    }
+    let mut glues = Vec::new();
+    let mut total = 0i64;
+    for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
+        if let ParagraphItem::Glue(glue) = item {
+            let flex = glue_flex(*glue, delta);
+            if flex > 0 {
+                total = total.saturating_add(flex);
+                glues.push((idx, flex));
+            }
+        }
+    }
+    if total <= 0 || glues.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::with_capacity(glues.len());
+    let mut assigned = 0i64;
+    for (pos, (idx, flex)) in glues.iter().enumerate() {
+        let extra = if pos + 1 == glues.len() {
+            delta.saturating_sub(assigned)
+        } else {
+            delta.saturating_mul(*flex) / total
+        };
+        assigned = assigned.saturating_add(extra);
+        out.push((*idx, extra as f32 / 1000.0));
+    }
+    out
+}
+
+fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -> bool {
+    matches!(
+        items.get(lb.end),
+        Some(ParagraphItem::Penalty(Penalty {
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+            ..
+        }))
+    )
+}
+
+fn glue_flex(glue: Glue, delta: i64) -> i64 {
+    if delta > 0 {
+        glue.stretch.milli_points() as i64
+    } else {
+        glue.shrink.milli_points() as i64
+    }
+}
+
 /// Group consecutive same-slot, same-link tokens into positioned segments,
 /// accumulating each segment's layout (non-kerned) advance width.
 fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+    let line_toks = toks
+        .iter()
+        .cloned()
+        .map(|tok| LineTok {
+            tok,
+            extra_advance: 0.0,
+        })
+        .collect::<Vec<_>>();
+    build_segs_adjusted(&line_toks, left, size, faces)
+}
+
+fn build_segs_adjusted(toks: &[LineTok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
     let mut segs: Vec<Seg> = Vec::new();
     let mut x = left;
     let mut cur: Option<Seg> = None;
-    for tok in toks {
+    for line_tok in toks {
+        let tok = &line_tok.tok;
         let tw = token_width(tok, size, faces);
+        let advance = tw + line_tok.extra_advance;
         match &mut cur {
             Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
                 s.text.push_str(&tok.text);
-                s.width += tw;
+                s.width += advance;
             }
             _ => {
                 if let Some(s) = cur.take() {
@@ -1788,11 +2083,17 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
                         Fill::Black
                     },
                     strike: tok.strike,
-                    width: tw,
+                    width: advance,
                 });
             }
         }
-        x += tw;
+        x += advance;
+        if tok.space
+            && line_tok.extra_advance != 0.0
+            && let Some(s) = cur.take()
+        {
+            segs.push(s);
+        }
     }
     if let Some(s) = cur {
         segs.push(s);

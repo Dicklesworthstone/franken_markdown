@@ -42,7 +42,7 @@ browser/WASM.
 | Beautiful default output | Cursor/GitHub-style theme, high-readable measure, polished tables, blockquotes, code blocks |
 | Shared style model | Typed theme v1 for font family, mono family, colors, spacing, table density, code theme, dark mode, and page contract |
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
-| PDF quality | Compact deterministic embedded-font PDF with Knuth-Plass line breaking, measured/striped tables, nested lists, syntax-highlighted code, tags, links, outlines, metadata, and compressed streams; hyphenation and deeper pagination are roadmap |
+| PDF quality | Compact deterministic embedded-font PDF with Knuth-Plass line breaking, deterministic discretionary hyphenation and glue justification for body paragraphs, measured/striped tables, nested lists, syntax-highlighted code, tags, links, outlines, metadata, and compressed streams; deeper pagination remains roadmap |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
 | Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage` |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are product targets |
@@ -87,10 +87,11 @@ deterministic PDFs today with embedded curated font subsets, real metrics,
 focused GPOS kerning, GSUB ligatures, selectable text, link annotations,
 outlines, title/author/SOURCE_DATE_EPOCH metadata, tagged-PDF structure, and
 compressed large page streams. The writer now does Knuth-Plass line breaking,
-measured-column tables with per-cell alignment and zebra striping, nested lists,
-tinted blockquotes, strikethrough, H1/H2 heading rules, and syntax-highlighted
-code panels. The beads for hyphenation, deeper pagination controls, and further
-visual polish remain open.
+deterministic discretionary hyphenation and glue justification for body
+paragraphs, measured-column tables with per-cell alignment and zebra striping,
+nested lists, tinted blockquotes, strikethrough, H1/H2 heading rules, and
+syntax-highlighted code panels. The beads for deeper pagination controls and
+further visual polish remain open.
 
 ```bash
 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
@@ -142,6 +143,8 @@ Implemented today:
 - real TrueType metrics, focused GPOS pair kerning, and GSUB standard ligatures
   in PDF output,
 - Knuth-Plass optimal line breaking in the PDF paragraph layout,
+- deterministic TeX/Liang discretionary hyphenation and glue justification for
+  PDF body paragraphs,
 - nested list rendering, measured-column pipe tables with per-cell alignment and
   zebra striping, tinted/nested blockquotes, strikethrough, H1/H2 hairline
   heading rules, inline-code chips, and syntax-highlighted fenced-code panels in
@@ -162,7 +165,7 @@ Implemented today:
 Planned:
 
 - full CommonMark/GFM conformance ladder,
-- TeX/Liang hyphenation and widow/orphan + keep-with-next pagination controls,
+- full widow/orphan + keep-with-next pagination controls,
 - code-block pagination polish and broader visual golden fixtures,
 - browser/WASM package hardening, published package assembly, and visual
   regression fixtures,
@@ -281,8 +284,8 @@ The core modules are:
 | `theme` | Shared typed style model: fonts, colors, spacing, code theme, dark mode, and page contract |
 | `html` | All-in-one HTML emitter |
 | `text` | Clean-room TrueType reader, metrics, subsetter, focused GPOS kerning, and GSUB ligatures |
-| `layout` | Knuth-Plass line breaking; richer pagination and hyphenation are roadmap |
-| `pdf` | Compact deterministic embedded-font PDF with Knuth-Plass breaking, tables, lists, and syntax-highlighted code; hyphenation and deeper pagination remain roadmap |
+| `layout` | Knuth-Plass line breaking and TeX/Liang hyphenation; richer pagination remains roadmap |
+| `pdf` | Compact deterministic embedded-font PDF with Knuth-Plass breaking, body-paragraph hyphenation/justification, tables, lists, and syntax-highlighted code; deeper pagination remains roadmap |
 | `cli` | Feature-gated `fmd` command surface |
 
 ## Installation
@@ -404,10 +407,11 @@ equivalent options through the library API rather than reading local config.
 - PDF output is a deterministic writer with embedded subset fonts, real metrics,
   focused kerning/ligatures, selectable text, compressed page streams, tagged-PDF
   structure groundwork, Knuth-Plass line breaking, measured/striped tables,
-  nested lists, and syntax-highlighted code. TeX/Liang hyphenation, full
-  widow/orphan and keep-with-next pagination controls, and richer accessibility
-  semantics such as image alt associations and table-cell scopes are not
-  implemented yet.
+  nested lists, syntax-highlighted code, and deterministic discretionary
+  hyphenation/justification for body paragraphs. Full widow/orphan and
+  keep-with-next pagination controls, broader visual golden fixtures, and richer
+  accessibility semantics such as full table-cell scopes are not implemented
+  yet.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
 - HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
   deterministic and portable, but future work can make these subsets smaller.
@@ -428,11 +432,11 @@ model will expose controlled theme/page options rather than arbitrary browser CS
 **Will PDFs really look better than browser print output?**  
 That is the intent. The PDF path already uses Knuth-Plass paragraph breaking,
 real metrics, focused kerning, GSUB ligatures, leading, measured-column tables,
-and syntax-highlighted code rather than a browser print pipeline; TeX/Liang
-hyphenation and deeper pagination controls are the remaining roadmap. It embeds
-subset fonts with selectable text, metadata, outlines, link annotations,
-tagged-PDF structure, SOURCE_DATE_EPOCH-controlled dates, and compressed page
-streams.
+deterministic discretionary hyphenation/justification for body paragraphs, and
+syntax-highlighted code rather than a browser print pipeline; deeper pagination
+controls remain roadmap. It embeds subset fonts with selectable text, metadata,
+outlines, link annotations, tagged-PDF structure, SOURCE_DATE_EPOCH-controlled
+dates, and compressed page streams.
 
 **Does the core work in WASM?**  
 Yes, as a first-class design goal. The core builds without the CLI feature, and

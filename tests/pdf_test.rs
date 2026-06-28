@@ -122,6 +122,21 @@ fn text_x_positions(bytes: &[u8], font_size: &str) -> Vec<f32> {
         .collect()
 }
 
+fn text_matrices(bytes: &[u8], font_size: &str) -> Vec<(f32, f32)> {
+    let needle = format!("{font_size} Tf 1 0 0 1 ");
+    text_streams(bytes)
+        .join("\n")
+        .lines()
+        .filter_map(|line| {
+            let pos = line.find(&needle)? + needle.len();
+            let mut parts = line[pos..].split_whitespace();
+            let x = parts.next()?.parse::<f32>().ok()?;
+            let y = parts.next()?.parse::<f32>().ok()?;
+            Some((x, y))
+        })
+        .collect()
+}
+
 fn compressed_stream_ledgers(text: &str) -> Vec<(usize, usize)> {
     let mut ledgers = Vec::new();
     let mut offset = 0usize;
@@ -149,6 +164,98 @@ fn compressed_stream_ledgers(text: &str) -> Vec<(usize, usize)> {
         offset = dl_end;
     }
     ledgers
+}
+
+#[test]
+fn pdf_uses_discretionary_hyphen_only_for_chosen_hyphen_breaks() {
+    let narrow = render_pdf("hyphenation", &small_page_opts(80.0, 220.0)).unwrap();
+    let narrow_text = as_text(&narrow);
+
+    assert!(
+        narrow_text.contains("<002D>"),
+        "narrow PDF line should emit a selectable discretionary hyphen"
+    );
+    assert!(
+        text_streams(&narrow).join("\n").matches("BT /F").count() >= 2,
+        "hyphenated word should split across multiple physical PDF text rows"
+    );
+
+    let wide = render_pdf("hyphenation", &small_page_opts(260.0, 220.0)).unwrap();
+    let wide_text = as_text(&wide);
+    assert!(
+        !wide_text.contains("<002D>"),
+        "wide unbroken word must not synthesize an unused discretionary hyphen"
+    );
+}
+
+#[test]
+fn pdf_headings_stay_ragged_and_do_not_discretionary_hyphenate() {
+    let pdf = render_pdf("# hyphenation", &small_page_opts(80.0, 220.0)).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("<002D>"),
+        "headings use a ragged policy and must not synthesize discretionary hyphens"
+    );
+}
+
+#[test]
+fn pdf_lists_and_blockquotes_use_paragraph_hyphenation_policy() {
+    let list_pdf = render_pdf("- representation\n", &small_page_opts(80.0, 220.0)).unwrap();
+    let quote_pdf = render_pdf("> representation\n", &small_page_opts(80.0, 220.0)).unwrap();
+    let list_count = as_text(&list_pdf).matches("<002D>").count();
+    let quote_count = as_text(&quote_pdf).matches("<002D>").count();
+
+    assert!(
+        list_count >= 1,
+        "list paragraph flow should be eligible for discretionary hyphenation; found {list_count}"
+    );
+    assert!(
+        quote_count >= 1,
+        "blockquote paragraph flow should be eligible for discretionary hyphenation; found {quote_count}"
+    );
+}
+
+#[test]
+fn pdf_table_cells_and_code_blocks_stay_ragged_without_discretionary_hyphens() {
+    let table_pdf =
+        render_pdf("| representation |\n|---|\n", &small_page_opts(90.0, 220.0)).unwrap();
+    let code_pdf = render_pdf(
+        "```text\nrepresentation\n```\n",
+        &small_page_opts(90.0, 220.0),
+    )
+    .unwrap();
+
+    assert!(
+        !as_text(&table_pdf).contains("<002D>"),
+        "table cell wrapping is currently a ragged measured-column policy, not discretionary hyphenation"
+    );
+    assert!(
+        !as_text(&code_pdf).contains("<002D>"),
+        "code block wrapping must not synthesize discretionary prose hyphens"
+    );
+}
+
+#[test]
+fn pdf_justifies_non_final_paragraph_lines_with_adjusted_glue() {
+    let pdf = render_pdf(
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+        &small_page_opts(170.0, 260.0),
+    )
+    .unwrap();
+    let matrices = text_matrices(&pdf, "11.00");
+
+    let mut by_baseline: BTreeMap<i32, usize> = BTreeMap::new();
+    for (_, y) in matrices {
+        *by_baseline.entry((y * 100.0).round() as i32).or_default() += 1;
+    }
+
+    assert!(
+        by_baseline
+            .values()
+            .any(|segments_on_line| *segments_on_line >= 2),
+        "at least one non-final plain paragraph line should split into multiple positioned text segments after glue justification"
+    );
 }
 
 #[test]

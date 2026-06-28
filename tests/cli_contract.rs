@@ -137,7 +137,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("\"knuth_plass_pdf\":\"available\""));
     assert!(stdout.contains("\"page_builder_pdf\":\"available_v0_keep_widow\""));
-    assert!(stdout.contains("\"hyphenation_pdf\":\"planned\""));
+    assert!(stdout.contains("\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\""));
+    assert!(stdout.contains("\"pdf_justification\":\"available_body_paragraphs\""));
     assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
     assert!(!stdout.contains("available_v0_base14"));
 
@@ -180,13 +181,16 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("SOURCE_DATE_EPOCH"));
     assert!(stdout.contains("tagged-PDF structure tree v0"));
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
+    assert!(stdout.contains("deterministic discretionary hyphenation"));
+    assert!(stdout.contains("glue justification for body paragraphs"));
     assert!(stdout.contains("basic keep/widow page building"));
-    assert!(
-        stdout.contains("TeX/Liang hyphenation and deeper page-builder polish are still planned")
-    );
+    assert!(stdout.contains("deeper page-builder polish is still planned"));
     assert!(!stdout.contains(
         "Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned"
     ));
+    assert!(
+        !stdout.contains("TeX/Liang hyphenation and deeper page-builder polish are still planned")
+    );
     assert!(!stdout.contains("base-14"));
     assert!(!stdout.contains("Base-14"));
 }

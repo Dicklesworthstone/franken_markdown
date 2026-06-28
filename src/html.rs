@@ -6,11 +6,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::HtmlOptions;
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
+use crate::{FontAssets, HtmlOptions};
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
@@ -23,7 +23,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     let css = opts
         .custom_css
         .clone()
-        .unwrap_or_else(|| default_css(doc, &opts.theme));
+        .unwrap_or_else(|| default_css(doc, opts));
 
     let mut body = String::new();
     let mut state = RenderState::default();
@@ -272,17 +272,19 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
 
 fn slug(text: &str) -> String {
     let mut s = String::new();
+    let mut pending_dash = false;
     for c in text.chars() {
         if c.is_ascii_alphanumeric() {
+            if pending_dash && !s.is_empty() {
+                s.push('-');
+            }
             s.push(c.to_ascii_lowercase());
+            pending_dash = false;
         } else if c == ' ' || c == '-' || c == '_' {
-            s.push('-');
+            pending_dash = true;
         }
     }
-    while s.contains("--") {
-        s = s.replace("--", "-");
-    }
-    s.trim_matches('-').to_string()
+    s
 }
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token,
@@ -390,8 +392,9 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 }
 
 /// The default, dependency-free, gorgeous stylesheet.
-fn default_css(doc: &Document, theme: &Theme) -> String {
-    let embedded = embedded_font_css(doc, theme);
+fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
+    let theme = &opts.theme;
+    let embedded = embedded_font_css(doc, theme, &opts.font_assets);
     let body_font = if embedded.has_body {
         format!("\"FMD Body\", {}", theme.body_font_stack())
     } else {
@@ -522,7 +525,7 @@ struct EmbeddedFontCss {
     has_mono: bool,
 }
 
-fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
+fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) -> EmbeddedFontCss {
     let mut usage = collect_font_usage(doc);
     usage.add_stability_seed();
 
@@ -535,7 +538,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         "FMD Body",
         "normal",
         "400",
-        fonts::body_bytes(theme.font, FontStyle::Regular),
+        body_font_bytes(font_assets, theme.font, FontStyle::Regular),
         &usage.body_regular,
     );
     has_body |= !usage.body_regular.is_empty();
@@ -545,7 +548,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         "FMD Body",
         "normal",
         "700",
-        fonts::body_bytes(theme.font, FontStyle::Bold),
+        body_font_bytes(font_assets, theme.font, FontStyle::Bold),
         &usage.body_bold,
     );
     has_body |= !usage.body_bold.is_empty();
@@ -555,7 +558,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         "FMD Body",
         "italic",
         "400",
-        fonts::body_bytes(theme.font, FontStyle::Italic),
+        body_font_bytes(font_assets, theme.font, FontStyle::Italic),
         &usage.body_italic,
     );
     has_body |= !usage.body_italic.is_empty();
@@ -565,7 +568,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         "FMD Body",
         "italic",
         "700",
-        fonts::body_bytes(theme.font, FontStyle::BoldItalic),
+        body_font_bytes(font_assets, theme.font, FontStyle::BoldItalic),
         &usage.body_bold_italic,
     );
     has_body |= !usage.body_bold_italic.is_empty();
@@ -575,7 +578,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         "FMD Mono",
         "normal",
         "400",
-        fonts::mono_bytes(FontStyle::Regular),
+        mono_font_bytes(font_assets, FontStyle::Regular),
         &usage.mono,
     );
     has_mono |= !usage.mono.is_empty();
@@ -585,6 +588,34 @@ fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
         has_body,
         has_mono,
     }
+}
+
+fn body_font_bytes(font_assets: &FontAssets, family: crate::FontFamily, style: FontStyle) -> &[u8] {
+    match style {
+        FontStyle::Regular => font_assets
+            .body_regular
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Bold => font_assets
+            .body_bold
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Italic => font_assets
+            .body_italic
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::BoldItalic => font_assets
+            .body_bold_italic
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+    }
+}
+
+fn mono_font_bytes(font_assets: &FontAssets, style: FontStyle) -> &[u8] {
+    font_assets
+        .mono_regular
+        .as_deref()
+        .unwrap_or_else(|| fonts::mono_bytes(style))
 }
 
 impl FontUsage {
@@ -921,7 +952,7 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
-    use super::base64_encode;
+    use super::{base64_encode, slug};
 
     #[test]
     fn base64_encoder_matches_known_vectors() {
@@ -932,5 +963,14 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn slug_collapses_separator_runs_in_one_pass() {
+        let mut heading = String::from("---Alpha");
+        heading.push_str(&" _-".repeat(4096));
+        heading.push_str("Beta---");
+
+        assert_eq!(slug(&heading), "alpha-beta");
     }
 }

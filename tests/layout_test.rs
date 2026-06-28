@@ -3,11 +3,13 @@
 use franken_markdown::ast::Inline;
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
-    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, Penalty, StyledText, TextBox,
-    TextStyle, UNITS_PER_POINT, adjustment_to_layout_units, advance_to_layout_units,
-    break_paragraph, expansion_budget, hyphenated_paragraph_items_from_text, measure_advances,
-    measure_styled_text, measure_text, measure_text_with_pairs, paragraph_items_from_inlines,
-    paragraph_items_from_text, protruded_fit_width, protrusion_for_text,
+    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, ParagraphLayoutScratch, Penalty,
+    StyledText, TextBox, TextStyle, UNITS_PER_POINT, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph, break_paragraph_into, expansion_budget,
+    hyphenated_paragraph_items_from_text, hyphenated_paragraph_items_from_text_into,
+    measure_advances, measure_styled_text, measure_text, measure_text_with_pairs,
+    paragraph_items_from_inlines, paragraph_items_from_text, protruded_fit_width,
+    protrusion_for_text,
 };
 
 struct StubMetrics;
@@ -151,6 +153,17 @@ fn paragraph_items_use_boxes_glue_and_final_forced_break() {
         assert_eq!(penalty.penalty, FORCED_BREAK_PENALTY);
         assert!(!penalty.flagged);
     }
+}
+
+#[test]
+fn paragraph_items_keep_no_break_spaces_inside_words() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let items = paragraph_items_from_text(&metrics, "A\u{00a0}B C", size);
+
+    assert_box_text(&items[0], "A\u{00a0}B");
+    assert!(matches!(items[1], ParagraphItem::Glue(_)));
+    assert_box_text(&items[2], "C");
 }
 
 #[test]
@@ -334,6 +347,52 @@ fn break_paragraph_never_spans_an_interior_forced_break() {
 }
 
 #[test]
+fn break_paragraph_falls_back_when_every_dp_edge_has_infinite_badness() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(40_000);
+    let items = paragraph_items_from_text(&metrics, "mmmm mmmm mmmm mmmm", size);
+    let breaks = break_paragraph(&items, width);
+
+    assert_eq!(
+        breaks.len(),
+        4,
+        "saturated-badness DP must not collapse the whole paragraph into one overfull line"
+    );
+    for line in &breaks {
+        assert_eq!(line_text(&items, line.start, line.end), "mmmm");
+        assert!(line.natural_width <= width);
+    }
+}
+
+#[test]
+fn break_paragraph_into_matches_wrapper_and_reuses_scratch() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(18_000);
+    let items = paragraph_items_from_text(&metrics, "a aa aaa aaaa aa a", size);
+    let expected = break_paragraph(&items, width);
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(&items, width, &mut scratch, &mut breaks);
+    assert_eq!(breaks, expected);
+
+    let first_capacities = scratch.capacities();
+    assert!(first_capacities.candidates > 0);
+    assert!(first_capacities.states > 0);
+    assert!(first_capacities.prefix_widths > 0);
+
+    break_paragraph_into(&items, width, &mut scratch, &mut breaks);
+    assert_eq!(breaks, expected);
+    assert_eq!(
+        scratch.capacities(),
+        first_capacities,
+        "second same-sized layout should reuse retained scratch capacity"
+    );
+}
+
+#[test]
 fn break_paragraph_returns_empty_for_no_candidates() {
     let breaks = break_paragraph(&[], LayoutUnit::from_points(72));
 
@@ -377,6 +436,19 @@ fn english_hyphenator_uses_full_tex_pattern_corpus() {
 }
 
 #[test]
+fn hyphenation_points_into_matches_allocating_api() {
+    let hyphenator = Hyphenator::english();
+    let opts = HyphenationOptions::default();
+    let mut points = vec![99, 100];
+
+    hyphenator.hyphenation_points_into("documentation", opts, &mut points);
+    assert_eq!(points, hyphenator.hyphenation_points("documentation", opts));
+
+    hyphenator.hyphenation_points_into("not-a-word", opts, &mut points);
+    assert!(points.is_empty());
+}
+
+#[test]
 fn hyphenated_paragraph_items_emit_flagged_discretionary_penalties() {
     let metrics = StubMetrics;
     let hyphenator = Hyphenator::english();
@@ -394,6 +466,65 @@ fn hyphenated_paragraph_items_emit_flagged_discretionary_penalties() {
     assert_eq!(flagged.len(), 2);
     assert!(flagged.iter().all(|p| p.penalty > 0));
     assert!(flagged.iter().all(|p| p.width > LayoutUnit::ZERO));
+}
+
+#[test]
+fn hyphenated_paragraph_items_keep_no_break_spaces_inside_words() {
+    let metrics = StubMetrics;
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let items = hyphenated_paragraph_items_from_text(
+        &metrics,
+        &hyphenator,
+        "alpha\u{00a0}beta gamma",
+        size,
+    );
+
+    assert_box_text(&items[0], "alpha\u{00a0}beta");
+    assert!(matches!(items[1], ParagraphItem::Glue(_)));
+    assert_box_text(&items[2], "gamma");
+}
+
+#[test]
+fn hyphenated_paragraph_items_into_matches_wrapper_and_reuses_scratch() {
+    let metrics = StubMetrics;
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let text = "Documentation typography representation deterministic optimization";
+    let expected = hyphenated_paragraph_items_from_text(&metrics, &hyphenator, text, size);
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut items = Vec::new();
+
+    hyphenated_paragraph_items_from_text_into(
+        &metrics,
+        &hyphenator,
+        text,
+        size,
+        &mut scratch,
+        &mut items,
+    );
+    assert_eq!(items, expected);
+
+    let first_capacities = scratch.capacities();
+    assert!(first_capacities.hyphen_lower_bytes > 0);
+    assert!(first_capacities.hyphen_dotted_bytes > 0);
+    assert!(first_capacities.hyphen_scores > 0);
+    assert!(first_capacities.hyphen_points > 0);
+
+    hyphenated_paragraph_items_from_text_into(
+        &metrics,
+        &hyphenator,
+        text,
+        size,
+        &mut scratch,
+        &mut items,
+    );
+    assert_eq!(items, expected);
+    assert_eq!(
+        scratch.capacities(),
+        first_capacities,
+        "second same-sized item build should reuse retained hyphenation buffers"
+    );
 }
 
 #[test]
@@ -459,6 +590,17 @@ fn microtype_protrusion_and_expansion_are_integer_deterministic() {
     );
 }
 
+#[test]
+fn microtype_fit_width_clamps_to_zero_when_protrusion_exceeds_natural_width() {
+    let size = FontSize::from_points(10);
+    let options = MicrotypeOptions::CONSERVATIVE;
+
+    assert_eq!(
+        protruded_fit_width(LayoutUnit::from_milli_points(2_000), ".", size, options),
+        LayoutUnit::ZERO
+    );
+}
+
 fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {
     let mut words = Vec::new();
     for item in &items[start..end] {
@@ -479,6 +621,16 @@ fn assert_box_style(item: &ParagraphItem, text: &str, style: TextStyle) {
         assert_eq!(b.runs.runs.len(), 1);
         assert_eq!(b.runs.runs[0].text, text);
         assert_eq!(b.runs.runs[0].style, style);
+    }
+}
+
+fn assert_box_text(item: &ParagraphItem, text: &str) {
+    assert!(
+        matches!(item, ParagraphItem::Box(_)),
+        "expected text box {text:?}, got {item:?}"
+    );
+    if let ParagraphItem::Box(b) = item {
+        assert_eq!(b.text, text);
     }
 }
 

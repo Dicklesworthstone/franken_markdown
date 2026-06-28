@@ -67,12 +67,22 @@ impl FmdConfig {
 
     /// Save to the default native config path.
     pub fn save_default(&self) -> ConfigResult<PathBuf> {
-        let path = config_path();
+        self.save_to_path(config_path())
+    }
+
+    /// Save to an explicit native config path.
+    ///
+    /// The config file format is line-oriented (`key=value`). Values that
+    /// contain line breaks cannot be represented safely, so this method rejects
+    /// them rather than writing a file that could inject additional keys.
+    pub fn save_to_path(&self, path: impl AsRef<Path>) -> ConfigResult<PathBuf> {
+        let path = path.as_ref();
+        let serialized = self.try_to_file_string()?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, self.to_file_string())?;
-        Ok(path)
+        std::fs::write(path, serialized)?;
+        Ok(path.to_path_buf())
     }
 
     /// Parse `key=value` config text.
@@ -108,6 +118,12 @@ impl FmdConfig {
                 self.dark_mode = Some(parse_dark_mode(value)?);
             }
             "custom_css" => {
+                if contains_line_break(value) {
+                    return Err(
+                        "custom_css path must be a single line; remove newline characters"
+                            .to_string(),
+                    );
+                }
                 let trimmed = value.trim();
                 self.custom_css = if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
                     None
@@ -198,6 +214,16 @@ impl FmdConfig {
     /// Deterministic file representation.
     #[must_use]
     pub fn to_file_string(&self) -> String {
+        self.to_file_string_inner(false).unwrap_or_default()
+    }
+
+    /// Deterministic file representation, rejecting values that cannot be
+    /// safely represented in the current line-oriented format.
+    pub fn try_to_file_string(&self) -> ConfigResult<String> {
+        self.to_file_string_inner(true)
+    }
+
+    fn to_file_string_inner(&self, reject_invalid: bool) -> ConfigResult<String> {
         let mut out = String::new();
         if let Some(font) = self.font {
             out.push_str("font=");
@@ -210,9 +236,19 @@ impl FmdConfig {
             out.push('\n');
         }
         if let Some(path) = &self.custom_css {
-            out.push_str("custom_css=");
-            out.push_str(&path.display().to_string());
-            out.push('\n');
+            let path = path.display().to_string();
+            if contains_line_break(&path) {
+                if reject_invalid {
+                    return Err(ConfigError::Parse(
+                        "custom_css path must be a single line; remove newline characters"
+                            .to_string(),
+                    ));
+                }
+            } else {
+                out.push_str("custom_css=");
+                out.push_str(&path);
+                out.push('\n');
+            }
         }
         if let Some(margins) = self.margins {
             out.push_str("margin_top_pt=");
@@ -228,7 +264,7 @@ impl FmdConfig {
             out.push_str(&json_num(margins.left_pt));
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     fn set_margin(
@@ -287,6 +323,10 @@ fn unquote(value: &str) -> &str {
         .strip_prefix('"')
         .and_then(|v| v.strip_suffix('"'))
         .unwrap_or(value)
+}
+
+fn contains_line_break(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '\n' | '\r'))
 }
 
 fn non_empty_env(key: &str) -> Option<String> {

@@ -41,6 +41,9 @@ pub mod text;
 pub mod theme;
 pub mod wasm;
 
+#[cfg(feature = "wasm-bindgen")]
+pub mod wasm_abi;
+
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(feature = "cli")]
@@ -64,6 +67,150 @@ pub use theme::{
     ThemeColors, ThemeSpacing,
 };
 
+/// Font slot for caller-supplied font bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontAssetSlot {
+    /// Proportional body regular face.
+    BodyRegular,
+    /// Proportional body bold face.
+    BodyBold,
+    /// Proportional body italic face.
+    BodyItalic,
+    /// Proportional body bold-italic face.
+    BodyBoldItalic,
+    /// Monospace/code regular face.
+    MonoRegular,
+}
+
+impl FontAssetSlot {
+    /// Parse stable browser/config spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "body-regular" | "body_regular" | "regular" => Some(Self::BodyRegular),
+            "body-bold" | "body_bold" | "bold" => Some(Self::BodyBold),
+            "body-italic" | "body_italic" | "italic" => Some(Self::BodyItalic),
+            "body-bold-italic" | "body_bold_italic" | "bold-italic" | "bold_italic" => {
+                Some(Self::BodyBoldItalic)
+            }
+            "mono-regular" | "mono_regular" | "mono" | "code" => Some(Self::MonoRegular),
+            _ => None,
+        }
+    }
+
+    /// Stable browser/config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BodyRegular => "body-regular",
+            Self::BodyBold => "body-bold",
+            Self::BodyItalic => "body-italic",
+            Self::BodyBoldItalic => "body-bold-italic",
+            Self::MonoRegular => "mono-regular",
+        }
+    }
+}
+
+/// Optional caller-supplied TrueType font bytes for renderer font slots.
+///
+/// Missing slots use the bundled deterministic fonts. Supplied slots must be
+/// parseable TrueType/sfnt fonts with `glyf` outlines so the HTML and PDF paths
+/// can subset them without filesystem, fontconfig, or global mutable state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontAssets {
+    pub body_regular: Option<Vec<u8>>,
+    pub body_bold: Option<Vec<u8>>,
+    pub body_italic: Option<Vec<u8>>,
+    pub body_bold_italic: Option<Vec<u8>>,
+    pub mono_regular: Option<Vec<u8>>,
+}
+
+impl FontAssets {
+    /// True when every slot will use bundled fallback fonts.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.body_regular.is_none()
+            && self.body_bold.is_none()
+            && self.body_italic.is_none()
+            && self.body_bold_italic.is_none()
+            && self.mono_regular.is_none()
+    }
+
+    /// Return a copy with one slot populated after deterministic validation.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] when the bytes are empty,
+    /// malformed, or not subsettable by the clean-room TrueType subsetter.
+    pub fn with_slot(mut self, slot: FontAssetSlot, bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        self.set_slot(slot, bytes)?;
+        Ok(self)
+    }
+
+    /// Populate one slot after deterministic validation.
+    ///
+    /// # Errors
+    /// See [`Self::with_slot`].
+    pub fn set_slot(&mut self, slot: FontAssetSlot, bytes: impl Into<Vec<u8>>) -> Result<()> {
+        let bytes = bytes.into();
+        validate_font_asset(slot, &bytes)?;
+        match slot {
+            FontAssetSlot::BodyRegular => self.body_regular = Some(bytes),
+            FontAssetSlot::BodyBold => self.body_bold = Some(bytes),
+            FontAssetSlot::BodyItalic => self.body_italic = Some(bytes),
+            FontAssetSlot::BodyBoldItalic => self.body_bold_italic = Some(bytes),
+            FontAssetSlot::MonoRegular => self.mono_regular = Some(bytes),
+        }
+        Ok(())
+    }
+
+    /// Validate all populated slots.
+    ///
+    /// This also protects callers who construct [`FontAssets`] directly instead
+    /// of using [`Self::set_slot`].
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] for the first malformed slot.
+    pub fn validate(&self) -> Result<()> {
+        for (slot, bytes) in [
+            (FontAssetSlot::BodyRegular, self.body_regular.as_deref()),
+            (FontAssetSlot::BodyBold, self.body_bold.as_deref()),
+            (FontAssetSlot::BodyItalic, self.body_italic.as_deref()),
+            (
+                FontAssetSlot::BodyBoldItalic,
+                self.body_bold_italic.as_deref(),
+            ),
+            (FontAssetSlot::MonoRegular, self.mono_regular.as_deref()),
+        ] {
+            if let Some(bytes) = bytes {
+                validate_font_asset(slot, bytes)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_font_asset(slot: FontAssetSlot, bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font bytes must not be empty",
+            slot.as_str()
+        )));
+    }
+    let font = text::Font::parse(bytes.to_vec()).map_err(|err| {
+        RenderError::InvalidInput(format!(
+            "{} font bytes are not a supported TrueType font: {err}",
+            slot.as_str()
+        ))
+    })?;
+    if !font.has_glyf_outlines() {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
+            slot.as_str()
+        )));
+    }
+    Ok(())
+}
+
 /// Options for the all-in-one HTML renderer.
 #[derive(Debug, Clone, Default)]
 pub struct HtmlOptions {
@@ -77,6 +224,8 @@ pub struct HtmlOptions {
     /// When false (default), raw inline/block HTML in the source is escaped and
     /// rendered as text rather than passed through — safe for untrusted input.
     pub allow_raw_html: bool,
+    /// Optional caller-supplied fonts. Missing slots use bundled fonts.
+    pub font_assets: FontAssets,
 }
 
 /// Options for the PDF renderer.
@@ -102,6 +251,37 @@ pub struct PdfOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks.
     pub code_line_numbers: bool,
+    /// Caller-provided image bytes keyed by the Markdown image destination.
+    ///
+    /// The render core never fetches network resources or reads files. Native
+    /// CLI and browser/WASM callers resolve image destinations into explicit
+    /// byte assets before rendering. Unsupported or missing assets fall back to
+    /// visible alt text in PDF output.
+    pub image_assets: Vec<PdfImageAsset>,
+    /// Optional caller-supplied fonts. Missing slots use bundled fonts.
+    pub font_assets: FontAssets,
+}
+
+/// Image bytes supplied by a host for PDF rendering.
+///
+/// `destination` is matched against the Markdown image destination after
+/// trimming ASCII/Unicode whitespace. The first matching asset wins, keeping
+/// behavior deterministic even if a caller accidentally supplies duplicates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfImageAsset {
+    pub destination: String,
+    pub bytes: Vec<u8>,
+}
+
+impl PdfImageAsset {
+    /// Construct a PDF image asset keyed by a Markdown image destination.
+    #[must_use]
+    pub fn new(destination: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            destination: destination.into(),
+            bytes: bytes.into(),
+        }
+    }
 }
 
 /// Parse Markdown source into the document AST.
@@ -146,6 +326,7 @@ pub fn parse_markdown_spanned_profiled(src: &str) -> SpannedParseProfile {
 /// Currently infallible for the HTML path, but returns [`Result`] so callers do
 /// not have to change signatures as richer validation lands.
 pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
+    opts.font_assets.validate()?;
     Ok(html::render(doc, opts))
 }
 

@@ -16,6 +16,7 @@ fn naive_markdown_special(bytes: &[u8]) -> Option<usize> {
                 | b'\t'
                 | b'#'
                 | b'-'
+                | b'='
                 | b'*'
                 | b'+' // `+` bullet-list marker, matching is_markdown_special_byte
                 | b'_'
@@ -69,6 +70,7 @@ fn byte_scanners_match_naive_oracles_for_core_corpus() {
         b"",
         b"a",
         b"*",
+        b"Title\n====\n",
         b"plain ascii words only",
         b"alpha **bold** `code` [link](dest)",
         b"<div class=\"x\">& escaped</div>",
@@ -166,6 +168,10 @@ fn markdown_line_scanner_starter_flags_match_parser_block_precedence() {
 
     let ordered = scan_markdown_line("123. ordered");
     assert!(ordered.maybe_list_marker);
+
+    let setext_equals = scan_markdown_line("===");
+    assert!(setext_equals.maybe_setext_underline);
+    assert_eq!(setext_equals.first_special_byte, Some(0));
 
     let numeric_paragraph = scan_markdown_line("2026 report");
     assert!(!numeric_paragraph.maybe_list_marker);

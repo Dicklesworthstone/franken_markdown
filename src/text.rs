@@ -69,35 +69,50 @@ impl core::fmt::Display for FontError {
 impl std::error::Error for FontError {}
 
 fn be_u16(d: &[u8], o: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([*d.get(o)?, *d.get(o + 1)?]))
+    let bytes = d.get(o..o.checked_add(2)?)?;
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 fn be_i16(d: &[u8], o: usize) -> Option<i16> {
     be_u16(d, o).map(|v| v as i16)
 }
 fn be_u32(d: &[u8], o: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *d.get(o)?,
-        *d.get(o + 1)?,
-        *d.get(o + 2)?,
-        *d.get(o + 3)?,
-    ]))
+    let bytes = d.get(o..o.checked_add(4)?)?;
+    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn off(base: usize, delta: usize) -> Option<usize> {
+    base.checked_add(delta)
+}
+
+fn off_mul(base: usize, index: usize, stride: usize) -> Option<usize> {
+    base.checked_add(index.checked_mul(stride)?)
+}
+
+fn be_u16_at(d: &[u8], base: usize, delta: usize) -> Option<u16> {
+    be_u16(d, off(base, delta)?)
+}
+
+fn be_u32_at(d: &[u8], base: usize, delta: usize) -> Option<u32> {
+    be_u32(d, off(base, delta)?)
+}
+
+fn bytes_at(d: &[u8], base: usize, len: usize) -> Option<&[u8]> {
+    d.get(base..off(base, len)?)
 }
 
 /// Write a big-endian `u16` at `off` into a mutable buffer, bounds-checked.
 fn write_u16(d: &mut [u8], off: usize, v: u16) -> Option<()> {
     let b = v.to_be_bytes();
-    *d.get_mut(off)? = b[0];
-    *d.get_mut(off + 1)? = b[1];
+    let dst = d.get_mut(off..off.checked_add(2)?)?;
+    dst.copy_from_slice(&b);
     Some(())
 }
 
 /// Write a big-endian `u32` at `off` into a mutable buffer, bounds-checked.
 fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
     let b = v.to_be_bytes();
-    *d.get_mut(off)? = b[0];
-    *d.get_mut(off + 1)? = b[1];
-    *d.get_mut(off + 2)? = b[2];
-    *d.get_mut(off + 3)? = b[3];
+    let dst = d.get_mut(off..off.checked_add(4)?)?;
+    dst.copy_from_slice(&b);
     Some(())
 }
 
@@ -126,9 +141,12 @@ fn find_table(d: &[u8], tag: &[u8; 4]) -> Option<usize> {
 fn find_table_full(d: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
     let num_tables = be_u16(d, 4)? as usize;
     for i in 0..num_tables {
-        let rec = 12 + i * 16;
-        if d.get(rec..rec + 4)? == tag {
-            return Some((be_u32(d, rec + 8)? as usize, be_u32(d, rec + 12)? as usize));
+        let rec = off_mul(12, i, 16)?;
+        if bytes_at(d, rec, 4)? == tag {
+            return Some((
+                be_u32_at(d, rec, 8)? as usize,
+                be_u32_at(d, rec, 12)? as usize,
+            ));
         }
     }
     None
@@ -139,28 +157,28 @@ fn find_kern0(d: &[u8]) -> Option<(usize, u16)> {
     let (kern, kern_len) = find_table_full(d, b"kern")?;
     let table_end = kern.checked_add(kern_len)?;
     let version = be_u16(d, kern)?;
-    let n_tables = be_u16(d, kern + 2)? as usize;
+    let n_tables = be_u16_at(d, kern, 2)? as usize;
     if version != 0 {
         return None;
     }
 
-    let mut sub = kern + 4;
+    let mut sub = off(kern, 4)?;
     for _ in 0..n_tables {
         if sub.checked_add(6)? > table_end {
             return None;
         }
-        let length = be_u16(d, sub + 2)? as usize;
-        let coverage = be_u16(d, sub + 4)?;
+        let length = be_u16_at(d, sub, 2)? as usize;
+        let coverage = be_u16_at(d, sub, 4)?;
         let format = coverage >> 8;
         let horizontal = coverage & 0x0001 != 0;
         let minimum = coverage & 0x0002 != 0;
-        let pairs = sub + 14;
+        let pairs = off(sub, 14)?;
         if format == 0 && horizontal && !minimum && length >= 14 {
             let sub_end = sub.checked_add(length)?;
             if sub_end > table_end {
                 return None;
             }
-            let n_pairs = be_u16(d, sub + 6)?;
+            let n_pairs = be_u16_at(d, sub, 6)?;
             let bytes_needed = (n_pairs as usize).checked_mul(6)?;
             if pairs.checked_add(bytes_needed)? <= sub_end {
                 return Some((pairs, n_pairs));
@@ -195,18 +213,27 @@ impl Font {
         let hmtx = find_table(d, b"hmtx").ok_or(FontError::MissingTable("hmtx"))?;
         let cmap = find_table(d, b"cmap").ok_or(FontError::MissingTable("cmap"))?;
 
-        let units_per_em = be_u16(d, head + 18).ok_or(FontError::Truncated)?;
-        let num_glyphs = be_u16(d, maxp + 4).ok_or(FontError::Truncated)?;
-        let ascent = be_i16(d, hhea + 4).ok_or(FontError::Truncated)?;
-        let descent = be_i16(d, hhea + 6).ok_or(FontError::Truncated)?;
-        let line_gap = be_i16(d, hhea + 8).ok_or(FontError::Truncated)?;
-        let num_h_metrics = be_u16(d, hhea + 34).ok_or(FontError::Truncated)?;
+        let units_per_em =
+            be_u16(d, off(head, 18).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
+        let num_glyphs =
+            be_u16(d, off(maxp, 4).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
+        let ascent =
+            be_i16(d, off(hhea, 4).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
+        let descent =
+            be_i16(d, off(hhea, 6).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
+        let line_gap =
+            be_i16(d, off(hhea, 8).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
+        let num_h_metrics =
+            be_u16(d, off(hhea, 34).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
 
         let (cmap_off, cmap_format) = select_cmap(d, cmap).ok_or(FontError::NoUnicodeCmap)?;
 
         // Outline tables are optional: present for TrueType (glyf) fonts, absent
         // for CFF/OpenType. Their absence is not an error here.
-        let loca_long = be_i16(d, head + 50).unwrap_or(0) != 0;
+        let loca_long = off(head, 50)
+            .and_then(|offset| be_i16(d, offset))
+            .unwrap_or(0)
+            != 0;
         let loca_off = find_table(d, b"loca");
         let glyf = find_table_full(d, b"glyf");
         let kern0 = find_kern0(d);
@@ -244,20 +271,20 @@ impl Font {
         let i = gid as usize;
         let (start, end) = if self.loca_long {
             (
-                be_u32(&self.data, loca + i * 4)? as usize,
-                be_u32(&self.data, loca + (i + 1) * 4)? as usize,
+                be_u32(&self.data, off_mul(loca, i, 4)?)? as usize,
+                be_u32(&self.data, off_mul(loca, i.checked_add(1)?, 4)?)? as usize,
             )
         } else {
             // Short loca stores offsets / 2.
             (
-                be_u16(&self.data, loca + i * 2)? as usize * 2,
-                be_u16(&self.data, loca + (i + 1) * 2)? as usize * 2,
+                be_u16(&self.data, off_mul(loca, i, 2)?)? as usize * 2,
+                be_u16(&self.data, off_mul(loca, i.checked_add(1)?, 2)?)? as usize * 2,
             )
         };
         if end < start || end > glyf_len {
             return None;
         }
-        Some((glyf_off + start, glyf_off + end))
+        Some((off(glyf_off, start)?, off(glyf_off, end)?))
     }
 
     /// Raw `glyf` bytes for glyph `gid` (for subset embedding), or `None`.
@@ -277,10 +304,10 @@ impl Font {
             return None; // empty glyph (no contours)
         }
         Some([
-            be_i16(&self.data, s + 2)?,
-            be_i16(&self.data, s + 4)?,
-            be_i16(&self.data, s + 6)?,
-            be_i16(&self.data, s + 8)?,
+            be_i16(&self.data, off(s, 2)?)?,
+            be_i16(&self.data, off(s, 4)?)?,
+            be_i16(&self.data, off(s, 6)?)?,
+            be_i16(&self.data, off(s, 8)?)?,
         ])
     }
 
@@ -310,21 +337,37 @@ impl Font {
         if e <= s || !be_i16(&self.data, s).is_some_and(|n| n < 0) {
             return out;
         }
-        let mut p = s + 10; // skip numberOfContours + bbox
-        while let Some(flags) = be_u16(&self.data, p) {
-            let Some(comp) = be_u16(&self.data, p + 2) else {
+        let Some(mut p) = off(s, 10) else {
+            return out;
+        };
+        while let Some(component_record_end) = off(p, 4) {
+            if component_record_end > e {
+                break;
+            }
+            let Some(flags) = be_u16(&self.data, p) else {
                 break;
             };
-            out.push(comp);
-            p += 4;
-            p += if flags & ARG_WORDS != 0 { 4 } else { 2 };
-            if flags & WE_HAVE_SCALE != 0 {
-                p += 2;
+            let Some(comp) = off(p, 2).and_then(|offset| be_u16(&self.data, offset)) else {
+                break;
+            };
+            let mut step = 4usize + if flags & ARG_WORDS != 0 { 4 } else { 2 };
+            step += if flags & WE_HAVE_SCALE != 0 {
+                2
             } else if flags & X_Y_SCALE != 0 {
-                p += 4;
+                4
             } else if flags & TWO_BY_TWO != 0 {
-                p += 8;
+                8
+            } else {
+                0
+            };
+            let Some(next) = off(p, step) else {
+                break;
+            };
+            if next > e {
+                break;
             }
+            out.push(comp);
+            p = next;
             if flags & MORE == 0 || p >= e {
                 break;
             }
@@ -338,7 +381,9 @@ impl Font {
     pub fn advance_width(&self, gid: u16) -> u16 {
         let last = self.num_h_metrics.saturating_sub(1);
         let idx = gid.min(last) as usize;
-        be_u16(&self.data, self.hmtx_off + idx * 4).unwrap_or(0)
+        off_mul(self.hmtx_off, idx, 4)
+            .and_then(|offset| be_u16(&self.data, offset))
+            .unwrap_or(0)
     }
 
     /// The glyph id for a character, or `0` (`.notdef`) if unmapped.
@@ -377,16 +422,20 @@ impl Font {
         let mut hi = n_pairs as usize;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let rec = pairs + mid * 6;
+            let Some(rec) = off_mul(pairs, mid, 6) else {
+                return 0;
+            };
             let Some(l) = be_u16(&self.data, rec) else {
                 return 0;
             };
-            let Some(r) = be_u16(&self.data, rec + 2) else {
+            let Some(r) = off(rec, 2).and_then(|offset| be_u16(&self.data, offset)) else {
                 return 0;
             };
             let key = ((l as u32) << 16) | r as u32;
             if key == target {
-                return be_i16(&self.data, rec + 4).unwrap_or(0);
+                return off(rec, 4)
+                    .and_then(|offset| be_i16(&self.data, offset))
+                    .unwrap_or(0);
             }
             if key < target {
                 lo = mid + 1;
@@ -419,28 +468,31 @@ impl Font {
         let c = cp as u16;
         let d = &self.data;
         let base = self.cmap_off;
-        let seg_x2 = be_u16(d, base + 6)? as usize;
+        let seg_x2 = be_u16(d, off(base, 6)?)? as usize;
         let seg_count = seg_x2 / 2;
-        let end_codes = base + 14;
-        let start_codes = end_codes + seg_x2 + 2; // +2 for reservedPad
-        let id_deltas = start_codes + seg_x2;
-        let id_range_offsets = id_deltas + seg_x2;
+        let end_codes = off(base, 14)?;
+        let start_codes = off(off(end_codes, seg_x2)?, 2)?; // +2 for reservedPad
+        let id_deltas = off(start_codes, seg_x2)?;
+        let id_range_offsets = off(id_deltas, seg_x2)?;
         for i in 0..seg_count {
-            let end = be_u16(d, end_codes + i * 2)?;
+            let end = be_u16(d, off_mul(end_codes, i, 2)?)?;
             if c > end {
                 continue;
             }
-            let start = be_u16(d, start_codes + i * 2)?;
+            let start = be_u16(d, off_mul(start_codes, i, 2)?)?;
             if c < start {
                 return Some(0);
             }
-            let id_delta = be_u16(d, id_deltas + i * 2)?;
-            let iro_pos = id_range_offsets + i * 2;
+            let id_delta = be_u16(d, off_mul(id_deltas, i, 2)?)?;
+            let iro_pos = off_mul(id_range_offsets, i, 2)?;
             let id_range_offset = be_u16(d, iro_pos)?;
             if id_range_offset == 0 {
                 return Some(c.wrapping_add(id_delta));
             }
-            let gi_addr = iro_pos + id_range_offset as usize + 2 * (c - start) as usize;
+            let gi_addr = off(
+                off(iro_pos, id_range_offset as usize)?,
+                2usize.checked_mul((c - start) as usize)?,
+            )?;
             let g = be_u16(d, gi_addr)?;
             return Some(if g == 0 { 0 } else { g.wrapping_add(id_delta) });
         }
@@ -488,7 +540,7 @@ impl Font {
         let mut set: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
         set.insert(0);
         for &gid in seed_glyphs {
-            if gid != 0 {
+            if gid != 0 && gid < self.num_glyphs {
                 set.insert(gid);
             }
         }
@@ -498,7 +550,7 @@ impl Font {
             for &gid in &set {
                 if self.is_composite(gid) {
                     for c in self.glyph_components(gid) {
-                        if !set.contains(&c) {
+                        if c < self.num_glyphs && !set.contains(&c) {
                             added.push(c);
                         }
                     }
@@ -516,16 +568,17 @@ impl Font {
         // --- 2. Renumber old -> new -----------------------------------------
         let mut new_of: std::collections::BTreeMap<u16, u16> = std::collections::BTreeMap::new();
         for (i, &g) in old_gids.iter().enumerate() {
-            new_of.insert(g, i as u16);
+            let new_gid = u16::try_from(i).ok()?;
+            new_of.insert(g, new_gid);
         }
         let n = old_gids.len();
-        let n_u16 = n as u16;
+        let n_u16 = u16::try_from(n).ok()?;
 
         // --- 3. Rebuild glyf + loca (long offsets) --------------------------
         let mut glyf_bytes: Vec<u8> = Vec::new();
-        let mut loca: Vec<u32> = Vec::with_capacity(n + 1);
+        let mut loca: Vec<u32> = Vec::with_capacity(n.checked_add(1)?);
         for &old in &old_gids {
-            loca.push(glyf_bytes.len() as u32);
+            loca.push(u32::try_from(glyf_bytes.len()).ok()?);
             let gb = self.subset_glyph_bytes(old, &new_of)?;
             glyf_bytes.extend_from_slice(&gb);
             // Pad each glyph to a 4-byte multiple so the next glyph (and every
@@ -534,8 +587,8 @@ impl Font {
                 glyf_bytes.push(0);
             }
         }
-        loca.push(glyf_bytes.len() as u32);
-        let mut loca_bytes: Vec<u8> = Vec::with_capacity(loca.len() * 4);
+        loca.push(u32::try_from(glyf_bytes.len()).ok()?);
+        let mut loca_bytes: Vec<u8> = Vec::with_capacity(loca.len().checked_mul(4)?);
         for o in &loca {
             loca_bytes.extend_from_slice(&o.to_be_bytes());
         }
@@ -543,16 +596,16 @@ impl Font {
         // --- 4. Metric/meta tables ------------------------------------------
         // maxp: original bytes with numGlyphs (u16 @ +4) set to n.
         let (maxp_off, maxp_len) = find_table_full(&self.data, b"maxp")?;
-        let mut maxp = self.data.get(maxp_off..maxp_off + maxp_len)?.to_vec();
+        let mut maxp = self.data.get(maxp_off..off(maxp_off, maxp_len)?)?.to_vec();
         write_u16(&mut maxp, 4, n_u16)?;
 
         // hhea: original bytes with numberOfHMetrics (u16 @ +34) set to n.
         let (hhea_off, hhea_len) = find_table_full(&self.data, b"hhea")?;
-        let mut hhea = self.data.get(hhea_off..hhea_off + hhea_len)?.to_vec();
+        let mut hhea = self.data.get(hhea_off..off(hhea_off, hhea_len)?)?.to_vec();
         write_u16(&mut hhea, 34, n_u16)?;
 
         // hmtx: n long metrics (advanceWidth, lsb=0), no trailing run.
-        let mut hmtx: Vec<u8> = Vec::with_capacity(n * 4);
+        let mut hmtx: Vec<u8> = Vec::with_capacity(n.checked_mul(4)?);
         for &old in &old_gids {
             hmtx.extend_from_slice(&self.advance_width(old).to_be_bytes());
             hmtx.extend_from_slice(&0i16.to_be_bytes());
@@ -560,7 +613,7 @@ impl Font {
 
         // head: original bytes; zero checkSumAdjustment (@ +8), force long loca.
         let (head_off, head_len) = find_table_full(&self.data, b"head")?;
-        let mut head = self.data.get(head_off..head_off + head_len)?.to_vec();
+        let mut head = self.data.get(head_off..off(head_off, head_len)?)?.to_vec();
         write_u32(&mut head, 8, 0)?;
         write_u16(&mut head, 50, 1)?; // indexToLocFormat = 1 (long)
 
@@ -628,7 +681,12 @@ impl Font {
                 head_offset = table_offset;
             }
             let checksum = table_checksum(bytes);
-            records.push((**tag, checksum, table_offset as u32, bytes.len() as u32));
+            records.push((
+                **tag,
+                checksum,
+                u32::try_from(table_offset).ok()?,
+                u32::try_from(bytes.len()).ok()?,
+            ));
             body.extend_from_slice(bytes);
         }
         while body.len() % 4 != 0 {
@@ -652,7 +710,7 @@ impl Font {
         // checkSumAdjustment: 0xB1B0AFBA - checksum(whole file with field zeroed).
         let file_checksum = table_checksum(&out);
         let adj = 0xB1B0_AFBAu32.wrapping_sub(file_checksum);
-        write_u32(&mut out, head_offset + 8, adj)?;
+        write_u32(&mut out, off(head_offset, 8)?, adj)?;
 
         Some((out, new_of))
     }
@@ -684,19 +742,19 @@ impl Font {
         let mut p = 10usize; // skip numberOfContours + 4x i16 bbox
         loop {
             let flags = be_u16(&out, p)?;
-            let comp_old = be_u16(&out, p + 2)?;
+            let comp_old = be_u16_at(&out, p, 2)?;
             let comp_new = *new_of.get(&comp_old)?;
             let nb = comp_new.to_be_bytes();
-            *out.get_mut(p + 2)? = nb[0];
-            *out.get_mut(p + 3)? = nb[1];
-            p += 4;
-            p += if flags & ARG_WORDS != 0 { 4 } else { 2 };
+            *out.get_mut(off(p, 2)?)? = nb[0];
+            *out.get_mut(off(p, 3)?)? = nb[1];
+            p = off(p, 4)?;
+            p = off(p, if flags & ARG_WORDS != 0 { 4 } else { 2 })?;
             if flags & WE_HAVE_SCALE != 0 {
-                p += 2;
+                p = off(p, 2)?;
             } else if flags & X_Y_SCALE != 0 {
-                p += 4;
+                p = off(p, 4)?;
             } else if flags & TWO_BY_TWO != 0 {
-                p += 8;
+                p = off(p, 8)?;
             }
             if flags & MORE == 0 {
                 break;
@@ -725,7 +783,10 @@ impl Font {
             codes.insert(cp as u16, ng);
         }
         let entries: Vec<(u16, u16)> = codes.into_iter().collect();
-        let seg_count = entries.len() + 1; // + final 0xFFFF segment
+        let seg_count = entries.len().checked_add(1)?; // + final 0xFFFF segment
+        let sub_len = 16usize.checked_add(seg_count.checked_mul(8)?)?;
+        let sub_len_u16 = u16::try_from(sub_len).ok()?;
+        let seg_count_x2 = u16::try_from(seg_count.checked_mul(2)?).ok()?;
 
         let mut pw: usize = 1;
         let mut es: u16 = 0;
@@ -733,18 +794,15 @@ impl Font {
             pw *= 2;
             es += 1;
         }
-        let search_range = (pw as u16).wrapping_mul(2);
+        let search_range = u16::try_from(pw.checked_mul(2)?).ok()?;
         let entry_selector = es;
-        let range_shift = (seg_count as u16)
-            .wrapping_mul(2)
-            .wrapping_sub(search_range);
+        let range_shift = seg_count_x2.checked_sub(search_range)?;
 
-        let sub_len = 16 + seg_count * 8;
         let mut sub: Vec<u8> = Vec::with_capacity(sub_len);
         sub.extend_from_slice(&4u16.to_be_bytes()); // format
-        sub.extend_from_slice(&(sub_len as u16).to_be_bytes()); // length
+        sub.extend_from_slice(&sub_len_u16.to_be_bytes()); // length
         sub.extend_from_slice(&0u16.to_be_bytes()); // language
-        sub.extend_from_slice(&((seg_count * 2) as u16).to_be_bytes()); // segCountX2
+        sub.extend_from_slice(&seg_count_x2.to_be_bytes()); // segCountX2
         sub.extend_from_slice(&search_range.to_be_bytes());
         sub.extend_from_slice(&entry_selector.to_be_bytes());
         sub.extend_from_slice(&range_shift.to_be_bytes());
@@ -785,14 +843,14 @@ impl Font {
     fn cmap12_lookup(&self, cp: u32) -> Option<u16> {
         let d = &self.data;
         let base = self.cmap_off;
-        let num_groups = be_u32(d, base + 12)? as usize;
+        let num_groups = be_u32(d, off(base, 12)?)? as usize;
         for i in 0..num_groups {
-            let g = base + 16 + i * 12;
+            let g = off_mul(off(base, 16)?, i, 12)?;
             let start = be_u32(d, g)?;
-            let end = be_u32(d, g + 4)?;
+            let end = be_u32(d, off(g, 4)?)?;
             if cp >= start && cp <= end {
-                let start_gid = be_u32(d, g + 8)?;
-                let gid = start_gid + (cp - start);
+                let start_gid = be_u32(d, off(g, 8)?)?;
+                let gid = start_gid.checked_add(cp - start)?;
                 return Some((gid & 0xFFFF) as u16);
             }
         }
@@ -804,13 +862,13 @@ impl Font {
 /// format. Prefers a full-repertoire format-12 `(3,10)`/`(0,*)` table, then a
 /// BMP format-4 `(3,1)`/`(0,*)` table.
 fn select_cmap(d: &[u8], cmap: usize) -> Option<(usize, u16)> {
-    let num = be_u16(d, cmap + 2)? as usize;
+    let num = be_u16(d, off(cmap, 2)?)? as usize;
     let mut best: Option<(usize, u16, u8)> = None; // (offset, format, rank)
     for i in 0..num {
-        let rec = cmap + 4 + i * 8;
+        let rec = off_mul(off(cmap, 4)?, i, 8)?;
         let platform = be_u16(d, rec)?;
-        let encoding = be_u16(d, rec + 2)?;
-        let sub = cmap + be_u32(d, rec + 4)? as usize;
+        let encoding = be_u16(d, off(rec, 2)?)?;
+        let sub = off(cmap, be_u32(d, off(rec, 4)?)? as usize)?;
         let format = be_u16(d, sub)?;
         let unicode = matches!((platform, encoding), (0, _) | (3, 1) | (3, 10));
         if !unicode {
@@ -992,24 +1050,24 @@ fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
     let format = be_u16(d, cov)?;
     match format {
         1 => {
-            let count = be_u16(d, cov + 2)? as usize;
+            let count = be_u16_at(d, cov, 2)? as usize;
             let mut v = Vec::with_capacity(count.min(d.len() / 2 + 1));
             for i in 0..count {
-                v.push(be_u16(d, cov + 4 + i * 2)?);
+                v.push(be_u16(d, off_mul(off(cov, 4)?, i, 2)?)?);
             }
             Some(v)
         }
         2 => {
-            let range_count = be_u16(d, cov + 2)? as usize;
+            let range_count = be_u16_at(d, cov, 2)? as usize;
             // Key by coverage index so the result is correctly ordered even if
             // ranges are listed out of order.
             let mut by_index: std::collections::BTreeMap<u32, u16> =
                 std::collections::BTreeMap::new();
             for i in 0..range_count {
-                let rec = cov + 4 + i * 6;
+                let rec = off_mul(off(cov, 4)?, i, 6)?;
                 let start = be_u16(d, rec)? as u32;
-                let end = be_u16(d, rec + 2)? as u32;
-                let start_idx = be_u16(d, rec + 4)? as u32;
+                let end = be_u16_at(d, rec, 2)? as u32;
+                let start_idx = be_u16_at(d, rec, 4)? as u32;
                 if end < start {
                     continue;
                 }
@@ -1032,22 +1090,22 @@ fn parse_class_def(d: &[u8], cd: usize) -> Option<ClassDef> {
     let format = be_u16(d, cd)?;
     match format {
         1 => {
-            let start = be_u16(d, cd + 2)?;
-            let count = be_u16(d, cd + 4)? as usize;
+            let start = be_u16_at(d, cd, 2)?;
+            let count = be_u16_at(d, cd, 4)? as usize;
             let mut classes = Vec::with_capacity(count.min(d.len() / 2 + 1));
             for i in 0..count {
-                classes.push(be_u16(d, cd + 6 + i * 2)?);
+                classes.push(be_u16(d, off_mul(off(cd, 6)?, i, 2)?)?);
             }
             Some(ClassDef::Format1 { start, classes })
         }
         2 => {
-            let range_count = be_u16(d, cd + 2)? as usize;
+            let range_count = be_u16_at(d, cd, 2)? as usize;
             let mut ranges = Vec::with_capacity(range_count.min(d.len() / 6 + 1));
             for i in 0..range_count {
-                let rec = cd + 4 + i * 6;
+                let rec = off_mul(off(cd, 4)?, i, 6)?;
                 let s = be_u16(d, rec)?;
-                let e = be_u16(d, rec + 2)?;
-                let c = be_u16(d, rec + 4)?;
+                let e = be_u16_at(d, rec, 2)?;
+                let c = be_u16_at(d, rec, 4)?;
                 ranges.push((s, e, c));
             }
             Some(ClassDef::Format2 { ranges })
@@ -1068,17 +1126,17 @@ fn parse_pair_subtable(d: &[u8], sub: usize) -> Option<KernSubtable> {
 
 /// Pair Adjustment format 1 (specific pairs).
 fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
-    let cov_off = be_u16(d, sub + 2)? as usize;
-    let vf1 = be_u16(d, sub + 4)?;
-    let vf2 = be_u16(d, sub + 6)?;
-    let pair_set_count = be_u16(d, sub + 8)? as usize;
+    let cov_off = be_u16_at(d, sub, 2)? as usize;
+    let vf1 = be_u16_at(d, sub, 4)?;
+    let vf2 = be_u16_at(d, sub, 6)?;
+    let pair_set_count = be_u16_at(d, sub, 8)? as usize;
 
     let rec1_size = value_record_size(vf1);
     let rec2_size = value_record_size(vf2);
     // Each PairValueRecord: secondGlyph(2) + valueRecord1 + valueRecord2.
-    let pair_rec_size = 2 + rec1_size + rec2_size;
+    let pair_rec_size = off(2, off(rec1_size, rec2_size)?)?;
 
-    let coverage = parse_coverage_glyphs(d, sub + cov_off)?;
+    let coverage = parse_coverage_glyphs(d, off(sub, cov_off)?)?;
 
     let mut pairs: std::collections::BTreeMap<(u16, u16), i16> = std::collections::BTreeMap::new();
 
@@ -1087,19 +1145,25 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
         let Some(left_glyph) = coverage.get(i).copied() else {
             continue;
         };
-        let Some(ps_off) = be_u16(d, sub + 10 + i * 2) else {
+        let Some(ps_off) = off_mul(off(sub, 10)?, i, 2).and_then(|slot| be_u16(d, slot)) else {
             continue;
         };
-        let ps = sub + ps_off as usize;
+        let Some(ps) = off(sub, ps_off as usize) else {
+            continue;
+        };
         let Some(pair_value_count) = be_u16(d, ps) else {
             continue;
         };
-        let mut p = ps + 2;
+        let Some(mut p) = off(ps, 2) else {
+            continue;
+        };
         for _ in 0..pair_value_count {
             let Some(second) = be_u16(d, p) else {
                 break;
             };
-            let x_adv = value_record_x_advance(d, p + 2, vf1).unwrap_or(0);
+            let x_adv = off(p, 2)
+                .and_then(|value_off| value_record_x_advance(d, value_off, vf1))
+                .unwrap_or(0);
             // First subtable / first record wins for a given pair.
             pairs.entry((left_glyph, second)).or_insert(x_adv);
             let Some(np) = p.checked_add(pair_rec_size) else {
@@ -1114,24 +1178,24 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
 
 /// Pair Adjustment format 2 (class-based).
 fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
-    let cov_off = be_u16(d, sub + 2)? as usize;
-    let vf1 = be_u16(d, sub + 4)?;
-    let vf2 = be_u16(d, sub + 6)?;
-    let class_def1_off = be_u16(d, sub + 8)? as usize;
-    let class_def2_off = be_u16(d, sub + 10)? as usize;
-    let class1_count = be_u16(d, sub + 12)? as usize;
-    let class2_count = be_u16(d, sub + 14)? as usize;
+    let cov_off = be_u16_at(d, sub, 2)? as usize;
+    let vf1 = be_u16_at(d, sub, 4)?;
+    let vf2 = be_u16_at(d, sub, 6)?;
+    let class_def1_off = be_u16_at(d, sub, 8)? as usize;
+    let class_def2_off = be_u16_at(d, sub, 10)? as usize;
+    let class1_count = be_u16_at(d, sub, 12)? as usize;
+    let class2_count = be_u16_at(d, sub, 14)? as usize;
 
     let rec1_size = value_record_size(vf1);
     let rec2_size = value_record_size(vf2);
-    let class_rec_size = rec1_size + rec2_size;
+    let class_rec_size = off(rec1_size, rec2_size)?;
 
     // Class1Record[]: each holds class2_count Class2Records (record[c1][c2]).
-    let matrix_base = sub + 16;
+    let matrix_base = off(sub, 16)?;
     let cell_count = class1_count.checked_mul(class2_count)?;
 
-    // BUG 1 FIX: never allocate/iterate based on untrusted class counts unless
-    // the declared matrix actually fits within the font data.
+    // Never allocate/iterate based on untrusted class counts unless the
+    // declared matrix actually fits within the font data.
     let matrix: Vec<i16> = if class_rec_size == 0 {
         // Both value formats empty => every xAdvance is 0; store nothing.
         Vec::new()
@@ -1144,19 +1208,19 @@ fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
         }
         let mut m = Vec::with_capacity(cell_count);
         for idx in 0..cell_count {
-            let off = matrix_base + idx * class_rec_size;
+            let cell = off_mul(matrix_base, idx, class_rec_size)?;
             // In-bounds by the check above; reads only xAdvance of record1.
-            let x_adv = value_record_x_advance(d, off, vf1).unwrap_or(0);
+            let x_adv = value_record_x_advance(d, cell, vf1).unwrap_or(0);
             m.push(x_adv);
         }
         m
     };
 
-    let mut coverage = parse_coverage_glyphs(d, sub + cov_off)?;
+    let mut coverage = parse_coverage_glyphs(d, off(sub, cov_off)?)?;
     coverage.sort_unstable();
 
-    let class1 = parse_class_def(d, sub + class_def1_off)?;
-    let class2 = parse_class_def(d, sub + class_def2_off)?;
+    let class1 = parse_class_def(d, off(sub, class_def1_off)?)?;
+    let class2 = parse_class_def(d, off(sub, class_def2_off)?)?;
 
     Some(KernSubtable::Format2 {
         coverage,
@@ -1175,8 +1239,8 @@ fn resolve_extension(d: &[u8], sub: usize) -> Option<(u16, usize)> {
     if pos_format != 1 {
         return None;
     }
-    let ext_type = be_u16(d, sub + 2)?;
-    let ext_off = be_u32(d, sub + 4)? as usize;
+    let ext_type = be_u16_at(d, sub, 2)?;
+    let ext_off = be_u32_at(d, sub, 4)? as usize;
     Some((ext_type, sub.checked_add(ext_off)?))
 }
 
@@ -1195,33 +1259,35 @@ impl Font {
         let (gpos, _gpos_len) = find_table_full(d, b"GPOS")?;
 
         // GPOS header: major(0) minor(2) scriptList(4) featureList(6) lookupList(8).
-        let feature_list_off = be_u16(d, gpos + 6)? as usize;
-        let lookup_list_off = be_u16(d, gpos + 8)? as usize;
-        let feature_list = gpos + feature_list_off;
-        let lookup_list = gpos + lookup_list_off;
+        let feature_list_off = be_u16_at(d, gpos, 6)? as usize;
+        let lookup_list_off = be_u16_at(d, gpos, 8)? as usize;
+        let feature_list = off(gpos, feature_list_off)?;
+        let lookup_list = off(gpos, lookup_list_off)?;
 
         // --- Collect every 'kern' feature's lookup indices (deduplicated). ---
         let feature_count = be_u16(d, feature_list)? as usize;
         let mut lookup_indices: Vec<u16> = Vec::new();
         for i in 0..feature_count {
             // FeatureRecord: tag[4] + featureOffset(2), from FeatureList.
-            let rec = feature_list + 2 + i * 6;
-            let Some(tag) = d.get(rec..rec + 4) else {
+            let rec = off_mul(off(feature_list, 2)?, i, 6)?;
+            let Some(tag) = bytes_at(d, rec, 4) else {
                 break;
             };
             if tag != b"kern" {
                 continue;
             }
-            let Some(feat_off) = be_u16(d, rec + 4) else {
+            let Some(feat_off) = be_u16_at(d, rec, 4) else {
                 continue;
             };
-            let feat = feature_list + feat_off as usize;
+            let Some(feat) = off(feature_list, feat_off as usize) else {
+                continue;
+            };
             // Feature: featureParams(0) lookupIndexCount(2) lookupIndices(4..).
-            let Some(lookup_index_count) = be_u16(d, feat + 2) else {
+            let Some(lookup_index_count) = be_u16_at(d, feat, 2) else {
                 continue;
             };
             for j in 0..lookup_index_count as usize {
-                if let Some(idx) = be_u16(d, feat + 4 + j * 2) {
+                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot)) {
                     if !lookup_indices.contains(&idx) {
                         lookup_indices.push(idx);
                     }
@@ -1238,23 +1304,30 @@ impl Font {
             if li >= lookup_count {
                 continue;
             }
-            let Some(lookup_off) = be_u16(d, lookup_list + 2 + li * 2) else {
+            let Some(lookup_off) =
+                off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
+            else {
                 continue;
             };
-            let lookup = lookup_list + lookup_off as usize;
+            let Some(lookup) = off(lookup_list, lookup_off as usize) else {
+                continue;
+            };
             // Lookup: lookupType(0) lookupFlag(2) subTableCount(4) offsets(6..).
             let Some(lookup_type) = be_u16(d, lookup) else {
                 continue;
             };
-            let Some(sub_count) = be_u16(d, lookup + 4) else {
+            let Some(sub_count) = be_u16_at(d, lookup, 4) else {
                 continue;
             };
 
             for s in 0..sub_count as usize {
-                let Some(sub_off) = be_u16(d, lookup + 6 + s * 2) else {
+                let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
+                else {
                     continue;
                 };
-                let sub = lookup + sub_off as usize;
+                let Some(sub) = off(lookup, sub_off as usize) else {
+                    continue;
+                };
 
                 match lookup_type {
                     2 => {
@@ -1363,29 +1436,31 @@ impl Font {
     fn parse_gsub_ligatures(&self) -> Option<Ligatures> {
         let d = &self.data;
         let (gsub, _) = find_table_full(d, b"GSUB")?;
-        let feature_list = gsub + be_u16(d, gsub + 6)? as usize;
-        let lookup_list = gsub + be_u16(d, gsub + 8)? as usize;
+        let feature_list = off(gsub, be_u16_at(d, gsub, 6)? as usize)?;
+        let lookup_list = off(gsub, be_u16_at(d, gsub, 8)? as usize)?;
 
         // Collect every 'liga' feature's lookup indices.
         let feature_count = be_u16(d, feature_list)? as usize;
         let mut lookup_indices: Vec<u16> = Vec::new();
         for i in 0..feature_count {
-            let rec = feature_list + 2 + i * 6;
-            let Some(tag) = d.get(rec..rec + 4) else {
+            let rec = off_mul(off(feature_list, 2)?, i, 6)?;
+            let Some(tag) = bytes_at(d, rec, 4) else {
                 break;
             };
             if tag != b"liga" {
                 continue;
             }
-            let Some(feat_off) = be_u16(d, rec + 4) else {
+            let Some(feat_off) = be_u16_at(d, rec, 4) else {
                 continue;
             };
-            let feat = feature_list + feat_off as usize;
-            let Some(n) = be_u16(d, feat + 2) else {
+            let Some(feat) = off(feature_list, feat_off as usize) else {
+                continue;
+            };
+            let Some(n) = be_u16_at(d, feat, 2) else {
                 continue;
             };
             for j in 0..n as usize {
-                if let Some(idx) = be_u16(d, feat + 4 + j * 2) {
+                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot)) {
                     if !lookup_indices.contains(&idx) {
                         lookup_indices.push(idx);
                     }
@@ -1401,21 +1476,28 @@ impl Font {
             if li >= lookup_count {
                 continue;
             }
-            let Some(lookup_off) = be_u16(d, lookup_list + 2 + li * 2) else {
+            let Some(lookup_off) =
+                off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
+            else {
                 continue;
             };
-            let lookup = lookup_list + lookup_off as usize;
+            let Some(lookup) = off(lookup_list, lookup_off as usize) else {
+                continue;
+            };
             let Some(lookup_type) = be_u16(d, lookup) else {
                 continue;
             };
-            let Some(sub_count) = be_u16(d, lookup + 4) else {
+            let Some(sub_count) = be_u16_at(d, lookup, 4) else {
                 continue;
             };
             for s in 0..sub_count as usize {
-                let Some(sub_off) = be_u16(d, lookup + 6 + s * 2) else {
+                let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
+                else {
                     continue;
                 };
-                let sub = lookup + sub_off as usize;
+                let Some(sub) = off(lookup, sub_off as usize) else {
+                    continue;
+                };
                 match lookup_type {
                     4 => parse_ligature_subst(d, sub, &mut rules),
                     // Extension Substitution -> a real type-4 subtable.
@@ -1450,13 +1532,17 @@ fn parse_ligature_subst(
     if format != 1 {
         return;
     }
-    let Some(cov_off) = be_u16(d, sub + 2) else {
+    let Some(cov_off) = be_u16_at(d, sub, 2) else {
         return;
     };
-    let Some(set_count) = be_u16(d, sub + 4) else {
+    let Some(set_count) = be_u16_at(d, sub, 4) else {
         return;
     };
-    let Some(coverage) = parse_coverage_glyphs(d, sub + cov_off as usize) else {
+    let Some(coverage) = off(sub, cov_off as usize).and_then(|cov| parse_coverage_glyphs(d, cov))
+    else {
+        return;
+    };
+    let Some(set_offsets) = off(sub, 6) else {
         return;
     };
     for i in 0..set_count as usize {
@@ -1464,22 +1550,29 @@ fn parse_ligature_subst(
         let Some(first) = coverage.get(i).copied() else {
             continue;
         };
-        let Some(set_off) = be_u16(d, sub + 6 + i * 2) else {
+        let Some(set_off) = off_mul(set_offsets, i, 2).and_then(|slot| be_u16(d, slot)) else {
             continue;
         };
-        let lig_set = sub + set_off as usize;
+        let Some(lig_set) = off(sub, set_off as usize) else {
+            continue;
+        };
         let Some(lig_count) = be_u16(d, lig_set) else {
             continue;
         };
+        let Some(lig_offsets) = off(lig_set, 2) else {
+            continue;
+        };
         for j in 0..lig_count as usize {
-            let Some(lig_off) = be_u16(d, lig_set + 2 + j * 2) else {
+            let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot)) else {
                 continue;
             };
-            let lig = lig_set + lig_off as usize;
+            let Some(lig) = off(lig_set, lig_off as usize) else {
+                continue;
+            };
             let Some(lig_glyph) = be_u16(d, lig) else {
                 continue;
             };
-            let Some(comp_count) = be_u16(d, lig + 2) else {
+            let Some(comp_count) = be_u16_at(d, lig, 2) else {
                 continue;
             };
             if comp_count == 0 {
@@ -1488,8 +1581,11 @@ fn parse_ligature_subst(
             // componentGlyphIDs holds comp_count-1 entries (the first is `first`).
             let mut components = Vec::with_capacity(comp_count as usize - 1);
             let mut ok = true;
+            let Some(component_base) = off(lig, 4) else {
+                continue;
+            };
             for k in 0..(comp_count as usize - 1) {
-                match be_u16(d, lig + 4 + k * 2) {
+                match off_mul(component_base, k, 2).and_then(|slot| be_u16(d, slot)) {
                     Some(g) => components.push(g),
                     None => {
                         ok = false;

@@ -20,18 +20,19 @@
 //! Pure computation (no `std::fs`, no deps) so it stays WASM / `--no-default-features`
 //! clean; the font bytes come from `include_bytes!`, not the filesystem.
 
-use crate::PdfOptions;
 use crate::ast::{Align, Block, Document, Inline, List, Table};
 use crate::error::Result;
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FontSize, LayoutUnit, ParagraphItem, Penalty, StyledText, TextBox, break_paragraph,
-    default_interword_glue, measure_text_with_pairs,
+    default_interword_glue, is_breakable_whitespace, measure_text_with_pairs,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::Theme;
+use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 #[cfg(not(target_arch = "wasm32"))]
 type PdfStageStart = std::time::Instant;
@@ -64,6 +65,9 @@ const QUOTE_BG_PAD_V: f32 = 3.0;
 
 // Table zebra-stripe tint for alternating body rows (very subtle cool gray).
 const TABLE_STRIPE: (f32, f32, f32) = (0.965, 0.969, 0.975);
+const PDF_IMAGE_DPI_SCALE: f32 = 72.0 / 96.0;
+const MAX_PDF_IMAGE_COMPRESSED_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PDF_IMAGE_PIXELS: u64 = 24_000_000;
 
 // Font slots referenced in page Resources as /F1../F5.
 const F_BODY: u8 = 1;
@@ -126,6 +130,46 @@ struct Line {
     /// Vertical-list metadata used by the page builder.
     flow: FlowMark,
     segs: Vec<Seg>,
+    image: Option<ImageLine>,
+}
+
+#[derive(Clone)]
+struct ImageLine {
+    image: PdfImageData,
+    alt: String,
+    width_pt: f32,
+    height_pt: f32,
+}
+
+#[derive(Clone)]
+struct PdfImageData {
+    key: String,
+    width_px: u32,
+    height_px: u32,
+    color: PdfImageColor,
+    compressed_rows: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PdfImageColor {
+    Gray,
+    Rgb,
+}
+
+impl PdfImageColor {
+    const fn color_space(self) -> &'static str {
+        match self {
+            Self::Gray => "/DeviceGray",
+            Self::Rgb => "/DeviceRGB",
+        }
+    }
+
+    const fn components(self) -> u8 {
+        match self {
+            Self::Gray => 1,
+            Self::Rgb => 3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,6 +177,7 @@ enum FlowKind {
     Paragraph,
     Heading,
     Code,
+    Image,
     TableHeader,
     TableRule,
     TableRow,
@@ -241,14 +286,29 @@ fn nonnegative_finite(value: f32, fallback: f32) -> f32 {
 }
 
 impl Faces {
-    fn load(opts: &PdfOptions) -> Option<Self> {
+    fn load(opts: &PdfOptions) -> Result<Self> {
         let fam = opts.theme.font;
-        Some(Self {
-            body: fonts::load_body(fam, FontStyle::Regular).ok()?,
-            bold: fonts::load_body(fam, FontStyle::Bold).ok()?,
-            italic: fonts::load_body(fam, FontStyle::Italic).ok()?,
-            bolditalic: fonts::load_body(fam, FontStyle::BoldItalic).ok()?,
-            mono: fonts::load_mono(FontStyle::Regular).ok()?,
+        Ok(Self {
+            body: parse_face(
+                FontAssetSlot::BodyRegular,
+                body_font_bytes(&opts.font_assets, fam, FontStyle::Regular),
+            )?,
+            bold: parse_face(
+                FontAssetSlot::BodyBold,
+                body_font_bytes(&opts.font_assets, fam, FontStyle::Bold),
+            )?,
+            italic: parse_face(
+                FontAssetSlot::BodyItalic,
+                body_font_bytes(&opts.font_assets, fam, FontStyle::Italic),
+            )?,
+            bolditalic: parse_face(
+                FontAssetSlot::BodyBoldItalic,
+                body_font_bytes(&opts.font_assets, fam, FontStyle::BoldItalic),
+            )?,
+            mono: parse_face(
+                FontAssetSlot::MonoRegular,
+                mono_font_bytes(&opts.font_assets, FontStyle::Regular),
+            )?,
         })
     }
 
@@ -266,6 +326,50 @@ impl Faces {
     fn advance(&self, slot: u8, c: char) -> f32 {
         self.get(slot).advance_1000(c) as f32
     }
+}
+
+fn body_font_bytes(font_assets: &FontAssets, family: crate::FontFamily, style: FontStyle) -> &[u8] {
+    match style {
+        FontStyle::Regular => font_assets
+            .body_regular
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Bold => font_assets
+            .body_bold
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Italic => font_assets
+            .body_italic
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::BoldItalic => font_assets
+            .body_bold_italic
+            .as_deref()
+            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+    }
+}
+
+fn mono_font_bytes(font_assets: &FontAssets, style: FontStyle) -> &[u8] {
+    font_assets
+        .mono_regular
+        .as_deref()
+        .unwrap_or_else(|| fonts::mono_bytes(style))
+}
+
+fn parse_face(slot: FontAssetSlot, bytes: &[u8]) -> Result<Font> {
+    let font = Font::parse(bytes.to_vec()).map_err(|err| {
+        RenderError::InvalidInput(format!(
+            "{} font bytes are not a supported TrueType font: {err}",
+            slot.as_str()
+        ))
+    })?;
+    if !font.has_glyf_outlines() {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
+            slot.as_str()
+        )));
+    }
+    Ok(font)
 }
 
 /// Resolve a font slot from inline style flags.
@@ -325,20 +429,13 @@ fn render_inner(doc: &Document, opts: &PdfOptions, profiled: bool) -> Result<Pdf
         PdfProfiler::disabled()
     };
     let page = PageGeom::from_theme(&opts.theme);
-    let Some(faces) = profiler.measure(
+    let faces = profiler.measure(
         "font_load",
         5,
-        "load bundled body/bold/italic/bolditalic/mono faces",
+        "load body/bold/italic/bolditalic/mono faces from supplied or bundled bytes",
         || Faces::load(opts),
-        |_| 0,
-    ) else {
-        // The bundled fonts are tested to parse, so this is unreachable in
-        // practice; emit a valid empty document rather than failing.
-        return Ok(PdfProfile {
-            bytes: empty_pdf(page),
-            stages: profiler.finish(),
-        });
-    };
+        |result| usize::from(result.is_ok()),
+    )?;
     let lines = profiler.measure(
         "layout",
         doc.blocks.len(),
@@ -563,6 +660,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
         }
         Block::Paragraph(inlines) => {
+            if layout_standalone_image(inlines, indent, out, cx) {
+                return;
+            }
             let mut toks = Vec::new();
             tokenize(inlines, false, false, false, None, &mut toks);
             let group = cx.alloc_flow();
@@ -621,6 +721,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         shade: false,
                         flow: FlowMark::default(),
                         segs,
+                        image: None,
                     });
                 }
             }
@@ -652,6 +753,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     shade: false,
                     flow: FlowMark::default(),
                     segs,
+                    image: None,
                 });
             }
             mark_flow(out, start, group, FlowKind::Code);
@@ -691,6 +793,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     kind: FlowKind::Rule,
                 },
                 segs: Vec::new(),
+                image: None,
             });
         }
         Block::HtmlBlock(html) => {
@@ -754,7 +857,168 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             kind: FlowKind::Heading,
         },
         segs: Vec::new(),
+        image: None,
     });
+}
+
+fn layout_standalone_image(
+    inlines: &[Inline],
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) -> bool {
+    let [Inline::Image { dest, alt, .. }] = inlines else {
+        return false;
+    };
+    let Some(image) = resolve_pdf_image(&cx.opts.image_assets, dest) else {
+        return false;
+    };
+
+    let max_w = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
+    let max_h = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
+    let natural_w = image.width_px as f32 * PDF_IMAGE_DPI_SCALE;
+    let natural_h = image.height_px as f32 * PDF_IMAGE_DPI_SCALE;
+    if natural_w <= 0.0 || natural_h <= 0.0 {
+        return false;
+    }
+    let scale = (max_w / natural_w).min(max_h / natural_h).min(1.0);
+    let width_pt = natural_w * scale;
+    let height_pt = natural_h * scale;
+    if width_pt <= 0.0 || height_pt <= 0.0 {
+        return false;
+    }
+
+    let group = cx.alloc_flow();
+    out.push(Line {
+        size: (height_pt / 1.32).max(1.0),
+        gap_after: 7.0,
+        rule: false,
+        rule_x: cx.page.left + indent,
+        quote_bars: Vec::new(),
+        bg: 0,
+        shade: false,
+        flow: FlowMark {
+            group,
+            index: 0,
+            count: 1,
+            kind: FlowKind::Image,
+        },
+        segs: Vec::new(),
+        image: Some(ImageLine {
+            image,
+            alt: alt.clone(),
+            width_pt,
+            height_pt,
+        }),
+    });
+    true
+}
+
+fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfImageData> {
+    let key = dest.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let asset = assets
+        .iter()
+        .find(|asset| asset.destination.trim() == key)?;
+    parse_png_image_asset(key, &asset.bytes)
+}
+
+fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1A\n";
+    if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES || bytes.get(..8)? != PNG_SIG {
+        return None;
+    }
+
+    let mut pos = 8usize;
+    let mut width = 0u32;
+    let mut height = 0u32;
+    let mut color = None;
+    let mut idat = Vec::new();
+    let mut seen_ihdr = false;
+    let mut seen_iend = false;
+
+    while pos < bytes.len() {
+        let len = be_u32(bytes, pos)? as usize;
+        let kind_start = pos.checked_add(4)?;
+        let data_start = kind_start.checked_add(4)?;
+        let data_end = data_start.checked_add(len)?;
+        let next = data_end.checked_add(4)?;
+        if next > bytes.len() {
+            return None;
+        }
+        let kind = bytes.get(kind_start..data_start)?;
+        let data = bytes.get(data_start..data_end)?;
+        if !seen_ihdr && kind != b"IHDR" {
+            return None;
+        }
+        match kind {
+            b"IHDR" => {
+                if seen_ihdr || len != 13 {
+                    return None;
+                }
+                width = be_u32(data, 0)?;
+                height = be_u32(data, 4)?;
+                let bit_depth = *data.get(8)?;
+                let color_type = *data.get(9)?;
+                let compression = *data.get(10)?;
+                let filter = *data.get(11)?;
+                let interlace = *data.get(12)?;
+                if width == 0
+                    || height == 0
+                    || u64::from(width).saturating_mul(u64::from(height)) > MAX_PDF_IMAGE_PIXELS
+                    || bit_depth != 8
+                    || compression != 0
+                    || filter != 0
+                    || interlace != 0
+                {
+                    return None;
+                }
+                color = match color_type {
+                    0 => Some(PdfImageColor::Gray),
+                    2 => Some(PdfImageColor::Rgb),
+                    _ => return None,
+                };
+                seen_ihdr = true;
+            }
+            b"IDAT" => {
+                if !seen_ihdr {
+                    return None;
+                }
+                if idat.len().saturating_add(data.len()) > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+                    return None;
+                }
+                idat.extend_from_slice(data);
+            }
+            b"IEND" => {
+                if len != 0 || next != bytes.len() {
+                    return None;
+                }
+                seen_iend = true;
+                break;
+            }
+            _ => {}
+        }
+        pos = next;
+    }
+
+    let color = color?;
+    if !seen_ihdr || !seen_iend || idat.is_empty() {
+        return None;
+    }
+    Some(PdfImageData {
+        key: key.to_string(),
+        width_px: width,
+        height_px: height,
+        color,
+        compressed_rows: idat,
+    })
+}
+
+fn be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let b = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
@@ -893,6 +1157,7 @@ fn layout_table(
                         kind,
                     },
                     segs,
+                    image: None,
                 });
             }
 
@@ -914,6 +1179,7 @@ fn layout_table(
             kind: FlowKind::TableRule,
         },
         segs: Vec::new(),
+        image: None,
     };
 
     out.extend(row_lines(
@@ -941,7 +1207,7 @@ fn layout_table(
 }
 
 fn wrap_table_cell(text: &str, max_width: f32, size: f32, slot: u8, faces: &Faces) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<&str> = split_breakable_words(text);
     if words.is_empty() {
         return Vec::new();
     }
@@ -1137,7 +1403,7 @@ fn push_text_tokens(
 ) {
     let mut word = String::new();
     for c in text.chars() {
-        if c.is_whitespace() {
+        if is_breakable_whitespace(c) {
             if !word.is_empty() {
                 out.push(Tok {
                     text: std::mem::take(&mut word),
@@ -1325,6 +1591,7 @@ fn layout_inlines(
             shade: false,
             flow: FlowMark::default(),
             segs,
+            image: None,
         });
     }
     mark_flow(out, start, flow.group, flow.kind);
@@ -1364,6 +1631,7 @@ fn layout_prefixed_inlines(
             shade: false,
             flow: FlowMark::default(),
             segs: vec![marker],
+            image: None,
         });
         mark_flow(out, start, spec.flow.group, spec.flow.kind);
         return;
@@ -1418,6 +1686,7 @@ fn layout_prefixed_inlines(
             shade: false,
             flow: FlowMark::default(),
             segs,
+            image: None,
         });
     }
     mark_flow(out, start, spec.flow.group, spec.flow.kind);
@@ -1478,6 +1747,7 @@ fn layout_inlines_greedy(
             shade: false,
             flow: FlowMark::default(),
             segs,
+            image: None,
         });
     }
 }
@@ -1756,6 +2026,24 @@ fn expand_code_tabs(text: &str) -> String {
     out
 }
 
+fn split_breakable_words(text: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, ch) in text.char_indices() {
+        if is_breakable_whitespace(ch) {
+            if let Some(s) = start.take() {
+                words.push(&text[s..idx]);
+            }
+        } else if start.is_none() {
+            start = Some(idx);
+        }
+    }
+    if let Some(s) = start {
+        words.push(&text[s..]);
+    }
+    words
+}
+
 fn fill_for_highlight(kind: HighlightTok) -> Fill {
     match kind {
         HighlightTok::Plain | HighlightTok::Punct => Fill::Black,
@@ -1826,7 +2114,7 @@ fn serialize(
 
     // Subset each used face to the characters it renders, and keep the parsed
     // subset (its cmap gives the new glyph ids we encode in the content stream).
-    let mut subsets: Vec<EmbeddedFace> = Vec::new();
+    let mut subsets: Vec<EmbeddedFace> = Vec::with_capacity(used_slots.len());
     let mut shaped_cache: ShapedRunCache = BTreeMap::new();
     let mut shape_cache_hits = 0usize;
     let mut shape_cache_hit_bytes = 0usize;
@@ -1876,7 +2164,8 @@ fn serialize(
         let keep: Vec<char> = chars.into_iter().collect();
         // Seed the subset with the chars' glyphs (so the cmap resolves) plus the
         // shaped glyphs (which add ligature glyphs no character maps to).
-        let mut seed: Vec<u16> = keep.iter().map(|&c| source.glyph_index(c)).collect();
+        let mut seed: Vec<u16> = Vec::with_capacity(keep.len().saturating_add(shaped_glyphs.len()));
+        seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
         let Some((bytes, map)) = source.subset_glyphs(&seed, &keep) else {
@@ -1906,6 +2195,7 @@ fn serialize(
             kern: source.gpos_kerning(),
             lig,
             map,
+            cmap_chars: keep,
             lig_uni,
         });
     }
@@ -1941,19 +2231,39 @@ fn serialize(
         || heading_metadata(lines),
         |meta| meta.len(),
     );
+    let images = profiler.measure(
+        "image_asset_collection",
+        lines.len(),
+        "collect supported PDF image XObjects from laid-out image lines",
+        || collect_pdf_images(lines),
+        |images| images.iter().map(|image| image.compressed_rows.len()).sum(),
+    );
+    let image_index: BTreeMap<&str, usize> = images
+        .iter()
+        .enumerate()
+        .map(|(idx, image)| (image.key.as_str(), idx))
+        .collect();
 
     // PASS 2 — per page: backgrounds (code panels + inline-code chips) FIRST,
     // then text + rules, then blockquote gutter bars. Link annotations and
     // outline destinations are collected from the same placed geometry.
     let stream_generation_started = profiler.checkpoint();
-    let mut pages: Vec<PageContent> = Vec::new();
-    let mut outlines: Vec<OutlineEntry> = Vec::new();
-    let mut seen_heading_groups: BTreeSet<u32> = BTreeSet::new();
+    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len());
+    let mut page_buffer_reserved_bytes = 0usize;
     for (page_idx, placed) in pages_placed.iter().enumerate() {
-        let mut bg = String::new();
-        let mut body = String::new();
-        let mut annots = Vec::new();
-        let mut marks = Vec::new();
+        let bg_capacity = estimated_background_capacity(placed);
+        let body_capacity = estimated_body_capacity(placed);
+        let annot_capacity = estimated_link_annotation_count(placed);
+        let mark_capacity = estimated_mark_count(placed);
+        page_buffer_reserved_bytes = page_buffer_reserved_bytes
+            .saturating_add(bg_capacity)
+            .saturating_add(body_capacity)
+            .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
+            .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
+        let mut bg = String::with_capacity(bg_capacity);
+        let mut body = String::with_capacity(body_capacity);
+        let mut annots = Vec::with_capacity(annot_capacity);
+        let mut marks = Vec::with_capacity(mark_capacity);
         let mut next_mcid = 0usize;
 
         // (a) Blockquote backgrounds: subtle page-local panels behind quoted
@@ -2055,10 +2365,10 @@ fn serialize(
             let y = p.y;
             if line.flow.kind == FlowKind::Heading
                 && line.flow.group != 0
-                && seen_heading_groups.insert(line.flow.group)
+                && scratch.seen_heading_groups.insert(line.flow.group)
                 && let Some(meta) = heading_meta.get(&line.flow.group)
             {
-                outlines.push(OutlineEntry {
+                scratch.outlines.push(OutlineEntry {
                     id: meta.id.clone(),
                     title: meta.title.clone(),
                     page_index: page_idx,
@@ -2073,15 +2383,28 @@ fn serialize(
                     yy = y + line.size * 0.5,
                 ));
             } else {
-                let marked = line_has_visible_text(line);
+                let marked = line_has_visible_content(line);
                 if marked {
                     let tag = struct_tag_for_line(line);
                     body.push_str(&format!("/{tag} <</MCID {next_mcid}>> BDC\n"));
                     marks.push(StructMark {
                         mcid: next_mcid,
                         tag,
+                        alt: line.image.as_ref().map(|image| image.alt.clone()),
                     });
                     next_mcid += 1;
+                }
+                if let Some(image) = &line.image
+                    && let Some(idx) = image_index.get(image.image.key.as_str())
+                {
+                    let name = image_name(*idx);
+                    body.push_str(&format!(
+                        "q {w} 0 0 {h} {x} {y} cm /{name} Do Q\n",
+                        w = pdf_num(image.width_pt),
+                        h = pdf_num(image.height_pt),
+                        x = pdf_num(line.rule_x),
+                        y = pdf_num(y),
+                    ));
                 }
                 for seg in &line.segs {
                     if seg.text.is_empty() {
@@ -2163,29 +2486,64 @@ fn serialize(
         let mut quote_acc = quote_extents(placed);
         flush_quote_bars(&mut body, &mut quote_acc);
 
-        pages.push(PageContent {
-            stream: format!("{bg}{body}"),
+        let mut stream = String::with_capacity(bg.len().saturating_add(body.len()));
+        stream.push_str(&bg);
+        stream.push_str(&body);
+
+        scratch.pages.push(PageContent {
+            stream,
             annots,
             marks,
         });
     }
-    if pages.is_empty() {
-        pages.push(PageContent {
+    profiler.record_since(
+        "page_content_buffer_preallocation",
+        scratch.pages.len(),
+        page_buffer_reserved_bytes,
+        "pre-size per-page content, annotation, and structure-mark buffers",
+        None,
+    );
+    if scratch.pages.is_empty() {
+        scratch.pages.push(PageContent {
             stream: String::new(),
             annots: Vec::new(),
             marks: Vec::new(),
         });
     }
-    let page_stream_bytes = pages.iter().map(|page| page.stream.len()).sum();
+    let page_stream_bytes = scratch.pages.iter().map(|page| page.stream.len()).sum();
     profiler.record_since(
         "page_content_stream_generation",
-        pages.len(),
+        scratch.pages.len(),
         page_stream_bytes,
         "generate page drawing operators, annotations, outlines, and structure marks",
         stream_generation_started,
     );
 
-    build_pdf(&pages, &outlines, &subsets, opts, page, profiler)
+    build_pdf(
+        &scratch.pages,
+        &scratch.outlines,
+        &subsets,
+        &images,
+        opts,
+        page,
+        profiler,
+    )
+}
+
+struct RenderScratch {
+    pages: Vec<PageContent>,
+    outlines: Vec<OutlineEntry>,
+    seen_heading_groups: BTreeSet<u32>,
+}
+
+impl RenderScratch {
+    fn with_capacity(page_count: usize, heading_count: usize) -> Self {
+        Self {
+            pages: Vec::with_capacity(page_count.max(1)),
+            outlines: Vec::with_capacity(heading_count),
+            seen_heading_groups: BTreeSet::new(),
+        }
+    }
 }
 
 struct PageContent {
@@ -2194,16 +2552,92 @@ struct PageContent {
     marks: Vec<StructMark>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StructMark {
     mcid: usize,
     tag: &'static str,
+    alt: Option<String>,
 }
 
 #[derive(Clone)]
 struct LinkAnnotation {
     rect: Rect,
     target: LinkTarget,
+}
+
+fn estimated_background_capacity(placed: &[Placed<'_>]) -> usize {
+    let quote_bars = placed
+        .iter()
+        .map(|placed| placed.line.quote_bars.len())
+        .sum::<usize>();
+    let shaded_lines = placed.iter().filter(|placed| placed.line.shade).count();
+    let panel_lines = placed.iter().filter(|placed| placed.line.bg != 0).count();
+    let mono_chips = placed
+        .iter()
+        .flat_map(|placed| placed.line.segs.iter())
+        .filter(|seg| seg.slot == F_MONO && !seg.text.trim().is_empty())
+        .count();
+
+    quote_bars
+        .saturating_mul(160)
+        .saturating_add(shaded_lines.saturating_mul(160))
+        .saturating_add(panel_lines.saturating_mul(48))
+        .saturating_add(mono_chips.saturating_mul(160))
+}
+
+fn estimated_body_capacity(placed: &[Placed<'_>]) -> usize {
+    let mut text_bytes = 0usize;
+    let mut segments = 0usize;
+    let mut struck = 0usize;
+    let mut linked = 0usize;
+    let mut images = 0usize;
+    let mut rules = 0usize;
+    for placed in placed {
+        if placed.line.rule {
+            rules += 1;
+        }
+        if placed.line.image.is_some() {
+            images += 1;
+        }
+        for seg in &placed.line.segs {
+            if seg.text.is_empty() {
+                continue;
+            }
+            segments += 1;
+            text_bytes = text_bytes.saturating_add(seg.text.len());
+            if seg.strike {
+                struck += 1;
+            }
+            if seg.link.is_some() {
+                linked += 1;
+            }
+        }
+    }
+
+    placed
+        .len()
+        .saturating_mul(48)
+        .saturating_add(segments.saturating_mul(96))
+        .saturating_add(text_bytes.saturating_mul(6))
+        .saturating_add(struck.saturating_mul(96))
+        .saturating_add(linked.saturating_mul(160))
+        .saturating_add(images.saturating_mul(96))
+        .saturating_add(rules.saturating_mul(96))
+}
+
+fn estimated_link_annotation_count(placed: &[Placed<'_>]) -> usize {
+    placed
+        .iter()
+        .flat_map(|placed| placed.line.segs.iter())
+        .filter(|seg| seg.link.is_some() && seg.width > 0.0)
+        .count()
+}
+
+fn estimated_mark_count(placed: &[Placed<'_>]) -> usize {
+    placed
+        .iter()
+        .filter(|placed| line_has_visible_content(placed.line))
+        .count()
 }
 
 #[derive(Clone, Copy)]
@@ -2288,11 +2722,28 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
     out
 }
 
-fn line_has_visible_text(line: &Line) -> bool {
-    line.segs.iter().any(|seg| !seg.text.is_empty())
+fn collect_pdf_images(lines: &[Line]) -> Vec<PdfImageData> {
+    let mut by_key: BTreeMap<String, PdfImageData> = BTreeMap::new();
+    for image in lines.iter().filter_map(|line| line.image.as_ref()) {
+        by_key
+            .entry(image.image.key.clone())
+            .or_insert_with(|| image.image.clone());
+    }
+    by_key.into_values().collect()
+}
+
+fn image_name(index: usize) -> String {
+    format!("Im{}", index + 1)
+}
+
+fn line_has_visible_content(line: &Line) -> bool {
+    line.image.is_some() || line.segs.iter().any(|seg| !seg.text.is_empty())
 }
 
 fn struct_tag_for_line(line: &Line) -> &'static str {
+    if line.image.is_some() {
+        return "Figure";
+    }
     if line.segs.iter().any(|seg| seg.link.is_some()) {
         return "Link";
     }
@@ -2542,6 +2993,8 @@ struct EmbeddedFace {
     lig: Ligatures,
     /// Source glyph id -> subset (renumbered) glyph id.
     map: BTreeMap<u16, u16>,
+    /// Sorted document characters retained in the subset cmap.
+    cmap_chars: Vec<char>,
     /// Subset glyph id -> its source characters, for ligature glyphs that no
     /// character maps to (keeps ligated text selectable via ToUnicode).
     lig_uni: BTreeMap<u16, String>,
@@ -2558,6 +3011,155 @@ type ShapedRunCache = BTreeMap<u8, BTreeMap<String, ShapedRun>>;
 struct PdfStream {
     dict: String,
     bytes: Vec<u8>,
+}
+
+fn estimated_pdf_buffer_capacity(
+    pages: &[PageContent],
+    faces: &[EmbeddedFace],
+    images: &[PdfImageData],
+    outline_count: usize,
+    annot_count: usize,
+    mark_count: usize,
+    total_objs: usize,
+) -> usize {
+    let page_stream_bytes = pages.iter().map(|page| page.stream.len()).sum::<usize>();
+    let page_mark_bytes = pages
+        .iter()
+        .flat_map(|page| page.marks.iter())
+        .filter_map(|mark| mark.alt.as_ref())
+        .map(String::len)
+        .sum::<usize>();
+    let page_annot_bytes = pages
+        .iter()
+        .flat_map(|page| page.annots.iter())
+        .map(|annot| match &annot.target {
+            LinkTarget::Uri(uri) | LinkTarget::Fragment(uri) => uri.len(),
+        })
+        .sum::<usize>();
+    let font_program_bytes = faces.iter().map(|face| face.bytes.len()).sum::<usize>();
+    let font_aux_bytes = faces
+        .iter()
+        .map(|face| {
+            face.font.num_glyphs as usize * 8
+                + face.cmap_chars.len() * 18
+                + face.lig_uni.values().map(String::len).sum::<usize>() * 4
+        })
+        .sum::<usize>();
+    let image_bytes = images
+        .iter()
+        .map(|image| image.compressed_rows.len())
+        .sum::<usize>();
+
+    page_stream_bytes
+        .saturating_add(font_program_bytes)
+        .saturating_add(font_aux_bytes)
+        .saturating_add(image_bytes)
+        .saturating_add(page_mark_bytes.saturating_mul(2))
+        .saturating_add(page_annot_bytes.saturating_mul(2))
+        .saturating_add(total_objs.saturating_mul(192))
+        .saturating_add(pages.len().saturating_mul(256))
+        .saturating_add(outline_count.saturating_mul(192))
+        .saturating_add(annot_count.saturating_mul(192))
+        .saturating_add(mark_count.saturating_mul(192))
+        .saturating_add(4096)
+}
+
+fn append_decimal_usize(out: &mut Vec<u8>, value: usize) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[pos..]);
+}
+
+fn append_xref_offset(out: &mut Vec<u8>, offset: usize) {
+    let mut buf = [0u8; 20];
+    let mut n = offset;
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    let digits = &buf[pos..];
+    for _ in digits.len()..10 {
+        out.push(b'0');
+    }
+    out.extend_from_slice(digits);
+}
+
+fn append_pdf_object_header(out: &mut Vec<u8>, object_id: usize) {
+    append_decimal_usize(out, object_id);
+    out.extend_from_slice(b" 0 obj\n");
+}
+
+fn append_pdf_object_str(out: &mut Vec<u8>, offsets: &mut [usize], object_id: usize, body: &str) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(b"\nendobj\n");
+}
+
+fn append_xref_in_use_row(out: &mut Vec<u8>, offset: usize) {
+    append_xref_offset(out, offset);
+    out.extend_from_slice(b" 00000 n \n");
+}
+
+fn append_decimal_u64_string(out: &mut String, value: u64) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    for &byte in &buf[pos..] {
+        out.push(byte as char);
+    }
+}
+
+fn append_i32_string(out: &mut String, value: i32) {
+    if value < 0 {
+        out.push('-');
+    }
+    append_decimal_u64_string(out, i64::from(value).unsigned_abs());
+}
+
+fn append_pdf_num(out: &mut String, value: f32) {
+    let finite = if value.is_finite() { value } else { 0.0 };
+    let scaled = (f64::from(finite) * 100.0).round() as i64;
+    if scaled < 0 || (scaled == 0 && finite.is_sign_negative()) {
+        out.push('-');
+    }
+    let abs = scaled.unsigned_abs();
+    append_decimal_u64_string(out, abs / 100);
+    let frac = abs % 100;
+    if frac == 0 {
+        return;
+    }
+    out.push('.');
+    if frac < 10 {
+        out.push('0');
+        append_decimal_u64_string(out, frac);
+    } else if frac % 10 == 0 {
+        append_decimal_u64_string(out, frac / 10);
+    } else {
+        append_decimal_u64_string(out, frac);
+    }
 }
 
 fn page_stream(stream: &str) -> PdfStream {
@@ -2591,6 +3193,7 @@ fn build_pdf(
     pages: &[PageContent],
     outlines: &[OutlineEntry],
     faces: &[EmbeddedFace],
+    images: &[PdfImageData],
     opts: &PdfOptions,
     page_geom: PageGeom,
     profiler: &mut PdfProfiler,
@@ -2598,6 +3201,7 @@ fn build_pdf(
     let build_started = profiler.checkpoint();
     let p = pages.len();
     let nf = faces.len();
+    let ni = images.len();
     let title = opts.title.clone().unwrap_or_default();
     let author = opts.author.clone().unwrap_or_default();
     let outline_count = outlines.len();
@@ -2629,7 +3233,7 @@ fn build_pdf(
     // Object number plan (1-indexed):
     //   1 Catalog, 2 Pages, [3..3+p) Page objs, [3+p..3+2p) content streams,
     //   then per face k: type0, cidfont, descriptor, fontfile, tounicode (5),
-    //   then link annotations, optional outline root/items, optional structure
+    //   then image XObjects, link annotations, optional outline root/items, optional structure
     //   root/parent-tree/elements, then Info.
     let page_obj = |i: usize| 3 + i;
     let content_obj = |i: usize| 3 + p + i;
@@ -2639,7 +3243,9 @@ fn build_pdf(
     let desc_obj = |k: usize| face_base + 5 * k + 2;
     let file_obj = |k: usize| face_base + 5 * k + 3;
     let touni_obj = |k: usize| face_base + 5 * k + 4;
-    let annot_base = face_base + 5 * nf;
+    let image_base = face_base + 5 * nf;
+    let image_obj = |k: usize| image_base + k;
+    let annot_base = image_base + ni;
     let annot_obj = |page_index: usize, local_index: usize| {
         annot_base + annot_starts.get(page_index).copied().unwrap_or(0) + local_index
     };
@@ -2672,17 +3278,28 @@ fn build_pdf(
         String::new()
     };
 
-    let mut buf: Vec<u8> = Vec::new();
+    let pdf_buffer_capacity = estimated_pdf_buffer_capacity(
+        pages,
+        faces,
+        images,
+        outline_count,
+        total_annots,
+        total_marks,
+        total_objs,
+    );
+    profiler.record_since(
+        "pdf_buffer_preallocation",
+        total_objs,
+        pdf_buffer_capacity,
+        "pre-size final PDF byte buffer from page streams, embedded assets, and object counts",
+        None,
+    );
+    let mut buf: Vec<u8> = Vec::with_capacity(pdf_buffer_capacity);
     let mut offsets: Vec<usize> = vec![0; total_objs + 1];
-
-    let emit = |buf: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &str| {
-        offsets[n] = buf.len();
-        buf.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
-    };
 
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
 
-    emit(
+    append_pdf_object_str(
         &mut buf,
         &mut offsets,
         1,
@@ -2693,7 +3310,7 @@ fn build_pdf(
         .map(|i| format!("{} 0 R", page_obj(i)))
         .collect::<Vec<_>>()
         .join(" ");
-    emit(
+    append_pdf_object_str(
         &mut buf,
         &mut offsets,
         2,
@@ -2707,6 +3324,17 @@ fn build_pdf(
         .map(|(k, f)| format!("/F{} {} 0 R", f.slot, type0_obj(k)))
         .collect::<Vec<_>>()
         .join(" ");
+    let image_res = if images.is_empty() {
+        String::new()
+    } else {
+        let refs = images
+            .iter()
+            .enumerate()
+            .map(|(k, _)| format!("/{} {} 0 R", image_name(k), image_obj(k)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(" /XObject << {refs} >>")
+    };
     let media_w = pdf_num(page_geom.width);
     let media_h = pdf_num(page_geom.height);
     for i in 0..p {
@@ -2724,13 +3352,13 @@ fn build_pdf(
         } else {
             String::new()
         };
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             page_obj(i),
             &format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
-                 /Resources << /Font << {font_res} >> >> /Contents {c} 0 R{annots}{struct_parent} >>",
+                 /Resources << /Font << {font_res} >>{image_res} >> /Contents {c} 0 R{annots}{struct_parent} >>",
                 c = content_obj(i),
             ),
         );
@@ -2769,7 +3397,7 @@ fn build_pdf(
             |widths| widths.len(),
         );
 
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             type0_obj(k),
@@ -2780,7 +3408,7 @@ fn build_pdf(
                 tu = touni_obj(k),
             ),
         );
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             cid_obj(k),
@@ -2797,7 +3425,7 @@ fn build_pdf(
         } else {
             0
         };
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             desc_obj(k),
@@ -2839,9 +3467,9 @@ fn build_pdf(
         // ToUnicode CMap (left uncompressed so it stays greppable + tiny).
         let cmap = profiler.measure(
             "tounicode_generation",
-            face.font.num_glyphs as usize + face.lig_uni.len(),
+            face.cmap_chars.len() + face.lig_uni.len(),
             "generate selectable-text ToUnicode CMap for one subset face",
-            || tounicode_cmap(&face.font, &face.lig_uni),
+            || tounicode_cmap(&face.font, &face.cmap_chars, &face.lig_uni),
             |cmap| cmap.len(),
         );
         offsets[touni_obj(k)] = buf.len();
@@ -2855,6 +3483,27 @@ fn build_pdf(
         );
     }
 
+    for (k, image) in images.iter().enumerate() {
+        offsets[image_obj(k)] = buf.len();
+        let colors = image.color.components();
+        let color_space = image.color.color_space();
+        buf.extend_from_slice(
+            format!(
+                "{n} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter /FlateDecode \
+                 /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >> \
+                 /Length {len} >>\nstream\n",
+                n = image_obj(k),
+                w = image.width_px,
+                h = image.height_px,
+                len = image.compressed_rows.len(),
+            )
+            .as_bytes(),
+        );
+        buf.extend_from_slice(&image.compressed_rows);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+    }
+
     for (page_index, page) in pages.iter().enumerate() {
         for (local_index, annot) in page
             .annots
@@ -2863,7 +3512,7 @@ fn build_pdf(
             .enumerate()
         {
             let body = annotation_dict(annot, &dest_by_id, page_obj);
-            emit(
+            append_pdf_object_str(
                 &mut buf,
                 &mut offsets,
                 annot_obj(page_index, local_index),
@@ -2873,7 +3522,7 @@ fn build_pdf(
     }
 
     if outline_count > 0 {
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             outline_root_obj,
@@ -2895,7 +3544,7 @@ fn build_pdf(
             } else {
                 format!(" /Next {} 0 R", outline_item_obj(i + 1))
             };
-            emit(
+            append_pdf_object_str(
                 &mut buf,
                 &mut offsets,
                 outline_item_obj(i),
@@ -2920,7 +3569,7 @@ fn build_pdf(
             })
             .collect::<Vec<_>>()
             .join(" ");
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             struct_root_obj,
@@ -2940,7 +3589,7 @@ fn build_pdf(
                 .join(" ");
             nums.push_str(&format!("{page_index} [ {refs} ] "));
         }
-        emit(
+        append_pdf_object_str(
             &mut buf,
             &mut offsets,
             parent_tree_obj,
@@ -2949,13 +3598,19 @@ fn build_pdf(
 
         for (page_index, page) in pages.iter().enumerate() {
             for (local_index, mark) in page.marks.iter().enumerate() {
-                emit(
+                let alt = mark
+                    .alt
+                    .as_ref()
+                    .filter(|alt| !alt.is_empty())
+                    .map(|alt| format!(" /Alt ({})", pdf_escape(alt)))
+                    .unwrap_or_default();
+                append_pdf_object_str(
                     &mut buf,
                     &mut offsets,
                     struct_elem_obj(page_index, local_index),
                     &format!(
                         "<< /Type /StructElem /S /{tag} /P {parent} 0 R /Pg {page_obj} 0 R \
-                         /K << /Type /MCR /Pg {page_obj} 0 R /MCID {mcid} >> >>",
+                         /K << /Type /MCR /Pg {page_obj} 0 R /MCID {mcid} >>{alt} >>",
                         tag = mark.tag,
                         parent = struct_root_obj,
                         page_obj = page_obj(page_index),
@@ -2977,7 +3632,7 @@ fn build_pdf(
         format!(" /Author ({})", pdf_escape(&author))
     };
     let info_date = pdf_info_date(opts.metadata_epoch_seconds);
-    emit(
+    append_pdf_object_str(
         &mut buf,
         &mut offsets,
         info_obj,
@@ -2996,17 +3651,19 @@ fn build_pdf(
     let xref_started = profiler.checkpoint();
     let xref_pos = buf.len();
     let size = total_objs + 1;
-    buf.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    buf.extend_from_slice(b"xref\n0 ");
+    append_decimal_usize(&mut buf, size);
+    buf.extend_from_slice(b"\n0000000000 65535 f \n");
     for offset in offsets.iter().take(total_objs + 1).skip(1) {
-        buf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        append_xref_in_use_row(&mut buf, *offset);
     }
-    buf.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {size} /Root 1 0 R /Info {info_obj} 0 R >>\n\
-             startxref\n{xref_pos}\n%%EOF\n"
-        )
-        .as_bytes(),
-    );
+    buf.extend_from_slice(b"trailer\n<< /Size ");
+    append_decimal_usize(&mut buf, size);
+    buf.extend_from_slice(b" /Root 1 0 R /Info ");
+    append_decimal_usize(&mut buf, info_obj);
+    buf.extend_from_slice(b" 0 R >>\nstartxref\n");
+    append_decimal_usize(&mut buf, xref_pos);
+    buf.extend_from_slice(b"\n%%EOF\n");
     profiler.record_since(
         "xref_trailer_writing",
         total_objs + 1,
@@ -3113,10 +3770,12 @@ impl FaceMetrics {
 /// `/W` widths array `[ 0 [w0 w1 ...] ]` (1/1000 em, indexed by glyph id = CID).
 fn widths_array(font: &Font) -> String {
     let upm = font.units_per_em.max(1) as u32;
-    let mut s = String::from("0 [");
+    let glyph_count = font.num_glyphs as usize;
+    let mut s = String::with_capacity(4 + glyph_count.saturating_mul(6));
+    s.push_str("0 [");
     for gid in 0..font.num_glyphs {
         let w = font.advance_width(gid) as u32 * 1000 / upm;
-        s.push_str(&w.to_string());
+        append_decimal_u64_string(&mut s, u64::from(w));
         s.push(' ');
     }
     s.push(']');
@@ -3153,14 +3812,16 @@ fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[
     let upm = i32::from(source.units_per_em.max(1));
     let mut out = String::from("[<");
     for (i, &g) in shaped.iter().enumerate() {
-        out.push_str(&format!("{:04X}", map.get(&g).copied().unwrap_or(0)));
+        append_hex_u16(&mut out, map.get(&g).copied().unwrap_or(0));
         if let Some(&next) = shaped.get(i + 1) {
             let k = kern.pair(g, next);
             if k != 0 {
                 // A TJ number shifts the next glyph left by number/1000 em, so a
                 // tightening (negative) kern becomes a positive number.
                 let adj = -(i32::from(k) * 1000 / upm);
-                out.push_str(&format!(">{adj}<"));
+                out.push('>');
+                append_i32_string(&mut out, adj);
+                out.push('<');
             }
         }
     }
@@ -3170,30 +3831,34 @@ fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[
 
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
 /// stays selectable. Only the glyphs the document uses appear.
-fn tounicode_cmap(font: &Font, lig_uni: &BTreeMap<u16, String>) -> String {
-    // (gid, UTF-16BE hex) over the chars present in the subset cmap, plus the
-    // ligature glyphs (which no character maps to) so ligated text stays
-    // selectable.
-    let mut entries: Vec<(u16, String)> = Vec::new();
-    for cp in 0x20u32..0x2C00 {
-        if let Some(c) = char::from_u32(cp) {
-            let g = font.glyph_index(c);
-            if g != 0 {
-                entries.push((g, utf16be_hex(c)));
-            }
+fn tounicode_cmap(font: &Font, cmap_chars: &[char], lig_uni: &BTreeMap<u16, String>) -> String {
+    // (gid, UTF-16BE hex) over the chars known to be present in the subset cmap,
+    // plus ligature glyphs (which no single character maps to) so ligated text
+    // stays selectable. This avoids scanning broad Unicode ranges for every
+    // embedded face.
+    let mut entries: Vec<(u16, String)> =
+        Vec::with_capacity(cmap_chars.len().saturating_add(lig_uni.len()));
+    for &c in cmap_chars {
+        let g = font.glyph_index(c);
+        if g != 0 {
+            entries.push((g, utf16be_hex(c)));
         }
     }
     for (g, s) in lig_uni {
-        entries.push((*g, s.chars().map(utf16be_hex).collect()));
+        let mut hex = String::with_capacity(s.len().saturating_mul(4));
+        for c in s.chars() {
+            append_utf16be_hex(c, &mut hex);
+        }
+        entries.push((*g, hex));
     }
     entries.sort_by_key(|&(g, _)| g);
     entries.dedup_by_key(|(g, _)| *g);
 
-    let mut body = String::new();
+    let mut body = String::with_capacity(entries.len().saturating_mul(18).saturating_add(64));
     for chunk in entries.chunks(100) {
-        body.push_str(&format!("{} beginbfchar\n", chunk.len()));
+        let _ = writeln!(&mut body, "{} beginbfchar", chunk.len());
         for (g, hex) in chunk {
-            body.push_str(&format!("<{g:04X}> <{hex}>\n"));
+            let _ = writeln!(&mut body, "<{g:04X}> <{hex}>");
         }
         body.push_str("endbfchar\n");
     }
@@ -3207,12 +3872,24 @@ fn tounicode_cmap(font: &Font, lig_uni: &BTreeMap<u16, String>) -> String {
 }
 
 fn utf16be_hex(c: char) -> String {
-    let mut s = String::new();
+    let mut s = String::with_capacity(8);
+    append_utf16be_hex(c, &mut s);
+    s
+}
+
+fn append_utf16be_hex(c: char, out: &mut String) {
     let mut buf = [0u16; 2];
     for u in c.encode_utf16(&mut buf) {
-        s.push_str(&format!("{u:04X}"));
+        append_hex_u16(out, *u);
     }
-    s
+}
+
+fn append_hex_u16(out: &mut String, value: u16) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push(HEX[((value >> 12) & 0xF) as usize] as char);
+    out.push(HEX[((value >> 8) & 0xF) as usize] as char);
+    out.push(HEX[((value >> 4) & 0xF) as usize] as char);
+    out.push(HEX[(value & 0xF) as usize] as char);
 }
 
 /// Deterministic subset PostScript name, e.g. `FMDFA1+Embedded`.
@@ -3238,17 +3915,16 @@ fn empty_pdf(page: PageGeom) -> Vec<u8> {
     .into_iter()
     .enumerate()
     {
-        offsets[n + 1] = buf.len();
-        buf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", n + 1).as_bytes());
+        append_pdf_object_str(&mut buf, &mut offsets, n + 1, body);
     }
     let xref_pos = buf.len();
     buf.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
     for off in offsets.iter().skip(1) {
-        buf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        append_xref_in_use_row(&mut buf, *off);
     }
-    buf.extend_from_slice(
-        format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n").as_bytes(),
-    );
+    buf.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n");
+    append_decimal_usize(&mut buf, xref_pos);
+    buf.extend_from_slice(b"\n%%EOF\n");
     buf
 }
 
@@ -3334,29 +4010,28 @@ fn slug(text: &str) -> String {
 
 fn pdf_escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 4);
-    for c in s.chars() {
-        match c {
-            '(' => o.push_str("\\("),
-            ')' => o.push_str("\\)"),
-            '\\' => o.push_str("\\\\"),
-            '\r' => o.push_str("\\r"),
-            '\n' => o.push(' '),
-            c if (c as u32) < 256 => o.push(c),
-            _ => o.push('?'),
-        }
-    }
+    append_pdf_string_escaped(&mut o, s);
     o
 }
 
+fn append_pdf_string_escaped(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            '\\' => out.push_str("\\\\"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push(' '),
+            c if (c as u32) < 256 => out.push(c),
+            _ => out.push('?'),
+        }
+    }
+}
+
 fn pdf_num(value: f32) -> String {
-    let mut s = format!("{value:.2}");
-    while s.ends_with('0') {
-        s.pop();
-    }
-    if s.ends_with('.') {
-        s.pop();
-    }
-    if s.is_empty() { "0".to_string() } else { s }
+    let mut s = String::new();
+    append_pdf_num(&mut s, value);
+    s
 }
 
 fn text_width(s: &str, size: f32, font: u8, faces: &Faces) -> f32 {
@@ -3382,4 +4057,131 @@ fn inline_text(inlines: &[Inline]) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod pdf_writer_tests {
+    use super::{
+        append_decimal_u64_string, append_decimal_usize, append_hex_u16, append_i32_string,
+        append_pdf_num, append_pdf_object_str, append_pdf_string_escaped, append_xref_in_use_row,
+        append_xref_offset,
+    };
+
+    #[test]
+    fn decimal_writer_covers_boundary_values() {
+        let mut out = Vec::new();
+        append_decimal_usize(&mut out, 0);
+        out.push(b' ');
+        append_decimal_usize(&mut out, 7);
+        out.push(b' ');
+        append_decimal_usize(&mut out, 42);
+        out.push(b' ');
+        append_decimal_usize(&mut out, 9_876_543_210);
+
+        assert_eq!(out, b"0 7 42 9876543210");
+    }
+
+    #[test]
+    fn xref_writer_uses_classic_ten_digit_padding() {
+        let mut out = Vec::new();
+        append_xref_offset(&mut out, 0);
+        out.push(b'\n');
+        append_xref_offset(&mut out, 42);
+        out.push(b'\n');
+        append_xref_offset(&mut out, 1_234_567_890);
+        out.push(b'\n');
+        append_xref_offset(&mut out, 10_000_000_000);
+
+        assert_eq!(out, b"0000000000\n0000000042\n1234567890\n10000000000");
+    }
+
+    #[test]
+    fn xref_row_writer_preserves_pdf_spacing() {
+        let mut out = Vec::new();
+        append_xref_in_use_row(&mut out, 123);
+
+        assert_eq!(out, b"0000000123 00000 n \n");
+    }
+
+    #[test]
+    fn object_writer_records_offset_and_envelope_exactly() {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = [0usize; 3];
+        append_pdf_object_str(&mut out, &mut offsets, 2, "<< /Type /Example >>");
+
+        assert_eq!(offsets[2], b"%PDF-1.7\n".len());
+        assert_eq!(out, b"%PDF-1.7\n2 0 obj\n<< /Type /Example >>\nendobj\n");
+    }
+
+    #[test]
+    fn glyph_hex_writer_is_uppercase_and_zero_padded() {
+        let mut out = String::new();
+        append_hex_u16(&mut out, 0);
+        out.push(' ');
+        append_hex_u16(&mut out, 0x00AF);
+        out.push(' ');
+        append_hex_u16(&mut out, 0xBEEF);
+
+        assert_eq!(out, "0000 00AF BEEF");
+    }
+
+    #[test]
+    fn string_decimal_and_signed_integer_writers_cover_boundaries() {
+        let mut out = String::new();
+        append_decimal_u64_string(&mut out, 0);
+        out.push(' ');
+        append_decimal_u64_string(&mut out, 12_345_678_901);
+        out.push(' ');
+        append_i32_string(&mut out, -120);
+        out.push(' ');
+        append_i32_string(&mut out, 0);
+        out.push(' ');
+        append_i32_string(&mut out, 456);
+
+        assert_eq!(out, "0 12345678901 -120 0 456");
+    }
+
+    #[test]
+    fn fixed_precision_pdf_number_writer_rounds_and_trims_like_pdf_points() {
+        let mut out = String::new();
+        for value in [0.0, 1.0, 1.2, 1.23, 1.235, -2.5, -2.345] {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            append_pdf_num(&mut out, value);
+        }
+
+        assert_eq!(out, "0 1 1.2 1.23 1.24 -2.5 -2.35");
+    }
+
+    #[test]
+    fn fixed_precision_pdf_number_writer_matches_legacy_format_policy() {
+        fn legacy_pdf_num(value: f32) -> String {
+            let mut s = format!("{value:.2}");
+            while s.ends_with('0') {
+                s.pop();
+            }
+            if s.ends_with('.') {
+                s.pop();
+            }
+            if s.is_empty() { "0".to_string() } else { s }
+        }
+
+        for value in [
+            -1200.0, -25.5, -2.345, -0.25, -0.004, 0.0, 0.004, 0.005, 0.25, 1.234, 1.235, 12.0,
+            9999.995,
+        ] {
+            let mut out = String::new();
+            append_pdf_num(&mut out, value);
+            assert_eq!(out, legacy_pdf_num(value), "value {value}");
+        }
+    }
+
+    #[test]
+    fn pdf_literal_string_escape_writer_matches_existing_policy() {
+        let mut out = String::new();
+        append_pdf_string_escaped(&mut out, "a(b)c\\d\re\n\u{2206}");
+
+        assert_eq!(out, "a\\(b\\)c\\\\d\\re ?");
+    }
 }

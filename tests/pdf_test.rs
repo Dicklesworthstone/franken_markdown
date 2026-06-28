@@ -6,9 +6,67 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::{
-    PageMargins, PageSize, PdfOptions, Theme, parse_markdown, render_pdf, render_pdf_document,
-    render_pdf_document_profiled,
+    PageMargins, PageSize, PdfImageAsset, PdfOptions, Theme, parse_markdown, render_pdf,
+    render_pdf_document, render_pdf_document_profiled,
 };
+
+fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + data.len());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    // The renderer does not trust or decode CRCs for this first PDF embedding
+    // slice; the chunk envelope is enough for deterministic XObject emission.
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out
+}
+
+fn tiny_rgb_png(dest_pixels: &[[u8; 3]]) -> Vec<u8> {
+    let width = dest_pixels.len() as u32;
+    let height = 1u32;
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB, deflate, PNG filters, no interlace.
+
+    let mut rows = Vec::with_capacity(1 + dest_pixels.len() * 3);
+    rows.push(0); // filter type 0 for the single row.
+    for pixel in dest_pixels {
+        rows.extend_from_slice(pixel);
+    }
+    let idat = franken_markdown::compress::zlib_compress(&rows);
+
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    png.extend_from_slice(&png_chunk(b"IDAT", &idat));
+    png.extend_from_slice(&png_chunk(b"IEND", &[]));
+    png
+}
+
+fn tiny_rgb_png_with_prefix_chunk() -> Vec<u8> {
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"tEXt", b"before ihdr"));
+    png.extend_from_slice(&tiny_rgb_png(&[[0x24, 0x91, 0xB8]])[8..]);
+    png
+}
+
+fn tiny_rgb_png_with_nonempty_iend() -> Vec<u8> {
+    let mut png = tiny_rgb_png(&[[0x24, 0x91, 0xB8]]);
+    let iend = png_chunk(b"IEND", b"bad");
+    if let Some(pos) = png.windows(12).position(|chunk| &chunk[4..8] == b"IEND") {
+        png.truncate(pos);
+        png.extend_from_slice(&iend);
+    }
+    png
+}
+
+fn tiny_rgb_png_with_trailing_bytes() -> Vec<u8> {
+    let mut png = tiny_rgb_png(&[[0x24, 0x91, 0xB8]]);
+    png.extend_from_slice(b"trailing bytes after IEND");
+    png
+}
 
 fn as_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -208,6 +266,116 @@ fn pdf_metadata_honors_explicit_epoch_seconds() {
 
     assert!(text.contains("/CreationDate (D:20231114221320Z)"));
     assert!(text.contains("/ModDate (D:20231114221320Z)"));
+}
+
+#[test]
+fn pdf_renders_supplied_png_image_as_xobject() {
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "images/tiny.png",
+            tiny_rgb_png(&[[0xD0, 0x22, 0x40], [0x20, 0x64, 0xC8]]),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Tiny chart](images/tiny.png)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/Subtype /Image"),
+        "supported PNG should become an image XObject"
+    );
+    assert!(text.contains("/ColorSpace /DeviceRGB"));
+    assert!(text.contains("/Filter /FlateDecode"));
+    assert!(text.contains("/Predictor 15"));
+    assert!(text.contains("/Colors 3"));
+    assert!(text.contains("/Columns 2"));
+    assert!(text.contains("/XObject << /Im1 "));
+    assert!(
+        text.contains("/Im1 Do"),
+        "page content should draw the image"
+    );
+    assert!(
+        text.contains("/S /Figure"),
+        "tagged structure marks a figure"
+    );
+    assert!(
+        text.contains("/Alt (Tiny chart)"),
+        "figure alt text should be carried into the structure element"
+    );
+}
+
+#[test]
+fn pdf_images_fall_back_to_alt_text_when_asset_missing_or_unsupported() {
+    let missing = render_pdf(
+        "![Missing image](images/missing.png)",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let missing_text = as_text(&missing);
+    assert!(!missing_text.contains("/Subtype /Image"));
+    assert!(
+        missing_text.contains("BT /F"),
+        "missing image asset should render visible alt text"
+    );
+
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("images/bad.png", b"not a png".to_vec())],
+        ..PdfOptions::default()
+    };
+    let unsupported = render_pdf("![Bad image](images/bad.png)", &opts).unwrap();
+    let unsupported_text = as_text(&unsupported);
+    assert!(!unsupported_text.contains("/Subtype /Image"));
+    assert!(
+        unsupported_text.contains("BT /F"),
+        "unsupported image asset should render visible alt text"
+    );
+
+    for (dest, bytes) in [
+        ("images/prefix.png", tiny_rgb_png_with_prefix_chunk()),
+        ("images/bad-iend.png", tiny_rgb_png_with_nonempty_iend()),
+        ("images/trailing.png", tiny_rgb_png_with_trailing_bytes()),
+    ] {
+        let opts = PdfOptions {
+            image_assets: vec![PdfImageAsset::new(dest, bytes)],
+            ..PdfOptions::default()
+        };
+        let pdf = render_pdf(&format!("![Malformed envelope]({dest})"), &opts).unwrap();
+        let pdf_text = as_text(&pdf);
+        assert!(!pdf_text.contains("/Subtype /Image"));
+        assert!(
+            pdf_text.contains("BT /F"),
+            "malformed PNG envelope should render visible alt text"
+        );
+    }
+}
+
+#[test]
+fn pdf_image_object_order_is_deterministic_across_asset_order() {
+    let md = "![Second](images/b.png)\n\n![First](images/a.png)";
+    let first = PdfImageAsset::new("images/a.png", tiny_rgb_png(&[[0x24, 0x91, 0xB8]]));
+    let second = PdfImageAsset::new("images/b.png", tiny_rgb_png(&[[0xE8, 0x44, 0x44]]));
+
+    let opts_ab = PdfOptions {
+        image_assets: vec![first.clone(), second.clone()],
+        ..PdfOptions::default()
+    };
+    let opts_ba = PdfOptions {
+        image_assets: vec![second, first],
+        ..PdfOptions::default()
+    };
+
+    let pdf_ab = render_pdf(md, &opts_ab).unwrap();
+    let pdf_ba = render_pdf(md, &opts_ba).unwrap();
+
+    assert_eq!(
+        pdf_ab, pdf_ba,
+        "host asset order must not affect deterministic PDF bytes"
+    );
+    let pdf_text = as_text(&pdf_ab);
+    assert!(pdf_text.contains("/XObject << /Im1 "));
+    assert!(pdf_text.contains("/Im2 "));
+    assert!(pdf_text.contains("/Im2 Do"));
+    assert!(pdf_text.contains("/Im1 Do"));
 }
 
 #[test]

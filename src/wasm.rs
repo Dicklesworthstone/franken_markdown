@@ -7,8 +7,9 @@
 //! theme, HTML, or PDF behavior.
 
 use crate::{
-    DarkModePolicy, DiagnosticSeverity, FontFamily, HtmlOptions, PdfOptions, RenderError, Result,
-    Theme, parse_markdown_spanned, render_html_document, render_pdf_document,
+    DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlOptions,
+    PdfImageAsset, PdfOptions, RenderError, Result, Theme, parse_markdown_spanned,
+    render_html_document, render_pdf_document,
 };
 
 /// Output kind requested by a browser/WASM caller.
@@ -68,6 +69,14 @@ pub struct WasmRenderOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks for PDF output.
     pub code_line_numbers: bool,
+    /// Caller-provided image bytes keyed by Markdown image destination.
+    ///
+    /// Browser hosts pass explicit bytes. The core never fetches URLs and never
+    /// reads the filesystem.
+    pub pdf_image_assets: Vec<PdfImageAsset>,
+    /// Caller-provided font bytes. Missing slots use bundled deterministic
+    /// fallback fonts.
+    pub font_assets: FontAssets,
 }
 
 impl WasmRenderOptions {
@@ -120,12 +129,66 @@ impl WasmRenderOptions {
         Ok(self)
     }
 
+    /// Return a copy with one supplied font asset appended/replaced.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] for malformed slot names or font
+    /// bytes that the clean-room TrueType reader/subsetter cannot validate.
+    pub fn with_font_asset_bytes(
+        mut self,
+        slot: FontAssetSlot,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        self.font_assets.set_slot(slot, bytes)?;
+        Ok(self)
+    }
+
+    /// Return a copy with one supplied font asset, using stable slot spelling.
+    ///
+    /// Valid slots are `body-regular`, `body-bold`, `body-italic`,
+    /// `body-bold-italic`, and `mono-regular`.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] for unknown slots or malformed font
+    /// bytes.
+    pub fn with_font_asset_name(self, slot: &str, bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        let slot = FontAssetSlot::parse(slot).ok_or_else(|| {
+            RenderError::InvalidInput(format!(
+                "unknown font asset slot '{slot}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular"
+            ))
+        })?;
+        self.with_font_asset_bytes(slot, bytes)
+    }
+
+    /// Return a copy with one PDF image asset appended.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] when the Markdown destination is
+    /// blank. Image byte validation happens during PDF rendering so callers get
+    /// the same supported-format behavior on native and WASM targets.
+    pub fn with_pdf_image_asset(
+        mut self,
+        destination: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        let destination = destination.into();
+        if destination.trim().is_empty() {
+            return Err(RenderError::InvalidInput(
+                "image asset destination must not be blank".to_string(),
+            ));
+        }
+        self.pdf_image_assets
+            .push(PdfImageAsset::new(destination, bytes));
+        Ok(self)
+    }
+
     fn html_options(&self) -> HtmlOptions {
         HtmlOptions {
             theme: self.theme.clone(),
             title: self.title.clone(),
             custom_css: self.custom_css.clone(),
             allow_raw_html: self.allow_raw_html,
+            font_assets: self.font_assets.clone(),
         }
     }
 
@@ -137,6 +200,8 @@ impl WasmRenderOptions {
             metadata_epoch_seconds: self.metadata_epoch_seconds,
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
+            image_assets: self.pdf_image_assets.clone(),
+            font_assets: self.font_assets.clone(),
         }
     }
 }
@@ -248,8 +313,8 @@ pub fn capabilities_json() -> String {
     "{\"schema\":\"fmd-wasm-capabilities-v1\",\
      \"outputs\":[\"html\",\"pdf\"],\
      \"input\":\"markdown_utf8\",\
-     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true},\
-     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true},\
+     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"font_assets\":\"ttf_v0_host_supplied_bytes\"},\
+     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\"},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
      \"runtime_assumptions\":{\"filesystem\":false,\"process\":false,\"network\":false,\"threads\":false},\
      \"theme\":"

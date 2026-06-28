@@ -31,6 +31,7 @@ publish = false
 [lib]
 name = "franken_markdown"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 # Two binaries from one shared entrypoint (`cli::main`), each from its own thin
 # shim so no source file is shared across build targets. The long name builds
@@ -50,11 +51,16 @@ required-features = ["cli"]
 default = ["cli"]
 # CLI surface only. The engine library never depends on these.
 cli = ["dep:clap"]
+# Browser package adapter only. The no-default core stays dependency-free; this
+# feature exists because Rust 2024 treats manual `no_mangle`/`export_name` ABI
+# exports as unsafe attributes, and the project forbids unsafe code.
+wasm-bindgen = ["dep:wasm-bindgen"]
 
 [dependencies]
 # The ONLY third-party crate, and only for the CLI argument parser. The library
 # target (the renderer itself) compiles with zero external dependencies.
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
+wasm-bindgen = { version = "0.2.126", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

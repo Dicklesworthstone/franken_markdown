@@ -15,6 +15,17 @@ fn rejects_non_font_bytes() {
     ));
 }
 
+#[test]
+fn malformed_required_table_offsets_fail_without_unwinding() {
+    let result = std::panic::catch_unwind(|| Font::parse(font_with_bad_required_table_offsets()));
+
+    assert!(result.is_ok(), "malformed font offsets must not panic");
+    assert!(matches!(
+        result.unwrap(),
+        Err(FontError::Truncated | FontError::NoUnicodeCmap)
+    ));
+}
+
 /// Hand-built minimal sfnt: head/maxp/hhea/hmtx + a format-12 cmap mapping
 /// 'A'->gid1, 'B'->gid2. Hermetic + deterministic (no external font needed).
 #[test]
@@ -35,6 +46,23 @@ fn parses_synthetic_format12_font() {
     // 'A' is gid1 -> 600/1000 em -> 600/1000.
     assert_eq!(font.advance_1000('A'), 600);
     assert_eq!(font.kerning('A', 'B'), 0);
+}
+
+fn font_with_bad_required_table_offsets() -> Vec<u8> {
+    let tags = [b"head", b"maxp", b"hhea", b"hmtx", b"cmap"];
+    let mut font = Vec::new();
+    font.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    font.extend_from_slice(&(tags.len() as u16).to_be_bytes());
+    font.extend_from_slice(&0u16.to_be_bytes());
+    font.extend_from_slice(&0u16.to_be_bytes());
+    font.extend_from_slice(&0u16.to_be_bytes());
+    for tag in tags {
+        font.extend_from_slice(tag);
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&u32::MAX.to_be_bytes());
+        font.extend_from_slice(&64u32.to_be_bytes());
+    }
+    font
 }
 
 #[test]
@@ -82,6 +110,42 @@ fn synthetic_font_has_no_glyf_outlines() {
     assert!(font.glyph_bbox(1).is_none());
     assert!(!font.is_composite(1));
     assert!(font.glyph_components(1).is_empty());
+}
+
+#[test]
+fn truncated_composite_glyph_does_not_read_past_its_loca_range() {
+    let font = Font::parse(build_synthetic_truncated_composite_font_with_end(11)).unwrap();
+
+    assert!(font.has_glyf_outlines());
+    assert!(
+        font.is_composite(1),
+        "the glyph header marks gid 1 as composite"
+    );
+    assert_eq!(
+        font.glyph_data(1).map(<[u8]>::len),
+        Some(11),
+        "loca intentionally exposes a glyph ending inside the first component record"
+    );
+    assert!(
+        font.glyph_components(1).is_empty(),
+        "component parsing must stop at the glyph range, not keep reading trailing glyf bytes"
+    );
+}
+
+#[test]
+fn truncated_composite_glyph_does_not_accept_partial_component_args() {
+    let font = Font::parse(build_synthetic_truncated_composite_font_with_end(14)).unwrap();
+
+    assert!(font.is_composite(1));
+    assert_eq!(
+        font.glyph_data(1).map(<[u8]>::len),
+        Some(14),
+        "loca exposes flags and component id but omits the required argument bytes"
+    );
+    assert!(
+        font.glyph_components(1).is_empty(),
+        "component parsing must reject records whose full argument/transform payload is truncated"
+    );
 }
 
 #[test]
@@ -217,6 +281,29 @@ fn subsets_plex_sans_and_reparses() {
     );
 }
 
+#[test]
+fn subset_glyphs_ignores_out_of_range_seed_glyph_ids() {
+    let orig = std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
+    let font = Font::parse(orig).unwrap();
+
+    let invalid_at_count = font.num_glyphs;
+    let (sub, remap) = font
+        .subset_glyphs(&[invalid_at_count, u16::MAX], &[])
+        .expect("subset with only invalid external glyph ids still keeps .notdef");
+
+    assert_eq!(remap.get(&0), Some(&0));
+    assert!(
+        !remap.contains_key(&invalid_at_count),
+        "gid == num_glyphs is outside the original face"
+    );
+    assert!(
+        !remap.contains_key(&u16::MAX),
+        "arbitrary out-of-range glyph ids must not enter the subset map"
+    );
+    let reparsed = Font::parse(sub).expect("subset re-parses");
+    assert_eq!(reparsed.num_glyphs, 1, "only .notdef remains");
+}
+
 /// DejaVu's accented letters are composite glyphs — exercise the transitive
 /// closure + component-id rewriting end to end.
 #[test]
@@ -261,6 +348,68 @@ fn build_synthetic_font() -> Vec<u8> {
 
 fn build_synthetic_font_with_kern() -> Vec<u8> {
     build_synthetic_font_with_extra_tables(vec![(b"kern", build_synthetic_kern_table())])
+}
+
+fn build_synthetic_truncated_composite_font_with_end(gid1_end: u32) -> Vec<u8> {
+    // head: long loca format so gid 1 can deliberately end inside a component record.
+    let mut head = vec![0u8; 54];
+    head[18..20].copy_from_slice(&be16(1000));
+    head[50..52].copy_from_slice(&be16(1));
+
+    let mut maxp = Vec::new();
+    maxp.extend_from_slice(&be32(0x0000_5000));
+    maxp.extend_from_slice(&be16(2));
+
+    let mut hhea = vec![0u8; 36];
+    hhea[4..6].copy_from_slice(&be16(800));
+    hhea[6..8].copy_from_slice(&be16((-200i16) as u16));
+    hhea[34..36].copy_from_slice(&be16(2));
+
+    let mut hmtx = Vec::new();
+    for aw in [500u16, 600] {
+        hmtx.extend_from_slice(&be16(aw));
+        hmtx.extend_from_slice(&be16(0));
+    }
+
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(1));
+    cmap.extend_from_slice(&be16(3));
+    cmap.extend_from_slice(&be16(10));
+    cmap.extend_from_slice(&be32(12));
+    cmap.extend_from_slice(&be16(12));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be32(16 + 12));
+    cmap.extend_from_slice(&be32(0));
+    cmap.extend_from_slice(&be32(1));
+    cmap.extend_from_slice(&be32(65));
+    cmap.extend_from_slice(&be32(65));
+    cmap.extend_from_slice(&be32(1));
+
+    // gid0 is empty: loca[0] == loca[1] == 0.
+    // gid1 is declared with a caller-controlled end offset. The following bytes
+    // remain inside the glyf table as trailing/padding data and must not be
+    // interpreted as a component record unless the whole record is in range.
+    let mut glyf = Vec::new();
+    glyf.extend_from_slice(&(-1i16).to_be_bytes());
+    glyf.extend_from_slice(&[0u8; 8]);
+    glyf.push(0x00);
+    glyf.extend_from_slice(&[0x20, 0x12, 0x34, 0x56, 0x78]);
+
+    let mut loca = Vec::new();
+    for off in [0u32, 0, gid1_end] {
+        loca.extend_from_slice(&be32(off));
+    }
+
+    assemble_synthetic_font(vec![
+        (b"cmap", cmap),
+        (b"glyf", glyf),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+        (b"loca", loca),
+        (b"maxp", maxp),
+    ])
 }
 
 fn build_synthetic_font_with_extra_tables(extra: Vec<(&'static [u8; 4], Vec<u8>)>) -> Vec<u8> {
@@ -312,6 +461,11 @@ fn build_synthetic_font_with_extra_tables(extra: Vec<(&'static [u8; 4], Vec<u8>)
     ];
     tables.extend(extra);
 
+    assemble_synthetic_font(tables)
+}
+
+fn assemble_synthetic_font(mut tables: Vec<(&'static [u8; 4], Vec<u8>)>) -> Vec<u8> {
+    tables.sort_by(|a, b| a.0.cmp(b.0));
     let n = tables.len() as u16;
     let dir_len = 12 + tables.len() * 16;
     let mut body = Vec::new();

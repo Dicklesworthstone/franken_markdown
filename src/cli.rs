@@ -9,9 +9,13 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
-use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html, render_pdf};
+use crate::{
+    FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Theme,
+    render_html, render_pdf,
+};
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// franken_markdown — Markdown to beautiful all-in-one HTML & tiny PDF.
 #[derive(Parser)]
@@ -19,7 +23,7 @@ const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
     name = "fmd",
     version,
     about,
-    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path embeds curated per-document font subsets today; LaTeX-grade paragraph and page layout are still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
+    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path embeds curated per-document font subsets, uses Knuth-Plass paragraph breaking, and applies basic keep/widow pagination today; TeX/Liang hyphenation and deeper page polish are still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
 )]
 struct Cli {
     /// Emit stable machine-readable JSON for command metadata/status.
@@ -88,6 +92,14 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
+    /// Provide a local PDF image asset as MARKDOWN_DEST=PATH. The render core
+    /// never fetches or reads files; this native CLI flag resolves bytes before
+    /// rendering. Repeat for multiple images.
+    #[arg(long = "pdf-image", value_name = "DEST=PATH")]
+    pdf_images: Vec<String>,
+    /// Maximum bytes accepted for each `--pdf-image` file before rendering.
+    #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
+    max_pdf_image_bytes: u64,
     /// Maximum Markdown input bytes accepted before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
@@ -275,6 +287,14 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
+    let pdf_image_assets = if want_pdf {
+        match read_pdf_image_assets(&args.pdf_images, args.max_pdf_image_bytes) {
+            Ok(assets) => assets,
+            Err(e) => return fail_json(66, "input_error", &e, json),
+        }
+    } else {
+        Vec::new()
+    };
 
     if want_html {
         let opts = HtmlOptions {
@@ -282,6 +302,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             title: args.title.clone(),
             custom_css: custom_css.clone(),
             allow_raw_html: args.allow_html,
+            font_assets: FontAssets::default(),
         };
         match render_html(&src, &opts) {
             Ok(html) => {
@@ -322,6 +343,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
             code_line_numbers: args.pdf_line_numbers,
+            image_assets: pdf_image_assets,
+            font_assets: FontAssets::default(),
         };
         match render_pdf(&src, &opts) {
             Ok(bytes) => match out_path(&args, single, "pdf") {
@@ -509,11 +532,20 @@ fn read_input(input: Option<&str>, text: Option<&str>, max_bytes: u64) -> std::i
 }
 
 fn read_limited<R: Read>(reader: R, max_bytes: u64, label: &str) -> std::io::Result<Vec<u8>> {
+    read_limited_with_flag(reader, max_bytes, label, "--max-input-bytes")
+}
+
+fn read_limited_with_flag<R: Read>(
+    reader: R,
+    max_bytes: u64,
+    label: &str,
+    flag: &str,
+) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut limited = reader.take(max_bytes.saturating_add(1));
     limited.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
-        return Err(input_too_large(label, bytes.len() as u64, max_bytes));
+        return Err(size_limit_error(label, bytes.len() as u64, max_bytes, flag));
     }
     Ok(bytes)
 }
@@ -524,10 +556,70 @@ fn string_from_input_bytes(bytes: Vec<u8>) -> std::io::Result<String> {
 }
 
 fn input_too_large(label: &str, observed: u64, max_bytes: u64) -> Error {
+    size_limit_error(label, observed, max_bytes, "--max-input-bytes")
+}
+
+fn pdf_image_too_large(label: &str, observed: u64, max_bytes: u64) -> Error {
+    size_limit_error(label, observed, max_bytes, "--max-pdf-image-bytes")
+}
+
+fn size_limit_error(label: &str, observed: u64, max_bytes: u64, flag: &str) -> Error {
     Error::new(
         IoErrorKind::InvalidData,
-        format!("{label} is {observed} bytes; exceeds --max-input-bytes {max_bytes}"),
+        format!("{label} is {observed} bytes; exceeds {flag} {max_bytes}"),
     )
+}
+
+fn read_pdf_image_assets(
+    specs: &[String],
+    max_bytes: u64,
+) -> std::result::Result<Vec<PdfImageAsset>, String> {
+    let mut assets = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let (destination, path) = parse_pdf_image_spec(spec)?;
+        let label = format!("PDF image asset {destination} from {}", path.display());
+        if let Ok(meta) = std::fs::metadata(&path)
+            && meta.len() > max_bytes
+        {
+            return Err(pdf_image_too_large(&label, meta.len(), max_bytes).to_string());
+        }
+        let file = std::fs::File::open(&path).map_err(|e| format!("reading {label}: {e}"))?;
+        let bytes = read_limited_with_flag(file, max_bytes, &label, "--max-pdf-image-bytes")
+            .map_err(|e| format!("reading {label}: {e}"))?;
+        assets.push(PdfImageAsset::new(destination, bytes));
+    }
+    Ok(assets)
+}
+
+fn parse_pdf_image_spec(spec: &str) -> std::result::Result<(String, PathBuf), String> {
+    let Some((dest, path)) = split_pdf_image_spec(spec) else {
+        return Err(format!(
+            "invalid --pdf-image {spec:?}; expected MARKDOWN_DEST=PATH, for example --pdf-image images/chart.png=./chart.png"
+        ));
+    };
+    let dest = dest.trim();
+    let path = path.trim();
+    if dest.is_empty() {
+        return Err("invalid --pdf-image: MARKDOWN_DEST must not be blank".to_string());
+    }
+    if path.is_empty() {
+        return Err("invalid --pdf-image: PATH must not be blank".to_string());
+    }
+    Ok((dest.to_string(), PathBuf::from(path)))
+}
+
+fn split_pdf_image_spec(spec: &str) -> Option<(&str, &str)> {
+    for (idx, _) in spec.match_indices('=') {
+        let dest = &spec[..idx];
+        let path = &spec[idx + 1..];
+        if dest.trim().is_empty() || path.trim().is_empty() {
+            continue;
+        }
+        if std::fs::metadata(path.trim()).is_ok() {
+            return Some((dest, path));
+        }
+    }
+    spec.rsplit_once('=')
 }
 
 fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
@@ -648,7 +740,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_v0\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"planned\",\"hyphenation_pdf\":\"planned\",\"page_builder_pdf\":\"planned\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"pdf_image_assets\":\"available_png_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_v0\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"planned\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     );
@@ -663,7 +755,7 @@ fn print_robot_triage() {
 
 fn print_robot_docs() {
     println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, tagged-PDF structure tree v0, selectable text, and FlateDecode-compressed large page streams; Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  --pdf-image maps one Markdown image destination to a local file as DEST=PATH for PDF rendering; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG image assets via --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, tagged-PDF structure tree v0, selectable text, and FlateDecode-compressed large page streams; TeX/Liang hyphenation and deeper page-builder polish are still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
     );
 }
 

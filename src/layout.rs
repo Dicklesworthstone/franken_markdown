@@ -498,7 +498,7 @@ fn styled_words(text: &StyledText) -> Vec<StyledText> {
     for run in &text.runs {
         let mut chunk = String::new();
         for ch in run.text.chars() {
-            if ch.is_whitespace() {
+            if is_breakable_whitespace(ch) {
                 if !chunk.is_empty() {
                     current.push_text(&chunk, run.style);
                     chunk.clear();
@@ -530,32 +530,76 @@ pub fn hyphenated_paragraph_items_from_text<M: PairMetrics>(
     size: FontSize,
 ) -> Vec<ParagraphItem> {
     let mut items = Vec::new();
-    let mut words = text.split_whitespace().peekable();
+    let mut scratch = ParagraphLayoutScratch::new();
+    hyphenated_paragraph_items_from_text_into(
+        metrics,
+        hyphenator,
+        text,
+        size,
+        &mut scratch,
+        &mut items,
+    );
+    items
+}
+
+/// Convert plain text into paragraph items with discretionary hyphen penalties,
+/// reusing caller-owned buffers.
+///
+/// `out` is cleared before use. The scratch workspace is shared with
+/// [`break_paragraph_into`] so renderers can reuse one allocation set for item
+/// construction and line breaking across all paragraphs in a render call.
+pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
+    metrics: &M,
+    hyphenator: &Hyphenator,
+    text: &str,
+    size: FontSize,
+    scratch: &mut ParagraphLayoutScratch,
+    out: &mut Vec<ParagraphItem>,
+) {
+    out.clear();
+    scratch.hyphen_lower.clear();
+    scratch.hyphen_dotted.clear();
+    scratch.hyphen_scores.clear();
+    scratch.hyphen_points.clear();
+    let mut words = breakable_words(text).peekable();
     let space = measure_text_with_pairs(metrics, " ", size);
     let hyphen_width = measure_text_with_pairs(metrics, "-", size);
     while let Some(word) = words.next() {
-        push_hyphenated_word_items(&mut items, metrics, hyphenator, word, size, hyphen_width);
+        hyphenator.hyphenation_points_into_scratch(
+            word,
+            HyphenationOptions::default(),
+            &mut scratch.hyphen_points,
+            &mut scratch.hyphen_lower,
+            &mut scratch.hyphen_dotted,
+            &mut scratch.hyphen_scores,
+        );
+        push_hyphenated_word_items_from_points(
+            out,
+            metrics,
+            word,
+            size,
+            hyphen_width,
+            &scratch.hyphen_points,
+        );
         if words.peek().is_some() {
-            items.push(ParagraphItem::Glue(default_interword_glue(space)));
+            out.push(ParagraphItem::Glue(default_interword_glue(space)));
         }
     }
-    items.push(ParagraphItem::Penalty(Penalty {
+    out.push(ParagraphItem::Penalty(Penalty {
         width: LayoutUnit::ZERO,
         penalty: FORCED_BREAK_PENALTY,
         flagged: false,
     }));
-    items
 }
 
-fn push_hyphenated_word_items<M: PairMetrics>(
+fn push_hyphenated_word_items_from_points<M: PairMetrics>(
     out: &mut Vec<ParagraphItem>,
     metrics: &M,
-    hyphenator: &Hyphenator,
     word: &str,
     size: FontSize,
     hyphen_width: LayoutUnit,
+    points: &[usize],
 ) {
-    let points = hyphenator.hyphenation_points(word, HyphenationOptions::default());
     if points.is_empty() {
         out.push(ParagraphItem::Box(TextBox {
             text: word.to_string(),
@@ -566,7 +610,7 @@ fn push_hyphenated_word_items<M: PairMetrics>(
     }
 
     let mut start = 0usize;
-    for point in points {
+    for &point in points {
         let end = byte_index_for_char_boundary(word, point);
         if end > start {
             let part = &word[start..end];
@@ -600,6 +644,52 @@ fn byte_index_for_char_boundary(s: &str, char_idx: usize) -> usize {
     s.char_indices()
         .nth(char_idx)
         .map_or_else(|| s.len(), |(idx, _)| idx)
+}
+
+/// True for whitespace where normal Markdown/PDF text layout may break a line.
+///
+/// Unicode no-break spaces are intentionally treated as word characters. They
+/// should stay selectable as their original scalar and must not become ordinary
+/// breakable spaces during PDF layout.
+#[must_use]
+pub(crate) fn is_breakable_whitespace(ch: char) -> bool {
+    ch.is_whitespace() && !matches!(ch, '\u{00A0}' | '\u{2007}' | '\u{202F}')
+}
+
+fn breakable_words(text: &str) -> BreakableWords<'_> {
+    BreakableWords { text, pos: 0 }
+}
+
+struct BreakableWords<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> Iterator for BreakableWords<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let len = self.text.len();
+        while self.pos < len {
+            let ch = self.text.get(self.pos..)?.chars().next()?;
+            if !is_breakable_whitespace(ch) {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        if self.pos >= len {
+            return None;
+        }
+        let start = self.pos;
+        while self.pos < len {
+            let ch = self.text.get(self.pos..)?.chars().next()?;
+            if is_breakable_whitespace(ch) {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        self.text.get(start..self.pos)
+    }
 }
 
 /// Default TeX-like interword glue for the first paragraph builder.
@@ -672,42 +762,81 @@ impl Hyphenator {
     /// Return legal hyphenation points as character offsets in `word`.
     #[must_use]
     pub fn hyphenation_points(&self, word: &str, opts: HyphenationOptions) -> Vec<usize> {
-        if !word.chars().all(|c| c.is_ascii_alphabetic()) {
-            return Vec::new();
+        let mut out = Vec::new();
+        self.hyphenation_points_into(word, opts, &mut out);
+        out
+    }
+
+    /// Write legal hyphenation points into a caller-owned buffer.
+    ///
+    /// `out` is cleared before use. This is the allocation-reuse variant used
+    /// by render-call-local layout scratch workspaces.
+    pub fn hyphenation_points_into(
+        &self,
+        word: &str,
+        opts: HyphenationOptions,
+        out: &mut Vec<usize>,
+    ) {
+        let mut lower = String::new();
+        let mut dotted = Vec::new();
+        let mut scores = Vec::new();
+        self.hyphenation_points_into_scratch(word, opts, out, &mut lower, &mut dotted, &mut scores);
+    }
+
+    fn hyphenation_points_into_scratch(
+        &self,
+        word: &str,
+        opts: HyphenationOptions,
+        out: &mut Vec<usize>,
+        lower: &mut String,
+        dotted: &mut Vec<u8>,
+        scores: &mut Vec<u8>,
+    ) {
+        out.clear();
+        lower.clear();
+        dotted.clear();
+        scores.clear();
+        for byte in word.bytes() {
+            if !byte.is_ascii_alphabetic() {
+                return;
+            }
+            lower.push(byte.to_ascii_lowercase() as char);
         }
-        let lower = word.to_ascii_lowercase();
+
         let len = lower.len();
         if len <= opts.min_left.saturating_add(opts.min_right) {
-            return Vec::new();
+            return;
         }
         if let Some(exception) = self
             .exceptions
             .iter()
-            .find(|exception| exception.word == lower)
+            .find(|exception| exception.word == lower.as_str())
         {
-            return exception
-                .points
-                .iter()
-                .copied()
-                .filter(|&p| legal_hyphen_point(p, len, opts))
-                .collect();
+            out.extend(
+                exception
+                    .points
+                    .iter()
+                    .copied()
+                    .filter(|&p| legal_hyphen_point(p, len, opts)),
+            );
+            return;
         }
 
-        let dotted = format!(".{lower}.");
-        let mut scores = vec![0u8; dotted.len() + 1];
-        english_hyphen_trie().apply(dotted.as_bytes(), &mut scores);
-        scores
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, &score)| {
-                let point = idx.checked_sub(1)?;
-                if score % 2 == 1 && legal_hyphen_point(point, len, opts) {
-                    Some(point)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        dotted.reserve(len + 2);
+        dotted.push(b'.');
+        dotted.extend_from_slice(lower.as_bytes());
+        dotted.push(b'.');
+
+        scores.resize(dotted.len() + 1, 0);
+        english_hyphen_trie().apply(dotted, scores);
+        out.extend(scores.iter().enumerate().filter_map(|(idx, &score)| {
+            let point = idx.checked_sub(1)?;
+            if score % 2 == 1 && legal_hyphen_point(point, len, opts) {
+                Some(point)
+            } else {
+                None
+            }
+        }));
     }
 }
 
@@ -1013,7 +1142,12 @@ pub fn protruded_fit_width(
     size: FontSize,
     options: MicrotypeOptions,
 ) -> LayoutUnit {
-    natural_width.saturating_sub(protrusion_for_text(text, size, options).total())
+    let protrusion = protrusion_for_text(text, size, options).total();
+    if natural_width <= LayoutUnit::ZERO || protrusion >= natural_width {
+        LayoutUnit::ZERO
+    } else {
+        natural_width - protrusion
+    }
 }
 
 /// Maximum deterministic expansion/contraction budget for one line.
@@ -1096,7 +1230,7 @@ struct SegmentMetrics {
     shrink: LayoutUnit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct MetricPrefixes {
     width: Vec<i128>,
     stretch: Vec<i128>,
@@ -1104,13 +1238,19 @@ struct MetricPrefixes {
 }
 
 impl MetricPrefixes {
-    fn from_items(items: &[ParagraphItem]) -> Self {
-        let mut width = Vec::with_capacity(items.len() + 1);
-        let mut stretch = Vec::with_capacity(items.len() + 1);
-        let mut shrink = Vec::with_capacity(items.len() + 1);
-        width.push(0);
-        stretch.push(0);
-        shrink.push(0);
+    fn rebuild_from_items(&mut self, items: &[ParagraphItem]) {
+        self.width.clear();
+        self.stretch.clear();
+        self.shrink.clear();
+
+        let needed = items.len() + 1;
+        self.width.reserve(needed);
+        self.stretch.reserve(needed);
+        self.shrink.reserve(needed);
+
+        self.width.push(0);
+        self.stretch.push(0);
+        self.shrink.push(0);
 
         let mut running_width = 0i128;
         let mut running_stretch = 0i128;
@@ -1127,15 +1267,9 @@ impl MetricPrefixes {
                 }
                 ParagraphItem::Penalty(_) => {}
             }
-            width.push(running_width);
-            stretch.push(running_stretch);
-            shrink.push(running_shrink);
-        }
-
-        Self {
-            width,
-            stretch,
-            shrink,
+            self.width.push(running_width);
+            self.stretch.push(running_stretch);
+            self.shrink.push(running_shrink);
         }
     }
 
@@ -1176,6 +1310,78 @@ struct BreakState {
     fitness: FitnessClass,
 }
 
+/// Reusable scratch storage for paragraph layout.
+///
+/// This is render-call-local by design: callers create one workspace per render
+/// job, reuse it for every paragraph in that job, and then drop it. It keeps the
+/// core deterministic and WASM-friendly while avoiding per-paragraph allocation
+/// churn in the hot line-breaking path.
+#[derive(Debug, Default)]
+pub struct ParagraphLayoutScratch {
+    hyphen_lower: String,
+    hyphen_dotted: Vec<u8>,
+    hyphen_scores: Vec<u8>,
+    hyphen_points: Vec<usize>,
+    candidates: Vec<BreakCandidate>,
+    forced_prefix: Vec<usize>,
+    metrics: MetricPrefixes,
+    states: Vec<Option<BreakState>>,
+}
+
+impl ParagraphLayoutScratch {
+    /// Construct an empty scratch workspace.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear all live scratch data while retaining allocations for reuse.
+    pub fn clear(&mut self) {
+        self.hyphen_lower.clear();
+        self.hyphen_dotted.clear();
+        self.hyphen_scores.clear();
+        self.hyphen_points.clear();
+        self.candidates.clear();
+        self.forced_prefix.clear();
+        self.metrics.width.clear();
+        self.metrics.stretch.clear();
+        self.metrics.shrink.clear();
+        self.states.clear();
+    }
+
+    /// Report retained capacities for tests and performance proof ledgers.
+    #[must_use]
+    pub fn capacities(&self) -> ParagraphLayoutScratchCapacities {
+        ParagraphLayoutScratchCapacities {
+            hyphen_lower_bytes: self.hyphen_lower.capacity(),
+            hyphen_dotted_bytes: self.hyphen_dotted.capacity(),
+            hyphen_scores: self.hyphen_scores.capacity(),
+            hyphen_points: self.hyphen_points.capacity(),
+            candidates: self.candidates.capacity(),
+            forced_prefixes: self.forced_prefix.capacity(),
+            prefix_widths: self.metrics.width.capacity(),
+            prefix_stretches: self.metrics.stretch.capacity(),
+            prefix_shrinks: self.metrics.shrink.capacity(),
+            states: self.states.capacity(),
+        }
+    }
+}
+
+/// Retained scratch-buffer capacities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParagraphLayoutScratchCapacities {
+    pub hyphen_lower_bytes: usize,
+    pub hyphen_dotted_bytes: usize,
+    pub hyphen_scores: usize,
+    pub hyphen_points: usize,
+    pub candidates: usize,
+    pub forced_prefixes: usize,
+    pub prefix_widths: usize,
+    pub prefix_stretches: usize,
+    pub prefix_shrinks: usize,
+    pub states: usize,
+}
+
 /// Break a paragraph with a first-cut Knuth-Plass-style dynamic program.
 ///
 /// This is intentionally a baseline optimizer, not the final TeX clone:
@@ -1185,34 +1391,62 @@ struct BreakState {
 /// breakpoint, and the minimum total demerits over the full paragraph is chosen.
 #[must_use]
 pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<LineBreak> {
-    let candidates = break_candidates(items);
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    let metrics = MetricPrefixes::from_items(items);
-    let forced_prefix = forced_break_prefixes(items);
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut out = Vec::new();
+    break_paragraph_into(items, line_width, &mut scratch, &mut out);
+    out
+}
 
-    let mut states: Vec<Option<BreakState>> = vec![None; candidates.len()];
+/// Break a paragraph into a caller-owned output buffer using reusable scratch.
+///
+/// `out` is cleared before use. `scratch` and `out` are separate so renderers can
+/// keep one long-lived scratch workspace and decide whether to keep, copy, or
+/// immediately consume each paragraph's line breaks.
+pub fn break_paragraph_into(
+    items: &[ParagraphItem],
+    line_width: LayoutUnit,
+    scratch: &mut ParagraphLayoutScratch,
+    out: &mut Vec<LineBreak>,
+) {
+    out.clear();
+    break_candidates_into(items, &mut scratch.candidates);
+    if scratch.candidates.is_empty() {
+        scratch.forced_prefix.clear();
+        scratch.metrics.width.clear();
+        scratch.metrics.stretch.clear();
+        scratch.metrics.shrink.clear();
+        scratch.states.clear();
+        return;
+    }
+    scratch.metrics.rebuild_from_items(items);
+    forced_break_prefixes_into(items, &mut scratch.forced_prefix);
+
+    let candidates = &scratch.candidates;
+    scratch.states.clear();
+    scratch.states.resize(candidates.len(), None);
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
 
-        for prev_idx in 0..=j {
+        for (prev_idx, prev_candidate) in candidates.iter().enumerate().take(j + 1) {
             let (prev_state, start) = if prev_idx == j {
                 (None, 0)
             } else {
-                let Some(state) = states[prev_idx] else {
+                let Some(state) = scratch.states[prev_idx] else {
                     continue;
                 };
-                (Some((prev_idx, state)), candidates[prev_idx].next)
+                (Some((prev_idx, state)), prev_candidate.next)
             };
             if start > candidate.item_index {
                 continue;
             }
-            if forced_break_between(&forced_prefix, start, candidate.item_index) {
+            if forced_break_between(&scratch.forced_prefix, start, candidate.item_index) {
                 continue;
             }
-            let segment = metrics.segment_metrics(start, *candidate);
+            let segment = scratch.metrics.segment_metrics(start, *candidate);
             let badness = candidate_badness(*candidate, segment, line_width);
+            if badness >= INF_PENALTY {
+                continue;
+            }
             let fitness = candidate_fitness(*candidate, segment, line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
             let demerits = prev_demerits.saturating_add(line_demerits(
@@ -1241,17 +1475,17 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
                 best = Some(state);
             }
         }
-        states[j] = best;
+        scratch.states[j] = best;
     }
 
-    let Some(mut idx) = states.len().checked_sub(1) else {
-        return Vec::new();
+    let Some(mut idx) = scratch.states.len().checked_sub(1) else {
+        return;
     };
-    if states[idx].is_none() {
-        return greedy_break_paragraph(items, line_width, &metrics);
+    if scratch.states[idx].is_none() {
+        greedy_break_paragraph_into(candidates, line_width, &scratch.metrics, out);
+        return;
     }
-    let mut out = Vec::new();
-    while let Some(state) = states[idx] {
+    while let Some(state) = scratch.states[idx] {
         out.push(state.line);
         match state.prev {
             Some(prev) => idx = prev,
@@ -1259,11 +1493,11 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
         }
     }
     out.reverse();
-    out
 }
 
-fn forced_break_prefixes(items: &[ParagraphItem]) -> Vec<usize> {
-    let mut out = Vec::with_capacity(items.len() + 1);
+fn forced_break_prefixes_into(items: &[ParagraphItem], out: &mut Vec<usize>) {
+    out.clear();
+    out.reserve(items.len() + 1);
     let mut count = 0usize;
     out.push(count);
     for item in items {
@@ -1278,7 +1512,6 @@ fn forced_break_prefixes(items: &[ParagraphItem]) -> Vec<usize> {
         }
         out.push(count);
     }
-    out
 }
 
 fn forced_break_between(prefix: &[usize], start: usize, end: usize) -> bool {
@@ -1291,8 +1524,9 @@ fn forced_break_between(prefix: &[usize], start: usize, end: usize) -> bool {
     before_end > before_start
 }
 
-fn break_candidates(items: &[ParagraphItem]) -> Vec<BreakCandidate> {
-    let mut out = Vec::new();
+fn break_candidates_into(items: &[ParagraphItem], out: &mut Vec<BreakCandidate>) {
+    out.clear();
+    out.reserve(items.len());
     for (idx, item) in items.iter().enumerate() {
         match item {
             ParagraphItem::Glue(_) => out.push(BreakCandidate {
@@ -1312,7 +1546,6 @@ fn break_candidates(items: &[ParagraphItem]) -> Vec<BreakCandidate> {
             ParagraphItem::Penalty(_) | ParagraphItem::Box(_) => {}
         }
     }
-    out
 }
 
 fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
@@ -1426,30 +1659,16 @@ const fn fitness_rank(class: FitnessClass) -> i32 {
     }
 }
 
-fn greedy_break_paragraph(
-    items: &[ParagraphItem],
+fn greedy_break_paragraph_into(
+    candidates: &[BreakCandidate],
     line_width: LayoutUnit,
     metrics: &MetricPrefixes,
-) -> Vec<LineBreak> {
-    let mut out = Vec::new();
+    out: &mut Vec<LineBreak>,
+) {
     let mut start = 0usize;
     let mut last_candidate: Option<BreakCandidate> = None;
-    for candidate in break_candidates(items) {
-        let segment = metrics.segment_metrics(start, candidate);
-        if candidate.penalty == FORCED_BREAK_PENALTY {
-            out.push(LineBreak {
-                start,
-                end: candidate.item_index,
-                next: candidate.next,
-                natural_width: segment.width,
-                badness: candidate_badness(candidate, segment, line_width),
-                fitness: candidate_fitness(candidate, segment, line_width),
-                demerits: 0,
-            });
-            start = candidate.next;
-            last_candidate = None;
-            continue;
-        }
+    for &candidate in candidates {
+        let mut segment = metrics.segment_metrics(start, candidate);
         if segment.width > line_width {
             if let Some(prev) = last_candidate {
                 let prev_metrics = metrics.segment_metrics(start, prev);
@@ -1463,7 +1682,22 @@ fn greedy_break_paragraph(
                     demerits: 0,
                 });
                 start = prev.next;
+                segment = metrics.segment_metrics(start, candidate);
             }
+        }
+        if candidate.penalty == FORCED_BREAK_PENALTY {
+            out.push(LineBreak {
+                start,
+                end: candidate.item_index,
+                next: candidate.next,
+                natural_width: segment.width,
+                badness: candidate_badness(candidate, segment, line_width),
+                fitness: candidate_fitness(candidate, segment, line_width),
+                demerits: 0,
+            });
+            start = candidate.next;
+            last_candidate = None;
+            continue;
         }
         last_candidate = Some(candidate);
     }
@@ -1479,7 +1713,6 @@ fn greedy_break_paragraph(
             demerits: 0,
         });
     }
-    out
 }
 
 const fn clamp_u128_to_i32(value: u128) -> i32 {

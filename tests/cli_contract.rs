@@ -65,6 +65,35 @@ fn temp_file(name: &str, ext: &str) -> PathBuf {
     ))
 }
 
+fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + data.len());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out
+}
+
+fn tiny_rgb_png() -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&2u32.to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+
+    let rows = [
+        0, // filter type 0
+        0xE8, 0x44, 0x44, 0x24, 0x91, 0xB8,
+    ];
+    let idat = franken_markdown::compress::zlib_compress(&rows);
+
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    png.extend_from_slice(&png_chunk(b"IDAT", &idat));
+    png.extend_from_slice(&png_chunk(b"IEND", &[]));
+    png
+}
+
 #[test]
 fn bare_invocation_prints_help_and_exits_successfully() {
     let out = fmd(&[]);
@@ -102,9 +131,13 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"source_date_epoch_pdf\":\"available\""));
     assert!(stdout.contains("\"tagged_pdf\":\"available_v0\""));
     assert!(stdout.contains("\"stream_compression_pdf\":\"available\""));
+    assert!(stdout.contains("\"pdf_image_assets\":\"available_png_v0\""));
     assert!(stdout.contains("--pdf-line-numbers"));
+    assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--author"));
-    assert!(stdout.contains("\"knuth_plass_pdf\":\"planned\""));
+    assert!(stdout.contains("\"knuth_plass_pdf\":\"available\""));
+    assert!(stdout.contains("\"page_builder_pdf\":\"available_v0_keep_widow\""));
+    assert!(stdout.contains("\"hyphenation_pdf\":\"planned\""));
     assert!(stdout.contains("\"theme_model\":{\"status\":\"structured_v1\""));
     assert!(!stdout.contains("available_v0_base14"));
 
@@ -141,11 +174,19 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("focused GPOS kerning"));
     assert!(stdout.contains("GSUB ligatures"));
     assert!(stdout.contains("--pdf-line-numbers"));
+    assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("--max-input-bytes"));
     assert!(stdout.contains("SOURCE_DATE_EPOCH"));
     assert!(stdout.contains("tagged-PDF structure tree v0"));
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
+    assert!(stdout.contains("basic keep/widow page building"));
+    assert!(
+        stdout.contains("TeX/Liang hyphenation and deeper page-builder polish are still planned")
+    );
+    assert!(!stdout.contains(
+        "Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned"
+    ));
     assert!(!stdout.contains("base-14"));
     assert!(!stdout.contains("Base-14"));
 }
@@ -345,6 +386,185 @@ fn pdf_render_honors_source_date_epoch_metadata() {
     assert!(pdf_text.contains("/ModDate (D:20231114221320Z)"));
 
     let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn pdf_render_accepts_local_image_assets() {
+    let image_path = temp_file("tiny-image", "png");
+    let out_path = temp_file("image-pdf", "pdf");
+    fs::write(&image_path, tiny_rgb_png()).unwrap();
+
+    let mapping = format!("images/tiny.png={}", image_path.display());
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[
+        "--text",
+        "![Tiny chart](images/tiny.png)",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &mapping,
+        "--out",
+        &out_path_s,
+        "--json",
+    ]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(text(&out.stderr).contains("\"format\":\"pdf\""));
+
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(pdf_text.contains("/Subtype /Image"));
+    assert!(pdf_text.contains("/ColorSpace /DeviceRGB"));
+    assert!(pdf_text.contains("/XObject << /Im1 "));
+    assert!(pdf_text.contains("/Im1 Do"));
+    assert!(pdf_text.contains("/S /Figure"));
+    assert!(pdf_text.contains("/Alt (Tiny chart)"));
+
+    let _ = fs::remove_file(image_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn pdf_image_asset_mapping_allows_equals_in_markdown_destination() {
+    let image_path = temp_file("query-image", "png");
+    let equals_image_path = temp_file("query-image-with-equals", "png").with_file_name(format!(
+        "fmd-cli-contract-{}-image=asset.png",
+        std::process::id()
+    ));
+    let out_path = temp_file("query-image-pdf", "pdf");
+    let equals_out_path = temp_file("equals-path-image-pdf", "pdf");
+    fs::write(&image_path, tiny_rgb_png()).unwrap();
+    fs::write(&equals_image_path, tiny_rgb_png()).unwrap();
+
+    let destination = "https://cdn.example.test/chart.png?version=1";
+    let mapping = format!("{destination}={}", image_path.display());
+    let out_path_s = out_path.display().to_string();
+    let markdown = format!("![Versioned chart]({destination})");
+    let out = fmd(&[
+        "--text",
+        &markdown,
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &mapping,
+        "--out",
+        &out_path_s,
+        "--json",
+    ]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(pdf_text.contains("/Subtype /Image"));
+    assert!(pdf_text.contains("/Alt (Versioned chart)"));
+
+    let equals_mapping = format!("images/local.png={}", equals_image_path.display());
+    let equals_out_path_s = equals_out_path.display().to_string();
+    let equals_out = fmd(&[
+        "--text",
+        "![Local asset](images/local.png)",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &equals_mapping,
+        "--out",
+        &equals_out_path_s,
+        "--json",
+    ]);
+
+    assert!(equals_out.status.success());
+    assert!(equals_out.stdout.is_empty());
+    let pdf = fs::read(&equals_out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(pdf_text.contains("/Subtype /Image"));
+    assert!(pdf_text.contains("/Alt (Local asset)"));
+
+    let _ = fs::remove_file(image_path);
+    let _ = fs::remove_file(equals_image_path);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_file(equals_out_path);
+}
+
+#[test]
+fn pdf_image_asset_errors_are_stable_and_prevent_partial_both_output() {
+    let base_path = temp_file("bad-image-asset", "out");
+    let base_path_s = base_path.display().to_string();
+    let html_path = base_path.with_extension("html");
+    let pdf_path = base_path.with_extension("pdf");
+    let missing = temp_file("missing-image", "png");
+    let mapping = format!("images/missing.png={}", missing.display());
+
+    let out = fmd(&[
+        "--text",
+        "# With image\n\n![Missing](images/missing.png)",
+        "--to",
+        "both",
+        "--pdf-image",
+        &mapping,
+        "--out",
+        &base_path_s,
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("\"code\":\"input_error\""));
+    assert!(stderr.contains("reading PDF image asset images/missing.png"));
+    assert!(
+        !html_path.exists(),
+        "PDF asset preflight should fail before writing HTML in --to both mode"
+    );
+    assert!(
+        !pdf_path.exists(),
+        "PDF asset preflight should not create a PDF"
+    );
+
+    let pdf_path_s = pdf_path.display().to_string();
+    let bad_spec = fmd(&[
+        "--text",
+        "![Bad](bad.png)",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        "bad.png",
+        "--out",
+        &pdf_path_s,
+        "--json",
+    ]);
+    assert_eq!(bad_spec.status.code(), Some(66));
+    let stderr = text(&bad_spec.stderr);
+    assert!(stderr.contains("\"code\":\"input_error\""));
+    assert!(stderr.contains("expected MARKDOWN_DEST=PATH"));
+
+    let oversized_path = temp_file("oversized-image", "png");
+    fs::write(&oversized_path, tiny_rgb_png()).unwrap();
+    let oversized_mapping = format!("images/oversized.png={}", oversized_path.display());
+    let oversized = fmd(&[
+        "--text",
+        "![Oversized](images/oversized.png)",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &oversized_mapping,
+        "--max-pdf-image-bytes",
+        "4",
+        "--out",
+        &pdf_path_s,
+        "--json",
+    ]);
+    assert_eq!(oversized.status.code(), Some(66));
+    let stderr = text(&oversized.stderr);
+    assert!(stderr.contains("\"code\":\"input_error\""));
+    assert!(stderr.contains("PDF image asset images/oversized.png"));
+    assert!(stderr.contains("exceeds --max-pdf-image-bytes 4"));
+
+    let _ = fs::remove_file(base_path);
+    let _ = fs::remove_file(html_path);
+    let _ = fs::remove_file(pdf_path);
+    let _ = fs::remove_file(oversized_path);
 }
 
 #[test]

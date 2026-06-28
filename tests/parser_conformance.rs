@@ -36,6 +36,10 @@ fn scalar_line_scanner_is_conservative_for_markdown_starters() {
     assert!(delimiter.maybe_table_delimiter);
     assert!(delimiter.contains_pipe);
 
+    let setext_equals = scan_markdown_line("==========");
+    assert!(setext_equals.maybe_setext_underline);
+    assert_eq!(setext_equals.first_special_byte, Some(0));
+
     let reference = scan_markdown_line("\t[label]: /dest");
     assert!(reference.maybe_reference);
 

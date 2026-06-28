@@ -33,6 +33,17 @@ fn contains_ligature_tounicode_entry(pdf: &[u8]) -> bool {
     false
 }
 
+fn tounicode_bfchar_gids(pdf: &[u8]) -> Vec<u16> {
+    let s = String::from_utf8_lossy(pdf);
+    s.lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix('<')?;
+            let (gid_hex, _) = rest.split_once("> <")?;
+            u16::from_str_radix(gid_hex, 16).ok()
+        })
+        .collect()
+}
+
 #[test]
 fn embedded_font_programs_are_flate_compressed() {
     let pdf = render_pdf(DOC, &PdfOptions::default()).unwrap();
@@ -56,6 +67,41 @@ fn embedded_font_programs_are_flate_compressed() {
 }
 
 #[test]
+fn tounicode_maps_only_used_scalars_in_deterministic_order() {
+    let pdf = render_pdf("Café", &PdfOptions::default()).unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+
+    assert!(
+        s.contains("<00E9>"),
+        "used scalar should remain copyable through ToUnicode"
+    );
+    for unused in ["<0394>", "<03A9>"] {
+        assert!(
+            !s.contains(unused),
+            "unused scalar {unused} should not be emitted after exact used-char collection"
+        );
+    }
+
+    let gids = tounicode_bfchar_gids(&pdf);
+    assert!(!gids.is_empty(), "expected body-font ToUnicode entries");
+    let mut sorted = gids.clone();
+    sorted.sort_unstable();
+    assert_eq!(gids, sorted, "ToUnicode bfchar rows stay glyph-sorted");
+}
+
+#[test]
+fn minimal_pdf_tounicode_is_valid_with_no_used_chars() {
+    let pdf = render_pdf("", &PdfOptions::default()).unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+
+    assert!(s.contains("begincmap"), "minimal PDF still embeds a CMap");
+    assert!(
+        !s.contains("beginbfchar"),
+        "empty documents should not synthesize unused ToUnicode mappings"
+    );
+}
+
+#[test]
 fn type0_identity_h_fonts_keep_non_winansi_text_selectable() {
     let pdf = render_pdf("Café Δ Ω naïve", &PdfOptions::default()).unwrap();
     let s = String::from_utf8_lossy(&pdf);
@@ -70,6 +116,17 @@ fn type0_identity_h_fonts_keep_non_winansi_text_selectable() {
             "ToUnicode CMap should preserve {scalar} for copy/paste"
         );
     }
+}
+
+#[test]
+fn pdf_preserves_no_break_space_for_copy_and_search() {
+    let pdf = render_pdf("A&nbsp;B", &PdfOptions::default()).unwrap();
+    let s = String::from_utf8_lossy(&pdf);
+
+    assert!(
+        s.contains("<00A0>"),
+        "decoded Markdown no-break space should remain U+00A0 in ToUnicode"
+    );
 }
 
 #[test]

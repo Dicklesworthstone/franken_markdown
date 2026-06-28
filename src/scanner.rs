@@ -254,6 +254,7 @@ const fn is_markdown_special_byte(byte: u8) -> bool {
             | b'#'
             | b'-'
             | b'*'
+            | b'+' // `+` is a CommonMark bullet-list marker, like `-` and `*`
             | b'_'
             | b'`'
             | b'~'

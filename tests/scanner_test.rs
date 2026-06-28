@@ -17,6 +17,7 @@ fn naive_markdown_special(bytes: &[u8]) -> Option<usize> {
                 | b'#'
                 | b'-'
                 | b'*'
+                | b'+' // `+` bullet-list marker, matching is_markdown_special_byte
                 | b'_'
                 | b'`'
                 | b'~'

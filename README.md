@@ -179,7 +179,7 @@ Useful flags:
 | Flag | Meaning |
 |---|---|
 | `--to html` | Write HTML; default |
-| `--to pdf` | Write the current compact deterministic PDF v0 |
+| `--to pdf` | Write the compact deterministic embedded-font PDF |
 | `--to both` | Write both outputs, deriving extensions from `--out` |
 | `--out <path>` | Output path; HTML without `--out` writes to stdout |
 | `--font sans` | Default high-readability sans stack |

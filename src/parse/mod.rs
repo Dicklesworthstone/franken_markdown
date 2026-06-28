@@ -1171,6 +1171,14 @@ fn parse_list_profiled(
                     i = j;
                     break;
                 }
+                // A blank line followed by more content that stays inside THIS
+                // item (indented to its content column) means the item holds two
+                // block-level elements separated by a blank line, which makes the
+                // whole list loose (CommonMark). A blank line followed by a dedent
+                // (the item/list ending) is a trailing blank and does not loosen.
+                if j < lines.len() && leading_spaces(lines[j]) >= m.content_indent {
+                    tight = false;
+                }
                 item_lines.push(String::new());
                 i += 1;
                 continue;

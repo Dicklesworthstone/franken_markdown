@@ -1,0 +1,21 @@
+Keyword	fn
+Plain	 
+Func	main
+Punct	(
+Punct	)
+Plain	 
+Punct	{
+Plain	 
+Keyword	let
+Plain	 
+Plain	n
+Plain	 
+Operator	=
+Plain	 
+Number	42
+Punct	;
+Plain	 
+Punct	}
+Plain	 
+Comment	// count
+Plain	\n

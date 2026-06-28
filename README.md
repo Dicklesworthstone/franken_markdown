@@ -17,8 +17,9 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > including clean-room syntax highlighting for common documentation languages.
 > The PDF path also works as a compact deterministic v0 with embedded
 > per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures,
-> and selectable text. The final high-typography paragraph/page-layout engine
-> and WASM package remain active roadmap work tracked in beads.
+> tagged-PDF structure, and selectable text. The final high-typography
+> paragraph/page-layout engine and WASM package remain active roadmap work
+> tracked in beads.
 
 ## TL;DR
 
@@ -38,7 +39,7 @@ browser/WASM.
 | Beautiful default output | Cursor/GitHub-style theme, high-readable measure, polished tables, blockquotes, code blocks |
 | Shared style model | Typed theme v1 for font family, mono family, colors, spacing, table density, code theme, dark mode, and page contract |
 | Tiny dependency surface | Clean-room core; no `comrak`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine |
-| PDF quality | Compact deterministic embedded-font PDF v0 now; planned Knuth-Plass line breaking, hyphenation, page-builder polish, stream compression, and richer pagination |
+| PDF quality | Compact deterministic embedded-font PDF v0 now with tags, links, outlines, metadata, and compressed streams; planned Knuth-Plass line breaking, hyphenation, page-builder polish, and richer pagination |
 | WASM-first | Core render API stays free of CLI/filesystem/runtime assumptions |
 | Agent-friendly CLI | `fmd README.md`, `fmd --text`, `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage` |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are product targets |
@@ -63,6 +64,8 @@ target/release/fmd examples/showcase.md --font serif --out showcase-serif.html
 
 # Render the current compact PDF MVP
 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
+target/release/fmd examples/showcase.md --to pdf --title "Showcase" --author "FMD" --out showcase.pdf
+SOURCE_DATE_EPOCH=1700000000 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
 
 # Discover the agent-readable contract
 target/release/fmd capabilities --json
@@ -78,10 +81,11 @@ target/release/fmd --no-config examples/showcase.md --out showcase.html
 
 The PDF path is intentionally honest about its stage: it produces valid,
 deterministic PDFs today with embedded curated font subsets, real metrics,
-focused GPOS kerning, GSUB ligatures, and selectable text. The current writer
-still uses simple greedy wrapping and an early page model. The beads for
-Knuth-Plass line breaking, hyphenation, page-builder quality, stream
-compression, and visual polish remain open.
+focused GPOS kerning, GSUB ligatures, selectable text, link annotations,
+outlines, title/author/SOURCE_DATE_EPOCH metadata, tagged-PDF structure, and
+compressed large page streams. The current writer still uses simple greedy
+wrapping and an early page model. The beads for Knuth-Plass line breaking,
+hyphenation, page-builder quality, and visual polish remain open.
 
 ```bash
 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
@@ -126,12 +130,19 @@ Implemented today:
 - safe HTML escaping by default,
 - all-in-one HTML with inlined CSS,
 - clean-room syntax highlighting for common documentation languages,
-- default sans and serif font stacks,
+- deterministic browser `@font-face` embedding with document-subset bundled
+  fonts plus high-quality sans/serif fallback stacks,
 - custom stylesheet replacement,
 - compact deterministic PDF v0 with embedded curated font subsets,
 - real TrueType metrics, focused GPOS pair kerning, and GSUB standard ligatures
   in PDF output,
 - `ToUnicode` mappings for selectable text, including ligature glyphs,
+- PDF link annotations, heading outlines/bookmarks, internal heading
+  destinations, and deterministic Info metadata,
+- reproducible PDF Info dates controlled by explicit library options or the
+  CLI's `SOURCE_DATE_EPOCH`,
+- tagged-PDF structure tree v0 with page MCIDs, standard block/link/code/table
+  tags, parent tree, `/Lang`, and `/Tabs /S`,
 - `fmd` and `franken_markdown` binaries over one shared CLI entrypoint,
 - typed render errors so callers can handle future incomplete/invalid render
   paths deterministically.
@@ -140,9 +151,7 @@ Planned:
 
 - full CommonMark/GFM conformance ladder,
 - Knuth-Plass paragraph layout and TeX/Liang hyphenation,
-- high-quality PDF page layout, tables, code pagination, stream compression,
-  and visual fixtures,
-- browser HTML `@font-face` embedding/subsetting,
+- high-quality PDF page layout, tables, code pagination, and visual fixtures,
 - browser/WASM package and examples,
 - Asupersync-backed native batch renderer with cancellation and budgets.
 
@@ -168,9 +177,11 @@ Useful flags:
 | `--font serif` | Long-form serif stack |
 | `--css <file>` | Replace the default stylesheet with custom CSS |
 | `--title <text>` | Override the document title |
+| `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML through instead of escaping it |
 | `--json` | Emit stable status/error JSON to stderr for render commands |
 | `--no-config` | Ignore native config for a reproducible config-free render |
+| `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing |
 
 ### Config
 
@@ -366,16 +377,20 @@ equivalent options through the library API rather than reading local config.
 | HTML printed to terminal | Pass `--out file.html` or redirect stdout |
 | Custom CSS removed the default styling | `--css` intentionally replaces the stylesheet; include every rule you want |
 | Raw HTML appears escaped | Default is safe escaping; pass `--allow-html` only for trusted input |
+| Input is refused as too large | Raise the render guard explicitly, e.g. `--max-input-bytes 134217728` |
+| `SOURCE_DATE_EPOCH` is rejected | Use non-negative decimal seconds, e.g. `SOURCE_DATE_EPOCH=1700000000 fmd doc.md --to pdf --out doc.pdf` |
 
 ## Limitations
 
 - PDF output is implemented as a v0 deterministic writer with embedded subset
-  fonts, real metrics, focused kerning/ligatures, selectable text, and greedy
-  wrapping. Knuth-Plass paragraph breaking, hyphenation, full pagination
-  controls, stream compression, and richer block layout are not implemented yet.
+  fonts, real metrics, focused kerning/ligatures, selectable text, compressed
+  large page streams, tagged-PDF structure groundwork, and greedy wrapping.
+  Knuth-Plass paragraph breaking, hyphenation, full pagination controls, richer
+  accessibility semantics such as image alt associations and table cell scopes,
+  and richer block layout are not implemented yet.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
-- HTML fonts are currently CSS stacks; browser `@font-face` embedding/subsetting
-  is planned.
+- HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
+  deterministic and portable, but future work can make these subsets smaller.
 - WASM packaging and browser examples are not present yet.
 - There is no installer or published release yet.
 
@@ -391,9 +406,11 @@ model will expose controlled theme/page options rather than arbitrary browser CS
 
 **Will PDFs really look better than browser print output?**  
 That is the intent. The planned PDF path uses TeX-style paragraph breaking,
-hyphenation, leading, pagination controls, and stream compression rather than a
-browser print pipeline. The current v0 already embeds subset fonts with real
-metrics, focused kerning, GSUB ligatures, and selectable text.
+hyphenation, leading, and pagination controls rather than a browser print
+pipeline. The current v0 already embeds subset fonts with real metrics, focused
+kerning, GSUB ligatures, selectable text, metadata, outlines, link annotations,
+tagged-PDF structure, SOURCE_DATE_EPOCH-controlled dates, and compressed large
+page streams.
 
 **Does the core work in WASM?**  
 That is a first-class design goal. The core must build without the CLI feature;

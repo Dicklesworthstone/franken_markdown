@@ -14,7 +14,8 @@ The gauntlet is measurement-first:
   - runs in-process library scenarios via examples/fmd_perf_harness.rs,
   - runs CLI wall-clock baselines through hyperfine,
   - optionally opens Linux perf counters temporarily and restores them on exit,
-  - writes golden checksums, hotspot table, hypothesis ledger, and scaling notes.
+  - writes schema manifest, golden checksums, hotspot table, hypothesis ledger,
+    and scaling notes.
 
 Options:
   --iters N      in-process iterations per scenario (default: 3; raise for
@@ -79,8 +80,64 @@ GOLDEN_DIR="$ARTIFACT_DIR/golden"
 TMP_ROOT="/data/tmp/fmd-perf-$RUN_ID"
 BATCH_IN="$TMP_ROOT/batch-in"
 BATCH_OUT="$TMP_ROOT/batch-out"
+SCHEMA_VERSION="fmd-perf-artifact-v1"
+SCHEMA_DOC="docs/PERFORMANCE_ARTIFACT_SCHEMA.md"
 
 mkdir -p "$ARTIFACT_DIR" "$GOLDEN_DIR" "$BATCH_IN" "$BATCH_OUT"
+
+cat > "$ARTIFACT_DIR/SCHEMA.md" <<EOF
+# Schema
+
+This run follows \`$SCHEMA_VERSION\`.
+
+Canonical schema documentation:
+
+\`\`\`text
+$SCHEMA_DOC
+\`\`\`
+
+Every optimization closeout should cite this run directory and the relevant
+schema records or mapped files.
+EOF
+
+cat > "$ARTIFACT_DIR/schema_manifest.json" <<EOF
+{
+  "schema_version": "$SCHEMA_VERSION",
+  "schema_doc": "$SCHEMA_DOC",
+  "run_id": "$RUN_ID",
+  "artifact_dir": "$ARTIFACT_DIR",
+  "primary_jsonl": "inprocess.jsonl",
+  "required_record_types": [
+    "run_start",
+    "host_fingerprint",
+    "build_profile",
+    "scenario_start",
+    "stage_summary",
+    "perf_sample",
+    "hardware_counter_summary",
+    "golden_checksum",
+    "hypothesis_evaluated",
+    "proof_obligation",
+    "run_complete",
+    "next_target_recommendation"
+  ],
+  "current_gauntlet_mapping": {
+    "fingerprint.json": ["run_start", "host_fingerprint", "build_profile"],
+    "inprocess.jsonl": ["perf_sample"],
+    "golden/pdf-large-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/pdf-large-recommendation.jsonl": ["next_target_recommendation"],
+    "golden/parser-large-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/parser-large-spanned-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/parser-large-recommendation.jsonl": ["next_target_recommendation"],
+    "golden_checksums.txt": ["golden_checksum"],
+    "hypothesis.md": ["hypothesis_evaluated"],
+    "perf-stat.stdout": ["hardware_counter_summary"],
+    "perf-stat.stderr": ["hardware_counter_summary"],
+    "BASELINE.md": ["run_complete"],
+    "hotspot_table.md": ["next_target_recommendation source evidence"]
+  }
+}
+EOF
 
 PERF_PARANOID_OLD=""
 KPTR_RESTRICT_OLD=""
@@ -151,6 +208,10 @@ This first run establishes baseline. Future runs should treat >10% p95 drift as 
 ## Golden output
 Golden outputs are written to \`golden/\` and checksummed in \`golden_checksums.txt\`.
 
+## Schema
+This run follows \`$SCHEMA_VERSION\`; see \`SCHEMA.md\`,
+\`schema_manifest.json\`, and \`$SCHEMA_DOC\`.
+
 ## Scope boundary
 This run does not change code or prove a specific optimization. It ranks targets for one-lever optimization commits.
 
@@ -177,6 +238,7 @@ fi
 
 cat > "$ARTIFACT_DIR/fingerprint.json" <<EOF
 {
+  "schema_version": "$SCHEMA_VERSION",
   "run_id": "$RUN_ID",
   "captured_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "git_sha": "$(git rev-parse HEAD)",
@@ -327,6 +389,8 @@ cat > "$ARTIFACT_DIR/README.md" <<EOF
 
 Artifacts:
 
+- \`SCHEMA.md\` - schema stamp for this run.
+- \`schema_manifest.json\` - machine-readable schema/version/file mapping.
 - \`DEFINE.md\` - scenario and budget definition.
 - \`fingerprint.json\` - host, build, git, and toolchain fingerprint.
 - \`BASELINE.md\` - p50/p95/p99 baseline table.
@@ -334,6 +398,11 @@ Artifacts:
 - \`hypothesis.md\` - interpreted bottleneck hypotheses.
 - \`scaling_law.md\` - multicore/batch scaling guidance.
 - \`ALIEN_ARTIFACT.md\` - advanced-math artifact/proof plan.
+- \`golden/pdf-large-stages.jsonl\` - PDF stage attribution records.
+- \`golden/pdf-large-recommendation.jsonl\` - next PDF optimization target recommendation.
+- \`golden/parser-large-stages.jsonl\` - parser stage/allocation attribution records.
+- \`golden/parser-large-spanned-stages.jsonl\` - source-span/diagnostic parser attribution records.
+- \`golden/parser-large-recommendation.jsonl\` - next parser optimization target recommendation.
 - \`golden_checksums.txt\` - behavior-preservation checksums.
 - \`hyperfine.*\` - CLI wall-clock baselines.
 - \`perf-stat.*\` - hardware counter output when permitted.

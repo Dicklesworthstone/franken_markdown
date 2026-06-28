@@ -3,11 +3,11 @@
 use franken_markdown::ast::Inline;
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
-    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, StyledText, TextStyle,
-    UNITS_PER_POINT, adjustment_to_layout_units, advance_to_layout_units, break_paragraph,
-    expansion_budget, hyphenated_paragraph_items_from_text, measure_advances, measure_styled_text,
-    measure_text, measure_text_with_pairs, paragraph_items_from_inlines, paragraph_items_from_text,
-    protruded_fit_width, protrusion_for_text,
+    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, Penalty, StyledText, TextBox,
+    TextStyle, UNITS_PER_POINT, adjustment_to_layout_units, advance_to_layout_units,
+    break_paragraph, expansion_budget, hyphenated_paragraph_items_from_text, measure_advances,
+    measure_styled_text, measure_text, measure_text_with_pairs, paragraph_items_from_inlines,
+    paragraph_items_from_text, protruded_fit_width, protrusion_for_text,
 };
 
 struct StubMetrics;
@@ -110,35 +110,46 @@ fn paragraph_items_use_boxes_glue_and_final_forced_break() {
     let items = paragraph_items_from_text(&metrics, "mi AV", size);
 
     assert_eq!(items.len(), 4);
-    match &items[0] {
-        ParagraphItem::Box(item) => {
-            assert_eq!(item.text, "mi");
-            assert_eq!(item.width, LayoutUnit::from_milli_points(11_500));
-        }
-        other => panic!("expected first box, got {other:?}"),
+    let first = &items[0];
+    assert!(
+        matches!(first, ParagraphItem::Box(_)),
+        "expected first box, got {first:?}"
+    );
+    if let ParagraphItem::Box(item) = first {
+        assert_eq!(item.text, "mi");
+        assert_eq!(item.width, LayoutUnit::from_milli_points(11_500));
     }
-    match &items[1] {
-        ParagraphItem::Glue(glue) => {
-            assert_eq!(glue.width, LayoutUnit::from_milli_points(2_500));
-            assert_eq!(glue.stretch, LayoutUnit::from_milli_points(1_250));
-            assert_eq!(glue.shrink, LayoutUnit::from_milli_points(833));
-        }
-        other => panic!("expected interword glue, got {other:?}"),
+
+    let interword = &items[1];
+    assert!(
+        matches!(interword, ParagraphItem::Glue(_)),
+        "expected interword glue, got {interword:?}"
+    );
+    if let ParagraphItem::Glue(glue) = interword {
+        assert_eq!(glue.width, LayoutUnit::from_milli_points(2_500));
+        assert_eq!(glue.stretch, LayoutUnit::from_milli_points(1_250));
+        assert_eq!(glue.shrink, LayoutUnit::from_milli_points(833));
     }
-    match &items[2] {
-        ParagraphItem::Box(item) => {
-            assert_eq!(item.text, "AV");
-            assert_eq!(item.width, LayoutUnit::from_milli_points(9_200));
-        }
-        other => panic!("expected second box, got {other:?}"),
+
+    let second = &items[2];
+    assert!(
+        matches!(second, ParagraphItem::Box(_)),
+        "expected second box, got {second:?}"
+    );
+    if let ParagraphItem::Box(item) = second {
+        assert_eq!(item.text, "AV");
+        assert_eq!(item.width, LayoutUnit::from_milli_points(9_200));
     }
-    match &items[3] {
-        ParagraphItem::Penalty(penalty) => {
-            assert_eq!(penalty.width, LayoutUnit::ZERO);
-            assert_eq!(penalty.penalty, FORCED_BREAK_PENALTY);
-            assert!(!penalty.flagged);
-        }
-        other => panic!("expected final forced break, got {other:?}"),
+
+    let final_break = &items[3];
+    assert!(
+        matches!(final_break, ParagraphItem::Penalty(_)),
+        "expected final forced break, got {final_break:?}"
+    );
+    if let ParagraphItem::Penalty(penalty) = final_break {
+        assert_eq!(penalty.width, LayoutUnit::ZERO);
+        assert_eq!(penalty.penalty, FORCED_BREAK_PENALTY);
+        assert!(!penalty.flagged);
     }
 }
 
@@ -187,6 +198,30 @@ fn styled_text_preserves_markdown_inline_boundaries() {
     assert_eq!(styled.runs[4].style, TextStyle::BODY.with_code());
     assert_eq!(styled.runs[6].text, "link");
     assert_eq!(styled.runs[6].style, TextStyle::BODY.with_link());
+}
+
+#[test]
+fn styled_text_preserves_raw_html_source_for_layout_text() {
+    let inlines = vec![
+        Inline::Text("before ".to_string()),
+        Inline::Html("<i>raw</i>".to_string()),
+        Inline::Text(" ".to_string()),
+        Inline::Emphasis(vec![Inline::Html("<span>styled</span>".to_string())]),
+        Inline::Text(" after".to_string()),
+    ];
+    let styled = StyledText::from_inlines(&inlines);
+
+    assert_eq!(
+        styled.plain_text(),
+        "before <i>raw</i> <span>styled</span> after"
+    );
+    assert_eq!(styled.runs.len(), 3);
+    assert_eq!(styled.runs[0].text, "before <i>raw</i> ");
+    assert_eq!(styled.runs[0].style, TextStyle::BODY);
+    assert_eq!(styled.runs[1].text, "<span>styled</span>");
+    assert_eq!(styled.runs[1].style, TextStyle::BODY.with_italic());
+    assert_eq!(styled.runs[2].text, " after");
+    assert_eq!(styled.runs[2].style, TextStyle::BODY);
 }
 
 #[test]
@@ -269,6 +304,33 @@ fn line_break_certificate_locks_prefix_metric_behavior() {
             (6, 9, 10, 12_500, 0, FitnessClass::Decent, 29_930),
         ]
     );
+}
+
+#[test]
+fn break_paragraph_never_spans_an_interior_forced_break() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let box_a = || {
+        ParagraphItem::Box(TextBox {
+            text: "A".to_string(),
+            runs: StyledText::plain("A"),
+            width: measure_text_with_pairs(&metrics, "A", size),
+        })
+    };
+    let forced = || {
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+        })
+    };
+    let items = vec![box_a(), forced(), box_a(), forced()];
+    let breaks = break_paragraph(&items, LayoutUnit::from_milli_points(100_000));
+
+    assert_eq!(breaks.len(), 2);
+    assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "A");
+    assert_eq!(breaks[0].next, 2);
+    assert_eq!(line_text(&items, breaks[1].start, breaks[1].end), "A");
 }
 
 #[test]
@@ -408,14 +470,15 @@ fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {
 }
 
 fn assert_box_style(item: &ParagraphItem, text: &str, style: TextStyle) {
-    match item {
-        ParagraphItem::Box(b) => {
-            assert_eq!(b.text, text);
-            assert_eq!(b.runs.runs.len(), 1);
-            assert_eq!(b.runs.runs[0].text, text);
-            assert_eq!(b.runs.runs[0].style, style);
-        }
-        other => panic!("expected styled box, got {other:?}"),
+    assert!(
+        matches!(item, ParagraphItem::Box(_)),
+        "expected styled box, got {item:?}"
+    );
+    if let ParagraphItem::Box(b) = item {
+        assert_eq!(b.text, text);
+        assert_eq!(b.runs.runs.len(), 1);
+        assert_eq!(b.runs.runs[0].text, text);
+        assert_eq!(b.runs.runs[0].style, style);
     }
 }
 

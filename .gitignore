@@ -19,9 +19,16 @@ Thumbs.db
 *.tmp
 *.tmp.*
 
+# Generated example render outputs (regenerable from examples/*.md)
+/showcase.pdf
+/showcase_serif.pdf
+
 # Beads local DB (the JSONL is tracked; the SQLite DB is local)
 .beads/*.db
 .beads/*.db-*
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Beads compliance audit dir (managed by /beads-compliance-and-completion-verification skill)
+/beads_compliance_audit/

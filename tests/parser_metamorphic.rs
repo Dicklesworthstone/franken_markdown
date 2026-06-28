@@ -93,6 +93,14 @@ fn line_endings_and_final_newline_do_not_change_output() {
 }
 
 #[test]
+fn utf8_bom_does_not_change_normal_rendered_output() {
+    let plain = "[id]: /dest \"title\"\n\n# Title\n\nSee [id].\n";
+    let bom = format!("\u{feff}{plain}");
+
+    assert_eq!(render(plain), render(&bom));
+}
+
+#[test]
 fn reference_definition_position_is_not_semantic() {
     let before = "[id]: /dest \"title\"\n\nSee [id].\n";
     let after = "See [id].\n\n[id]: /dest \"title\"\n";

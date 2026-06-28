@@ -1,7 +1,11 @@
 //! Focused parser conformance regressions. Tests may unwrap for brevity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::{HtmlOptions, render_html};
+use std::collections::BTreeSet;
+
+use franken_markdown::{
+    HtmlOptions, parse_markdown, parse_markdown_profiled, render_html, scan_markdown_line,
+};
 
 fn html(md: &str) -> String {
     render_html(md, &HtmlOptions::default()).unwrap()
@@ -16,6 +20,38 @@ fn html_allowing_raw(md: &str) -> String {
         },
     )
     .unwrap()
+}
+
+#[test]
+fn scalar_line_scanner_is_conservative_for_markdown_starters() {
+    let heading = scan_markdown_line("  ## Title");
+    assert!(heading.maybe_heading_marker);
+    assert_eq!(heading.first_special_byte, Some(2));
+
+    let table_header = scan_markdown_line("| a | `b|c` |");
+    assert!(table_header.contains_pipe);
+    assert!(table_header.contains_backtick);
+
+    let delimiter = scan_markdown_line("|---|:---:|---:|");
+    assert!(delimiter.maybe_table_delimiter);
+    assert!(delimiter.contains_pipe);
+
+    let reference = scan_markdown_line("\t[label]: /dest");
+    assert!(reference.maybe_reference);
+
+    let raw_html = scan_markdown_line("text <span>ok</span>");
+    assert!(raw_html.maybe_html);
+    assert!(raw_html.maybe_autolink);
+
+    let fence = scan_markdown_line("   ```rust");
+    assert!(fence.maybe_fence);
+    assert!(fence.contains_backtick);
+
+    let list = scan_markdown_line("123. ordered");
+    assert!(list.maybe_list_marker);
+
+    let plain = scan_markdown_line("plain words only");
+    assert_eq!(plain, Default::default());
 }
 
 #[test]
@@ -64,6 +100,48 @@ fn full_reference_link_definitions_are_collected_and_not_rendered() {
 
     assert!(out.contains("<a href=\"https://example.com/docs\" title=\"Docs\">the docs</a>"));
     assert!(!out.contains("[docs]:"));
+}
+
+#[test]
+fn multiline_reference_titles_resolve_and_do_not_render() {
+    let out = html(
+        "[double]: /double\n  \"Double title\"\n\
+         [single]: /single\n'Single title'\n\
+         [paren]: /paren\n(Paren title)\n\n\
+         [double] [single] [paren]",
+    );
+
+    assert!(out.contains("<a href=\"/double\" title=\"Double title\">double</a>"));
+    assert!(out.contains("<a href=\"/single\" title=\"Single title\">single</a>"));
+    assert!(out.contains("<a href=\"/paren\" title=\"Paren title\">paren</a>"));
+    assert!(!out.contains("<p>&quot;Double title&quot;</p>"));
+    assert!(!out.contains("<p>'Single title'</p>"));
+    assert!(!out.contains("<p>(Paren title)</p>"));
+}
+
+#[test]
+fn multiline_reference_titles_preserve_first_definition_wins() {
+    let out = html("[id]: /first\n\"First\"\n[id]: /second\n\"Second\"\n\nSee [id].");
+
+    assert!(out.contains("<a href=\"/first\" title=\"First\">id</a>"));
+    assert!(!out.contains("/second"));
+    assert!(!out.contains("Second"));
+}
+
+#[test]
+fn malformed_multiline_reference_title_remains_visible_text() {
+    let out = html("[id]: /ok\n\"unterminated\n\nSee [id].");
+
+    assert!(out.contains("<a href=\"/ok\">id</a>"));
+    assert!(out.contains("<p>\"unterminated</p>"));
+}
+
+#[test]
+fn four_space_reference_title_line_is_not_consumed() {
+    let out = html("[id]: /ok\n    \"not a title\"\n\nSee [id].");
+
+    assert!(out.contains("<a href=\"/ok\">id</a>"));
+    assert!(out.contains("<pre><code>\"not a title\"\n</code></pre>"));
 }
 
 #[test]
@@ -290,6 +368,19 @@ fn underscore_emphasis_still_works_at_word_boundaries() {
 }
 
 #[test]
+fn unmatched_closing_emphasis_delimiters_remain_literal_text() {
+    for (md, expected) in [
+        ("a*", "<p>a*</p>"),
+        ("a**", "<p>a**</p>"),
+        ("a_", "<p>a_</p>"),
+        ("a__", "<p>a__</p>"),
+    ] {
+        let out = html(md);
+        assert!(out.contains(expected), "{md:?} should render as {expected}");
+    }
+}
+
+#[test]
 fn uri_and_email_autolinks_render_with_commonmark_display_text() {
     let out = html("Visit <https://example.com/docs?q=1> or <team@example.com>.");
 
@@ -307,6 +398,62 @@ fn character_references_decode_named_decimal_and_hex_forms() {
     assert!(out.contains("AT&amp;T"));
     assert!(out.contains("\u{a9} \u{a9} \u{a9} \u{1f680}"));
     assert!(out.contains("&amp;notaref;"));
+}
+
+#[test]
+fn profiled_parser_matches_normal_ast_and_reports_required_stages() {
+    let src = "# Profiled\n\n\
+               A paragraph with **strong** text and [ref][id].\n\n\
+               [id]: https://example.com \"Example\"\n\n\
+               | Name | Value |\n|---|---:|\n| alpha | 1 |\n\n\
+               - [x] task\n  - nested\n\n\
+               ```rust\nfn main() {}\n```\n";
+
+    let normal = parse_markdown(src);
+    let profiled = parse_markdown_profiled(src);
+
+    assert_eq!(profiled.document, normal);
+
+    let stages: BTreeSet<&str> = profiled.stages.iter().map(|stage| stage.stage).collect();
+    for required in [
+        "line_split",
+        "reference_collection",
+        "block_parse_total",
+        "inline_parse",
+        "heading_block",
+        "paragraph_block",
+        "table_block",
+        "list_block",
+        "fenced_code_block",
+    ] {
+        assert!(stages.contains(required), "missing parser stage {required}");
+    }
+
+    assert!(
+        profiled.stages.iter().any(|stage| stage.allocations > 0),
+        "parser profiling should report approximate allocation/object counts"
+    );
+}
+
+#[test]
+fn profiled_parser_does_not_charge_single_line_paragraphs_for_join_allocation() {
+    let profiled = parse_markdown_profiled("alpha\n\nbeta");
+    let paragraph_allocations: Vec<usize> = profiled
+        .stages
+        .iter()
+        .filter(|stage| stage.stage == "paragraph_block")
+        .map(|stage| stage.allocations)
+        .collect();
+
+    assert_eq!(paragraph_allocations, vec![2, 2]);
+
+    let joined = parse_markdown_profiled("alpha\nbeta");
+    let joined_paragraph = joined
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "paragraph_block")
+        .expect("multi-line paragraph should report a paragraph stage");
+    assert_eq!(joined_paragraph.allocations, 5);
 }
 
 #[test]
@@ -426,8 +573,8 @@ fn atx_closing_hashes_must_be_space_separated() {
     let out = html("# title#\n\n# title ###\n\n# ###\n");
 
     assert!(out.contains("<h1 id=\"title\">title#</h1>"));
-    assert!(out.contains("<h1 id=\"title\">title</h1>"));
-    assert!(out.contains("<h1 id=\"\"></h1>"));
+    assert!(out.contains("<h1 id=\"title-2\">title</h1>"));
+    assert!(out.contains("<h1 id=\"section\"></h1>"));
 }
 
 #[test]

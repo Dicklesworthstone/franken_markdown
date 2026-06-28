@@ -14,6 +14,11 @@ use std::collections::BTreeMap;
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
+#[cfg(not(target_arch = "wasm32"))]
+type ParseStageStart = std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+type ParseStageStart = ();
+
 #[derive(Debug, Clone)]
 struct LinkReference {
     dest: String,
@@ -22,16 +27,182 @@ struct LinkReference {
 
 type ReferenceMap = BTreeMap<String, LinkReference>;
 
+/// Parsed document plus parser stage attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseProfile {
+    /// Parsed renderer AST.
+    pub document: Document,
+    /// Stable parser stage ledger in observation order.
+    pub stages: Vec<ParseStageSummary>,
+}
+
+/// Spanned parsed document plus parser stage attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpannedParseProfile {
+    /// Parsed document with source spans and diagnostics.
+    pub document: SpannedDocument,
+    /// Stable parser stage ledger in observation order.
+    pub stages: Vec<ParseStageSummary>,
+}
+
+/// One measured parser stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseStageSummary {
+    /// Stable stage identifier used by perf artifacts and Beads closeouts.
+    pub stage: &'static str,
+    /// Stage-specific work count: lines, blocks, inline input bytes, rows, etc.
+    pub count: usize,
+    /// Elapsed nanoseconds for this invocation. Zero on wasm32 until a browser
+    /// clock provider exists.
+    pub elapsed_ns: u128,
+    /// Stage-specific input byte count when meaningful.
+    pub bytes: usize,
+    /// Approximate number of parser-owned objects/strings/vectors produced.
+    pub allocations: usize,
+    /// Short stable explanation for artifact readers.
+    pub notes: &'static str,
+}
+
+struct ParseProfiler {
+    enabled: bool,
+    stages: Vec<ParseStageSummary>,
+}
+
+impl ParseProfiler {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            stages: Vec::new(),
+        }
+    }
+
+    fn enabled() -> Self {
+        Self {
+            enabled: true,
+            stages: Vec::new(),
+        }
+    }
+
+    fn checkpoint(&self) -> Option<ParseStageStart> {
+        if self.enabled {
+            parse_stage_now()
+        } else {
+            None
+        }
+    }
+
+    fn record_since(
+        &mut self,
+        stage: &'static str,
+        count: usize,
+        bytes: usize,
+        allocations: usize,
+        notes: &'static str,
+        started: Option<ParseStageStart>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        self.stages.push(ParseStageSummary {
+            stage,
+            count,
+            elapsed_ns: parse_stage_elapsed_ns(started),
+            bytes,
+            allocations,
+            notes,
+        });
+    }
+
+    fn measure<T, F, C>(&mut self, stage: &'static str, notes: &'static str, f: F, counts: C) -> T
+    where
+        F: FnOnce() -> T,
+        C: FnOnce(&T) -> (usize, usize, usize),
+    {
+        let started = self.checkpoint();
+        let result = f();
+        let (count, bytes, allocations) = if self.enabled {
+            counts(&result)
+        } else {
+            (0, 0, 0)
+        };
+        self.record_since(stage, count, bytes, allocations, notes, started);
+        result
+    }
+
+    fn finish(self) -> Vec<ParseStageSummary> {
+        self.stages
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_stage_now() -> Option<ParseStageStart> {
+    Some(std::time::Instant::now())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_stage_now() -> Option<ParseStageStart> {
+    Some(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_stage_elapsed_ns(started: Option<ParseStageStart>) -> u128 {
+    started.map_or(0, |start| start.elapsed().as_nanos())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_stage_elapsed_ns(_started: Option<ParseStageStart>) -> u128 {
+    0
+}
+
 /// Parse a full Markdown document.
 #[must_use]
 pub fn parse_document(src: &str) -> Document {
+    let mut profiler = ParseProfiler::disabled();
+    parse_document_inner(src, &mut profiler)
+}
+
+/// Parse a full Markdown document and collect parser stage attribution.
+#[must_use]
+pub fn parse_document_profiled(src: &str) -> ParseProfile {
+    let mut profiler = ParseProfiler::enabled();
+    let document = parse_document_inner(src, &mut profiler);
+    ParseProfile {
+        document,
+        stages: profiler.finish(),
+    }
+}
+
+fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
-    let lines: Vec<&str> = src.lines().collect();
+    let lines = profiler.measure(
+        "line_split",
+        "strip UTF-8 BOM if present and split source into logical lines",
+        || src.lines().collect::<Vec<&str>>(),
+        |lines| (lines.len(), src.len(), 1),
+    );
+    let reference_started = profiler.checkpoint();
     let (lines, refs) = collect_link_references(&lines);
-    Document {
-        blocks: parse_blocks_with_refs(&lines, &refs),
-    }
+    profiler.record_since(
+        "reference_collection",
+        refs.len(),
+        src.len(),
+        refs.len() + lines.len(),
+        "collect link reference definitions and remove consumed definition lines",
+        reference_started,
+    );
+    let block_started = profiler.checkpoint();
+    let blocks = parse_blocks_with_refs_profiled(&lines, &refs, profiler);
+    let block_count = blocks.len();
+    profiler.record_since(
+        "block_parse_total",
+        block_count,
+        src.len(),
+        block_count,
+        "line classification, block assembly, and recursive block parsing",
+        block_started,
+    );
+    Document { blocks }
 }
 
 /// Parse a document and attach top-level source spans plus recoverable parser
@@ -39,8 +210,28 @@ pub fn parse_document(src: &str) -> Document {
 /// span-free.
 #[must_use]
 pub fn parse_document_spanned(src: &str) -> SpannedDocument {
-    let document = parse_document(src);
-    let spans = collect_top_level_spans(src);
+    parse_document_spanned_inner(src, &mut ParseProfiler::disabled())
+}
+
+/// Parse a spanned document and collect parser stage attribution.
+#[must_use]
+pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
+    let mut profiler = ParseProfiler::enabled();
+    let document = parse_document_spanned_inner(src, &mut profiler);
+    SpannedParseProfile {
+        document,
+        stages: profiler.finish(),
+    }
+}
+
+fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> SpannedDocument {
+    let document = parse_document_inner(src, profiler);
+    let spans = profiler.measure(
+        "span_collection",
+        "collect top-level source spans for editor/WASM diagnostics",
+        || collect_top_level_spans(src),
+        |spans| (spans.len(), src.len(), spans.len()),
+    );
     let fallback = SourceSpan::new(0, src.len());
     let blocks = document
         .blocks
@@ -51,7 +242,12 @@ pub fn parse_document_spanned(src: &str) -> SpannedDocument {
 
     SpannedDocument {
         blocks,
-        diagnostics: collect_parse_diagnostics(src),
+        diagnostics: profiler.measure(
+            "diagnostics_collection",
+            "collect recoverable parser diagnostics such as malformed references and fences",
+            || collect_parse_diagnostics(src),
+            |diagnostics| (diagnostics.len(), src.len(), diagnostics.len()),
+        ),
         source_len: src.len(),
     }
 }
@@ -296,7 +492,11 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
     (consumed, refs)
 }
 
-fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
+fn parse_blocks_with_refs_profiled(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
     'blocks: while i < lines.len() {
@@ -311,14 +511,22 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             continue;
         }
         if let Some((level, text)) = atx_heading(line) {
-            blocks.push(Block::Heading {
-                level,
-                inlines: parse_inlines_with_refs(text, refs),
-            });
+            let started = profiler.checkpoint();
+            let inlines = parse_inlines_with_refs_profiled(text, refs, profiler);
+            profiler.record_since(
+                "heading_block",
+                1,
+                line.len(),
+                1 + inlines.len(),
+                "parse one ATX heading block and its inline content",
+                started,
+            );
+            blocks.push(Block::Heading { level, inlines });
             i += 1;
             continue;
         }
         if let Some((fence_ch, fence_len, info)) = open_fence(line) {
+            let started = profiler.checkpoint();
             let lang = {
                 let t = info.trim();
                 t.split_whitespace()
@@ -337,43 +545,98 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
                 code.push('\n');
                 i += 1;
             }
+            profiler.record_since(
+                "fenced_code_block",
+                1,
+                code.len(),
+                usize::from(lang.is_some()) + 1,
+                "parse one fenced code block body and language info",
+                started,
+            );
             blocks.push(Block::CodeBlock { lang, code });
             continue;
         }
         if indented_code_start(line) {
+            let started = profiler.checkpoint();
             let (code, used) = parse_indented_code(&lines[i..]);
+            profiler.record_since(
+                "indented_code_block",
+                used,
+                code.len(),
+                1,
+                "parse one indented code block",
+                started,
+            );
             blocks.push(Block::CodeBlock { lang: None, code });
             i += used;
             continue;
         }
         if line.trim_start().starts_with('>') {
+            let started = profiler.checkpoint();
             let mut inner = Vec::new();
             while i < lines.len() && lines[i].trim_start().starts_with('>') {
                 inner.push(strip_blockquote(lines[i]));
                 i += 1;
             }
             let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
-            blocks.push(Block::BlockQuote(parse_blocks_with_refs(&inner_refs, refs)));
+            let inner_blocks = parse_blocks_with_refs_profiled(&inner_refs, refs, profiler);
+            profiler.record_since(
+                "blockquote_block",
+                inner.len(),
+                inner.iter().map(String::len).sum(),
+                inner.len() + inner_blocks.len(),
+                "parse one blockquote and recursively parse its inner blocks",
+                started,
+            );
+            blocks.push(Block::BlockQuote(inner_blocks));
             continue;
         }
         if html_block_start(line) {
+            let started = profiler.checkpoint();
             let start = i;
             i += 1;
             while i < lines.len() && !lines[i].trim().is_empty() {
                 i += 1;
             }
-            blocks.push(Block::HtmlBlock(lines[start..i].join("\n")));
+            let html = lines[start..i].join("\n");
+            profiler.record_since(
+                "html_block",
+                i - start,
+                html.len(),
+                1,
+                "parse one raw HTML block",
+                started,
+            );
+            blocks.push(Block::HtmlBlock(html));
             continue;
         }
         if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1]) {
-            if let Some((table, used)) = parse_table(&lines[i..], refs) {
+            let started = profiler.checkpoint();
+            if let Some((table, used)) = parse_table_profiled(&lines[i..], refs, profiler) {
+                profiler.record_since(
+                    "table_block",
+                    used,
+                    lines[i..i + used].iter().map(|line| line.len()).sum(),
+                    1 + table.head.len() + table.rows.iter().map(Vec::len).sum::<usize>(),
+                    "parse one pipe table block including aligned cells",
+                    started,
+                );
                 blocks.push(Block::Table(table));
                 i += used;
                 continue;
             }
         }
         if list_marker(line).is_some() {
-            let (list, used) = parse_list(&lines[i..], refs);
+            let started = profiler.checkpoint();
+            let (list, used) = parse_list_profiled(&lines[i..], refs, profiler);
+            profiler.record_since(
+                "list_block",
+                used,
+                lines[i..i + used].iter().map(|line| line.len()).sum(),
+                1 + list.items.len(),
+                "parse one ordered/unordered/task list block",
+                started,
+            );
             blocks.push(Block::List(list));
             i += used;
             continue;
@@ -384,11 +647,18 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             if i > start
                 && let Some(level) = setext_underline(lines[i])
             {
-                let text = lines[start..i].join("\n");
-                blocks.push(Block::Heading {
-                    level,
-                    inlines: parse_inlines_with_refs(&text, refs),
-                });
+                let started = profiler.checkpoint();
+                let (inlines, text_len, join_allocations) =
+                    parse_lines_as_inlines(&lines[start..i], refs, profiler);
+                profiler.record_since(
+                    "setext_heading_block",
+                    i - start + 1,
+                    text_len,
+                    join_allocations + 1 + inlines.len(),
+                    "parse one setext heading and its inline content",
+                    started,
+                );
+                blocks.push(Block::Heading { level, inlines });
                 i += 1;
                 continue 'blocks;
             }
@@ -404,10 +674,44 @@ fn parse_blocks_with_refs(lines: &[&str], refs: &ReferenceMap) -> Vec<Block> {
             }
             i += 1;
         }
-        let text = lines[start..i].join("\n");
-        blocks.push(Block::Paragraph(parse_inlines_with_refs(&text, refs)));
+        let started = profiler.checkpoint();
+        let (inlines, text_len, join_allocations) =
+            parse_lines_as_inlines(&lines[start..i], refs, profiler);
+        profiler.record_since(
+            "paragraph_block",
+            i - start,
+            text_len,
+            join_allocations + 1 + inlines.len(),
+            "parse one paragraph block and its inline content",
+            started,
+        );
+        blocks.push(Block::Paragraph(inlines));
     }
     blocks
+}
+
+fn parse_lines_as_inlines(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> (Vec<Inline>, usize, usize) {
+    match lines {
+        [] => (Vec::new(), 0, 0),
+        [line] => (
+            parse_inlines_with_refs_profiled(line, refs, profiler),
+            line.len(),
+            0,
+        ),
+        _ => {
+            let text = lines.join("\n");
+            let len = text.len();
+            (
+                parse_inlines_with_refs_profiled(&text, refs, profiler),
+                len,
+                1,
+            )
+        }
+    }
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
@@ -734,15 +1038,15 @@ fn is_html_block_tag(name: &str) -> bool {
 
 // ---- lists ------------------------------------------------------------------
 
-struct Marker {
+struct Marker<'a> {
     indent: usize,
     ordered: bool,
     start: u64,
     content_indent: usize,
-    rest: String,
+    rest: &'a str,
 }
 
-fn list_marker(line: &str) -> Option<Marker> {
+fn list_marker(line: &str) -> Option<Marker<'_>> {
     let indent = leading_spaces(line);
     let t = &line[indent..];
     if let Some(first) = t.chars().next()
@@ -755,13 +1059,14 @@ fn list_marker(line: &str) -> Option<Marker> {
             ordered: false,
             start: 1,
             content_indent: indent + first.len_utf8() + padding,
-            rest: rest.to_string(),
+            rest,
         });
     }
     // Ordered: digits then `.` or `)` then space.
-    let digits: String = t.chars().take_while(char::is_ascii_digit).collect();
-    if !digits.is_empty() && digits.len() <= 9 {
-        let after = &t[digits.len()..];
+    let digit_len = t.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_len > 0 && digit_len <= 9 {
+        let digits = &t[..digit_len];
+        let after = &t[digit_len..];
         if (after.starts_with('.') || after.starts_with(')'))
             && let Ok(start) = digits.parse()
             && let Some((rest, padding)) = marker_padding(&after[1..])
@@ -770,8 +1075,8 @@ fn list_marker(line: &str) -> Option<Marker> {
                 indent,
                 ordered: true,
                 start,
-                content_indent: indent + digits.len() + 1 + padding,
-                rest: rest.to_string(),
+                content_indent: indent + digit_len + 1 + padding,
+                rest,
             });
         }
     }
@@ -796,6 +1101,15 @@ fn list_marker_interrupts_paragraph(line: &str) -> bool {
 }
 
 fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
+    let mut profiler = ParseProfiler::disabled();
+    parse_list_profiled(lines, refs, &mut profiler)
+}
+
+fn parse_list_profiled(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> (List, usize) {
     let Some(first) = list_marker(lines[0]) else {
         return (
             List {
@@ -828,7 +1142,7 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
         let Some(m) = list_marker(lines[i]).filter(|m| m.ordered == ordered) else {
             break;
         };
-        let mut item_lines = vec![m.rest.clone()];
+        let mut item_lines = vec![m.rest.to_string()];
         i += 1;
 
         while i < lines.len() {
@@ -888,7 +1202,7 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
         let item_refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
         items.push(ListItem {
             task,
-            blocks: parse_blocks_with_refs(&item_refs, refs),
+            blocks: parse_blocks_with_refs_profiled(&item_refs, refs, profiler),
         });
     }
     (
@@ -982,6 +1296,15 @@ fn split_table_row(line: &str) -> Vec<String> {
 }
 
 fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
+    let mut profiler = ParseProfiler::disabled();
+    parse_table_profiled(lines, refs, &mut profiler)
+}
+
+fn parse_table_profiled(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Option<(Table, usize)> {
     let header = split_table_row(lines[0]);
     let align_cells = split_table_row(lines[1]);
     let cols = header.len();
@@ -1003,14 +1326,14 @@ fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
         .collect();
     let head: Vec<Vec<Inline>> = header
         .iter()
-        .map(|c| parse_inlines_with_refs(c, refs))
+        .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
         .collect();
     let mut rows = Vec::new();
     let mut i = 2;
     while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
         let mut cells: Vec<Vec<Inline>> = split_table_row(lines[i])
             .iter()
-            .map(|c| parse_inlines_with_refs(c, refs))
+            .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
             .collect();
         cells.resize_with(cols, Vec::new);
         cells.truncate(cols);
@@ -1029,13 +1352,29 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
 }
 
 fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
-    let mut out = Vec::new();
+    let mut profiler = ParseProfiler::disabled();
+    parse_inlines_with_refs_profiled(text, refs, &mut profiler)
+}
+
+fn parse_inlines_with_refs_profiled(
+    text: &str,
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Inline> {
+    let started = profiler.checkpoint();
+    // Inline parsing is two phases. Phase 1 (this loop) tokenizes the text into a
+    // flat list of `InlineEl` nodes: finalized inlines (code, links, images,
+    // autolinks, raw HTML, breaks) interleaved with raw `*`/`_` emphasis
+    // delimiter runs. Phase 2 (`resolve_emphasis`) runs the CommonMark
+    // "process emphasis" delimiter-stack algorithm over that list to pair openers
+    // with closers and build the correct nested `Emphasis`/`Strong` tree.
+    let mut els: Vec<InlineEl> = Vec::new();
     let bytes: Vec<char> = text.chars().collect();
     let mut buf = String::new();
     let mut i = 0;
-    let flush = |buf: &mut String, out: &mut Vec<Inline>| {
+    let flush = |buf: &mut String, els: &mut Vec<InlineEl>| {
         if !buf.is_empty() {
-            out.push(Inline::Text(std::mem::take(buf)));
+            els.push(InlineEl::Text(std::mem::take(buf)));
         }
     };
     while i < bytes.len() {
@@ -1054,20 +1393,20 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 if buf.ends_with('\\') {
                     buf.pop();
                 }
-                flush(&mut buf, &mut out);
-                out.push(if hard {
+                flush(&mut buf, &mut els);
+                els.push(InlineEl::Node(if hard {
                     Inline::HardBreak
                 } else {
                     Inline::SoftBreak
-                });
+                }));
                 i += 1;
             }
             '`' => {
                 let n = run_len(&bytes, i, '`');
                 if let Some(end) = find_code_close(&bytes, i + n, '`', n) {
-                    flush(&mut buf, &mut out);
+                    flush(&mut buf, &mut els);
                     let inner: String = bytes[i + n..end].iter().collect();
-                    out.push(Inline::Code(normalize_code_span(&inner)));
+                    els.push(InlineEl::Node(Inline::Code(normalize_code_span(&inner))));
                     i = end + n;
                 } else {
                     buf.push(c);
@@ -1075,23 +1414,25 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
-                if let Some((alt, dest, title, next)) = parse_link_like(&bytes, i + 1, refs) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Image {
+                if let Some((alt, dest, title, next)) =
+                    parse_link_like(&bytes, i + 1, refs, profiler)
+                {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Image {
                         dest,
                         title,
                         alt: inlines_to_plain(&alt),
-                    });
+                    }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i + 1, refs)
+                    parse_reference_link_like(&bytes, i + 1, refs, profiler)
                 {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Image {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Image {
                         dest,
                         title,
                         alt: inlines_to_plain(&alt),
-                    });
+                    }));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1099,27 +1440,29 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 }
             }
             '[' => {
-                if let Some((content, dest, title, next)) = parse_link_like(&bytes, i, refs) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Link {
+                if let Some((content, dest, title, next)) =
+                    parse_link_like(&bytes, i, refs, profiler)
+                {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Link {
                         dest,
                         title,
                         content,
-                    });
+                    }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i, refs)
+                    parse_reference_link_like(&bytes, i, refs, profiler)
                 {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Link {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Link {
                         dest,
                         title,
                         content,
-                    });
+                    }));
                     i = next;
                 } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Html(html));
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1128,16 +1471,16 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
             }
             '<' => {
                 if let Some((label, dest, next)) = parse_autolink(&bytes, i) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Link {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Link {
                         dest,
                         title: None,
                         content: vec![Inline::Text(label)],
-                    });
+                    }));
                     i = next;
                 } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Html(html));
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1155,8 +1498,10 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
             }
             '~' if run_len(&bytes, i, '~') >= 2 => {
                 if let Some((inner, next)) = parse_delim(&bytes, i, '~', 2) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Strikethrough(parse_inlines_with_refs(&inner, refs)));
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Strikethrough(
+                        parse_inlines_with_refs_profiled(&inner, refs, profiler),
+                    )));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1164,49 +1509,40 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
                 }
             }
             '*' | '_' => {
+                // Push a `*`/`_` delimiter run onto the node list with its
+                // CommonMark left/right-flanking can_open/can_close flags. The
+                // actual pairing into emphasis/strong is deferred to
+                // `resolve_emphasis` (the delimiter-stack pass) so that nested and
+                // overlapping runs resolve correctly.
                 let n = run_len(&bytes, i, c);
-                if is_intraword_underscore_run(&bytes, i, n) {
+                let before = i.checked_sub(1).map(|idx| bytes[idx]);
+                let after = bytes.get(i + n).copied();
+                let (can_open, can_close) = emphasis_flanking(before, after, c);
+                if can_open || can_close {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Delim {
+                        ch: c,
+                        count: n,
+                        orig: n,
+                        can_open,
+                        can_close,
+                    });
+                } else {
+                    // An inert run (e.g. an intraword `_`) is literal text.
                     for _ in 0..n {
                         buf.push(c);
                     }
-                    i += n;
-                    continue;
                 }
-                // Triple delimiter run: `***x***` / `___x___` is emphasis *and*
-                // strong (bold-italic). Try it before the 2/1 split so the run is
-                // not greedily consumed as `**` + a stray `*`.
-                if n >= 3
-                    && let Some((inner, next)) = parse_delim(&bytes, i, c, 3)
-                {
-                    flush(&mut buf, &mut out);
-                    let parsed = parse_inlines_with_refs(&inner, refs);
-                    out.push(Inline::Strong(vec![Inline::Emphasis(parsed)]));
-                    i = next;
-                    continue;
-                }
-                let want = if n >= 2 { 2 } else { 1 };
-                if let Some((inner, next)) = parse_delim(&bytes, i, c, want) {
-                    flush(&mut buf, &mut out);
-                    let parsed = parse_inlines_with_refs(&inner, refs);
-                    out.push(if want == 2 {
-                        Inline::Strong(parsed)
-                    } else {
-                        Inline::Emphasis(parsed)
-                    });
-                    i = next;
-                } else {
-                    buf.push(c);
-                    i += 1;
-                }
+                i += n;
             }
             _ => {
                 if let Some((label, dest, next)) = parse_bare_url_autolink(&bytes, i) {
-                    flush(&mut buf, &mut out);
-                    out.push(Inline::Link {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Link {
                         dest,
                         title: None,
                         content: vec![Inline::Text(label)],
-                    });
+                    }));
                     i = next;
                 } else {
                     buf.push(c);
@@ -1215,8 +1551,281 @@ fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {
             }
         }
     }
-    flush(&mut buf, &mut out);
+    flush(&mut buf, &mut els);
+    let out = resolve_emphasis(els);
+    profiler.record_since(
+        "inline_parse",
+        bytes.len(),
+        text.len(),
+        1 + bytes.len() + out.len(),
+        "parse inline delimiters, links, references, autolinks, code spans, and text",
+        started,
+    );
     out
+}
+
+/// One element of the flat inline token list built before emphasis resolution.
+enum InlineEl {
+    /// A run of plain text (entities already decoded, escapes already applied).
+    Text(String),
+    /// A finalized inline that emphasis processing treats as opaque (code,
+    /// links, images, autolinks, raw HTML, breaks, and emphasis/strong/strike
+    /// subtrees produced by `resolve_emphasis` itself).
+    Node(Inline),
+    /// An unresolved run of `*` or `_` emphasis delimiters.
+    Delim {
+        ch: char,
+        /// Remaining (not yet consumed) delimiter characters.
+        count: usize,
+        /// Original run length, used for the CommonMark "rule of three".
+        orig: usize,
+        can_open: bool,
+        can_close: bool,
+    },
+}
+
+/// CommonMark left/right-flanking classification for a `*`/`_` delimiter run.
+///
+/// Returns `(can_open, can_close)`. `before`/`after` are the characters
+/// immediately adjacent to the run (the start and end of the text count as
+/// whitespace). For `_`, the additional intraword rule applies so that
+/// `foo_bar` stays literal while `_foo_` opens/closes emphasis.
+fn emphasis_flanking(before: Option<char>, after: Option<char>, ch: char) -> (bool, bool) {
+    let before_ws = before.is_none_or(char::is_whitespace);
+    let before_punct = before.is_some_and(|c| c.is_ascii_punctuation());
+    let after_ws = after.is_none_or(char::is_whitespace);
+    let after_punct = after.is_some_and(|c| c.is_ascii_punctuation());
+
+    let left_flanking = !after_ws && (!after_punct || before_ws || before_punct);
+    let right_flanking = !before_ws && (!before_punct || after_ws || after_punct);
+
+    if ch == '_' {
+        let can_open = left_flanking && (!right_flanking || before_punct);
+        let can_close = right_flanking && (!left_flanking || after_punct);
+        (can_open, can_close)
+    } else {
+        (left_flanking, right_flanking)
+    }
+}
+
+/// Append text to `out`, merging with a trailing `Text` node when possible so the
+/// resolved inline sequence keeps adjacent literal runs coalesced.
+fn push_inline_text(out: &mut Vec<Inline>, s: &str) {
+    if s.is_empty() {
+        return;
+    }
+    if let Some(Inline::Text(t)) = out.last_mut() {
+        t.push_str(s);
+    } else {
+        out.push(Inline::Text(s.to_string()));
+    }
+}
+
+/// Emit one `InlineEl` into a finalized inline vector. Unmatched delimiter runs
+/// degrade to their literal characters.
+fn emit_inline_el(el: &InlineEl, out: &mut Vec<Inline>) {
+    match el {
+        InlineEl::Text(s) => push_inline_text(out, s),
+        InlineEl::Node(inl) => out.push(inl.clone()),
+        InlineEl::Delim { ch, count, .. } => {
+            let mut s = String::with_capacity(*count);
+            for _ in 0..*count {
+                s.push(*ch);
+            }
+            push_inline_text(out, &s);
+        }
+    }
+}
+
+/// Resolve a flat token list into a nested inline tree using the CommonMark
+/// "process emphasis" delimiter-stack algorithm, then linearize what remains.
+fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
+    let n = els.len();
+    let mut els = els;
+    // Intrusive doubly linked list over `els`, with tombstones (`alive`) instead
+    // of physical removal so indices stay stable as nodes are spliced in/out.
+    let mut prev: Vec<Option<usize>> = (0..n).map(|i| i.checked_sub(1)).collect();
+    let mut next: Vec<Option<usize>> = (0..n).map(|i| (i + 1 < n).then_some(i + 1)).collect();
+    let mut alive: Vec<bool> = vec![true; n];
+    let mut head: Option<usize> = (n > 0).then_some(0);
+
+    process_emphasis(&mut els, &mut prev, &mut next, &mut alive, &mut head);
+
+    let mut out = Vec::new();
+    let mut idx = head;
+    while let Some(k) = idx {
+        if alive[k] {
+            emit_inline_el(&els[k], &mut out);
+        }
+        idx = next[k];
+    }
+    out
+}
+
+/// Splice element `x` out of the intrusive linked list and mark it dead.
+fn unlink_el(
+    x: usize,
+    prev: &mut [Option<usize>],
+    next: &mut [Option<usize>],
+    alive: &mut [bool],
+    head: &mut Option<usize>,
+) {
+    let p = prev[x];
+    let nx = next[x];
+    match p {
+        Some(pp) => next[pp] = nx,
+        None => *head = nx,
+    }
+    if let Some(nn) = nx {
+        prev[nn] = p;
+    }
+    alive[x] = false;
+}
+
+/// The CommonMark "process emphasis" pass: walk closers left to right, match each
+/// to the nearest compatible opener honoring the rule of three, and wrap the
+/// enclosed nodes in `Strong` (2 delimiters) or `Emphasis` (1 delimiter).
+fn process_emphasis(
+    els: &mut Vec<InlineEl>,
+    prev: &mut Vec<Option<usize>>,
+    next: &mut Vec<Option<usize>>,
+    alive: &mut Vec<bool>,
+    head: &mut Option<usize>,
+) {
+    // Per (char, slot) lower bound below which no opener can be found; `slot`
+    // folds the closer's can_open flag and run length mod 3, mirroring the
+    // reference implementation's `openers_bottom`.
+    let mut openers_bottom: BTreeMap<(char, usize), Option<usize>> = BTreeMap::new();
+    let mut ci = *head;
+
+    while let Some(c) = ci {
+        if !alive[c] {
+            ci = next[c];
+            continue;
+        }
+        let (cch, closer_can_open, corig) = match &els[c] {
+            InlineEl::Delim {
+                ch,
+                can_close,
+                can_open,
+                orig,
+                ..
+            } if *can_close => (*ch, *can_open, *orig),
+            _ => {
+                ci = next[c];
+                continue;
+            }
+        };
+        let slot = (if closer_can_open { 3 } else { 0 }) + (corig % 3);
+        let bound = openers_bottom.get(&(cch, slot)).copied().flatten();
+
+        // Walk back to the nearest opener of the same char that is not rejected
+        // by the rule of three.
+        let mut opener_idx = prev[c];
+        let mut found: Option<usize> = None;
+        while let Some(o) = opener_idx {
+            if Some(o) == bound {
+                break;
+            }
+            if alive[o]
+                && let InlineEl::Delim {
+                    ch,
+                    can_open,
+                    can_close,
+                    orig,
+                    ..
+                } = &els[o]
+                && *ch == cch
+                && *can_open
+            {
+                // Rule of three: if either delimiter can both open and close, the
+                // summed run lengths must not be a multiple of 3 unless both are.
+                let odd_match = (closer_can_open || *can_close)
+                    && (*orig + corig) % 3 == 0
+                    && !(*orig % 3 == 0 && corig % 3 == 0);
+                if !odd_match {
+                    found = Some(o);
+                    break;
+                }
+            }
+            opener_idx = prev[o];
+        }
+
+        let Some(o) = found else {
+            // No opener: remember the lower bound. The delimiter itself is
+            // still literal source text, so leave it alive for final emission.
+            openers_bottom.insert((cch, slot), prev[c]);
+            ci = next[c];
+            continue;
+        };
+
+        let ocount = match &els[o] {
+            InlineEl::Delim { count, .. } => *count,
+            _ => 0,
+        };
+        let ccount = match &els[c] {
+            InlineEl::Delim { count, .. } => *count,
+            _ => 0,
+        };
+        // Prefer strong as the OUTER wrapper for a single multi-delimiter run
+        // (`***x***` -> <strong><em>x</em></strong>): consume one delimiter for
+        // the inner emphasis first when both runs still have 3+, otherwise take
+        // two for strong, otherwise one for emphasis.
+        let use_delims = if ocount >= 3 && ccount >= 3 {
+            1
+        } else if ocount >= 2 && ccount >= 2 {
+            2
+        } else {
+            1
+        };
+
+        // Collect and consume the nodes strictly between opener and closer.
+        let mut content: Vec<Inline> = Vec::new();
+        let mut m = next[o];
+        while let Some(mi) = m {
+            if mi == c {
+                break;
+            }
+            if alive[mi] {
+                emit_inline_el(&els[mi], &mut content);
+                alive[mi] = false;
+            }
+            m = next[mi];
+        }
+        let node = if use_delims == 2 {
+            Inline::Strong(content)
+        } else {
+            Inline::Emphasis(content)
+        };
+
+        if let InlineEl::Delim { count, .. } = &mut els[o] {
+            *count -= use_delims;
+        }
+        if let InlineEl::Delim { count, .. } = &mut els[c] {
+            *count -= use_delims;
+        }
+
+        // Splice the new node between the (possibly shortened) opener and closer.
+        let ni = els.len();
+        els.push(InlineEl::Node(node));
+        prev.push(Some(o));
+        next.push(Some(c));
+        alive.push(true);
+        next[o] = Some(ni);
+        prev[c] = Some(ni);
+
+        if matches!(&els[o], InlineEl::Delim { count, .. } if *count == 0) {
+            unlink_el(o, prev, next, alive, head);
+        }
+        if matches!(&els[c], InlineEl::Delim { count, .. } if *count == 0) {
+            let after = next[c];
+            unlink_el(c, prev, next, alive, head);
+            ci = after;
+        } else {
+            // Closer still has delimiters: keep matching it against more openers.
+            ci = Some(c);
+        }
+    }
 }
 
 fn run_len(chars: &[char], i: usize, ch: char) -> usize {
@@ -1291,6 +1900,7 @@ fn parse_link_like(
     chars: &[char],
     i: usize,
     refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
@@ -1318,7 +1928,7 @@ fn parse_link_like(
         return None;
     }
     Some((
-        parse_inlines_with_refs(&text, refs),
+        parse_inlines_with_refs_profiled(&text, refs, profiler),
         dest.trim().to_string(),
         title,
         k + 1,
@@ -1429,6 +2039,7 @@ fn parse_reference_link_like(
     chars: &[char],
     i: usize,
     refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
@@ -1452,7 +2063,7 @@ fn parse_reference_link_like(
 
     let reference = refs.get(&label)?;
     Some((
-        parse_inlines_with_refs(&text, refs),
+        parse_inlines_with_refs_profiled(&text, refs, profiler),
         reference.dest.clone(),
         reference.title.clone(),
         next,

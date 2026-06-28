@@ -240,6 +240,8 @@ below the same-host variance envelope, stop polishing it and re-profile.
 1. Add profiling-only stage attribution for `pdf-large`:
    layout, used-slot scan, glyph collection, shaping, subsetting, ToUnicode,
    page stream generation, object serialization, xref/trailer.
+   The harness writes this as `golden/pdf-large-stages.jsonl` plus
+   `golden/pdf-large-recommendation.jsonl` when `--out-dir` is supplied.
 2. Preserve golden PDFs and determinism checks.
 3. Replace hot `format!`/`String` loops with deterministic append writers:
    decimal writer, fixed-precision point writer, hex u16 writer, xref offset
@@ -255,6 +257,9 @@ Expected first target: `src/pdf.rs` functions `serialize`, `build_pdf`,
 
 1. Attribute `parser-large` by block scanner, inline parser, table parser, link
    reference collection, span/diagnostic paths, and allocation counts.
+   The harness writes this as `golden/parser-large-stages.jsonl`,
+   `golden/parser-large-spanned-stages.jsonl`, and
+   `golden/parser-large-recommendation.jsonl` when `--out-dir` is supplied.
 2. Replace repeated full-line checks with a single classified scan where it
    preserves CommonMark/GFM behavior.
 3. Prefer borrowed spans and compact token/range structures in hot paths.
@@ -297,6 +302,8 @@ Expected first target: `src/pdf.rs` functions `serialize`, `build_pdf`,
 
 Every optimization commit needs an isomorphism note covering:
 
+- artifact directory following `docs/PERFORMANCE_ARTIFACT_SCHEMA.md`
+  (`fmd-perf-artifact-v1`),
 - ordering preserved,
 - tie-breaking preserved,
 - floating-point decisions unchanged or moved to fixed-point,
@@ -327,6 +334,8 @@ Every SIMD commit additionally needs:
 ## Immediate Next Move
 
 Start with `fep.6`, but do not optimize blind. The first implementation step is
-stage-level PDF attribution with golden output preservation. The current
-`perf stat` result says CPU throughput is already high; the dominant likely
-waste is repeated work and formatting/allocation overhead, not branch prediction.
+stage-level PDF attribution using the shared artifact schema in
+`docs/PERFORMANCE_ARTIFACT_SCHEMA.md`, with golden output preservation. The
+current `perf stat` result says CPU throughput is already high; the dominant
+likely waste is repeated work and formatting/allocation overhead, not branch
+prediction.

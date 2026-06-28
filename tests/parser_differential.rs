@@ -46,8 +46,10 @@ fn approved_parser_fixtures_match_article_snapshots() {
             "parser fixture drift: {}",
             path.display()
         );
+        eprintln!("parser fixture ok: {}", path.display());
         checked += 1;
     }
 
-    assert!(checked >= 3, "expected at least three parser fixtures");
+    eprintln!("parser fixture count: {checked}");
+    assert!(checked >= 4, "expected at least four parser fixtures");
 }

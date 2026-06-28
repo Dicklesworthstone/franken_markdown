@@ -2,7 +2,7 @@
 //! is the single shared entrypoint for both the long-name binary and the short
 //! `fmd` alias.
 
-use std::io::{Read, Write};
+use std::io::{Error, ErrorKind as IoErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -10,6 +10,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{FontFamily, HtmlOptions, PdfOptions, RenderError, Theme, render_html, render_pdf};
+
+const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// franken_markdown — Markdown to beautiful all-in-one HTML & tiny PDF.
 #[derive(Parser)]
@@ -77,9 +79,18 @@ struct RenderArgs {
     /// Document title (defaults to the first heading).
     #[arg(long)]
     title: Option<String>,
+    /// Document author metadata for PDF output.
+    #[arg(long)]
+    author: Option<String>,
     /// Pass raw HTML in the source through instead of escaping it.
     #[arg(long)]
     allow_html: bool,
+    /// Render muted line numbers in PDF fenced code blocks.
+    #[arg(long)]
+    pdf_line_numbers: bool,
+    /// Maximum Markdown input bytes accepted before rendering.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
     /// Emit a stable JSON status envelope to stderr after writing outputs.
     #[arg(long)]
     json: bool,
@@ -218,7 +229,11 @@ pub fn main() -> ExitCode {
 
 fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
-    let src = match read_input(args.input.as_deref(), args.text.as_deref()) {
+    let src = match read_input(
+        args.input.as_deref(),
+        args.text.as_deref(),
+        args.max_input_bytes,
+    ) {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
@@ -252,6 +267,14 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let want_html = matches!(args.to, Target::Html | Target::Both);
     let want_pdf = matches!(args.to, Target::Pdf | Target::Both);
     let single = !matches!(args.to, Target::Both);
+    let pdf_metadata_epoch = if want_pdf {
+        match source_date_epoch() {
+            Ok(epoch) => epoch,
+            Err(e) => return fail_json(64, "usage_error", &e, json),
+        }
+    } else {
+        None
+    };
 
     if want_html {
         let opts = HtmlOptions {
@@ -295,7 +318,10 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         let opts = PdfOptions {
             theme: theme.clone(),
             title: args.title.clone(),
+            author: args.author.clone(),
+            metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
+            code_line_numbers: args.pdf_line_numbers,
         };
         match render_pdf(&src, &opts) {
             Ok(bytes) => match out_path(&args, single, "pdf") {
@@ -453,17 +479,77 @@ fn load_config(no_config: bool) -> std::result::Result<FmdConfig, crate::config:
     }
 }
 
-fn read_input(input: Option<&str>, text: Option<&str>) -> std::io::Result<String> {
+fn read_input(input: Option<&str>, text: Option<&str>, max_bytes: u64) -> std::io::Result<String> {
     if let Some(raw) = text {
+        if raw.len() as u64 > max_bytes {
+            return Err(input_too_large(
+                "raw --text input",
+                raw.len() as u64,
+                max_bytes,
+            ));
+        }
         return Ok(raw.to_string());
     }
     if input == Some("-") || input.is_none() {
-        let mut s = String::new();
-        std::io::stdin().read_to_string(&mut s)?;
-        Ok(s)
+        let stdin = std::io::stdin();
+        let bytes = read_limited(stdin.lock(), max_bytes, "stdin input")?;
+        string_from_input_bytes(bytes)
     } else {
-        std::fs::read_to_string(input.unwrap_or_default())
+        let path = input.unwrap_or_default();
+        let label = format!("input file {path}");
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.len() > max_bytes
+        {
+            return Err(input_too_large(&label, meta.len(), max_bytes));
+        }
+        let file = std::fs::File::open(path)?;
+        let bytes = read_limited(file, max_bytes, &label)?;
+        string_from_input_bytes(bytes)
     }
+}
+
+fn read_limited<R: Read>(reader: R, max_bytes: u64, label: &str) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut limited = reader.take(max_bytes.saturating_add(1));
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(input_too_large(label, bytes.len() as u64, max_bytes));
+    }
+    Ok(bytes)
+}
+
+fn string_from_input_bytes(bytes: Vec<u8>) -> std::io::Result<String> {
+    String::from_utf8(bytes)
+        .map_err(|e| Error::new(IoErrorKind::InvalidData, format!("input is not UTF-8: {e}")))
+}
+
+fn input_too_large(label: &str, observed: u64, max_bytes: u64) -> Error {
+    Error::new(
+        IoErrorKind::InvalidData,
+        format!("{label} is {observed} bytes; exceeds --max-input-bytes {max_bytes}"),
+    )
+}
+
+fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
+    let raw = match std::env::var_os("SOURCE_DATE_EPOCH") {
+        Some(raw) => raw,
+        None => return Ok(None),
+    };
+    let Some(raw) = raw.to_str() else {
+        return Err(
+            "SOURCE_DATE_EPOCH must be UTF-8 decimal seconds since the Unix epoch".to_string(),
+        );
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(
+            "SOURCE_DATE_EPOCH must be non-negative decimal seconds since the Unix epoch"
+                .to_string(),
+        );
+    }
+    trimmed.parse::<u64>().map(Some).map_err(|_| {
+        "SOURCE_DATE_EPOCH is too large; expected decimal seconds since the Unix epoch".to_string()
+    })
 }
 
 /// Compute the output path for a given extension, or `None` to mean stdout
@@ -562,7 +648,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() {
     println!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"planned\",\"hyphenation_pdf\":\"planned\",\"page_builder_pdf\":\"planned\",\"stream_compression_pdf\":\"planned\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_v0\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"planned\",\"hyphenation_pdf\":\"planned\",\"page_builder_pdf\":\"planned\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     );
@@ -577,7 +663,7 @@ fn print_robot_triage() {
 
 fn print_robot_docs() {
     println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, and selectable text; Knuth-Plass paragraph layout, hyphenation, page-builder polish, and compression are still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, tagged-PDF structure tree v0, selectable text, and FlateDecode-compressed large page streams; Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
     );
 }
 

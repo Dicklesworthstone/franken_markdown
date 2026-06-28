@@ -12,6 +12,6 @@ echo "fmd parser harness: metamorphic pseudo-fuzz"
 cargo test --test parser_metamorphic
 
 echo "fmd parser harness: approved differential fixtures"
-cargo test --test parser_differential
+cargo test --test parser_differential -- --nocapture
 
 echo "fmd parser harness: ok"

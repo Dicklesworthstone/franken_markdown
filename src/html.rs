@@ -4,8 +4,12 @@
 //! readable measure and leading, gorgeous tables with subtle striping, elegant
 //! blockquotes, and code blocks ready for syntax highlighting.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::HtmlOptions;
 use crate::ast::{Align, Block, Document, Inline, List};
+use crate::fonts::{self, FontStyle};
+use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 
 /// Render a document to a complete HTML5 document string.
@@ -19,10 +23,11 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     let css = opts
         .custom_css
         .clone()
-        .unwrap_or_else(|| default_css(&opts.theme));
+        .unwrap_or_else(|| default_css(doc, &opts.theme));
 
     let mut body = String::new();
-    render_blocks(&doc.blocks, &mut body, opts);
+    let mut state = RenderState::default();
+    render_blocks(&doc.blocks, &mut body, opts, &mut state);
 
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -40,17 +45,46 @@ fn first_heading_text(doc: &Document) -> Option<String> {
     })
 }
 
-fn render_blocks(blocks: &[Block], out: &mut String, opts: &HtmlOptions) {
-    for block in blocks {
-        render_block(block, out, opts);
+#[derive(Default)]
+struct RenderState {
+    used_heading_ids: BTreeSet<String>,
+    next_heading_suffix: BTreeMap<String, usize>,
+}
+
+impl RenderState {
+    fn heading_id(&mut self, text: &str) -> String {
+        let mut base = slug(text);
+        if base.is_empty() {
+            base.push_str("section");
+        }
+
+        let mut suffix = self.next_heading_suffix.get(&base).copied().unwrap_or(1);
+        loop {
+            let candidate = if suffix == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{suffix}")
+            };
+            suffix += 1;
+            if self.used_heading_ids.insert(candidate.clone()) {
+                self.next_heading_suffix.insert(base, suffix);
+                return candidate;
+            }
+        }
     }
 }
 
-fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions) {
+fn render_blocks(blocks: &[Block], out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
+    for block in blocks {
+        render_block(block, out, opts, state);
+    }
+}
+
+fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
     match block {
         Block::Heading { level, inlines } => {
-            let id = slug(&inlines_to_plain(inlines));
-            out.push_str(&format!("<h{level} id=\"{id}\">"));
+            let id = state.heading_id(&inlines_to_plain(inlines));
+            out.push_str(&format!("<h{level} id=\"{}\">", escape_attr(&id)));
             render_inlines(inlines, out, opts);
             out.push_str(&format!("</h{level}>\n"));
         }
@@ -77,10 +111,10 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions) {
         }
         Block::BlockQuote(inner) => {
             out.push_str("<blockquote>\n");
-            render_blocks(inner, out, opts);
+            render_blocks(inner, out, opts, state);
             out.push_str("</blockquote>\n");
         }
-        Block::List(list) => render_list(list, out, opts),
+        Block::List(list) => render_list(list, out, opts, state),
         Block::Table(table) => render_table(table, out, opts),
         Block::ThematicBreak => out.push_str("<hr>\n"),
         Block::HtmlBlock(html) => {
@@ -94,7 +128,7 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions) {
     }
 }
 
-fn render_list(list: &List, out: &mut String, opts: &HtmlOptions) {
+fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
     let tag = if list.ordered { "ol" } else { "ul" };
     if list.ordered && list.start != 1 {
         out.push_str(&format!("<{tag} start=\"{}\">\n", list.start));
@@ -119,13 +153,16 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions) {
                 continue;
             }
         }
-        render_blocks(&item.blocks, out, opts);
+        render_blocks(&item.blocks, out, opts, state);
         out.push_str("</li>\n");
     }
     out.push_str(&format!("</{tag}>\n"));
 }
 
 fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions) {
+    out.push_str(
+        "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
+    );
     out.push_str("<table>\n<thead>\n<tr>");
     for (idx, cell) in table.head.iter().enumerate() {
         let align = align_attr(table.align.get(idx).copied().unwrap_or(Align::None));
@@ -145,6 +182,7 @@ fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions)
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody>\n</table>\n");
+    out.push_str("</div>\n");
 }
 
 fn align_attr(a: Align) -> &'static str {
@@ -226,7 +264,7 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
             Inline::Link { content, .. } => s.push_str(&inlines_to_plain(content)),
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => s.push(' '),
-            Inline::Html(_) => {}
+            Inline::Html(html) => s.push_str(html),
         }
     }
     s
@@ -352,9 +390,18 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 }
 
 /// The default, dependency-free, gorgeous stylesheet.
-fn default_css(theme: &Theme) -> String {
-    let body_font = theme.body_font_stack();
-    let mono_font = theme.mono_font_stack();
+fn default_css(doc: &Document, theme: &Theme) -> String {
+    let embedded = embedded_font_css(doc, theme);
+    let body_font = if embedded.has_body {
+        format!("\"FMD Body\", {}", theme.body_font_stack())
+    } else {
+        theme.body_font_stack().to_string()
+    };
+    let mono_font = if embedded.has_mono {
+        format!("\"FMD Mono\", {}", theme.mono_font_stack())
+    } else {
+        theme.mono_font_stack().to_string()
+    };
     let colors = &theme.colors;
     let spacing = &theme.spacing;
 
@@ -368,11 +415,12 @@ fn default_css(theme: &Theme) -> String {
     };
 
     format!(
-        "{}\n\
+        "{}{}\n\
 :root {{ --fmd-base: {}px; --fmd-measure: {}px; --fmd-line-height: {}; \
 --fmd-radius: {}px; --fmd-table-pad-y: {}em; --fmd-table-pad-x: {}em; \
 --fmd-font-body: {body_font}; --fmd-font-mono: {mono_font}; }}\n\
 {BASE_CSS}\n{TOKEN_CSS}\n{dark}{token_dark}",
+        embedded.css,
         color_vars(colors),
         spacing.base_px,
         spacing.max_width_px,
@@ -437,6 +485,265 @@ fn css_num(value: f32) -> String {
     if s.is_empty() { "0".to_string() } else { s }
 }
 
+#[derive(Default)]
+struct FontUsage {
+    body_regular: BTreeSet<char>,
+    body_bold: BTreeSet<char>,
+    body_italic: BTreeSet<char>,
+    body_bold_italic: BTreeSet<char>,
+    mono: BTreeSet<char>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct InlineStyle {
+    bold: bool,
+    italic: bool,
+}
+
+impl InlineStyle {
+    const fn bold(self) -> Self {
+        Self {
+            bold: true,
+            italic: self.italic,
+        }
+    }
+
+    const fn italic(self) -> Self {
+        Self {
+            bold: self.bold,
+            italic: true,
+        }
+    }
+}
+
+struct EmbeddedFontCss {
+    css: String,
+    has_body: bool,
+    has_mono: bool,
+}
+
+fn embedded_font_css(doc: &Document, theme: &Theme) -> EmbeddedFontCss {
+    let mut usage = collect_font_usage(doc);
+    usage.add_stability_seed();
+
+    let mut css = String::new();
+    let mut has_body = false;
+    let mut has_mono = false;
+
+    push_font_face(
+        &mut css,
+        "FMD Body",
+        "normal",
+        "400",
+        fonts::body_bytes(theme.font, FontStyle::Regular),
+        &usage.body_regular,
+    );
+    has_body |= !usage.body_regular.is_empty();
+
+    push_font_face(
+        &mut css,
+        "FMD Body",
+        "normal",
+        "700",
+        fonts::body_bytes(theme.font, FontStyle::Bold),
+        &usage.body_bold,
+    );
+    has_body |= !usage.body_bold.is_empty();
+
+    push_font_face(
+        &mut css,
+        "FMD Body",
+        "italic",
+        "400",
+        fonts::body_bytes(theme.font, FontStyle::Italic),
+        &usage.body_italic,
+    );
+    has_body |= !usage.body_italic.is_empty();
+
+    push_font_face(
+        &mut css,
+        "FMD Body",
+        "italic",
+        "700",
+        fonts::body_bytes(theme.font, FontStyle::BoldItalic),
+        &usage.body_bold_italic,
+    );
+    has_body |= !usage.body_bold_italic.is_empty();
+
+    push_font_face(
+        &mut css,
+        "FMD Mono",
+        "normal",
+        "400",
+        fonts::mono_bytes(FontStyle::Regular),
+        &usage.mono,
+    );
+    has_mono |= !usage.mono.is_empty();
+
+    EmbeddedFontCss {
+        css,
+        has_body,
+        has_mono,
+    }
+}
+
+impl FontUsage {
+    fn body_slot(&mut self, style: InlineStyle) -> &mut BTreeSet<char> {
+        match (style.bold, style.italic) {
+            (false, false) => &mut self.body_regular,
+            (true, false) => &mut self.body_bold,
+            (false, true) => &mut self.body_italic,
+            (true, true) => &mut self.body_bold_italic,
+        }
+    }
+
+    fn add_body_text(&mut self, text: &str, style: InlineStyle) {
+        self.body_slot(style).extend(text.chars());
+    }
+
+    fn add_mono_text(&mut self, text: &str) {
+        self.mono.extend(text.chars());
+    }
+
+    fn add_soft_break(&mut self, style: InlineStyle) {
+        self.body_slot(style).insert(' ');
+    }
+
+    fn add_stability_seed(&mut self) {
+        add_seed_if_used(&mut self.body_regular);
+        add_seed_if_used(&mut self.body_bold);
+        add_seed_if_used(&mut self.body_italic);
+        add_seed_if_used(&mut self.body_bold_italic);
+        add_seed_if_used(&mut self.mono);
+    }
+}
+
+fn add_seed_if_used(chars: &mut BTreeSet<char>) {
+    if chars.is_empty() {
+        return;
+    }
+    chars.extend(HTML_FONT_SEED.chars());
+}
+
+fn collect_font_usage(doc: &Document) -> FontUsage {
+    let mut usage = FontUsage::default();
+    collect_blocks_font_usage(&doc.blocks, &mut usage);
+    usage
+}
+
+fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
+    for block in blocks {
+        match block {
+            Block::Heading { inlines, .. } => {
+                collect_inlines_font_usage(inlines, usage, InlineStyle::default().bold());
+            }
+            Block::Paragraph(inlines) => {
+                collect_inlines_font_usage(inlines, usage, InlineStyle::default());
+            }
+            Block::CodeBlock { code, .. } => usage.add_mono_text(code),
+            Block::BlockQuote(inner) => collect_blocks_font_usage(inner, usage),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_blocks_font_usage(&item.blocks, usage);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    collect_inlines_font_usage(cell, usage, InlineStyle::default().bold());
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        collect_inlines_font_usage(cell, usage, InlineStyle::default());
+                    }
+                }
+            }
+            Block::ThematicBreak => {}
+            Block::HtmlBlock(html) => usage.add_body_text(html, InlineStyle::default()),
+        }
+    }
+}
+
+fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: InlineStyle) {
+    for inl in inlines {
+        match inl {
+            Inline::Text(text) => usage.add_body_text(text, style),
+            Inline::Emphasis(children) => {
+                collect_inlines_font_usage(children, usage, style.italic())
+            }
+            Inline::Strong(children) => collect_inlines_font_usage(children, usage, style.bold()),
+            Inline::Strikethrough(children)
+            | Inline::Link {
+                content: children, ..
+            } => {
+                collect_inlines_font_usage(children, usage, style);
+            }
+            Inline::Code(text) => usage.add_mono_text(text),
+            Inline::Image { alt, .. } => usage.add_body_text(alt, style),
+            Inline::SoftBreak | Inline::HardBreak => usage.add_soft_break(style),
+            Inline::Html(html) => usage.add_body_text(html, style),
+        }
+    }
+}
+
+fn push_font_face(
+    css: &mut String,
+    family: &str,
+    style: &str,
+    weight: &str,
+    font_bytes: &[u8],
+    chars: &BTreeSet<char>,
+) {
+    if chars.is_empty() {
+        return;
+    }
+
+    let keep: Vec<char> = chars.iter().copied().collect();
+    let subset = Font::parse(font_bytes.to_vec())
+        .ok()
+        .and_then(|font| font.subset(&keep))
+        .unwrap_or_else(|| font_bytes.to_vec());
+    let encoded = base64_encode(&subset);
+    css.push_str("@font-face {\n");
+    css.push_str("  font-family: \"");
+    css.push_str(family);
+    css.push_str("\";\n  font-style: ");
+    css.push_str(style);
+    css.push_str(";\n  font-weight: ");
+    css.push_str(weight);
+    css.push_str(";\n  font-display: swap;\n  src: url(\"data:font/ttf;base64,");
+    css.push_str(&encoded);
+    css.push_str("\") format(\"truetype\");\n}\n");
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = bytes.get(i + 1).copied().unwrap_or(0);
+        let b2 = bytes.get(i + 2).copied().unwrap_or(0);
+
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < bytes.len() {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+
+        i += 3;
+    }
+    out
+}
+
+const HTML_FONT_SEED: &str = " \t\n0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}<>/\\'\"+-_=*#%&@|`~^•–—“”‘’";
+
 const TOKEN_CSS: &str = r#"
 .tok-kw { color: #cf222e; }
 .tok-ty { color: #953800; }
@@ -475,6 +782,7 @@ body {
   -webkit-font-smoothing: antialiased;
   text-wrap: pretty;
   hyphens: auto;
+  overflow-wrap: break-word;
 }
 main.fmd {
   max-width: var(--fmd-measure);
@@ -487,7 +795,7 @@ h1, h2, h3, h4, h5, h6 {
   margin: 2.2em 0 0.7em;
   line-height: 1.25;
   font-weight: 650;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 h1 { font-size: 2.05em; padding-bottom: 0.3em; border-bottom: 1px solid var(--fmd-border-muted); }
 h2 { font-size: 1.55em; padding-bottom: 0.3em; border-bottom: 1px solid var(--fmd-border-muted); }
@@ -499,6 +807,11 @@ h6 { font-size: 0.88em; color: var(--fmd-fg-muted); }
 p { margin: 0 0 1.1em; }
 a { color: var(--fmd-accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
+a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fmd-accent), transparent 35%);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 
 ul, ol { margin: 0 0 1.1em; padding-left: 1.7em; }
 li { margin: 0.25em 0; }
@@ -530,6 +843,7 @@ pre {
   border: 1px solid var(--fmd-border-muted);
   border-radius: calc(var(--fmd-radius) + 2px);
   overflow: auto;
+  break-inside: avoid;
   line-height: 1.55;
 }
 pre code { background: none; padding: 0; font-size: 0.86em; }
@@ -538,24 +852,85 @@ hr { height: 1px; border: 0; background: var(--fmd-border); margin: 2.4em 0; }
 
 img { max-width: 100%; border-radius: var(--fmd-radius); }
 
+.table-wrap {
+  margin: 0 0 1.4em;
+  overflow-x: auto;
+  border: 1px solid var(--fmd-border);
+  border-radius: calc(var(--fmd-radius) + 2px);
+  -webkit-overflow-scrolling: touch;
+}
+.table-wrap:focus-within {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fmd-accent), transparent 82%);
+}
+.table-wrap:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fmd-accent), transparent 35%);
+  outline-offset: 3px;
+}
 table {
   border-collapse: collapse;
   width: 100%;
-  margin: 0 0 1.4em;
+  min-width: 100%;
+  margin: 0;
   font-size: 0.95em;
-  overflow: hidden;
-  border-radius: calc(var(--fmd-radius) + 2px);
-  border: 1px solid var(--fmd-border);
 }
 thead th {
   background: var(--fmd-bg-subtle);
   font-weight: 650;
   text-align: left;
 }
-th, td { padding: var(--fmd-table-pad-y) var(--fmd-table-pad-x); border-bottom: 1px solid var(--fmd-border-muted); }
+th, td {
+  padding: var(--fmd-table-pad-y) var(--fmd-table-pad-x);
+  border-bottom: 1px solid var(--fmd-border-muted);
+  vertical-align: top;
+}
 tbody tr:nth-child(even) { background: var(--fmd-stripe); }
 tbody tr:last-child td { border-bottom: 0; }
 
 del { color: var(--fmd-fg-muted); }
 strong { font-weight: 680; }
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+    font-size: 11pt;
+    line-height: 1.5;
+  }
+  main.fmd {
+    max-width: none;
+    padding: 0;
+  }
+  a {
+    color: #000;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  blockquote, pre, table, img {
+    break-inside: avoid;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    break-after: avoid;
+    color: #000;
+  }
+  .table-wrap {
+    overflow: visible;
+    border-color: #999;
+  }
+}
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_encoder_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+}

@@ -7,9 +7,9 @@
 //!   default (Cursor/GitHub-preview-like) and accepts a custom stylesheet, or
 //! * a **tiny, deterministic PDF**. The current v0 writer embeds curated
 //!   per-document font subsets with real metrics, focused GPOS kerning, GSUB
-//!   ligatures, and selectable text; the roadmap adds LaTeX-grade paragraph and
-//!   page layout (Knuth-Plass optimal line breaking, hyphenation, widow/orphan
-//!   control, compression, and richer block pagination).
+//!   ligatures, tagged-PDF structure, and selectable text; the roadmap adds
+//!   LaTeX-grade paragraph and page layout (Knuth-Plass optimal line breaking,
+//!   hyphenation, widow/orphan control, and richer block pagination).
 //!
 //! The library has **zero third-party dependencies** — every component (the
 //! Markdown parser, the HTML emitter, the font/text subsystem, the line-breaking
@@ -35,9 +35,11 @@ pub mod html;
 pub mod layout;
 pub mod parse;
 pub mod pdf;
+pub mod scanner;
 pub mod span;
 pub mod text;
 pub mod theme;
+pub mod wasm;
 
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -46,6 +48,13 @@ pub mod config;
 
 pub use ast::Document;
 pub use error::{RenderError, Result};
+pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
+pub use pdf::{PdfProfile, PdfStageSummary};
+pub use scanner::{
+    ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
+    classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_pdf_escape,
+    scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
+};
 pub use span::{
     DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
     SpannedInline, SpannedListItem, SpannedTable,
@@ -77,8 +86,22 @@ pub struct PdfOptions {
     pub theme: Theme,
     /// Optional document title metadata.
     pub title: Option<String>,
-    /// When false (default), raw HTML is treated as text.
+    /// Optional document author metadata.
+    pub author: Option<String>,
+    /// Optional UTC Unix timestamp for deterministic PDF CreationDate/ModDate.
+    ///
+    /// CLI callers usually populate this from `SOURCE_DATE_EPOCH`; library and
+    /// WASM callers pass the value explicitly so the render core never reads
+    /// process environment.
+    pub metadata_epoch_seconds: Option<u64>,
+    /// Raw HTML policy from the shared render surface.
+    ///
+    /// The PDF writer cannot pass HTML tags through as live markup. It preserves
+    /// raw HTML source as visible text so PDF output does not silently drop user
+    /// content when Markdown contains inline or block HTML.
     pub allow_raw_html: bool,
+    /// Render muted line numbers in fenced code blocks.
+    pub code_line_numbers: bool,
 }
 
 /// Parse Markdown source into the document AST.
@@ -93,6 +116,12 @@ pub fn parse_markdown(src: &str) -> Document {
     parse::parse_document(src)
 }
 
+/// Parse Markdown source into the document AST and collect parser stage timing.
+#[must_use]
+pub fn parse_markdown_profiled(src: &str) -> ParseProfile {
+    parse::parse_document_profiled(src)
+}
+
 /// Parse Markdown source into a spanned document with recoverable diagnostics.
 ///
 /// This additive API is for editor/WASM integrations, diagnostics, and
@@ -100,6 +129,12 @@ pub fn parse_markdown(src: &str) -> Document {
 #[must_use]
 pub fn parse_markdown_spanned(src: &str) -> SpannedDocument {
     parse::parse_document_spanned(src)
+}
+
+/// Parse Markdown source into a spanned document and collect parser stage timing.
+#[must_use]
+pub fn parse_markdown_spanned_profiled(src: &str) -> SpannedParseProfile {
+    parse::parse_document_spanned_profiled(src)
 }
 
 /// Render an already-parsed document to a complete, self-contained HTML string.
@@ -120,6 +155,18 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 /// Propagates renderer errors; the HTML and PDF renderers share this one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
     pdf::render(doc, opts)
+}
+
+/// Render an already-parsed document to PDF bytes and collect per-stage timing.
+///
+/// This is intended for benchmarks, optimization beads, and diagnostics. Normal
+/// render callers should use [`render_pdf_document`], which does not read clocks
+/// or collect stage ledgers.
+///
+/// # Errors
+/// See [`render_pdf_document`].
+pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
+    pdf::render_profiled(doc, opts)
 }
 
 /// Render Markdown source to a complete, self-contained HTML document string.

@@ -4,9 +4,11 @@ use franken_markdown::layout::{
     paragraph_items_from_text,
 };
 use franken_markdown::{
-    FontFamily, HtmlOptions, PdfOptions, Theme, parse_markdown, render_html, render_html_document,
-    render_pdf, render_pdf_document,
+    FontFamily, HtmlOptions, PdfOptions, Theme, parse_markdown, parse_markdown_profiled,
+    parse_markdown_spanned_profiled, render_html, render_html_document, render_pdf,
+    render_pdf_document, render_pdf_document_profiled,
 };
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::hint::black_box;
@@ -207,6 +209,7 @@ fn parser_large(
     let doc = parse_markdown(&src);
     let html = render_html_document(&doc, &HtmlOptions::default())?;
     write_golden(out_dir, "parser-large.html", html.as_bytes())?;
+    write_parser_large_stage_artifacts(out_dir, iterations, &src, &doc, &html)?;
     let durations = measure(iterations, || {
         let doc = parse_markdown(&src);
         black_box(doc.blocks.len())
@@ -313,9 +316,19 @@ fn pdf_large(
         theme: Theme::default(),
         title: Some(String::from("fmd large perf document")),
         allow_raw_html: false,
+        ..PdfOptions::default()
     };
     let golden = render_pdf_document(&doc, &opts)?;
     write_golden(out_dir, "pdf-large.pdf", &golden)?;
+    write_pdf_large_stage_artifacts(
+        out_dir,
+        iterations,
+        src.len(),
+        golden.len(),
+        &doc,
+        &opts,
+        &golden,
+    )?;
     let durations = measure(iterations, || {
         let pdf = render_pdf_document(&doc, &opts).unwrap_or_default();
         black_box(pdf.len())
@@ -329,6 +342,370 @@ fn pdf_large(
         durations,
         notes: String::from("render pre-parsed large mixed Markdown document to PDF"),
     })
+}
+
+#[derive(Default)]
+struct StageBucket {
+    samples: Vec<u128>,
+    work_count: usize,
+    max_bytes: usize,
+    total_bytes: usize,
+    allocation_count: usize,
+    total_ns: u128,
+    notes: &'static str,
+}
+
+fn write_pdf_large_stage_artifacts(
+    out_dir: Option<&Path>,
+    iterations: usize,
+    input_bytes: usize,
+    output_bytes: usize,
+    doc: &franken_markdown::Document,
+    opts: &PdfOptions,
+    golden: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(dir) = out_dir else {
+        return Ok(());
+    };
+
+    let mut buckets: BTreeMap<&'static str, StageBucket> = BTreeMap::new();
+    for _ in 0..iterations {
+        let profile = render_pdf_document_profiled(doc, opts)?;
+        if profile.bytes != golden {
+            return Err("profiled pdf-large render bytes differed from normal render bytes".into());
+        }
+        for stage in profile.stages {
+            let bucket = buckets.entry(stage.stage).or_default();
+            bucket.samples.push(stage.elapsed_ns);
+            bucket.work_count = bucket.work_count.saturating_add(stage.count);
+            bucket.max_bytes = bucket.max_bytes.max(stage.bytes);
+            bucket.total_bytes = bucket.total_bytes.saturating_add(stage.bytes);
+            bucket.total_ns = bucket.total_ns.saturating_add(stage.elapsed_ns);
+            bucket.notes = stage.notes;
+        }
+    }
+
+    let stage_path = dir.join("pdf-large-stages.jsonl");
+    let mut stage_jsonl = String::new();
+    stage_jsonl.push_str(&format!(
+        "{{\"type\":\"scenario_start\",\"scenario\":\"pdf-large\",\"category\":\"render-pdf\",\"input_bytes\":{},\"iterations\":{},\"notes\":\"{}\"}}\n",
+        input_bytes,
+        iterations,
+        "stage attribution for pre-parsed large mixed Markdown document to PDF"
+    ));
+
+    let mut ranked: Vec<(&'static str, u128, u128)> = Vec::new();
+    for (stage, bucket) in &mut buckets {
+        bucket.samples.sort_unstable();
+        let p50 = percentile_ns_u128(&bucket.samples, 50);
+        let p95 = percentile_ns_u128(&bucket.samples, 95);
+        let p99 = percentile_ns_u128(&bucket.samples, 99);
+        let max = bucket.samples.last().copied().unwrap_or(0);
+        ranked.push((*stage, p95, bucket.total_ns));
+        stage_jsonl.push_str(&format!(
+            "{{\"type\":\"stage_summary\",\"scenario\":\"pdf-large\",\"stage\":\"{}\",\"count\":{},\"work_count\":{},\"total_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{},\"output_bytes\":{},\"total_output_bytes\":{},\"unit\":\"ns\",\"notes\":\"{}\"}}\n",
+            stage,
+            bucket.samples.len(),
+            bucket.work_count,
+            bucket.total_ns,
+            p50,
+            p95,
+            p99,
+            max,
+            bucket.max_bytes,
+            bucket.total_bytes,
+            json_escape(bucket.notes),
+        ));
+    }
+    stage_jsonl.push_str(&format!(
+        "{{\"type\":\"proof_obligation\",\"bead_id\":\"br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.1\",\"obligation\":\"profiled_bytes_equal_normal_pdf\",\"status\":\"pass\",\"evidence_path\":\"golden/pdf-large.pdf\",\"notes\":\"{}\"}}\n",
+        json_escape(&format!(
+            "{} profiled iteration(s) matched normal render bytes exactly; output_bytes={output_bytes}",
+            iterations
+        ))
+    ));
+    fs::write(&stage_path, stage_jsonl)?;
+
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+    let (top_stage, top_p95, top_total) = ranked
+        .iter()
+        .find(|(stage, _, _)| !stage.ends_with("_total"))
+        .copied()
+        .unwrap_or(("unknown", 0, 0));
+    let recommended = recommended_pdf_perf_bead(top_stage);
+    let recommendation_path = dir.join("pdf-large-recommendation.jsonl");
+    fs::write(
+        recommendation_path,
+        format!(
+            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{}}}\n",
+            recommended.bead_id,
+            json_escape(recommended.reason),
+            "golden/pdf-large-stages.jsonl",
+            recommended.confidence,
+            top_stage,
+            top_p95,
+            top_total,
+        ),
+    )?;
+    Ok(())
+}
+
+fn write_parser_large_stage_artifacts(
+    out_dir: Option<&Path>,
+    iterations: usize,
+    src: &str,
+    normal_doc: &franken_markdown::Document,
+    golden_html: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(dir) = out_dir else {
+        return Ok(());
+    };
+
+    let mut buckets: BTreeMap<&'static str, StageBucket> = BTreeMap::new();
+    for _ in 0..iterations {
+        let profile = parse_markdown_profiled(src);
+        if profile.document != *normal_doc {
+            return Err("profiled parser-large document differed from normal parse".into());
+        }
+        let html = render_html_document(&profile.document, &HtmlOptions::default())?;
+        if html != golden_html {
+            return Err("profiled parser-large rendered HTML differed from golden HTML".into());
+        }
+        for stage in profile.stages {
+            let bucket = buckets.entry(stage.stage).or_default();
+            bucket.samples.push(stage.elapsed_ns);
+            bucket.work_count = bucket.work_count.saturating_add(stage.count);
+            bucket.max_bytes = bucket.max_bytes.max(stage.bytes);
+            bucket.total_bytes = bucket.total_bytes.saturating_add(stage.bytes);
+            bucket.allocation_count = bucket.allocation_count.saturating_add(stage.allocations);
+            bucket.total_ns = bucket.total_ns.saturating_add(stage.elapsed_ns);
+            bucket.notes = stage.notes;
+        }
+    }
+
+    let stage_path = dir.join("parser-large-stages.jsonl");
+    let ranked = write_stage_summary_jsonl(
+        StageJsonlSpec {
+            path: &stage_path,
+            scenario: "parser-large",
+            category: "parse",
+            input_bytes: src.len(),
+            iterations,
+            notes: "stage attribution for generated 1 MiB CommonMark/GFM-like document",
+            proof: Some(StageProof {
+                bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.1",
+                obligation: "profiled_parse_equals_normal_parse_and_html",
+                evidence_path: "golden/parser-large.html",
+                notes: format!(
+                    "{} profiled parse iteration(s) matched normal AST and rendered HTML exactly; output_bytes={}",
+                    iterations,
+                    golden_html.len()
+                ),
+            }),
+        },
+        &mut buckets,
+    )?;
+
+    let spanned = parse_markdown_spanned_profiled(src);
+    if spanned.document.to_document() != *normal_doc {
+        return Err("profiled parser-large spanned document differed from normal parse".into());
+    }
+    let mut spanned_buckets: BTreeMap<&'static str, StageBucket> = BTreeMap::new();
+    for stage in spanned.stages {
+        let bucket = spanned_buckets.entry(stage.stage).or_default();
+        bucket.samples.push(stage.elapsed_ns);
+        bucket.work_count = bucket.work_count.saturating_add(stage.count);
+        bucket.max_bytes = bucket.max_bytes.max(stage.bytes);
+        bucket.total_bytes = bucket.total_bytes.saturating_add(stage.bytes);
+        bucket.allocation_count = bucket.allocation_count.saturating_add(stage.allocations);
+        bucket.total_ns = bucket.total_ns.saturating_add(stage.elapsed_ns);
+        bucket.notes = stage.notes;
+    }
+    let spanned_stage_path = dir.join("parser-large-spanned-stages.jsonl");
+    let _ = write_stage_summary_jsonl(
+        StageJsonlSpec {
+            path: &spanned_stage_path,
+            scenario: "parser-large-spanned",
+            category: "parse-spans-diagnostics",
+            input_bytes: src.len(),
+            iterations: 1,
+            notes: "stage attribution for spanned parser diagnostics path on generated parser-large source",
+            proof: Some(StageProof {
+                bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.1",
+                obligation: "profiled_spanned_parse_equals_normal_parse",
+                evidence_path: "parser-large-spanned-stages.jsonl",
+                notes: String::from(
+                    "profiled spanned parse converted back to the normal AST exactly",
+                ),
+            }),
+        },
+        &mut spanned_buckets,
+    )?;
+
+    let (top_stage, top_p95, top_total, top_allocations) = ranked
+        .iter()
+        .copied()
+        .next()
+        .unwrap_or(("unknown", 0, 0, 0));
+    let recommended = recommended_parser_perf_bead(top_stage, top_allocations);
+    fs::write(
+        dir.join("parser-large-recommendation.jsonl"),
+        format!(
+            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{},\"top_stage_allocations\":{}}}\n",
+            recommended.bead_id,
+            json_escape(recommended.reason),
+            "golden/parser-large-stages.jsonl",
+            recommended.confidence,
+            top_stage,
+            top_p95,
+            top_total,
+            top_allocations,
+        ),
+    )?;
+    Ok(())
+}
+
+struct StageJsonlSpec<'a> {
+    path: &'a Path,
+    scenario: &'a str,
+    category: &'a str,
+    input_bytes: usize,
+    iterations: usize,
+    notes: &'a str,
+    proof: Option<StageProof<'a>>,
+}
+
+struct StageProof<'a> {
+    bead_id: &'a str,
+    obligation: &'a str,
+    evidence_path: &'a str,
+    notes: String,
+}
+
+fn write_stage_summary_jsonl(
+    spec: StageJsonlSpec<'_>,
+    buckets: &mut BTreeMap<&'static str, StageBucket>,
+) -> io::Result<Vec<(&'static str, u128, u128, usize)>> {
+    let mut jsonl = String::new();
+    jsonl.push_str(&format!(
+        "{{\"type\":\"scenario_start\",\"scenario\":\"{}\",\"category\":\"{}\",\"input_bytes\":{},\"iterations\":{},\"notes\":\"{}\"}}\n",
+        spec.scenario,
+        spec.category,
+        spec.input_bytes,
+        spec.iterations,
+        json_escape(spec.notes),
+    ));
+
+    let mut ranked = Vec::new();
+    for (stage, bucket) in buckets {
+        bucket.samples.sort_unstable();
+        let p50 = percentile_ns_u128(&bucket.samples, 50);
+        let p95 = percentile_ns_u128(&bucket.samples, 95);
+        let p99 = percentile_ns_u128(&bucket.samples, 99);
+        let max = bucket.samples.last().copied().unwrap_or(0);
+        ranked.push((*stage, p95, bucket.total_ns, bucket.allocation_count));
+        jsonl.push_str(&format!(
+            "{{\"type\":\"stage_summary\",\"scenario\":\"{}\",\"stage\":\"{}\",\"count\":{},\"work_count\":{},\"allocation_count\":{},\"total_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{},\"input_bytes\":{},\"total_input_bytes\":{},\"unit\":\"ns\",\"notes\":\"{}\"}}\n",
+            spec.scenario,
+            stage,
+            bucket.samples.len(),
+            bucket.work_count,
+            bucket.allocation_count,
+            bucket.total_ns,
+            p50,
+            p95,
+            p99,
+            max,
+            bucket.max_bytes,
+            bucket.total_bytes,
+            json_escape(bucket.notes),
+        ));
+    }
+    if let Some(proof) = spec.proof {
+        jsonl.push_str(&format!(
+            "{{\"type\":\"proof_obligation\",\"bead_id\":\"{}\",\"obligation\":\"{}\",\"status\":\"pass\",\"evidence_path\":\"{}\",\"notes\":\"{}\"}}\n",
+            proof.bead_id,
+            proof.obligation,
+            proof.evidence_path,
+            json_escape(&proof.notes),
+        ));
+    }
+    fs::write(spec.path, jsonl)?;
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+    Ok(ranked)
+}
+
+struct PdfPerfRecommendation {
+    bead_id: &'static str,
+    reason: &'static str,
+    confidence: &'static str,
+}
+
+fn recommended_parser_perf_bead(stage: &str, allocations: usize) -> PdfPerfRecommendation {
+    match stage {
+        "line_split" | "reference_collection" | "block_parse_total" => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.3",
+            reason: "line/reference/block classification dominates; implement scalar special-byte classification scan after fixture gate",
+            confidence: "medium",
+        },
+        "inline_parse" | "paragraph_block" | "heading_block" | "setext_heading_block" => {
+            let confidence = if allocations > 0 { "high" } else { "medium" };
+            PdfPerfRecommendation {
+                bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.4",
+                reason: "inline or paragraph parsing dominates with parser-owned object churn; reduce allocation churn with borrowed spans",
+                confidence,
+            }
+        }
+        "table_block" | "list_block" | "fenced_code_block" | "blockquote_block" => {
+            PdfPerfRecommendation {
+                bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.2",
+                reason: "semantic block parser dominates; expand scanner-sensitive differential fixtures before rewriting behavior-sensitive code",
+                confidence: "medium",
+            }
+        }
+        _ => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.2",
+            reason: "parser attribution did not map cleanly; add fixture corpus before parser rewrites",
+            confidence: "low",
+        },
+    }
+}
+
+fn recommended_pdf_perf_bead(stage: &str) -> PdfPerfRecommendation {
+    match stage {
+        "glyph_collection_and_shaping" => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.4",
+            reason: "glyph collection and shaping dominates; cache shaped segment glyph streams within one render",
+            confidence: "high",
+        },
+        "font_subsetting" => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.5",
+            reason: "font subsetting dominates; compact deterministic subset map lookups and seed handling",
+            confidence: "high",
+        },
+        "tounicode_generation" | "widths_array_generation" => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.6",
+            reason: "font metadata generation dominates; optimize ToUnicode and width-table generation",
+            confidence: "high",
+        },
+        "page_stream_compression" | "font_stream_compression" | "xref_trailer_writing" => {
+            PdfPerfRecommendation {
+                bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.2",
+                reason: "PDF serialization/compression dominates; implement deterministic append-only PDF writers",
+                confidence: "medium",
+            }
+        }
+        "layout" | "pagination" | "page_content_stream_generation" => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.3",
+            reason: "layout or page-content assembly dominates; pre-size buffers and introduce render scratch",
+            confidence: "medium",
+        },
+        _ => PdfPerfRecommendation {
+            bead_id: "br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.2",
+            reason: "stage attribution did not map cleanly; start with deterministic append-only PDF writers",
+            confidence: "low",
+        },
+    }
 }
 
 fn measure<F>(iterations: usize, mut f: F) -> Vec<Duration>
@@ -353,6 +730,15 @@ fn percentile_ns(durations: &[Duration], percentile: usize) -> u128 {
     let p = percentile.min(100);
     let idx = ((durations.len() - 1) * p).div_ceil(100);
     durations[idx].as_nanos()
+}
+
+fn percentile_ns_u128(durations: &[u128], percentile: usize) -> u128 {
+    if durations.is_empty() {
+        return 0;
+    }
+    let p = percentile.min(100);
+    let idx = ((durations.len() - 1) * p).div_ceil(100);
+    durations[idx]
 }
 
 fn write_golden(out_dir: Option<&Path>, name: &str, bytes: &[u8]) -> io::Result<()> {

@@ -393,7 +393,7 @@ fn push_inline_runs(out: &mut StyledText, inlines: &[Inline], style: TextStyle) 
             Inline::Link { content, .. } => push_inline_runs(out, content, style.with_link()),
             Inline::Image { alt, .. } => out.push_text(alt, style),
             Inline::SoftBreak | Inline::HardBreak => out.push_text(" ", style),
-            Inline::Html(_) => {}
+            Inline::Html(html) => out.push_text(html, style),
         }
     }
 }
@@ -1190,6 +1190,7 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
         return Vec::new();
     }
     let metrics = MetricPrefixes::from_items(items);
+    let forced_prefix = forced_break_prefixes(items);
 
     let mut states: Vec<Option<BreakState>> = vec![None; candidates.len()];
     for (j, candidate) in candidates.iter().enumerate() {
@@ -1205,6 +1206,9 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
                 (Some((prev_idx, state)), candidates[prev_idx].next)
             };
             if start > candidate.item_index {
+                continue;
+            }
+            if forced_break_between(&forced_prefix, start, candidate.item_index) {
                 continue;
             }
             let segment = metrics.segment_metrics(start, *candidate);
@@ -1256,6 +1260,35 @@ pub fn break_paragraph(items: &[ParagraphItem], line_width: LayoutUnit) -> Vec<L
     }
     out.reverse();
     out
+}
+
+fn forced_break_prefixes(items: &[ParagraphItem]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(items.len() + 1);
+    let mut count = 0usize;
+    out.push(count);
+    for item in items {
+        if matches!(
+            item,
+            ParagraphItem::Penalty(Penalty {
+                penalty: FORCED_BREAK_PENALTY,
+                ..
+            })
+        ) {
+            count = count.saturating_add(1);
+        }
+        out.push(count);
+    }
+    out
+}
+
+fn forced_break_between(prefix: &[usize], start: usize, end: usize) -> bool {
+    let before_start = prefix.get(start).copied().unwrap_or(0);
+    let before_end = prefix
+        .get(end)
+        .copied()
+        .or_else(|| prefix.last().copied())
+        .unwrap_or(before_start);
+    before_end > before_start
 }
 
 fn break_candidates(items: &[ParagraphItem]) -> Vec<BreakCandidate> {
@@ -1403,6 +1436,20 @@ fn greedy_break_paragraph(
     let mut last_candidate: Option<BreakCandidate> = None;
     for candidate in break_candidates(items) {
         let segment = metrics.segment_metrics(start, candidate);
+        if candidate.penalty == FORCED_BREAK_PENALTY {
+            out.push(LineBreak {
+                start,
+                end: candidate.item_index,
+                next: candidate.next,
+                natural_width: segment.width,
+                badness: candidate_badness(candidate, segment, line_width),
+                fitness: candidate_fitness(candidate, segment, line_width),
+                demerits: 0,
+            });
+            start = candidate.next;
+            last_candidate = None;
+            continue;
+        }
         if segment.width > line_width {
             if let Some(prev) = last_candidate {
                 let prev_metrics = metrics.segment_metrics(start, prev);

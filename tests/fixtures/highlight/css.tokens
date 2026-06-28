@@ -1,0 +1,21 @@
+Operator	.
+Type	hero
+Plain	 
+Punct	{
+Plain	 
+Type	color
+Punct	:
+Plain	 
+Number	#0a3069
+Punct	;
+Plain	 
+Type	display
+Punct	:
+Plain	 
+Keyword	flex
+Punct	;
+Plain	 
+Punct	}
+Plain	 
+Comment	/* c */
+Plain	\n

@@ -2,10 +2,21 @@
 //! brevity, so opt out of the crate-wide restriction lints here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fs;
+use std::path::Path;
+
 use franken_markdown::{HtmlOptions, Theme, render_html};
 
 fn render(md: &str) -> String {
     render_html(md, &HtmlOptions::default()).unwrap()
+}
+
+fn main_inner(html: &str) -> &str {
+    let start_marker = "<main class=\"fmd\">\n";
+    let end_marker = "</main>\n</body>";
+    let start = html.find(start_marker).unwrap() + start_marker.len();
+    let end = html.find(end_marker).unwrap();
+    &html[start..end]
 }
 
 #[test]
@@ -53,10 +64,43 @@ fn main() {}
     assert!(html.contains("<ol>"));
     assert!(html.contains("<blockquote>"));
     assert!(html.contains("<pre><code class=\"language-rust\">"));
-    assert!(html.contains("<table>"));
+    assert!(
+        html.contains(
+            "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n<table>"
+        )
+    );
     assert!(html.contains("<th>A</th>"));
     assert!(html.contains("<td>1</td>"));
     assert!(html.contains("<hr>"));
+}
+
+#[test]
+fn default_html_includes_responsive_table_and_print_css() {
+    let html = render("| A | B |\n|---|---|\n| one | two |");
+
+    assert!(
+        html.contains(
+            "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n<table>"
+        )
+    );
+    assert!(html.contains(".table-wrap {\n  margin: 0 0 1.4em;\n  overflow-x: auto;"));
+    assert!(html.contains(".table-wrap:focus-visible {"));
+    assert!(html.contains("outline-offset: 3px;"));
+    assert!(html.contains("break-inside: avoid;"));
+    assert!(html.contains("@media print {"));
+    assert!(html.contains(".table-wrap {\n    overflow: visible;"));
+    assert!(html.contains("letter-spacing: 0;"));
+    assert!(!html.contains("letter-spacing: -"));
+}
+
+#[test]
+fn approved_html_preview_snapshot_matches() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/html");
+    let source = fs::read_to_string(root.join("preview.md")).unwrap();
+    let expected = fs::read_to_string(root.join("preview.article.html")).unwrap();
+    let actual = render(&source);
+
+    assert_eq!(expected.trim_end(), main_inner(&actual).trim_end());
 }
 
 #[test]
@@ -65,6 +109,27 @@ fn html_escaping_is_safe() {
     assert!(!html.contains("<script>alert(1)</script>"));
     assert!(html.contains("&lt;script&gt;"));
     assert!(html.contains("&amp;"));
+}
+
+#[test]
+fn heading_ids_are_unique_non_empty_and_collision_safe() {
+    let html = render("# Alpha\n\n# Alpha\n\n# Alpha 2\n\n# Alpha\n\n# !!!\n\n# ???");
+
+    assert!(html.contains("<h1 id=\"alpha\">Alpha</h1>"));
+    assert!(html.contains("<h1 id=\"alpha-2\">Alpha</h1>"));
+    assert!(html.contains("<h1 id=\"alpha-2-2\">Alpha 2</h1>"));
+    assert!(html.contains("<h1 id=\"alpha-3\">Alpha</h1>"));
+    assert!(html.contains("<h1 id=\"section\">!!!</h1>"));
+    assert!(html.contains("<h1 id=\"section-2\">???</h1>"));
+    assert!(!html.contains("id=\"\""));
+}
+
+#[test]
+fn heading_plain_text_projection_preserves_raw_html_source() {
+    let html = render("# Title <i>raw</i>");
+
+    assert!(html.contains("<title>Title &lt;i&gt;raw&lt;/i&gt;</title>"));
+    assert!(html.contains("<h1 id=\"title-irawi\">Title &lt;i&gt;raw&lt;/i&gt;</h1>"));
 }
 
 #[test]
@@ -111,6 +176,39 @@ fn serif_theme_changes_font_stack() {
 }
 
 #[test]
+fn default_html_embeds_deterministic_subset_font_faces() {
+    let md = "\
+# Font Proof
+
+Body **bold** *italic* ***both*** and `mono`.
+
+```rust
+fn main() { println!(\"hello\"); }
+```
+";
+    let first = render(md);
+    let second = render(md);
+
+    assert_eq!(first, second, "embedded font CSS must be deterministic");
+    assert!(first.contains("@font-face {"));
+    assert!(first.contains("font-family: \"FMD Body\";"));
+    assert!(first.contains("font-family: \"FMD Mono\";"));
+    assert!(first.contains("font-style: italic;"));
+    assert!(first.contains("font-weight: 700;"));
+    assert!(first.contains("data:font/ttf;base64,"));
+    assert!(first.contains("--fmd-font-body: \"FMD Body\","));
+    assert!(first.contains("--fmd-font-mono: \"FMD Mono\","));
+    assert!(
+        first.matches("data:font/ttf;base64,").count() >= 5,
+        "expected regular/bold/italic/bold-italic body faces plus mono"
+    );
+    assert!(
+        first.len() < 500_000,
+        "subset fonts should keep small documents comfortably below 500KB"
+    );
+}
+
+#[test]
 fn custom_stylesheet_replaces_default() {
     let opts = HtmlOptions {
         custom_css: Some("body{color:red}".to_string()),
@@ -119,6 +217,7 @@ fn custom_stylesheet_replaces_default() {
     let html = render_html("# Hi", &opts).unwrap();
     assert!(html.contains("body{color:red}"));
     assert!(!html.contains("--fmd-accent"));
+    assert!(!html.contains("@font-face"));
 }
 
 #[test]

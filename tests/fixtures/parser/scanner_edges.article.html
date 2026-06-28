@@ -1,0 +1,44 @@
+<h1 id="scanner-edge-corpus">Scanner Edge Corpus</h1>
+<h2 id="title">Title</h2>
+<p>Paragraph with foo_bar_baz, <strong><em>bold em</em></strong>, escaped *stars*, literal [brackets], and &lt;span data-x="1"&gt;raw html&lt;/span&gt;.</p>
+<p>See <a href="https://example.com/a(b)">https://example.com/a(b)</a>., <a href="http://www.example.org/path?q=1">www.example.org/path?q=1</a>, and <a href="mailto:team@example.com">team@example.com</a>.</p>
+<div class="table-wrap" role="region" aria-label="Markdown table" tabindex="0">
+<table>
+<thead>
+<tr><th>Key</th><th style="text-align:center">Expr</th><th style="text-align:right">Note</th></tr>
+</thead>
+<tbody>
+<tr><td>pipe</td><td style="text-align:center">a | b</td><td style="text-align:right"><code>x|y</code></td></tr>
+<tr><td>tick</td><td style="text-align:center">`</td><td style="text-align:right"><code>a|b</code></td></tr>
+</tbody>
+</table>
+</div>
+<blockquote>
+<ul>
+<li><p>quoted</p>
+<ol>
+<li>nested
+continuation</li>
+</ol>
+</li>
+</ul>
+</blockquote>
+<ul>
+<li>tabbed unordered item</li>
+</ul>
+<ol>
+<li><p>ordered tab item</p>
+<ol start="2">
+<li>indented ordered marker stays inside</li>
+</ol>
+</li>
+</ol>
+<p>[bad]:</p>
+<p>Use <a href="/target" title="Target">ok</a>, [missing], and <img src="/logo.png" alt="Logo" title="Logo">.</p>
+<pre><code class="language-text">inside
+</code></pre>
+<pre><code>```rust
+let x = 1;
+```
+</code></pre>
+<hr>

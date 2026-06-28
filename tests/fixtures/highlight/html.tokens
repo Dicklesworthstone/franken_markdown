@@ -1,0 +1,14 @@
+Comment	<!-- c -->
+Plain	\n
+Operator	<
+Keyword	section
+Plain	 
+Type	class
+Operator	=
+Str	"hero"
+Operator	>
+Plain	Hi
+Operator	</
+Keyword	section
+Operator	>
+Plain	\n

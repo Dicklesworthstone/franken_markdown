@@ -1,0 +1,1 @@
+fn main() { let n = 42; } // count

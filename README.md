@@ -19,9 +19,10 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > deterministic, embedded-subset-font documents with Knuth–Plass line breaking,
 > real GPOS kerning and GSUB ligatures, measured-column tables, nested lists,
 > tinted blockquotes, strikethrough, H1/H2 heading rules, syntax-highlighted code
-> panels, and selectable tagged-PDF text. TeX/Liang hyphenation, deeper
-> pagination controls, and the dedicated WASM package remain active roadmap work
-> tracked in beads.
+> panels, and selectable tagged-PDF text. The browser package skeleton,
+> wasm-bindgen adapter, and interactive demo are present; TeX/Liang hyphenation,
+> deeper pagination controls, and broader WASM package hardening remain active
+> roadmap work tracked in beads.
 
 ## TL;DR
 
@@ -152,6 +153,8 @@ Implemented today:
   CLI's `SOURCE_DATE_EPOCH`,
 - tagged-PDF structure tree v0 with page MCIDs, standard block/link/code/table
   tags, parent tree, `/Lang`, and `/Tabs /S`,
+- browser/WASM package sources, wasm-bindgen adapter tests, and an interactive
+  local demo that exercise the same dependency-free render core,
 - `fmd` and `franken_markdown` binaries over one shared CLI entrypoint,
 - typed render errors so callers can handle future incomplete/invalid render
   paths deterministically.
@@ -161,7 +164,8 @@ Planned:
 - full CommonMark/GFM conformance ladder,
 - TeX/Liang hyphenation and widow/orphan + keep-with-next pagination controls,
 - code-block pagination polish and broader visual golden fixtures,
-- browser/WASM package and examples,
+- browser/WASM package hardening, published package assembly, and visual
+  regression fixtures,
 - Asupersync-backed native batch renderer with cancellation and budgets.
 
 ## Command Reference
@@ -263,7 +267,8 @@ Native CLI/batch orchestration:
   fmd + Asupersync feature layer for cancellation, budgets, and parallel jobs
 
 Browser path:
-  wasm API over the same parser/theme/render core
+  wasm API over the same parser/theme/render core, with explicit host-supplied
+  CSS/font/image bytes and bundled fallback assets
 ```
 
 The core modules are:
@@ -313,6 +318,11 @@ scripts/check-wasm-core.sh
 That script checks the library with `--no-default-features` for both native Rust
 and `wasm32-unknown-unknown`. It must stay green before the project claims any
 browser/WASM readiness.
+
+The browser-facing API never discovers fonts from the host system. Callers can
+provide UTF-8 CSS bytes and TrueType font bytes for the documented renderer
+slots (`body-regular`, `body-bold`, `body-italic`, `body-bold-italic`,
+`mono-regular`); any missing slot falls back to bundled deterministic fonts.
 
 Clean-room policy gate:
 
@@ -401,7 +411,8 @@ equivalent options through the library API rather than reading local config.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
 - HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
   deterministic and portable, but future work can make these subsets smaller.
-- WASM packaging and browser examples are not present yet.
+- WASM packaging and browser examples are present but not published yet, and
+  browser visual/golden fixture coverage is still early.
 - There is no installer or published release yet.
 
 ## FAQ
@@ -424,8 +435,10 @@ tagged-PDF structure, SOURCE_DATE_EPOCH-controlled dates, and compressed page
 streams.
 
 **Does the core work in WASM?**  
-That is a first-class design goal. The core must build without the CLI feature;
-dedicated WASM exports and tests are planned before stability claims.
+Yes, as a first-class design goal. The core builds without the CLI feature, and
+the repository now includes dedicated wasm-bindgen exports, package sources, a
+browser demo, and package contract tests; published package hardening and browser
+visual fixtures remain before stability claims.
 
 **Where does Asupersync fit?**  
 In native orchestration: batch rendering, cancellation, budgets, structured

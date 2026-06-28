@@ -20,9 +20,9 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > real GPOS kerning and GSUB ligatures, measured-column tables, nested lists,
 > tinted blockquotes, strikethrough, H1/H2 heading rules, syntax-highlighted code
 > panels, and selectable tagged-PDF text. The browser package skeleton,
-> wasm-bindgen adapter, and interactive demo are present; TeX/Liang hyphenation,
-> deeper pagination controls, and broader WASM package hardening remain active
-> roadmap work tracked in beads.
+> wasm-bindgen adapter, and interactive demo are present; deeper pagination
+> controls and broader WASM package hardening remain active roadmap work tracked
+> in beads.
 
 ## TL;DR
 
@@ -61,6 +61,7 @@ target/release/fmd - --out stdin.html < examples/showcase.md
 
 # Render raw Markdown text directly
 target/release/fmd --text '# Hello from fmd' --out hello.html
+target/release/fmd --text '# Hello from fmd' --out - > hello.html
 
 # Use the serif theme
 target/release/fmd examples/showcase.md --font serif --out showcase-serif.html
@@ -188,7 +189,7 @@ Useful flags:
 | `--to html` | Write HTML; default |
 | `--to pdf` | Write the compact deterministic embedded-font PDF |
 | `--to both` | Write both outputs, deriving extensions from `--out` |
-| `--out <path>` | Output path; HTML without `--out` writes to stdout |
+| `--out <path>` | Output path; HTML without `--out` or with `--out -` writes to stdout; PDF and `--to both` require a real path |
 | `--font sans` | Default high-readability sans stack |
 | `--font serif` | Long-form serif stack |
 | `--css <file>` | Replace the default stylesheet with custom CSS |
@@ -395,7 +396,7 @@ equivalent options through the library API rather than reading local config.
 | Symptom | Fix |
 |---|---|
 | `PDF output requires --out <path>` | PDF writes binary bytes and must have a path: `fmd doc.md --to pdf --out doc.pdf` |
-| PDF differs from the HTML preview | The PDF now does Knuth-Plass breaking, measured/striped tables, nested lists, and syntax highlighting; the remaining gaps vs HTML are images, inline styling inside table cells, and hyphenation |
+| PDF differs from the HTML preview | The PDF now does Knuth-Plass breaking, body-paragraph hyphenation/justification, measured/striped tables, nested lists, syntax highlighting, and host-supplied standalone PNG images; remaining gaps vs HTML include inline styling inside table cells, inline image-in-prose rendering, and deeper pagination polish |
 | HTML printed to terminal | Pass `--out file.html` or redirect stdout |
 | Custom CSS removed the default styling | `--css` intentionally replaces the stylesheet; include every rule you want |
 | Raw HTML appears escaped | Default is safe escaping; pass `--allow-html` only for trusted input |

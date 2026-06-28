@@ -7,9 +7,10 @@
 //!   default (Cursor/GitHub-preview-like) and accepts a custom stylesheet, or
 //! * a **tiny, deterministic PDF**. The current v0 writer embeds curated
 //!   per-document font subsets with real metrics, focused GPOS kerning, GSUB
-//!   ligatures, tagged-PDF structure, and selectable text; the roadmap adds
-//!   LaTeX-grade paragraph and page layout (Knuth-Plass optimal line breaking,
-//!   hyphenation, widow/orphan control, and richer block pagination).
+//!   ligatures, Knuth-Plass paragraph breaking, deterministic discretionary
+//!   hyphenation/justification for body paragraphs, tagged-PDF structure, and
+//!   selectable text; the roadmap adds deeper page layout (full widow/orphan
+//!   control, keep-with-next, and richer block pagination).
 //!
 //! The library has **zero third-party dependencies** — every component (the
 //! Markdown parser, the HTML emitter, the font/text subsystem, the line-breaking
@@ -18,11 +19,11 @@
 //!
 //! ## Status
 //!
-//! Pre-Phase-0 scaffold. The HTML path renders today with clean-room syntax
+//! Early but capable. The HTML path renders today with clean-room syntax
 //! highlighting for common documentation languages. The PDF path renders a
-//! compact deterministic embedded-font v0; the high-typography paragraph and
-//! page-layout subsystems are still being built out (tracked in beads). Nothing
-//! here is final.
+//! compact deterministic embedded-font v0 with high-typography paragraph
+//! layout; deeper page-builder polish is still being built out and tracked in
+//! beads. Nothing here is final.
 #![forbid(unsafe_code)]
 #![cfg_attr(not(feature = "cli"), allow(dead_code))]
 

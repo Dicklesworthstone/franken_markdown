@@ -47,6 +47,15 @@ fn fmd_with_stdin(args: &[&str], stdin: &str) -> Output {
     child.wait_with_output().unwrap()
 }
 
+fn fmd_in_dir(args: &[&str], cwd: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("SOURCE_DATE_EPOCH")
+        .output()
+        .unwrap()
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
@@ -62,6 +71,19 @@ fn temp_file(name: &str, ext: &str) -> PathBuf {
         nanos,
         name,
         ext
+    ))
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "fmd-cli-contract-{}-{}-{}",
+        std::process::id(),
+        nanos,
+        name
     ))
 }
 
@@ -103,6 +125,7 @@ fn bare_invocation_prints_help_and_exits_successfully() {
     let stdout = text(&out.stdout);
     assert!(stdout.contains("First tries that work:"));
     assert!(stdout.contains("fmd README.md"));
+    assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
     assert!(stdout.contains("fmd config show --json"));
     assert!(stdout.contains("fmd capabilities --json"));
     assert!(stdout.contains("fmd robot-docs guide"));
@@ -121,6 +144,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"native_config\":\"available\""));
     assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
     assert!(stdout.contains("\"input_size_limit\":\"available\""));
+    assert!(stdout.contains("\"html_stdout_dash\":\"available\""));
+    assert!(stdout.contains("\"pdf_stdout_dash\":\"refused_usage_error\""));
     assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
     assert!(stdout.contains("\"font_subsetting_pdf\":\"available\""));
     assert!(stdout.contains("\"embedded_subset_fonts_pdf\":\"available\""));
@@ -135,6 +160,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("--pdf-line-numbers"));
     assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--author"));
+    assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
     assert!(stdout.contains("\"knuth_plass_pdf\":\"available\""));
     assert!(stdout.contains("\"page_builder_pdf\":\"available_v0_keep_widow\""));
     assert!(stdout.contains("\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\""));
@@ -178,6 +204,9 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("--max-input-bytes"));
+    assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
+    assert!(stdout.contains("`--out -` writes HTML document data to stdout only"));
+    assert!(stdout.contains("PDF and --to both require a real output path"));
     assert!(stdout.contains("SOURCE_DATE_EPOCH"));
     assert!(stdout.contains("tagged-PDF structure tree v0"));
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
@@ -251,6 +280,65 @@ fn first_try_file_and_stdin_renders_work() {
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(file_out_path);
     let _ = fs::remove_file(stdin_out_path);
+}
+
+#[test]
+fn html_out_dash_writes_document_data_to_stdout_without_dash_file() {
+    let cwd = temp_dir("out-dash-html");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let out = fmd_in_dir(&["--text", "# Stdout\n\nBody.", "--out", "-"], &cwd);
+
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("<!DOCTYPE html>"));
+    assert!(stdout.contains("<h1 id=\"stdout\">Stdout</h1>"));
+    assert!(
+        !cwd.join("-").exists(),
+        "`--out -` for HTML stdout must not create a literal dash file"
+    );
+}
+
+#[test]
+fn pdf_out_dash_is_rejected_before_creating_literal_dash_file() {
+    let cwd = temp_dir("out-dash-pdf");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let out = fmd_in_dir(
+        &["--text", "# PDF", "--to", "pdf", "--out", "-", "--json"],
+        &cwd,
+    );
+
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("\"code\":\"usage_error\""));
+    assert!(stderr.contains("`--out -` writes HTML to stdout only"));
+    assert!(
+        !cwd.join("-").exists(),
+        "PDF refusal must not create a literal dash file"
+    );
+}
+
+#[test]
+fn both_out_dash_is_rejected_before_creating_dash_derived_files() {
+    let cwd = temp_dir("out-dash-both");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let out = fmd_in_dir(
+        &["--text", "# Both", "--to", "both", "--out", "-", "--json"],
+        &cwd,
+    );
+
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("\"code\":\"usage_error\""));
+    assert!(stderr.contains("PDF and --to both require a real output path"));
+    assert!(!cwd.join("-").exists());
+    assert!(!cwd.join("-.html").exists());
+    assert!(!cwd.join("-.pdf").exists());
 }
 
 #[test]

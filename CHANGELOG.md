@@ -1,167 +1,245 @@
 # Changelog
 
-This changelog is researched from git history, repository files, and local
-tracker state. It distinguishes actual releases from ordinary commits; this
-project has no tags or GitHub Releases yet.
+## Scope and methodology
 
-## Timeline
+This changelog reconstructs the project's history from the git log, the
+repository files, the checked-in beads tracker (`.beads/`), and the docs under
+`docs/`. It is organized by landed capability rather than raw commit order, with
+a date-based timeline kept visible so chronology is never lost. Representative
+commits are linked directly.
 
-| Date | Version / phase | Evidence | Summary |
-|---|---|---|---|
-| 2026-06-26 | Pre-Phase-0 scaffold | `8b66477` | Working clean-room Markdown-to-HTML scaffold with `fmd` CLI and typed PDF refusal |
-| 2026-06-26 | Governance and CLI hardening | `e3cd358`, `98c7f0b`, `d694c86` | License rider, project docs, agent-friendly CLI surfaces, and roadmap Beads |
+This is **pre-release development history**. As of this writing the project has
+**no git tags and no GitHub Releases**; nothing has been published to crates.io
+or npm. Where this document says "landed," it means the capability is present in
+the `main` branch working history, not that a version was cut. Conformance and
+status numbers below are the measured, ratcheted floors enforced in CI, not
+aspirational targets.
 
-## Unreleased
+- Sources: `git log --reverse --no-merges` (109 commits, 2026-06-26 to
+  2026-06-29), the working tree, `.beads/issues.jsonl`, `docs/`, and the CI
+  workflows under `.github/workflows/`.
+- Version state: **Unreleased / `0.0.0` development.** No tags, no releases.
+- Commit links use the form
+  `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
-### Documentation And Governance
+## Version timeline
 
-- Switched the project license to the MIT License with OpenAI/Anthropic rider,
-  matching the `/dp/asupersync` convention.
-- Added project-local agent guidance covering clean-room rendering, WASM as a
-  first-class target, Asupersync usage boundaries, CLI ergonomics, testing, and
-  Beads/Agent Mail coordination.
-- Added a README that is explicit about current status, command examples,
-  architecture, limitations, and roadmap.
+| Date | Phase | Headline |
+|---|---|---|
+| 2026-06-26 | Scaffold + first capabilities | Zero-dependency Markdown to HTML engine, the `fmd` CLI, governance, the structured theme model, syntax highlighting, the clean-room font reader, and the deterministic PDF MVP all land in one day |
+| 2026-06-27 | Typography deepens | Font subsetting and embedding, GPOS kerning, GSUB ligatures, Knuth-Plass breaking, hyphenation, measured tables, styled inline runs, FlateDecode compression, and a large parser-correctness fix wave |
+| 2026-06-28 | Hardening + WASM assets | Browser/WASM package assets, justified hyphen breaks, list looseness/tightness fixes, theme-color unification across HTML and PDF, and CI claim-discipline + keep-with-next pagination |
+| 2026-06-29 | Proof gates + accessibility + batch | Real WASM proof gate with native parity, CommonMark 0.31.2 conformance harness, hierarchical accessible tagged-PDF, deterministic render-tree golden, the performance-proof track, and the native Asupersync batch contract |
 
-### CLI Ergonomics
+## Unreleased (`0.0.0` development)
 
-- Added native `fmd config show/get/set/path --json` using a dependency-free
-  `key=value` file with `FMD_CONFIG`, XDG/platform path resolution, persistent
-  font/custom-CSS/theme defaults, page-margin keys, and `--no-config` for
-  reproducible config-free renders.
-- Added first-try render aliases so `fmd README.md`, `fmd -`, and
-  `fmd --text '# Hi' --out hi.html` route to `render`.
-- Added `capabilities`, `doctor`, and `robot-docs guide` surfaces.
-- Added `--robot-triage` as a one-call JSON quick reference and health envelope.
-- Added `--json` status/error output for render operations.
-- Normalized common `--json` typos before parsing.
-- Returned documented exit code 64 for usage errors and added a teaching hint
-  that names `fmd --help`, `fmd capabilities --json`, and
-  `fmd robot-docs guide`.
-- Kept stdout as document data and stderr as diagnostics/status.
-- Added binary-level contract tests for help, file/stdin/text render paths,
-  discovery JSON, PDF rendering, usage errors, typo inference, and
-  `NO_COLOR`/CI/`TERM=dumb` expectations.
+What follows are the capability waves that make up the current `main` history.
 
-### Planning
+### Zero-dependency core and the `fmd` CLI
 
-- Tightened the roadmap around first-class browser/WASM support.
-- Added `scripts/check-wasm-core.sh` and a GitHub Actions workflow plan for the
-  native no-default-features core check plus `wasm32-unknown-unknown`.
-- Added `scripts/check-policy.sh` to enforce the clean-room dependency and
-  unsafe-code boundary in CI.
-- Added `scripts/check-determinism.sh` to compare repeated agent JSON, HTML,
-  and PDF render outputs byte-for-byte in CI.
-- Clarified that Asupersync belongs in native batch orchestration,
-  cancellation, budgets, and deterministic tests, not in the pure synchronous
-  render core.
+The project began as a working clean-room Markdown-to-HTML engine with no
+third-party dependencies and a single shared CLI entrypoint feeding both the
+`fmd` and `franken_markdown` binaries. The CLI was built agent-first from the
+start: render aliasing so `fmd README.md`, `fmd -`, and `fmd --text '# Hi'` all
+work; stdout as data and stderr as diagnostics; stable exit codes; a global
+`--json`; and discovery surfaces (`capabilities`, `doctor`, `robot-docs guide`,
+`--robot-triage`). Native config persistence followed, using a dependency-free
+`key=value` file with `FMD_CONFIG`/XDG/platform resolution and `--no-config` for
+reproducible runs.
 
-### Rendering Engine
+- Scaffold, engine core, and both binaries: [`8b66477`](https://github.com/Dicklesworthstone/franken_markdown/commit/8b664778844fd8c7f5aac95c9bae386bd74ae55a)
+- Agent-ergonomic CLI surface (`capabilities`, `doctor`, `robot-docs`, `--text`, JSON): [`98c7f0b`](https://github.com/Dicklesworthstone/franken_markdown/commit/98c7f0bf3379f385df58d533bc8317697eddcf3e)
+- Hardened agent contract (`--robot-triage`, exit codes, typo normalization): [`0ab6879`](https://github.com/Dicklesworthstone/franken_markdown/commit/0ab6879385b27d989b3f7e5edaddb711300d76f4)
+- Native config persistence: [`95773aa`](https://github.com/Dicklesworthstone/franken_markdown/commit/95773aa9adf729cd21f9cd484f61a64332e25026)
+- Reconcile `--to pdf` default-output behavior with the docs: [`7e9b805`](https://github.com/Dicklesworthstone/franken_markdown/commit/7e9b8052e856f5525668fcce1e76a013d6ec310d), stdout-aware `--out -`: [`8c6b3e5`](https://github.com/Dicklesworthstone/franken_markdown/commit/8c6b3e52d568650a115717ec79b27311f2d417d1)
 
-- Upgraded the tagged-PDF structure tree from a flat v0 to a real accessible
-  hierarchy (bead `qw1.9`): a single `/Document` root with accurate nesting for
-  headings, paragraphs, nested lists (`/L`/`/LI`/`/LBody`), blockquotes, per-cell
-  tables (`/Table`/`/TR`/`/TH`/`/TD` with header column scope), code, figures
-  (`/Alt` + layout `/BBox`), and links referenced back from the tree via `/OBJR`.
-  All decoration (backgrounds, panels, zebra stripes, inline-code chips, rules,
-  thematic breaks, blockquote gutter bars) is now marked `/Artifact`, so the
-  tagged page has no unmarked content (PDF/UA 7.1). Documented supported
-  semantics, limitations, and non-goals in `docs/PDF_ACCESSIBILITY.md`; pinned by
-  new structural tests and the determinism/policy gates.
-- Replaced the flat theme fields with a structured dependency-free theme model
-  covering font family, mono font, colors, spacing, table density, code theme,
-  dark-mode policy, and PDF/page contract; exposed stable hand-rolled JSON for
-  CLI/config/WASM callers.
-- Added a clean-room syntax highlighter for common documentation languages,
-  wired into the HTML emitter with token CSS and regression tests.
-- Added document-centric library entrypoints:
-  `parse_markdown`, `render_html_document`, and `render_pdf_document`, so callers
-  can parse once and render multiple outputs from one AST.
-- Landed the first deterministic PDF writer: valid PDF 1.7 output, Base-14
-  fonts, automatic pagination, headings, paragraphs, code blocks, lists,
-  blockquotes, thematic rules, simple table text, xref/startxref output, and
-  byte-level structural tests.
-- Updated `fmd doctor`, `capabilities --json`, `robot-docs guide`, and
-  `--robot-triage` to report the PDF path as `available_v0_base14` while keeping
-  Knuth-Plass layout and font subsetting marked as planned.
-- Unified PDF colors onto the shared theme tokens (one-theme-model doctrine): the
-  PDF writer now resolves link, body text, code panel/chip, blockquote tint/bar,
-  table stripe, and heading/table/thematic rules from the same `ThemeColors` the
-  HTML stylesheet uses, replacing previously hardcoded, slightly-divergent values.
-  Changing a theme color now moves both HTML and PDF together. Added a
-  cross-surface invariant test suite and `scripts/theme-proof.sh`.
-- Turned `scripts/check-wasm-package.sh` into a real "first-class WASM" proof
-  gate: it builds the release wasm-bindgen module, loads the *generated* module
-  in headless node, renders HTML+PDF, asserts byte-identical native↔WASM parity
-  over a corpus, and enforces a committed `.wasm` size budget. Added a headless
-  smoke harness (`wasm/smoke.mjs`) and a dedicated CI job. Demoted the
-  source-string package tests to an explicit "source-shape lint" that does not
-  count as proof of working WASM.
-- Generalized PDF keep-with-next pagination: a short intro/caption paragraph is
-  now kept with the table, code block, figure, or list it introduces, so it never
-  strands alone at the foot of a page (extending the existing heading keep). A
-  `list_start` flow flag marks a list's first line so list intros are covered too.
-  Added unit + behavioral tests and `scripts/pagination-proof.sh`.
-- Made the WASM browser package publish-ready: hardened `wasm/package.json`
-  (repository/homepage/keywords/publishConfig), added a manifest-completeness
-  check to the package gate (every declared file must ship), and a tag-gated npm
-  release workflow. Capabilities now reports `wasm_browser_package` as
-  `publishable_unpublished` (one tag push from publication; the claim-discipline
-  gate still blocks an `npm install` claim until it is actually published).
+### Clean-room parser: CommonMark/GFM subset
 
-### Parser Conformance
+The parser grew a useful CommonMark/GFM subset and then a long correctness wave.
+Block features include setext headings, indented code blocks, reference-style
+links and images (full, collapsed, shortcut), lazy and nested lists, and
+blockquote lazy continuation. Inline features include character-reference
+decoding, robust link destinations, GFM bare-URL autolinks, and correct nested
+emphasis (including `***` as bold-italic and four-times emphasis). A focused fix
+wave tightened opener indentation, table-width validation, intraword
+underscores, ordered-list interruption, code-span pipes, list looseness, and not
+extracting reference definitions from inside fenced code. Source spans and
+recoverable diagnostics were added for editor/WASM tooling.
 
-- Added an official CommonMark 0.31.2 spec-suite conformance harness
-  (`scripts/commonmark-conformance.sh`): runs all 652 official examples, normalizes
-  fmd's styled HTML, and reports a per-example gap ledger (pass / known_gap /
-  intentional_non_goal) plus a section summary. Current result: **357/652 match**
-  (60.4% of in-scope examples; raw-HTML examples are intentional non-goals). The
-  number is a committed ratcheted floor enforced in CI, surfaced in
-  `capabilities --json` (`commonmark_spec`), with a drift guard tying the two
-  together. The spec is vendored as dev-only test data under
-  `tests/fixtures/commonmark/`.
-- Added setext heading support for `===`, `---`, and single-dash paragraph
-  underlines while preserving standalone thematic breaks.
-- Added focused parser conformance tests for level-one setext headings,
-  level-two setext headings, single-dash setext headings, thematic breaks, and
-  indented non-underlines.
-- Added a reference-definition collection pass with normalized labels and
-  first-definition-wins behavior.
-- Added full, collapsed, and shortcut reference links plus matching reference
-  images, with malformed-definition regressions that keep bad definitions
-  visible as normal text.
-- Added lazy list-item continuation and nested ordered/unordered list parsing,
-  including task-list continuation and blockquote/list nesting regressions.
-- Added `scripts/parser-diff.sh`, dependency-free parser metamorphic tests, and
-  approved article-body fixture snapshots under `tests/fixtures/parser/`.
-- Added `parse_markdown_spanned`, source-span wrapper types, and recoverable
-  parser diagnostics for malformed reference definitions and unclosed fences.
-- Added conservative raw HTML block/inline parsing with default escaping and
-  trusted pass-through only when `allow_raw_html` / `--allow-html` is enabled.
-- Added top-level four-space indented code block parsing while preserving
-  existing list-item indentation behavior.
+- Setext headings: [`13ecaaa`](https://github.com/Dicklesworthstone/franken_markdown/commit/13ecaaa262281bad802ade3431b59cc4314e7824); reference links: [`25ae472`](https://github.com/Dicklesworthstone/franken_markdown/commit/25ae4725da11cdbc83a9761ee20de913564c4c9b); lazy/nested lists: [`2ef00e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ef00e80b74ca79e9b25c6e609dc6ba135e2a0d5); indented code: [`141303f`](https://github.com/Dicklesworthstone/franken_markdown/commit/141303fe6a9bb6105e483fa74da9ee3fe3674110)
+- Raw-HTML policy (escape by default, pass-through only with `--allow-html`): [`04b0ea8`](https://github.com/Dicklesworthstone/franken_markdown/commit/04b0ea8f8c0941bbc36929784e3ab5387b7feb47); source spans and diagnostics: [`c7587a2`](https://github.com/Dicklesworthstone/franken_markdown/commit/c7587a271f647af7260cff4e1bdddb55d0463fdd)
+- Character references: [`61439fc`](https://github.com/Dicklesworthstone/franken_markdown/commit/61439fc634cd09e2e605a8448843857e1fe08bbc); robust link destinations: [`31241a1`](https://github.com/Dicklesworthstone/franken_markdown/commit/31241a16872a1e4c846283177bfb5149bcf0a74e); bare-URL autolinks: [`39eab0e`](https://github.com/Dicklesworthstone/franken_markdown/commit/39eab0ebb1933db5fee48b1e74b3b5ec85d5efca)
+- Correctness fix wave (opener indentation, table widths, intraword underscores, list interruption, code-span pipes, escaped backticks): [`ff624e9`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff624e93dba9b1ae9aaf96ec2238b1a342bf7cf6), [`a84451a`](https://github.com/Dicklesworthstone/franken_markdown/commit/a84451abd8881e970533743a9621d8373f41d4fa), [`8ee5973`](https://github.com/Dicklesworthstone/franken_markdown/commit/8ee59731e4334357d2acc40803b9f1f0ddd7cce0), [`69795df`](https://github.com/Dicklesworthstone/franken_markdown/commit/69795dfa32378b2d5527d2ea27cd61c3eace5aa5), [`796d53c`](https://github.com/Dicklesworthstone/franken_markdown/commit/796d53cc07e714f0df9a8dba9c1e00515ba8681c)
+- List looseness/tightness correctness and bold-italic triple runs: [`193f762`](https://github.com/Dicklesworthstone/franken_markdown/commit/193f762d885cc1e60420f79eb87c03d4a56ddbd0), [`2973915`](https://github.com/Dicklesworthstone/franken_markdown/commit/297391551de40808445b57c97b9045a832824b00), [`3239366`](https://github.com/Dicklesworthstone/franken_markdown/commit/3239366b1dde463d4e97064d39e62d2b2eca425a), [`37c3b40`](https://github.com/Dicklesworthstone/franken_markdown/commit/37c3b40ffda3f52f1d36430eaff3a4019d7b0d34); reference defs not pulled from code fences: [`73190fc`](https://github.com/Dicklesworthstone/franken_markdown/commit/73190fcb8798d78d28709a11f2f384f6803a342d)
 
-## 2026-06-26 - Pre-Phase-0 Scaffold
+### HTML rendering and clean-room syntax highlighting
 
-### Delivered
+The HTML emitter produces a single self-contained file with inlined CSS, a
+Cursor/GitHub-like light palette plus a dark-mode counterpart, table striping,
+blockquotes, task lists, and custom-stylesheet replacement. A clean-room syntax
+highlighter (no `syntect`, no regex engine) covers the languages common in
+technical writing and is wired into the emitter with token CSS and regression
+tests. Markdown URL schemes are sanitized to keep unsafe links out of output.
 
-- Created the Rust 2024 crate, nightly toolchain pin, and release profiles.
-- Added a clean-room renderer core with no third-party dependencies.
-- Added the `fmd` and `franken_markdown` binaries over one shared CLI entrypoint.
-- Implemented a useful Markdown parser subset:
-  headings, paragraphs, fenced code, blockquotes, lists, task lists, pipe
-  tables, thematic breaks, emphasis, strong, strikethrough, code spans, links,
-  images, autolinks, and breaks.
-- Implemented all-in-one HTML output with inlined default CSS, custom stylesheet
-  replacement, sans/serif font stacks, table styling, blockquotes, code blocks,
-  task lists, and dark-mode CSS.
-- Added typed `not_yet_implemented` PDF behavior so callers initially got
-  deterministic failure instead of a panic or silent empty file. This has since
-  been superseded by the v0 deterministic PDF writer in Unreleased.
-- Added smoke tests and `examples/showcase.md`.
+- Clean-room syntax highlighting for code blocks: [`252c1a8`](https://github.com/Dicklesworthstone/franken_markdown/commit/252c1a88430326c81529326f4eb6b1ee2662ec53)
+- Sanitize unsafe Markdown URL schemes: [`d144c80`](https://github.com/Dicklesworthstone/franken_markdown/commit/d144c80f148367aab6996be0a321ccc71c582d73)
+- Tight nested lists render without spurious `<p>` wrappers: [`57149d7`](https://github.com/Dicklesworthstone/franken_markdown/commit/57149d756ae4aaad4e7cf864ad8c253f12d87843)
 
-### Notes For Agents
+### Shared theme model
 
-- `CHANGELOG_RESEARCH.md` contains the evidence summary.
-- There are no release tags yet.
-- `.beads/issues.jsonl` contains the initial roadmap issue graph.
+A structured, dependency-free theme replaced the original flat fields: body and
+mono font families, light and dark color tokens, spacing/measure/leading,
+table density, code theme, dark-mode policy, and a page contract (size and
+margins). It serializes to stable hand-rolled JSON for CLI/config/WASM callers.
+The doctrine is one theme model for both surfaces, and a later wave routed every
+PDF color through the same tokens the HTML stylesheet uses, so a theme change
+now moves HTML and PDF together.
+
+- Structured shared style model: [`064e4ab`](https://github.com/Dicklesworthstone/franken_markdown/commit/064e4ab943380a13bd357aaab5d7ccb73511d3a2)
+- Unify PDF colors onto the shared theme tokens (`mwm.6`): [`5e1eaf4`](https://github.com/Dicklesworthstone/franken_markdown/commit/5e1eaf46048389c97d21a113800242f8838dc3f5)
+
+### Font and text subsystem (clean-room TrueType)
+
+The text subsystem is entirely the project's own code: a TrueType reader
+(metrics, cmap), `glyf`/`loca` outline parsing, a glyf subsetter, GPOS pair-
+kerning, and a GSUB standard-ligature parser. IBM Plex Sans and Computer Modern
+(both OFL) are vendored and bundled via `include_bytes!` so the PDF path can
+embed document-specific subsets with no system fonts.
+
+- TTF/OTF reader (metrics + cmap): [`102bc05`](https://github.com/Dicklesworthstone/franken_markdown/commit/102bc05e77aa9e0b9ad15d8d7f61ea68bf0c22c1); `glyf`/`loca` outlines: [`de6712d`](https://github.com/Dicklesworthstone/franken_markdown/commit/de6712d5a88e24a51eb3d24f98347021ba1215e6); glyf subsetter: [`38621ae`](https://github.com/Dicklesworthstone/franken_markdown/commit/38621ae480939c8e9fb80c480277ba55b0c8134a)
+- GPOS pair-kerning parser (`vxi.4`): [`d38bc62`](https://github.com/Dicklesworthstone/franken_markdown/commit/d38bc62bf504f2fd94ebd1fdbeaa5f5ee62ceb97); GSUB standard-ligature parser (`vxi.3`): [`60e7664`](https://github.com/Dicklesworthstone/franken_markdown/commit/60e7664a3b42095c1f2099009efca76e212c0c4d)
+- Vendored fonts and bundled registry: [`127e5c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/127e5c023309cf7835de2682609aedfbcb15e17d), [`6b58281`](https://github.com/Dicklesworthstone/franken_markdown/commit/6b582814b47427aa5f7acc793543588c2db4d282)
+
+### Layout: Knuth-Plass line breaking and hyphenation
+
+The layout engine provides fixed metrics, a Knuth-Plass optimal paragraph
+breaker, a deterministic hyphenation core that uses the full TeX English Liang
+patterns, microtype hooks, and preservation of styled inline runs through
+breaking. A later re-profile gate deferred deeper layout/hyphenation work behind
+evidence rather than speculation.
+
+- Fixed metrics and paragraph breaker: [`789e6e1`](https://github.com/Dicklesworthstone/franken_markdown/commit/789e6e134ac7c45dcfd0c88a7731c2a7ff09fd10); hyphenation core: [`22ad648`](https://github.com/Dicklesworthstone/franken_markdown/commit/22ad648f986df5a2bd36eb9736fc87b211501bc1); full TeX patterns: [`cef6d16`](https://github.com/Dicklesworthstone/franken_markdown/commit/cef6d161cb55d125772320aec47b49b0b28c26b9)
+- Preserve styled inline runs: [`e65aa68`](https://github.com/Dicklesworthstone/franken_markdown/commit/e65aa68a05121521b2f9113f9f58a28125db7838); microtype hooks: [`159ff5a`](https://github.com/Dicklesworthstone/franken_markdown/commit/159ff5a4e02ca133079e318d057dac39b8fd43aa)
+
+### PDF writer: deterministic, embedded fonts, real typography
+
+The PDF writer began as a deterministic PDF 1.7 MVP and grew into the project's
+differentiator. It embeds document-subset fonts as CIDFontType2/Identity-H,
+applies GPOS kerning through `TJ` positioning, shapes and embeds GSUB ligatures
+while keeping text selectable, FlateDecode-compresses font programs and large
+page streams, renders styled inline runs, does Knuth-Plass breaking with
+blockquote bars/link styling/code panels, lays tables out as a measured-column
+booktabs-style grid, and renders discretionary hyphen breaks with justified
+lines. A consolidation commit unified the best PDF and parser paths. Generalized
+keep-with-next pagination keeps headings, captions, and list intros with the
+block they introduce. The tagged-PDF structure tree was upgraded from a flat v0
+to a real accessible hierarchy rooted at one `/Document`, with decoration marked
+`/Artifact`.
+
+- Deterministic PDF MVP writer contract: [`e0f07ac`](https://github.com/Dicklesworthstone/franken_markdown/commit/e0f07ace7bb2647aeb39fe702d63d5d118c31d9a); embed document-subset fonts: [`91d4707`](https://github.com/Dicklesworthstone/franken_markdown/commit/91d4707c128ac1297a9b6ba8d6b13100f84de937)
+- GPOS kerning via `TJ`: [`2adbe44`](https://github.com/Dicklesworthstone/franken_markdown/commit/2adbe44b7b46bc4095b7044cd211149fd589b01e); shape + embed GSUB ligatures (selectable): [`20d41b4`](https://github.com/Dicklesworthstone/franken_markdown/commit/20d41b4ead4bb80b33e0a3d45a50e83d2c72375b); FlateDecode-compress font programs (`fep.5`): [`debbe82`](https://github.com/Dicklesworthstone/franken_markdown/commit/debbe82effd59c67e36474324b46352a5a6470bd)
+- Styled inline runs (`dy5.1`): [`247a074`](https://github.com/Dicklesworthstone/franken_markdown/commit/247a0746da7b601052feef3f639f0726580d1834); Knuth-Plass + blockquote bars + link styling + code panels: [`dd79635`](https://github.com/Dicklesworthstone/franken_markdown/commit/dd796357c9f57e6c1af238516af466a8a4824d8e); measured-column tables: [`4636265`](https://github.com/Dicklesworthstone/franken_markdown/commit/46362658235a4a46819f3d416714a780dd9c752d)
+- Consolidate the best-of PDF + parser pipeline: [`b1343da`](https://github.com/Dicklesworthstone/franken_markdown/commit/b1343da3dba2be5fc86bfa4caef4ddea8e4d06e7); discretionary hyphen breaks + justified lines: [`95d31bf`](https://github.com/Dicklesworthstone/franken_markdown/commit/95d31bf6856ff762d7df4690e236252acc99f20b)
+- Generalized keep-with-next pagination (`mwm.7`): [`b4560f6`](https://github.com/Dicklesworthstone/franken_markdown/commit/b4560f6a19a3004bd077784f063aecf51a13db0b); list-intro keep-with-next (`mwm.10`): [`d36b41e`](https://github.com/Dicklesworthstone/franken_markdown/commit/d36b41e18c36a08b2d7fd4d2dfe46f67da560b27)
+- Hierarchical accessible tagged-PDF structure tree (`qw1.9`): [`955dd50`](https://github.com/Dicklesworthstone/franken_markdown/commit/955dd505211ad730576d4290fb47cb44881fd926); see [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md)
+
+### WASM package and native parity
+
+The browser path is first-class. Browser package assets and a wasm-bindgen
+adapter landed, then a real "first-class WASM" proof gate that builds the release
+module, loads the generated module in headless node, renders HTML and PDF, and
+asserts byte-identical native parity over a corpus with a committed `.wasm` size
+budget. Determinism, negative-path, and size/checksum evidence followed, and the
+package was made publish-ready with a hardened manifest and a tag-gated npm
+release workflow. Capabilities now reports the package as
+`publishable_unpublished`: one tag push from publication, with a claim-discipline
+gate that blocks any `npm install` claim until it actually ships.
+
+- Browser package assets and PDF render hardening: [`54dc00a`](https://github.com/Dicklesworthstone/franken_markdown/commit/54dc00a84866704062fc2b122914b861e7d8c1d0)
+- Real WASM proof gate, headless render + native parity (`3i5.6`): [`e999d23`](https://github.com/Dicklesworthstone/franken_markdown/commit/e999d2355f03ea88d99934f96eab8511c188f61b); determinism/negative-path/size evidence (`3i5.5`): [`3bbf90b`](https://github.com/Dicklesworthstone/franken_markdown/commit/3bbf90b6c2668c62df8394079caefdf528aa9213)
+- Publish-ready package + list-intro keep (`mwm.10`, `3i5.7`): [`d36b41e`](https://github.com/Dicklesworthstone/franken_markdown/commit/d36b41e18c36a08b2d7fd4d2dfe46f67da560b27)
+
+### CommonMark conformance harness
+
+An official CommonMark 0.31.2 conformance harness runs all 652 official
+examples, normalizes fmd's styled HTML, and reports a per-example gap ledger
+(pass / known-gap / intentional non-goal) plus a section summary. The current
+result is a committed, ratcheted floor of **357/652 matched** (60.4% of in-scope
+examples; the raw-HTML examples are intentional non-goals). The number is
+surfaced in `capabilities --json` with a drift guard tying the two together. The
+spec is vendored as dev-only test data.
+
+- CommonMark 0.31.2 spec harness, measured + ratcheted (`mwm.3`): [`2ce6f8c`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ce6f8cb051272d3bc158648c5c22df2c65a53b4); harness hardening: [`0719ca0`](https://github.com/Dicklesworthstone/franken_markdown/commit/0719ca0923153a0e636e6a8d0ed7d04b667b4037)
+
+### Asupersync batch and streaming orchestration
+
+The native batch path is scoped to keep the render core synchronous and
+dependency-free. A deterministic worker-budget policy and a native-only batch
+API/CLI contract landed as documents (`zmd.1.1`, `zmd.1.2`), defining the
+`fmd batch <inputs...>` subcommand, the budget math, and a deterministic
+`fmd-batch-receipt-v1`. The implementing module (`src/batch.rs`, bead `zmd.1.3`)
+follows that contract: round-robin sharding across exactly `workers` Asupersync
+tasks, per-file cancellation checkpoints, and receipts assembled in deterministic
+input order. The `batch` cargo feature is the only thing that pulls Asupersync;
+`scripts/check-wasm-core.sh` proves the core never sees it.
+
+- Worker-budget policy (`zmd.1.1`): [`4e36b9f`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e36b9f271d310dc3f96c3461666777dd7401c01); native-only batch API/CLI contract (`zmd.1.2`): [`60f09e3`](https://github.com/Dicklesworthstone/franken_markdown/commit/60f09e3aeccb20a19244560d2131ea1f041367df)
+- See [`docs/BATCH_ORCHESTRATION.md`](docs/BATCH_ORCHESTRATION.md) and [`docs/BATCH_WORKER_BUDGET.md`](docs/BATCH_WORKER_BUDGET.md)
+
+### Performance track (measurement-first)
+
+Performance work is gated on evidence. A measurement-first roadmap, a measured
+rendering gauntlet, and safe performance counters with run comparison make up
+the proof track. Hot-path layout scans were de-duplicated. The gauntlet's
+gates explicitly deferred a deeper layout/hyphenation rewrite and rejected a SIMD
+subtree because the evidence did not justify them.
+
+- Measurement-first optimization roadmap: [`470fa00`](https://github.com/Dicklesworthstone/franken_markdown/commit/470fa00fb832a78157fd68ffdd031d46aa1e9d9f); measured rendering gauntlet: [`d6c986c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d6c986c16878461c00f9d1d23e4838ba0fe7b7fc); de-duplicate line/hyphen scans: [`b76fb3e`](https://github.com/Dicklesworthstone/franken_markdown/commit/b76fb3ef8ce03141b8ba4959228d187d8ea43b85)
+- Safe counters + run comparison (`qw1.8`): [`9bf7007`](https://github.com/Dicklesworthstone/franken_markdown/commit/9bf7007c45da66b1b30b964dd2c76dee2baf55e5); re-profile gate defers the layout subtree (`qw1.7`): [`642c68c`](https://github.com/Dicklesworthstone/franken_markdown/commit/642c68c23995b09319d787e3f3008d6002eea0aa); reject SIMD subtree per the evidence gate (`qw1.6`): [`e983993`](https://github.com/Dicklesworthstone/franken_markdown/commit/e983993dcb56e90c75fb04382e1137c41ddf478b)
+
+### Testing, CI, and quality gates
+
+Quality is enforced by standing gates rather than convention. CI runs
+formatting, all-target checks, a std-only core check, and four custom scripts: a
+clean-room policy gate (no third-party normal deps, no banned renderer/browser
+forests, no build scripts, unsafe-code forbidden), a WASM-core boundary gate, a
+deterministic-output gate (byte-for-byte across repeated JSON/HTML/PDF renders),
+and a README-to-`capabilities` claim-discipline gate. Test suites cover parser
+conformance/metamorphic/differential/spans, fonts, layout, kerning, ligatures,
+PDF structure and embedding, security, the WASM API and package, and a
+deterministic render-tree visual golden.
+
+- WASM core boundary gate: [`c460f00`](https://github.com/Dicklesworthstone/franken_markdown/commit/c460f00b717e1bb3e61ad9f74f6450ce6a2df0e2); clean-room policy gate: [`7d0b1c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/7d0b1c053a6c75d6b2cf69f5c8b143266a989551); deterministic output gate: [`d2b9da3`](https://github.com/Dicklesworthstone/franken_markdown/commit/d2b9da35b24c9b2c5789710e94ceb7127bad05c7)
+- README/capabilities claim-discipline gate (`mwm.9`): [`96f091b`](https://github.com/Dicklesworthstone/franken_markdown/commit/96f091ba89408712e8e86a7fc5f96bb2f6fbf021); metamorphic + fixture harness: [`951533e`](https://github.com/Dicklesworthstone/franken_markdown/commit/951533ee7456a8c0960d40d724fa2f2336ed8cd0); deterministic render-tree golden (`qw1.1.2`): [`2a12ebb`](https://github.com/Dicklesworthstone/franken_markdown/commit/2a12ebb37494208b4e89af0f816697fc809bfffa)
+
+### Documentation, governance, and identity
+
+Governance and project intent are checked in: the MIT License with the
+OpenAI/Anthropic rider, project-local agent guidance (`AGENTS.md`), the
+comprehensive plan, and reality-check bridge plans that keep the README honest
+against the code. A hero illustration and a GitHub social-preview image were
+added.
+
+- Project docs, governance, and license rider: [`e3cd358`](https://github.com/Dicklesworthstone/franken_markdown/commit/e3cd3587b7f14a58bb2826ad75419d1e82064105)
+- 2026-06-28 reality-check bridge plan + gap-closing beads: [`5c6af41`](https://github.com/Dicklesworthstone/franken_markdown/commit/5c6af418a1574f4f726d1e45c736f5d6f3fbcc9d); README reality-check after PDF typography landed: [`5917b30`](https://github.com/Dicklesworthstone/franken_markdown/commit/5917b30c435c48232a0ecf4e54d9d482fd912dcd)
+- Hero illustration + social preview image: [`b8a3904`](https://github.com/Dicklesworthstone/franken_markdown/commit/b8a3904605d9625ce980fe8df627b459ff67155f)
+
+## Notes for agents
+
+- **No tags or releases exist.** Do not write release notes that imply a `0.0.0`
+  (or any) version was published. The crate sets `publish = false`; the npm
+  package (`@franken-suite/franken-markdown`) is publish-ready but unpublished.
+- **Status numbers are ratcheted floors, not goals.** CommonMark is 357/652
+  in-scope normalized matches and CI fails if it regresses;
+  `capabilities --json` reports the same number via a drift guard.
+- **The `batch` feature is the only Asupersync entry point.** The render core,
+  `--no-default-features`, and wasm builds never compile it.
+  `scripts/check-wasm-core.sh` is the standing proof.
+- **Determinism is enforced.** `scripts/check-determinism.sh` compares repeated
+  JSON/HTML/PDF output byte-for-byte; `SOURCE_DATE_EPOCH` controls PDF dates.
+- **The roadmap lives in beads.** `.beads/issues.jsonl` is the checked-in tracker;
+  bead ids referenced above (for example `mwm.*`, `qw1.*`, `zmd.1.*`, `vxi.*`,
+  `3i5.*`) map capability waves to their tracker entries.
+- **Where to look first:** `src/cli.rs` for the command contract, `src/pdf.rs`
+  and `src/layout.rs`/`src/text.rs` for typography, `src/parse/` for the parser,
+  and `docs/` for the PDF accessibility and batch contracts.

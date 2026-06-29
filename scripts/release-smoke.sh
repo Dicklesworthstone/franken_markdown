@@ -3,8 +3,9 @@
 # release-smoke.sh <path-to-fmd> — smoke-test a built `fmd` binary before it is
 # attached to a release (bead 08f). Exercises the agent-first entry points and
 # both output formats, asserting stable exit codes and real output. Used by the
-# release workflow on every platform's freshly built binary, and runnable
-# locally against `target/release/fmd`.
+# release workflow on the Linux and macOS binaries (Windows runs an equivalent
+# inline PowerShell smoke, since this script needs a POSIX shell + python3), and
+# runnable locally against `target/release/fmd`.
 #
 # Exit codes: 0 ok, 64 usage, 66 binary missing/not executable, 70 a check failed.
 

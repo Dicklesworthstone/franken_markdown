@@ -24,7 +24,7 @@ top of this already-flat layout.
 ## Why reject (evidence)
 
 - **Not first-order.** The qw1.7 re-profile ranks `hyphen-corpus` rank 3
-  (27.3 ms over a 50,000-word synthetic stress corpus ≈ 0.55 µs/word); `pdf-large`
+  (27.5 ms p95 over a 50,000-word synthetic stress corpus ≈ 0.55 µs/word); `pdf-large`
   and `parser-large` dominate p95 by 2–4×. Real documents have far fewer words,
   so per-document hyphenation is small.
 - **qw1.7.1 already cut the repeated-word cost** with a per-document cache, so the

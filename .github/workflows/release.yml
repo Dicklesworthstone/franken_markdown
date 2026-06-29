@@ -60,6 +60,25 @@ jobs:
         shell: bash
         run: scripts/release-smoke.sh "target/${{ matrix.target }}/release/fmd"
 
+      # The bash smoke script assumes a POSIX shell + python3, so Windows gets a
+      # focused PowerShell smoke instead: the binary runs, capabilities is valid
+      # JSON, and --text renders HTML to stdout.
+      - name: Smoke test (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $fmd = "target/${{ matrix.target }}/release/fmd.exe"
+          & $fmd --version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "fmd --version exited $LASTEXITCODE" }
+          $caps = (& $fmd capabilities --json) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "fmd capabilities --json exited $LASTEXITCODE" }
+          $caps | ConvertFrom-Json | Out-Null
+          $html = (& $fmd --text '# Hello from fmd' --out -) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "fmd --text exited $LASTEXITCODE" }
+          if ($html -notmatch '<h1') { throw "fmd --text did not write HTML to stdout" }
+          Write-Host "windows smoke: ok (version, capabilities JSON, --text HTML)"
+
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
@@ -90,8 +109,12 @@ jobs:
           # Archive the staging folder itself (not its contents) so the zip has a
           # top-level fmd-<version>-<target>/ directory, matching the tar archives.
           Compress-Archive -Path $staging -DestinationPath "$name.zip" -Force
-          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" `
-            | Out-File -Encoding ascii "$name.zip.sha256"
+          # Write the checksum with a Unix LF newline (Out-File would emit CRLF,
+          # and the trailing \r would become part of the filename when verified
+          # with `sha256sum -c`), in the GNU coreutils "hash<space><space>name"
+          # format so it combines cleanly with the Linux/macOS sums.
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          [System.IO.File]::WriteAllText("$PWD/$name.zip.sha256", "$hash  $name.zip`n")
           "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: Upload build artifacts
@@ -121,7 +144,9 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          cat ./*.sha256 > SHA256SUMS
+          # Strip any stray CR so a Windows-produced sums line can't carry a
+          # trailing \r into the filename under `sha256sum -c`.
+          cat ./*.sha256 | tr -d '\r' > SHA256SUMS
           echo "Release assets:"; ls -1
 
       - name: Create release

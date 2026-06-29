@@ -31,7 +31,8 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > Version `0.0.0`; no release is tagged yet. Prebuilt `fmd` binaries for Linux,
 > macOS (Intel + Apple Silicon), and Windows are produced by the tag-gated
 > `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
-> until a tag is pushed, build from source as shown under [Install](#install).
+> until a tag is pushed, build from source as shown under
+> [Installation](#installation).
 
 ---
 
@@ -63,40 +64,6 @@ output.
 | WASM-first | The core has no filesystem, fontconfig, process, thread, or async-runtime assumptions; fonts arrive as bytes |
 | Agent-friendly CLI | `fmd README.md` just works; `capabilities --json`, `doctor --json`, `robot-docs guide`, and `--robot-triage` expose a stable machine contract |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are all product targets |
-
----
-
-## Install
-
-### Prebuilt binaries (once a `v*` tag is released)
-
-Each tagged release attaches a `fmd` archive per platform — Linux
-(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`) and Apple
-Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`) — built
-and smoke-tested by `.github/workflows/release.yml`, each with a `.sha256` plus a
-combined `SHA256SUMS`.
-
-```bash
-# Download the archive for your platform from the GitHub Releases page, then
-# verify and unpack (Linux example):
-sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
-./fmd-vX.Y.Z-x86_64-unknown-linux-gnu/fmd --version
-```
-
-### From source (any platform with a Rust toolchain)
-
-```bash
-cargo install --path . --bin fmd     # installs `fmd` into ~/.cargo/bin
-# or build in place:
-cargo build --release --bin fmd      # -> target/release/fmd
-```
-
-### Browser / WASM
-
-The browser package is published separately to npm as
-[`@franken-suite/franken-markdown`](wasm/README.md) by
-`.github/workflows/release-wasm.yml`.
 
 ---
 
@@ -199,9 +166,10 @@ bottom.
 
 ## Installation
 
-> A `curl`/PowerShell installer (`install.sh` / `install.ps1`) is being added.
-> Until a release is tagged, the installer builds `fmd` from source on your
-> machine. The from-source path below always works today.
+> The `curl`/PowerShell installers (`install.sh` / `install.ps1`) are present.
+> Until a release is tagged they build `fmd` from source on your machine; once a
+> `v*` tag is pushed they download and verify the prebuilt binary instead. The
+> from-source path below always works today.
 
 ### One-line install (Unix: macOS, Linux)
 
@@ -248,11 +216,22 @@ fmd --help
 `fmd` and the long alias `franken_markdown` are the same program built from one
 shared entrypoint; type whichever you like.
 
-### Future channels
+### Prebuilt binaries and npm (on a tagged release)
 
-Once a version is tagged, standalone binaries and a published
-`@franken-suite/franken-markdown` npm package (the browser/WASM build) are the
-planned distribution channels.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds,
+smoke-tests, and attaches a `fmd` archive per platform — Linux
+(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`) and Apple
+Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`) — each
+with a `.sha256` and a combined `SHA256SUMS`. Download the archive for your
+platform and verify it before unpacking (Linux example):
+
+```bash
+sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+```
+
+The browser/WASM build publishes separately to npm as
+`@franken-suite/franken-markdown` via `.github/workflows/release-wasm.yml`.
 
 ---
 

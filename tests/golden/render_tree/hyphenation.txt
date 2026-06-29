@@ -1,0 +1,17 @@
+page 150.00x300.00 content-w 102.00 | 1 page(s)
+=== page 0 (8 lines) ===
+  P x=24.00 y=261.48 size=11.0 f=1 fill=0.122,0.137,0.157 "Internationalization"
+  P x=24.00 y=246.96 size=11.0 f=1 fill=0.122,0.137,0.157 "and "
+  P x=60.88 y=246.96 size=11.0 f=1 fill=0.122,0.137,0.157 "antidisestab-"
+  P x=24.00 y=232.44 size=11.0 f=1 fill=0.122,0.137,0.157 "lishmentarianism"
+  P x=24.00 y=217.92 size=11.0 f=1 fill=0.122,0.137,0.157 "are "
+  P x=54.03 y=217.92 size=11.0 f=1 fill=0.122,0.137,0.157 "representative"
+  P x=24.00 y=203.40 size=11.0 f=1 fill=0.122,0.137,0.157 "hyphenation "
+  P x=94.83 y=203.40 size=11.0 f=1 fill=0.122,0.137,0.157 "candi-"
+  P x=24.00 y=188.88 size=11.0 f=1 fill=0.122,0.137,0.157 "dates "
+  P x=58.38 y=188.88 size=11.0 f=1 fill=0.122,0.137,0.157 "in "
+  P x=74.25 y=188.88 size=11.0 f=1 fill=0.122,0.137,0.157 "a "
+  P x=86.99 y=188.88 size=11.0 f=1 fill=0.122,0.137,0.157 "deliber-"
+  P x=24.00 y=174.36 size=11.0 f=1 fill=0.122,0.137,0.157 "ately "
+  P x=91.20 y=174.36 size=11.0 f=1 fill=0.122,0.137,0.157 "narrow"
+  P x=24.00 y=159.84 size=11.0 f=1 fill=0.122,0.137,0.157 "measure."

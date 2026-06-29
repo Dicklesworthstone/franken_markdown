@@ -1,0 +1,16 @@
+page 360.00x400.00 content-w 312.00 | 1 page(s)
+=== page 0 (6 lines) ===
+  TH col=0 x=31.00 y=362.80 size=10.0 f=2 fill=0.122,0.137,0.157 "Name"
+  TH col=1 x=206.36 y=362.80 size=10.0 f=2 fill=0.122,0.137,0.157 "Qty"
+  TH col=2 x=270.71 y=362.80 size=10.0 f=2 fill=0.122,0.137,0.157 "Price"
+  rule y=356.52 x=24.00 kind=TableRule
+  TD col=0 x=31.00 y=338.32 size=10.0 f=1 fill=0.122,0.137,0.157 "alpha"
+  TD col=1 x=216.67 y=338.32 size=10.0 f=1 fill=0.122,0.137,0.157 "1"
+  TD col=2 x=272.48 y=338.32 size=10.0 f=1 fill=0.122,0.137,0.157 "9.99"
+  TD col=0 x=31.00 y=322.62 size=10.0 f=1 fill=0.122,0.137,0.157 "beta"
+  TD col=1 x=210.67 y=322.62 size=10.0 f=1 fill=0.122,0.137,0.157 "22"
+  TD col=2 x=269.48 y=322.62 size=10.0 f=1 fill=0.122,0.137,0.157 "12.00"
+  TD col=0 x=31.00 y=306.92 size=10.0 f=1 fill=0.122,0.137,0.157 "gamma"
+  TD col=1 x=204.67 y=306.92 size=10.0 f=1 fill=0.122,0.137,0.157 "333"
+  TD col=2 x=272.48 y=306.92 size=10.0 f=1 fill=0.122,0.137,0.157 "7.50"
+  rule y=300.64 x=24.00 kind=TableRule

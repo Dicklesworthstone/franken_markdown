@@ -131,7 +131,9 @@ Implemented today:
 - reference-style links and images (`[text][id]`, `[text][]`, shortcut
   `[text]`, and matching image forms),
 - parser conformance, metamorphic, approved fixture snapshot, and official
-  CommonMark 0.31.2 spec-suite harnesses,
+  CommonMark 0.31.2 spec-suite harnesses, plus a deterministic PDF render-tree
+  golden (`tests/golden/render_tree/`) that catches layout/baseline/color/structure
+  regressions byte-determinism alone would miss,
 - additive spanned parse API with recoverable diagnostics for editor/WASM
   integrations,
 - structured shared theme model for HTML, PDF, CLI JSON, and WASM callers,

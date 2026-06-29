@@ -3752,6 +3752,122 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     penalty
 }
 
+// ---- render-tree golden support (bead qw1.1.2) ------------------------------
+//
+// A deterministic textual dump of the *paginated layout* — the placed lines with
+// their baselines, structure roles, and per-segment x/size/font/fill/text. Byte
+// determinism proves the writer is stable run-to-run; this render tree, pinned
+// as a golden, additionally catches appearance regressions across code changes
+// (baseline shifts, x-position/layout drift, text-color drift, wrong structure)
+// that byte-identical-but-wrong output would otherwise hide.
+
+#[cfg(all(test, target_os = "linux"))]
+fn render_tree_fill_label(fill: Fill, palette: &Palette) -> String {
+    // Label a fill by its emitted device-RGB so color drift shows up in the
+    // golden diff exactly as it would in the rendered page.
+    let (r, g, b) = fill_rgb(fill, palette);
+    format!("{r:.3},{g:.3},{b:.3}")
+}
+
+/// Serialize the paginated layout to a stable, human-reviewable render tree.
+#[cfg(all(test, target_os = "linux"))]
+fn serialize_render_tree(pages: &[Vec<Placed<'_>>], page: PageGeom, palette: &Palette) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "page {:.2}x{:.2} content-w {:.2} | {} page(s)",
+        page.width,
+        page.height,
+        page.content_w,
+        pages.len()
+    );
+    for (page_index, placed) in pages.iter().enumerate() {
+        let _ = writeln!(out, "=== page {page_index} ({} lines) ===", placed.len());
+        for p in placed {
+            let line = p.line;
+            let path = container_prefix(line)
+                .iter()
+                .map(|elem| elem.tag)
+                .collect::<Vec<_>>()
+                .join(">");
+            let prefix = if path.is_empty() {
+                String::new()
+            } else {
+                format!("[{path}] ")
+            };
+            if line.rule {
+                let _ = writeln!(
+                    out,
+                    "  rule y={:.2} x={:.2} kind={:?}",
+                    p.y + line.size * 0.5,
+                    line.rule_x,
+                    line.flow.kind
+                );
+            } else if let Some(image) = &line.image {
+                let _ = writeln!(
+                    out,
+                    "  {prefix}figure y={:.2} x={:.2} w={:.2} h={:.2} alt={:?}",
+                    p.y, line.rule_x, image.width_pt, image.height_pt, image.alt
+                );
+            } else if !line.table_cols.is_empty() {
+                let header = line.flow.kind == FlowKind::TableHeader;
+                let cell = if header { "TH" } else { "TD" };
+                for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
+                    if seg.text.is_empty() {
+                        continue;
+                    }
+                    let _ = writeln!(
+                        out,
+                        "  {prefix}{cell} col={col} x={:.2} y={:.2} size={:.1} f={} fill={} {:?}",
+                        seg.x,
+                        p.y,
+                        line.size,
+                        seg.slot,
+                        render_tree_fill_label(seg.fill, palette),
+                        seg.text
+                    );
+                }
+            } else {
+                let tag = leaf_elem(line).tag;
+                for seg in &line.segs {
+                    if seg.text.is_empty() {
+                        continue;
+                    }
+                    let strike = if seg.strike { " strike" } else { "" };
+                    let link = if seg.link.is_some() { " link" } else { "" };
+                    let _ = writeln!(
+                        out,
+                        "  {prefix}{tag} x={:.2} y={:.2} size={:.1} f={} fill={}{strike}{link} {:?}",
+                        seg.x,
+                        p.y,
+                        line.size,
+                        seg.slot,
+                        render_tree_fill_label(seg.fill, palette),
+                        seg.text
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Render Markdown to the deterministic render tree (parse -> layout -> paginate
+/// -> serialize), reusing the exact pipeline the PDF writer uses.
+#[cfg(all(test, target_os = "linux"))]
+fn render_tree_debug(markdown: &str, opts: &PdfOptions) -> String {
+    let doc = crate::parse_markdown(markdown);
+    let page = PageGeom::from_theme(&opts.theme);
+    let Ok(faces) = Faces::load(opts) else {
+        return "FONT LOAD ERROR\n".to_string();
+    };
+    let palette = Palette::from_colors(&opts.theme.colors);
+    let lines = layout(&doc.blocks, opts, &faces, page);
+    let pages = paginate_lines(&lines, page);
+    serialize_render_tree(&pages, page, &palette)
+}
+
 #[cfg(test)]
 mod keep_with_next_tests {
     use super::*;
@@ -5242,5 +5358,144 @@ mod pdf_writer_tests {
         append_pdf_string_escaped(&mut out, "a(b)c\\d\re\n\u{2206}");
 
         assert_eq!(out, "a\\(b\\)c\\\\d\\re ?");
+    }
+}
+
+/// Deterministic render-tree goldens (bead qw1.1.2). Each fixture is rendered
+/// through the real layout/pagination pipeline and its render tree is pinned to
+/// a committed golden under `tests/golden/render_tree/`. A code change that
+/// shifts a baseline, moves an x-position, drifts a text color, or alters the
+/// structure produces a golden diff — the appearance-regression signal that
+/// byte determinism alone cannot give.
+///
+/// Pinned on Linux (the CI quality runner) so f32 layout values are compared on
+/// one platform; cross-OS byte stability is gated separately by
+/// `scripts/check-determinism.sh`. Regenerate after an intentional change with
+/// `UPDATE_RENDER_TREE=1 cargo test render_tree`.
+#[cfg(all(test, target_os = "linux"))]
+mod render_tree_golden_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::theme::{PageMargins, PageSize, Theme};
+    use std::path::PathBuf;
+
+    fn small_opts(width_pt: f32, height_pt: f32) -> PdfOptions {
+        let mut theme = Theme::default();
+        theme.page.size = PageSize {
+            name: "render-tree-test",
+            width_pt,
+            height_pt,
+        };
+        theme.page.margins = PageMargins {
+            top_pt: 24.0,
+            right_pt: 24.0,
+            bottom_pt: 24.0,
+            left_pt: 24.0,
+        };
+        PdfOptions {
+            theme,
+            ..PdfOptions::default()
+        }
+    }
+
+    fn golden_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/render_tree")
+            .join(format!("{name}.txt"))
+    }
+
+    /// (name, markdown, page width, page height). Pages are kept narrow so prose
+    /// wraps, hyphenation fires, and multi-page pagination is exercised.
+    fn cases() -> Vec<(&'static str, String, f32, f32)> {
+        vec![
+            (
+                "prose",
+                "# Heading One\n\n## Heading Two\n\nA paragraph of body text long \
+                 enough that it wraps across several measured lines under a narrow \
+                 column, exercising baselines and the line breaker.\n\n\
+                 Another paragraph with *emphasis*, **strong**, `code`, and a \
+                 [link](https://example.com/docs) inline.\n"
+                    .to_string(),
+                320.0,
+                400.0,
+            ),
+            (
+                "lists",
+                "- first item\n- second item\n  - nested bullet\n  - nested two\n\
+                 - third item\n\n1. ordered one\n2. ordered two\n\n- [ ] todo\n\
+                 - [x] done\n"
+                    .to_string(),
+                320.0,
+                400.0,
+            ),
+            (
+                "table",
+                "| Name | Qty | Price |\n|:---|---:|:--:|\n| alpha | 1 | 9.99 |\n\
+                 | beta | 22 | 12.00 |\n| gamma | 333 | 7.50 |\n"
+                    .to_string(),
+                360.0,
+                400.0,
+            ),
+            (
+                "quote-code",
+                "> A quoted paragraph that is long enough to wrap inside the quote \
+                 gutter at this measure.\n>\n> - quoted list item\n\n\
+                 ```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\n\
+                 Body with ~~struck~~ text after the code block.\n"
+                    .to_string(),
+                320.0,
+                400.0,
+            ),
+            (
+                "hyphenation",
+                "Internationalization and antidisestablishmentarianism are \
+                 representative hyphenation candidates in a deliberately narrow \
+                 measure.\n"
+                    .to_string(),
+                150.0,
+                300.0,
+            ),
+        ]
+    }
+
+    #[test]
+    fn render_tree_goldens_match() {
+        let update = std::env::var("UPDATE_RENDER_TREE").is_ok();
+        let mut mismatches = Vec::new();
+        for (name, md, w, h) in cases() {
+            let tree = render_tree_debug(&md, &small_opts(w, h));
+            let path = golden_path(name);
+            if update {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).expect("create golden dir");
+                }
+                std::fs::write(&path, &tree).expect("write golden");
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(expected) if expected == tree => {}
+                Ok(_expected) => {
+                    mismatches.push(format!("{name}: render tree differs from golden"))
+                }
+                Err(e) => mismatches.push(format!("{name}: cannot read golden {path:?}: {e}")),
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "render-tree golden mismatch ({}). If the change is intentional, \
+             regenerate with `UPDATE_RENDER_TREE=1 cargo test render_tree` and \
+             review the diff.\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_tree_is_stable_across_repeated_renders() {
+        // The render tree must itself be deterministic (a prerequisite for the
+        // golden to mean anything).
+        let opts = small_opts(320.0, 400.0);
+        let md = cases()[0].1.clone();
+        assert_eq!(render_tree_debug(&md, &opts), render_tree_debug(&md, &opts));
     }
 }

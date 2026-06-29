@@ -130,7 +130,8 @@ Implemented today:
   hard and soft breaks,
 - reference-style links and images (`[text][id]`, `[text][]`, shortcut
   `[text]`, and matching image forms),
-- parser conformance, metamorphic, and approved fixture snapshot harnesses,
+- parser conformance, metamorphic, approved fixture snapshot, and official
+  CommonMark 0.31.2 spec-suite harnesses,
 - additive spanned parse API with recoverable diagnostics for editor/WASM
   integrations,
 - structured shared theme model for HTML, PDF, CLI JSON, and WASM callers,
@@ -415,7 +416,12 @@ equivalent options through the library API rather than reading local config.
   keep-with-next pagination controls, broader visual golden fixtures, and richer
   accessibility semantics such as full table-cell scopes are not implemented
   yet.
-- Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
+- Parser coverage is measured against the official CommonMark 0.31.2 suite by
+  `scripts/commonmark-conformance.sh`: **357/652 examples match** after
+  normalizing fmd's styled HTML (60.4% of the 591 in-scope examples; the 61
+  raw-HTML examples are intentional non-goals since fmd escapes raw HTML by
+  default). The number is a ratcheted floor (CI fails if it drops) and a lower
+  bound on parser correctness — see `tests/fixtures/commonmark/`.
 - HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
   deterministic and portable, but future work can make these subsets smaller.
 - The WASM package builds a real wasm-bindgen module that loads and renders with

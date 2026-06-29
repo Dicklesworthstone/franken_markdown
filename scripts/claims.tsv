@@ -17,3 +17,4 @@ shared_theme_model	shared theme model	shared_theme_model	structured	tests/pdf_te
 tagged_pdf	tagged-PDF structure	tagged_pdf	available	tests/pdf_test.rs
 stream_compression	compressed	stream_compression_pdf	available	tests/pdf_test.rs
 wasm_browser_package	npm install	wasm_browser_package	available_published	scripts/check-wasm-package.sh
+commonmark_conformance	commonmark-conformance.sh	commonmark_spec	0.31.2	scripts/commonmark-conformance.sh

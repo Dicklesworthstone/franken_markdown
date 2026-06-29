@@ -101,6 +101,15 @@ project has no tags or GitHub Releases yet.
 
 ### Parser Conformance
 
+- Added an official CommonMark 0.31.2 spec-suite conformance harness
+  (`scripts/commonmark-conformance.sh`): runs all 652 official examples, normalizes
+  fmd's styled HTML, and reports a per-example gap ledger (pass / known_gap /
+  intentional_non_goal) plus a section summary. Current result: **357/652 match**
+  (60.4% of in-scope examples; raw-HTML examples are intentional non-goals). The
+  number is a committed ratcheted floor enforced in CI, surfaced in
+  `capabilities --json` (`commonmark_spec`), with a drift guard tying the two
+  together. The spec is vendored as dev-only test data under
+  `tests/fixtures/commonmark/`.
 - Added setext heading support for `===`, `---`, and single-dash paragraph
   underlines while preserving standalone thematic breaks.
 - Added focused parser conformance tests for level-one setext headings,

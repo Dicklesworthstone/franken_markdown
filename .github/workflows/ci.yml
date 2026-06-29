@@ -44,6 +44,9 @@ jobs:
       - name: Check claim discipline (README <-> capabilities)
         run: scripts/check-claim-discipline.sh --self-test
 
+      - name: Check CommonMark conformance (ratcheted floor)
+        run: scripts/commonmark-conformance.sh ci
+
       - name: Test
         run: cargo test
 

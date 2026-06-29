@@ -188,6 +188,9 @@ struct FlowMark {
     index: usize,
     count: usize,
     kind: FlowKind,
+    /// True only on the first line of a list (the first item's marker line), so
+    /// the page builder can keep a short intro/caption with the list it heads.
+    list_start: bool,
 }
 
 impl Default for FlowMark {
@@ -197,6 +200,7 @@ impl Default for FlowMark {
             index: 0,
             count: 1,
             kind: FlowKind::Other,
+            list_start: false,
         }
     }
 }
@@ -836,6 +840,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     index: 0,
                     count: 1,
                     kind: FlowKind::Rule,
+                    list_start: false,
                 },
                 segs: Vec::new(),
                 image: None,
@@ -900,6 +905,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             index: 0,
             count: 1,
             kind: FlowKind::Heading,
+            list_start: false,
         },
         segs: Vec::new(),
         image: None,
@@ -947,6 +953,7 @@ fn layout_standalone_image(
             index: 0,
             count: 1,
             kind: FlowKind::Image,
+            list_start: false,
         },
         segs: Vec::new(),
         image: Some(ImageLine {
@@ -1080,6 +1087,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             index,
             count,
             kind,
+            list_start: false,
         };
     }
 }
@@ -1200,6 +1208,7 @@ fn layout_table(
                         index: row_idx,
                         count: depth,
                         kind,
+                        list_start: false,
                     },
                     segs,
                     image: None,
@@ -1222,6 +1231,7 @@ fn layout_table(
             index: 0,
             count: 1,
             kind: FlowKind::TableRule,
+            list_start: false,
         },
         segs: Vec::new(),
         image: None,
@@ -1326,6 +1336,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         .max(8.0);
     let marker_left = cx.page.left + indent + 2.0;
     let content_indent = indent + marker_col + 11.0;
+    let list_first_line = out.len();
 
     for (i, item) in list.items.iter().enumerate() {
         let marker = markers.get(i).cloned().unwrap_or_else(|| "•".to_string());
@@ -1382,6 +1393,11 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         for b in rest {
             layout_block(b, content_indent, out, cx);
         }
+    }
+    // Mark the list's first line so a short intro/caption immediately before it
+    // is kept with the list by the page builder (keep-with-next).
+    if let Some(first) = out.get_mut(list_first_line) {
+        first.flow.list_start = true;
     }
     gap(out, 6.0);
 }
@@ -3224,10 +3240,11 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         && before.flow.group != after.flow.group
         && before.flow.index + 1 == before.flow.count
         && before.flow.count <= 2;
-    let after_starts_captioned_block = matches!(
+    let after_starts_captioned_block = (matches!(
         after.flow.kind,
         FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
-    ) && after.flow.index == 0;
+    ) && after.flow.index == 0)
+        || after.flow.list_start;
     if before_ends_short_intro && after_starts_captioned_block {
         penalty += 700_000.0;
     }
@@ -3263,6 +3280,7 @@ mod keep_with_next_tests {
                 index,
                 count,
                 kind,
+                list_start: false,
             },
             segs: Vec::new(),
             image: None,
@@ -3302,6 +3320,33 @@ mod keep_with_next_tests {
             line(FlowKind::TableRow, 2, 1, 3),
         ];
         assert_eq!(break_penalty(&lines, 1), 0.0);
+    }
+
+    #[test]
+    fn short_intro_before_a_list_is_kept_but_a_long_paragraph_is_not() {
+        let mut list_start = line(FlowKind::Paragraph, 2, 0, 3);
+        list_start.flow.list_start = true;
+        let kept = [line(FlowKind::Paragraph, 1, 0, 1), list_start];
+        assert!(
+            break_penalty(&kept, 1) >= 700_000.0,
+            "a short intro before a list must be kept with it"
+        );
+
+        let mut list_start2 = line(FlowKind::Paragraph, 2, 0, 3);
+        list_start2.flow.list_start = true;
+        let not_kept = [line(FlowKind::Paragraph, 1, 3, 4), list_start2];
+        assert_eq!(
+            break_penalty(&not_kept, 1),
+            0.0,
+            "a long body paragraph before a list is not a caption/intro"
+        );
+
+        // A paragraph before a non-list-start paragraph is unaffected.
+        let plain = [
+            line(FlowKind::Paragraph, 1, 0, 1),
+            line(FlowKind::Paragraph, 2, 0, 1),
+        ];
+        assert_eq!(break_penalty(&plain, 1), 0.0);
     }
 
     #[test]

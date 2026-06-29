@@ -88,9 +88,16 @@ project has no tags or GitHub Releases yet.
   source-string package tests to an explicit "source-shape lint" that does not
   count as proof of working WASM.
 - Generalized PDF keep-with-next pagination: a short intro/caption paragraph is
-  now kept with the table, code block, or figure it introduces, so it never
-  strands alone at the foot of a page (extending the existing heading keep).
+  now kept with the table, code block, figure, or list it introduces, so it never
+  strands alone at the foot of a page (extending the existing heading keep). A
+  `list_start` flow flag marks a list's first line so list intros are covered too.
   Added unit + behavioral tests and `scripts/pagination-proof.sh`.
+- Made the WASM browser package publish-ready: hardened `wasm/package.json`
+  (repository/homepage/keywords/publishConfig), added a manifest-completeness
+  check to the package gate (every declared file must ship), and a tag-gated npm
+  release workflow. Capabilities now reports `wasm_browser_package` as
+  `publishable_unpublished` (one tag push from publication; the claim-discipline
+  gate still blocks an `npm install` claim until it is actually published).
 
 ### Parser Conformance
 

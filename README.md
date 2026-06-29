@@ -21,9 +21,10 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > tinted blockquotes, strikethrough, H1/H2 heading rules, syntax-highlighted code
 > panels, and selectable tagged-PDF text. The browser/WASM package now builds a
 > real wasm-bindgen module that loads in node/the browser and renders HTML and
-> PDF with byte-identical parity to the native core (proven by
-> `scripts/check-wasm-package.sh`); npm publishing and deeper pagination controls
-> remain active roadmap work tracked in beads.
+> PDF with byte-identical parity to the native core, and is publish-ready
+> (validated manifest plus a tag-gated npm release workflow), all proven by
+> `scripts/check-wasm-package.sh`; the actual npm publish (one tag push) and
+> deeper pagination controls remain active roadmap work tracked in beads.
 
 ## TL;DR
 
@@ -418,8 +419,9 @@ equivalent options through the library API rather than reading local config.
 - HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
   deterministic and portable, but future work can make these subsets smaller.
 - The WASM package builds a real wasm-bindgen module that loads and renders with
-  proven byte-identical native parity (`scripts/check-wasm-package.sh`), but is
-  not published to npm yet, and
+  proven byte-identical native parity, and is publish-ready (validated manifest +
+  tag-gated release workflow), all checked by `scripts/check-wasm-package.sh`; it
+  is not actually published to npm yet (one tag push away), and
   browser visual/golden fixture coverage is still early.
 - There is no installer or published release yet.
 

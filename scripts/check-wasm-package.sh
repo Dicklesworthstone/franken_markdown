@@ -61,6 +61,7 @@ wasm-bindgen "$wasm_in" --target web --out-dir "$pkg_dir"
 cp wasm/franken_markdown.js "$package_dir/franken_markdown.js"
 cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
 cp wasm/package.json "$package_dir/package.json"
+cp wasm/README.md "$package_dir/README.md"
 mkdir -p "$package_dir/demo"
 cp wasm/demo/index.html "$package_dir/demo/index.html"
 cp wasm/demo/demo.js "$package_dir/demo/demo.js"
@@ -72,6 +73,22 @@ for artifact in \
   [ -s "$artifact" ] || { log "expected package artifact missing: $artifact"; exit 1; }
 done
 log "package assembled at $package_dir"
+
+# Manifest completeness (publishability proof, npm-free): every path declared in
+# package.json files[] must exist in the assembled package — exactly what
+# `npm pack` would include. Plus the README npm auto-ships. The only remaining
+# step to publish is a maintainer pushing a tag (see .github/workflows/release-wasm.yml).
+log "manifest completeness (publishability):"
+manifest_fail=0
+while IFS= read -r rel; do
+  if [ -s "$package_dir/$rel" ]; then
+    log "  files[] ${rel}: present"
+  else
+    log "  files[] ${rel}: MISSING"; manifest_fail=1
+  fi
+done < <(python3 -c "import json; [print(f) for f in json.load(open('wasm/package.json'))['files']]")
+if [ -s "$package_dir/README.md" ]; then log "  README.md: present"; else log "  README.md: MISSING"; manifest_fail=1; fi
+[ "$manifest_fail" -eq 0 ] || { log "manifest FAIL: declared package files missing from assembly"; exit 1; }
 
 # Size budget (raw + gzip), with a ratchet.
 bg="$pkg_dir/franken_markdown_bg.wasm"

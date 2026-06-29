@@ -1077,6 +1077,40 @@ fn pdf_keeps_a_short_caption_with_its_following_table() {
 }
 
 #[test]
+fn pdf_keeps_a_short_intro_with_its_following_list() {
+    // mwm.10: a short intro paragraph must not strand at the foot of a page while
+    // the list it introduces starts the next page (list-start keep-with-next).
+    let mut filler = String::new();
+    for i in 1..=9 {
+        filler.push_str(&format!("Filler line number {i} here.\n\n"));
+    }
+    let opts = small_page_opts(240.0, 150.0);
+
+    // Control: without a list, the intro fits as the last paragraph on page 1.
+    let no_list = format!("{filler}Intro for the list\n");
+    let control = page_tag_sequences(&render_pdf(&no_list, &opts).unwrap());
+    assert!(
+        control.len() == 2 && control[1].iter().filter(|t| t.as_str() == "P").count() == 5,
+        "control: the intro should sit with filler on page 1; got {control:?}"
+    );
+
+    // With a list, the intro is pulled off page 1 (4 filler P remain) to join the
+    // list on a later page.
+    let with_list =
+        format!("{filler}Intro for the list\n\n- first item\n- second item\n- third item\n");
+    let pages = page_tag_sequences(&render_pdf(&with_list, &opts).unwrap());
+    assert!(
+        pages.len() >= 3,
+        "intro + list should paginate onto page 2+, got {pages:?}"
+    );
+    assert_eq!(
+        pages[1].iter().filter(|t| t.as_str() == "P").count(),
+        4,
+        "the intro should have been pulled off the page before the list; got {pages:?}"
+    );
+}
+
+#[test]
 fn pdf_colors_derive_from_shared_theme_tokens() {
     let theme = Theme::default();
     let colors = &theme.colors;

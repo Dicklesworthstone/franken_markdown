@@ -5,6 +5,32 @@
   "type": "module",
   "sideEffects": false,
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
+  "author": "Jeffrey Emanuel",
+  "homepage": "https://github.com/Dicklesworthstone/franken_markdown#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dicklesworthstone/franken_markdown.git",
+    "directory": "wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/Dicklesworthstone/franken_markdown/issues"
+  },
+  "keywords": [
+    "markdown",
+    "pdf",
+    "html",
+    "renderer",
+    "wasm",
+    "webassembly",
+    "typesetting"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "exports": {
     ".": {
       "types": "./franken_markdown.d.ts",

@@ -1,0 +1,45 @@
+name: Release WASM package
+
+# Publishes the browser/WASM package to npm when a version tag is pushed. The
+# build + headless render + native-parity + manifest gate runs first; npm publish
+# only happens if it is green. Requires an NPM_TOKEN secret with publish rights to
+# the @franken-suite scope. Without the secret the publish step is skipped, so the
+# workflow doubles as a tag-time publishability check.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish-wasm:
+    name: Build, verify, and publish the WASM package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Build + verify the package (build, headless render, native parity, manifest, size)
+        run: scripts/check-wasm-package.sh release
+
+      - name: Publish to npm (skipped without NPM_TOKEN)
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish --provenance --access public
+        working-directory: target/fmd-checks/wasm-package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -67,6 +67,21 @@ for crate in "${banned[@]}"; do
   fi
 done
 
+echo "fmd policy check: batch/asupersync isolation (native-only, opt-in)"
+# The render core, the default build, and every wasm/no-default build must never
+# pull the batch orchestration framework (asupersync); it is opt-in via
+# --features batch only (bead zmd.1.6). The --no-default-features core was
+# already asserted to have zero third-party deps above, so it cannot contain it.
+default_crates="$(cargo tree --prefix none --edges normal | awk '{print $1}' | sort -u)"
+if printf '%s\n' "$default_crates" | grep -Fxq asupersync; then
+  fail "asupersync must not be in the default dependency graph (opt-in via --features batch)"
+fi
+batch_crates="$(cargo tree --features batch --prefix none --edges normal 2>/dev/null \
+  | awk '{print $1}' | sort -u)"
+if ! printf '%s\n' "$batch_crates" | grep -Fxq asupersync; then
+  fail "the --features batch graph must include asupersync (feature wiring broken)"
+fi
+
 echo "fmd policy check: no native build script"
 if [ -e build.rs ]; then
   fail "build.rs is not allowed without an explicit architecture decision"

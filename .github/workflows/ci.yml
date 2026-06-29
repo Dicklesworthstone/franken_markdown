@@ -98,3 +98,23 @@ jobs:
 
       - name: WASM package gate (build + headless render + native parity + size)
         run: scripts/check-wasm-package.sh ci
+
+  batch:
+    name: Native batch feature (Asupersync)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The batch feature pulls Asupersync (heavy, native-only); run it in its
+      # own job so the main quality gate stays fast. Proves the feature compiles,
+      # the scheduler + deterministic-receipt + cancellation lab tests pass, and
+      # the throughput e2e (scenarios + receipt-determinism + negative path) runs.
+      - name: Build + test the batch feature
+        run: cargo test --features batch --lib batch::
+
+      - name: Clippy (batch feature)
+        run: cargo clippy --features batch --lib -- -D warnings
+
+      - name: Batch throughput e2e self-test
+        run: scripts/batch-throughput.sh --self-test

@@ -40,3 +40,6 @@ Thumbs.db
 
 # Beads compliance audit dir (managed by /beads-compliance-and-completion-verification skill)
 /beads_compliance_audit/
+
+# Regenerable batch-throughput corpora + rendered outputs
+tests/artifacts/perf/*/work/

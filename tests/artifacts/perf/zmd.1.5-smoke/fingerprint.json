@@ -1,0 +1,13 @@
+{
+  "schema_version": "fmd-perf-artifact-v1",
+  "run_id": "zmd.1.5-smoke",
+  "git_sha": "63ecbafb5b34fc4ae9d5911dbb8f3f9c7ee4e55c",
+  "dirty": " M .beads/issues.jsonl; M scripts/check-policy.sh;?? -;?? franken_markdown_illustration.png;?? scripts/batch-throughput.sh;?? tests/artifacts/claims/;?? tests/artifacts/cli/;?? tests/artifacts/conformance/;?? tests/artifacts/pagination/;?? tests/artifacts/perf/batch-throughput-20260629T192217Z/;?? tests/artifacts/perf/batch-throughput-20260629T192451Z/;?? tests/artifacts/perf/fep.6.1-stage-smoke/;",
+  "rustc": "rustc 1.98.0-nightly (df6ee909e 2026-06-28)",
+  "cargo": "cargo 1.98.0-nightly (a335d47ff 2026-06-26)",
+  "os": "Linux 6.17.0-35-generic x86_64",
+  "cpu": "AMD Ryzen Threadripper PRO 5995WX 64-Cores",
+  "available_parallelism": 128,
+  "files": 6,
+  "iters": 2
+}

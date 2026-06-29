@@ -1,0 +1,93 @@
+{
+  "type": "batch_throughput_summary",
+  "schema_version": "fmd-perf-artifact-v1",
+  "artifact_dir": "tests/artifacts/perf/zmd.1.5-smoke",
+  "parallel_speedup_pdf": 1.42,
+  "parallel_speedup_ideal": 6,
+  "scenarios": [
+    {
+      "scenario": "html-100",
+      "inputs": 6,
+      "ok": 6,
+      "failed": 0,
+      "skipped": 0,
+      "workers": 6,
+      "queue_depth": 192,
+      "p50_ms": 12.477,
+      "p95_ms": 13.902,
+      "p99_ms": 13.902,
+      "throughput_files_per_s": 480.9,
+      "output_bytes": 682279,
+      "peak_rss_kb": 5252,
+      "policy": {
+        "mu_jobs_per_s_per_worker": 80.1,
+        "lambda_jobs_per_s": 480.9,
+        "c_workers": 6,
+        "rho_utilization": 1.0
+      }
+    },
+    {
+      "scenario": "pdf-100",
+      "inputs": 6,
+      "ok": 6,
+      "failed": 0,
+      "skipped": 0,
+      "workers": 6,
+      "queue_depth": 192,
+      "p50_ms": 19.404,
+      "p95_ms": 19.796,
+      "p99_ms": 19.796,
+      "throughput_files_per_s": 309.2,
+      "output_bytes": 139182,
+      "peak_rss_kb": 12388,
+      "policy": {
+        "mu_jobs_per_s_per_worker": 51.5,
+        "lambda_jobs_per_s": 309.2,
+        "c_workers": 6,
+        "rho_utilization": 1.0
+      }
+    },
+    {
+      "scenario": "mixed-both",
+      "inputs": 4,
+      "ok": 4,
+      "failed": 0,
+      "skipped": 0,
+      "workers": 4,
+      "queue_depth": 192,
+      "p50_ms": 58.122,
+      "p95_ms": 80.226,
+      "p99_ms": 80.226,
+      "throughput_files_per_s": 68.8,
+      "output_bytes": 851115,
+      "peak_rss_kb": 13476,
+      "policy": {
+        "mu_jobs_per_s_per_worker": 17.2,
+        "lambda_jobs_per_s": 68.8,
+        "c_workers": 4,
+        "rho_utilization": 1.0
+      }
+    },
+    {
+      "scenario": "budget-cap1",
+      "inputs": 6,
+      "ok": 6,
+      "failed": 0,
+      "skipped": 0,
+      "workers": 1,
+      "queue_depth": 2,
+      "p50_ms": 27.569,
+      "p95_ms": 70.173,
+      "p99_ms": 70.173,
+      "throughput_files_per_s": 217.6,
+      "output_bytes": 139182,
+      "peak_rss_kb": 7324,
+      "policy": {
+        "mu_jobs_per_s_per_worker": 217.6,
+        "lambda_jobs_per_s": 217.6,
+        "c_workers": 1,
+        "rho_utilization": 1.0
+      }
+    }
+  ]
+}

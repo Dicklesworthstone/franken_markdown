@@ -9,13 +9,13 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 
 ![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)
 ![Language](https://img.shields.io/badge/language-Rust%202024-dea584)
-![Status](https://img.shields.io/badge/status-early%20but%20capable-orange)
+![Status](https://img.shields.io/badge/status-HTML%20%26%20PDF%20already%20work-success)
 ![Core](https://img.shields.io/badge/core-clean--room%20std--only-success)
 ![WASM](https://img.shields.io/badge/WASM-first--class-654ff0)
 
 </div>
 
-> **Status: early, but the HTML and PDF paths already work.** Markdown renders to
+> **The HTML and PDF paths work today.** Markdown renders to
 > self-contained HTML today, including clean-room syntax highlighting for common
 > documentation languages. The PDF path produces compact, deterministic,
 > embedded-subset-font documents with Knuth-Plass line breaking, real GPOS

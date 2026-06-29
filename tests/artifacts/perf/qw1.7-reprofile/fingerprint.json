@@ -1,0 +1,7 @@
+{
+  "git_sha": "6eadba037c89530559e3c45f0089665535ef1f63",
+  "build_profile": "release",
+  "rustc": "rustc 1.98.0-nightly (df6ee909e 2026-06-28)",
+  "cpu": "AMD Ryzen Threadripper PRO 5995WX 64-Cores",
+  "note": "layout re-profile gate qw1.7; iters bounded for the 7s hyphen-corpus scenario"
+}

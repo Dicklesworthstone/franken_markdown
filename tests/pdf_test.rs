@@ -787,6 +787,17 @@ fn pdf_structure_tree_is_hierarchical_and_accessible() {
         text.contains("/Type /OBJR"),
         "a link annotation must be referenced from the structure tree"
     );
+    // The reverse of the /OBJR: the link annotation carries a /StructParent, the
+    // StructTreeRoot advertises /ParentTreeNextKey, and the parent tree maps the
+    // annotation's key to its owning element (PDF/UA bidirectional link).
+    assert!(
+        text.contains("/StructParent "),
+        "a tagged link annotation needs a /StructParent back-reference"
+    );
+    assert!(
+        text.contains("/ParentTreeNextKey"),
+        "the StructTreeRoot must advertise /ParentTreeNextKey"
+    );
 
     // Decoration is wrapped as /Artifact, and all marked content is balanced —
     // nothing is left unmarked in the tagged page (PDF/UA 7.1).

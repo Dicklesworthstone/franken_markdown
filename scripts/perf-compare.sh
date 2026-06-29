@@ -48,11 +48,20 @@ run_compare() { # before_dir after_dir
 import json, os, sys
 
 before_dir, after_dir = sys.argv[1], sys.argv[2]
-envelope = float(os.environ.get("ENVELOPE", "3.0"))
+try:
+    envelope = float(os.environ.get("ENVELOPE", "3.0"))
+except ValueError:
+    sys.stderr.write("perf-compare: --envelope must be a number; using 3.0\n")
+    envelope = 3.0
 as_json = os.environ.get("JSON", "0") == "1"
 
+REQUIRED = ("scenario", "p50_ns", "p95_ns", "p99_ns")
+
 def load_samples(d):
-    """scenario -> perf_sample dict, from inprocess.jsonl (last wins)."""
+    """scenario -> perf_sample dict, from inprocess.jsonl (last wins). Records
+    missing any required percentile key (e.g. a truncated/partial artifact line
+    that still parses as JSON) are skipped with a warning rather than crashing
+    the comparison downstream."""
     out = {}
     path = os.path.join(d, "inprocess.jsonl")
     if os.path.isfile(path):
@@ -65,8 +74,15 @@ def load_samples(d):
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("type") == "perf_sample" and "scenario" in rec:
+                if rec.get("type") != "perf_sample":
+                    continue
+                if all(k in rec for k in REQUIRED):
                     out[rec["scenario"]] = rec
+                elif "scenario" in rec:
+                    sys.stderr.write(
+                        f"perf-compare: skipping incomplete perf_sample "
+                        f"'{rec['scenario']}' in {path} (missing percentile fields)\n"
+                    )
     return out
 
 def load_rss_kb(d):
@@ -89,13 +105,19 @@ rss_before = load_rss_kb(before_dir)
 rss_after = load_rss_kb(after_dir)
 
 def pct(b, a):
+    # A zero baseline cannot yield a finite percentage; report None (serialized
+    # as JSON null) rather than the non-standard `Infinity` token that strict
+    # parsers reject.
     if b == 0:
-        return 0.0 if a == 0 else float("inf")
+        return 0.0 if a == 0 else None
     return (a - b) / b * 100.0
 
 def classify(p95_pct):
     # Latency: lower is better. A negative delta beyond the envelope is an
-    # improvement; a positive one is a regression; otherwise it is noise.
+    # improvement; a positive one is a regression; otherwise it is noise. A
+    # degenerate zero baseline (p95_pct is None) is treated as noise.
+    if p95_pct is None:
+        return "noise"
     if p95_pct <= -envelope:
         return "improvement"
     if p95_pct >= envelope:
@@ -155,13 +177,23 @@ BEAD_HINTS = {
 reco = None
 if after_top:
     cat = after.get(after_top, {}).get("category", "")
+    # Confidence is HIGH when the AFTER top hotspot clearly dominates the
+    # runner-up (>=20% p95 margin) and the top did not just shift; otherwise
+    # MEDIUM, because a narrow lead or a freshly-shifted top makes "optimize
+    # this next" a less certain call.
+    after_p95_desc = sorted((v["p95_ns"] for v in after.values()), reverse=True)
+    margin = None
+    if len(after_p95_desc) >= 2 and after_p95_desc[0] > 0:
+        margin = (after_p95_desc[0] - after_p95_desc[1]) / after_p95_desc[0]
+    narrow_lead = margin is not None and margin < 0.20
+    confidence = "medium" if (hotspot_shifted or narrow_lead) else "high"
     reco = {
         "scenario": after_top,
         "category": cat,
         "p95_ns": after.get(after_top, {}).get("p95_ns"),
         "suggested_area": BEAD_HINTS.get(cat, "re-profile this scenario"),
         "reason": "highest p95 in the AFTER run" + (" (top hotspot shifted)" if hotspot_shifted else ""),
-        "confidence": "high" if (after_top and (not before or before_top == after_top or hotspot_shifted)) else "medium",
+        "confidence": confidence,
     }
 
 rss_delta_kb = (rss_after - rss_before) if (rss_before is not None and rss_after is not None) else None

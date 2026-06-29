@@ -1216,9 +1216,10 @@ fn layout_table(
             for row_idx in 0..depth {
                 let mut segs = Vec::new();
                 // Source grid column of each emitted seg, kept parallel to `segs`
-                // so the structure tree can tag per-cell `/TH`/`/TD`. Empty cells
-                // emit no seg (and no column), which the tree builder backfills as
-                // empty cells using the table's column count.
+                // so the structure tree can tag per-cell `/TH`/`/TD`. An empty
+                // cell emits no seg (and no column), so it is simply omitted from
+                // its row's structure — a known limitation (no empty-`/TD`
+                // backfill); see docs/PDF_ACCESSIBILITY.md.
                 let mut cols = Vec::new();
                 for k in 0..ncol {
                     let Some(text) = wrapped.get(k).and_then(|parts| parts.get(row_idx)) else {
@@ -2845,8 +2846,12 @@ fn serialize(
         // Per-page logical-row tracking for table cells: a new table fragment
         // (or a new logical row within it) is detected from the table flow group
         // and the per-row wrap index resetting to 0. The header is row 0.
+        // `prev_table_kind` additionally catches an orphan body-row wrap line that
+        // begins a continuation page after the repeated header: its wrap index is
+        // != 0, but the header→body kind transition still starts a fresh row.
         let mut tbl_group: Option<u32> = None;
         let mut tbl_row: u32 = 0;
+        let mut prev_table_kind: Option<FlowKind> = None;
         for p in placed {
             let line = p.line;
             let y = p.y;
@@ -2884,7 +2889,9 @@ fn serialize(
                 // logical row for cell grouping.
                 match tbl_group {
                     Some(g) if g == line.flow.group => {
-                        if line.flow.index == 0 {
+                        let into_body = line.flow.kind == FlowKind::TableRow
+                            && prev_table_kind != Some(FlowKind::TableRow);
+                        if line.flow.index == 0 || into_body {
                             tbl_row += 1;
                         }
                     }
@@ -2893,6 +2900,7 @@ fn serialize(
                         tbl_row = 0;
                     }
                 }
+                prev_table_kind = Some(line.flow.kind);
                 let header = line.flow.kind == FlowKind::TableHeader;
                 let cell_tag = if header { "TH" } else { "TD" };
                 let prefix = container_prefix(line);
@@ -3170,6 +3178,11 @@ struct StructTree {
     nodes: Vec<SNode>,
     /// `parent_tree[page][mcid]` = owning node index, in dense `/MCID` order.
     parent_tree: Vec<Vec<usize>>,
+    /// `annot_owner[page][local]` = owning node index of the resolved link
+    /// annotation (in the same filter order as annotation object numbering), or
+    /// `None` when the annotation has no owning structure element. Drives the
+    /// `/StructParent` back-reference required for tagged links (PDF/UA).
+    annot_owner: Vec<Vec<Option<usize>>>,
 }
 
 /// Assemble the hierarchical structure tree from per-page marks. Each mark
@@ -3189,6 +3202,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         page: None,
     }];
     let mut parent_tree: Vec<Vec<usize>> = Vec::with_capacity(pages.len());
+    let mut annot_owner: Vec<Vec<Option<usize>>> = Vec::with_capacity(pages.len());
 
     for (page_idx, page) in pages.iter().enumerate() {
         let mut leaf_for_mcid: Vec<usize> = Vec::new();
@@ -3247,27 +3261,34 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
 
         // Reference each resolved link annotation back from its owning /Link
         // element with an /OBJR, in the same filtered order used for annotation
-        // object numbering.
+        // object numbering, and record the owning element so the annotation can
+        // carry the reverse /StructParent.
+        let mut owners_this_page: Vec<Option<usize>> = Vec::new();
         let mut local = 0usize;
         for annot in &page.annots {
             if !annotation_is_resolved(annot, dest_ids) {
                 continue;
             }
-            if let Some(m) = annot.owner_mcid
-                && let Some(&owner) = leaf_for_mcid.get(m)
-            {
+            let owner = annot.owner_mcid.and_then(|m| leaf_for_mcid.get(m).copied());
+            if let Some(owner) = owner {
                 nodes[owner].kids.push(SKid::ObjR {
                     page: page_idx,
                     local,
                 });
             }
+            owners_this_page.push(owner);
             local += 1;
         }
+        annot_owner.push(owners_this_page);
 
         parent_tree.push(leaf_for_mcid);
     }
 
-    StructTree { nodes, parent_tree }
+    StructTree {
+        nodes,
+        parent_tree,
+        annot_owner,
+    }
 }
 
 fn estimated_background_capacity(placed: &[Placed<'_>]) -> usize {
@@ -4366,9 +4387,35 @@ fn build_pdf(
         StructTree {
             nodes: Vec::new(),
             parent_tree: Vec::new(),
+            annot_owner: Vec::new(),
         }
     };
     let struct_node_count = stree.nodes.len();
+
+    // Assign a `/StructParent` key to each OBJR-referenced link annotation. Page
+    // content uses keys `0..p` (the `/StructParents` on page objects), so
+    // annotation keys start at `p` to stay unique. `annot_struct_parent[page]
+    // [local]` is `Some(key)` for an annotation with an owning element;
+    // `struct_annot_nums` collects the parent-tree back-references `key -> owner`.
+    let mut annot_struct_parent: Vec<Vec<Option<usize>>> = Vec::with_capacity(p);
+    let mut struct_annot_nums: Vec<(usize, usize)> = Vec::new();
+    let mut next_struct_key = p;
+    for page_owners in &stree.annot_owner {
+        let mut keys = Vec::with_capacity(page_owners.len());
+        for owner in page_owners {
+            match owner {
+                Some(node) => {
+                    let key = next_struct_key;
+                    next_struct_key += 1;
+                    keys.push(Some(key));
+                    struct_annot_nums.push((key, *node));
+                }
+                None => keys.push(None),
+            }
+        }
+        annot_struct_parent.push(keys);
+    }
+    let parent_tree_next_key = next_struct_key;
 
     // Object number plan (1-indexed):
     //   1 Catalog, 2 Pages, [3..3+p) Page objs, [3+p..3+2p) content streams,
@@ -4649,7 +4696,10 @@ fn build_pdf(
             .filter(|annot| annotation_is_resolved(annot, &dest_ids))
             .enumerate()
         {
-            let body = annotation_dict(annot, &dest_by_id, page_obj);
+            let struct_parent = annot_struct_parent
+                .get(page_index)
+                .and_then(|keys| keys.get(local_index).copied().flatten());
+            let body = annotation_dict(annot, &dest_by_id, page_obj, struct_parent);
             append_pdf_object_str(
                 &mut buf,
                 &mut offsets,
@@ -4700,17 +4750,22 @@ fn build_pdf(
 
     if tagged {
         // StructTreeRoot points at the single /Document node (node 0).
+        // /ParentTreeNextKey is one past the highest key used in /Nums.
         append_pdf_object_str(
             &mut buf,
             &mut offsets,
             struct_root_obj,
             &format!(
-                "<< /Type /StructTreeRoot /K [ {doc} 0 R ] /ParentTree {parent_tree_obj} 0 R >>",
+                "<< /Type /StructTreeRoot /K [ {doc} 0 R ] /ParentTree {parent_tree_obj} 0 R \
+                 /ParentTreeNextKey {parent_tree_next_key} >>",
                 doc = struct_elem_obj(0),
             ),
         );
 
-        // Parent tree: map each page's MCIDs (in order) to their owning element.
+        // Parent tree: page keys (0..p) map their MCIDs in order to the owning
+        // element; annotation keys (p..) map a single OBJR-referenced link
+        // annotation back to its owning /Link element. Keys stay sorted because
+        // every page key is < p <= every annotation key.
         let mut nums = String::new();
         for (page_index, leaf_for_mcid) in stree.parent_tree.iter().enumerate() {
             if leaf_for_mcid.is_empty() {
@@ -4722,6 +4777,9 @@ fn build_pdf(
                 .collect::<Vec<_>>()
                 .join(" ");
             nums.push_str(&format!("{page_index} [ {refs} ] "));
+        }
+        for (key, owner_node) in &struct_annot_nums {
+            nums.push_str(&format!("{key} {} 0 R ", struct_elem_obj(*owner_node)));
         }
         append_pdf_object_str(
             &mut buf,
@@ -4895,6 +4953,7 @@ fn annotation_dict(
     annot: &LinkAnnotation,
     dest_by_id: &BTreeMap<&str, &OutlineEntry>,
     page_obj: impl Fn(usize) -> usize,
+    struct_parent: Option<usize>,
 ) -> String {
     let rect = format!(
         "[{} {} {} {}]",
@@ -4903,19 +4962,27 @@ fn annotation_dict(
         pdf_num(annot.rect.x1),
         pdf_num(annot.rect.y1),
     );
+    // The reverse of the owning /Link element's /OBJR: maps this annotation back
+    // through the parent tree to its structure element (required for tagged
+    // links, PDF/UA).
+    let sp = struct_parent
+        .map(|key| format!(" /StructParent {key}"))
+        .unwrap_or_default();
     match &annot.target {
         LinkTarget::Uri(uri) => format!(
             "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] \
-             /A << /S /URI /URI ({uri}) >> >>",
+             /A << /S /URI /URI ({uri}) >>{sp} >>",
             uri = pdf_escape(uri),
         ),
         LinkTarget::Fragment(id) => {
             let Some(dest) = dest_by_id.get(id.as_str()) else {
-                return format!("<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] >>");
+                return format!(
+                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{sp} >>"
+                );
             };
             format!(
                 "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] \
-                 /Dest [{page} 0 R /XYZ null {y} null] >>",
+                 /Dest [{page} 0 R /XYZ null {y} null]{sp} >>",
                 page = page_obj(dest.page_index),
                 y = pdf_num(dest.y),
             )

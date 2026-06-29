@@ -91,7 +91,11 @@ pub fn worker_budget(input: &BudgetInputs) -> WorkerBudget {
     };
 
     let workers = desired.min(mem_workers).max(1);
-    let queue_depth = (2 * workers).clamp(2, 4 * c_avail);
+    // Saturating: this is a `pub` function, so guard against overflow on
+    // pathological (near-`usize::MAX`) inputs.
+    let queue_depth = workers
+        .saturating_mul(2)
+        .clamp(2, c_avail.saturating_mul(4));
     WorkerBudget {
         workers,
         queue_depth,
@@ -321,6 +325,13 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         .collect();
     entries.sort();
     for entry in entries {
+        // Never follow symlinks during the recursive walk: a directory symlink
+        // that forms a cycle would otherwise recurse without bound and overflow
+        // the stack. (A symlink passed explicitly as a top-level input is still
+        // honored by `expand_inputs`.)
+        if entry.is_symlink() {
+            continue;
+        }
         if entry.is_dir() {
             collect_dir(&entry, out)?;
         } else if is_markdown(&entry) {
@@ -346,6 +357,33 @@ fn output_path(input: &Path, out_dir: Option<&Path>, ext: &str) -> PathBuf {
             None => PathBuf::from(name),
         },
     }
+}
+
+/// Extension-independent output identity: two inputs collide (overwrite each
+/// other's outputs) exactly when this key matches, since outputs differ only by
+/// extension. Used to detect silent overwrites before rendering.
+fn output_key(input: &Path, out_dir: Option<&Path>) -> PathBuf {
+    output_path(input, out_dir, "")
+}
+
+/// Map each input to `Some(first_index)` when an earlier input already claims its
+/// output key (a flat-name collision under a shared `--out-dir`, e.g. `a/doc.md`
+/// and `b/doc.md` both targeting `out/doc.*`). Deterministic in sorted input
+/// order; the earliest input keeps the output and later ones are failed rather
+/// than silently overwritten.
+fn detect_output_collisions(inputs: &[PathBuf], out_dir: Option<&Path>) -> Vec<Option<usize>> {
+    let mut seen: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+    let mut collisions = vec![None; inputs.len()];
+    for (i, input) in inputs.iter().enumerate() {
+        let key = output_key(input, out_dir);
+        match seen.get(&key) {
+            Some(&first) => collisions[i] = Some(first),
+            None => {
+                seen.insert(key, i);
+            }
+        }
+    }
+    collisions
 }
 
 fn render_one(
@@ -459,6 +497,10 @@ pub async fn render_batch(
     }
 
     let workers = budget.workers.max(1);
+    let collisions = Arc::new(detect_output_collisions(
+        &plan.inputs,
+        plan.out_dir.as_deref(),
+    ));
     let inputs = Arc::new(plan.inputs);
     let cancelled = Arc::new(AtomicBool::new(false));
 
@@ -474,6 +516,7 @@ pub async fn render_batch(
     for w in 0..workers {
         let inputs = Arc::clone(&inputs);
         let cancelled = Arc::clone(&cancelled);
+        let collisions = Arc::clone(&collisions);
         let html = opts.html.clone();
         let pdf = opts.pdf.clone();
         let out_dir = plan.out_dir.clone();
@@ -486,22 +529,39 @@ pub async fn render_batch(
                 let cancel_now = stop
                     || cancelled.load(Ordering::Relaxed)
                     || Cx::current().is_some_and(|tcx| tcx.checkpoint().is_err());
-                if cancel_now {
+                let entry = if cancel_now {
                     stop = true;
                     cancelled.store(true, Ordering::Relaxed);
-                    entries.push((i, FileEntry::skipped(&inputs[i])));
+                    FileEntry::skipped(&inputs[i])
+                } else if let Some(first) = collisions[i] {
+                    // Refuse to silently overwrite an earlier input's output.
+                    failed(
+                        &inputs[i],
+                        format!(
+                            "output path collides with earlier input {} (same name under --out-dir); rename or use distinct output directories",
+                            inputs[first].display()
+                        ),
+                    )
                 } else {
-                    let entry = render_one(&inputs[i], format, out_dir.as_deref(), &html, &pdf);
-                    entries.push((i, entry));
-                }
+                    // Isolate a renderer panic to this one file (in unwind builds;
+                    // release uses panic=abort, where a panic ends the process the
+                    // same as the single-file render path). The engine is designed
+                    // panic-free, so this is defense-in-depth.
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        render_one(&inputs[i], format, out_dir.as_deref(), &html, &pdf)
+                    }))
+                    .unwrap_or_else(|_| failed(&inputs[i], "render panicked".to_string()))
+                };
+                entries.push((i, entry));
                 i += workers;
             }
             entries
         }));
     }
 
-    // Reassemble in deterministic input order; any index not produced (a panicked
-    // or cancelled shard) is recorded as skipped so every input appears.
+    // Reassemble in deterministic input order. Workers always push an entry for
+    // every index they own, so the `None` fallback below is only a defensive
+    // guard (e.g. against a force-cancelled shard at runtime shutdown).
     let mut slots: Vec<Option<FileEntry>> = (0..inputs.len()).map(|_| None).collect();
     for task in tasks {
         for (idx, entry) in task.await {
@@ -781,5 +841,26 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn output_collisions_are_detected_not_silently_overwritten() {
+        // Pure detection: two distinct inputs whose flat output names collide
+        // under one --out-dir. The earliest (sorted) keeps the output; the later
+        // is flagged, never silently overwritten.
+        let out = Some(Path::new("/out"));
+        let inputs = vec![
+            PathBuf::from("/a/doc.md"),
+            PathBuf::from("/b/doc.md"),
+            PathBuf::from("/a/other.md"),
+        ];
+        let collisions = detect_output_collisions(&inputs, out);
+        assert_eq!(collisions[0], None, "first claimant keeps the output");
+        assert_eq!(collisions[1], Some(0), "second collides with input 0");
+        assert_eq!(collisions[2], None, "distinct stem does not collide");
+
+        // No collisions when writing alongside each input (distinct parents).
+        let alongside = detect_output_collisions(&inputs, None);
+        assert!(alongside.iter().all(Option::is_none));
     }
 }

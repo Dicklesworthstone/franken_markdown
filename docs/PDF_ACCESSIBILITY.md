@@ -27,7 +27,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Table header cell | `/TH` with `/A << /O /Table /Scope /Column >>` | Column scope (Markdown headers are column headers) |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
-| Inline / autolink link | `/Link` with `/OBJR` to its link annotation | The annotation lives in the tree, not just page `/Annots` |
+| Inline / autolink link | `/Link` with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
 
 Cross-cutting guarantees, all asserted by tests:
@@ -37,6 +37,9 @@ Cross-cutting guarantees, all asserted by tests:
   `/Artifact BMC … EMC` span. Marked content is always balanced
   (`#BDC + #BMC == #EMC`). This is the PDF/UA 7.1 "all content is tagged"
   requirement.
+- **Bidirectional links.** Each OBJR-referenced link annotation carries a
+  `/StructParent` whose key maps, through the parent tree, back to its owning
+  `/Link` element; the `/StructTreeRoot` advertises `/ParentTreeNextKey`.
 - **Parent tree integrity.** Each page declares `/StructParents`, and the
   `/ParentTree` `/Nums` maps every content `/MCID`, in order, to the structure
   element that owns it. Each content-stream `/MCID` is referenced by exactly one

@@ -144,6 +144,7 @@ run_self_test() {
     || [ "$(backend_read kernel.kptr_restrict)" != "0" ] \
     || [ "$(backend_read kernel.nmi_watchdog)" != "0" ]; then
     echo "perf-counters self-test: FAIL — tuning did not apply" >&2
+    trap - EXIT
     rm -rf "$MOCK_DIR"; exit 1
   fi
 
@@ -173,6 +174,7 @@ trap restore_originals EXIT
 
 if [ "$SELF_TEST" -eq 1 ]; then
   run_self_test
+  exit $? # defense-in-depth: run_self_test already exits on every path
 fi
 
 # ---- real run ---------------------------------------------------------------
@@ -188,16 +190,20 @@ fi
 mkdir -p "$OUT_DIR"
 
 # Default target: the fmd binary's --version (cheap and always present once
-# built). Pass `-- CMD ...` to profile a real render instead.
+# built). Pass `-- CMD ...` to profile a real render instead. The `|| true`
+# inside each substitution keeps a broken/absent cargo from tripping
+# `set -e`/`pipefail` before the build fallback below can run.
+target_dir() {
+  { cargo metadata --format-version 1 --no-deps 2>/dev/null || true; } \
+    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'
+}
 if [ "${#CMD[@]}" -eq 0 ]; then
   BIN="target/release/fmd"
-  [ -x "$BIN" ] || BIN="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
-    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/fmd"
+  [ -x "$BIN" ] || BIN="$(target_dir)/release/fmd"
   if [ ! -x "$BIN" ]; then
     echo "perf-counters: building release fmd for the default target..."
     cargo build --release --bin fmd >/dev/null 2>&1 || true
-    BIN="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
-      | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/fmd"
+    BIN="$(target_dir)/release/fmd"
   fi
   CMD=("$BIN" --version)
 fi
@@ -281,7 +287,11 @@ available_json=$([ "$PERF_OK" -eq 1 ] && echo true || echo false)
   printf '"available":%s,"counter_set":[%s],' "$available_json" "$counter_json"
   printf '"stdout_path":"perf-stat.stdout","stderr_path":"perf-stat.stderr",'
   printf '"restore_status":"%s",' "$RESTORE_STATUS"
-  printf '"notes":"perf-counters.sh over: %s"}\n' "${CMD[*]}"
+  # Escape backslashes then double-quotes so a command/path with either still
+  # produces valid JSON.
+  cmd_escaped="${CMD[*]//\\/\\\\}"
+  cmd_escaped="${cmd_escaped//\"/\\\"}"
+  printf '"notes":"perf-counters.sh over: %s"}\n' "$cmd_escaped"
 } > "$OUT_DIR/hardware_counter_summary.jsonl"
 
 echo "perf-counters: done"

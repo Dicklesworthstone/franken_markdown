@@ -35,6 +35,23 @@ aspirational targets.
 
 What follows are the capability waves that make up the current `main` history.
 
+### Cross-platform release and installer hardening (08f)
+
+The release path is ready ahead of the first tag. A hand-rolled (no cargo-dist
+dependency), tag-gated `.github/workflows/release.yml` builds the `fmd` CLI for
+Linux (`x86_64-unknown-linux-gnu`), macOS Intel and Apple Silicon
+(`x86_64`/`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`),
+smoke-tests each freshly built binary, packages it with a per-archive SHA-256,
+and attaches the archives plus a combined `SHA256SUMS` to the GitHub release. The
+browser/WASM npm package ships separately via the tag-gated `release-wasm.yml`.
+CI already runs the Windows/macOS/Linux `platform-check` matrix and the WASM
+package gate; `scripts/release-smoke.sh` (version, help, `capabilities`/`doctor`
+JSON, HTML+PDF render, stdin, `--text`, and the error path) runs in the quality
+gate and on every release binary. The working tree is kept free of untracked
+generated artifacts (`.gitignore` covers the regenerable check/smoke outputs),
+and the README gains an Install section covering prebuilt binaries (with checksum
+verification), `cargo install`, and the npm package.
+
 ### Zero-dependency core and the `fmd` CLI
 
 The project began as a working clean-room Markdown-to-HTML engine with no

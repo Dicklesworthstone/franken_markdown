@@ -43,3 +43,34 @@ Thumbs.db
 
 # Regenerable batch-throughput corpora + rendered outputs
 tests/artifacts/perf/*/work/
+
+# Generated test/proof artifacts (08f: keep the working tree free of untracked
+# generated artifacts). Canonical perf/proof artifacts are committed per bead;
+# everything below is regenerable scratch written by the check scripts and smoke
+# runs, so it is ignored to keep `git status` meaningful and releases clean.
+tests/artifacts/claims/
+tests/artifacts/cli/
+tests/artifacts/conformance/
+tests/artifacts/pagination/
+tests/artifacts/theme/
+tests/artifacts/wasm/
+tests/artifacts/perf/*-smoke/
+tests/artifacts/perf/*-smoke2/
+tests/artifacts/perf/*-scratch*/
+tests/artifacts/perf/*-fresh-eyes*/
+tests/artifacts/perf/*-before/
+tests/artifacts/perf/*-after/
+tests/artifacts/perf/*-shape-cache/
+tests/artifacts/perf/*-layout-smoke/
+tests/artifacts/perf/*-stage-smoke/
+tests/artifacts/perf/*-prefix-smoke/
+tests/artifacts/perf/*-trie-smoke*/
+tests/artifacts/perf/*-borrowed-spans/
+tests/artifacts/perf/*-regression-script*/
+tests/artifacts/perf/batch-throughput-*/
+tests/artifacts/perf/smoke-*/
+tests/artifacts/perf/fep.6.*/
+tests/artifacts/perf/qw1.1.1-*/
+
+# Stray render output written to a file literally named "-" (a `--out -` accident)
+/-

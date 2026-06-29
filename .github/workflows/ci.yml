@@ -59,6 +59,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Release smoke test (built binary)
+        run: |
+          cargo build --release --bin fmd
+          scripts/release-smoke.sh target/release/fmd
+
   platform-check:
     name: Cross-platform check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

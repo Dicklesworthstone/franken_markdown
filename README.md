@@ -28,7 +28,10 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > manifest plus a tag-gated npm release workflow), proven by
 > `scripts/check-wasm-package.sh`. The actual npm publish (one tag push) and
 > deeper pagination controls remain active roadmap work tracked in beads.
-> Version `0.0.0`; no release is tagged yet, so binaries build from source for now.
+> Version `0.0.0`; no release is tagged yet. Prebuilt `fmd` binaries for Linux,
+> macOS (Intel + Apple Silicon), and Windows are produced by the tag-gated
+> `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
+> until a tag is pushed, build from source as shown under [Install](#install).
 
 ---
 
@@ -63,10 +66,44 @@ output.
 
 ---
 
+## Install
+
+### Prebuilt binaries (once a `v*` tag is released)
+
+Each tagged release attaches a `fmd` archive per platform — Linux
+(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`) and Apple
+Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`) — built
+and smoke-tested by `.github/workflows/release.yml`, each with a `.sha256` plus a
+combined `SHA256SUMS`.
+
+```bash
+# Download the archive for your platform from the GitHub Releases page, then
+# verify and unpack (Linux example):
+sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+./fmd-vX.Y.Z-x86_64-unknown-linux-gnu/fmd --version
+```
+
+### From source (any platform with a Rust toolchain)
+
+```bash
+cargo install --path . --bin fmd     # installs `fmd` into ~/.cargo/bin
+# or build in place:
+cargo build --release --bin fmd      # -> target/release/fmd
+```
+
+### Browser / WASM
+
+The browser package is published separately to npm as
+[`@franken-suite/franken-markdown`](wasm/README.md) by
+`.github/workflows/release-wasm.yml`.
+
+---
+
 ## Quick Example
 
 ```bash
-# Build the fmd binary from source (no release is tagged yet)
+# Build the fmd binary from source
 cargo build --release --bin fmd
 
 # Render a Markdown file to self-contained HTML

@@ -76,8 +76,13 @@ default_crates="$(cargo tree --prefix none --edges normal | awk '{print $1}' | s
 if printf '%s\n' "$default_crates" | grep -Fxq asupersync; then
   fail "asupersync must not be in the default dependency graph (opt-in via --features batch)"
 fi
-batch_crates="$(cargo tree --features batch --prefix none --edges normal 2>/dev/null \
-  | awk '{print $1}' | sort -u)"
+# `2>/dev/null` hides asupersync's benign "unclosed table" fixture warning; wrap
+# the assignment in `if !` so a genuine resolve/fetch failure reports a clear
+# error instead of a silent `set -e` abort.
+if ! batch_crates="$(cargo tree --features batch --prefix none --edges normal 2>/dev/null \
+  | awk '{print $1}' | sort -u)"; then
+  fail "cargo tree --features batch failed — could not resolve the batch (asupersync) dependency graph"
+fi
 if ! printf '%s\n' "$batch_crates" | grep -Fxq asupersync; then
   fail "the --features batch graph must include asupersync (feature wiring broken)"
 fi

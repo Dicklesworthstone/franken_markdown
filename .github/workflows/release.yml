@@ -84,7 +84,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="fmd-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          # Sanitize '/' (a workflow_dispatch run from a feature/x branch would
+          # otherwise put a slash in the archive name and break tar).
+          name="fmd-${GITHUB_REF_NAME//\//-}-${{ matrix.target }}"
           staging="$(mktemp -d)/$name"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/fmd" "$staging/"
@@ -101,7 +103,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $name = "fmd-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $name = "fmd-$($env:GITHUB_REF_NAME -replace '/','-')-${{ matrix.target }}"
           $staging = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fmd.exe" $staging

@@ -20,6 +20,10 @@
 # Usage:
 #   scripts/batch-throughput.sh [--files N] [--iters K] [--run-id ID] [--smoke]
 #   scripts/batch-throughput.sh --self-test    # tiny corpus, fast, CI-friendly
+#
+# Targets a Linux CI host: uses `date +%s%N`, GNU `/usr/bin/time -v`, and
+# `/proc/cpuinfo` (RSS/CPU degrade gracefully elsewhere, but nanosecond timing
+# needs GNU date), and bash 4+ for `"${extra[@]}"` under `set -u`.
 
 set -euo pipefail
 

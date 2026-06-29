@@ -116,7 +116,9 @@ jobs:
       # the scheduler + deterministic-receipt + cancellation lab tests pass, and
       # the throughput e2e (scenarios + receipt-determinism + negative path) runs.
       - name: Build + test the batch feature
-        run: cargo test --features batch --lib batch::
+        # Quoted: a trailing "::" makes the plain scalar invalid per the YAML spec
+        # (GitHub's parser is lenient, but yamllint/editors/pre-commit reject it).
+        run: "cargo test --features batch --lib batch::"
 
       - name: Clippy (batch feature)
         run: cargo clippy --features batch --lib -- -D warnings

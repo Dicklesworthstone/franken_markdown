@@ -38,8 +38,12 @@ jobs:
         run: scripts/check-wasm-package.sh release
 
       - name: Publish to npm (skipped without NPM_TOKEN)
-        if: ${{ env.NODE_AUTH_TOKEN != '' }}
-        run: npm publish --provenance --access public
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret not set — skipping publish (build + verify already passed)."
+            exit 0
+          fi
+          npm publish --provenance --access public
         working-directory: target/fmd-checks/wasm-package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

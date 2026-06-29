@@ -52,7 +52,9 @@ def emit(s): print(s); mapfile.write(s + "\n")
 # Collect page content streams in document order. fmd compresses page streams
 # (>=4096 bytes) with FlateDecode; smaller ones are raw.
 pages = []
-for m in re.finditer(rb"stream\r?\n", pdf):
+# Match an OPENING `stream` only; the negative lookbehind avoids matching the
+# `stream` inside `endstream`.
+for m in re.finditer(rb"(?<!end)stream\r?\n", pdf):
     start = m.end()
     end = pdf.find(b"endstream", start)
     if end == -1:

@@ -3230,12 +3230,11 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     }
 
     // Generalized keep-with-next: keep a short intro/caption paragraph with the
-    // structured block it introduces (a table, code block, or figure/image), so
-    // a one- or two-line caption never strands alone at the foot of a page. This
-    // extends the heading keep above to captioned blocks. (List items share the
-    // Paragraph kind in this layout, so a dedicated list-intro keep would need a
-    // separate list-start flag; the heading and captioned-block keeps cover the
-    // common stranding cases.)
+    // structured block it introduces (a table, code block, figure/image, or
+    // list), so a one- or two-line caption never strands alone at the foot of a
+    // page. This extends the heading keep above to captioned blocks. List items
+    // share the Paragraph kind, so the list's first line is tagged with
+    // `flow.list_start` in `layout_list` to make a list start detectable here.
     let before_ends_short_intro = before.flow.kind == FlowKind::Paragraph
         && before.flow.group != after.flow.group
         && before.flow.index + 1 == before.flow.count

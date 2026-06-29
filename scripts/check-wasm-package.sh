@@ -80,13 +80,19 @@ log "package assembled at $package_dir"
 # step to publish is a maintainer pushing a tag (see .github/workflows/release-wasm.yml).
 log "manifest completeness (publishability):"
 manifest_fail=0
+# Capture the declared file list first (a command substitution, so `set -e`
+# catches a python failure — a process substitution would not, and an empty list
+# would vacuously "pass").
+declared_files="$(python3 -c "import json; [print(f) for f in json.load(open('wasm/package.json'))['files']]")"
+[ -n "$declared_files" ] || { log "manifest FAIL: could not read package.json files[]"; exit 1; }
 while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
   if [ -s "$package_dir/$rel" ]; then
     log "  files[] ${rel}: present"
   else
     log "  files[] ${rel}: MISSING"; manifest_fail=1
   fi
-done < <(python3 -c "import json; [print(f) for f in json.load(open('wasm/package.json'))['files']]")
+done <<<"$declared_files"
 if [ -s "$package_dir/README.md" ]; then log "  README.md: present"; else log "  README.md: MISSING"; manifest_fail=1; fi
 [ "$manifest_fail" -eq 0 ] || { log "manifest FAIL: declared package files missing from assembly"; exit 1; }
 
@@ -112,7 +118,7 @@ corpus+=("$WORK/probe.md")
 
 # WASM side: load the generated module and render the corpus.
 log "headless node: load generated module + render corpus"
-node wasm/smoke.mjs "$package_dir" "$bg" "$WORK" "$EPOCH" "${corpus[@]}" | tee -a "$LEDGER"
+node wasm/smoke.mjs "$package_dir" "$bg" "$WORK" "$EPOCH" "${corpus[@]}" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.
 log "native<->WASM byte parity:"

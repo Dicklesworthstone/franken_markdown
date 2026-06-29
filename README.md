@@ -2,6 +2,8 @@
 
 # franken_markdown
 
+<img src="franken_markdown_illustration.webp" alt="franken_markdown - clean-room Rust Markdown renderer (HTML, PDF, fmd CLI, WASM)">
+
 **A clean-room, dependency-lean Rust Markdown renderer for beautiful all-in-one
 HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 

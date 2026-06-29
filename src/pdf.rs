@@ -32,7 +32,8 @@ use crate::layout::{
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -448,6 +449,9 @@ struct PdfWordContext<'a> {
     faces: &'a Faces,
     policy: ParagraphPolicy,
     hyphenator: &'a Hyphenator,
+    /// Per-document hyphenation cache (bead qw1.7.1); shared via `&RefCell` so
+    /// this `Copy` context can still read/insert.
+    hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -657,10 +661,17 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         next_bg: 0,
         next_flow: 0,
         list_stack: Vec::new(),
+        hyphen_cache: RefCell::new(HashMap::new()),
     };
     layout_blocks(blocks, 0.0, &mut out, &mut cx);
     out
 }
+
+/// Bound on the per-document hyphenation cache (distinct lowercase words). Beyond
+/// this, further words are still hyphenated but not cached — a fixed cap keeps
+/// memory bounded and the cached set deterministic (words are seen in document
+/// order), while never changing the hyphenation result.
+const HYPHEN_CACHE_MAX: usize = 16_384;
 
 /// One open list level during layout. The stack in [`LayoutCx`] lets
 /// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
@@ -679,6 +690,11 @@ struct LayoutCx<'a> {
     list_stack: Vec<ListFrame>,
     next_bg: u32,
     next_flow: u32,
+    /// Per-document (per-render) word → hyphenation-points cache (bead qw1.7.1).
+    /// Keyed by the lowercase ASCII word; `RefCell` so it can be shared through
+    /// the `Copy` [`PdfWordContext`]. Lives for the whole `layout()` call and is
+    /// dropped with it (render-call-local), and never changes the result.
+    hyphen_cache: RefCell<HashMap<String, Vec<usize>>>,
 }
 
 impl LayoutCx<'_> {
@@ -1618,11 +1634,12 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
 /// link flags) that produced it. Words -> `Box`; a single space between two
 /// words -> `Glue`; a trailing forced penalty ends the paragraph. Leading,
 /// duplicate, and trailing spaces are collapsed for cleaner breakpoints.
-fn build_paragraph(
+fn build_paragraph<'a>(
     toks: &[Tok],
     fs: FontSize,
-    faces: &Faces,
+    faces: &'a Faces,
     policy: ParagraphPolicy,
+    hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
 ) -> BuiltParagraph {
     let mut items: Vec<ParagraphItem> = Vec::new();
     let mut item_toks: Vec<Vec<Tok>> = Vec::new();
@@ -1634,6 +1651,7 @@ fn build_paragraph(
         faces,
         policy,
         hyphenator: &hyphenator,
+        hyphen_cache,
     };
 
     for tok in toks {
@@ -1722,8 +1740,35 @@ fn flush_pdf_word(
 
     let plain: String = word.iter().map(|t| t.text.as_str()).collect();
     let points = if cx.policy.hyphenate && plain.bytes().all(|byte| byte.is_ascii_alphabetic()) {
-        cx.hyphenator
-            .hyphenation_points(&plain, HyphenationOptions::default())
+        // Hyphenation points are case-independent and depend only on the word's
+        // letters, so the lowercase word is a sound cache key (opts are always the
+        // default here). A cache hit returns exactly what the hyphenator would
+        // compute, so output stays byte-identical. To avoid an allocation on the
+        // common all-lowercase lookup, only fold case when an uppercase letter is
+        // present.
+        let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(plain.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(plain.as_str())
+        };
+        let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
+        cached.unwrap_or_else(|| {
+            let pts = cx
+                .hyphenator
+                .hyphenation_points(&plain, HyphenationOptions::default());
+            // Only cache words that actually hyphenate. A non-hyphenating word
+            // gains nothing from caching, so skipping the insert (no key clone, no
+            // map entry) keeps unique / non-hyphenating corpora from paying any
+            // cache cost — they do not regress — while repeated hyphenating words
+            // still hit.
+            if !pts.is_empty() {
+                let mut cache = cx.hyphen_cache.borrow_mut();
+                if cache.len() < HYPHEN_CACHE_MAX {
+                    cache.insert(key.into_owned(), pts.clone());
+                }
+            }
+            pts
+        })
     } else {
         Vec::new()
     };
@@ -1844,7 +1889,7 @@ fn layout_inlines(
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
     let policy = ParagraphPolicy::for_flow(flow.kind);
-    let built = build_paragraph(&toks, fs, cx.faces, policy);
+    let built = build_paragraph(&toks, fs, cx.faces, policy, &cx.hyphen_cache);
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
     if !built
@@ -1909,7 +1954,7 @@ fn layout_prefixed_inlines(
     let left = cx.page.left + spec.content_indent;
     let fs = font_size_of(spec.size);
     let policy = ParagraphPolicy::for_flow(spec.flow.kind);
-    let built = build_paragraph(&toks, fs, cx.faces, policy);
+    let built = build_paragraph(&toks, fs, cx.faces, policy, &cx.hyphen_cache);
 
     if !built
         .items

@@ -1,0 +1,41 @@
+{
+  "type": "hyphen_cache_eval",
+  "bead": "qw1.7.1",
+  "schema_version": "fmd-perf-artifact-v1",
+  "cache": {
+    "location": "src/pdf.rs flush_pdf_word",
+    "key": "lowercase ASCII word",
+    "bound": 16384,
+    "scope": "per layout() call",
+    "insert_policy": "only words that hyphenate"
+  },
+  "corpora": [
+    {
+      "name": "repeated-word",
+      "words": 14400,
+      "distinct": 7,
+      "no_cache_ms": 583,
+      "cache_ms": 564,
+      "delta_pct": -3.3,
+      "byte_identical": true
+    },
+    {
+      "name": "realistic-424kb",
+      "words": 59412,
+      "no_cache_ms": 492,
+      "cache_ms": 488,
+      "delta_pct": -0.8,
+      "byte_identical": true
+    },
+    {
+      "name": "pathological-all-distinct",
+      "words": 14400,
+      "distinct": 14400,
+      "no_cache_ms": 158,
+      "cache_ms": 167,
+      "delta_pct": 5.7,
+      "byte_identical": true
+    }
+  ],
+  "conclusion": "Repeated-word corpora improve beyond noise; realistic docs neutral; output byte-identical. Worst case is a non-realistic all-distinct corpus."
+}

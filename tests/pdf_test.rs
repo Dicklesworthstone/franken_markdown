@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::{
-    PageMargins, PageSize, PdfImageAsset, PdfOptions, Theme, parse_markdown, render_pdf,
-    render_pdf_document, render_pdf_document_profiled,
+    HtmlOptions, PageMargins, PageSize, PdfImageAsset, PdfOptions, Theme, parse_markdown,
+    render_html, render_pdf, render_pdf_document, render_pdf_document_profiled,
 };
 
 fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
@@ -766,13 +766,16 @@ fn pdf_blockquotes_have_subtle_background_and_gutter_bar() {
     let pdf = render_pdf("> quoted text\n>\n> second line\n", &PdfOptions::default()).unwrap();
     let text = as_text(&pdf);
 
+    // Colors now derive from the shared theme tokens (one-theme-model doctrine):
+    // the blockquote tint is `bg_subtle` (#f6f8fa) and the gutter bar is the
+    // `quote_bar` token (#d1d9e0), matching the HTML stylesheet.
     assert!(
-        text.contains("0.985 0.987 0.991 rg"),
-        "blockquote background should use the subtle quote panel fill"
+        text.contains("0.965 0.973 0.980 rg"),
+        "blockquote background should use the theme `bg_subtle` tint"
     );
     assert!(
-        text.contains("0.75 0.75 0.80 RG 2.50 w"),
-        "blockquote should retain the gutter bar stroke"
+        text.contains("0.820 0.851 0.878 RG 2.50 w"),
+        "blockquote gutter bar should use the theme `quote_bar` stroke"
     );
 }
 
@@ -971,4 +974,148 @@ fn pdf_sanitizes_pathological_theme_page_geometry() {
     );
     assert!(!text.contains("NaN"));
     assert!(!text.contains("inf"));
+}
+
+// ---------------------------------------------------------------------------
+// mwm.6.1 — cross-surface theme-token invariant.
+//
+// PDF colors must derive from the SAME shared theme tokens the HTML stylesheet
+// uses (the "one theme model" doctrine). These tests render both surfaces and
+// assert each visual element's color matches its theme token on both, and that
+// changing a token moves both surfaces together. They log a full token table so
+// any future divergence is obvious without a debugger.
+// ---------------------------------------------------------------------------
+
+/// Format a `#rrggbb` theme token the way the PDF writer does: device-RGB with
+/// three decimals. Mirrors `pdf::hex_rgb` + the `{:.3}` content-stream writer.
+fn token_pdf_rgb(hex: &str) -> String {
+    let s = hex.trim_start_matches('#');
+    let comp = |i: usize| f32::from(u8::from_str_radix(&s[i..i + 2], 16).unwrap()) / 255.0;
+    format!("{:.3} {:.3} {:.3}", comp(0), comp(2), comp(4))
+}
+
+/// A small document touching every theme-driven element, kept under the page
+/// stream compression threshold so the content stream stays inspectable.
+const THEME_PROBE_MD: &str = "# Heading One\n\n> quoted text\n>\n> more quote\n\nBody with a \
+     [link](https://example.com) and `inline code`.\n\n| A | B |\n|---|--:|\n| 1 | 2 |\n| 3 | 4 |\n\n---\n";
+
+#[test]
+fn pdf_colors_derive_from_shared_theme_tokens() {
+    let theme = Theme::default();
+    let colors = &theme.colors;
+    let pdf = render_pdf(THEME_PROBE_MD, &PdfOptions::default()).unwrap();
+    let pdf_text = as_text(&pdf);
+    let html = render_html(
+        THEME_PROBE_MD,
+        &HtmlOptions {
+            theme: theme.clone(),
+            ..HtmlOptions::default()
+        },
+    )
+    .unwrap();
+
+    // (element, theme-token hex): each must appear as device-RGB in the PDF and
+    // as its hex token in the HTML stylesheet.
+    let ledger: [(&str, &str); 6] = [
+        ("link/accent", colors.accent.as_str()),
+        ("body text (fg)", colors.fg.as_str()),
+        ("code/quote bg (bg_subtle)", colors.bg_subtle.as_str()),
+        ("blockquote bar (quote_bar)", colors.quote_bar.as_str()),
+        ("table stripe (stripe)", colors.stripe.as_str()),
+        (
+            "heading/table rule (border_muted)",
+            colors.border_muted.as_str(),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (element, hex) in ledger {
+        let pdf_rgb = token_pdf_rgb(hex);
+        let in_pdf = pdf_text.contains(&pdf_rgb);
+        let in_html = html.contains(hex);
+        eprintln!(
+            "theme-token | {element:34} | token {hex} | pdf `{pdf_rgb}` present={in_pdf} | html present={in_html}"
+        );
+        if !in_pdf {
+            failures.push(format!(
+                "PDF missing {element} color `{pdf_rgb}` (token {hex})"
+            ));
+        }
+        if !in_html {
+            failures.push(format!("HTML missing {element} token {hex}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "PDF/HTML diverged from shared theme tokens:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+#[test]
+fn theme_color_token_changes_propagate_to_both_html_and_pdf() {
+    // Changing one token must move BOTH surfaces — the core of the doctrine.
+    let mut theme = Theme::default();
+    theme.colors.accent = "#ff0000".to_string();
+    let md = "A [link](https://example.com).\n";
+
+    let html = render_html(
+        md,
+        &HtmlOptions {
+            theme: theme.clone(),
+            ..HtmlOptions::default()
+        },
+    )
+    .unwrap();
+    let pdf = render_pdf(
+        md,
+        &PdfOptions {
+            theme,
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let pdf_text = as_text(&pdf);
+
+    let red_rgb = token_pdf_rgb("#ff0000");
+    eprintln!("custom accent #ff0000 -> pdf `{red_rgb}`");
+    assert!(
+        html.contains("#ff0000"),
+        "HTML link color should follow the custom accent token"
+    );
+    assert!(
+        pdf_text.contains(&red_rgb),
+        "PDF link color should follow the custom accent token (`{red_rgb}`)"
+    );
+    assert!(
+        !pdf_text.contains(&token_pdf_rgb("#0969da")),
+        "overridden accent must not leave the default accent in the PDF"
+    );
+}
+
+#[test]
+fn theme_serif_keeps_shared_color_tokens() {
+    // Switching the body font to serif must not change colors: they remain
+    // theme-token driven, proving font and color are independent.
+    let theme = Theme::serif();
+    let pdf = render_pdf(
+        THEME_PROBE_MD,
+        &PdfOptions {
+            theme: theme.clone(),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let pdf_text = as_text(&pdf);
+    for hex in [
+        &theme.colors.accent,
+        &theme.colors.fg,
+        &theme.colors.bg_subtle,
+    ] {
+        let rgb = token_pdf_rgb(hex);
+        assert!(
+            pdf_text.contains(&rgb),
+            "serif PDF should still use theme token {hex} (`{rgb}`)"
+        );
+    }
 }

@@ -74,6 +74,12 @@ project has no tags or GitHub Releases yet.
 - Updated `fmd doctor`, `capabilities --json`, `robot-docs guide`, and
   `--robot-triage` to report the PDF path as `available_v0_base14` while keeping
   Knuth-Plass layout and font subsetting marked as planned.
+- Unified PDF colors onto the shared theme tokens (one-theme-model doctrine): the
+  PDF writer now resolves link, body text, code panel/chip, blockquote tint/bar,
+  table stripe, and heading/table/thematic rules from the same `ThemeColors` the
+  HTML stylesheet uses, replacing previously hardcoded, slightly-divergent values.
+  Changing a theme color now moves both HTML and PDF together. Added a
+  cross-surface invariant test suite and `scripts/theme-proof.sh`.
 
 ### Parser Conformance
 

@@ -30,7 +30,7 @@ use crate::layout::{
     is_breakable_whitespace, measure_text_with_pairs,
 };
 use crate::text::{Font, Kerning, Ligatures};
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -44,9 +44,10 @@ const MIN_PAGE_DIM: f32 = 80.0;
 const MIN_CONTENT_DIM: f32 = 40.0;
 const PAGE_STREAM_COMPRESSION_MIN: usize = 4096;
 
-// Inline-link styling: hyperlink blue (`rg` fill + `RG` underline stroke).
-const LINK_COLOR: (f32, f32, f32) = (0.07, 0.20, 0.55);
-const BLACK: (f32, f32, f32) = (0.0, 0.0, 0.0);
+// Visual colors (links, code backgrounds, blockquote tint/bar, table stripe,
+// rules, body text) are resolved from the shared theme tokens at render time;
+// see `Palette`. This keeps PDF and HTML visually coherent (one theme model)
+// rather than hardcoding divergent values here.
 
 // Fenced-code panel + inline-code chip backgrounds.
 const CODE_PAD_X: f32 = 8.0; // text inset inside a fenced-code line
@@ -54,18 +55,13 @@ const CODE_HANGING_INDENT: f32 = 12.0; // continuation inset for wrapped code ro
 const CODE_LINE_NUMBER_GAP: f32 = 6.0;
 const PANEL_PAD_V: f32 = 5.0; // vertical breathing room above/below the code
 const PANEL_RADIUS: f32 = 4.0;
-const PANEL_GRAY: (f32, f32, f32) = (0.960, 0.960, 0.970);
 const PANEL_ASCENT_FRAC: f32 = 0.78; // glyph top above baseline (mono)
 const PANEL_DESCENT_FRAC: f32 = 0.30; // glyph bottom below baseline
 const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
-const CHIP_GRAY: (f32, f32, f32) = (0.930, 0.930, 0.950);
-const QUOTE_BG: (f32, f32, f32) = (0.985, 0.987, 0.991);
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
 
-// Table zebra-stripe tint for alternating body rows (very subtle cool gray).
-const TABLE_STRIPE: (f32, f32, f32) = (0.965, 0.969, 0.975);
 const PDF_IMAGE_DPI_SCALE: f32 = 72.0 / 96.0;
 const MAX_PDF_IMAGE_COMPRESSED_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PDF_IMAGE_PIXELS: u64 = 24_000_000;
@@ -2352,10 +2348,71 @@ fn fill_for_highlight(kind: HighlightTok) -> Fill {
     }
 }
 
-fn fill_rgb(fill: Fill) -> (f32, f32, f32) {
+/// PDF device-RGB colors resolved once per render from the shared theme tokens
+/// ([`ThemeColors`]), so the PDF and HTML surfaces stay visually coherent — the
+/// "one theme model" doctrine. Each field mirrors the element-to-token mapping
+/// the HTML stylesheet uses, so changing a theme color moves both surfaces
+/// together. Code syntax-token colors are a separate code-theme palette and are
+/// intentionally not part of this struct.
+#[derive(Clone, Copy)]
+struct Palette {
+    /// Body text and plain/inline code glyphs (theme `fg`).
+    fg: (f32, f32, f32),
+    /// Hyperlink text and underline (theme `accent`).
+    link: (f32, f32, f32),
+    /// Fenced-code panel background (theme `code_bg`).
+    code_panel_bg: (f32, f32, f32),
+    /// Inline-code chip background (theme `code_bg`, the same token the HTML
+    /// `code`/`pre` rule uses).
+    code_chip_bg: (f32, f32, f32),
+    /// Blockquote tint behind quoted content (theme `bg_subtle`).
+    quote_bg: (f32, f32, f32),
+    /// Blockquote gutter bar (theme `quote_bar`).
+    quote_bar: (f32, f32, f32),
+    /// Table zebra stripe for alternating body rows (theme `stripe`).
+    table_stripe: (f32, f32, f32),
+    /// Heading hairline and table rules (theme `border_muted`, matching the
+    /// HTML `h1`/`h2` and table-cell borders).
+    rule: (f32, f32, f32),
+    /// Thematic-break rule (theme `border`, matching the HTML `hr`).
+    hr: (f32, f32, f32),
+}
+
+impl Palette {
+    fn from_colors(colors: &ThemeColors) -> Self {
+        Self {
+            fg: hex_rgb(&colors.fg),
+            link: hex_rgb(&colors.accent),
+            code_panel_bg: hex_rgb(&colors.code_bg),
+            code_chip_bg: hex_rgb(&colors.code_bg),
+            quote_bg: hex_rgb(&colors.bg_subtle),
+            quote_bar: hex_rgb(&colors.quote_bar),
+            table_stripe: hex_rgb(&colors.stripe),
+            rule: hex_rgb(&colors.border_muted),
+            hr: hex_rgb(&colors.border),
+        }
+    }
+}
+
+/// Parse a `#rrggbb` theme token into a PDF device-RGB triple in `0.0..=1.0`.
+/// Falls back to black on malformed input so rendering stays infallible.
+fn hex_rgb(hex: &str) -> (f32, f32, f32) {
+    let s = hex.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    let component = |range: std::ops::Range<usize>| -> Option<f32> {
+        let byte = u8::from_str_radix(s.get(range)?, 16).ok()?;
+        Some(f32::from(byte) / 255.0)
+    };
+    match (component(0..2), component(2..4), component(4..6)) {
+        (Some(r), Some(g), Some(b)) if s.len() == 6 => (r, g, b),
+        _ => (0.0, 0.0, 0.0),
+    }
+}
+
+fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
     match fill {
-        Fill::Black => BLACK,
-        Fill::Link => LINK_COLOR,
+        Fill::Black => palette.fg,
+        Fill::Link => palette.link,
         Fill::Syntax(HighlightTok::Keyword) => (0.812, 0.133, 0.180),
         Fill::Syntax(HighlightTok::Type) => (0.584, 0.220, 0.000),
         Fill::Syntax(HighlightTok::Func) => (0.400, 0.224, 0.729),
@@ -2363,7 +2420,7 @@ fn fill_rgb(fill: Fill) -> (f32, f32, f32) {
         Fill::Syntax(HighlightTok::Number) => (0.020, 0.314, 0.682),
         Fill::Syntax(HighlightTok::Comment) => (0.431, 0.467, 0.506),
         Fill::Syntax(HighlightTok::Operator) => (0.020, 0.314, 0.682),
-        Fill::Syntax(HighlightTok::Plain | HighlightTok::Punct) => BLACK,
+        Fill::Syntax(HighlightTok::Plain | HighlightTok::Punct) => palette.fg,
     }
 }
 
@@ -2391,6 +2448,10 @@ fn serialize(
     page: PageGeom,
     profiler: &mut PdfProfiler,
 ) -> Vec<u8> {
+    // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
+    // visually coherent (the one-theme-model doctrine). See `Palette`.
+    let palette = Palette::from_colors(&opts.theme.colors);
+
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
     let mut used_slots: Vec<u8> = SLOTS
@@ -2577,7 +2638,7 @@ fn serialize(
                 page.right_x(),
                 top_y + QUOTE_BG_PAD_V,
                 3.0,
-                QUOTE_BG,
+                palette.quote_bg,
             ));
         }
 
@@ -2598,7 +2659,7 @@ fn serialize(
                 page.right_x(),
                 top_y,
                 0.0,
-                TABLE_STRIPE,
+                palette.table_stripe,
             ));
         }
 
@@ -2628,7 +2689,7 @@ fn serialize(
                     x1,
                     top_y,
                     PANEL_RADIUS,
-                    PANEL_GRAY,
+                    palette.code_panel_bg,
                 ));
             }
             i = j.max(i + 1);
@@ -2654,13 +2715,19 @@ fn serialize(
                     cx1,
                     cy1,
                     CHIP_RADIUS,
-                    CHIP_GRAY,
+                    palette.code_chip_bg,
                 ));
             }
         }
 
-        // (d) Text + rules.
+        // (d) Text + rules. Prime the nonstroking color to the theme body color
+        // so the first run (which equals `current_fill` and would otherwise skip
+        // emitting `rg`) renders in the theme `fg`, not PDF-default black.
         let mut current_fill = Fill::Black;
+        {
+            let (r, g, b) = palette.fg;
+            body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
+        }
         for p in placed {
             let line = p.line;
             let y = p.y;
@@ -2678,8 +2745,13 @@ fn serialize(
             }
             if line.rule {
                 let x2 = page.right_x();
+                let (rr, rg, rb) = if line.flow.kind == FlowKind::Rule {
+                    palette.hr
+                } else {
+                    palette.rule
+                };
                 body.push_str(&format!(
-                    "0.82 0.82 0.84 RG 0.7 w {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\n",
+                    "{rr:.3} {rg:.3} {rb:.3} RG 0.7 w {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\n",
                     x = line.rule_x,
                     yy = y + line.size * 0.5,
                 ));
@@ -2725,7 +2797,7 @@ fn serialize(
                             }
                         };
                         if seg.fill != current_fill {
-                            let (r, g, b) = fill_rgb(seg.fill);
+                            let (r, g, b) = fill_rgb(seg.fill, &palette);
                             body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
                             current_fill = seg.fill;
                         }
@@ -2741,7 +2813,7 @@ fn serialize(
                         // in the text's own color (stroke `RG`, leaving the text
                         // fill `rg` untouched so `current_fill` stays in sync).
                         if seg.strike && seg.width > 0.0 {
-                            let (r, g, b) = fill_rgb(seg.fill);
+                            let (r, g, b) = fill_rgb(seg.fill, &palette);
                             let sy = y + line.size * 0.30;
                             let sw = (line.size * 0.06).max(0.4);
                             body.push_str(&format!(
@@ -2752,12 +2824,13 @@ fn serialize(
                             ));
                         }
                         if let Some(target) = &seg.link {
-                            let (r, g, b) = LINK_COLOR;
+                            let (r, g, b) = palette.link;
+                            let (fr, fg2, fb) = palette.fg;
                             let uy = y - line.size * 0.12;
                             let uw = (line.size * 0.06).max(0.4);
                             body.push_str(&format!(
                                 "{r:.3} {g:.3} {b:.3} RG {uw:.2} w \
-                                 {x1:.2} {uy:.2} m {x2:.2} {uy:.2} l S\n0 0 0 rg\n",
+                                 {x1:.2} {uy:.2} m {x2:.2} {uy:.2} l S\n{fr:.3} {fg2:.3} {fb:.3} rg\n",
                                 x1 = seg.x,
                                 x2 = seg.x + seg.width,
                             ));
@@ -2785,7 +2858,7 @@ fn serialize(
         // (e) Blockquote gutter bars: accumulate each quote's vertical extent on
         // this page (keyed by quote id), then stroke one segment per quote.
         let mut quote_acc = quote_extents(placed);
-        flush_quote_bars(&mut body, &mut quote_acc);
+        flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
 
         let mut stream = String::with_capacity(bg.len().saturating_add(body.len()));
         stream.push_str(&bg);
@@ -3238,10 +3311,15 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
 }
 
 /// Stroke one subtle vertical bar per accumulated blockquote, then clear.
-fn flush_quote_bars(content: &mut String, acc: &mut BTreeMap<usize, (f32, f32, f32)>) {
+fn flush_quote_bars(
+    content: &mut String,
+    acc: &mut BTreeMap<usize, (f32, f32, f32)>,
+    bar: (f32, f32, f32),
+) {
+    let (br, bg, bb) = bar;
     for (x, top, bot) in acc.values() {
         content.push_str(&format!(
-            "0.75 0.75 0.80 RG 2.50 w {x:.2} {top:.2} m {x:.2} {bot:.2} l S\n"
+            "{br:.3} {bg:.3} {bb:.3} RG 2.50 w {x:.2} {top:.2} m {x:.2} {bot:.2} l S\n"
         ));
     }
     acc.clear();

@@ -23,6 +23,10 @@ Thumbs.db
 /showcase.pdf
 /showcase_serif.pdf
 
+# Stray default-output render files (fmd --to pdf/both with no --out); see bead mwm.8
+/document.html
+/document.pdf
+
 # Beads local DB (the JSONL is tracked; the SQLite DB is local)
 .beads/*.db
 .beads/*.db-*

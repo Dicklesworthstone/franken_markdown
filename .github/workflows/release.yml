@@ -87,7 +87,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fmd.exe" $staging
           Copy-Item README.md, LICENSE, CHANGELOG.md $staging -ErrorAction SilentlyContinue
-          Compress-Archive -Path "$staging/*" -DestinationPath "$name.zip" -Force
+          # Archive the staging folder itself (not its contents) so the zip has a
+          # top-level fmd-<version>-<target>/ directory, matching the tar archives.
+          Compress-Archive -Path $staging -DestinationPath "$name.zip" -Force
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" `
             | Out-File -Encoding ascii "$name.zip.sha256"
           "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii

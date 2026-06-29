@@ -28,7 +28,10 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-          - os: macos-latest
+          # macos-13 is the Intel runner and macos-latest is Apple Silicon, so
+          # each macOS target builds natively — the smoke test runs a binary the
+          # runner can actually execute (no Rosetta assumption).
+          - os: macos-13
             target: x86_64-apple-darwin
             archive: tar.gz
           - os: macos-latest
@@ -81,7 +84,7 @@ jobs:
           $staging = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fmd.exe" $staging
-          Copy-Item README.md, CHANGELOG.md $staging -ErrorAction SilentlyContinue
+          Copy-Item README.md, LICENSE, CHANGELOG.md $staging -ErrorAction SilentlyContinue
           Compress-Archive -Path "$staging/*" -DestinationPath "$name.zip" -Force
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" `
             | Out-File -Encoding ascii "$name.zip.sha256"

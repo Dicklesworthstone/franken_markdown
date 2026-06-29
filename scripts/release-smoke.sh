@@ -66,8 +66,12 @@ head -c 5 "$work/out.pdf" | grep -q "%PDF-" || fail "PDF output is missing the %
 printf '# From stdin\n' | "$FMD" - --out "$work/stdin.html" || fail "stdin -> HTML exited nonzero"
 grep -q "<h1" "$work/stdin.html" || fail "stdin HTML output is missing an <h1>"
 
-# 8. --text to stdout (stdout is data).
-"$FMD" --text '# Hello from fmd' --out - 2>/dev/null | grep -q "<h1" \
+# 8. --text to stdout (stdout is data). Redirect to a file rather than piping to
+# grep: with `set -o pipefail`, an early-exiting `grep -q` could SIGPIPE fmd and
+# spuriously fail the pipe.
+"$FMD" --text '# Hello from fmd' --out - > "$work/text-stdout.html" 2>/dev/null \
+  || fail "--text --out - exited nonzero"
+grep -q "<h1" "$work/text-stdout.html" \
   || fail "--text --out - did not write HTML to stdout"
 
 # 9. a bad path fails with a nonzero (but not crashing) exit code.

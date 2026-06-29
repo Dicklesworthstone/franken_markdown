@@ -107,6 +107,21 @@ enum LinkTarget {
     Fragment(String),
 }
 
+/// Tagged-PDF list membership, populated by [`layout_list`] for every line that
+/// belongs to a list item. Lets the structure-tree builder group lines into
+/// `/L` → `/LI` → `/LBody` containers, including nested lists. The innermost
+/// list wins: a deeper `layout_list` stamps its lines first, and the enclosing
+/// list only stamps still-unmarked lines, so `depth` is always the line's true
+/// nesting level.
+#[derive(Clone)]
+struct ListMark {
+    /// Unique id of the enclosing list (its first line's out-vec index). Nesting
+    /// depth is encoded by this mark's position in [`Line::list_path`].
+    list: u32,
+    /// Unique id of the enclosing list item (the item's flow group).
+    item: u32,
+}
+
 /// One laid-out line: a baseline-aligned row of styled segments, or a rule.
 struct Line {
     size: f32,
@@ -126,6 +141,16 @@ struct Line {
     shade: bool,
     /// Vertical-list metadata used by the page builder.
     flow: FlowMark,
+    /// Tagged-PDF list membership: the full ancestor chain of enclosing lists,
+    /// outermost first, so a deeply nested list line carries every `/L`→`/LI`
+    /// level above it. Empty for non-list lines. Set by [`layout_list`].
+    list_path: Vec<ListMark>,
+    /// Tagged-PDF table cell columns: for a table content line, the source
+    /// column index of each entry in `segs` (so `table_cols.len() == segs.len()`
+    /// and `table_cols[i]` is the grid column of `segs[i]`). Empty for every
+    /// non-table line. Lets the structure-tree builder emit per-cell `/TH`/`/TD`
+    /// and merge a cell's wrapped fragments across physical lines.
+    table_cols: Vec<u32>,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -631,15 +656,27 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         page,
         next_bg: 0,
         next_flow: 0,
+        list_stack: Vec::new(),
     };
     layout_blocks(blocks, 0.0, &mut out, &mut cx);
     out
+}
+
+/// One open list level during layout. The stack in [`LayoutCx`] lets
+/// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
+/// nested lists tag correctly in the structure tree.
+struct ListFrame {
+    /// Stable list id (the list's first out-vec index).
+    list: u32,
+    /// Current item's flow group (set per item as the loop advances).
+    item: u32,
 }
 
 struct LayoutCx<'a> {
     opts: &'a PdfOptions,
     faces: &'a Faces,
     page: PageGeom,
+    list_stack: Vec<ListFrame>,
     next_bg: u32,
     next_flow: u32,
 }
@@ -769,6 +806,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         bg: gid,
                         shade: false,
                         flow: FlowMark::default(),
+                        list_path: Vec::new(),
+                        table_cols: Vec::new(),
                         segs,
                         image: None,
                     });
@@ -801,6 +840,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     bg: gid,
                     shade: false,
                     flow: FlowMark::default(),
+                    list_path: Vec::new(),
+                    table_cols: Vec::new(),
                     segs,
                     image: None,
                 });
@@ -842,6 +883,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     kind: FlowKind::Rule,
                     list_start: false,
                 },
+                list_path: Vec::new(),
+                table_cols: Vec::new(),
                 segs: Vec::new(),
                 image: None,
             });
@@ -907,6 +950,8 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             kind: FlowKind::Heading,
             list_start: false,
         },
+        list_path: Vec::new(),
+        table_cols: Vec::new(),
         segs: Vec::new(),
         image: None,
     });
@@ -955,6 +1000,8 @@ fn layout_standalone_image(
             kind: FlowKind::Image,
             list_start: false,
         },
+        list_path: Vec::new(),
+        table_cols: Vec::new(),
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -1168,6 +1215,11 @@ fn layout_table(
 
             for row_idx in 0..depth {
                 let mut segs = Vec::new();
+                // Source grid column of each emitted seg, kept parallel to `segs`
+                // so the structure tree can tag per-cell `/TH`/`/TD`. Empty cells
+                // emit no seg (and no column), which the tree builder backfills as
+                // empty cells using the table's column count.
+                let mut cols = Vec::new();
                 for k in 0..ncol {
                     let Some(text) = wrapped.get(k).and_then(|parts| parts.get(row_idx)) else {
                         continue;
@@ -1192,6 +1244,7 @@ fn layout_table(
                         strike: false,
                         width: w,
                     });
+                    cols.push(k as u32);
                 }
                 lines.push(Line {
                     size,
@@ -1210,6 +1263,8 @@ fn layout_table(
                         kind,
                         list_start: false,
                     },
+                    list_path: Vec::new(),
+                    table_cols: cols,
                     segs,
                     image: None,
                 });
@@ -1233,6 +1288,8 @@ fn layout_table(
             kind: FlowKind::TableRule,
             list_start: false,
         },
+        list_path: Vec::new(),
+        table_cols: Vec::new(),
         segs: Vec::new(),
         image: None,
     };
@@ -1338,6 +1395,14 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     let content_indent = indent + marker_col + 11.0;
     let list_first_line = out.len();
 
+    // Push this list onto the layout's list stack so every line laid out while
+    // it is open can be stamped with its full `/L`→`/LI` ancestor chain. The
+    // item id is updated as the loop advances.
+    cx.list_stack.push(ListFrame {
+        list: list_first_line as u32,
+        item: 0,
+    });
+
     for (i, item) in list.items.iter().enumerate() {
         let marker = markers.get(i).cloned().unwrap_or_else(|| "•".to_string());
         let marker_width = text_width(&marker, 11.0, F_BODY, cx.faces);
@@ -1370,6 +1435,10 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             }
         }
         let group = cx.alloc_flow();
+        let item_start_line = out.len();
+        if let Some(top) = cx.list_stack.last_mut() {
+            top.item = group;
+        }
         // Always emit the marker line (even for an empty leading run) so the
         // bullet/number/task box shows at every nesting level.
         layout_prefixed_inlines(
@@ -1390,10 +1459,31 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
 
         // Recurse into nested lists (deeper indent via `layout_block` ->
         // `layout_list`) and render other child blocks at the content indent.
+        // Nested lists stamp their own lines first (deeper chain), so the loop
+        // below only fills in this item's still-unstamped lines.
         for b in rest {
             layout_block(b, content_indent, out, cx);
         }
+
+        // Stamp every line this item produced that a deeper list did not already
+        // claim with the full enclosing list chain (outermost first). Nesting
+        // depth is encoded by each mark's position in the chain.
+        let chain: Vec<ListMark> = cx
+            .list_stack
+            .iter()
+            .map(|frame| ListMark {
+                list: frame.list,
+                item: frame.item,
+            })
+            .collect();
+        for line in &mut out[item_start_line..] {
+            if line.list_path.is_empty() && line_has_visible_content(line) {
+                line.list_path = chain.clone();
+            }
+        }
     }
+
+    cx.list_stack.pop();
     // Mark the list's first line so a short intro/caption immediately before it
     // is kept with the list by the page builder (keep-with-next).
     if let Some(first) = out.get_mut(list_first_line) {
@@ -1787,6 +1877,8 @@ fn layout_inlines(
             bg: 0,
             shade: false,
             flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
             segs,
             image: None,
         });
@@ -1832,6 +1924,8 @@ fn layout_prefixed_inlines(
             bg: 0,
             shade: false,
             flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
             segs: vec![marker],
             image: None,
         });
@@ -1879,6 +1973,8 @@ fn layout_prefixed_inlines(
             bg: 0,
             shade: false,
             flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
             segs,
             image: None,
         });
@@ -1940,6 +2036,8 @@ fn layout_inlines_greedy(
             bg: 0,
             shade: false,
             flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
             segs,
             image: None,
         });
@@ -2744,6 +2842,11 @@ fn serialize(
             let (r, g, b) = palette.fg;
             body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
         }
+        // Per-page logical-row tracking for table cells: a new table fragment
+        // (or a new logical row within it) is detected from the table flow group
+        // and the per-row wrap index resetting to 0. The header is row 0.
+        let mut tbl_group: Option<u32> = None;
+        let mut tbl_row: u32 = 0;
         for p in placed {
             let line = p.line;
             let y = p.y;
@@ -2760,6 +2863,9 @@ fn serialize(
                 });
             }
             if line.rule {
+                // Rules (heading hairlines, thematic breaks, table booktabs lines)
+                // are decoration: wrap them as an /Artifact so they never enter the
+                // tagged reading order.
                 let x2 = page.right_x();
                 let (rr, rg, rb) = if line.flow.kind == FlowKind::Rule {
                     palette.hr
@@ -2767,19 +2873,95 @@ fn serialize(
                     palette.rule
                 };
                 body.push_str(&format!(
-                    "{rr:.3} {rg:.3} {rb:.3} RG 0.7 w {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\n",
+                    "/Artifact BMC\n{rr:.3} {rg:.3} {rb:.3} RG 0.7 w \
+                     {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\nEMC\n",
                     x = line.rule_x,
                     yy = y + line.size * 0.5,
                 ));
-            } else {
-                let marked = line_has_visible_content(line);
-                if marked {
-                    let tag = struct_tag_for_line(line);
-                    body.push_str(&format!("/{tag} <</MCID {next_mcid}>> BDC\n"));
+            } else if !line.table_cols.is_empty() {
+                // Table content line: emit one marked-content cell per seg so the
+                // structure tree can carry true `/TH`/`/TD` semantics. Track the
+                // logical row for cell grouping.
+                match tbl_group {
+                    Some(g) if g == line.flow.group => {
+                        if line.flow.index == 0 {
+                            tbl_row += 1;
+                        }
+                    }
+                    _ => {
+                        tbl_group = Some(line.flow.group);
+                        tbl_row = 0;
+                    }
+                }
+                let header = line.flow.kind == FlowKind::TableHeader;
+                let cell_tag = if header { "TH" } else { "TD" };
+                let prefix = container_prefix(line);
+                for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
+                    if seg.text.is_empty() {
+                        continue;
+                    }
+                    let mut path = prefix.clone();
+                    path.push(SElem {
+                        key: SKey::Table(line.flow.group),
+                        tag: "Table",
+                    });
+                    path.push(SElem {
+                        key: SKey::TableRow(line.flow.group, tbl_row),
+                        tag: "TR",
+                    });
+                    path.push(SElem {
+                        key: SKey::TableCell(line.flow.group, tbl_row, col),
+                        tag: cell_tag,
+                    });
+                    body.push_str(&format!("/{cell_tag} <</MCID {next_mcid}>> BDC\n"));
+                    draw_seg(
+                        &mut body,
+                        &mut annots,
+                        &mut current_fill,
+                        next_mcid,
+                        seg,
+                        line.size,
+                        y,
+                        &subsets,
+                        faces,
+                        &shaped_cache,
+                        &palette,
+                    );
+                    body.push_str("EMC\n");
                     marks.push(StructMark {
                         mcid: next_mcid,
-                        tag,
-                        alt: line.image.as_ref().map(|image| image.alt.clone()),
+                        path,
+                        alt: None,
+                        bbox: None,
+                    });
+                    next_mcid += 1;
+                }
+            } else {
+                let marked = line_has_visible_content(line);
+                let owner = next_mcid;
+                if marked {
+                    let leaf = leaf_elem(line);
+                    body.push_str(&format!(
+                        "/{tag} <</MCID {next_mcid}>> BDC\n",
+                        tag = leaf.tag
+                    ));
+                    let mut path = container_prefix(line);
+                    path.push(leaf);
+                    let (alt, bbox) = if let Some(image) = &line.image {
+                        let x0 = line.rule_x;
+                        let y1 = y + image.height_pt;
+                        (
+                            Some(image.alt.clone()),
+                            Some([x0, y, x0 + image.width_pt, y1]),
+                        )
+                    } else {
+                        (None, None)
+                    };
+                    marks.push(StructMark {
+                        mcid: next_mcid,
+                        path,
+                        alt,
+                        bbox,
                     });
                     next_mcid += 1;
                 }
@@ -2796,74 +2978,19 @@ fn serialize(
                     ));
                 }
                 for seg in &line.segs {
-                    if seg.text.is_empty() {
-                        continue;
-                    }
-                    if let Some(face) = subsets.iter().find(|f| f.slot == seg.slot) {
-                        let source = faces.get(seg.slot);
-                        let fallback;
-                        let shaped = match shaped_cache
-                            .get(&seg.slot)
-                            .and_then(|slot_cache| slot_cache.get(seg.text.as_str()))
-                        {
-                            Some(run) => run.glyphs.as_slice(),
-                            None => {
-                                fallback = shape_run(source, &face.lig, &seg.text);
-                                fallback.glyphs.as_slice()
-                            }
-                        };
-                        if seg.fill != current_fill {
-                            let (r, g, b) = fill_rgb(seg.fill, &palette);
-                            body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
-                            current_fill = seg.fill;
-                        }
-                        body.push_str(&format!(
-                            "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
-                            f = seg.slot,
-                            s = line.size,
-                            x = seg.x,
-                            y = y,
-                            tj = kerned_tj(&face.map, source, &face.kern, shaped),
-                        ));
-                        // Strikethrough: a thin stroke through the run's middle,
-                        // in the text's own color (stroke `RG`, leaving the text
-                        // fill `rg` untouched so `current_fill` stays in sync).
-                        if seg.strike && seg.width > 0.0 {
-                            let (r, g, b) = fill_rgb(seg.fill, &palette);
-                            let sy = y + line.size * 0.30;
-                            let sw = (line.size * 0.06).max(0.4);
-                            body.push_str(&format!(
-                                "{r:.3} {g:.3} {b:.3} RG {sw:.2} w \
-                                 {x1:.2} {sy:.2} m {x2:.2} {sy:.2} l S\n",
-                                x1 = seg.x,
-                                x2 = seg.x + seg.width,
-                            ));
-                        }
-                        if let Some(target) = &seg.link {
-                            let (r, g, b) = palette.link;
-                            let (fr, fg2, fb) = palette.fg;
-                            let uy = y - line.size * 0.12;
-                            let uw = (line.size * 0.06).max(0.4);
-                            body.push_str(&format!(
-                                "{r:.3} {g:.3} {b:.3} RG {uw:.2} w \
-                                 {x1:.2} {uy:.2} m {x2:.2} {uy:.2} l S\n{fr:.3} {fg2:.3} {fb:.3} rg\n",
-                                x1 = seg.x,
-                                x2 = seg.x + seg.width,
-                            ));
-                            current_fill = Fill::Black;
-                            if seg.width > 0.0 {
-                                annots.push(LinkAnnotation {
-                                    rect: Rect {
-                                        x0: seg.x,
-                                        y0: y - line.size * 0.28,
-                                        x1: seg.x + seg.width,
-                                        y1: y + line.size * 0.86,
-                                    },
-                                    target: target.clone(),
-                                });
-                            }
-                        }
-                    }
+                    draw_seg(
+                        &mut body,
+                        &mut annots,
+                        &mut current_fill,
+                        owner,
+                        seg,
+                        line.size,
+                        y,
+                        &subsets,
+                        faces,
+                        &shaped_cache,
+                        &palette,
+                    );
                 }
                 if marked {
                     body.push_str("EMC\n");
@@ -2872,12 +2999,26 @@ fn serialize(
         }
 
         // (e) Blockquote gutter bars: accumulate each quote's vertical extent on
-        // this page (keyed by quote id), then stroke one segment per quote.
+        // this page (keyed by quote id), then stroke one segment per quote. The
+        // bars are decorative, so they are wrapped as an /Artifact.
         let mut quote_acc = quote_extents(placed);
-        flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
+        if !quote_acc.is_empty() {
+            body.push_str("/Artifact BMC\n");
+            flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
+            body.push_str("EMC\n");
+        }
 
-        let mut stream = String::with_capacity(bg.len().saturating_add(body.len()));
-        stream.push_str(&bg);
+        // Backgrounds, panels, chips, and zebra stripes are purely decorative;
+        // wrap the whole prelude as one /Artifact so it stays out of the tagged
+        // reading order. (Per-rule and per-quote-bar artifacts are wrapped at
+        // their draw sites above and below.)
+        let mut stream =
+            String::with_capacity(bg.len().saturating_add(body.len()).saturating_add(24));
+        if !bg.is_empty() {
+            stream.push_str("/Artifact BMC\n");
+            stream.push_str(&bg);
+            stream.push_str("EMC\n");
+        }
         stream.push_str(&body);
 
         scratch.pages.push(PageContent {
@@ -2942,17 +3083,191 @@ struct PageContent {
     marks: Vec<StructMark>,
 }
 
+/// Identity of a structure element, used to share a container across the
+/// consecutive marks that belong to it (e.g. every cell of one table row reuses
+/// the same `TableRow`, every wrapped line of one paragraph reuses the same
+/// `Paragraph`). Two marks open/extend the same element iff their keys compare
+/// equal at the same path depth.
+#[derive(Clone, PartialEq, Eq)]
+enum SKey {
+    BlockQuote(usize),
+    List(u32),
+    ListItem(u32),
+    ListBody(u32),
+    Paragraph(u32),
+    Heading(u32),
+    Code(u32),
+    Table(u32),
+    TableRow(u32, u32),
+    TableCell(u32, u32, u32),
+    Figure(u32),
+    Link(u32),
+}
+
+/// One element on a mark's container path: its sharing key plus the `/S`
+/// structure type emitted for it.
+#[derive(Clone)]
+struct SElem {
+    key: SKey,
+    tag: &'static str,
+}
+
+/// A single piece of marked content (one `/MCID`) plus the structure path that
+/// owns it. The path runs from just below the implicit `/Document` root down to
+/// the owning element (whose `tag` is also the content-stream BDC operand). The
+/// structure-tree builder diffs consecutive paths to open and reuse shared
+/// ancestors, producing a properly nested tree.
 #[derive(Clone)]
 struct StructMark {
     mcid: usize,
-    tag: &'static str,
+    path: Vec<SElem>,
+    /// `/Alt` text for the owning element (figures carry their image alt).
     alt: Option<String>,
+    /// Figure bounding box `[x0, y0, x1, y1]` in page coordinates, emitted as a
+    /// layout `/BBox` attribute so assistive tech can locate the image region.
+    bbox: Option<[f32; 4]>,
 }
 
 #[derive(Clone)]
 struct LinkAnnotation {
     rect: Rect,
     target: LinkTarget,
+    /// `/MCID` of the structure leaf (a `/Link` element) that owns this
+    /// annotation on its page, so the structure tree can reference the
+    /// annotation back with an `/OBJR` (PDF/UA links live in the tree, not just
+    /// the page `/Annots`).
+    owner_mcid: Option<usize>,
+}
+
+/// One node in the assembled structure tree. Node 0 is always the `/Document`
+/// root; every other node is a container or leaf element. Object numbers are
+/// `struct_elem_base + node_index`, so the whole tree can be serialized after a
+/// single dynamic count.
+struct SNode {
+    tag: &'static str,
+    /// Parent node index (node 0's parent is the `/StructTreeRoot`).
+    parent: usize,
+    kids: Vec<SKid>,
+    /// `/Alt` text (figures).
+    alt: Option<String>,
+    /// Figure bounding box `[x0, y0, x1, y1]`.
+    bbox: Option<[f32; 4]>,
+    /// True for `/TH` cells, which emit a `/Scope /Column` table attribute.
+    scope_column: bool,
+    /// Page of this element's marked content, emitted as `/Pg` when present.
+    page: Option<usize>,
+}
+
+/// A child of a structure node: a nested element, a marked-content reference, or
+/// an object reference (to a link annotation).
+enum SKid {
+    Node(usize),
+    Mcr { page: usize, mcid: usize },
+    ObjR { page: usize, local: usize },
+}
+
+struct StructTree {
+    nodes: Vec<SNode>,
+    /// `parent_tree[page][mcid]` = owning node index, in dense `/MCID` order.
+    parent_tree: Vec<Vec<usize>>,
+}
+
+/// Assemble the hierarchical structure tree from per-page marks. Each mark
+/// carries the full container path from just below `/Document` to its owning
+/// element; consecutive marks that share a prefix reuse the same container
+/// nodes, so tables, lists, and blockquotes nest correctly. The open stack is
+/// reset per page (a block split across a page break becomes two sibling
+/// elements under `/Document`, which is valid and keeps the parent tree simple).
+fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> StructTree {
+    let mut nodes: Vec<SNode> = vec![SNode {
+        tag: "Document",
+        parent: 0,
+        kids: Vec::new(),
+        alt: None,
+        bbox: None,
+        scope_column: false,
+        page: None,
+    }];
+    let mut parent_tree: Vec<Vec<usize>> = Vec::with_capacity(pages.len());
+
+    for (page_idx, page) in pages.iter().enumerate() {
+        let mut leaf_for_mcid: Vec<usize> = Vec::new();
+        // Currently open path elements below /Document: (sharing key, node index).
+        let mut open: Vec<(SKey, usize)> = Vec::new();
+
+        let mut marks: Vec<&StructMark> = page.marks.iter().collect();
+        marks.sort_by_key(|m| m.mcid);
+
+        for mark in marks {
+            // Reuse the longest shared prefix with the currently open path, then
+            // open the remaining elements.
+            let mut common = 0;
+            while common < open.len()
+                && common < mark.path.len()
+                && open[common].0 == mark.path[common].key
+            {
+                common += 1;
+            }
+            open.truncate(common);
+            for elem in &mark.path[common..] {
+                let parent_node = open.last().map_or(0, |&(_, idx)| idx);
+                let node_index = nodes.len();
+                nodes.push(SNode {
+                    tag: elem.tag,
+                    parent: parent_node,
+                    kids: Vec::new(),
+                    alt: None,
+                    bbox: None,
+                    scope_column: elem.tag == "TH",
+                    page: None,
+                });
+                nodes[parent_node].kids.push(SKid::Node(node_index));
+                open.push((elem.key.clone(), node_index));
+            }
+
+            let owner = open.last().map_or(0, |&(_, idx)| idx);
+            if mark.alt.is_some() {
+                nodes[owner].alt = mark.alt.clone();
+            }
+            if mark.bbox.is_some() {
+                nodes[owner].bbox = mark.bbox;
+            }
+            nodes[owner].kids.push(SKid::Mcr {
+                page: page_idx,
+                mcid: mark.mcid,
+            });
+            if nodes[owner].page.is_none() {
+                nodes[owner].page = Some(page_idx);
+            }
+            if leaf_for_mcid.len() <= mark.mcid {
+                leaf_for_mcid.resize(mark.mcid + 1, 0);
+            }
+            leaf_for_mcid[mark.mcid] = owner;
+        }
+
+        // Reference each resolved link annotation back from its owning /Link
+        // element with an /OBJR, in the same filtered order used for annotation
+        // object numbering.
+        let mut local = 0usize;
+        for annot in &page.annots {
+            if !annotation_is_resolved(annot, dest_ids) {
+                continue;
+            }
+            if let Some(m) = annot.owner_mcid
+                && let Some(&owner) = leaf_for_mcid.get(m)
+            {
+                nodes[owner].kids.push(SKid::ObjR {
+                    page: page_idx,
+                    local,
+                });
+            }
+            local += 1;
+        }
+
+        parent_tree.push(leaf_for_mcid);
+    }
+
+    StructTree { nodes, parent_tree }
 }
 
 fn estimated_background_capacity(placed: &[Placed<'_>]) -> usize {
@@ -3130,23 +3445,199 @@ fn line_has_visible_content(line: &Line) -> bool {
     line.image.is_some() || line.segs.iter().any(|seg| !seg.text.is_empty())
 }
 
-fn struct_tag_for_line(line: &Line) -> &'static str {
-    if line.image.is_some() {
-        return "Figure";
+/// Draw one styled segment's text (with strikethrough, link underline, and link
+/// annotation) into `body` at baseline `y`. Shared by the whole-line and
+/// per-table-cell rendering paths so both emit byte-identical glyph runs. Link
+/// annotations record `owner_mcid` so the structure tree can reference them with
+/// an `/OBJR`. `current_fill` is threaded so redundant `rg` operators are still
+/// elided across calls exactly as the old single-pass loop did.
+#[allow(clippy::too_many_arguments)]
+fn draw_seg(
+    body: &mut String,
+    annots: &mut Vec<LinkAnnotation>,
+    current_fill: &mut Fill,
+    owner_mcid: usize,
+    seg: &Seg,
+    size: f32,
+    y: f32,
+    subsets: &[EmbeddedFace],
+    faces: &Faces,
+    shaped_cache: &ShapedRunCache,
+    palette: &Palette,
+) {
+    if seg.text.is_empty() {
+        return;
     }
-    if line.segs.iter().any(|seg| seg.link.is_some()) {
-        return "Link";
+    let Some(face) = subsets.iter().find(|f| f.slot == seg.slot) else {
+        return;
+    };
+    let source = faces.get(seg.slot);
+    let fallback;
+    let shaped = match shaped_cache
+        .get(&seg.slot)
+        .and_then(|slot_cache| slot_cache.get(seg.text.as_str()))
+    {
+        Some(run) => run.glyphs.as_slice(),
+        None => {
+            fallback = shape_run(source, &face.lig, &seg.text);
+            fallback.glyphs.as_slice()
+        }
+    };
+    if seg.fill != *current_fill {
+        let (r, g, b) = fill_rgb(seg.fill, palette);
+        body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
+        *current_fill = seg.fill;
+    }
+    body.push_str(&format!(
+        "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
+        f = seg.slot,
+        s = size,
+        x = seg.x,
+        tj = kerned_tj(&face.map, source, &face.kern, shaped),
+    ));
+    // Strikethrough: a thin stroke through the run's middle, in the text's own
+    // color (stroke `RG`, leaving the text fill `rg` untouched).
+    if seg.strike && seg.width > 0.0 {
+        let (r, g, b) = fill_rgb(seg.fill, palette);
+        let sy = y + size * 0.30;
+        let sw = (size * 0.06).max(0.4);
+        body.push_str(&format!(
+            "{r:.3} {g:.3} {b:.3} RG {sw:.2} w {x1:.2} {sy:.2} m {x2:.2} {sy:.2} l S\n",
+            x1 = seg.x,
+            x2 = seg.x + seg.width,
+        ));
+    }
+    if let Some(target) = &seg.link {
+        let (r, g, b) = palette.link;
+        let (fr, fg2, fb) = palette.fg;
+        let uy = y - size * 0.12;
+        let uw = (size * 0.06).max(0.4);
+        body.push_str(&format!(
+            "{r:.3} {g:.3} {b:.3} RG {uw:.2} w \
+             {x1:.2} {uy:.2} m {x2:.2} {uy:.2} l S\n{fr:.3} {fg2:.3} {fb:.3} rg\n",
+            x1 = seg.x,
+            x2 = seg.x + seg.width,
+        ));
+        *current_fill = Fill::Black;
+        if seg.width > 0.0 {
+            annots.push(LinkAnnotation {
+                rect: Rect {
+                    x0: seg.x,
+                    y0: y - size * 0.28,
+                    x1: seg.x + seg.width,
+                    y1: y + size * 0.86,
+                },
+                target: target.clone(),
+                owner_mcid: Some(owner_mcid),
+            });
+        }
+    }
+}
+
+/// The `/H1`..`/H6`/`/H` structure tag for a heading line, by its display size.
+/// Sizes below H3 collapse to the generic `/H` (the writer cannot recover the
+/// exact source level from size alone for H4–H6, which share the body measure).
+fn heading_tag(size: f32) -> &'static str {
+    if size >= 23.0 {
+        "H1"
+    } else if size >= 18.0 {
+        "H2"
+    } else if size >= 15.0 {
+        "H3"
+    } else {
+        "H"
+    }
+}
+
+/// The structure element that directly owns a non-table line's marked content.
+/// `Figure`/`Link` are detected first (image, then any link run); headings keep
+/// their heading semantics even when they contain a link.
+fn leaf_elem(line: &Line) -> SElem {
+    if line.image.is_some() {
+        return SElem {
+            key: SKey::Figure(line.flow.group),
+            tag: "Figure",
+        };
     }
     match line.flow.kind {
-        FlowKind::Heading if line.size >= 23.0 => "H1",
-        FlowKind::Heading if line.size >= 18.0 => "H2",
-        FlowKind::Heading if line.size >= 15.0 => "H3",
-        FlowKind::Heading => "H",
-        FlowKind::Code => "Code",
-        FlowKind::TableHeader | FlowKind::TableRow => "TR",
-        FlowKind::Paragraph => "P",
-        _ => "P",
+        FlowKind::Heading => SElem {
+            key: SKey::Heading(line.flow.group),
+            tag: heading_tag(line.size),
+        },
+        FlowKind::Code => SElem {
+            key: SKey::Code(line.bg),
+            tag: "Code",
+        },
+        _ => {
+            if line.segs.iter().any(|seg| seg.link.is_some()) {
+                SElem {
+                    key: SKey::Link(line.flow.group),
+                    tag: "Link",
+                }
+            } else {
+                SElem {
+                    key: SKey::Paragraph(line.flow.group),
+                    tag: "P",
+                }
+            }
+        }
     }
+}
+
+/// The enclosing container path (below `/Document`) shared by every leaf on this
+/// line: the blockquotes and lists that enclose it, outermost-first. Tables and
+/// leaves append their own elements after this.
+///
+/// Blockquotes and lists are merged by their out-vec start index (every
+/// blockquote id and list id is the index where that block opened). Markdown
+/// block structure is a tree, so start order is exactly nesting order — this
+/// gets `> - item` (list inside quote) and `- > quote` (quote inside list)
+/// right, rather than always nesting one kind inside the other.
+fn container_prefix(line: &Line) -> Vec<SElem> {
+    enum Container {
+        Quote(usize),
+        List { list: u32, item: u32 },
+    }
+    let mut containers: Vec<(usize, Container)> =
+        Vec::with_capacity(line.quote_bars.len().saturating_add(line.list_path.len()));
+    for (qid, _x) in &line.quote_bars {
+        containers.push((*qid, Container::Quote(*qid)));
+    }
+    for lm in &line.list_path {
+        containers.push((
+            lm.list as usize,
+            Container::List {
+                list: lm.list,
+                item: lm.item,
+            },
+        ));
+    }
+    containers.sort_by_key(|(start, _)| *start);
+
+    let mut path = Vec::new();
+    for (_, container) in containers {
+        match container {
+            Container::Quote(qid) => path.push(SElem {
+                key: SKey::BlockQuote(qid),
+                tag: "BlockQuote",
+            }),
+            Container::List { list, item } => {
+                path.push(SElem {
+                    key: SKey::List(list),
+                    tag: "L",
+                });
+                path.push(SElem {
+                    key: SKey::ListItem(item),
+                    tag: "LI",
+                });
+                path.push(SElem {
+                    key: SKey::ListBody(item),
+                    tag: "LBody",
+                });
+            }
+        }
+    }
+    path
 }
 
 fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>> {
@@ -3281,6 +3772,8 @@ mod keep_with_next_tests {
                 kind,
                 list_start: false,
             },
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
             segs: Vec::new(),
             image: None,
         }
@@ -3744,13 +4237,22 @@ fn build_pdf(
         annot_counts.push(count);
         total_annots += count;
     }
-    let mut mark_starts = Vec::with_capacity(p);
     let mut total_marks = 0usize;
     for page in pages {
-        mark_starts.push(total_marks);
         total_marks += page.marks.len();
     }
     let tagged = total_marks > 0;
+    // Assemble the hierarchical structure tree up front so its node count drives
+    // object numbering (containers + leaves are all numbered objects).
+    let stree = if tagged {
+        build_struct_tree(pages, &dest_ids)
+    } else {
+        StructTree {
+            nodes: Vec::new(),
+            parent_tree: Vec::new(),
+        }
+    };
+    let struct_node_count = stree.nodes.len();
 
     // Object number plan (1-indexed):
     //   1 Catalog, 2 Pages, [3..3+p) Page objs, [3+p..3+2p) content streams,
@@ -3783,10 +4285,8 @@ fn build_pdf(
     let struct_root_obj = struct_base;
     let parent_tree_obj = struct_base + 1;
     let struct_elem_base = struct_base + 2;
-    let struct_elem_obj = |page_index: usize, local_index: usize| {
-        struct_elem_base + mark_starts.get(page_index).copied().unwrap_or(0) + local_index
-    };
-    let info_obj = struct_base + if tagged { 2 + total_marks } else { 0 };
+    let struct_elem_obj = |node_index: usize| struct_elem_base + node_index;
+    let info_obj = struct_base + if tagged { 2 + struct_node_count } else { 0 };
     let total_objs = info_obj;
 
     let outline_root_ref = if outline_count == 0 {
@@ -4083,30 +4583,26 @@ fn build_pdf(
     }
 
     if tagged {
-        let root_kids = (0..p)
-            .flat_map(|page_index| {
-                (0..pages[page_index].marks.len()).map(move |local_index| {
-                    format!("{} 0 R", struct_elem_obj(page_index, local_index))
-                })
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        // StructTreeRoot points at the single /Document node (node 0).
         append_pdf_object_str(
             &mut buf,
             &mut offsets,
             struct_root_obj,
             &format!(
-                "<< /Type /StructTreeRoot /K [ {root_kids} ] /ParentTree {parent_tree_obj} 0 R >>"
+                "<< /Type /StructTreeRoot /K [ {doc} 0 R ] /ParentTree {parent_tree_obj} 0 R >>",
+                doc = struct_elem_obj(0),
             ),
         );
 
+        // Parent tree: map each page's MCIDs (in order) to their owning element.
         let mut nums = String::new();
-        for (page_index, page) in pages.iter().enumerate() {
-            if page.marks.is_empty() {
+        for (page_index, leaf_for_mcid) in stree.parent_tree.iter().enumerate() {
+            if leaf_for_mcid.is_empty() {
                 continue;
             }
-            let refs = (0..page.marks.len())
-                .map(|local_index| format!("{} 0 R", struct_elem_obj(page_index, local_index)))
+            let refs = leaf_for_mcid
+                .iter()
+                .map(|&node| format!("{} 0 R", struct_elem_obj(node)))
                 .collect::<Vec<_>>()
                 .join(" ");
             nums.push_str(&format!("{page_index} [ {refs} ] "));
@@ -4118,28 +4614,69 @@ fn build_pdf(
             &format!("<< /Nums [ {nums}] >>"),
         );
 
-        for (page_index, page) in pages.iter().enumerate() {
-            for (local_index, mark) in page.marks.iter().enumerate() {
-                let alt = mark
-                    .alt
-                    .as_ref()
-                    .filter(|alt| !alt.is_empty())
-                    .map(|alt| format!(" /Alt ({})", pdf_escape(alt)))
-                    .unwrap_or_default();
-                append_pdf_object_str(
-                    &mut buf,
-                    &mut offsets,
-                    struct_elem_obj(page_index, local_index),
-                    &format!(
-                        "<< /Type /StructElem /S /{tag} /P {parent} 0 R /Pg {page_obj} 0 R \
-                         /K << /Type /MCR /Pg {page_obj} 0 R /MCID {mcid} >>{alt} >>",
-                        tag = mark.tag,
-                        parent = struct_root_obj,
-                        page_obj = page_obj(page_index),
-                        mcid = mark.mcid,
+        // Serialize each structure element.
+        for (i, node) in stree.nodes.iter().enumerate() {
+            let parent_ref = if i == 0 {
+                struct_root_obj
+            } else {
+                struct_elem_obj(node.parent)
+            };
+            let kids = node
+                .kids
+                .iter()
+                .map(|kid| match kid {
+                    SKid::Node(n) => format!("{} 0 R", struct_elem_obj(*n)),
+                    SKid::Mcr { page, mcid } => format!(
+                        "<< /Type /MCR /Pg {pg} 0 R /MCID {mcid} >>",
+                        pg = page_obj(*page),
                     ),
-                );
-            }
+                    SKid::ObjR { page, local } => format!(
+                        "<< /Type /OBJR /Pg {pg} 0 R /Obj {obj} 0 R >>",
+                        pg = page_obj(*page),
+                        obj = annot_obj(*page, *local),
+                    ),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let k_entry = if node.kids.is_empty() {
+                String::new()
+            } else {
+                format!(" /K [ {kids} ]")
+            };
+            let pg = node
+                .page
+                .map(|page| format!(" /Pg {} 0 R", page_obj(page)))
+                .unwrap_or_default();
+            let alt = node
+                .alt
+                .as_ref()
+                .filter(|alt| !alt.is_empty())
+                .map(|alt| format!(" /Alt ({})", pdf_escape(alt)))
+                .unwrap_or_default();
+            // Table header cells advertise a column scope; figures carry a layout
+            // bounding box so assistive tech can locate the image region.
+            let attr = if node.scope_column {
+                " /A << /O /Table /Scope /Column >>".to_string()
+            } else if let Some(b) = node.bbox {
+                format!(
+                    " /A << /O /Layout /BBox [ {x0} {y0} {x1} {y1} ] >>",
+                    x0 = pdf_num(b[0]),
+                    y0 = pdf_num(b[1]),
+                    x1 = pdf_num(b[2]),
+                    y1 = pdf_num(b[3]),
+                )
+            } else {
+                String::new()
+            };
+            append_pdf_object_str(
+                &mut buf,
+                &mut offsets,
+                struct_elem_obj(i),
+                &format!(
+                    "<< /Type /StructElem /S /{tag} /P {parent_ref} 0 R{pg}{k_entry}{alt}{attr} >>",
+                    tag = node.tag,
+                ),
+            );
         }
     }
 

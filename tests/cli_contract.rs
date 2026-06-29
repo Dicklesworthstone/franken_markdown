@@ -154,7 +154,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"pdf_code_line_numbers\":\"available\""));
     assert!(stdout.contains("\"pdf_metadata\":\"available\""));
     assert!(stdout.contains("\"source_date_epoch_pdf\":\"available\""));
-    assert!(stdout.contains("\"tagged_pdf\":\"available_v0\""));
+    assert!(stdout.contains("\"tagged_pdf\":\"available_hierarchical_accessible\""));
     assert!(stdout.contains("\"stream_compression_pdf\":\"available\""));
     assert!(stdout.contains("\"pdf_image_assets\":\"available_png_v0\""));
     assert!(stdout.contains("--pdf-line-numbers"));
@@ -208,7 +208,7 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("`--out -` writes HTML document data to stdout only"));
     assert!(stdout.contains("PDF and --to both require a real output path"));
     assert!(stdout.contains("SOURCE_DATE_EPOCH"));
-    assert!(stdout.contains("tagged-PDF structure tree v0"));
+    assert!(stdout.contains("hierarchical accessible tagged-PDF structure tree"));
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
     assert!(stdout.contains("deterministic discretionary hyphenation"));
     assert!(stdout.contains("glue justification for body paragraphs"));

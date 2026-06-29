@@ -158,8 +158,13 @@ Implemented today:
   destinations, and deterministic Info metadata,
 - reproducible PDF Info dates controlled by explicit library options or the
   CLI's `SOURCE_DATE_EPOCH`,
-- tagged-PDF structure tree v0 with page MCIDs, standard block/link/code/table
-  tags, parent tree, `/Lang`, and `/Tabs /S`,
+- hierarchical tagged-PDF structure tree rooted at a single `/Document`, with
+  accurate nesting for headings, paragraphs, nested lists (`/L`/`/LI`/`/LBody`),
+  blockquotes, per-cell tables (`/Table`/`/TR`/`/TH`/`/TD` with header column
+  scope), code, figures (`/Alt` + layout `/BBox`), and links referenced back from
+  the tree via `/OBJR`; all decoration (rules, panels, stripes, quote bars) is
+  marked `/Artifact` so nothing pollutes the reading order — see
+  [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md),
 - browser/WASM package sources, wasm-bindgen adapter tests, and an interactive
   local demo that exercise the same dependency-free render core,
 - `fmd` and `franken_markdown` binaries over one shared CLI entrypoint,
@@ -409,13 +414,17 @@ equivalent options through the library API rather than reading local config.
 ## Limitations
 
 - PDF output is a deterministic writer with embedded subset fonts, real metrics,
-  focused kerning/ligatures, selectable text, compressed page streams, tagged-PDF
-  structure groundwork, Knuth-Plass line breaking, measured/striped tables,
-  nested lists, syntax-highlighted code, and deterministic discretionary
-  hyphenation/justification for body paragraphs. Full widow/orphan and
-  keep-with-next pagination controls, broader visual golden fixtures, and richer
-  accessibility semantics such as full table-cell scopes are not implemented
-  yet.
+  focused kerning/ligatures, selectable text, compressed page streams, a
+  hierarchical tagged-PDF structure tree (per-cell tables with header column
+  scope, nested lists, blockquotes, figures with alt/bbox, links referenced via
+  `/OBJR`, and decoration marked as `/Artifact`;
+  see [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md)), Knuth-Plass line
+  breaking, measured/striped tables, nested lists, syntax-highlighted code, and
+  deterministic discretionary hyphenation/justification for body paragraphs. Full
+  widow/orphan and keep-with-next pagination controls, broader visual golden
+  fixtures, and finer accessibility semantics (H4–H6 levels, `/Headers`
+  cell-to-header id linkage, sub-line inline-link tagging, page-spanning logical
+  elements) remain roadmap.
 - Parser coverage is measured against the official CommonMark 0.31.2 suite by
   `scripts/commonmark-conformance.sh`: **357/652 examples match** after
   normalizing fmd's styled HTML (60.4% of the 591 in-scope examples; the 61

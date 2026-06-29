@@ -58,6 +58,16 @@ project has no tags or GitHub Releases yet.
 
 ### Rendering Engine
 
+- Upgraded the tagged-PDF structure tree from a flat v0 to a real accessible
+  hierarchy (bead `qw1.9`): a single `/Document` root with accurate nesting for
+  headings, paragraphs, nested lists (`/L`/`/LI`/`/LBody`), blockquotes, per-cell
+  tables (`/Table`/`/TR`/`/TH`/`/TD` with header column scope), code, figures
+  (`/Alt` + layout `/BBox`), and links referenced back from the tree via `/OBJR`.
+  All decoration (backgrounds, panels, zebra stripes, inline-code chips, rules,
+  thematic breaks, blockquote gutter bars) is now marked `/Artifact`, so the
+  tagged page has no unmarked content (PDF/UA 7.1). Documented supported
+  semantics, limitations, and non-goals in `docs/PDF_ACCESSIBILITY.md`; pinned by
+  new structural tests and the determinism/policy gates.
 - Replaced the flat theme fields with a structured dependency-free theme model
   covering font family, mono font, colors, spacing, table density, code theme,
   dark-mode policy, and PDF/page contract; exposed stable hand-rolled JSON for

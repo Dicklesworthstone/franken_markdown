@@ -409,6 +409,10 @@ fn pdf_renders_supplied_png_image_as_xobject() {
         text.contains("/Alt (Tiny chart)"),
         "figure alt text should be carried into the structure element"
     );
+    assert!(
+        text.contains("/O /Layout /BBox ["),
+        "figure should carry a layout bounding box so AT can locate the image"
+    );
 }
 
 #[test]
@@ -595,14 +599,217 @@ fn pdf_emits_tagged_structure_tree_for_core_blocks() {
     assert!(text.contains("/Tabs /S"));
     assert!(text.contains("/Type /MCR"));
     assert!(text.contains("/MCID 0"));
+    // Single /Document root under the StructTreeRoot, then semantic elements.
+    assert!(text.contains("/S /Document"));
     assert!(text.contains("/S /H1"));
     assert!(text.contains("/S /P"));
     assert!(text.contains("/S /Link"));
     assert!(text.contains("/S /Code"));
+    // Tables now nest properly: a /Table holding /TR rows holding /TH//TD cells.
+    assert!(text.contains("/S /Table"));
     assert!(text.contains("/S /TR"));
+    assert!(text.contains("/S /TH"));
+    assert!(text.contains("/S /TD"));
     assert!(
         text.contains("/ToUnicode"),
         "tagged PDF still needs ToUnicode maps for copy/search"
+    );
+}
+
+/// Parse every `/StructElem` into `(object, tag, parent_object)`. The structure
+/// elements are plain (non-stream) objects, so a forward scan over the bytes is
+/// exact.
+fn struct_elements(bytes: &[u8]) -> Vec<(usize, String, usize)> {
+    let text = as_text(bytes);
+    let needle = " 0 obj\n<< /Type /StructElem /S /";
+    let mut out = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(pos) = rest.find(needle) {
+        let obj = rest[..pos]
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let after = &rest[pos + needle.len()..];
+        let tag: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        let parent = after
+            .find(" /P ")
+            .and_then(|p| after[p + 4..].split(" 0 R").next())
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        out.push((obj, tag, parent));
+        rest = after;
+    }
+    out
+}
+
+#[test]
+fn pdf_blockquote_inside_list_item_nests_under_the_list() {
+    // A blockquote nested inside a list item must tag as BlockQuote *inside* the
+    // item's LBody — not the reverse. Containers are ordered by where they open,
+    // so this and the `> - item` (list-in-quote) case both nest correctly.
+    let pdf = render_pdf("- alpha\n\n  > quoted\n", &PdfOptions::default()).unwrap();
+    let elems = struct_elements(&pdf);
+
+    let lbody = elems
+        .iter()
+        .find(|(_, tag, _)| tag == "LBody")
+        .map(|(obj, _, _)| *obj)
+        .expect("a list item should have an LBody");
+    let blockquote = elems
+        .iter()
+        .find(|(_, tag, _)| tag == "BlockQuote")
+        .expect("the nested blockquote should be tagged");
+    assert_eq!(
+        blockquote.2, lbody,
+        "the blockquote must nest inside the list item's LBody; elems={elems:?}"
+    );
+}
+
+#[test]
+fn pdf_list_inside_blockquote_nests_under_the_quote() {
+    // The mirror case: `> - item` must nest the list inside the blockquote.
+    let pdf = render_pdf("> - alpha\n> - beta\n", &PdfOptions::default()).unwrap();
+    let elems = struct_elements(&pdf);
+
+    let quote = elems
+        .iter()
+        .find(|(_, tag, _)| tag == "BlockQuote")
+        .map(|(obj, _, _)| *obj)
+        .expect("the blockquote should be tagged");
+    let list = elems
+        .iter()
+        .find(|(_, tag, _)| tag == "L")
+        .expect("the list inside the quote should be tagged");
+    assert_eq!(
+        list.2, quote,
+        "the list must nest inside the blockquote; elems={elems:?}"
+    );
+}
+
+/// Sum of marked-content openers (`BDC` for structure, `BMC` for artifacts) and
+/// closers (`EMC`) across the (uncompressed) page content streams. For a
+/// conforming tagged PDF these must balance: nothing may be left unmarked. Only
+/// `text_streams` (streams holding `BT /F` text) are inspected, so binary font
+/// programs cannot contribute false matches.
+fn marked_content_balance(bytes: &[u8]) -> (usize, usize) {
+    let mut openers = 0usize;
+    let mut closers = 0usize;
+    for body in text_streams(bytes) {
+        openers += body.matches("BDC").count() + body.matches("BMC").count();
+        closers += body.matches("EMC").count();
+    }
+    (openers, closers)
+}
+
+#[test]
+fn pdf_structure_tree_is_hierarchical_and_accessible() {
+    // A document exercising every container the writer can tag: nested lists, a
+    // blockquote, an aligned table, a fenced code block, and an inline link.
+    // Kept small so the page content stream stays uncompressed and its marked
+    // content is inspectable as plain bytes.
+    let md = "# Heading\n\n\
+        Intro with a [link](https://example.com/docs).\n\n\
+        - first item\n- second item\n  - nested item\n- third item\n\n\
+        > A quoted paragraph.\n\n\
+        | Name | Value |\n|:---|---:|\n| alpha | 1 |\n| beta | 2 |\n\n\
+        ```rust\nfn main() {}\n```\n";
+    let pdf = render_pdf(md, &PdfOptions::default()).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        text_streams(&pdf).iter().any(|s| s.contains("BDC")),
+        "test relies on an uncompressed content stream; shrink the doc if this fails"
+    );
+
+    // Catalog wires the tree as a tagged PDF.
+    assert!(text.contains("/MarkInfo << /Marked true >>"));
+    assert!(text.contains("/Lang (en-US)"));
+
+    // Exactly one /Document root, and it parents the StructTreeRoot. Recover the
+    // StructTreeRoot object number from the catalog and confirm the chain.
+    assert_eq!(
+        text.matches("/S /Document").count(),
+        1,
+        "there must be a single /Document structure root"
+    );
+    let root_obj = text
+        .split("/StructTreeRoot ")
+        .nth(1)
+        .and_then(|tail| tail.split(" 0 R").next())
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .expect("catalog references the StructTreeRoot object");
+    assert!(
+        text.contains(&format!("/S /Document /P {root_obj} 0 R")),
+        "the /Document element must be parented by the StructTreeRoot ({root_obj})"
+    );
+
+    // Semantic containers and leaves.
+    for tag in [
+        "/S /H1",
+        "/S /P",
+        "/S /L",
+        "/S /LI",
+        "/S /LBody",
+        "/S /BlockQuote",
+        "/S /Link",
+        "/S /Table",
+        "/S /TR",
+        "/S /TH",
+        "/S /TD",
+        "/S /Code",
+    ] {
+        assert!(text.contains(tag), "missing structure tag {tag}");
+    }
+
+    // The nested list produces a second /L nested inside the outer list. The
+    // `/S /L ` form (trailing space before `/P`) matches only `/L`, never the
+    // `/LI` or `/LBody` elements.
+    assert!(
+        text.matches("/S /L ").count() >= 2,
+        "a nested list must emit an inner /L element"
+    );
+
+    // Header cells advertise a column scope; the link annotation is referenced
+    // back from its /Link element with an /OBJR.
+    assert!(
+        text.contains("/A << /O /Table /Scope /Column >>"),
+        "table header cells need a column scope"
+    );
+    assert_eq!(
+        text.matches("/Scope /Column").count(),
+        2,
+        "both header cells (Name, Value) should carry a column scope"
+    );
+    assert!(
+        text.contains("/Type /OBJR"),
+        "a link annotation must be referenced from the structure tree"
+    );
+
+    // Decoration is wrapped as /Artifact, and all marked content is balanced —
+    // nothing is left unmarked in the tagged page (PDF/UA 7.1).
+    assert!(
+        text.contains("/Artifact BMC"),
+        "rules, panels, stripes, and quote bars must be artifacts"
+    );
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(openers > 0, "the page should contain marked content");
+    assert_eq!(
+        openers, closers,
+        "every BDC/BMC must be closed by an EMC (balanced marked content)"
+    );
+
+    // Every content-stream MCID has exactly one MCR in the structure tree.
+    let content_mcids: usize = text_streams(&pdf)
+        .iter()
+        .map(|s| s.matches("<</MCID ").count())
+        .sum();
+    assert_eq!(
+        content_mcids,
+        text.matches("/Type /MCR").count(),
+        "each content-stream MCID must be referenced by one structure MCR"
     );
 }
 
@@ -1048,9 +1255,12 @@ fn pdf_keeps_a_short_caption_with_its_following_table() {
         "{filler}Caption for the table\n\n| Col A | Col B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"
     );
     let pages = page_tag_sequences(&render_pdf(&with_table, &opts).unwrap());
+    // Table content is now tagged per cell (`TH` for header, `TD` for body), so
+    // a table's presence on a page is the presence of any cell tag.
+    let is_cell = |t: &String| t == "TH" || t == "TD";
     let table_page = pages
         .iter()
-        .position(|tags| tags.iter().any(|t| t == "TR"))
+        .position(|tags| tags.iter().any(is_cell))
         .expect("the table should render onto some page");
     assert!(
         table_page >= 2,
@@ -1062,8 +1272,8 @@ fn pdf_keeps_a_short_caption_with_its_following_table() {
         pages[table_page]
     );
     assert!(
-        !pages[table_page - 1].iter().any(|t| t == "TR"),
-        "the page before the table must not contain table rows; got {pages:?}"
+        !pages[table_page - 1].iter().any(is_cell),
+        "the page before the table must not contain table cells; got {pages:?}"
     );
     // The caption was pulled off the prior page: 4 filler P remain, not 5.
     assert_eq!(

@@ -96,10 +96,13 @@ done <<<"$declared_files"
 if [ -s "$package_dir/README.md" ]; then log "  README.md: present"; else log "  README.md: MISSING"; manifest_fail=1; fi
 [ "$manifest_fail" -eq 0 ] || { log "manifest FAIL: declared package files missing from assembly"; exit 1; }
 
-# Size budget (raw + gzip), with a ratchet.
+# Size budget (raw + gzip; brotli where available), with a ratchet, plus a
+# checksum so the artifact identity is recorded in the ledger.
 bg="$pkg_dir/franken_markdown_bg.wasm"
 raw=$(wc -c <"$bg"); gz=$(gzip -c "$bg" | wc -c)
-log "wasm size: raw=${raw} (budget ${BUDGET_RAW}); gzip=${gz} (budget ${BUDGET_GZIP})"
+if command -v brotli >/dev/null 2>&1; then br=$(brotli -c "$bg" | wc -c); else br="n/a (brotli not installed)"; fi
+log "wasm size: raw=${raw} (budget ${BUDGET_RAW}); gzip=${gz} (budget ${BUDGET_GZIP}); brotli=${br}"
+log "wasm sha256: $(sha256sum "$bg" | cut -d' ' -f1)"
 size_fail=0
 [ "$raw" -le "$BUDGET_RAW" ] || { log "SIZE FAIL: raw ${raw} > ${BUDGET_RAW}"; size_fail=1; }
 [ "$gz"  -le "$BUDGET_GZIP" ] || { log "SIZE FAIL: gzip ${gz} > ${BUDGET_GZIP}"; size_fail=1; }
@@ -129,7 +132,7 @@ for md in "${corpus[@]}"; do
   SOURCE_DATE_EPOCH="$EPOCH" "$fmd" "$md" --to pdf --out "$WORK/${stem}.native.pdf" >/dev/null 2>&1
   for ext in html pdf; do
     if cmp -s "$WORK/${stem}.wasm.${ext}" "$WORK/${stem}.native.${ext}"; then
-      log "  ${stem}.${ext}: IDENTICAL ($(wc -c <"$WORK/${stem}.native.${ext}") bytes)"
+      log "  ${stem}.${ext}: IDENTICAL ($(wc -c <"$WORK/${stem}.native.${ext}") bytes, sha256 $(sha256sum "$WORK/${stem}.wasm.${ext}" | cut -c1-16))"
     else
       log "  ${stem}.${ext}: DIFFER — wasm and native render diverged"; parity_fail=1
     fi

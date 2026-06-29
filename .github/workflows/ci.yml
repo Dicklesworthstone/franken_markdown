@@ -38,6 +38,12 @@ jobs:
       - name: Check deterministic output
         run: scripts/check-determinism.sh
 
+      - name: Check parser conformance
+        run: scripts/parser-diff.sh
+
+      - name: Check claim discipline (README <-> capabilities)
+        run: scripts/check-claim-discipline.sh --self-test
+
       - name: Test
         run: cargo test
 

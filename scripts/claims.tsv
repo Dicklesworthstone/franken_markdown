@@ -1,0 +1,19 @@
+# Claim-discipline registry (bead mwm.9). One row per marketed capability.
+# Columns (tab-separated):
+#   label              human label
+#   readme_pattern     a substring that, if present in README.md, means the claim IS being made
+#   capability_key     the key under capabilities --json .features that backs the claim
+#   expected_substr    the capability value must CONTAIN this (proves the tool agrees)
+#   proof_path         a repo file (gate script or test) that proves the capability
+# A row is enforced only when its readme_pattern is present in the README, so the
+# registry never forces a claim the README does not actually make.
+label	readme_pattern	capability_key	expected_substr	proof_path
+html_render	all-in-one HTML	html	available	scripts/check-determinism.sh
+embedded_subset_fonts	embedded-subset-font	embedded_subset_fonts_pdf	available	tests/pdf_embed_test.rs
+knuth_plass	Knuth-Plass	knuth_plass_pdf	available	tests/layout_test.rs
+hyphenation	hyphenation	hyphenation_pdf	available	tests/layout_test.rs
+syntax_highlighting	syntax highlighting	syntax_highlighting	available	tests/highlight_test.rs
+shared_theme_model	shared theme model	shared_theme_model	structured	tests/pdf_test.rs
+tagged_pdf	tagged-PDF structure	tagged_pdf	available	tests/pdf_test.rs
+stream_compression	compressed	stream_compression_pdf	available	tests/pdf_test.rs
+wasm_browser_package	npm install	wasm_browser_package	available	scripts/check-wasm-package.sh

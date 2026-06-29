@@ -16,4 +16,4 @@ syntax_highlighting	syntax highlighting	syntax_highlighting	available	tests/high
 shared_theme_model	shared theme model	shared_theme_model	structured	tests/pdf_test.rs
 tagged_pdf	tagged-PDF structure	tagged_pdf	available	tests/pdf_test.rs
 stream_compression	compressed	stream_compression_pdf	available	tests/pdf_test.rs
-wasm_browser_package	npm install	wasm_browser_package	available	scripts/check-wasm-package.sh
+wasm_browser_package	npm install	wasm_browser_package	available_published	scripts/check-wasm-package.sh

@@ -27,6 +27,10 @@ Thumbs.db
 /document.html
 /document.pdf
 
+# Generated wasm-bindgen package glue (built by scripts/check-wasm-package.sh,
+# never committed; the .wasm is large and reproducible).
+/wasm/pkg/
+
 # Beads local DB (the JSONL is tracked; the SQLite DB is local)
 .beads/*.db
 .beads/*.db-*

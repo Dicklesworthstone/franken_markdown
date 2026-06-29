@@ -3,6 +3,14 @@
 //! The source package is handwritten and dependency-free JavaScript/TypeScript.
 //! The generated `pkg/` glue is produced by `scripts/check-wasm-package.sh`
 //! after compiling the feature-gated `wasm-bindgen` adapter.
+//!
+//! IMPORTANT (bead 3i5.6): the source-string assertions below are a SOURCE-SHAPE
+//! LINT only — they prove the hand-written wrapper/types/package metadata keep
+//! the expected exports and field names. They do NOT prove the WASM package
+//! actually loads or renders. The real "first-class WASM" proof is
+//! `scripts/check-wasm-package.sh`, which builds the generated module, loads it
+//! in headless node, renders HTML+PDF, and asserts byte-identical native<->WASM
+//! parity. Never treat a passing source-shape lint as evidence of working WASM.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
@@ -37,6 +45,8 @@ fn tiny_rgb_png() -> Vec<u8> {
 
 #[test]
 fn browser_package_sources_export_agent_friendly_api() {
+    // SOURCE-SHAPE LINT (not proof of working WASM): asserts the wrapper source
+    // keeps the expected export surface. Real proof: scripts/check-wasm-package.sh.
     let js = fs::read_to_string("wasm/franken_markdown.js").unwrap();
     let dts = fs::read_to_string("wasm/franken_markdown.d.ts").unwrap();
     let package = fs::read_to_string("wasm/package.json").unwrap();

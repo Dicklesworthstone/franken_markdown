@@ -19,10 +19,11 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > deterministic, embedded-subset-font documents with Knuth–Plass line breaking,
 > real GPOS kerning and GSUB ligatures, measured-column tables, nested lists,
 > tinted blockquotes, strikethrough, H1/H2 heading rules, syntax-highlighted code
-> panels, and selectable tagged-PDF text. The browser package skeleton,
-> wasm-bindgen adapter, and interactive demo are present; deeper pagination
-> controls and broader WASM package hardening remain active roadmap work tracked
-> in beads.
+> panels, and selectable tagged-PDF text. The browser/WASM package now builds a
+> real wasm-bindgen module that loads in node/the browser and renders HTML and
+> PDF with byte-identical parity to the native core (proven by
+> `scripts/check-wasm-package.sh`); npm publishing and deeper pagination controls
+> remain active roadmap work tracked in beads.
 
 ## TL;DR
 
@@ -416,7 +417,9 @@ equivalent options through the library API rather than reading local config.
 - Parser coverage is a useful subset, not full CommonMark/GFM conformance yet.
 - HTML font subsets are embedded as TTF data URLs, not WOFF2; output is
   deterministic and portable, but future work can make these subsets smaller.
-- WASM packaging and browser examples are present but not published yet, and
+- The WASM package builds a real wasm-bindgen module that loads and renders with
+  proven byte-identical native parity (`scripts/check-wasm-package.sh`), but is
+  not published to npm yet, and
   browser visual/golden fixture coverage is still early.
 - There is no installer or published release yet.
 

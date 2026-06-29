@@ -68,3 +68,24 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  wasm-package:
+    name: WASM browser package gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: WASM package gate (build + headless render + native parity + size)
+        run: scripts/check-wasm-package.sh ci

@@ -80,6 +80,13 @@ project has no tags or GitHub Releases yet.
   HTML stylesheet uses, replacing previously hardcoded, slightly-divergent values.
   Changing a theme color now moves both HTML and PDF together. Added a
   cross-surface invariant test suite and `scripts/theme-proof.sh`.
+- Turned `scripts/check-wasm-package.sh` into a real "first-class WASM" proof
+  gate: it builds the release wasm-bindgen module, loads the *generated* module
+  in headless node, renders HTML+PDF, asserts byte-identical native↔WASM parity
+  over a corpus, and enforces a committed `.wasm` size budget. Added a headless
+  smoke harness (`wasm/smoke.mjs`) and a dedicated CI job. Demoted the
+  source-string package tests to an explicit "source-shape lint" that does not
+  count as proof of working WASM.
 
 ### Parser Conformance
 

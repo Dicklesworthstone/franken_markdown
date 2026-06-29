@@ -57,6 +57,62 @@ enum Command {
     Doctor(DoctorArgs),
     /// Read or edit native fmd config (never used by the WASM/core library).
     Config(ConfigArgs),
+    /// Render many Markdown inputs in parallel under a bounded worker budget
+    /// (native-only; Asupersync-backed). See docs/BATCH_ORCHESTRATION.md.
+    #[cfg(feature = "batch")]
+    Batch(BatchArgs),
+}
+
+#[cfg(feature = "batch")]
+#[derive(Args)]
+struct BatchArgs {
+    /// Markdown files and/or directories (recursed for `*.md`/`*.markdown`).
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+    /// Which output(s) to produce for every input.
+    #[arg(long, value_enum, default_value_t = Target::Html)]
+    to: Target,
+    /// Directory for outputs (default: alongside each input).
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+    /// Worker cap (default: derive from CPUs and the batch mode).
+    #[arg(long)]
+    workers: Option<usize>,
+    /// Sizing mode: `interactive` reserves CPU headroom; `throughput` uses all.
+    #[arg(long, value_enum, default_value_t = BatchModeArg::Interactive)]
+    batch_mode: BatchModeArg,
+    /// Soft memory ceiling in bytes (bounds concurrent renders).
+    #[arg(long)]
+    mem_budget: Option<u64>,
+    /// Record per-file failures in the receipt instead of failing the run.
+    #[arg(long)]
+    continue_on_error: bool,
+    /// Override the configured/default body font.
+    #[arg(long, value_enum)]
+    font: Option<FontArg>,
+    /// Custom stylesheet that fully replaces the default theme CSS (HTML).
+    #[arg(long)]
+    css: Option<PathBuf>,
+    /// Emit the machine-readable batch receipt JSON to stdout.
+    #[arg(long)]
+    json: bool,
+}
+
+#[cfg(feature = "batch")]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BatchModeArg {
+    Interactive,
+    Throughput,
+}
+
+#[cfg(feature = "batch")]
+impl From<BatchModeArg> for crate::batch::BatchMode {
+    fn from(m: BatchModeArg) -> Self {
+        match m {
+            BatchModeArg::Interactive => crate::batch::BatchMode::Interactive,
+            BatchModeArg::Throughput => crate::batch::BatchMode::Throughput,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -228,6 +284,8 @@ pub fn main() -> ExitCode {
         }
         Some(Command::Doctor(args)) => run_doctor(json || args.json),
         Some(Command::Config(args)) => run_config(args, json, no_config),
+        #[cfg(feature = "batch")]
+        Some(Command::Batch(args)) => run_batch(args, json, no_config),
         None => {
             let mut cmd = Cli::command();
             if cmd.print_long_help().is_err() {
@@ -378,6 +436,121 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(feature = "batch")]
+fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
+    use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};
+
+    let json = global_json || args.json;
+
+    let config = match load_config(no_config) {
+        Ok(config) => config,
+        Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
+    };
+    let mut theme = config.to_theme();
+    if let Some(font) = args.font {
+        theme = theme.with_font(font.into());
+    }
+    let css_path = args.css.clone().or_else(|| config.custom_css.clone());
+    let custom_css = match css_path.as_deref() {
+        Some(p) => match std::fs::read_to_string(p) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return fail_json(
+                    66,
+                    "input_error",
+                    &format!("reading stylesheet {}: {e}", p.display()),
+                    json,
+                );
+            }
+        },
+        None => None,
+    };
+
+    let format = match args.to {
+        Target::Html => OutputFormat::Html,
+        Target::Pdf => OutputFormat::Pdf,
+        Target::Both => OutputFormat::Both,
+    };
+    let pdf_epoch = match source_date_epoch() {
+        Ok(epoch) => epoch,
+        Err(e) => return fail_json(64, "usage_error", &e, json),
+    };
+
+    let inputs = match batch::expand_inputs(&args.inputs) {
+        Ok(found) if !found.is_empty() => found,
+        Ok(_) => {
+            return fail_json(
+                66,
+                "input_error",
+                "no Markdown inputs found (files/dirs expanded to nothing)",
+                json,
+            );
+        }
+        Err(e) => return fail_json(66, "input_error", &format!("expanding inputs: {e}"), json),
+    };
+
+    let html = HtmlOptions {
+        theme: theme.clone(),
+        title: None,
+        custom_css,
+        allow_raw_html: false,
+        font_assets: FontAssets::default(),
+    };
+    let pdf = PdfOptions {
+        theme,
+        title: None,
+        author: None,
+        metadata_epoch_seconds: pdf_epoch,
+        allow_raw_html: false,
+        code_line_numbers: false,
+        image_assets: Vec::new(),
+        font_assets: FontAssets::default(),
+    };
+
+    let continue_on_error = args.continue_on_error;
+    let plan = BatchPlan {
+        inputs,
+        format,
+        out_dir: args.out_dir.clone(),
+    };
+    let opts = BatchOptions {
+        html,
+        pdf,
+        mode: args.batch_mode.into(),
+        workers: args.workers,
+        mem_budget: args.mem_budget,
+        continue_on_error,
+    };
+
+    match batch::run_batch_blocking(plan, &opts) {
+        Ok(receipt) => {
+            // stdout is data (the receipt JSON) only with --json; otherwise a
+            // human summary goes to stderr and stdout stays empty.
+            if json {
+                println!("{}", receipt.to_json());
+            } else {
+                eprintln!(
+                    "fmd batch: {} ok, {} failed, {} skipped across {} input(s) on {} worker(s)",
+                    receipt.ok_count(),
+                    receipt.failed_count(),
+                    receipt.skipped_count(),
+                    receipt.files.len(),
+                    receipt.workers,
+                );
+            }
+            let total = receipt.files.len();
+            let hard_failure = (!continue_on_error && receipt.failed_count() > 0)
+                || (total > 0 && receipt.ok_count() == 0);
+            if hard_failure {
+                ExitCode::from(70)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => fail_json(70, "render_error", &format!("batch failed: {e}"), json),
+    }
 }
 
 fn run_config(args: ConfigArgs, global_json: bool, no_config: bool) -> ExitCode {
@@ -792,6 +965,9 @@ fn normalized_args() -> Vec<String> {
         "robot-docs",
         "doctor",
         "config",
+        // Recognized even without the `batch` feature so it is never rewritten to
+        // `render batch ...`; clap then reports a clean "unrecognized subcommand".
+        "batch",
         "help",
     ];
     let global_no_value = ["--json", "--no-color", "--no-config", "--robot-triage"];

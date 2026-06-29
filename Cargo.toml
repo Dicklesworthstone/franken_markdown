@@ -55,12 +55,26 @@ cli = ["dep:clap"]
 # feature exists because Rust 2024 treats manual `no_mangle`/`export_name` ABI
 # exports as unsafe attributes, and the project forbids unsafe code.
 wasm-bindgen = ["dep:wasm-bindgen"]
+# Native-only batch/streaming orchestration (bead zmd). Pulls Asupersync for
+# structured concurrency, cancellation, and budgets. Strictly opt-in: the
+# library core, `--no-default-features`, and wasm32 builds never enable it, so
+# the render engine stays dependency-free and `scripts/check-wasm-core.sh`
+# remains green. See docs/BATCH_ORCHESTRATION.md.
+batch = ["cli", "dep:asupersync"]
 
 [dependencies]
-# The ONLY third-party crate, and only for the CLI argument parser. The library
-# target (the renderer itself) compiles with zero external dependencies.
+# The ONLY third-party crate in the default build, and only for the CLI argument
+# parser. The library target (the renderer itself) compiles with zero external
+# dependencies.
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
 wasm-bindgen = { version = "0.2.126", optional = true }
+# Native-only, opt-in via the `batch` feature. Justification: the project's own
+# orchestration framework (the Franken suite), used solely for the native batch
+# renderer's structured concurrency / cancellation / budget semantics; it never
+# enters the render core or any wasm/no-default build. A git source (not a path)
+# so feature-off builds and CI — which do not vendor a sibling checkout — still
+# resolve the manifest. Cargo.lock pins the exact commit for reproducibility.
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

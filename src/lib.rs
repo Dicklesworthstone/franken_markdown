@@ -49,6 +49,10 @@ pub mod wasm_abi;
 pub mod cli;
 #[cfg(feature = "cli")]
 pub mod config;
+// Native-only batch renderer; pulls Asupersync. Never compiled for the core,
+// `--no-default-features`, or wasm builds.
+#[cfg(feature = "batch")]
+pub mod batch;
 
 pub use ast::Document;
 pub use error::{RenderError, Result};

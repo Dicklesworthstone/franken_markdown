@@ -120,6 +120,28 @@ pub async fn render_batch(
    let in-flight files finish, join children, and return a **partial**
    `BatchReceipt` (every started file is accounted as ok/failed/skipped).
 
+### As implemented (`zmd.1.3`, `src/batch.rs`)
+
+The shipped scheduler keeps the contract above but uses the simplest structure
+that bounds concurrency deterministically:
+
+- A multi-thread runtime is sized to `budget.workers` (capped to the input
+  count). Tasks are spawned through `Runtime::current_handle().spawn(..)` — the
+  documented `block_on` spawn path — rather than `cx.scope()`/`JoinSet`, because
+  the ambient `block_on` context is not region-bound for structured spawn on the
+  multi-thread runtime.
+- Inputs are split **round-robin into `workers` shards**; each worker task
+  renders its shard serially (a blocking call into the synchronous core, one
+  render in flight per worker → peak memory bounded to `workers × per-job RSS`).
+  This replaces the dynamic bounded ready channel: it bounds concurrency and peak
+  memory identically and is deterministic, at the cost of static (not
+  work-stealing) load balancing. A dynamic queue for uneven job-size balancing is
+  a documented future refinement.
+- Cancellation is cooperative at the per-file `checkpoint`; a shared flag records
+  it and the remaining shard files are marked `skipped`.
+- Receipts are reassembled in input order from `(index, FileEntry)` pairs, so the
+  output is independent of completion/scheduling order.
+
 ### `BatchReceipt` (deterministic)
 
 The receipt is **timing-free in its golden fields** so it is byte-stable for

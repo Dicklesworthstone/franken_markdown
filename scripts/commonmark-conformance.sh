@@ -75,7 +75,13 @@ def normalize(full_html):
     return body
 
 def render(md):
-    p = subprocess.run([binp, '-', '--out', '-'], input=md.encode(), capture_output=True)
+    # A hang or crash on any single example must count as a non-match (gap), never
+    # take down the whole harness.
+    try:
+        p = subprocess.run([binp, '-', '--out', '-'], input=md.encode(),
+                           capture_output=True, timeout=60)
+    except Exception:
+        return ""
     return p.stdout.decode('utf-8', 'replace')
 
 def eq(a, b):
@@ -136,12 +142,18 @@ if npass < floor:
     print(f"commonmark-conformance: FAILED — pass {npass} < committed floor {floor} (regression).")
     sys.exit(1)
 
-# Drift guard: `capabilities --json` must advertise the current floor, so the
-# published number can never silently disagree with the harness.
-caps = subprocess.run([binp, "capabilities", "--json"], capture_output=True).stdout.decode("utf-8", "replace")
-if str(floor) not in caps:
-    print(f"commonmark-conformance: FAILED — capabilities --json does not advertise the floor "
-          f"{floor}; update the `commonmark_spec` capability flag in src/cli.rs.")
+# Drift guard: the `features.commonmark_spec` capability flag must advertise the
+# current floor, so the published number can never silently disagree with the
+# harness. Check the specific field (not the whole JSON blob, where the digits
+# could match incidentally).
+caps_raw = subprocess.run([binp, "capabilities", "--json"], capture_output=True).stdout.decode("utf-8", "replace")
+try:
+    spec_flag = json.loads(caps_raw).get("features", {}).get("commonmark_spec", "")
+except Exception:
+    spec_flag = ""
+if str(floor) not in spec_flag:
+    print(f"commonmark-conformance: FAILED — capabilities features.commonmark_spec ({spec_flag!r}) "
+          f"does not advertise the floor {floor}; update the flag in src/cli.rs.")
     sys.exit(1)
 
 print(f"commonmark-conformance: ok — pass {npass} >= floor {floor}, capabilities advertises it. "

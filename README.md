@@ -189,7 +189,7 @@ Useful flags:
 | `--to html` | Write HTML; default |
 | `--to pdf` | Write the compact deterministic embedded-font PDF |
 | `--to both` | Write both outputs, deriving extensions from `--out` |
-| `--out <path>` | Output path; HTML without `--out` or with `--out -` writes to stdout; PDF and `--to both` require a real path |
+| `--out <path>` | Output path. HTML without `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files: an explicit `--out`, otherwise a path derived from the input filename (`doc.md` → `doc.pdf`), or `document.*` for stdin/`--text`. `--out -` is refused for PDF and `--to both` |
 | `--font sans` | Default high-readability sans stack |
 | `--font serif` | Long-form serif stack |
 | `--css <file>` | Replace the default stylesheet with custom CSS |
@@ -395,7 +395,7 @@ equivalent options through the library API rather than reading local config.
 
 | Symptom | Fix |
 |---|---|
-| `PDF output requires --out <path>` | PDF writes binary bytes and must have a path: `fmd doc.md --to pdf --out doc.pdf` |
+| `PDF and --to both require a real output path` (after `--out -`) | PDF can't stream to stdout. Omit `--out` to derive a path from the input (`doc.md` → `doc.pdf`, stdin/`--text` → `document.pdf`), or pass one: `fmd doc.md --to pdf --out doc.pdf` |
 | PDF differs from the HTML preview | The PDF now does Knuth-Plass breaking, body-paragraph hyphenation/justification, measured/striped tables, nested lists, syntax highlighting, and host-supplied standalone PNG images; remaining gaps vs HTML include inline styling inside table cells, inline image-in-prose rendering, and deeper pagination polish |
 | HTML printed to terminal | Pass `--out file.html` or redirect stdout |
 | Custom CSS removed the default styling | `--css` intentionally replaces the stylesheet; include every rule you want |

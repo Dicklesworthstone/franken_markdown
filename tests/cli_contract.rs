@@ -342,6 +342,50 @@ fn both_out_dash_is_rejected_before_creating_dash_derived_files() {
 }
 
 #[test]
+fn pdf_and_both_without_out_derive_paths_from_the_input_filename() {
+    // mwm.8: PDF/both cannot stream to stdout, but omitting --out is NOT an
+    // error — the output path is derived from the input stem (file input) or
+    // `document.*` (stdin/--text). This pins the documented default behavior.
+    let cwd = temp_dir("default-out-derive");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(cwd.join("report.md"), "# Title\n\nbody\n").unwrap();
+
+    // File input + --to pdf, no --out -> <stem>.pdf.
+    let pdf = fmd_in_dir(&["report.md", "--to", "pdf", "--json"], &cwd);
+    assert_eq!(
+        pdf.status.code(),
+        Some(0),
+        "pdf without --out should succeed"
+    );
+    assert!(cwd.join("report.pdf").exists(), "should derive report.pdf");
+    assert!(
+        !cwd.join("document.pdf").exists(),
+        "must not fall back to document.pdf for a file input"
+    );
+    let pdf_err = text(&pdf.stderr);
+    assert!(
+        pdf_err.contains("report.pdf"),
+        "stderr should report the derived output path; got: {pdf_err}"
+    );
+
+    // File input + --to both, no --out -> sibling .html and .pdf.
+    let both = fmd_in_dir(&["report.md", "--to", "both", "--json"], &cwd);
+    assert_eq!(both.status.code(), Some(0));
+    assert!(
+        cwd.join("report.html").exists() && cwd.join("report.pdf").exists(),
+        "both should derive sibling report.html and report.pdf"
+    );
+
+    // --text + --to pdf, no --out -> document.pdf (no input stem available).
+    let text_pdf = fmd_in_dir(&["--text", "# Hi", "--to", "pdf", "--json"], &cwd);
+    assert_eq!(text_pdf.status.code(), Some(0));
+    assert!(
+        cwd.join("document.pdf").exists(),
+        "stdin/--text without --out should derive document.pdf"
+    );
+}
+
+#[test]
 fn render_refuses_inputs_over_the_configured_byte_limit() {
     let raw = "123456789";
     let text_out = fmd(&[

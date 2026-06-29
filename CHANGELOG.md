@@ -87,6 +87,10 @@ project has no tags or GitHub Releases yet.
   smoke harness (`wasm/smoke.mjs`) and a dedicated CI job. Demoted the
   source-string package tests to an explicit "source-shape lint" that does not
   count as proof of working WASM.
+- Generalized PDF keep-with-next pagination: a short intro/caption paragraph is
+  now kept with the table, code block, or figure it introduces, so it never
+  strands alone at the foot of a page (extending the existing heading keep).
+  Added unit + behavioral tests and `scripts/pagination-proof.sh`.
 
 ### Parser Conformance
 

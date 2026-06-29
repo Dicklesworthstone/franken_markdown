@@ -169,7 +169,7 @@ impl PdfImageColor {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FlowKind {
     Paragraph,
     Heading,
@@ -3213,6 +3213,25 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 900_000.0;
     }
 
+    // Generalized keep-with-next: keep a short intro/caption paragraph with the
+    // structured block it introduces (a table, code block, or figure/image), so
+    // a one- or two-line caption never strands alone at the foot of a page. This
+    // extends the heading keep above to captioned blocks. (List items share the
+    // Paragraph kind in this layout, so a dedicated list-intro keep would need a
+    // separate list-start flag; the heading and captioned-block keeps cover the
+    // common stranding cases.)
+    let before_ends_short_intro = before.flow.kind == FlowKind::Paragraph
+        && before.flow.group != after.flow.group
+        && before.flow.index + 1 == before.flow.count
+        && before.flow.count <= 2;
+    let after_starts_captioned_block = matches!(
+        after.flow.kind,
+        FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
+    ) && after.flow.index == 0;
+    if before_ends_short_intro && after_starts_captioned_block {
+        penalty += 700_000.0;
+    }
+
     // Avoid club/widow breaks when splitting a paragraph-like group: at least
     // two lines should remain on both sides when the paragraph has enough lines.
     if before.flow.group == after.flow.group && before.flow.kind == FlowKind::Paragraph {
@@ -3224,6 +3243,86 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     }
 
     penalty
+}
+
+#[cfg(test)]
+mod keep_with_next_tests {
+    use super::*;
+
+    fn line(kind: FlowKind, group: u32, index: usize, count: usize) -> Line {
+        Line {
+            size: 11.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark {
+                group,
+                index,
+                count,
+                kind,
+            },
+            segs: Vec::new(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn short_caption_before_table_code_or_image_is_kept() {
+        for kind in [FlowKind::TableHeader, FlowKind::Code, FlowKind::Image] {
+            let lines = [line(FlowKind::Paragraph, 1, 0, 1), line(kind, 2, 0, 1)];
+            assert!(
+                break_penalty(&lines, 1) >= 700_000.0,
+                "a short caption before {kind:?} must be kept with it"
+            );
+        }
+    }
+
+    #[test]
+    fn long_body_paragraph_before_a_table_is_not_treated_as_a_caption() {
+        // A 4-line body paragraph ending right before a table is not a caption.
+        let lines = [
+            line(FlowKind::Paragraph, 1, 3, 4),
+            line(FlowKind::TableHeader, 2, 0, 1),
+        ];
+        assert_eq!(
+            break_penalty(&lines, 1),
+            0.0,
+            "a long body paragraph before a table must not trigger the caption keep"
+        );
+    }
+
+    #[test]
+    fn caption_keep_requires_the_block_to_start_at_its_first_line() {
+        // Crossing into the MIDDLE of a table row run is not a caption boundary.
+        let lines = [
+            line(FlowKind::Paragraph, 1, 0, 1),
+            line(FlowKind::TableRow, 2, 1, 3),
+        ];
+        assert_eq!(break_penalty(&lines, 1), 0.0);
+    }
+
+    #[test]
+    fn existing_heading_and_table_header_keeps_are_unchanged() {
+        let heading = [
+            line(FlowKind::Heading, 1, 0, 1),
+            line(FlowKind::Paragraph, 2, 0, 3),
+        ];
+        assert!(
+            break_penalty(&heading, 1) >= 1_000_000.0,
+            "heading keep-with-next regression"
+        );
+        let table = [
+            line(FlowKind::TableHeader, 5, 0, 3),
+            line(FlowKind::TableRow, 5, 1, 3),
+        ];
+        assert!(
+            break_penalty(&table, 1) >= 900_000.0,
+            "table-header keep-with-first-row regression"
+        );
+    }
 }
 
 fn vertical_height(lines: &[Line]) -> f32 {

@@ -601,6 +601,62 @@ fn microtype_fit_width_clamps_to_zero_when_protrusion_exceeds_natural_width() {
     );
 }
 
+#[test]
+fn microtype_protrusion_changes_a_line_fit_decision_deterministically() {
+    // The microtypography cost hook's intended effect on a line-fit decision: a
+    // line whose natural width slightly overruns the column does NOT fit with
+    // protrusion disabled, but DOES fit once its trailing period is allowed to
+    // hang into the margin. The delta is exact integer math (no float), so the
+    // decision is deterministic. (Hooks are off by default; this is the opt-in
+    // behavior a renderer would get by enabling MicrotypeOptions.)
+    let size = FontSize::from_points(10);
+    let column = LayoutUnit::from_milli_points(50_000);
+    let natural = LayoutUnit::from_milli_points(52_000); // 2 pt over the column
+
+    // Disabled: fit width == natural width, which overruns the column.
+    let disabled = protruded_fit_width(natural, "sentence.", size, MicrotypeOptions::DISABLED);
+    assert_eq!(disabled, natural);
+    assert!(
+        disabled > column,
+        "without protrusion the line must not fit"
+    );
+
+    // Enabled: the trailing '.' protrudes 550‰ × 10 pt = 5_500 milli-points, so
+    // the fit width drops to 46_500 and the line now fits the column.
+    let enabled = protruded_fit_width(natural, "sentence.", size, MicrotypeOptions::CONSERVATIVE);
+    assert_eq!(enabled, LayoutUnit::from_milli_points(46_500));
+    assert!(
+        enabled <= column,
+        "with protrusion the trailing period lets the line fit: {enabled:?} <= {column:?}"
+    );
+}
+
+#[test]
+fn microtype_protrusion_table_is_stable() {
+    // Golden fixture for the intended optical-margin deltas: each protruding
+    // character's fit-width reduction at 1000 pt (so milli-points read directly
+    // as per-mille). Pins the table so any change to the deltas is a reviewed,
+    // explained change.
+    let size = FontSize::from_points(1000);
+    let opts = MicrotypeOptions::CONSERVATIVE;
+    let right = |c: &str| {
+        (LayoutUnit::from_milli_points(1_000_000).milli_points()
+            - protruded_fit_width(LayoutUnit::from_milli_points(1_000_000), c, size, opts)
+                .milli_points())
+            / 1000
+    };
+    // Right-edge protrusion per-mille (trailing character).
+    assert_eq!(right("a."), 550);
+    assert_eq!(right("a,"), 550);
+    assert_eq!(right("a:"), 420);
+    assert_eq!(right("a;"), 420);
+    assert_eq!(right("a!"), 250);
+    assert_eq!(right("a?"), 250);
+    assert_eq!(right("a)"), 120);
+    assert_eq!(right("a-"), 80);
+    assert_eq!(right("ax"), 0);
+}
+
 fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {
     let mut words = Vec::new();
     for item in &items[start..end] {

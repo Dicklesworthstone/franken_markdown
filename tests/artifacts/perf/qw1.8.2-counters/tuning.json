@@ -1,0 +1,10 @@
+{
+  "requested": false,
+  "applied": false,
+  "restore_status": "not_tuned",
+  "sysctls": {
+    "kernel.perf_event_paranoid": {"old": "4", "current": "4"},
+    "kernel.kptr_restrict": {"old": "1", "current": "1"},
+    "kernel.nmi_watchdog": {"old": "1", "current": "1"}
+  }
+}

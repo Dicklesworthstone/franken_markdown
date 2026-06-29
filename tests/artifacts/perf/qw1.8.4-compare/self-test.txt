@@ -1,0 +1,1 @@
+perf-compare self-test: ok — same-run=no-change, improvement+regression+added all classified correctly

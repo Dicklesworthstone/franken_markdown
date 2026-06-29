@@ -44,6 +44,12 @@ jobs:
       - name: Check claim discipline (README <-> capabilities)
         run: scripts/check-claim-discipline.sh --self-test
 
+      - name: Check perf-counters restore cycle (qw1.8.2)
+        run: scripts/perf-counters.sh --self-test
+
+      - name: Check perf-compare classifier (qw1.8.4)
+        run: scripts/perf-compare.sh --self-test
+
       - name: Check CommonMark conformance (ratcheted floor)
         run: scripts/commonmark-conformance.sh ci
 

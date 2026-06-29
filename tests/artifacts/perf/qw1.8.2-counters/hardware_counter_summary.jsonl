@@ -1,0 +1,1 @@
+{"type":"hardware_counter_summary","scenario":"perf-counters-smoke","available":false,"counter_set":["cycles","instructions","branches","branch-misses","cache-references","cache-misses"],"stdout_path":"perf-stat.stdout","stderr_path":"perf-stat.stderr","restore_status":"not_tuned","notes":"perf-counters.sh over: /data/tmp/cargo-target/debug/fmd --version"}

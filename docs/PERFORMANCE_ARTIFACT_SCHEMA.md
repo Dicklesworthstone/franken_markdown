@@ -307,6 +307,19 @@ Required fields:
 Wave-specific scripts should preserve this mapping and add JSONL records for
 their extra stage attribution.
 
+## Shared Proof Tooling
+
+These cross-cutting tools (bead `qw1.8`) operate on the bundle above:
+
+| Tool | Bead | Purpose |
+|---|---|---|
+| `scripts/perf-counters.sh` | `qw1.8.2` | Safe hardware-counter profiling: preflight, optional `--tune` of `perf_event_paranoid`/`kptr_restrict`/`nmi_watchdog` for the run only with trap-based restore + verification, graceful fallback when `perf` is unavailable, and `tuning.json` + `hardware_counter_summary` records. `--self-test` proves the capture→tune→restore→verify cycle with no root. |
+| `scripts/perf-compare.sh` | `qw1.8.4` | Compare two run directories: per-scenario p50/p95/p99 deltas, output-byte and peak-RSS deltas, top-hotspot shift, variance-envelope classification (noise/improvement/regression), and a recommended next target. `--json` emits a machine summary; `--self-test` proves the classifier. |
+| `scripts/check-optimization-proof.sh` | `qw1.8.3` | Validate an `OPTIMIZATION_PROOF.md` against the isomorphism checklist before a perf bead closes. |
+
+Both `--self-test` modes run in CI so the restore logic and the classifier stay
+correct without needing privileged hosts or committed timing data.
+
 ## Closeout Rules For Perf Beads
 
 A performance bead close reason must cite:

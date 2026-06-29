@@ -1,0 +1,1 @@
+perf-counters self-test: ok — sysctls captured, tuned to (-1 0 0), and restored to originals (status=restored)

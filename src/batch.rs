@@ -863,4 +863,80 @@ mod tests {
         let alongside = detect_output_collisions(&inputs, None);
         assert!(alongside.iter().all(Option::is_none));
     }
+
+    #[test]
+    fn render_batch_cancelled_at_boundary_skips_all_and_leaks_no_output() {
+        // Deterministic cancellation injection (zmd.1.4): cancelling the context
+        // before `render_batch` observes its boundary checkpoint makes the
+        // outcome deterministic (unlike a mid-run cancel, whose skipped set would
+        // depend on scheduling). The same `checkpoint()` path also surfaces
+        // runtime budget exhaustion (CancelKind::PollQuota / CostBudget), so this
+        // covers the budget-refusal accounting too. We assert that every input is
+        // accounted as Skipped, the receipt is marked cancelled, and — crucially
+        // for "no leaks" — nothing was rendered, so no output file was written and
+        // no worker region was left running (render_batch returns before spawning).
+        use asupersync::prelude::{CancelKind, Cx, Outcome, RuntimeBuilder};
+
+        let dir = std::env::temp_dir().join(format!("fmd-batch-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.md", "b.md", "c.md"] {
+            std::fs::write(dir.join(name), "# Title\n\nbody").unwrap();
+        }
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(inputs.len(), 3);
+        let out_dir = dir.join("out");
+        let plan = BatchPlan {
+            inputs,
+            format: OutputFormat::Both,
+            out_dir: Some(out_dir.clone()),
+        };
+        let opts = BatchOptions {
+            html: HtmlOptions::default(),
+            pdf: PdfOptions::default(),
+            mode: BatchMode::Throughput,
+            workers: Some(2),
+            mem_budget: None,
+            continue_on_error: true,
+        };
+        let budget = WorkerBudget {
+            workers: 2,
+            queue_depth: 4,
+        };
+
+        let runtime = RuntimeBuilder::current_thread().build().unwrap();
+        let receipt = runtime.block_on(async move {
+            let cx = Cx::current().expect("block_on installs a root Cx");
+            cx.cancel_with(CancelKind::User, Some("zmd.1.4 cancel test"));
+            match render_batch(&cx, plan, &opts, budget).await {
+                Outcome::Ok(r) => r,
+                _ => panic!("render_batch should return Ok(receipt) even when cancelled"),
+            }
+        });
+
+        assert!(
+            receipt.cancelled,
+            "a cancelled context must mark the receipt cancelled"
+        );
+        assert_eq!(
+            receipt.skipped_count(),
+            3,
+            "every input is accounted as skipped"
+        );
+        assert_eq!(receipt.ok_count(), 0);
+        assert_eq!(receipt.failed_count(), 0);
+
+        // No leaks: nothing was rendered, so the output directory was never
+        // created (or is empty if it pre-existed).
+        let leaked = out_dir.exists()
+            && std::fs::read_dir(&out_dir)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+        assert!(
+            !leaked,
+            "a cancelled-before-start batch must not write any output"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

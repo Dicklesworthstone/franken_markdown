@@ -138,6 +138,11 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(capabilities.stderr.is_empty());
     let stdout = text(&capabilities.stdout);
     assert!(stdout.contains("\"tool\":\"fmd\""));
+    // The advertised `version` must track the package version (no manual drift).
+    assert!(
+        stdout.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))),
+        "capabilities `version` must equal CARGO_PKG_VERSION"
+    );
     assert!(stdout.contains("\"contract_version\":\"0.1.0\""));
     assert!(stdout.contains("\"64\":\"usage error\""));
     assert!(stdout.contains("\"robot_triage\":\"available\""));

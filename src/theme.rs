@@ -314,9 +314,10 @@ impl Theme {
         )
     }
 
-    /// CSS body font stack. Until the embedded-subset-font subsystem lands, we
-    /// use a high-quality system stack so output stays dependency-free and still
-    /// looks excellent; embedded `@font-face` subsets replace this.
+    /// CSS body font stack used as the fallback tail after the embedded
+    /// `@font-face` subsets (which the HTML emitter now inlines): a high-quality
+    /// system stack that keeps output dependency-free and attractive if a font
+    /// fails to load.
     #[must_use]
     pub(crate) fn body_font_stack(&self) -> &'static str {
         match self.font {

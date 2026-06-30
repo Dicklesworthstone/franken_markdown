@@ -602,8 +602,8 @@ Core modules:
 Honest about what the renderer does not do yet.
 
 - **PDF pagination is still maturing.** Keep-with-next (headings, captions, list
-  intros) and basic widow handling work today; full widow/orphan control,
-  repeatable table headers across pages, and finer block pagination remain
+  intros), basic widow handling, and repeatable table headers across page breaks
+  work today; full widow/orphan control and finer block pagination remain
   roadmap.
 - **PDF vs HTML gaps.** The PDF path does not yet render inline styling inside
   table cells, inline images within running prose, or arbitrary CSS. PDF images
@@ -650,9 +650,11 @@ pagination control is still landing.
 
 **Which languages get syntax highlighting?**
 The clean-room highlighter covers the languages that show up in technical
-writing: Rust, Python, JavaScript/TypeScript (including JSX/TSX), JSON, Bash and
-other shells, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, and Markdown.
-Unknown languages fall back to plain, escaped code.
+writing: Rust, Python, JavaScript/TypeScript (JSX/TSX files are tokenized as
+JavaScript — keywords, strings, comments, and numbers are highlighted; embedded
+markup tags are not), JSON, Bash and other shells, Go, C/C++ (including `#`
+preprocessor directives), TOML/INI, YAML, SQL (case-insensitive keywords),
+HTML/XML/SVG, and Markdown. Unknown languages fall back to plain, escaped code.
 
 **Does `fmd` have a `completions` subcommand?**
 No. There is no shell-completion generator today; the command set is `render`,

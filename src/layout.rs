@@ -742,9 +742,9 @@ pub struct Hyphenator {
 }
 
 impl Hyphenator {
-    /// English starter hyphenator. It includes a compact pattern subset plus
-    /// high-value exceptions for documentation-heavy words; full TeX pattern
-    /// import remains a follow-up data expansion, not an algorithm change.
+    /// English hyphenator. It uses the full TeX `hyph-en-us` pattern set (4938
+    /// `\patterns` tokens, embedded from `data/hyph-en-us.patterns`) plus
+    /// high-value exceptions for documentation-heavy words.
     #[must_use]
     pub const fn english() -> Self {
         Self {

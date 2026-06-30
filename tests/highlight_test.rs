@@ -798,3 +798,55 @@ fn sql_tokens_classified() {
     assert!(has_span("sql", typed, Tok::Type, "INTEGER"));
     assert!(has_span("sql", typed, Tok::Type, "VARCHAR"));
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for the 2026-06-30 highlighter classification fixes.
+// ---------------------------------------------------------------------------
+
+/// Token class of the first span whose exact text is `needle`.
+fn tok_of(lang: &str, code: &str, needle: &str) -> Option<Tok> {
+    highlight(lang, code)
+        .into_iter()
+        .find_map(|s| (code.get(s.start..s.end) == Some(needle)).then_some(s.kind))
+}
+
+#[test]
+fn ini_semicolon_comments_are_comments_not_code() {
+    assert_eq!(tok_of("ini", "k = v ; note", "; note"), Some(Tok::Comment));
+    assert_spans_tile("ini", "k = v ; note");
+}
+
+#[test]
+fn capitalized_calls_are_functions_and_all_caps_are_not_types() {
+    // A capitalized identifier immediately before `(` is a call, not a type.
+    assert_eq!(tok_of("go", "fmt.Println(x)", "Println"), Some(Tok::Func));
+    // ALL_CAPS constants are not mislabeled as types.
+    assert_ne!(tok_of("python", "MAX = 10", "MAX"), Some(Tok::Type));
+    // A genuine Capitalized type name (not a call, not all-caps) still types.
+    assert_eq!(
+        tok_of("rust", "let x: MyType = y;", "MyType"),
+        Some(Tok::Type)
+    );
+}
+
+#[test]
+fn sql_keywords_match_case_insensitively() {
+    let q = "select a from t where x and y";
+    assert_eq!(tok_of("sql", q, "select"), Some(Tok::Keyword));
+    assert_eq!(tok_of("sql", q, "and"), Some(Tok::Keyword));
+    assert_eq!(
+        tok_of("sql", "SELECT a FROM t", "SELECT"),
+        Some(Tok::Keyword)
+    );
+    assert_spans_tile("sql", q);
+}
+
+#[test]
+fn c_preprocessor_directives_are_keywords() {
+    assert_eq!(
+        tok_of("c", "#include <stdio.h>", "#include"),
+        Some(Tok::Keyword)
+    );
+    assert_eq!(tok_of("c", "#define X 1", "#define"), Some(Tok::Keyword));
+    assert_spans_tile("c", "#include <stdio.h>\nint main(){ return 0; }");
+}

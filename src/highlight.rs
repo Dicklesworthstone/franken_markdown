@@ -67,6 +67,12 @@ struct Rules {
     line_comments: &'static [&'static str],
     block_comment: Option<(&'static str, &'static str)>,
     strings: &'static [char],
+    /// Case-insensitive keyword/type matching (e.g. SQL, where `select`,
+    /// `SELECT`, and `Select` are all the keyword).
+    case_insensitive: bool,
+    /// A `#` at the start of a line begins a preprocessor directive whose first
+    /// word is a keyword (C/C++ `#include`, `#define`, ...).
+    hash_directives: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +130,37 @@ fn lex_generic(code: &str, r: &Rules) -> Vec<Span> {
                 end: pos,
             });
             continue;
+        }
+
+        // C/C++ preprocessor directive: `#word` at the start of a line (only
+        // whitespace before it). Colours `#include`, `#define`, ... as keywords.
+        if r.hash_directives && c == '#' {
+            let line_prefix = code[..pos].rsplit('\n').next().unwrap_or("");
+            if line_prefix.trim().is_empty() {
+                let start = pos;
+                let mut p = pos + clen;
+                while p < len
+                    && code[p..]
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch == ' ' || ch == '\t')
+                {
+                    p += 1;
+                }
+                while p < len {
+                    match code[p..].chars().next() {
+                        Some(ch) if ch.is_ascii_alphabetic() => p += ch.len_utf8(),
+                        _ => break,
+                    }
+                }
+                spans.push(Span {
+                    kind: Tok::Keyword,
+                    start,
+                    end: p,
+                });
+                pos = p;
+                continue;
+            }
         }
 
         // Line comment.
@@ -225,18 +262,33 @@ fn lex_generic(code: &str, r: &Rules) -> Vec<Span> {
                 }
             }
             let word = &code[start..p];
-            let kind = if r.keywords.contains(&word) {
+            let is_keyword = if r.case_insensitive {
+                r.keywords.iter().any(|k| k.eq_ignore_ascii_case(word))
+            } else {
+                r.keywords.contains(&word)
+            };
+            let is_type = if r.case_insensitive {
+                r.types.iter().any(|k| k.eq_ignore_ascii_case(word))
+            } else {
+                r.types.contains(&word)
+            };
+            let next_is_paren = code[p..].trim_start().starts_with('(');
+            // ALL_CAPS identifiers are conventionally constants, not types, so the
+            // "Capitalized => Type" heuristic must skip them.
+            let mut letters = word.chars().filter(|c| c.is_alphabetic());
+            let all_caps = word.chars().any(|c| c.is_ascii_uppercase())
+                && letters.all(|c| c.is_ascii_uppercase());
+            let first_upper = word.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+            let kind = if is_keyword {
                 Tok::Keyword
-            } else if r.types.contains(&word)
-                || (!r.types.is_empty()
-                    && word
-                        .chars()
-                        .next()
-                        .is_some_and(|c0| c0.is_ascii_uppercase()))
-            {
+            } else if is_type {
                 Tok::Type
-            } else if code[p..].trim_start().starts_with('(') {
+            } else if next_is_paren {
+                // A call/definition wins over the capitalization heuristic, so
+                // `Println(` is a function, not a type.
                 Tok::Func
+            } else if !r.types.is_empty() && first_upper && !all_caps {
+                Tok::Type
             } else {
                 Tok::Plain
             };
@@ -723,6 +775,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"'],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "python" | "py" => Some(Lexer::Generic(Rules {
             keywords: PY_KW,
@@ -730,6 +784,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
             Some(Lexer::Generic(Rules {
@@ -738,6 +794,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
                 line_comments: &["//"],
                 block_comment: Some(("/*", "*/")),
                 strings: &['"', '\'', '`'],
+                case_insensitive: false,
+                hash_directives: false,
             }))
         }
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
@@ -746,6 +804,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"'],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "bash" | "sh" | "shell" | "zsh" | "console" => Some(Lexer::Generic(Rules {
             keywords: SH_KW,
@@ -753,6 +813,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "go" | "golang" => Some(Lexer::Generic(Rules {
             keywords: GO_KW,
@@ -760,6 +822,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"', '`'],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "c" | "h" | "cpp" | "c++" | "cc" | "hpp" => Some(Lexer::Generic(Rules {
             keywords: C_KW,
@@ -767,13 +831,27 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: true,
         })),
-        "toml" | "ini" => Some(Lexer::Generic(Rules {
+        "toml" => Some(Lexer::Generic(Rules {
             keywords: &["true", "false"],
             types: &[],
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: false,
+        })),
+        "ini" | "cfg" | "conf" => Some(Lexer::Generic(Rules {
+            keywords: &["true", "false"],
+            types: &[],
+            // INI comments are conventionally `;` (and often `#`).
+            line_comments: &[";", "#"],
+            block_comment: None,
+            strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "yaml" | "yml" => Some(Lexer::Generic(Rules {
             keywords: &["true", "false", "null", "yes", "no"],
@@ -781,6 +859,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
+            case_insensitive: false,
+            hash_directives: false,
         })),
         "sql" => Some(Lexer::Generic(Rules {
             keywords: SQL_KW,
@@ -788,6 +868,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["--"],
             block_comment: Some(("/*", "*/")),
             strings: &['\'', '"'],
+            case_insensitive: true,
+            hash_directives: false,
         })),
         _ => None,
     }

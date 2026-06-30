@@ -11,9 +11,11 @@ pub type Result<T> = std::result::Result<T, RenderError>;
 pub enum RenderError {
     /// An I/O error reading source or writing output (CLI paths).
     Io(std::io::Error),
-    /// A subsystem that is wired but not yet built out (PDF layout/text/writer).
-    /// Carries a short, stable selector for agent-readable diagnostics.
-    NotYetImplemented(&'static str),
+    /// PDF generation failed in a way that must not be masked as a blank but
+    /// "successful" document — e.g. a caller-supplied font that parses yet cannot
+    /// be subset, or a writer invariant violation. Carries a short, stable
+    /// selector for agent-readable diagnostics.
+    PdfGeneration(&'static str),
     /// The Markdown or options were structurally invalid.
     InvalidInput(String),
 }
@@ -22,8 +24,8 @@ impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "io error: {e}"),
-            Self::NotYetImplemented(what) => {
-                write!(f, "not yet implemented: {what} (tracked in beads)")
+            Self::PdfGeneration(what) => {
+                write!(f, "PDF generation failed: {what}")
             }
             Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
         }
@@ -51,7 +53,7 @@ impl RenderError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io(_) => "io_error",
-            Self::NotYetImplemented(_) => "not_yet_implemented",
+            Self::PdfGeneration(_) => "pdf_generation",
             Self::InvalidInput(_) => "invalid_input",
         }
     }

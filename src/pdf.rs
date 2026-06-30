@@ -533,7 +533,7 @@ fn render_inner(doc: &Document, opts: &PdfOptions, profiled: bool) -> Result<Pdf
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let bytes = serialize(&lines, opts, &faces, page, &mut profiler);
+    let bytes = serialize(&lines, opts, &faces, page, &mut profiler)?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -3003,7 +3003,7 @@ fn serialize(
     faces: &Faces,
     page: PageGeom,
     profiler: &mut PdfProfiler,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_colors(&opts.theme.colors);
@@ -3087,10 +3087,14 @@ fn serialize(
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
         let Some((bytes, map)) = source.subset_glyphs(&seed, &keep) else {
-            return empty_pdf(page);
+            return Err(RenderError::PdfGeneration(
+                "an embedded font could not be subset",
+            ));
         };
         let Ok(font) = Font::parse(bytes.clone()) else {
-            return empty_pdf(page);
+            return Err(RenderError::PdfGeneration(
+                "a subset font could not be re-parsed",
+            ));
         };
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
@@ -4795,7 +4799,7 @@ fn build_pdf(
     opts: &PdfOptions,
     page_geom: PageGeom,
     profiler: &mut PdfProfiler,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
     let p = pages.len();
     let nf = faces.len();
@@ -5377,7 +5381,9 @@ fn build_pdf(
     );
 
     if offsets.iter().skip(1).any(|&offset| offset == 0) {
-        return empty_pdf(page_geom);
+        return Err(RenderError::PdfGeneration(
+            "internal: a PDF object was left unwritten (zero xref offset)",
+        ));
     }
 
     // xref + trailer.
@@ -5411,7 +5417,7 @@ fn build_pdf(
         "serialize all PDF objects, streams, xref, and trailer",
         build_started,
     );
-    buf
+    Ok(buf)
 }
 
 fn pdf_info_date(epoch_seconds: Option<u64>) -> String {
@@ -5640,34 +5646,6 @@ fn subset_psname(k: usize, slot: u8) -> String {
         .map(|i| (b'A' + ((k as u8 + slot + i as u8) % 26)) as char)
         .collect();
     format!("{tag}+Embedded")
-}
-
-/// A minimal but valid empty single-page PDF (degenerate fallback).
-fn empty_pdf(page: PageGeom) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut offsets = [0usize; 4];
-    let media_w = pdf_num(page.width);
-    let media_h = pdf_num(page.height);
-    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
-    for (n, body) in [
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
-        &format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] >>"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        append_pdf_object_str(&mut buf, &mut offsets, n + 1, body);
-    }
-    let xref_pos = buf.len();
-    buf.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
-    for off in offsets.iter().skip(1) {
-        append_xref_in_use_row(&mut buf, *off);
-    }
-    buf.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n");
-    append_decimal_usize(&mut buf, xref_pos);
-    buf.extend_from_slice(b"\n%%EOF\n");
-    buf
 }
 
 // ---- text helpers -----------------------------------------------------------

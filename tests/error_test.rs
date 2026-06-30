@@ -21,11 +21,8 @@ fn display_renders_each_variant_with_its_prefix() {
     let io = RenderError::from(real_io_error());
     assert!(io.to_string().starts_with("io error: "), "got {io}",);
 
-    let nyi = RenderError::NotYetImplemented("pdf-foo");
-    assert_eq!(
-        nyi.to_string(),
-        "not yet implemented: pdf-foo (tracked in beads)"
-    );
+    let pdf_gen = RenderError::PdfGeneration("pdf-foo");
+    assert_eq!(pdf_gen.to_string(), "PDF generation failed: pdf-foo");
 
     let bad = RenderError::InvalidInput("missing --out".to_string());
     assert_eq!(bad.to_string(), "invalid input: missing --out");
@@ -34,10 +31,7 @@ fn display_renders_each_variant_with_its_prefix() {
 #[test]
 fn code_is_a_stable_machine_selector_per_variant() {
     assert_eq!(RenderError::from(real_io_error()).code(), "io_error");
-    assert_eq!(
-        RenderError::NotYetImplemented("x").code(),
-        "not_yet_implemented"
-    );
+    assert_eq!(RenderError::PdfGeneration("x").code(), "pdf_generation");
     assert_eq!(
         RenderError::InvalidInput("y".to_string()).code(),
         "invalid_input"
@@ -53,7 +47,7 @@ fn source_chains_only_for_io_and_preserves_the_inner_error() {
     // The chained source is the real underlying std::io::Error.
     assert!(src.downcast_ref::<std::io::Error>().is_some());
 
-    assert!(RenderError::NotYetImplemented("x").source().is_none());
+    assert!(RenderError::PdfGeneration("x").source().is_none());
     assert!(
         RenderError::InvalidInput("y".to_string())
             .source()
@@ -79,7 +73,7 @@ fn from_io_error_maps_to_the_io_variant() {
 fn debug_is_available_for_diagnostics() {
     // The derived Debug must render each variant (used in `{:?}` diagnostics/asserts).
     assert!(format!("{:?}", RenderError::InvalidInput("z".to_string())).contains("InvalidInput"));
-    assert!(format!("{:?}", RenderError::NotYetImplemented("w")).contains("NotYetImplemented"));
+    assert!(format!("{:?}", RenderError::PdfGeneration("w")).contains("PdfGeneration"));
     assert!(format!("{:?}", RenderError::from(real_io_error())).contains("Io"));
 }
 

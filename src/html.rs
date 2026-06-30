@@ -313,29 +313,48 @@ fn highlight_code(lang: &str, code: &str, out: &mut String) {
 }
 
 fn escape_text(s: &str) -> String {
+    // Bulk-copy clean runs between special bytes via the shared scalar scanner
+    // (`find_html_escape` also flags `"`, which text leaves literal — handled in
+    // the match). The specials are all ASCII, so byte indexing never splits a
+    // multi-byte UTF-8 sequence.
+    let bytes = s.as_bytes();
     let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => o.push_str("&amp;"),
-            '<' => o.push_str("&lt;"),
-            '>' => o.push_str("&gt;"),
-            _ => o.push(c),
+    let mut start = 0;
+    while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {
+        let pos = start + rel;
+        o.push_str(&s[start..pos]);
+        match bytes[pos] {
+            b'&' => o.push_str("&amp;"),
+            b'<' => o.push_str("&lt;"),
+            b'>' => o.push_str("&gt;"),
+            other => o.push(other as char), // `"` (and only `"`) stays literal in text
         }
+        start = pos + 1;
     }
+    o.push_str(&s[start..]);
     o
 }
 
 fn escape_attr(s: &str) -> String {
+    // The attribute escape set (`& < > "`) is exactly the scanner's
+    // `find_html_escape` set, so bulk-copy clean runs and escape each special.
+    // All specials are ASCII, so byte indexing is UTF-8-safe.
+    let bytes = s.as_bytes();
     let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => o.push_str("&amp;"),
-            '<' => o.push_str("&lt;"),
-            '>' => o.push_str("&gt;"),
-            '"' => o.push_str("&quot;"),
-            _ => o.push(c),
+    let mut start = 0;
+    while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {
+        let pos = start + rel;
+        o.push_str(&s[start..pos]);
+        match bytes[pos] {
+            b'&' => o.push_str("&amp;"),
+            b'<' => o.push_str("&lt;"),
+            b'>' => o.push_str("&gt;"),
+            b'"' => o.push_str("&quot;"),
+            _ => {}
         }
+        start = pos + 1;
     }
+    o.push_str(&s[start..]);
     o
 }
 

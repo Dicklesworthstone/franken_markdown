@@ -1,7 +1,11 @@
-//! Scalar scanner oracles for future SIMD acceleration.
+//! Scalar byte/line scanners: small, safe, allocation-free, and portable.
 //!
-//! These routines are intentionally small, safe, allocation-free, and portable.
-//! They define the behavior accelerated implementations must match exactly.
+//! [`find_html_escape`] backs the HTML emitter's `escape_text`/`escape_attr`
+//! bulk-copy escaping in production. The remaining line classifiers
+//! ([`scan_markdown_line`], [`scan_table_or_fence_candidate`]) are the
+//! behavioral reference a future, explicitly-approved SIMD acceleration island
+//! must match exactly (see AGENTS.md on the SIMD/font-parsing island policy).
+//! Either way these routines define exact, testable behavior.
 
 /// Scalar, allocation-free Markdown line classification.
 ///

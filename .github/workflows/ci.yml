@@ -132,6 +132,20 @@ jobs:
       - name: Batch throughput e2e self-test
         run: scripts/batch-throughput.sh --self-test
 
+  e2e:
+    name: E2E suite (run-all)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Skip the batch-throughput fold-in here: the dedicated `batch` job already
+      # runs it, and including it would recompile Asupersync in this job too.
+      - name: Run the full e2e suite
+        env:
+          E2E_SKIP_BATCH: "1"
+        run: scripts/e2e/run-all.sh ci
+
   coverage:
     name: Coverage floor (ratcheted)
     runs-on: ubuntu-latest

@@ -514,3 +514,322 @@ fn build_synthetic_kern_table() -> Vec<u8> {
     kern.extend_from_slice(&(-80i16).to_be_bytes());
     kern
 }
+
+// ===========================================================================
+// Real-font edge-path coverage (mock-free).
+//
+// These tests drive the reader's harder-to-reach branches with REAL inputs:
+// exact metrics/glyph ids from the bundled faces, exact `FontError` Display
+// strings, real kerning/ligature values, and bundled (or system) fonts that
+// have been *deliberately damaged* (a truncated table, a corrupted offset,
+// length, magic, or format byte) to exercise the bounds-checked rejection
+// paths. No synthesized font structs are introduced here — every input is a
+// real font, possibly mutated by hand.
+// ===========================================================================
+
+const PLEX_REGULAR_PATH: &str = "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf";
+const DEJAVU_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+
+fn plex_regular_bytes() -> Vec<u8> {
+    std::fs::read(PLEX_REGULAR_PATH).unwrap()
+}
+
+fn rd_u16(d: &[u8], o: usize) -> u16 {
+    u16::from_be_bytes([d[o], d[o + 1]])
+}
+fn rd_u32(d: &[u8], o: usize) -> u32 {
+    u32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
+}
+fn wr_u16(d: &mut [u8], o: usize, v: u16) {
+    d[o..o + 2].copy_from_slice(&v.to_be_bytes());
+}
+
+/// Offset of a table's 16-byte directory record (where the tag lives).
+fn table_record(d: &[u8], tag: &[u8; 4]) -> usize {
+    let n = rd_u16(d, 4) as usize;
+    for i in 0..n {
+        let rec = 12 + i * 16;
+        if &d[rec..rec + 4] == tag {
+            return rec;
+        }
+    }
+    panic!("table {tag:?} not present in directory");
+}
+
+/// `(offset, length)` of a table, read straight from the sfnt directory.
+fn table_loc(d: &[u8], tag: &[u8; 4]) -> (usize, usize) {
+    let rec = table_record(d, tag);
+    (rd_u32(d, rec + 8) as usize, rd_u32(d, rec + 12) as usize)
+}
+
+/// `FontError` renders a distinct, human-readable message for each variant.
+#[test]
+fn font_error_display_messages() {
+    assert_eq!(
+        FontError::BadMagic.to_string(),
+        "not a TrueType/OpenType font"
+    );
+    assert_eq!(
+        FontError::MissingTable("glyf").to_string(),
+        "missing required font table: glyf"
+    );
+    assert_eq!(FontError::Truncated.to_string(), "font data is truncated");
+    assert_eq!(
+        FontError::NoUnicodeCmap.to_string(),
+        "no usable Unicode cmap (format 4/12)"
+    );
+}
+
+/// Several common BMP code points in the bundled Plex face resolve through the
+/// format-4 cmap's `idRangeOffset` glyphIdArray indirection rather than the
+/// `idDelta` fast path. Exact glyph ids are stable for the committed font.
+#[test]
+fn plex_cmap4_idrange_offset_indirection() {
+    let font = Font::parse(plex_regular_bytes()).unwrap();
+    // (cp, char, segment idRangeOffset != 0)
+    assert_eq!(font.glyph_index(':'), 95);
+    assert_eq!(font.glyph_index('['), 117);
+    assert_eq!(font.glyph_index('{'), 119);
+    assert_eq!(font.glyph_index(' '), 3);
+    // idDelta fast-path glyph still resolves (cross-check, same subtable).
+    assert_eq!(font.glyph_index('A'), 33);
+}
+
+/// Plex's GPOS `kern` feature carries a Pair-format-2 subtable whose first-glyph
+/// class table is `ClassDef` format 1, covering only U+0390 (ΐ) and U+03CA (ϊ).
+/// No earlier subtable covers those glyphs, so the pair is resolved there —
+/// exercising the format-1 class lookup for an in-range (`== start`) glyph and a
+/// below-start glyph.
+#[test]
+fn plex_gpos_pair_uses_classdef_format1() {
+    let font = Font::parse(plex_regular_bytes()).unwrap();
+    let kern = font.gpos_kerning();
+    let dotted = font.glyph_index('\u{0390}'); // ΐ -> ClassDef start, class 1
+    let dotless = font.glyph_index('\u{03CA}'); // ϊ -> below start, class 0
+    let apostrophe = font.glyph_index('\'');
+    assert_eq!(dotted, 612);
+    assert_eq!(dotless, 611);
+    assert_eq!(apostrophe, 99);
+    // class1=1, class2(apostrophe)=1 -> matrix cell = +40 design units.
+    assert_eq!(kern.pair(dotted, apostrophe), 40);
+    // class1=0 (glyph below ClassDef start) -> matrix row 0, cell = 0.
+    assert_eq!(kern.pair(dotless, apostrophe), 0);
+}
+
+/// A real face whose `head.unitsPerEm` is zeroed still parses, but every metric
+/// scaled to 1/1000 em must short-circuit to 0 instead of dividing by zero.
+#[test]
+fn zero_units_per_em_yields_zero_scaled_metrics() {
+    let mut bytes = plex_regular_bytes();
+    let (head, _) = table_loc(&bytes, b"head");
+    assert!(rd_u16(&bytes, head + 18) > 0, "upm starts non-zero");
+    wr_u16(&mut bytes, head + 18, 0);
+    let font = Font::parse(bytes).unwrap();
+    assert_eq!(font.units_per_em, 0);
+    assert_eq!(font.advance_1000('A'), 0);
+    assert_eq!(font.kerning_1000('A', 'V'), 0);
+}
+
+/// Corrupting the `glyf` table tag leaves a parseable font with no usable
+/// outlines: `has_glyf_outlines()` is false, glyph data is unavailable, and
+/// subsetting (which requires TrueType outlines) returns `None`.
+#[test]
+fn damaged_glyf_tag_disables_outlines_and_subsetting() {
+    let mut bytes = plex_regular_bytes();
+    let rec = table_record(&bytes, b"glyf");
+    bytes[rec..rec + 4].copy_from_slice(b"XXXX");
+    let font = Font::parse(bytes).unwrap();
+    assert!(!font.has_glyf_outlines());
+    assert!(font.glyph_data(font.glyph_index('A')).is_none());
+    assert!(font.subset(&['A', 'B']).is_none());
+}
+
+/// A `loca` entry pointing past the `glyf` table must make `glyph_range` reject
+/// the glyph (end beyond the table) rather than read out of bounds.
+#[test]
+fn damaged_loca_out_of_range_glyph_is_rejected() {
+    let mut bytes = plex_regular_bytes();
+    let (loca, _) = table_loc(&bytes, b"loca");
+    let a = Font::parse(bytes.clone()).unwrap().glyph_index('A');
+    assert!(
+        Font::parse(bytes.clone())
+            .unwrap()
+            .glyph_data(a)
+            .is_some_and(|d| !d.is_empty()),
+        "glyph 'A' has outline data before damage"
+    );
+    // Plex uses the short (offsets/2) loca format; set glyph A's END offset to
+    // 0xFFFF -> byte offset 0x1FFFE, far past the glyf table.
+    wr_u16(&mut bytes, loca + (a as usize + 1) * 2, 0xFFFF);
+    let font = Font::parse(bytes).unwrap();
+    assert!(font.glyph_data(a).is_none());
+    assert!(font.glyph_bbox(a).is_none());
+}
+
+/// Damaging the cmap directory drives `select_cmap` through its lower-priority
+/// ranking arms while still leaving a usable subtable selected: a `(3,10)`
+/// format-4 record (ranks below `(3,1)`), and a platform-0 *format-6* record
+/// (a Unicode subtable of an unsupported format, which is skipped).
+#[test]
+fn select_cmap_ranks_noncanonical_unicode_subtables() {
+    let mut bytes = plex_regular_bytes();
+    let (cmap, _) = table_loc(&bytes, b"cmap");
+    // record layout after version(2)+count(2): [plat(2) enc(2) offset(4)] each.
+    // record 1 = (1,0) format 6 -> set platform 0 (Unicode, unsupported format).
+    wr_u16(&mut bytes, cmap + 4 + 8, 0);
+    // record 2 = (3,1) format 4 -> set encoding 10 (non-canonical format-4).
+    wr_u16(&mut bytes, cmap + 4 + 16 + 2, 10);
+    let font = Font::parse(bytes).unwrap();
+    // The (0,3) format-4 subtable is still selected; lookups remain intact.
+    assert_eq!(font.glyph_index('A'), 33);
+    assert_eq!(font.glyph_index('B'), 34);
+}
+
+/// Breaking the format-4 terminal segment's `endCode` (0xFFFF sentinel) makes a
+/// lookup of the maximum BMP code point exceed every segment and fall through
+/// the whole scan, still safely returning `.notdef`.
+#[test]
+fn damaged_cmap_sentinel_falls_through_segment_scan() {
+    let mut bytes = plex_regular_bytes();
+    let (cmap, _) = table_loc(&bytes, b"cmap");
+    // record 0's subtable offset -> the selected format-4 subtable.
+    let sub = cmap + rd_u32(&bytes, cmap + 4 + 4) as usize;
+    assert_eq!(rd_u16(&bytes, sub), 4, "record 0 is format 4");
+    let seg_count = rd_u16(&bytes, sub + 6) as usize / 2;
+    let last_end = sub + 14 + (seg_count - 1) * 2;
+    assert_eq!(
+        rd_u16(&bytes, last_end),
+        0xFFFF,
+        "terminal sentinel present"
+    );
+    wr_u16(&mut bytes, last_end, 0xFFFD); // break the sentinel
+    let font = Font::parse(bytes).unwrap();
+    assert_eq!(font.glyph_index('\u{FFFF}'), 0); // falls through all segments
+    assert_eq!(font.glyph_index('A'), 33); // low segment still maps
+}
+
+/// DejaVu ships a legacy `kern` v0 format-0 horizontal table (2727 pairs). The
+/// classic pairs tighten, and varied lookups walk both directions of the pair
+/// binary search; an absent pair exits with no adjustment.
+#[test]
+fn dejavu_legacy_kern_binary_search() {
+    let Ok(bytes) = std::fs::read(DEJAVU_PATH) else {
+        eprintln!("skipping: {DEJAVU_PATH} not present (legacy kern validation)");
+        return;
+    };
+    let font = Font::parse(bytes).unwrap();
+    for (l, r) in [
+        ('A', 'V'),
+        ('A', 'Y'),
+        ('A', 'W'),
+        ('L', 'T'),
+        ('F', '.'),
+        ('Y', 'A'),
+    ] {
+        assert!(
+            font.kerning(l, r) < 0,
+            "{l}{r} should tighten via legacy kern"
+        );
+    }
+    let (a, v) = (font.glyph_index('A'), font.glyph_index('V'));
+    assert!(font.kerning_between_glyphs(a, v) < 0);
+    assert!(font.kerning_1000('A', 'V') < 0);
+    // notdef/notdef is never a kern pair -> not-found exit of the search.
+    assert_eq!(font.kerning_between_glyphs(0, 0), 0);
+}
+
+/// Each mutation makes `find_kern0` reject the (otherwise valid) DejaVu legacy
+/// kern table at a different bounds check; the font must still parse and report
+/// zero kerning, never panic.
+#[test]
+fn damaged_dejavu_kern_table_rejection_paths() {
+    let Ok(orig) = std::fs::read(DEJAVU_PATH) else {
+        eprintln!("skipping: {DEJAVU_PATH} not present (kern rejection validation)");
+        return;
+    };
+    let (kern, _) = table_loc(&orig, b"kern");
+    let sub = kern + 4; // first (and only) subtable
+
+    let kern_after = |writes: &[(usize, u16)]| -> i16 {
+        let mut b = orig.clone();
+        for &(o, v) in writes {
+            wr_u16(&mut b, o, v);
+        }
+        let font = Font::parse(b).expect("font still parses with a damaged kern table");
+        font.kerning('A', 'V')
+    };
+
+    // table version != 0
+    assert_eq!(kern_after(&[(kern, 1)]), 0);
+    // first subtable is not format 0 (single subtable): loop skips it, ends.
+    assert_eq!(kern_after(&[(sub + 4, 0x0101)]), 0);
+    // not-format-0 subtable + a claimed second subtable past the table end.
+    assert_eq!(kern_after(&[(sub + 4, 0x0101), (kern + 2, 2)]), 0);
+    // subtable length larger than the whole kern table.
+    assert_eq!(kern_after(&[(sub + 2, 0xFFFF)]), 0);
+    // nPairs larger than the subtable can hold.
+    assert_eq!(kern_after(&[(sub + 6, 0xFFFF)]), 0);
+    // zero-length subtable.
+    assert_eq!(kern_after(&[(sub + 2, 0)]), 0);
+}
+
+/// Sweep a truncation boundary through the GPOS and GSUB tables of a real font.
+/// Every partial read inside the kern/ligature parsers must take its bounds-
+/// checked rejection arm and yield a well-formed (possibly empty / degraded)
+/// result rather than panicking. All required tables precede GPOS, so parsing
+/// still succeeds at every boundary.
+#[test]
+fn truncated_layout_tables_degrade_without_panic() {
+    let full = plex_regular_bytes();
+    let (gpos_off, gpos_len) = table_loc(&full, b"GPOS");
+    let (gsub_off, gsub_len) = table_loc(&full, b"GSUB");
+    let gpos_end = gpos_off + gpos_len;
+    let gsub_end = gsub_off + gsub_len;
+
+    let base = Font::parse(full.clone()).unwrap();
+    let (av_l, av_r) = (base.glyph_index('A'), base.glyph_index('V'));
+    let (fg, ig) = (base.glyph_index('f'), base.glyph_index('i'));
+    // Intact tables: full kerning + ligatures work.
+    assert!(base.gpos_kerning().pair(av_l, av_r) < 0);
+    assert_eq!(base.gsub_ligatures().substitute(&[fg, ig]).len(), 1);
+
+    // GPOS cut boundaries: a fine sweep over the header + script/feature/lookup
+    // lists, then a coarse sweep over the rest (lookup subtable data). GSUB sits
+    // after GPOS, so these cuts also drop GSUB.
+    let mut gpos_cuts: Vec<usize> = Vec::new();
+    let mut c = gpos_off;
+    while c <= gpos_off + 3000.min(gpos_len) {
+        gpos_cuts.push(c);
+        c += 1;
+    }
+    while c <= gpos_end {
+        gpos_cuts.push(c);
+        c += 13;
+    }
+    for cut in gpos_cuts {
+        let mut bytes = full.clone();
+        bytes.truncate(cut);
+        let Ok(font) = Font::parse(bytes) else {
+            continue;
+        };
+        // A/V never kerns positive: degraded -> 0, intact -> negative.
+        let k = font.gpos_kerning().pair(av_l, av_r);
+        assert!(k <= 0, "kern stays a sane i16 at cut {cut} (got {k})");
+    }
+
+    // GSUB cut boundaries: the whole (small) GSUB table, byte by byte. GPOS is
+    // fully intact here, so we only probe ligature shaping.
+    for cut in gsub_off..=gsub_end {
+        let mut bytes = full.clone();
+        bytes.truncate(cut);
+        let Ok(font) = Font::parse(bytes) else {
+            continue;
+        };
+        // Shaping stays well-formed: ligated (1) or passed through (2).
+        let shaped = font.gsub_ligatures().substitute(&[fg, ig]);
+        assert!(
+            (1..=2).contains(&shaped.len()),
+            "ligature substitution stays well-formed at cut {cut}"
+        );
+    }
+}

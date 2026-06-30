@@ -53,6 +53,9 @@ jobs:
       - name: Check e2e harness machinery (grn.4.1)
         run: scripts/e2e/lib.sh --self-test
 
+      - name: Check no undocumented test doubles (grn.3.2)
+        run: scripts/check-test-doubles.sh
+
       - name: Check CommonMark conformance (ratcheted floor)
         run: scripts/commonmark-conformance.sh ci
 

@@ -153,8 +153,11 @@ else
   # Pass 2: batch — adds batch.rs; scoped to --lib (batch tests are inline lib tests)
   # so we don't re-run the whole integration suite under the heavier Asupersync build.
   run_pass "batch lib" --features batch --lib
-  # Pass 3: wasm-bindgen — makes wasm_abi.rs visible/measured; scoped to --lib.
-  run_pass "wasm-bindgen lib" --features wasm-bindgen --lib
+  # Pass 3: wasm-bindgen — covers wasm_abi.rs (the bindgen ABI adapter). Its
+  # success paths run natively via the wasm_abi_test integration test; the lib
+  # unit tests come along too. (Error paths cross the JS boundary and are covered
+  # by the real wasm build in scripts/check-wasm-package.sh, not here.)
+  run_pass "wasm-bindgen lib+abi" --features wasm-bindgen --lib --test wasm_abi_test
 fi
 
 # ---- reports ---------------------------------------------------------------

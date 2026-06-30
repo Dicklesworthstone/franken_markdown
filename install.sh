@@ -71,6 +71,11 @@ HAS_GUM=0
 if command -v gum &> /dev/null && [ -t 1 ]; then
   HAS_GUM=1
 fi
+USE_COLOR=1
+if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ]; then
+  USE_COLOR=0
+  NO_GUM=1
+fi
 
 log() { [ "$QUIET" -eq 1 ] && return 0; echo -e "$@"; }
 
@@ -78,8 +83,10 @@ info() {
   [ "$QUIET" -eq 1 ] && return 0
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
     gum style --foreground 39 "→ $*"
-  else
+  elif [ "$USE_COLOR" -eq 1 ]; then
     echo -e "\033[0;34m→\033[0m $*"
+  else
+    echo "-> $*"
   fi
 }
 
@@ -87,16 +94,20 @@ ok() {
   [ "$QUIET" -eq 1 ] && return 0
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
     gum style --foreground 42 "✓ $*"
-  else
+  elif [ "$USE_COLOR" -eq 1 ]; then
     echo -e "\033[0;32m✓\033[0m $*"
+  else
+    echo "[OK] $*"
   fi
 }
 
 warn() {
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
     gum style --foreground 214 "⚠ $*"
-  else
+  elif [ "$USE_COLOR" -eq 1 ]; then
     echo -e "\033[1;33m⚠\033[0m $*"
+  else
+    echo "[!] $*"
   fi
 }
 
@@ -104,8 +115,10 @@ err() {
   # Errors are never silenced, even with --quiet.
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
     gum style --foreground 196 "✗ $*"
-  else
+  elif [ "$USE_COLOR" -eq 1 ]; then
     echo -e "\033[0;31m✗\033[0m $*" >&2
+  else
+    echo "[X] $*" >&2
   fi
 }
 
@@ -138,15 +151,27 @@ draw_box() {
   local border="" i
   for ((i=0; i<inner_width; i++)); do border+="═"; done
 
-  printf "\033[%sm╔%s╗\033[0m\n" "$color" "$border"
+  if [ "$USE_COLOR" -eq 1 ]; then
+    printf "\033[%sm╔%s╗\033[0m\n" "$color" "$border"
+  else
+    printf "╔%s╗\n" "$border"
+  fi
   for line in "${lines[@]}"; do
     stripped=$(printf '%b' "$line" | LC_ALL=C sed "$strip_ansi_sed")
     len=${#stripped}
     local padding=$((max_width - len)) pad_str=""
     for ((i=0; i<padding; i++)); do pad_str+=" "; done
-    printf "\033[%sm║\033[0m  %b%s  \033[%sm║\033[0m\n" "$color" "$line" "$pad_str" "$color"
+    if [ "$USE_COLOR" -eq 1 ]; then
+      printf "\033[%sm║\033[0m  %b%s  \033[%sm║\033[0m\n" "$color" "$line" "$pad_str" "$color"
+    else
+      printf "║  %s%s  ║\n" "$stripped" "$pad_str"
+    fi
   done
-  printf "\033[%sm╚%s╝\033[0m\n" "$color" "$border"
+  if [ "$USE_COLOR" -eq 1 ]; then
+    printf "\033[%sm╚%s╝\033[0m\n" "$color" "$border"
+  else
+    printf "╚%s╝\n" "$border"
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +241,7 @@ while [ $# -gt 0 ]; do
     --from-source) FROM_SOURCE=1; shift;;
     --quiet|-q) QUIET=1; shift;;
     --no-gum) NO_GUM=1; shift;;
+    --no-color|--no-colour) USE_COLOR=0; NO_GUM=1; shift;;
     --force) FORCE=1; shift;;
     --artifact-url) ARTIFACT_URL="${2:-}"; shift 2;;
     --checksum) CHECKSUM="${2:-}"; shift 2;;
@@ -237,9 +263,15 @@ if [ "$QUIET" -eq 0 ]; then
       "$(gum style --foreground 245 'franken_markdown — Markdown to beautiful HTML & tiny PDF')"
   else
     echo ""
-    draw_box "1;36" \
-      "$(printf '\033[1;32m🧟 fmd installer\033[0m')" \
-      "$(printf '\033[0;90mfranken_markdown — Markdown to beautiful HTML & tiny PDF\033[0m')"
+    if [ "$USE_COLOR" -eq 1 ]; then
+      draw_box "1;36" \
+        "$(printf '\033[1;32m🧟 fmd installer\033[0m')" \
+        "$(printf '\033[0;90mfranken_markdown — Markdown to beautiful HTML & tiny PDF\033[0m')"
+    else
+      draw_box "1;36" \
+        "🧟 fmd installer" \
+        "franken_markdown — Markdown to beautiful HTML & tiny PDF"
+    fi
     echo ""
   fi
 fi
@@ -508,7 +540,7 @@ build_from_source() {
 # ─────────────────────────────────────────────────────────────────────────────
 download_one() {
   local url="$1" out="$2" label="$3"
-  if [ "$HAS_GUM" -eq 0 ] || [ "$NO_GUM" -eq 1 ] || [ "$QUIET" -eq 1 ] || [ ! -t 1 ]; then
+  if [ "$HAS_GUM" -eq 0 ] || [ "$NO_GUM" -eq 1 ] || [ "$USE_COLOR" -eq 0 ] || [ "$QUIET" -eq 1 ] || [ ! -t 1 ]; then
     info "$label"
     xcurl -fsSL --connect-timeout 30 --max-time 1800 "$url" -o "$out"
   else
@@ -735,19 +767,35 @@ if [ "$QUIET" -eq 0 ]; then
     echo ""
   else
     echo ""
-    draw_box "1;32" \
-      "$(printf '\033[1;32m✓ fmd installed!\033[0m')" \
-      "" \
-      "Binary:   \033[1m$DEST/$BINARY_NAME\033[0m" \
-      "Version:  \033[1m$DISPLAY_VERSION\033[0m  ($SRC_NOTE)" \
-      "" \
-      "\033[1;36mQuick start:\033[0m" \
-      "  \033[0;90mfmd README.md --out README.html\033[0m" \
-      "  \033[0;90mfmd README.md --to pdf --out README.pdf\033[0m" \
-      "  \033[0;90mfmd --text '# Hello' --out -\033[0m" \
-      "  \033[0;90mfmd capabilities --json\033[0m" \
-      "" \
-      "Uninstall: \033[0;90mrm -f $DEST/$BINARY_NAME\033[0m"
+    if [ "$USE_COLOR" -eq 1 ]; then
+      draw_box "1;32" \
+        "$(printf '\033[1;32m✓ fmd installed!\033[0m')" \
+        "" \
+        "Binary:   \033[1m$DEST/$BINARY_NAME\033[0m" \
+        "Version:  \033[1m$DISPLAY_VERSION\033[0m  ($SRC_NOTE)" \
+        "" \
+        "\033[1;36mQuick start:\033[0m" \
+        "  \033[0;90mfmd README.md --out README.html\033[0m" \
+        "  \033[0;90mfmd README.md --to pdf --out README.pdf\033[0m" \
+        "  \033[0;90mfmd --text '# Hello' --out -\033[0m" \
+        "  \033[0;90mfmd capabilities --json\033[0m" \
+        "" \
+        "Uninstall: \033[0;90mrm -f $DEST/$BINARY_NAME\033[0m"
+    else
+      draw_box "1;32" \
+        "✓ fmd installed!" \
+        "" \
+        "Binary:   $DEST/$BINARY_NAME" \
+        "Version:  $DISPLAY_VERSION  ($SRC_NOTE)" \
+        "" \
+        "Quick start:" \
+        "  fmd README.md --out README.html" \
+        "  fmd README.md --to pdf --out README.pdf" \
+        "  fmd --text '# Hello' --out -" \
+        "  fmd capabilities --json" \
+        "" \
+        "Uninstall: rm -f $DEST/$BINARY_NAME"
+    fi
     echo ""
   fi
 fi

@@ -453,7 +453,7 @@ try {
     $scope = if ($System) { 'Machine' } else { 'User' }
     $curPath = [Environment]::GetEnvironmentVariable('Path', $scope)
     if (-not $curPath) { $curPath = "" }
-    $onPath = ($curPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Dest.TrimEnd('\') }).Count -gt 0
+    $onPath = @($curPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Dest.TrimEnd('\') }).Count -gt 0
     if (-not $onPath) {
         if ($EasyMode) {
             try {

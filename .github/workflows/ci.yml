@@ -125,3 +125,29 @@ jobs:
 
       - name: Batch throughput e2e self-test
         run: scripts/batch-throughput.sh --self-test
+
+  coverage:
+    name: Coverage floor (ratcheted)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Branch coverage instrumentation needs llvm-tools; it is intentionally not
+      # pinned in rust-toolchain.toml (keeps the default dev install light), so add
+      # it here. cargo-llvm-cov is installed the same way as wasm-bindgen-cli above.
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      # Fast machinery sanity (lib-only branch probe) before the full merged run.
+      - name: Coverage self-test
+        run: scripts/coverage.sh --self-test
+
+      # Full merged measurement (default + batch + wasm-bindgen, with branch) and
+      # the ratcheted floor gate: fails if line/region/branch/function coverage
+      # drops below tests/fixtures/coverage/coverage-floor.txt.
+      - name: Coverage floor check
+        run: scripts/coverage.sh --check ci

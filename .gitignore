@@ -50,6 +50,10 @@ tests/artifacts/perf/*/work/
 # runs, so it is ignored to keep `git status` meaningful and releases clean.
 tests/artifacts/claims/
 tests/artifacts/cli/
+# Coverage: per-run dirs (html/, lcov.info, coverage-llvm.json, run.log) are
+# regenerable and bulky, so every run-id subdirectory is ignored. The committed
+# baseline ledger lives at the top level: tests/artifacts/coverage/baseline.{tsv,md}.
+tests/artifacts/coverage/*/
 tests/artifacts/conformance/
 tests/artifacts/pagination/
 tests/artifacts/theme/

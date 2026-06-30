@@ -1,0 +1,8 @@
+# Ratcheted coverage floor (grn.1.3). CI (--check) fails if any metric
+# drops below these integers. Raise with: scripts/coverage.sh --update-floor.
+# Whole-percent floors absorb cross-platform instrumentation noise while
+# still catching real regressions.
+lines=88
+regions=87
+branches=76
+functions=90

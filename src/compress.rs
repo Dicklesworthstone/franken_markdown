@@ -329,6 +329,283 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Decompress a complete zlib stream (RFC 1950 + RFC 1951) — the inverse of
+/// [`zlib_compress`]. Supports all three DEFLATE block types (stored, fixed
+/// Huffman, and dynamic Huffman, which real-world encoders such as PNG writers
+/// use). `max_out` bounds the decompressed size so a hostile stream cannot blow
+/// up memory; decoding stops with `None` if the output would exceed it. Returns
+/// `None` on any malformed input — it never panics.
+pub(crate) fn zlib_decompress(data: &[u8], max_out: usize) -> Option<Vec<u8>> {
+    // zlib header: CMF, FLG (2 bytes), then the DEFLATE body, then a 4-byte
+    // big-endian Adler-32 we do not need to re-verify here.
+    let cmf = *data.first()?;
+    let flg = *data.get(1)?;
+    if cmf & 0x0f != 8 || flg & 0x20 != 0 {
+        // Not deflate, or a preset dictionary we do not support.
+        return None;
+    }
+    let body = data.get(2..)?;
+    inflate_deflate(body, max_out)
+}
+
+/// A canonical-Huffman decoder built from a list of code lengths.
+struct Huffman {
+    /// `counts[len]` = number of codes of that bit length.
+    counts: [u16; MAX_HUFFMAN_BITS + 1],
+    /// Symbols ordered by (length, symbol), indexed via the canonical scheme.
+    symbols: Vec<u16>,
+}
+
+const MAX_HUFFMAN_BITS: usize = 15;
+
+impl Huffman {
+    fn from_lengths(lengths: &[u8]) -> Option<Self> {
+        let mut counts = [0u16; MAX_HUFFMAN_BITS + 1];
+        for &len in lengths {
+            let len = len as usize;
+            if len > MAX_HUFFMAN_BITS {
+                return None;
+            }
+            counts[len] += 1;
+        }
+        counts[0] = 0;
+        // Offsets of each length's first symbol within `symbols`.
+        let mut offsets = [0u16; MAX_HUFFMAN_BITS + 2];
+        for len in 1..=MAX_HUFFMAN_BITS {
+            offsets[len + 1] = offsets[len] + counts[len];
+        }
+        let mut symbols = vec![0u16; lengths.len()];
+        for (sym, &len) in lengths.iter().enumerate() {
+            if len != 0 {
+                let slot = offsets[len as usize] as usize;
+                *symbols.get_mut(slot)? = sym as u16;
+                offsets[len as usize] += 1;
+            }
+        }
+        Some(Huffman { counts, symbols })
+    }
+
+    /// Decode one symbol from the bit reader (RFC 1951 canonical decode).
+    fn decode(&self, br: &mut BitStream) -> Option<u16> {
+        let mut code = 0i32;
+        let mut first = 0i32;
+        let mut index = 0i32;
+        for len in 1..=MAX_HUFFMAN_BITS {
+            code |= br.bit()? as i32;
+            let count = self.counts[len] as i32;
+            if code - first < count {
+                return self.symbols.get((index + (code - first)) as usize).copied();
+            }
+            index += count;
+            first = (first + count) << 1;
+            code <<= 1;
+        }
+        None
+    }
+}
+
+/// LSB-first bit reader over a DEFLATE body.
+struct BitStream<'a> {
+    data: &'a [u8],
+    byte: usize,
+    bit: u32,
+}
+
+impl<'a> BitStream<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        BitStream {
+            data,
+            byte: 0,
+            bit: 0,
+        }
+    }
+    fn bit(&mut self) -> Option<u32> {
+        let b = *self.data.get(self.byte)?;
+        let v = (b >> self.bit) & 1;
+        self.bit += 1;
+        if self.bit == 8 {
+            self.bit = 0;
+            self.byte += 1;
+        }
+        Some(u32::from(v))
+    }
+    fn bits(&mut self, n: u32) -> Option<u32> {
+        let mut r = 0u32;
+        for i in 0..n {
+            r |= self.bit()? << i;
+        }
+        Some(r)
+    }
+    fn align_to_byte(&mut self) {
+        if self.bit != 0 {
+            self.bit = 0;
+            self.byte += 1;
+        }
+    }
+}
+
+fn inflate_deflate(body: &[u8], max_out: usize) -> Option<Vec<u8>> {
+    let mut br = BitStream::new(body);
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let bfinal = br.bits(1)?;
+        let btype = br.bits(2)?;
+        match btype {
+            0 => {
+                br.align_to_byte();
+                let len = br.bits(16)? as usize;
+                let _nlen = br.bits(16)?;
+                if out.len().checked_add(len)? > max_out {
+                    return None;
+                }
+                for _ in 0..len {
+                    out.push(br.bits(8)? as u8);
+                }
+            }
+            1 => {
+                let (lit, dist) = fixed_huffman();
+                inflate_block(&mut br, &lit, &dist, &mut out, max_out)?;
+            }
+            2 => {
+                let (lit, dist) = dynamic_huffman(&mut br)?;
+                inflate_block(&mut br, &lit, &dist, &mut out, max_out)?;
+            }
+            _ => return None,
+        }
+        if bfinal == 1 {
+            break;
+        }
+    }
+    Some(out)
+}
+
+fn inflate_block(
+    br: &mut BitStream,
+    lit: &Huffman,
+    dist: &Huffman,
+    out: &mut Vec<u8>,
+    max_out: usize,
+) -> Option<()> {
+    loop {
+        let sym = lit.decode(br)? as usize;
+        if sym == 256 {
+            return Some(());
+        }
+        if sym < 256 {
+            if out.len() >= max_out {
+                return None;
+            }
+            out.push(sym as u8);
+            continue;
+        }
+        let li = sym.checked_sub(257)?;
+        let length =
+            *LENGTH_BASE.get(li)? as usize + br.bits(*LENGTH_EXTRA.get(li)? as u32)? as usize;
+        let dsym = dist.decode(br)? as usize;
+        let distance =
+            *DIST_BASE.get(dsym)? as usize + br.bits(*DIST_EXTRA.get(dsym)? as u32)? as usize;
+        if distance == 0 || distance > out.len() || out.len().checked_add(length)? > max_out {
+            return None;
+        }
+        let start = out.len() - distance;
+        for k in 0..length {
+            let byte = *out.get(start + k)?;
+            out.push(byte);
+        }
+    }
+}
+
+/// Build the fixed (static) literal/length and distance Huffman tables.
+fn fixed_huffman() -> (Huffman, Huffman) {
+    let mut lit_lengths = [0u8; 288];
+    for (sym, len) in lit_lengths.iter_mut().enumerate() {
+        *len = match sym {
+            0..=143 => 8,
+            144..=255 => 9,
+            256..=279 => 7,
+            _ => 8,
+        };
+    }
+    let dist_lengths = [5u8; 30];
+    // The fixed tables are always well-formed, so the builders cannot fail; fall
+    // back to empty tables (which decode to `None`) if they somehow did.
+    (
+        Huffman::from_lengths(&lit_lengths).unwrap_or(Huffman {
+            counts: [0; MAX_HUFFMAN_BITS + 1],
+            symbols: Vec::new(),
+        }),
+        Huffman::from_lengths(&dist_lengths).unwrap_or(Huffman {
+            counts: [0; MAX_HUFFMAN_BITS + 1],
+            symbols: Vec::new(),
+        }),
+    )
+}
+
+/// Read a dynamic-Huffman block header and build its literal/length and distance
+/// tables (RFC 1951 §3.2.7).
+fn dynamic_huffman(br: &mut BitStream) -> Option<(Huffman, Huffman)> {
+    const ORDER: [usize; 19] = [
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+    ];
+    let hlit = br.bits(5)? as usize + 257;
+    let hdist = br.bits(5)? as usize + 1;
+    let hclen = br.bits(4)? as usize + 4;
+    if hlit > 286 || hdist > 30 {
+        return None;
+    }
+    let mut cl_lengths = [0u8; 19];
+    for &slot in ORDER.iter().take(hclen) {
+        cl_lengths[slot] = br.bits(3)? as u8;
+    }
+    let cl_huff = Huffman::from_lengths(&cl_lengths)?;
+
+    // Decode the combined literal+distance code-length sequence.
+    let total = hlit + hdist;
+    let mut lengths = Vec::with_capacity(total);
+    while lengths.len() < total {
+        let sym = cl_huff.decode(br)?;
+        match sym {
+            0..=15 => lengths.push(sym as u8),
+            16 => {
+                // Repeat the previous length 3..=6 times.
+                let prev = *lengths.last()?;
+                let repeat = 3 + br.bits(2)? as usize;
+                for _ in 0..repeat {
+                    if lengths.len() >= total {
+                        return None;
+                    }
+                    lengths.push(prev);
+                }
+            }
+            17 => {
+                let repeat = 3 + br.bits(3)? as usize;
+                for _ in 0..repeat {
+                    if lengths.len() >= total {
+                        return None;
+                    }
+                    lengths.push(0);
+                }
+            }
+            18 => {
+                let repeat = 11 + br.bits(7)? as usize;
+                for _ in 0..repeat {
+                    if lengths.len() >= total {
+                        return None;
+                    }
+                    lengths.push(0);
+                }
+            }
+            _ => return None,
+        }
+    }
+    if lengths.len() != total {
+        return None;
+    }
+    let lit = Huffman::from_lengths(lengths.get(..hlit)?)?;
+    let dist = Huffman::from_lengths(lengths.get(hlit..)?)?;
+    Some((lit, dist))
+}
+
 // ===========================================================================
 // Verification: a std-only DEFLATE inflater (fixed + stored blocks) used to
 // prove round-trip correctness without any external crate. NOT part of the
@@ -559,5 +836,115 @@ mod tests {
             }
             roundtrip(&v);
         }
+    }
+
+    // ---- production inflater (`zlib_decompress`) -----------------------------
+
+    fn fnv1a64(data: &[u8]) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for &b in data {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    fn prod_roundtrip(data: &[u8]) {
+        let comp = zlib_compress(data);
+        let got = zlib_decompress(&comp, data.len() + 64).expect("zlib_decompress");
+        assert_eq!(
+            got,
+            data,
+            "production inflater mismatch for len {}",
+            data.len()
+        );
+    }
+
+    #[test]
+    fn production_inflater_roundtrips_own_compressor() {
+        prod_roundtrip(b"");
+        prod_roundtrip(b"a");
+        prod_roundtrip(b"hello world");
+        prod_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        prod_roundtrip("The quick brown fox. ".repeat(300).as_bytes());
+        let zeros = vec![0u8; 50_000];
+        prod_roundtrip(&zeros);
+        // Incompressible (stored block) path.
+        let mut v = Vec::with_capacity(80_000);
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..80_000 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            v.push((s >> 33) as u8);
+        }
+        prod_roundtrip(&v);
+    }
+
+    #[rustfmt::skip]
+    const DYN_ZLIB: &[u8] = &[
+        120, 218, 181, 216, 143, 47, 212, 113, 28, 199, 113, 165, 161, 194, 40, 22, 42, 190,
+        41, 90, 168, 136, 197, 34, 69, 52, 90, 164, 66, 27, 77, 29, 142, 187, 28, 119,
+        206, 249, 185, 104, 138, 22, 90, 138, 197, 10, 139, 216, 176, 66, 191, 216, 40, 165,
+        20, 27, 253, 66, 13, 27, 209, 80, 99, 163, 180, 168, 197, 82, 173, 127, 225, 233,
+        15, 184, 215, 222, 239, 247, 231, 241, 254, 190, 183, 83, 73, 196, 66, 108, 188, 52,
+        44, 74, 8, 85, 202, 19, 99, 132, 8, 121, 146, 112, 42, 62, 90, 17, 39, 200,
+        19, 196, 74, 65, 36, 200, 68, 41, 201, 66, 184, 60, 82, 72, 148, 72, 101, 98,
+        65, 33, 82, 198, 73, 99, 34, 133, 104, 145, 50, 42, 252, 223, 15, 164, 49, 42,
+        185, 160, 8, 143, 16, 212, 212, 212, 176, 44, 149, 166, 206, 57, 44, 75, 162, 107,
+        162, 129, 101, 137, 13, 55, 103, 97, 89, 194, 58, 7, 109, 44, 43, 118, 163, 91,
+        46, 150, 21, 111, 229, 187, 74, 197, 61, 231, 255, 36, 187, 224, 171, 116, 100, 152,
+        147, 196, 136, 142, 140, 218, 19, 95, 68, 71, 10, 251, 207, 154, 50, 145, 62, 185,
+        101, 76, 105, 254, 197, 155, 152, 22, 131, 171, 43, 81, 42, 161, 13, 86, 40, 19,
+        105, 107, 13, 74, 68, 241, 214, 22, 229, 145, 56, 120, 31, 213, 150, 54, 177, 19,
+        197, 155, 249, 163, 17, 221, 133, 139, 203, 92, 240, 79, 203, 223, 164, 124, 253, 39,
+        88, 234, 117, 83, 119, 172, 192, 50, 235, 23, 88, 175, 85, 78, 94, 216, 216, 234,
+        60, 59, 177, 23, 104, 56, 226, 139, 61, 102, 243, 137, 46, 154, 199, 115, 153, 63,
+        13, 174, 51, 185, 151, 38, 220, 125, 62, 136, 94, 138, 254, 252, 65, 122, 205, 134,
+        75, 79, 34, 137, 159, 107, 70, 144, 194, 166, 154, 34, 72, 46, 51, 237, 227, 36,
+        149, 249, 119, 50, 146, 137, 250, 199, 47, 36, 145, 21, 83, 74, 146, 135, 254, 220,
+        12, 137, 205, 72, 43, 137, 164, 107, 102, 56, 183, 8, 103, 199, 210, 60, 109, 17,
+        110, 217, 214, 237, 75, 168, 80, 7, 151, 12, 170, 60, 103, 111, 77, 170, 81, 247,
+        192, 108, 106, 100, 222, 97, 58, 212, 240, 253, 20, 151, 97, 34, 199, 82, 87, 195,
+        60, 66, 178, 11, 96, 111, 226, 66, 99, 24, 176, 172, 162, 24, 222, 136, 184, 187,
+        102, 240, 138, 165, 60, 190, 73, 4, 166, 119, 90, 128, 100, 46, 244, 85, 129, 92,
+        114, 199, 172, 65, 42, 5, 223, 106, 65, 38, 37, 11, 118, 32, 145, 10, 237, 7,
+        32, 143, 91, 198, 142, 160, 181, 123, 150, 77, 252, 221, 105, 180, 223, 205, 159, 157,
+        150, 189, 45, 252, 41, 107, 247, 217, 7, 101, 190, 14, 106, 131, 138, 123, 31, 233,
+        13, 117, 57, 160, 122, 9, 141, 107, 36, 253, 16, 203, 100, 226, 82, 55, 75, 100,
+        186, 40, 128, 229, 241, 179, 170, 143, 229, 182, 80, 31, 204, 242, 213, 120, 246, 129,
+        93, 7, 157, 55, 34, 118, 189, 12, 6, 70, 57, 54, 107, 199, 35, 57, 50, 230,
+        179, 19, 28, 151, 45, 234, 209, 28, 21, 91, 189, 175, 28, 19, 199, 245, 113, 28,
+        17, 87, 171, 89, 142, 135, 167, 99, 50, 126, 120, 14, 122, 204, 227, 119, 231, 232,
+        225, 51, 248, 217, 9, 10, 89, 138, 95, 50, 81, 84, 38, 19, 41, 73, 210, 98,
+        74, 147, 103, 230, 48, 45, 38, 228, 233, 162, 84, 82, 111, 92, 65, 153, 100, 220,
+        54, 64, 137, 228, 52, 22, 162, 60, 242, 218, 76, 80, 109, 215, 122, 74, 80, 188,
+        165, 195, 2, 186, 11, 149, 147, 229, 139, 241, 23, 126, 237, 47, 75, 44, 181, 94,
+        179, 26, 43, 240, 145, 129, 13, 214, 107, 235, 134, 58, 108, 108, 29, 219, 118, 96,
+        47, 208, 229, 92, 143, 61, 102, 159, 151, 19, 205, 99, 40, 224, 33, 13, 238, 83,
+        168, 43, 77, 120, 82, 254, 148, 94, 138, 239, 167, 61, 232, 53, 155, 203, 106, 71,
+        18, 151, 22, 28, 64, 10, 91, 94, 254, 138, 228, 162, 119, 199, 143, 164, 178, 166,
+        185, 135, 100, 98, 218, 17, 72, 18, 177, 232, 237, 39, 121, 216, 140, 30, 39, 177,
+        217, 79, 15, 145, 116, 119, 253, 14, 93, 132, 179, 227, 182, 114, 236, 15, 111, 6,
+        204, 141,
+    ];
+    const DYN_PLAIN_LEN: usize = 9478;
+    const DYN_PLAIN_FNV1A64: u64 = 0x462c7b69f9163b4a;
+
+    #[test]
+    fn production_inflater_decodes_real_dynamic_huffman_stream() {
+        // A zlib stream produced by Python's zlib (a real-world encoder) that
+        // chose a DYNAMIC Huffman block — the case the cfg(test) verification
+        // inflater cannot handle. Proves `zlib_decompress` is a genuine RFC 1951
+        // inflater, not just the inverse of our own fixed/stored compressor.
+        assert_eq!((DYN_ZLIB[2] >> 1) & 3, 2, "fixture must be a dynamic block");
+        let out = zlib_decompress(DYN_ZLIB, DYN_PLAIN_LEN + 64).expect("decode dynamic huffman");
+        assert_eq!(out.len(), DYN_PLAIN_LEN);
+        assert_eq!(fnv1a64(&out), DYN_PLAIN_FNV1A64);
+    }
+
+    #[test]
+    fn production_inflater_rejects_oversized_output() {
+        let comp = zlib_compress(&vec![7u8; 10_000]);
+        // A cap below the true size must fail rather than allocate unbounded.
+        assert!(zlib_decompress(&comp, 100).is_none());
     }
 }

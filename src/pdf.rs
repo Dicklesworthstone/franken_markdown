@@ -170,10 +170,20 @@ struct PdfImageData {
     width_px: u32,
     height_px: u32,
     color: PdfImageColor,
-    compressed_rows: Vec<u8>,
+    /// FlateDecode stream of the image samples.
+    data: Vec<u8>,
+    /// When true, `data` is the raw PNG IDAT and the XObject applies the PNG
+    /// adaptive predictor (`/Predictor 15`); the simple, proven zero-decode path
+    /// for 8-bit grayscale/RGB PNGs. When false, `data` is our own zlib of
+    /// already-unfiltered 8-bit samples (no predictor) — used for formats that
+    /// must be decoded (palette, alpha, 16-bit, interlaced).
+    png_predictor: bool,
+    /// Optional 8-bit grayscale soft mask (FlateDecode), one sample per pixel,
+    /// carrying the source image's alpha channel as a PDF `/SMask`.
+    smask: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PdfImageColor {
     Gray,
     Rgb,
@@ -1040,7 +1050,80 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
     parse_png_image_asset(key, &asset.bytes)
 }
 
+/// Raw chunks of a PNG, gathered before the format is interpreted.
+struct PngChunks {
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    color_type: u8,
+    interlace: u8,
+    /// PLTE palette entries (`color_type == 3`).
+    palette: Vec<[u8; 3]>,
+    /// tRNS transparency chunk, interpreted per `color_type`.
+    trns: Vec<u8>,
+    /// Concatenated zlib-compressed image data.
+    idat: Vec<u8>,
+}
+
+/// Fully decoded PNG: 8-bit samples plus an optional 8-bit alpha plane.
+struct DecodedPng {
+    width: u32,
+    height: u32,
+    color: PdfImageColor,
+    /// Row-major 8-bit samples: 1 byte/pixel for `Gray`, 3 for `Rgb`.
+    samples: Vec<u8>,
+    /// Row-major 8-bit alpha, 1 byte/pixel, when the source had transparency.
+    alpha: Option<Vec<u8>>,
+}
+
 fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    let png = parse_png_chunks(bytes)?;
+
+    // Fast path: 8-bit grayscale/RGB, non-interlaced, no transparency. Embed the
+    // raw zlib IDAT directly and let the PDF reader run the PNG predictor — no
+    // decode/re-encode needed, and byte-for-byte what the file already holds.
+    if png.bit_depth == 8
+        && png.interlace == 0
+        && png.trns.is_empty()
+        && matches!(png.color_type, 0 | 2)
+    {
+        let color = if png.color_type == 0 {
+            PdfImageColor::Gray
+        } else {
+            PdfImageColor::Rgb
+        };
+        return Some(PdfImageData {
+            key: key.to_string(),
+            width_px: png.width,
+            height_px: png.height,
+            color,
+            data: png.idat,
+            png_predictor: true,
+            smask: None,
+        });
+    }
+
+    // Everything else (palette, alpha, 16-bit, interlaced, transparency) is fully
+    // decoded to 8-bit samples; alpha becomes a real PDF soft mask, so RGBA
+    // screenshots/logos render correctly instead of being silently dropped.
+    let decoded = decode_png_full(&png)?;
+    let data = crate::compress::zlib_compress(&decoded.samples);
+    let smask = decoded.alpha.as_deref().map(crate::compress::zlib_compress);
+    Some(PdfImageData {
+        key: key.to_string(),
+        width_px: decoded.width,
+        height_px: decoded.height,
+        color: decoded.color,
+        data,
+        png_predictor: false,
+        smask,
+    })
+}
+
+/// Walk a PNG's chunk stream, collecting IHDR fields, PLTE, tRNS, and IDAT. The
+/// per-format restrictions are applied later by the fast path / full decoder, so
+/// this stays a faithful structural read with only size/sanity guards.
+fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
     const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1A\n";
     if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES || bytes.get(..8)? != PNG_SIG {
         return None;
@@ -1049,7 +1132,11 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
     let mut pos = 8usize;
     let mut width = 0u32;
     let mut height = 0u32;
-    let mut color = None;
+    let mut bit_depth = 0u8;
+    let mut color_type = 0u8;
+    let mut interlace = 0u8;
+    let mut palette = Vec::new();
+    let mut trns = Vec::new();
     let mut idat = Vec::new();
     let mut seen_ihdr = false;
     let mut seen_iend = false;
@@ -1075,27 +1162,32 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
                 }
                 width = be_u32(data, 0)?;
                 height = be_u32(data, 4)?;
-                let bit_depth = *data.get(8)?;
-                let color_type = *data.get(9)?;
+                bit_depth = *data.get(8)?;
+                color_type = *data.get(9)?;
                 let compression = *data.get(10)?;
                 let filter = *data.get(11)?;
-                let interlace = *data.get(12)?;
+                interlace = *data.get(12)?;
                 if width == 0
                     || height == 0
                     || u64::from(width).saturating_mul(u64::from(height)) > MAX_PDF_IMAGE_PIXELS
-                    || bit_depth != 8
                     || compression != 0
                     || filter != 0
-                    || interlace != 0
+                    || interlace > 1
+                    || !matches!(bit_depth, 1 | 2 | 4 | 8 | 16)
+                    || !matches!(color_type, 0 | 2 | 3 | 4 | 6)
                 {
                     return None;
                 }
-                color = match color_type {
-                    0 => Some(PdfImageColor::Gray),
-                    2 => Some(PdfImageColor::Rgb),
-                    _ => return None,
-                };
                 seen_ihdr = true;
+            }
+            b"PLTE" => {
+                if len % 3 != 0 {
+                    return None;
+                }
+                palette = data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            }
+            b"tRNS" => {
+                trns = data.to_vec();
             }
             b"IDAT" => {
                 if !seen_ihdr {
@@ -1107,6 +1199,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
                 idat.extend_from_slice(data);
             }
             b"IEND" => {
+                // IEND must be empty and the final chunk (no trailing bytes).
                 if len != 0 || next != bytes.len() {
                     return None;
                 }
@@ -1118,17 +1211,320 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         pos = next;
     }
 
-    let color = color?;
     if !seen_ihdr || !seen_iend || idat.is_empty() {
         return None;
     }
-    Some(PdfImageData {
-        key: key.to_string(),
-        width_px: width,
-        height_px: height,
-        color,
-        compressed_rows: idat,
+    Some(PngChunks {
+        width,
+        height,
+        bit_depth,
+        color_type,
+        interlace,
+        palette,
+        trns,
+        idat,
     })
+}
+
+const PNG_ADAM7: [(u32, u32, u32, u32); 7] = [
+    // (x_start, x_step, y_start, y_step)
+    (0, 8, 0, 8),
+    (4, 8, 0, 8),
+    (0, 4, 4, 8),
+    (2, 4, 0, 4),
+    (0, 2, 2, 4),
+    (1, 2, 0, 2),
+    (0, 1, 1, 2),
+];
+
+/// Number of pixels a given Adam7 axis contributes for a `total`-length axis,
+/// starting at `start` with stride `step`.
+fn png_pass_count(total: u32, start: u32, step: u32) -> u32 {
+    if total <= start {
+        0
+    } else {
+        (total - start).div_ceil(step)
+    }
+}
+
+fn png_paeth(a: u8, b: u8, c: u8) -> u8 {
+    let (a, b, c) = (i32::from(a), i32::from(b), i32::from(c));
+    let p = a + b - c;
+    let pa = (p - a).abs();
+    let pb = (p - b).abs();
+    let pc = (p - c).abs();
+    if pa <= pb && pa <= pc {
+        a as u8
+    } else if pb <= pc {
+        b as u8
+    } else {
+        c as u8
+    }
+}
+
+/// Decode any supported PNG into 8-bit samples plus an optional alpha plane.
+fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
+    let width = png.width;
+    let height = png.height;
+    let bit_depth = png.bit_depth as usize;
+    let channels: usize = match png.color_type {
+        0 => 1, // grayscale
+        2 => 3, // RGB
+        3 => 1, // palette index
+        4 => 2, // grayscale + alpha
+        6 => 4, // RGBA
+        _ => return None,
+    };
+    if png.color_type == 3 && (png.palette.is_empty() || bit_depth > 8) {
+        return None;
+    }
+    // Output is grayscale only for true grayscale source (types 0 and 4).
+    let out_gray = matches!(png.color_type, 0 | 4);
+    let has_alpha = matches!(png.color_type, 4 | 6) || !png.trns.is_empty();
+
+    let npx = (width as usize).checked_mul(height as usize)?;
+    // RGBA8 intermediate (4 bytes/pixel), bounded by the IHDR pixel guard.
+    let mut rgba = vec![0u8; npx.checked_mul(4)?];
+
+    let bits_per_pixel = channels.checked_mul(bit_depth)?;
+    // Generous bound on the unfiltered raw size across all interlace passes.
+    let max_raw = npx
+        .checked_mul(channels)?
+        .checked_mul(if bit_depth == 16 { 2 } else { 1 })?
+        .checked_add(height as usize)?
+        .checked_mul(2)?
+        .checked_add(64)?;
+    let raw = crate::compress::zlib_decompress(&png.idat, max_raw)?;
+
+    let ctx = PngSampleCtx {
+        bit_depth,
+        color_type: png.color_type,
+        channels,
+        palette: &png.palette,
+        trns: &png.trns,
+        width,
+        height,
+    };
+
+    if png.interlace == 0 {
+        ctx.place_pass(&raw, width, height, 0, 1, 0, 1, &mut rgba)?;
+    } else {
+        let mut offset = 0usize;
+        for &(xs, xstep, ys, ystep) in &PNG_ADAM7 {
+            let pw = png_pass_count(width, xs, xstep);
+            let ph = png_pass_count(height, ys, ystep);
+            if pw == 0 || ph == 0 {
+                continue;
+            }
+            let row_bytes = (pw as usize)
+                .checked_mul(bits_per_pixel)?
+                .div_ceil(8)
+                .checked_add(1)?; // + 1 filter byte
+            let pass_len = row_bytes.checked_mul(ph as usize)?;
+            let pass = raw.get(offset..offset.checked_add(pass_len)?)?;
+            offset = offset.checked_add(pass_len)?;
+            ctx.place_pass(pass, pw, ph, xs, xstep, ys, ystep, &mut rgba)?;
+        }
+    }
+
+    // Collapse the RGBA8 intermediate to the output sample/alpha planes.
+    let mut samples = Vec::with_capacity(npx * if out_gray { 1 } else { 3 });
+    let mut alpha = if has_alpha {
+        Some(Vec::with_capacity(npx))
+    } else {
+        None
+    };
+    for px in rgba.chunks_exact(4) {
+        if out_gray {
+            samples.push(px[0]);
+        } else {
+            samples.extend_from_slice(&px[..3]);
+        }
+        if let Some(a) = alpha.as_mut() {
+            a.push(px[3]);
+        }
+    }
+
+    Some(DecodedPng {
+        width,
+        height,
+        color: if out_gray {
+            PdfImageColor::Gray
+        } else {
+            PdfImageColor::Rgb
+        },
+        samples,
+        alpha,
+    })
+}
+
+/// Per-image context for unfiltering one (sub-)image and scattering its pixels
+/// into the shared RGBA8 buffer.
+struct PngSampleCtx<'a> {
+    bit_depth: usize,
+    color_type: u8,
+    channels: usize,
+    palette: &'a [[u8; 3]],
+    trns: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+impl PngSampleCtx<'_> {
+    /// Unfilter the scanlines of one pass, then write each decoded pixel into
+    /// `rgba` at its interlaced destination `(ys + r*ystep, xs + c*xstep)`.
+    #[allow(clippy::too_many_arguments)]
+    fn place_pass(
+        &self,
+        pass: &[u8],
+        pw: u32,
+        ph: u32,
+        xs: u32,
+        xstep: u32,
+        ys: u32,
+        ystep: u32,
+        rgba: &mut [u8],
+    ) -> Option<()> {
+        let bits_per_pixel = self.channels.checked_mul(self.bit_depth)?;
+        let row_bytes = (pw as usize).checked_mul(bits_per_pixel)?.div_ceil(8);
+        let bpp = bits_per_pixel.div_ceil(8).max(1);
+        let stride = row_bytes.checked_add(1)?;
+
+        let mut prev = vec![0u8; row_bytes];
+        let mut line = vec![0u8; row_bytes];
+        for r in 0..ph as usize {
+            let row = pass.get(r * stride..r * stride + stride)?;
+            let filter = row[0];
+            let src = &row[1..];
+            for i in 0..row_bytes {
+                let x = src[i];
+                let a = if i >= bpp { line[i - bpp] } else { 0 };
+                let b = prev[i];
+                let c = if i >= bpp { prev[i - bpp] } else { 0 };
+                line[i] = match filter {
+                    0 => x,
+                    1 => x.wrapping_add(a),
+                    2 => x.wrapping_add(b),
+                    3 => x.wrapping_add(((u16::from(a) + u16::from(b)) / 2) as u8),
+                    4 => x.wrapping_add(png_paeth(a, b, c)),
+                    _ => return None,
+                };
+            }
+            let dst_y = ys + (r as u32) * ystep;
+            if dst_y >= self.height {
+                continue;
+            }
+            for c in 0..pw as usize {
+                let dst_x = xs + (c as u32) * xstep;
+                if dst_x >= self.width {
+                    continue;
+                }
+                let (rr, gg, bb, aa) = self.pixel(&line, c)?;
+                let idx = ((dst_y as usize) * (self.width as usize) + dst_x as usize) * 4;
+                let out = rgba.get_mut(idx..idx + 4)?;
+                out[0] = rr;
+                out[1] = gg;
+                out[2] = bb;
+                out[3] = aa;
+            }
+            std::mem::swap(&mut prev, &mut line);
+        }
+        Some(())
+    }
+
+    /// Decode pixel `c` of an unfiltered scanline `line` to RGBA8.
+    fn pixel(&self, line: &[u8], c: usize) -> Option<(u8, u8, u8, u8)> {
+        // Read the raw channel samples for this pixel as 8-bit values.
+        let mut chan = [0u8; 4];
+        match self.bit_depth {
+            16 => {
+                // Two bytes per sample, big-endian; keep the high byte.
+                let base = c.checked_mul(self.channels)?.checked_mul(2)?;
+                for (ch, slot) in chan.iter_mut().take(self.channels).enumerate() {
+                    *slot = *line.get(base + ch * 2)?;
+                }
+            }
+            8 => {
+                let base = c.checked_mul(self.channels)?;
+                for (ch, slot) in chan.iter_mut().take(self.channels).enumerate() {
+                    *slot = *line.get(base + ch)?;
+                }
+            }
+            depth => {
+                // Sub-byte samples (1/2/4 bits); only single-channel sources
+                // (grayscale or palette index) use these depths.
+                let samples_per_byte = 8 / depth;
+                let byte = *line.get(c / samples_per_byte)?;
+                let within = c % samples_per_byte;
+                let shift = 8 - depth * (within + 1);
+                let mask = (1u16 << depth) as u8 - 1;
+                chan[0] = (byte >> shift) & mask;
+            }
+        }
+
+        match self.color_type {
+            0 => {
+                // Grayscale: scale sub-8-bit values up to the full 0..=255 range.
+                let g = scale_to_8(chan[0], self.bit_depth);
+                let a = self.gray_trns_alpha(chan[0]);
+                Some((g, g, g, a))
+            }
+            2 => {
+                let (r, g, b) = (chan[0], chan[1], chan[2]);
+                let a = self.rgb_trns_alpha(r, g, b);
+                Some((r, g, b, a))
+            }
+            3 => {
+                let idx = chan[0] as usize;
+                let rgb = self.palette.get(idx)?;
+                let a = self.trns.get(idx).copied().unwrap_or(255);
+                Some((rgb[0], rgb[1], rgb[2], a))
+            }
+            4 => {
+                let g = scale_to_8(chan[0], self.bit_depth);
+                let a = scale_to_8(chan[1], self.bit_depth);
+                Some((g, g, g, a))
+            }
+            6 => Some((chan[0], chan[1], chan[2], chan[3])),
+            _ => None,
+        }
+    }
+
+    /// Alpha for a grayscale pixel given a possible single-value tRNS.
+    fn gray_trns_alpha(&self, raw_sample: u8) -> u8 {
+        // tRNS for grayscale is a single 16-bit value (2 bytes); we compare the
+        // low byte against the raw sample (depths <= 8 store the value there).
+        if self.trns.len() >= 2 && self.trns[1] == raw_sample {
+            0
+        } else {
+            255
+        }
+    }
+
+    /// Alpha for an RGB pixel given a possible single-color tRNS.
+    fn rgb_trns_alpha(&self, r: u8, g: u8, b: u8) -> u8 {
+        if self.trns.len() >= 6 && self.trns[1] == r && self.trns[3] == g && self.trns[5] == b {
+            0
+        } else {
+            255
+        }
+    }
+}
+
+/// Scale a sub-8-bit sample to the full 0..=255 range (PNG bit-depth scaling).
+fn scale_to_8(value: u8, bit_depth: usize) -> u8 {
+    match bit_depth {
+        1 => {
+            if value != 0 {
+                255
+            } else {
+                0
+            }
+        }
+        2 => value * 85,
+        4 => value * 17,
+        _ => value, // 8 or 16 (already a high byte)
+    }
 }
 
 fn be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
@@ -2758,7 +3154,12 @@ fn serialize(
         lines.len(),
         "collect supported PDF image XObjects from laid-out image lines",
         || collect_pdf_images(lines),
-        |images| images.iter().map(|image| image.compressed_rows.len()).sum(),
+        |images| {
+            images
+                .iter()
+                .map(|image| image.data.len() + image.smask.as_ref().map_or(0, Vec::len))
+                .sum()
+        },
     );
     let image_index: BTreeMap<&str, usize> = images
         .iter()
@@ -4244,7 +4645,7 @@ fn estimated_pdf_buffer_capacity(
         .sum::<usize>();
     let image_bytes = images
         .iter()
-        .map(|image| image.compressed_rows.len())
+        .map(|image| image.data.len() + image.smask.as_ref().map_or(0, Vec::len))
         .sum::<usize>();
 
     page_stream_bytes
@@ -4495,7 +4896,26 @@ fn build_pdf(
     let struct_elem_base = struct_base + 2;
     let struct_elem_obj = |node_index: usize| struct_elem_base + node_index;
     let info_obj = struct_base + if tagged { 2 + struct_node_count } else { 0 };
-    let total_objs = info_obj;
+    // Soft-mask XObjects for images carrying alpha are numbered AFTER Info, so
+    // adding them never renumbers any object above. `smask_for_image[k]` is the
+    // object number of image k's `/SMask`, or `None` when it has no alpha.
+    let smask_for_image: Vec<Option<usize>> = {
+        let mut next = info_obj + 1;
+        images
+            .iter()
+            .map(|image| {
+                if image.smask.is_some() {
+                    let n = next;
+                    next += 1;
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let n_smask = smask_for_image.iter().filter(|s| s.is_some()).count();
+    let total_objs = info_obj + n_smask;
 
     let outline_root_ref = if outline_count == 0 {
         String::new()
@@ -4717,21 +5137,56 @@ fn build_pdf(
         offsets[image_obj(k)] = buf.len();
         let colors = image.color.components();
         let color_space = image.color.color_space();
+        // The zero-decode fast path embeds the raw PNG IDAT and runs the PNG
+        // adaptive predictor; the full-decode path embeds our own zlib of the
+        // unfiltered samples and needs no predictor.
+        let decode_parms = if image.png_predictor {
+            format!(
+                " /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >>",
+                w = image.width_px,
+            )
+        } else {
+            String::new()
+        };
+        let smask_ref = match smask_for_image.get(k).copied().flatten() {
+            Some(n) => format!(" /SMask {n} 0 R"),
+            None => String::new(),
+        };
         buf.extend_from_slice(
             format!(
                 "{n} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter /FlateDecode \
-                 /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >> \
-                 /Length {len} >>\nstream\n",
+                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter /FlateDecode\
+                 {decode_parms}{smask_ref} /Length {len} >>\nstream\n",
                 n = image_obj(k),
                 w = image.width_px,
                 h = image.height_px,
-                len = image.compressed_rows.len(),
+                len = image.data.len(),
             )
             .as_bytes(),
         );
-        buf.extend_from_slice(&image.compressed_rows);
+        buf.extend_from_slice(&image.data);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        // The soft-mask XObject (8-bit grayscale alpha), if this image has one.
+        if let (Some(smask_obj), Some(alpha)) = (
+            smask_for_image.get(k).copied().flatten(),
+            image.smask.as_ref(),
+        ) {
+            offsets[smask_obj] = buf.len();
+            buf.extend_from_slice(
+                format!(
+                    "{smask_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+                     /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode \
+                     /Length {len} >>\nstream\n",
+                    w = image.width_px,
+                    h = image.height_px,
+                    len = alpha.len(),
+                )
+                .as_bytes(),
+            );
+            buf.extend_from_slice(alpha);
+            buf.extend_from_slice(b"\nendstream\nendobj\n");
+        }
     }
 
     for (page_index, page) in pages.iter().enumerate() {
@@ -5609,5 +6064,186 @@ mod render_tree_golden_tests {
         let opts = small_opts(320.0, 400.0);
         let md = cases()[0].1.clone();
         assert_eq!(render_tree_debug(&md, &opts), render_tree_debug(&md, &opts));
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+mod png_decode_tests {
+    use super::{
+        DecodedPng, PNG_ADAM7, PdfImageColor, PngChunks, decode_png_full, parse_png_image_asset,
+        png_pass_count,
+    };
+    use crate::compress::zlib_compress;
+
+    /// Build a `PngChunks` from raw (unfiltered, filter-type-0) scanlines.
+    fn chunks(
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+        color_type: u8,
+        interlace: u8,
+        rows: &[Vec<u8>],
+        palette: Vec<[u8; 3]>,
+        trns: Vec<u8>,
+    ) -> PngChunks {
+        let mut raw = Vec::new();
+        for r in rows {
+            raw.push(0u8); // filter type 0
+            raw.extend_from_slice(r);
+        }
+        PngChunks {
+            width,
+            height,
+            bit_depth,
+            color_type,
+            interlace,
+            palette,
+            trns,
+            idat: zlib_compress(&raw),
+        }
+    }
+
+    #[test]
+    fn rgba8_splits_color_and_alpha_into_smask() {
+        // 2x2 RGBA with distinct values per channel.
+        let rows = vec![
+            vec![10, 20, 30, 255, 40, 50, 60, 128],
+            vec![70, 80, 90, 0, 100, 110, 120, 200],
+        ];
+        let png = chunks(2, 2, 8, 6, 0, &rows, vec![], vec![]);
+        let DecodedPng {
+            color,
+            samples,
+            alpha,
+            ..
+        } = decode_png_full(&png).unwrap();
+        assert_eq!(color, PdfImageColor::Rgb);
+        assert_eq!(
+            samples,
+            vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
+        );
+        assert_eq!(alpha, Some(vec![255, 128, 0, 200]));
+    }
+
+    #[test]
+    fn palette_with_trns_expands_to_rgb_plus_alpha() {
+        let palette = vec![[255, 0, 0], [0, 255, 0], [0, 0, 255], [9, 9, 9]];
+        let trns = vec![0, 128, 255]; // alpha for first 3 entries; 4th -> opaque
+        let rows = vec![vec![0, 1, 3]];
+        let png = chunks(3, 1, 8, 3, 0, &rows, palette, trns);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.color, PdfImageColor::Rgb);
+        assert_eq!(d.samples, vec![255, 0, 0, 0, 255, 0, 9, 9, 9]);
+        assert_eq!(d.alpha, Some(vec![0, 128, 255]));
+    }
+
+    #[test]
+    fn gray_alpha8_keeps_gray_color_space() {
+        let rows = vec![vec![50, 255, 200, 128]];
+        let png = chunks(2, 1, 8, 4, 0, &rows, vec![], vec![]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.color, PdfImageColor::Gray);
+        assert_eq!(d.samples, vec![50, 200]);
+        assert_eq!(d.alpha, Some(vec![255, 128]));
+    }
+
+    #[test]
+    fn rgb16_downsamples_to_high_byte() {
+        // 2 pixels, each channel 16-bit big-endian; keep the high byte.
+        let rows = vec![vec![
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x11, 0x22, 0x22,
+        ]];
+        let png = chunks(2, 1, 16, 2, 0, &rows, vec![], vec![]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.samples, vec![0x12, 0x56, 0x9a, 0xde, 0x11, 0x22]);
+        assert_eq!(d.alpha, None);
+    }
+
+    #[test]
+    fn gray4_unpacks_and_scales_subbyte_samples() {
+        // Two 4-bit gray samples packed in one byte: 0x0F -> (15, 0) -> (255, 0).
+        let rows = vec![vec![0xF0]];
+        let png = chunks(2, 1, 4, 0, 0, &rows, vec![], vec![]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.color, PdfImageColor::Gray);
+        assert_eq!(d.samples, vec![255, 0]);
+        assert_eq!(d.alpha, None);
+    }
+
+    #[test]
+    fn adam7_interlaced_rgb_deinterlaces_exactly() {
+        // 5x5 RGB image; build the 7-pass raw stream the way an encoder would.
+        let (w, h) = (5u32, 5u32);
+        let img: Vec<Vec<[u8; 3]>> = (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| [(x * 40) as u8, (y * 40) as u8, ((x + y) * 20 % 256) as u8])
+                    .collect()
+            })
+            .collect();
+        let mut rows: Vec<Vec<u8>> = Vec::new();
+        for &(xs, xstep, ys, ystep) in &PNG_ADAM7 {
+            let pw = png_pass_count(w, xs, xstep);
+            let ph = png_pass_count(h, ys, ystep);
+            if pw == 0 || ph == 0 {
+                continue;
+            }
+            for r in 0..ph {
+                let yy = (ys + r * ystep) as usize;
+                let mut line = Vec::new();
+                for c in 0..pw {
+                    let xx = (xs + c * xstep) as usize;
+                    line.extend_from_slice(&img[yy][xx]);
+                }
+                rows.push(line);
+            }
+        }
+        let png = chunks(w, h, 8, 2, 1, &rows, vec![], vec![]);
+        let d = decode_png_full(&png).unwrap();
+        let mut expect = Vec::new();
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                expect.extend_from_slice(&img[y][x]);
+            }
+        }
+        assert_eq!(d.samples, expect);
+    }
+
+    #[test]
+    fn fast_path_8bit_rgb_passes_idat_through_with_predictor() {
+        // An 8-bit RGB non-interlaced PNG keeps the zero-decode predictor path.
+        let rows = vec![vec![1, 2, 3, 4, 5, 6]];
+        let png = chunks(2, 1, 8, 2, 0, &rows, vec![], vec![]);
+        // Re-assemble a full PNG byte stream to exercise parse_png_image_asset.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&2u32.to_be_bytes());
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        let push_chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&0u32.to_be_bytes());
+        };
+        push_chunk(&mut bytes, b"IHDR", &ihdr);
+        push_chunk(&mut bytes, b"IDAT", &png.idat);
+        push_chunk(&mut bytes, b"IEND", &[]);
+        let data = parse_png_image_asset("k", &bytes).unwrap();
+        assert!(
+            data.png_predictor,
+            "8-bit RGB stays on the predictor fast path"
+        );
+        assert!(data.smask.is_none());
+        assert_eq!(data.color, PdfImageColor::Rgb);
     }
 }

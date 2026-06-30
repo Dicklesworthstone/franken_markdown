@@ -146,6 +146,24 @@ jobs:
           E2E_SKIP_BATCH: "1"
         run: scripts/e2e/run-all.sh ci
 
+  mutation:
+    name: Mutation testing (ratcheted ceiling)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+
+      - name: Mutation harness self-test
+        run: scripts/mutation.sh --self-test
+
+      # Mutates a curated, well-tested scope and fails if the surviving-mutant
+      # count rises above tests/fixtures/mutation/survivor-ceiling.txt.
+      - name: Mutation survivor ceiling
+        run: scripts/mutation.sh ci
+
   coverage:
     name: Coverage floor (ratcheted)
     runs-on: ubuntu-latest

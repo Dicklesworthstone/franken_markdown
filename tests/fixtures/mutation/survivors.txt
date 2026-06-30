@@ -1,0 +1,4 @@
+# Mutation-testing survivor ledger (grn.5.4) — mutants no test caught.
+# Scope: src/span.rs src/error.rs src/fonts.rs. Regenerate: scripts/mutation.sh --update-ceiling
+# survivors=0
+# (none — every mutant in scope was caught by a test)

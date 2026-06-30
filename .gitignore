@@ -56,6 +56,9 @@ tests/artifacts/cli/
 tests/artifacts/coverage/*/
 # e2e harness run artifacts (ledger/transcripts/summary per run-id) — regenerable.
 tests/artifacts/e2e/
+# Mutation-testing run artifacts (cargo-mutants output) — regenerable. The
+# committed evidence is tests/fixtures/mutation/{survivor-ceiling.txt,survivors.txt}.
+tests/artifacts/mutation/
 tests/artifacts/conformance/
 tests/artifacts/pagination/
 tests/artifacts/theme/

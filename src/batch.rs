@@ -144,10 +144,17 @@ pub struct BatchOptions {
     pub mode: BatchMode,
     /// User worker cap (`None` = derive from CPUs).
     pub workers: Option<usize>,
-    /// Memory ceiling in bytes (`None` = unbounded).
+    /// Memory ceiling in bytes (`None` = unbounded). Enforced as a static
+    /// concurrency cap (`mem_budget / 64 MiB-per-job`), not by measuring real
+    /// resident memory.
     pub mem_budget: Option<u64>,
     /// When true, per-file failures do not fail the whole run.
     pub continue_on_error: bool,
+    /// Wall-clock deadline in seconds (`None` = no deadline). When it fires, the
+    /// run cooperatively cancels at the next per-file checkpoint and the receipt
+    /// is marked `cancelled`. This is the CLI-reachable cancellation path (the
+    /// crate forbids `unsafe`, so no POSIX signal handler is installed).
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,12 +468,16 @@ fn failed(input: &Path, message: String) -> FileEntry {
 #[derive(Debug)]
 pub enum BatchError {
     NoContext,
+    /// The run was cancelled (the `--timeout` deadline fired, or the host
+    /// cancelled the context) before it could complete normally.
+    Cancelled,
 }
 
 impl std::fmt::Display for BatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BatchError::NoContext => write!(f, "runtime did not provide a root context"),
+            BatchError::Cancelled => write!(f, "batch cancelled before completion (timeout)"),
         }
     }
 }
@@ -503,6 +514,28 @@ pub async fn render_batch(
     ));
     let inputs = Arc::new(plan.inputs);
     let cancelled = Arc::new(AtomicBool::new(false));
+
+    // `--timeout` watchdog: a plain OS thread (no `unsafe`, no signal handler)
+    // that flips `cancelled` once the deadline passes, so the cooperative
+    // per-file checkpoint observes it and the run stops cleanly. `watchdog_done`
+    // lets us wake it the instant the batch finishes so it never lingers.
+    let watchdog_done = Arc::new(AtomicBool::new(false));
+    let watchdog = opts.timeout_secs.filter(|&s| s > 0).map(|secs| {
+        let cancelled = Arc::clone(&cancelled);
+        let done = Arc::clone(&watchdog_done);
+        std::thread::spawn(move || {
+            let deadline_ms = secs.saturating_mul(1000);
+            let mut waited_ms = 0u64;
+            while waited_ms < deadline_ms {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                waited_ms = waited_ms.saturating_add(50);
+            }
+            cancelled.store(true, Ordering::Relaxed);
+        })
+    });
 
     // Spawn through the runtime handle (the documented `block_on` spawn path);
     // on a multi-thread runtime each worker task lands on its own worker thread,
@@ -576,6 +609,12 @@ pub async fn render_batch(
         .map(|(idx, slot)| slot.unwrap_or_else(|| FileEntry::skipped(&inputs[idx])))
         .collect();
 
+    // Wake and reap the watchdog (it exits within one 50 ms poll).
+    watchdog_done.store(true, Ordering::Relaxed);
+    if let Some(handle) = watchdog {
+        let _ = handle.join();
+    }
+
     Outcome::Ok(BatchReceipt {
         format: plan.format,
         mode: opts.mode,
@@ -620,7 +659,9 @@ pub fn run_batch_blocking(
     match outcome {
         Outcome::Ok(receipt) => Ok(receipt),
         Outcome::Err(e) => Err(e),
-        _ => Err(BatchError::NoContext),
+        // A non-Ok/non-Err outcome is a cancelled runtime shard — report it as
+        // cancellation, not the misleading "no root context".
+        _ => Err(BatchError::Cancelled),
     }
 }
 
@@ -661,6 +702,7 @@ mod tests {
             workers: Some(1),
             mem_budget: None,
             continue_on_error: true,
+            timeout_secs: None,
         }
     }
 
@@ -840,6 +882,7 @@ mod tests {
             workers: Some(3), // exercise the multi-thread scheduler
             mem_budget: None,
             continue_on_error: true,
+            timeout_secs: None,
         };
 
         let r1 = run_batch_blocking(make_plan(), &opts).unwrap();
@@ -932,6 +975,7 @@ mod tests {
             workers: Some(2),
             mem_budget: None,
             continue_on_error: true,
+            timeout_secs: None,
         };
         let budget = WorkerBudget {
             workers: 2,
@@ -1178,6 +1222,46 @@ mod tests {
             "got {:?}",
             f.error
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_error_cancelled_is_distinct_from_no_context() {
+        // A cancelled runtime shard must report cancellation, not the misleading
+        // "no root context" message.
+        assert_eq!(
+            BatchError::Cancelled.to_string(),
+            "batch cancelled before completion (timeout)"
+        );
+        assert_ne!(
+            BatchError::Cancelled.to_string(),
+            BatchError::NoContext.to_string()
+        );
+    }
+
+    #[test]
+    fn batch_timeout_not_reached_completes_normally() {
+        let dir = fresh_dir("timeout-ok");
+        let input = dir.join("a.md");
+        std::fs::write(&input, "# A\n\nbody").unwrap();
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: None,
+        };
+        // A generous deadline must not perturb a fast run: the --timeout watchdog
+        // spins up and is reaped without ever flipping the cancel flag.
+        let opts = BatchOptions {
+            timeout_secs: Some(3600),
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert!(
+            !r.cancelled,
+            "a fast run must not be cancelled by a long timeout"
+        );
+        assert_eq!(r.ok_count(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -81,9 +81,14 @@ struct BatchArgs {
     /// Sizing mode: `interactive` reserves CPU headroom; `throughput` uses all.
     #[arg(long, value_enum, default_value_t = BatchModeArg::Interactive)]
     batch_mode: BatchModeArg,
-    /// Soft memory ceiling in bytes (bounds concurrent renders).
+    /// Soft memory ceiling in bytes. Enforced as a static concurrency cap
+    /// (bytes / 64 MiB-per-job), NOT by measuring real resident memory.
     #[arg(long)]
     mem_budget: Option<u64>,
+    /// Wall-clock deadline in seconds. When it fires the run cancels at the next
+    /// per-file checkpoint and the receipt is marked `cancelled`.
+    #[arg(long)]
+    timeout: Option<u64>,
     /// Record per-file failures in the receipt instead of failing the run.
     #[arg(long)]
     continue_on_error: bool,
@@ -523,6 +528,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         workers: args.workers,
         mem_budget: args.mem_budget,
         continue_on_error,
+        timeout_secs: args.timeout,
     };
 
     match batch::run_batch_blocking(plan, &opts) {

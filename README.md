@@ -416,7 +416,8 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--out-dir <dir>` | Where to write outputs (default: alongside each input) |
 | `--workers <n>` | Worker cap (default: derived from CPU count and the batch mode) |
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
-| `--mem-budget <bytes>` | Soft memory ceiling that bounds concurrent renders |
+| `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
+| `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css` | Shared theme overrides, as in `render` |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |

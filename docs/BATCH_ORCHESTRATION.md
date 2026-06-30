@@ -138,7 +138,11 @@ that bounds concurrency deterministically:
   work-stealing) load balancing. A dynamic queue for uneven job-size balancing is
   a documented future refinement.
 - Cancellation is cooperative at the per-file `checkpoint`; a shared flag records
-  it and the remaining shard files are marked `skipped`.
+  it and the remaining shard files are marked `skipped`. The CLI reaches this path
+  via `--timeout <secs>`: a plain OS-thread watchdog (no `unsafe`, so no POSIX
+  signal handler) flips the same flag once the deadline passes, and the receipt is
+  marked `cancelled`. A host embedding `render_batch` can also cancel through its
+  own `Cx`.
 - Receipts are reassembled in input order from `(index, FileEntry)` pairs, so the
   output is independent of completion/scheduling order.
 

@@ -161,8 +161,16 @@ e2e_run() {
   E2E_LAST_STDERR="${E2E_LAST_BASE}.stderr"
   printf '%s\n' "$*" >"${E2E_LAST_BASE}.argv"
   : >"${E2E_LAST_BASE}.asserts"
-  ( cd "$E2E_LAST_CWD" && "$@" ) >"$E2E_LAST_STDOUT" 2>"$E2E_LAST_STDERR"
-  E2E_LAST_EXIT=$?
+  # Optional stdin: set E2E_STDIN=<file> before the step to feed it on stdin (for
+  # `fmd -` / stdin-render tests). It is consumed and cleared so it never leaks.
+  if [ -n "${E2E_STDIN:-}" ]; then
+    ( cd "$E2E_LAST_CWD" && "$@" ) <"$E2E_STDIN" >"$E2E_LAST_STDOUT" 2>"$E2E_LAST_STDERR"
+    E2E_LAST_EXIT=$?
+    E2E_STDIN=""
+  else
+    ( cd "$E2E_LAST_CWD" && "$@" ) </dev/null >"$E2E_LAST_STDOUT" 2>"$E2E_LAST_STDERR"
+    E2E_LAST_EXIT=$?
+  fi
   E2E_OPEN=1
 }
 

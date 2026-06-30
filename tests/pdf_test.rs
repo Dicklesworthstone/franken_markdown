@@ -1451,3 +1451,704 @@ fn theme_serif_keeps_shared_color_tokens() {
         );
     }
 }
+
+// ===========================================================================
+// grn.2.3.1 — pagination: real multi-page renders that exercise the page
+// builder, repeated table headers + body-row continuation, list/blockquote
+// splitting, widow/orphan control, and the page-fill/break estimator.
+// ===========================================================================
+
+/// `/Type /Pages /Count N` — the number of physical pages in the document.
+fn pages_count(bytes: &[u8]) -> usize {
+    as_text(bytes)
+        .split("/Type /Pages /Count ")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split(|c: char| !c.is_ascii_digit())
+                .find(|s| !s.is_empty())
+        })
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// Distinct text baselines (physical lines) in one page content stream, recovered
+/// from the `Tf 1 0 0 1 X Y Tm` text matrices. Justification can split one visual
+/// line into several positioned segments, so segment count overstates lines;
+/// distinct Y values are the true physical-line count.
+fn baseline_count(stream: &str) -> usize {
+    let mut ys = BTreeSet::new();
+    for part in stream.split(" Tf 1 0 0 1 ").skip(1) {
+        let mut fields = part.split_whitespace();
+        let _x = fields.next();
+        if let Some(y) = fields.next().and_then(|y| y.parse::<f32>().ok()) {
+            ys.insert((y * 100.0).round() as i64);
+        }
+    }
+    ys.len()
+}
+
+#[test]
+fn pdf_paginates_many_section_document_without_stranding_headings() {
+    // The pagination-proof.sh document in miniature: many heading + prose +
+    // captioned-table sections sized so structures land at varied page
+    // positions. Proves the multi-page builder, the keep-with-next heading
+    // rule across many breaks, and byte determinism.
+    let mut md = String::new();
+    for s in 1..=12 {
+        md.push_str(&format!("## Section {s}\n\n"));
+        for p in 1..=3 {
+            md.push_str(&format!(
+                "Paragraph {p} of section {s} with enough words to wrap across a couple of \
+                 lines on this narrow page and exercise the vertical page builder.\n\n"
+            ));
+        }
+        md.push_str(&format!("Caption for table {s}\n\n"));
+        md.push_str(&format!(
+            "| Key | Value |\n|---|---:|\n| a | {s} |\n| b | {s}{s} |\n\n"
+        ));
+    }
+    let mut opts = small_page_opts(260.0, 170.0);
+    opts.metadata_epoch_seconds = Some(1_700_000_000);
+
+    let pdf = render_pdf(&md, &opts).unwrap();
+    assert!(
+        pages_count(&pdf) > 4,
+        "a 12-section narrow-page document should span several pages, got {}",
+        pages_count(&pdf)
+    );
+
+    // Keep-with-next: a heading (its `/H2 <</MCID..` leaf) must never be the last
+    // tagged block on a page when content follows on a later page.
+    let pages = page_tag_sequences(&pdf);
+    let headings = ["H", "H1", "H2", "H3", "H4", "H5", "H6"];
+    for (i, tags) in pages.iter().enumerate() {
+        if i + 1 < pages.len() {
+            if let Some(last) = tags.last() {
+                assert!(
+                    !headings.contains(&last.as_str()),
+                    "page {i} ends with a stranded heading {last:?}; pages={pages:?}"
+                );
+            }
+        }
+    }
+
+    // Determinism across runs (pinned metadata epoch).
+    let again = render_pdf(&md, &opts).unwrap();
+    assert_eq!(pdf, again, "multi-page render must be byte-deterministic");
+}
+
+#[test]
+fn pdf_splits_long_list_across_pages_keeping_list_tags() {
+    let opts = small_page_opts(240.0, 120.0);
+    let mut md = String::from("Intro paragraph before the list.\n\n");
+    for i in 1..=14 {
+        md.push_str(&format!(
+            "- list item number {i} with a few trailing words\n"
+        ));
+    }
+    let pdf = render_pdf(&md, &opts).unwrap();
+    let text = as_text(&pdf);
+    let streams = text_streams(&pdf);
+
+    assert!(
+        pages_count(&pdf) > 1,
+        "a 14-item list on a short page should paginate, got {}",
+        pages_count(&pdf)
+    );
+    assert!(
+        streams.len() >= 2 && streams.iter().all(|s| s.contains("BT /F")),
+        "every list page should carry continuation list text"
+    );
+    for tag in ["/S /L", "/S /LI", "/S /LBody"] {
+        assert!(
+            text.contains(tag),
+            "split list must keep its {tag} structure"
+        );
+    }
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(openers > 0 && openers == closers, "balanced marked content");
+}
+
+#[test]
+fn pdf_splits_long_blockquote_across_pages_repeating_gutter_bar() {
+    let opts = small_page_opts(240.0, 110.0);
+    let mut md = String::new();
+    for i in 1..=14 {
+        md.push_str(&format!(
+            "> quoted line {i} carrying enough words to fill the measure\n>\n"
+        ));
+    }
+    let pdf = render_pdf(&md, &opts).unwrap();
+    let text = as_text(&pdf);
+    let streams = text_streams(&pdf);
+
+    assert!(
+        pages_count(&pdf) > 1,
+        "a long blockquote on a short page should paginate, got {}",
+        pages_count(&pdf)
+    );
+    assert!(
+        text.contains("/S /BlockQuote"),
+        "split quote keeps BlockQuote tag"
+    );
+    // The decorative gutter bar is stroked per page the quote occupies: a 2.50 w
+    // stroke wrapped as an /Artifact. It must appear on more than one page stream.
+    let pages_with_bar = streams
+        .iter()
+        .filter(|s| s.contains("0.820 0.851 0.878 RG 2.50 w"))
+        .count();
+    assert!(
+        pages_with_bar >= 2,
+        "the blockquote gutter bar should repeat on each continuation page, got {pages_with_bar}"
+    );
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(openers > 0 && openers == closers, "balanced marked content");
+}
+
+#[test]
+fn pdf_table_body_row_wraps_across_page_break_and_repeats_header() {
+    // A single body row with a long wrapping cell, on a very short page, forces a
+    // mid-row page break. The continuation page must (a) repeat the bold header
+    // and (b) resume the body row's wrapped lines — exercising the orphan
+    // body-row-wrap continuation path in the per-cell structure writer.
+    let opts = small_page_opts(240.0, 110.0);
+    let long = "wrap word ".repeat(40);
+    let md = format!(
+        "| Name | Notes |\n|---|---|\n| alpha | {long} |\n| beta | short note here |\n\
+         | gamma | another short note |\n"
+    );
+    let pdf = render_pdf(&md, &opts).unwrap();
+    let text = as_text(&pdf);
+    let streams = text_streams(&pdf);
+
+    assert!(
+        pages_count(&pdf) > 1,
+        "a wrapping body row on a short page should paginate, got {}",
+        pages_count(&pdf)
+    );
+    assert!(
+        streams.len() >= 2,
+        "table should span multiple content streams"
+    );
+    assert!(
+        streams[0].contains("/F2 10.00 Tf"),
+        "the first page carries the bold table header"
+    );
+    // A continuation page repeats the bold header (F2) above resumed body-row
+    // wrap lines (F1) — the orphan body-row-wrap continuation path.
+    assert!(
+        streams
+            .iter()
+            .skip(1)
+            .any(|s| s.contains("/F2 10.00 Tf") && s.contains("/F1 10.00 Tf")),
+        "a continuation page should repeat the header above resumed body rows"
+    );
+    assert!(
+        text.contains("/S /TH") && text.contains("/S /TD"),
+        "per-cell tags survive the split"
+    );
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(
+        openers > 0 && openers == closers,
+        "balanced marked content across the split"
+    );
+}
+
+#[test]
+fn pdf_avoids_widow_when_splitting_a_soft_wrapped_paragraph() {
+    // One genuine soft-wrapped paragraph (a single flow group, no hard breaks)
+    // that must split across short pages. The club/widow penalty must keep at
+    // least two physical baselines on each page rather than stranding a lone line.
+    let opts = small_page_opts(170.0, 90.0);
+    let body = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                omicron pi rho sigma tau upsilon phi chi psi omega kappa lambda alpha beta \
+                gamma delta epsilon zeta";
+    let pdf = render_pdf(body, &opts).unwrap();
+    let streams = text_streams(&pdf);
+
+    assert!(
+        pages_count(&pdf) > 1 && streams.len() >= 2,
+        "the paragraph should split across at least two pages, got {} page(s)",
+        pages_count(&pdf)
+    );
+    for (i, stream) in streams.iter().enumerate() {
+        let lines = baseline_count(stream);
+        assert!(
+            lines >= 2,
+            "page {i} holds a single-line widow/orphan ({lines} baselines)"
+        );
+    }
+}
+
+#[test]
+fn pdf_reuses_hyphenation_cache_for_repeated_words() {
+    // A narrow paragraph repeating the same long word (lowercase and Capitalized)
+    // exercises the per-document hyphenation cache: the first occurrence computes
+    // + inserts, later occurrences hit the cache, and the capitalized form folds
+    // case before the lookup. Output must still synthesize discretionary hyphens.
+    let opts = small_page_opts(90.0, 320.0);
+    let md = "internationalization internationalization Internationalization \
+              internationalization Internationalization internationalization";
+    let pdf = render_pdf(md, &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("<002D>"),
+        "repeated hyphenating words should still emit discretionary hyphens"
+    );
+    assert!(
+        text_streams(&pdf).join("\n").matches("BT /F").count() >= 4,
+        "the repeated long words should wrap into several physical rows"
+    );
+    // Cache reuse must not perturb deterministic output.
+    assert_eq!(
+        pdf,
+        render_pdf(md, &opts).unwrap(),
+        "cache path stays deterministic"
+    );
+}
+
+// ===========================================================================
+// grn.2.3.2 — accessibility/tagging: heading levels H3–H6, ordered/task list
+// markers, the /Nums parent tree, multi-page marked-content balance, empty
+// table cells, and strikethrough runs.
+// ===========================================================================
+
+#[test]
+fn pdf_tags_h3_through_h6_with_generic_heading_collapse() {
+    let pdf = render_pdf(
+        "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody text.\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    for tag in ["/S /H1 ", "/S /H2 ", "/S /H3 "] {
+        assert!(text.contains(tag), "explicit heading level missing: {tag}");
+    }
+    // H4–H6 share the body measure, so the writer cannot recover the source level
+    // and collapses them to the generic `/H`. There are three such headings.
+    assert_eq!(
+        text.matches("/S /H /P").count(),
+        3,
+        "H4/H5/H6 should each collapse to a generic /H structure element"
+    );
+    // Each heading still produces an outline destination/title.
+    assert!(text.contains("/Outlines ") && text.contains("/Title (Three)"));
+}
+
+#[test]
+fn pdf_tags_task_list_markers_and_keeps_them_selectable() {
+    let pdf = render_pdf("- [x] done item\n- [ ] todo item\n", &PdfOptions::default()).unwrap();
+    let text = as_text(&pdf);
+
+    for tag in ["/S /L", "/S /LI", "/S /LBody"] {
+        assert!(text.contains(tag), "task list missing structure tag {tag}");
+    }
+    // The checkbox marker glyphs `[`, `]`, and `x` must remain copyable.
+    for scalar in ["<005B>", "<005D>", "<0078>"] {
+        assert!(
+            text.contains(scalar),
+            "task marker scalar {scalar} must be selectable"
+        );
+    }
+}
+
+#[test]
+fn pdf_tags_ordered_list_markers_with_custom_start() {
+    let pdf = render_pdf("3. gamma\n4. delta\n", &PdfOptions::default()).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/S /L"),
+        "ordered list keeps an /L structure element"
+    );
+    // Markers `3.` and `4.` (start = 3) render digit glyphs not present in the
+    // body words `gamma`/`delta`, so their scalars come from the numbering.
+    for scalar in ["<0033>", "<0034>"] {
+        assert!(
+            text.contains(scalar),
+            "ordered marker digit {scalar} must be selectable"
+        );
+    }
+}
+
+#[test]
+fn pdf_parent_tree_nums_maps_page_and_link_annotation_keys() {
+    let pdf = render_pdf(
+        "# Linked\n\nVisit [the site](https://example.com/docs) for more.\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    // The parent tree's /Nums array maps page StructParents key 0 to its element
+    // list, then the link annotation's key (>= page count) back to its /Link.
+    let nums = text
+        .split("/Nums [ ")
+        .nth(1)
+        .and_then(|tail| tail.split(" ] >>").next())
+        .expect("parent tree should emit a /Nums array");
+    assert!(
+        nums.starts_with("0 ["),
+        "page key 0 should head the parent tree: {nums:?}"
+    );
+    assert!(
+        nums.contains("0 R"),
+        "the /Nums array references structure elements"
+    );
+    // The annotation key advertised by /ParentTreeNextKey must exceed the page
+    // count (single page here, so keys start at 1).
+    let next_key = text
+        .split("/ParentTreeNextKey ")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split(|c: char| !c.is_ascii_digit())
+                .find(|s| !s.is_empty())
+        })
+        .and_then(|n| n.parse::<usize>().ok())
+        .expect("StructTreeRoot advertises /ParentTreeNextKey");
+    assert!(
+        next_key >= 2,
+        "annotation key should follow the page key, got {next_key}"
+    );
+}
+
+#[test]
+fn pdf_marked_content_balances_across_a_multi_page_tagged_document() {
+    let opts = small_page_opts(240.0, 120.0);
+    let mut md = String::from("# Report\n\n");
+    for i in 1..=10 {
+        md.push_str(&format!(
+            "Paragraph {i} with a [link](https://example.com/{i}) and `code` inline.\n\n"
+        ));
+    }
+    let pdf = render_pdf(&md, &opts).unwrap();
+
+    assert!(pages_count(&pdf) > 1, "report should span multiple pages");
+    let streams = text_streams(&pdf);
+    assert!(
+        streams.len() >= 2 && streams.iter().all(|s| s.contains("BT /F")),
+        "small pages should keep every page content stream uncompressed + inspectable"
+    );
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(openers > 0, "tagged pages contain marked content");
+    assert_eq!(
+        openers, closers,
+        "every BDC/BMC closes with an EMC across all pages"
+    );
+
+    // Every content-stream MCID is referenced by exactly one structure MCR.
+    let content_mcids: usize = streams.iter().map(|s| s.matches("<</MCID ").count()).sum();
+    assert_eq!(
+        content_mcids,
+        as_text(&pdf).matches("/Type /MCR").count(),
+        "each MCID across pages maps to one MCR"
+    );
+}
+
+#[test]
+fn pdf_table_with_empty_cells_stays_balanced_and_tagged() {
+    // An empty body cell emits no seg (no `/TD` backfill, a documented limitation)
+    // but the surrounding cells must still tag and the marked content must balance.
+    let pdf = render_pdf(
+        "| Name | Value |\n|---|---|\n| alpha |  |\n|  | 7 |\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(text.contains("/S /TH"), "header cells tag as /TH");
+    assert!(text.contains("/S /TD"), "non-empty body cells tag as /TD");
+    let (openers, closers) = marked_content_balance(&pdf);
+    assert!(
+        openers > 0 && openers == closers,
+        "empty cells must not unbalance marks"
+    );
+}
+
+#[test]
+fn pdf_strikethrough_runs_draw_a_stroke_and_stay_selectable() {
+    let plain = render_pdf("deletedword", &PdfOptions::default()).unwrap();
+    let struck = render_pdf("~~deletedword~~", &PdfOptions::default()).unwrap();
+
+    let plain_stream = text_streams(&plain).join("\n");
+    let struck_stream = text_streams(&struck).join("\n");
+
+    assert!(
+        !plain_stream.contains(" l S\n"),
+        "plain prose has no strike/underline stroke in its text stream"
+    );
+    assert!(
+        struck_stream.contains(" m ") && struck_stream.contains(" l S"),
+        "a strikethrough run draws a stroke through the text"
+    );
+    // The struck word's glyphs remain copyable (subset + ToUnicode).
+    assert!(
+        as_text(&struck).contains("<0064>"),
+        "the letter d of the struck word should still be selectable"
+    );
+}
+
+// ===========================================================================
+// grn.2.3.3 — images, fonts, and content streams: grayscale image XObjects,
+// PNG rejection paths, ancillary chunks, empty/blank code fences, and supplied
+// font assets.
+// ===========================================================================
+
+/// A minimal 8-bit grayscale (color type 0) PNG, one row of `pixels`.
+fn tiny_gray_png(pixels: &[u8]) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&(pixels.len() as u32).to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 0, 0, 0, 0]); // 8-bit grayscale, deflate, PNG filters, no interlace.
+
+    let mut rows = Vec::with_capacity(1 + pixels.len());
+    rows.push(0); // filter type 0.
+    rows.extend_from_slice(pixels);
+    let idat = franken_markdown::compress::zlib_compress(&rows);
+
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    png.extend_from_slice(&png_chunk(b"IDAT", &idat));
+    png.extend_from_slice(&png_chunk(b"IEND", &[]));
+    png
+}
+
+/// 13-byte IHDR payload with explicit bit depth + color type.
+fn ihdr_data(width: u32, height: u32, bit_depth: u8, color_type: u8) -> Vec<u8> {
+    let mut d = Vec::new();
+    d.extend_from_slice(&width.to_be_bytes());
+    d.extend_from_slice(&height.to_be_bytes());
+    d.extend_from_slice(&[bit_depth, color_type, 0, 0, 0]);
+    d
+}
+
+#[test]
+fn pdf_renders_grayscale_png_as_devicegray_xobject() {
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "images/gray.png",
+            tiny_gray_png(&[0x20, 0xC0]),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Gray ramp](images/gray.png)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/Subtype /Image"),
+        "grayscale PNG becomes an image XObject"
+    );
+    assert!(
+        text.contains("/ColorSpace /DeviceGray"),
+        "grayscale uses DeviceGray"
+    );
+    assert!(
+        text.contains("/Predictor 15 /Colors 1 /BitsPerComponent 8 /Columns 2"),
+        "grayscale DecodeParms carry a single color component"
+    );
+    assert!(
+        text.contains("/Im1 Do"),
+        "page content draws the grayscale image"
+    );
+    assert!(text.contains("/S /Figure") && text.contains("/Alt (Gray ramp)"));
+}
+
+#[test]
+fn pdf_rejects_unsupported_png_color_and_geometry_variants() {
+    let valid_idat = franken_markdown::compress::zlib_compress(&[0u8; 8]);
+
+    // Palette (color type 3) — unsupported color model.
+    let mut palette = Vec::new();
+    palette.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    palette.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data(2, 1, 8, 3)));
+    palette.extend_from_slice(&png_chunk(b"IDAT", &valid_idat));
+    palette.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    // 16-bit depth — only 8-bit is accepted.
+    let mut deep = Vec::new();
+    deep.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    deep.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data(2, 1, 16, 2)));
+    deep.extend_from_slice(&png_chunk(b"IDAT", &valid_idat));
+    deep.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    // Wrong IHDR length (12 bytes, not 13).
+    let mut bad_ihdr = Vec::new();
+    bad_ihdr.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    bad_ihdr.extend_from_slice(&png_chunk(b"IHDR", &[0u8; 12]));
+    bad_ihdr.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    // Missing IDAT entirely.
+    let mut no_idat = Vec::new();
+    no_idat.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    no_idat.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data(2, 1, 8, 2)));
+    no_idat.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    // Truncated chunk: a declared length that runs past the end of the buffer.
+    let mut truncated = Vec::new();
+    truncated.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    truncated.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data(2, 1, 8, 2)));
+    truncated.extend_from_slice(&0xFFFF_FFF0u32.to_be_bytes());
+    truncated.extend_from_slice(b"IDAT");
+
+    for (dest, bytes) in [
+        ("images/palette.png", palette),
+        ("images/deep.png", deep),
+        ("images/badihdr.png", bad_ihdr),
+        ("images/noidat.png", no_idat),
+        ("images/truncated.png", truncated),
+    ] {
+        let opts = PdfOptions {
+            image_assets: vec![PdfImageAsset::new(dest, bytes)],
+            ..PdfOptions::default()
+        };
+        let pdf = render_pdf(&format!("![Rejected]({dest})"), &opts).unwrap();
+        let text = as_text(&pdf);
+        assert!(
+            !text.contains("/Subtype /Image"),
+            "{dest}: unsupported PNG must not become an image XObject"
+        );
+        assert!(
+            text.contains("BT /F"),
+            "{dest}: rejected image should render visible alt text"
+        );
+    }
+}
+
+#[test]
+fn pdf_accepts_png_with_ancillary_chunk_after_ihdr() {
+    // An ancillary chunk (here a tEXt) between IHDR and IDAT must be skipped, not
+    // rejected — the image should still embed.
+    let idat = {
+        let rows = vec![0u8, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60]; // filter byte + 2 RGB pixels.
+        franken_markdown::compress::zlib_compress(&rows)
+    };
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data(2, 1, 8, 2)));
+    png.extend_from_slice(&png_chunk(b"tEXt", b"after ihdr"));
+    png.extend_from_slice(&png_chunk(b"IDAT", &idat));
+    png.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("images/ancillary.png", png)],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Has metadata](images/ancillary.png)", &opts).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        text.contains("/Subtype /Image"),
+        "ancillary chunk after IHDR should not block embedding"
+    );
+    assert!(text.contains("/ColorSpace /DeviceRGB") && text.contains("/Im1 Do"));
+}
+
+#[test]
+fn pdf_empty_image_destination_falls_back_to_alt_text() {
+    // `![alt]()` resolves to an empty destination, which short-circuits image
+    // resolution; the alt text must render as ordinary prose.
+    let pdf = render_pdf("![only alt text]()", &PdfOptions::default()).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "empty destination has no image"
+    );
+    assert!(
+        text.contains("BT /F"),
+        "empty-destination image renders alt text"
+    );
+}
+
+#[test]
+fn pdf_empty_code_fence_emits_a_panel() {
+    // An empty fenced block still gets a one-line-tall panel. With no line
+    // numbers it has no visible glyphs (so no tagged content), but the decorative
+    // panel tint is still drawn.
+    let plain = render_pdf("```text\n```\n", &PdfOptions::default()).unwrap();
+    assert!(
+        as_text(&plain).contains("0.965 0.973 0.980 rg"),
+        "empty fence draws the code panel background tint"
+    );
+
+    // With line numbers, the empty fence still emits a muted, selectable "1" run,
+    // which is visible content and therefore tags as /Code.
+    let numbered = render_pdf(
+        "```text\n```\n",
+        &PdfOptions {
+            code_line_numbers: true,
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let numbered_text = as_text(&numbered);
+    assert!(
+        numbered_text.contains("/S /Code"),
+        "numbered empty fence tags as /Code"
+    );
+    assert!(
+        numbered_text.contains("0.431 0.467 0.506 rg"),
+        "an empty numbered fence still emits a muted line-number run"
+    );
+    assert!(
+        numbered_text.contains("<0031>"),
+        "line number 1 is selectable"
+    );
+}
+
+#[test]
+fn pdf_code_block_with_blank_lines_keeps_numbered_panel_rows() {
+    let opts = PdfOptions {
+        code_line_numbers: true,
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("```text\nalpha\n\nbeta\n```\n", &opts).unwrap();
+    let streams = text_streams(&pdf).join("\n");
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/S /Code"),
+        "blank-line code still tags as /Code"
+    );
+    // Three source rows (alpha, blank, beta) each emit a line-number run; the
+    // blank row produces an empty code row that still carries its number column.
+    assert!(
+        streams.matches("/F4 9.50 Tf").count() >= 4,
+        "numbered code with a blank line should still render number + code runs"
+    );
+    assert!(
+        text.contains("<0033>"),
+        "line number 3 (beta) should be selectable"
+    );
+}
+
+#[test]
+fn pdf_accepts_supplied_bundled_font_assets() {
+    // Supplying caller-provided font bytes exercises the supplied-asset path
+    // (vs. the bundled fallback). Bundled bytes are valid, subsettable faces, so
+    // the result is still a well-formed embedded-font PDF.
+    use franken_markdown::FontFamily;
+    use franken_markdown::fonts::{self, FontStyle};
+
+    let assets = franken_markdown::FontAssets {
+        body_regular: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::Regular).to_vec()),
+        body_bold: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::Bold).to_vec()),
+        body_italic: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::Italic).to_vec()),
+        body_bold_italic: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::BoldItalic).to_vec()),
+        mono_regular: Some(fonts::mono_bytes(FontStyle::Regular).to_vec()),
+    };
+    let opts = PdfOptions {
+        font_assets: assets,
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("Plain **bold** *italic* `code` text.", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(pdf.starts_with(b"%PDF-1.7\n") && pdf.ends_with(b"%%EOF\n"));
+    assert!(
+        text.contains("/FontFile2"),
+        "supplied fonts still embed as subset programs"
+    );
+    assert!(text.contains("/Subtype /Type0") && text.contains("/ToUnicode"));
+}

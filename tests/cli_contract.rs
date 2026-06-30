@@ -785,3 +785,614 @@ fn help_honors_no_color_ci_and_dumb_terminal_expectations() {
     assert!(stdout.contains("Usage: fmd"));
     assert!(!stdout.contains('\u{1b}'));
 }
+
+// ---------------------------------------------------------------------------
+// Render argument-validation, flag-normalization, and discovery branches that
+// the first wave of contract tests did not reach. Everything below drives the
+// real binary via real argv, real temp files, and per-child environments.
+// ---------------------------------------------------------------------------
+
+/// `--font` selects the body family for one render (covers the FontArg ->
+/// FontFamily conversion and the `theme.with_font` overlay in run_render).
+#[test]
+fn font_flag_overrides_body_family_for_a_single_render() {
+    let serif_path = temp_file("font-serif", "html");
+    let serif_path_s = serif_path.display().to_string();
+    let serif = fmd(&[
+        "--text",
+        "# Serif\n\nBody.",
+        "--font",
+        "serif",
+        "--out",
+        &serif_path_s,
+    ]);
+    assert!(serif.status.success());
+    let serif_html = fs::read_to_string(&serif_path).unwrap();
+    assert!(
+        serif_html.contains("Source Serif 4"),
+        "--font serif should select the serif family"
+    );
+
+    let sans_path = temp_file("font-sans", "html");
+    let sans_path_s = sans_path.display().to_string();
+    let sans = fmd(&[
+        "--text",
+        "# Sans\n\nBody.",
+        "--font",
+        "sans",
+        "--out",
+        &sans_path_s,
+    ]);
+    assert!(sans.status.success());
+    let sans_html = fs::read_to_string(&sans_path).unwrap();
+    assert!(
+        sans_html.contains("Inter"),
+        "--font sans should select the sans family"
+    );
+    assert!(!sans_html.contains("Source Serif 4"));
+
+    let _ = fs::remove_file(serif_path);
+    let _ = fs::remove_file(sans_path);
+}
+
+/// A `--css` stylesheet that cannot be read is an input error (exit 66), not a
+/// silent fallback to the default theme.
+#[test]
+fn missing_custom_stylesheet_is_an_input_error() {
+    let css = temp_file("missing-style", "css");
+    let _ = fs::remove_file(&css);
+    let css_s = css.display().to_string();
+    let out_path = temp_file("css-fail", "html");
+    let out_path_s = out_path.display().to_string();
+
+    let out = fmd(&[
+        "--text",
+        "# X",
+        "--css",
+        &css_s,
+        "--out",
+        &out_path_s,
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"input_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("reading stylesheet"), "stderr: {stderr}");
+    assert!(
+        !out_path.exists(),
+        "a stylesheet failure must not write an HTML file"
+    );
+}
+
+/// Writing HTML to a path whose parent directory does not exist is an output
+/// error (exit 73), reported on stderr without emitting document data.
+#[test]
+fn html_write_to_unwritable_path_is_an_output_error() {
+    let dir = temp_dir("html-write-fail");
+    let _ = fs::remove_dir_all(&dir);
+    let target = dir.join("out.html");
+    let target_s = target.display().to_string();
+
+    let out = fmd(&["--text", "# X", "--out", &target_s, "--json"]);
+
+    assert_eq!(out.status.code(), Some(73));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"output_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("writing"), "stderr: {stderr}");
+    assert!(!target.exists());
+}
+
+/// The PDF writer hits the same output-error path (exit 73) when its
+/// destination directory is missing.
+#[test]
+fn pdf_write_to_unwritable_path_is_an_output_error() {
+    let dir = temp_dir("pdf-write-fail");
+    let _ = fs::remove_dir_all(&dir);
+    let target = dir.join("out.pdf");
+    let target_s = target.display().to_string();
+
+    let out = fmd(&["--text", "# X", "--to", "pdf", "--out", &target_s, "--json"]);
+
+    assert_eq!(out.status.code(), Some(73));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"output_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("writing"), "stderr: {stderr}");
+    assert!(!target.exists());
+}
+
+/// With no `--out` and the default HTML target, document data streams to stdout
+/// (no file is created and stderr stays clean).
+#[test]
+fn html_without_out_streams_to_stdout() {
+    let cwd = temp_dir("html-default-stdout");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let out = fmd_in_dir(&["--text", "# Plain\n\nBody."], &cwd);
+
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("<!DOCTYPE html>"));
+    assert!(stdout.contains("<h1 id=\"plain\">Plain</h1>"));
+    // No --out means nothing is written next to the working directory.
+    assert!(fs::read_dir(&cwd).unwrap().next().is_none());
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+/// `--to both --out <path>` swaps the extension per format, deriving sibling
+/// `.html` and `.pdf` files from the given output path.
+#[test]
+fn both_target_with_out_swaps_extension_per_format() {
+    let dir = temp_dir("both-extension");
+    fs::create_dir_all(&dir).unwrap();
+    let base = dir.join("doc.out");
+    let base_s = base.display().to_string();
+
+    let out = fmd(&[
+        "--text",
+        "# Both\n\nBody.",
+        "--to",
+        "both",
+        "--out",
+        &base_s,
+        "--json",
+    ]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("\"format\":\"html\""), "stderr: {stderr}");
+    assert!(stderr.contains("\"format\":\"pdf\""), "stderr: {stderr}");
+    assert!(
+        dir.join("doc.html").exists(),
+        "both should derive doc.html from the --out stem"
+    );
+    assert!(
+        dir.join("doc.pdf").exists(),
+        "both should derive doc.pdf from the --out stem"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `doctor` prints a human report by default and a JSON envelope when the
+/// global `--json` flag precedes the subcommand.
+#[test]
+fn doctor_prints_human_report_and_honors_global_json() {
+    let human = fmd(&["doctor"]);
+    assert!(human.status.success());
+    assert!(human.stderr.is_empty());
+    let stdout = text(&human.stdout);
+    assert!(stdout.contains("fmd doctor"));
+    assert!(stdout.contains("html: available"));
+    assert!(stdout.contains("theme model: structured v1"));
+    assert!(stdout.contains("cli dependency: clap"));
+    assert!(stdout.contains("wasm posture: core builds with --no-default-features"));
+    assert!(stdout.contains("license: MIT with OpenAI/Anthropic rider"));
+
+    let global = fmd(&["--json", "doctor"]);
+    assert!(global.status.success());
+    let stdout = text(&global.stdout);
+    assert!(stdout.contains("\"ok\":true"));
+    assert!(stdout.contains("\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\""));
+}
+
+/// `robot-docs` with no explicit subcommand defaults to the guide.
+#[test]
+fn robot_docs_defaults_to_the_guide_subcommand() {
+    let out = fmd(&["robot-docs"]);
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    assert!(text(&out.stdout).contains("fmd agent guide"));
+}
+
+/// Every remaining `--json` typo normalizes to `--json` before parsing, just
+/// like the already-tested `--jason`.
+#[test]
+fn additional_json_typos_are_inferred_before_parsing() {
+    for typo in ["--jsno", "--jsoon", "--json=true"] {
+        let out_path = temp_file("json-typo-variant", "html");
+        let out_path_s = out_path.display().to_string();
+        let out = fmd(&[typo, "--text", "# Typo", "--out", &out_path_s]);
+        assert!(out.status.success(), "{typo} should normalize to --json");
+        assert!(out.stdout.is_empty());
+        let stderr = text(&out.stderr);
+        assert!(
+            stderr.contains("\"event\":\"wrote\""),
+            "{typo} should emit JSON write status; got: {stderr}"
+        );
+        let _ = fs::remove_file(out_path);
+    }
+}
+
+/// The colour-spelling and `--color=never` typos normalize to `--no-color`,
+/// which is an accepted global flag (output is already plain).
+#[test]
+fn color_flag_typos_normalize_to_no_color() {
+    for typo in ["--no-colour", "--colour=never", "--color=never"] {
+        let out = fmd(&[typo, "capabilities", "--json"]);
+        assert!(out.status.success(), "{typo} should be accepted");
+        assert!(out.stderr.is_empty(), "{typo} should not warn");
+        assert!(
+            text(&out.stdout).contains("\"tool\":\"fmd\""),
+            "{typo} should still run capabilities"
+        );
+    }
+}
+
+/// An input error emitted without `--json` uses the plain `fmd: <msg>` human
+/// form on stderr rather than a JSON envelope.
+#[test]
+fn input_error_without_json_uses_human_readable_stderr() {
+    let out = fmd(&["--text", "123456789", "--max-input-bytes", "4"]);
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.starts_with("fmd: "), "stderr: {stderr}");
+    assert!(
+        stderr.contains("exceeds --max-input-bytes 4"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("\"code\""), "stderr: {stderr}");
+}
+
+/// A `--pdf-image` spec with a blank destination or a blank path is a distinct,
+/// stable input error (exercises both blank-side branches of the spec parser).
+#[test]
+fn pdf_image_spec_rejects_blank_destination_and_blank_path() {
+    let img = temp_file("blank-side-image", "png");
+    fs::write(&img, tiny_rgb_png()).unwrap();
+    let blank_dest_pdf = temp_file("blank-dest-pdf", "pdf");
+    let blank_dest_pdf_s = blank_dest_pdf.display().to_string();
+    let blank_dest_mapping = format!("={}", img.display());
+
+    let blank_dest = fmd(&[
+        "--text",
+        "# X",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &blank_dest_mapping,
+        "--out",
+        &blank_dest_pdf_s,
+        "--json",
+    ]);
+    assert_eq!(blank_dest.status.code(), Some(66));
+    let stderr = text(&blank_dest.stderr);
+    assert!(
+        stderr.contains("\"code\":\"input_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("MARKDOWN_DEST must not be blank"),
+        "stderr: {stderr}"
+    );
+
+    let blank_path_pdf = temp_file("blank-path-pdf", "pdf");
+    let blank_path_pdf_s = blank_path_pdf.display().to_string();
+    let blank_path = fmd(&[
+        "--text",
+        "# X",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        "images/chart.png=",
+        "--out",
+        &blank_path_pdf_s,
+        "--json",
+    ]);
+    assert_eq!(blank_path.status.code(), Some(66));
+    let stderr = text(&blank_path.stderr);
+    assert!(
+        stderr.contains("\"code\":\"input_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("PATH must not be blank"),
+        "stderr: {stderr}"
+    );
+
+    let _ = fs::remove_file(img);
+    let _ = fs::remove_file(blank_dest_pdf);
+    let _ = fs::remove_file(blank_path_pdf);
+}
+
+/// A digits-only but out-of-range `SOURCE_DATE_EPOCH` is a usage error (exit
+/// 64) that fails before any PDF is written.
+#[test]
+fn source_date_epoch_overflow_is_a_usage_error() {
+    let out_path = temp_file("sde-overflow-pdf", "pdf");
+    let _ = fs::remove_file(&out_path);
+    let out_path_s = out_path.display().to_string();
+    let out = fmd_with_env(
+        &[
+            "--text",
+            "# Dated",
+            "--to",
+            "pdf",
+            "--out",
+            &out_path_s,
+            "--json",
+        ],
+        &[("SOURCE_DATE_EPOCH", "999999999999999999999999")],
+    );
+
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"usage_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("too large"), "stderr: {stderr}");
+    assert!(!out_path.exists());
+}
+
+// ---------------------------------------------------------------------------
+// Config-subcommand human-readable output and resolution/error branches not
+// reached by the JSON-only config contract suite. All use isolated FMD_CONFIG
+// paths so the real user config is never read or written.
+// ---------------------------------------------------------------------------
+
+/// Render that loads a malformed native config reports a config error (exit 66)
+/// instead of rendering with partial state.
+#[test]
+fn render_with_malformed_config_is_a_config_error() {
+    let config = temp_file("render-bad-config", "conf");
+    fs::write(&config, "this line has no equals sign\n").unwrap();
+    let config_s = config.display().to_string();
+    let out_path = temp_file("render-bad-config-out", "html");
+    let out_path_s = out_path.display().to_string();
+
+    let out = fmd_with_env(
+        &["--text", "# X", "--out", &out_path_s, "--json"],
+        &[("FMD_CONFIG", config_s.as_str())],
+    );
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"config_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("reading config"), "stderr: {stderr}");
+    assert!(!out_path.exists());
+
+    let _ = fs::remove_file(config);
+}
+
+/// `config show` (no `--json`) prints the resolved keys in human form.
+#[test]
+fn config_show_human_readable_lists_resolved_keys() {
+    let config = temp_file("show-human", "conf");
+    let _ = fs::remove_file(&config);
+    let config_s = config.display().to_string();
+
+    let out = fmd_with_env(&["config", "show"], &[("FMD_CONFIG", config_s.as_str())]);
+
+    assert!(out.status.success());
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("fmd config"));
+    assert!(stdout.contains(&format!("path: {config_s}")));
+    assert!(stdout.contains("font: sans"));
+    assert!(stdout.contains("dark_mode: auto"));
+    assert!(stdout.contains("page_size: letter"));
+}
+
+/// `config get <key>` (no `--json`) prints just the resolved value.
+#[test]
+fn config_get_human_readable_prints_bare_value() {
+    let config = temp_file("get-human", "conf");
+    let _ = fs::remove_file(&config);
+    let config_s = config.display().to_string();
+
+    let out = fmd_with_env(
+        &["config", "get", "font"],
+        &[("FMD_CONFIG", config_s.as_str())],
+    );
+
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    assert_eq!(text(&out.stdout).trim(), "sans");
+}
+
+/// `config path` (no `--json`) prints exactly the resolved config path.
+#[test]
+fn config_path_human_readable_prints_resolved_path() {
+    let config = temp_file("path-human", "conf");
+    let config_s = config.display().to_string();
+
+    let out = fmd_with_env(&["config", "path"], &[("FMD_CONFIG", config_s.as_str())]);
+
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    assert_eq!(text(&out.stdout).trim(), config_s);
+}
+
+/// `config get` against a config path that is a directory surfaces a config
+/// read error (exit 66), mirroring the `config show` directory case.
+#[test]
+fn config_get_reports_config_error_when_path_is_a_directory() {
+    let dir = temp_dir("get-dir-config");
+    fs::create_dir_all(&dir).unwrap();
+    let dir_s = dir.display().to_string();
+
+    let out = fmd_with_env(
+        &["config", "get", "font", "--json"],
+        &[("FMD_CONFIG", dir_s.as_str())],
+    );
+
+    assert_eq!(out.status.code(), Some(66));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"config_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("reading config"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `config set` against a malformed existing config fails while loading it
+/// (exit 66) and never rewrites the file.
+#[test]
+fn config_set_reports_config_error_when_existing_config_is_malformed() {
+    let config = temp_file("set-bad-config", "conf");
+    fs::write(&config, "garbage without an equals\n").unwrap();
+    let config_s = config.display().to_string();
+
+    let out = fmd_with_env(
+        &["config", "set", "font", "serif", "--json"],
+        &[("FMD_CONFIG", config_s.as_str())],
+    );
+
+    assert_eq!(out.status.code(), Some(66));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"config_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("reading config"), "stderr: {stderr}");
+    // The malformed file is left untouched.
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "garbage without an equals\n"
+    );
+
+    let _ = fs::remove_file(config);
+}
+
+/// JSON envelopes escape control and quote characters: an unknown `config get`
+/// key carrying every escaped class flows through the CLI's json_escape.
+#[test]
+fn json_envelopes_escape_control_and_quote_characters() {
+    let config = temp_file("json-escape-config", "conf");
+    let _ = fs::remove_file(&config);
+    let config_s = config.display().to_string();
+    let weird_key = "a\"b\\c\nd\re\tf";
+
+    let out = fmd_with_env(
+        &["config", "get", weird_key, "--json"],
+        &[("FMD_CONFIG", config_s.as_str())],
+    );
+
+    assert_eq!(out.status.code(), Some(64));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"usage_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("a\\\"b"), "escaped quote missing: {stderr}");
+    assert!(
+        stderr.contains("b\\\\c"),
+        "escaped backslash missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("c\\nd"),
+        "escaped newline missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("d\\re"),
+        "escaped carriage return missing: {stderr}"
+    );
+    assert!(stderr.contains("e\\tf"), "escaped tab missing: {stderr}");
+}
+
+// ---------------------------------------------------------------------------
+// Unix-only environment edge cases. These need a child process environment that
+// cannot be expressed as UTF-8 `&str`, or filesystem permissions that the
+// crate's forbid-unsafe rules keep out of the in-process tests.
+// ---------------------------------------------------------------------------
+
+/// A non-UTF-8 `SOURCE_DATE_EPOCH` is a usage error (exit 64).
+#[cfg(unix)]
+#[test]
+fn non_utf8_source_date_epoch_is_a_usage_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let out_path = temp_file("sde-non-utf8-pdf", "pdf");
+    let _ = fs::remove_file(&out_path);
+    let out_path_s = out_path.display().to_string();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .args([
+            "--text",
+            "# Dated",
+            "--to",
+            "pdf",
+            "--out",
+            &out_path_s,
+            "--json",
+        ])
+        .env("SOURCE_DATE_EPOCH", OsStr::from_bytes(&[0x66, 0xff, 0xfe]))
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"usage_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("must be UTF-8"), "stderr: {stderr}");
+    assert!(!out_path.exists());
+}
+
+/// `config set` reports a config write error (exit 73) when the target config
+/// directory is read-only. Skipped when DAC permissions are not enforced for
+/// this process (e.g. running as root), so the assertion is never a false claim.
+#[cfg(unix)]
+#[test]
+fn config_set_save_error_when_target_directory_is_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_dir("ro-config-save");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let probe = dir.join(".probe");
+    let perms_enforced = fs::write(&probe, b"x").is_err();
+
+    if perms_enforced {
+        let config = dir.join("config");
+        let config_s = config.display().to_string();
+        let out = fmd_with_env(
+            &["config", "set", "font", "serif", "--json"],
+            &[("FMD_CONFIG", config_s.as_str())],
+        );
+        assert_eq!(out.status.code(), Some(73));
+        let stderr = text(&out.stderr);
+        assert!(
+            stderr.contains("\"code\":\"config_error\""),
+            "stderr: {stderr}"
+        );
+        assert!(stderr.contains("writing config"), "stderr: {stderr}");
+        assert!(
+            !config.exists(),
+            "a failed save must not leave a config file"
+        );
+    } else {
+        let _ = fs::remove_file(&probe);
+    }
+
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+    let _ = fs::remove_dir_all(&dir);
+}

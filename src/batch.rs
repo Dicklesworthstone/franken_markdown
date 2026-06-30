@@ -639,6 +639,40 @@ mod tests {
         }
     }
 
+    /// Create a fresh, unique temp directory for a test. The per-test `tag` plus
+    /// the process id plus a monotonic counter keep concurrently-running tests
+    /// from sharing a directory.
+    fn fresh_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::AtomicU64;
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("fmd-batch-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Default single-worker throughput options with the bundled fonts (valid).
+    fn throughput_opts() -> BatchOptions {
+        BatchOptions {
+            html: HtmlOptions::default(),
+            pdf: PdfOptions::default(),
+            mode: BatchMode::Throughput,
+            workers: Some(1),
+            mem_budget: None,
+            continue_on_error: true,
+        }
+    }
+
+    /// Markdown bytes that are not a valid TrueType font; supplying them in a
+    /// font slot makes `render_html`/`render_pdf` fail during font validation.
+    fn bad_font() -> crate::FontAssets {
+        crate::FontAssets {
+            body_regular: Some(vec![0u8, 1, 2, 3]),
+            ..crate::FontAssets::default()
+        }
+    }
+
     #[test]
     fn worker_budget_matches_documented_examples() {
         // c=1 → single worker, queue floor 2.
@@ -935,6 +969,414 @@ mod tests {
         assert!(
             !leaked,
             "a cancelled-before-start batch must not write any output"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_budget_memory_and_zero_cpu_edges() {
+        // Memory-constrained: floor(256 MiB / 64 MiB) = 4 dominates 8 desired.
+        assert_eq!(
+            worker_budget(&inputs(
+                8,
+                0,
+                BatchMode::Throughput,
+                256 * 1024 * 1024,
+                64 * 1024 * 1024
+            ))
+            .workers,
+            4
+        );
+        // c_avail = 0 is clamped up to one core (never zero workers).
+        let z = worker_budget(&inputs(
+            0,
+            0,
+            BatchMode::Interactive,
+            0,
+            DEFAULT_PER_JOB_RSS,
+        ));
+        assert_eq!(
+            z,
+            WorkerBudget {
+                workers: 1,
+                queue_depth: 2
+            }
+        );
+        // An explicit cap opts out of the interactive reservation: cap below
+        // cores is honored exactly even in interactive mode.
+        assert_eq!(
+            worker_budget(&inputs(
+                16,
+                5,
+                BatchMode::Interactive,
+                0,
+                DEFAULT_PER_JOB_RSS
+            ))
+            .workers,
+            5
+        );
+        // queue_depth tracks 2x workers (one in-flight + one queued per worker).
+        assert_eq!(
+            worker_budget(&inputs(8, 0, BatchMode::Throughput, 0, DEFAULT_PER_JOB_RSS)).queue_depth,
+            16
+        );
+    }
+
+    #[test]
+    fn json_escape_into_covers_every_escape_path() {
+        // Exercises each arm of `json_escape_into`: quote, backslash, the three
+        // named whitespace escapes, a sub-0x20 control char (\uXXXX), and a
+        // passthrough character.
+        let mut out = String::new();
+        json_escape_into(&mut out, "\"\\\n\r\t\u{0001}z");
+        assert_eq!(out, "\\\"\\\\\\n\\r\\t\\u0001z");
+    }
+
+    #[test]
+    fn batch_error_display_names_the_failure() {
+        assert_eq!(
+            format!("{}", BatchError::NoContext),
+            "runtime did not provide a root context"
+        );
+    }
+
+    #[test]
+    fn receipt_json_covers_html_pdf_formats_and_skipped_status() {
+        // Html-format receipt carrying a Skipped file: covers the "html" format
+        // string and the "skipped" file-status string in `to_json`.
+        let html = BatchReceipt {
+            format: OutputFormat::Html,
+            mode: BatchMode::Throughput,
+            workers: 1,
+            queue_depth: 2,
+            files: vec![FileEntry::skipped(Path::new("x.md"))],
+            cancelled: true,
+        };
+        let j = html.to_json();
+        assert!(j.contains("\"format\":\"html\""));
+        assert!(j.contains("\"status\":\"skipped\""));
+        assert!(j.contains("\"skipped\":1"));
+        assert_eq!(html.skipped_count(), 1);
+
+        // Pdf-format receipt: covers the "pdf" format string.
+        let pdf = BatchReceipt {
+            format: OutputFormat::Pdf,
+            mode: BatchMode::Throughput,
+            workers: 1,
+            queue_depth: 2,
+            files: Vec::new(),
+            cancelled: false,
+        };
+        assert!(pdf.to_json().contains("\"format\":\"pdf\""));
+    }
+
+    #[test]
+    fn output_path_without_parent_yields_bare_name() {
+        // The filesystem root has no parent and no file stem, so the `None`
+        // parent arm builds a bare `.<ext>` name rather than panicking.
+        assert_eq!(
+            output_path(Path::new("/"), None, "html"),
+            PathBuf::from(".html")
+        );
+    }
+
+    #[test]
+    fn expand_inputs_accepts_files_and_propagates_missing_paths() {
+        let dir = fresh_dir("file-direct");
+        let f = dir.join("solo.md");
+        std::fs::write(&f, "# solo").unwrap();
+
+        // A plain file path is accepted directly (the non-directory branch of
+        // `expand_inputs`) and the same file given twice is de-duplicated.
+        let got = expand_inputs(&[f.clone(), f.clone()]).unwrap();
+        assert_eq!(got, vec![f.clone()]);
+
+        // A path that does not exist surfaces the io error from `metadata`.
+        let missing = dir.join("nope.md");
+        assert!(expand_inputs(std::slice::from_ref(&missing)).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_inputs_recurses_filters_and_orders() {
+        let dir = fresh_dir("expand-tree");
+        std::fs::create_dir_all(dir.join("sub/deep")).unwrap();
+        // Included: .md and .markdown at multiple depths.
+        std::fs::write(dir.join("b.md"), "b").unwrap();
+        std::fs::write(dir.join("a.markdown"), "a").unwrap();
+        std::fs::write(dir.join("sub/c.md"), "c").unwrap();
+        std::fs::write(dir.join("sub/deep/d.markdown"), "d").unwrap();
+        // Excluded: wrong extension and no extension.
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        std::fs::write(dir.join("README"), "ignored").unwrap();
+        std::fs::write(dir.join("sub/skip.rst"), "ignored").unwrap();
+
+        let got = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let names: Vec<String> = got
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.markdown", "b.md", "sub/c.md", "sub/deep/d.markdown"],
+            "recursion collects only markdown, in deterministic sorted order"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expand_inputs_skips_directory_symlinks_during_walk() {
+        let dir = fresh_dir("expand-symlink");
+        std::fs::write(dir.join("real.md"), "x").unwrap();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        // A directory symlink pointing back at the root would recurse without
+        // bound if followed; the walk must skip it.
+        std::os::unix::fs::symlink(&dir, dir.join("nested/loop")).unwrap();
+
+        let got = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let names: Vec<String> = got
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["real.md"],
+            "the directory symlink is skipped, so the walk terminates"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_read_failure_for_missing_input() {
+        let dir = fresh_dir("read-fail");
+        let missing = dir.join("ghost.md");
+        // `out_dir: None` exercises the "write alongside input" branch (no
+        // create-dir step) and the read of a non-existent file fails per-file.
+        let plan = BatchPlan {
+            inputs: vec![missing.clone()],
+            format: OutputFormat::Html,
+            out_dir: None,
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert_eq!(r.ok_count(), 0);
+        let f = &r.files[0];
+        assert_eq!(f.status, FileStatus::Failed);
+        assert!(f.outputs.is_empty());
+        assert!(
+            f.error.as_deref().unwrap().starts_with("read failed:"),
+            "got {:?}",
+            f.error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_create_out_dir_failure() {
+        let dir = fresh_dir("outdir-fail");
+        let input = dir.join("a.md");
+        std::fs::write(&input, "# A").unwrap();
+        // A regular file used as the output directory makes `create_dir_all` fail.
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "i am a file, not a dir").unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: Some(blocker.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("create out-dir failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_render_html_failure_on_bad_font() {
+        let dir = fresh_dir("html-render-fail");
+        let input = dir.join("a.md");
+        std::fs::write(&input, "# A").unwrap();
+
+        let opts = BatchOptions {
+            html: HtmlOptions {
+                font_assets: bad_font(),
+                ..HtmlOptions::default()
+            },
+            ..throughput_opts()
+        };
+        // Html-only format: covers the wants_html render-error arm and skips PDF.
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: Some(dir.join("out")),
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("render html failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_render_pdf_failure_on_bad_font() {
+        let dir = fresh_dir("pdf-render-fail");
+        let input = dir.join("a.md");
+        std::fs::write(&input, "# A").unwrap();
+
+        let opts = BatchOptions {
+            pdf: PdfOptions {
+                font_assets: bad_font(),
+                ..PdfOptions::default()
+            },
+            ..throughput_opts()
+        };
+        // Pdf-only format: covers the wants_pdf render-error arm and skips HTML.
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Pdf,
+            out_dir: Some(dir.join("out")),
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("render pdf failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_write_html_failure_when_output_is_a_directory() {
+        let dir = fresh_dir("html-write-fail");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        // Pre-create the would-be output file as a directory so the write fails
+        // after a successful render.
+        std::fs::create_dir_all(out.join("doc.html")).unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("write html failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_records_write_pdf_failure_when_output_is_a_directory() {
+        let dir = fresh_dir("pdf-write-fail");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::create_dir_all(out.join("doc.pdf")).unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Pdf,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("write pdf failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_fails_later_input_on_output_collision() {
+        // Two inputs in distinct subdirs share a flat output name under one
+        // `--out-dir`. With a single worker both indices land on the same shard,
+        // so the in-worker collision-refusal arm runs: the earliest input keeps
+        // the output and the later one is failed, never silently overwritten.
+        let dir = fresh_dir("collision");
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("a/doc.md"), "# from a").unwrap();
+        std::fs::write(dir.join("b/doc.md"), "# from b").unwrap();
+
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(inputs.len(), 2);
+        let out = dir.join("out");
+        let plan = BatchPlan {
+            inputs: inputs.clone(),
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+
+        assert_eq!(r.ok_count(), 1, "earliest input keeps the output");
+        assert_eq!(
+            r.failed_count(),
+            1,
+            "later collision refused, not overwritten"
+        );
+        assert_eq!(r.files[0].status, FileStatus::Ok);
+        assert_eq!(r.files[1].status, FileStatus::Failed);
+        assert!(
+            r.files[1]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("collides with earlier input"),
+            "got {:?}",
+            r.files[1].error
         );
 
         let _ = std::fs::remove_dir_all(&dir);

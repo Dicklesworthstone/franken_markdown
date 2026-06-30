@@ -1,17 +1,52 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::ast::Inline;
+use franken_markdown::fonts::{FontStyle, load_body};
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
-    LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, ParagraphLayoutScratch, Penalty,
-    StyledText, TextBox, TextStyle, UNITS_PER_POINT, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph, break_paragraph_into, expansion_budget,
-    hyphenated_paragraph_items_from_text, hyphenated_paragraph_items_from_text_into,
-    measure_advances, measure_styled_text, measure_text, measure_text_with_pairs,
-    paragraph_items_from_inlines, paragraph_items_from_text, protruded_fit_width,
-    protrusion_for_text,
+    INF_PENALTY, LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, ParagraphLayoutScratch,
+    Penalty, StyledText, TextBox, TextStyle, UNITS_PER_POINT, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph, break_paragraph_into, default_interword_glue,
+    expansion_budget, hyphenated_paragraph_items_from_text,
+    hyphenated_paragraph_items_from_text_into, measure_advances, measure_styled_text, measure_text,
+    measure_text_with_pairs, paragraph_items_from_inlines, paragraph_items_from_text,
+    protruded_fit_width, protrusion_for_text,
 };
+use franken_markdown::text::Font;
+use franken_markdown::theme::FontFamily;
 
+/// A deterministic, hand-computable metrics *oracle* — NOT a mock of the system
+/// under test.
+///
+/// The system under test in this file is the layout algorithm: measurement,
+/// box/glue/penalty construction, hyphenation point placement, microtypography,
+/// and the Knuth-Plass line breaker. None of that is stubbed here. What
+/// `StubMetrics` stands in for is purely an *input* to those functions — the
+/// glyph-advance and pair-kerning table that the algorithm reads through the
+/// public [`AdvanceMetrics`] / [`PairMetrics`] traits.
+///
+/// It is retained deliberately, for three reasons:
+///
+/// 1. **Exact, font-independent arithmetic.** Its advances (`i`=250, `m`=900,
+///    space=250, everything else 500 ‱) and its single kern pair (`AV`=-80) are
+///    chosen so every expected milli-point width, badness, demerit, and break
+///    decision is computable by hand. That lets the existing certificate-style
+///    tests pin the breaker's output to exact integers, which would be brittle
+///    and unreadable if tied to a specific real face's hinted metrics.
+/// 2. **It exercises a code path the bundled fonts cannot.** The vendored OFL
+///    faces ship no legacy `kern` table, so `Font::kerning_1000` returns 0 for
+///    every pair (verified by [`real_font_pair_metrics_match_advance_only_path`]
+///    below). The kerning arithmetic inside [`measure_text_with_pairs`] is only
+///    given a non-zero adjustment to integrate by an oracle like this one.
+/// 3. **It is an oracle, not a fake of behavior we are testing.** A mock would
+///    impersonate the line breaker and assert on calls into it; this only
+///    answers "how wide is this glyph", which is exactly the kind of pure,
+///    side-effect-free input a deterministic oracle should supply.
+///
+/// The real-font tests further down (`real_font_*`) run the *same* layout
+/// functions against actual bundled-font metrics, proving the algorithm holds on
+/// reality and not just on this synthetic table. The two approaches are
+/// complementary: the oracle gives exactness, the real fonts give fidelity.
 struct StubMetrics;
 
 impl AdvanceMetrics for StubMetrics {
@@ -696,4 +731,446 @@ fn metric_sums_saturate_instead_of_overflowing() {
     let measured = measure_advances([u32::MAX, u32::MAX, u32::MAX], huge);
 
     assert_eq!(measured.milli_points(), i32::MAX);
+}
+
+// ---------------------------------------------------------------------------
+// grn.3.1 — drive the SAME layout functions through REAL bundled-font metrics.
+//
+// These tests deliberately use `franken_markdown::fonts::load_body(..)` as the
+// metrics source (no synthetic table), proving the measurement, item-building,
+// hyphenation, and Knuth-Plass code paths behave on real glyph advances and not
+// only on the hand-computable `StubMetrics` oracle documented above.
+// ---------------------------------------------------------------------------
+
+fn serif_font() -> Font {
+    load_body(FontFamily::Serif, FontStyle::Regular).expect("bundled serif font parses")
+}
+
+/// A real-font advance source that intentionally does NOT override
+/// [`PairMetrics::kerning_1000`], so `measure_text_with_pairs` is forced through
+/// the trait-default (zero) kerning hook. The advances are 100% real bundled-font
+/// data — this is a thin trait adapter to reach the default method, not a
+/// synthetic metrics double.
+struct AdvanceOnly<'a>(&'a Font);
+
+impl AdvanceMetrics for AdvanceOnly<'_> {
+    fn advance_1000(&self, ch: char) -> u32 {
+        self.0.advance_1000(ch)
+    }
+}
+
+impl PairMetrics for AdvanceOnly<'_> {}
+
+#[test]
+fn real_font_measurement_is_additive_and_real() {
+    let font = serif_font();
+    let size = FontSize::from_points(10);
+
+    // Real measured advances are strictly positive and additive across glyphs.
+    let m = measure_text(&font, "m", size);
+    let mm = measure_text(&font, "mm", size);
+    assert!(m > LayoutUnit::ZERO);
+    assert_eq!(mm, m + m, "advance summation is exact for repeated glyphs");
+
+    // A longer run measures wider than a strict prefix of it.
+    assert!(measure_text(&font, "hyphenation", size) > measure_text(&font, "hyphen", size));
+
+    // `measure_advances` must agree with `measure_text` when fed the same real
+    // per-character advances the breaker would otherwise see.
+    let advances: Vec<u32> = "documentation"
+        .chars()
+        .map(|ch| font.advance_1000(ch))
+        .collect();
+    assert_eq!(
+        measure_advances(advances, size),
+        measure_text(&font, "documentation", size)
+    );
+}
+
+#[test]
+fn real_font_pair_metrics_match_advance_only_path() {
+    let font = serif_font();
+    let size = FontSize::from_points(11);
+    let text = "AVATAR Wave To.";
+
+    // The bundled faces ship no legacy `kern` table, so the real font's
+    // overriding `kerning_1000` contributes zero for every pair...
+    let with_real_pairs = measure_text_with_pairs(&font, text, size);
+    let no_pairs = measure_text(&font, text, size);
+    assert_eq!(
+        with_real_pairs, no_pairs,
+        "real fonts carry no pair kerning"
+    );
+
+    // ...and the `PairMetrics::kerning_1000` *default* (exercised via AdvanceOnly,
+    // which does not override it) is likewise a no-op over the same real advances.
+    let with_default_pairs = measure_text_with_pairs(&AdvanceOnly(&font), text, size);
+    assert_eq!(
+        with_default_pairs, no_pairs,
+        "the PairMetrics default kerning hook is a no-op over real advances"
+    );
+}
+
+#[test]
+fn real_font_paragraph_items_carry_real_box_widths() {
+    let font = serif_font();
+    let size = FontSize::from_points(12);
+    let items = paragraph_items_from_text(&font, "alpha beta gamma", size);
+
+    // 3 boxes + 2 interword glues + 1 trailing forced break.
+    assert_eq!(items.len(), 6);
+    let space = measure_text_with_pairs(&font, " ", size);
+    for (item, word) in [
+        (&items[0], "alpha"),
+        (&items[2], "beta"),
+        (&items[4], "gamma"),
+    ] {
+        match item {
+            ParagraphItem::Box(b) => {
+                assert_eq!(b.text, word);
+                assert_eq!(b.width, measure_text_with_pairs(&font, word, size));
+                assert!(b.width > LayoutUnit::ZERO);
+            }
+            other => panic!("expected real-measured box, got {other:?}"),
+        }
+    }
+    for glue_idx in [1usize, 3] {
+        match &items[glue_idx] {
+            ParagraphItem::Glue(g) => assert_eq!(g.width, space),
+            other => panic!("expected interword glue, got {other:?}"),
+        }
+    }
+    assert!(matches!(
+        items[5],
+        ParagraphItem::Penalty(Penalty {
+            penalty: FORCED_BREAK_PENALTY,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn real_font_break_paragraph_wraps_and_is_monotonic() {
+    let font = serif_font();
+    let size = FontSize::from_points(11);
+    let text = "the quick brown fox jumps over the lazy dog";
+    let items = paragraph_items_from_text(&font, text, size);
+
+    let narrow = LayoutUnit::from_milli_points(120_000);
+    let breaks = break_paragraph(&items, narrow);
+
+    // The real metrics force a wrap into more than one line.
+    assert!(breaks.len() >= 2, "narrow column must wrap: {breaks:?}");
+
+    // Every chosen line is feasible (the breaker never keeps an infinite-badness
+    // edge) and cumulative demerits never decrease down the paragraph.
+    let mut prev_demerits = i64::MIN;
+    for line in &breaks {
+        assert!(line.badness < INF_PENALTY, "feasible line: {line:?}");
+        assert!(
+            line.demerits >= prev_demerits,
+            "demerits accumulate: {line:?}"
+        );
+        prev_demerits = line.demerits;
+    }
+
+    // The lines reconstruct the original word sequence, in order, with no loss.
+    let reconstructed = breaks
+        .iter()
+        .map(|line| line_text(&items, line.start, line.end))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(reconstructed, text);
+
+    // Metamorphic: a much wider column needs no more lines than a narrow one,
+    // and a very wide column fits the whole sentence on a single line.
+    let wide = break_paragraph(&items, LayoutUnit::from_points(600));
+    assert!(wide.len() <= breaks.len());
+    assert_eq!(wide.len(), 1, "the whole sentence fits one very wide line");
+}
+
+#[test]
+fn real_font_hyphenation_inserts_real_discretionary_breaks() {
+    let font = serif_font();
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let items = hyphenated_paragraph_items_from_text(&font, &hyphenator, "hyphenation", size);
+
+    // Same fragmentation the exception dictates, now with real-measured widths.
+    assert_eq!(line_text(&items, 0, items.len()), "hy phen ation");
+    let hyphen_width = measure_text_with_pairs(&font, "-", size);
+    let flagged: Vec<&Penalty> = items
+        .iter()
+        .filter_map(|item| match item {
+            ParagraphItem::Penalty(p) if p.flagged => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flagged.len(), 2);
+    assert!(
+        flagged
+            .iter()
+            .all(|p| p.penalty > 0 && p.width == hyphen_width)
+    );
+
+    // At a column exactly wide enough for "hyphen-", the optimal first line takes
+    // the discretionary break and pays for the real hyphen glyph. Breaking after
+    // "hy" is infeasible (no stretchable glue), so the breaker must choose "phen".
+    let column = measure_text_with_pairs(&font, "hyphen", size) + hyphen_width;
+    let breaks = break_paragraph(&items, column);
+    assert_eq!(breaks.len(), 2);
+    assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "hy phen");
+    assert_eq!(breaks[0].natural_width, column);
+}
+
+// ---------------------------------------------------------------------------
+// grn.2.7 — target previously-uncovered lines / branches.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn styled_text_covers_strikethrough_image_breaks_and_empty_runs() {
+    let inlines = vec![
+        Inline::Text(String::new()), // empty run: push_text early return
+        Inline::Strikethrough(vec![Inline::Text("struck".to_string())]),
+        Inline::SoftBreak, // becomes a space
+        Inline::Image {
+            dest: "img.png".to_string(),
+            title: None,
+            alt: "alt text".to_string(),
+        },
+        Inline::HardBreak, // also a space
+        Inline::Text("end".to_string()),
+    ];
+    let styled = StyledText::from_inlines(&inlines);
+
+    assert_eq!(styled.plain_text(), "struck alt text end");
+    assert_eq!(styled.runs.len(), 2);
+    assert_eq!(styled.runs[0].text, "struck");
+    assert_eq!(styled.runs[0].style, TextStyle::BODY.with_strikethrough());
+    assert_eq!(styled.runs[1].text, " alt text end");
+    assert_eq!(styled.runs[1].style, TextStyle::BODY);
+}
+
+#[test]
+fn styled_words_handle_runs_of_whitespace_and_trailing_space() {
+    let font = serif_font();
+    let size = FontSize::from_points(10);
+    // Double interior spaces and a trailing space: the word splitter must not
+    // emit empty words for the extra whitespace (the "current is empty" branches).
+    let items = paragraph_items_from_text(&font, "A  B ", size);
+
+    assert_eq!(items.len(), 4); // Box(A), Glue, Box(B), forced break
+    assert_box_text(&items[0], "A");
+    assert!(matches!(items[1], ParagraphItem::Glue(_)));
+    assert_box_text(&items[2], "B");
+    assert!(matches!(
+        items[3],
+        ParagraphItem::Penalty(Penalty {
+            penalty: FORCED_BREAK_PENALTY,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn left_edge_protrusion_covers_brackets_and_dashes() {
+    let size = FontSize::from_points(10);
+    let opts = MicrotypeOptions::CONSERVATIVE;
+
+    // Opening bracket protrudes 120 per-mille on the left; closing 120 on right.
+    let bracket = protrusion_for_text("(quote)", size, opts);
+    assert_eq!(bracket.left, LayoutUnit::from_milli_points(1_200));
+    assert_eq!(bracket.right, LayoutUnit::from_milli_points(1_200));
+
+    // A leading dash protrudes 80 per-mille on the left.
+    let dash = protrusion_for_text("-dash", size, opts);
+    assert_eq!(dash.left, LayoutUnit::from_milli_points(800));
+}
+
+#[test]
+fn protruded_fit_width_handles_nonpositive_natural_width() {
+    let size = FontSize::from_points(10);
+    let opts = MicrotypeOptions::CONSERVATIVE;
+    // A non-positive natural width clamps to zero regardless of protrusion (the
+    // `natural_width <= ZERO` arm of the guard).
+    assert_eq!(
+        protruded_fit_width(LayoutUnit::from_milli_points(-1_000), "(x", size, opts),
+        LayoutUnit::ZERO
+    );
+}
+
+#[test]
+fn adjustment_conversion_saturates_in_both_directions() {
+    let huge = FontSize::from_milli_points(u32::MAX);
+    assert_eq!(
+        adjustment_to_layout_units(i32::MAX, huge).milli_points(),
+        i32::MAX
+    );
+    assert_eq!(
+        adjustment_to_layout_units(i32::MIN, huge).milli_points(),
+        i32::MIN
+    );
+}
+
+#[test]
+fn scratch_clear_retains_allocations() {
+    let font = serif_font();
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut items = Vec::new();
+
+    // Populate the hyphenation buffers...
+    hyphenated_paragraph_items_from_text_into(
+        &font,
+        &hyphenator,
+        "documentation typography representation",
+        size,
+        &mut scratch,
+        &mut items,
+    );
+    // ...and the line-breaking buffers, reusing the same scratch.
+    let mut breaks = Vec::new();
+    break_paragraph_into(
+        &items,
+        LayoutUnit::from_milli_points(80_000),
+        &mut scratch,
+        &mut breaks,
+    );
+
+    let before = scratch.capacities();
+    assert!(before.hyphen_points > 0);
+    assert!(before.candidates > 0);
+    assert!(before.prefix_widths > 0);
+    assert!(before.states > 0);
+
+    scratch.clear();
+    assert_eq!(
+        scratch.capacities(),
+        before,
+        "clear() drops live data but retains every allocation for reuse"
+    );
+}
+
+#[test]
+fn prohibited_penalty_is_not_a_breakpoint() {
+    let font = serif_font();
+    let size = FontSize::from_points(12);
+    let left = measure_text_with_pairs(&font, "left", size);
+    let right = measure_text_with_pairs(&font, "right", size);
+    let items = vec![
+        ParagraphItem::Box(TextBox {
+            text: "left".to_string(),
+            runs: StyledText::plain("left"),
+            width: left,
+        }),
+        // A prohibiting penalty (>= INF_PENALTY) must NOT become a candidate.
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: INF_PENALTY,
+            flagged: false,
+        }),
+        ParagraphItem::Box(TextBox {
+            text: "right".to_string(),
+            runs: StyledText::plain("right"),
+            width: right,
+        }),
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+        }),
+    ];
+    // Column only wide enough for "left": with no usable breakpoint between the
+    // two boxes, they stay welded and the emergency fallback emits one overfull
+    // line containing both.
+    let breaks = break_paragraph(&items, left);
+
+    assert_eq!(breaks.len(), 1);
+    assert_eq!(
+        line_text(&items, breaks[0].start, breaks[0].end),
+        "left right"
+    );
+    assert_eq!(breaks[0].natural_width, left + right);
+    assert!(
+        breaks[0].natural_width > left,
+        "the welded line overflows the column"
+    );
+}
+
+#[test]
+fn greedy_fallback_emits_overfull_leading_line_without_forced_tail() {
+    let font = serif_font();
+    let size = FontSize::from_points(12);
+    let space = measure_text_with_pairs(&font, " ", size);
+    let lead = measure_text_with_pairs(&font, "unbreakable", size);
+    let tail = measure_text_with_pairs(&font, "word", size);
+    // No trailing forced break: when every DP edge is infinite the greedy
+    // emergency fallback must still flush the dangling leading box as a final
+    // (overfull) line.
+    let items = vec![
+        ParagraphItem::Box(TextBox {
+            text: "unbreakable".to_string(),
+            runs: StyledText::plain("unbreakable"),
+            width: lead,
+        }),
+        ParagraphItem::Glue(default_interword_glue(space)),
+        ParagraphItem::Box(TextBox {
+            text: "word".to_string(),
+            runs: StyledText::plain("word"),
+            width: tail,
+        }),
+    ];
+    // Column narrower than the first word forces every DP edge infinite.
+    let column = LayoutUnit::from_milli_points(lead.milli_points() / 2);
+    let breaks = break_paragraph(&items, column);
+
+    assert_eq!(breaks.len(), 1);
+    assert_eq!(breaks[0].start, 0);
+    assert_eq!(breaks[0].end, 1);
+    assert_eq!(breaks[0].natural_width, lead);
+    assert!(breaks[0].natural_width > column);
+}
+
+#[test]
+fn negative_non_forced_penalty_rewards_a_break() {
+    let font = serif_font();
+    let size = FontSize::from_points(12);
+    let head = measure_text_with_pairs(&font, "encouragement", size);
+    let tail = measure_text_with_pairs(&font, "go", size);
+    assert!(head > tail, "precondition: head word is the wider one");
+    // An "encouraged" (negative but not forced) penalty between two welded boxes.
+    let items = vec![
+        ParagraphItem::Box(TextBox {
+            text: "encouragement".to_string(),
+            runs: StyledText::plain("encouragement"),
+            width: head,
+        }),
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: -50,
+            flagged: false,
+        }),
+        ParagraphItem::Box(TextBox {
+            text: "go".to_string(),
+            runs: StyledText::plain("go"),
+            width: tail,
+        }),
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+        }),
+    ];
+    // Column exactly fits the first box, so breaking at the encouraged penalty is
+    // feasible (badness 0) and the negative penalty lowers demerits (exercising
+    // the negative-penalty demerit branch).
+    let breaks = break_paragraph(&items, head);
+
+    assert_eq!(breaks.len(), 2);
+    assert_eq!(breaks[0].start, 0);
+    assert_eq!(breaks[0].end, 1);
+    assert_eq!(breaks[0].natural_width, head);
+    assert_eq!(breaks[0].badness, 0);
+    assert_eq!(line_text(&items, breaks[1].start, breaks[1].end), "go");
 }

@@ -54,6 +54,8 @@ tests/artifacts/cli/
 # regenerable and bulky, so every run-id subdirectory is ignored. The committed
 # baseline ledger lives at the top level: tests/artifacts/coverage/baseline.{tsv,md}.
 tests/artifacts/coverage/*/
+# e2e harness run artifacts (ledger/transcripts/summary per run-id) — regenerable.
+tests/artifacts/e2e/
 tests/artifacts/conformance/
 tests/artifacts/pagination/
 tests/artifacts/theme/

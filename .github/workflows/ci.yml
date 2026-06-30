@@ -50,6 +50,9 @@ jobs:
       - name: Check perf-compare classifier (qw1.8.4)
         run: scripts/perf-compare.sh --self-test
 
+      - name: Check e2e harness machinery (grn.4.1)
+        run: scripts/e2e/lib.sh --self-test
+
       - name: Check CommonMark conformance (ratcheted floor)
         run: scripts/commonmark-conformance.sh ci
 

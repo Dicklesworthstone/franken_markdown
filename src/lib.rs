@@ -72,6 +72,9 @@ pub use theme::{
     ThemeColors, ThemeSpacing,
 };
 
+/// Crate version exposed for embedders that need renderer provenance.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Font slot for caller-supplied font bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontAssetSlot {
@@ -373,4 +376,15 @@ pub fn render_html(src: &str, opts: &HtmlOptions) -> Result<String> {
 /// See [`render_pdf_document`].
 pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
     render_pdf_document(&parse_markdown(src), opts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VERSION;
+
+    #[test]
+    fn version_constant_matches_package_metadata() {
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(!VERSION.trim().is_empty());
+    }
 }

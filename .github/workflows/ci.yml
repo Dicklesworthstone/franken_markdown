@@ -147,7 +147,7 @@ jobs:
         run: scripts/e2e/run-all.sh ci
 
   mutation:
-    name: Mutation testing (ratcheted ceiling)
+    name: Mutation testing (curated utility modules, ratcheted ceiling)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

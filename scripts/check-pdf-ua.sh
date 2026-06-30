@@ -80,7 +80,22 @@ if grep -qiE "could not be parsed|not a valid pdf|exception" "$ART/report.txt"; 
   echo "check-pdf-ua: FAILED — veraPDF could not parse the rendered PDF (see $ART/report.txt)." >&2
   exit 70
 fi
-PASSED="$(grep -ciE "passedChecks|compliant|isCompliant=.true" "$ART/report.txt" || true)"
-echo "check-pdf-ua: ok — veraPDF parsed the tagged PDF; full report at $ART/report.txt"
-echo "check-pdf-ua: (partial PDF/UA tagging is expected; see docs/PDF_ACCESSIBILITY.md for the roadmap.)"
+
+# Beyond "can parse", require that veraPDF actually exercised PDF/UA checks and
+# that SOME passed. A document whose tagging regressed to nothing (no structure
+# tree, zero satisfied rules) must fail here instead of passing silently — that
+# is the difference between a real spot-check and a no-op.
+PASSED="$(grep -oiE 'passedChecks[^0-9]*[0-9]+' "$ART/report.txt" | grep -oE '[0-9]+' | head -1)"
+PASSED="${PASSED:-0}"
+if [ "$PASSED" -le 0 ]; then
+  # Some veraPDF builds report compliance differently; accept an explicit
+  # compliant marker as an alternative positive signal before failing.
+  if ! grep -qiE "isCompliant=.true|\"compliant\"[[:space:]]*:[[:space:]]*true" "$ART/report.txt"; then
+    echo "check-pdf-ua: FAILED — veraPDF satisfied 0 PDF/UA checks; the structure tree" >&2
+    echo "             appears to have regressed (see $ART/report.txt)." >&2
+    exit 70
+  fi
+fi
+echo "check-pdf-ua: ok — veraPDF parsed the tagged PDF and ${PASSED} PDF/UA check(s) passed."
+echo "check-pdf-ua: (partial PDF/UA conformance is expected; see docs/PDF_ACCESSIBILITY.md for the roadmap.)"
 exit 0

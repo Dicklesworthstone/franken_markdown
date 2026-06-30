@@ -24,7 +24,12 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
 
-# Curated scope: small, logic-bearing, thoroughly-tested modules. Expand over time.
+# Curated scope: small, logic-bearing, thoroughly-tested utility modules where a
+# survivor ceiling of 0 is achievable and the full run is fast. The large engine
+# modules (pdf/layout/text/parse/html/compress/highlight) are NOT mutation-tested
+# here — they each carry hundreds of mutants (hours of CI) and known survivors —
+# and are instead guarded by the golden, differential, metamorphic, fuzz, and
+# conformance suites. Expand this list only with files proven to reach 0 survivors.
 DEFAULT_FILES="src/span.rs src/error.rs src/fonts.rs"
 FILES="${FMD_MUTANTS_FILES:-$DEFAULT_FILES}"
 CEILING_FILE="tests/fixtures/mutation/survivor-ceiling.txt"

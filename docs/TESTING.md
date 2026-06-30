@@ -61,7 +61,7 @@ double from being introduced without this kind of justification.
 | Property + metamorphic | Cross-cutting invariants over generated inputs (injection-safety, determinism, PDF structure) | `tests/parser_metamorphic.rs` (via `cargo test`) |
 | Fuzz (generative) | No panic / termination / balanced spans over arbitrary bytes + deep nesting | `tests/parser_fuzz.rs` (via `cargo test`) |
 | Golden output (regenerable) | HTML + PDF rendered-output regression snapshots | `tests/golden_output.rs`; update with `UPDATE_GOLDEN=1` |
-| Mutation (ratcheted ceiling) | Tests actually *fail* when the code is wrong | `scripts/mutation.sh` |
+| Mutation (curated utility modules, ratcheted ceiling) | Tests actually *fail* when the code is wrong — proven on the small, fully-covered modules (span/error/fonts); the large engine modules are guarded by golden/differential/metamorphic/fuzz instead | `scripts/mutation.sh` |
 | Test-double gate | No new undocumented Stub/Mock/Fake/Dummy doubles | `scripts/check-test-doubles.sh` |
 | E2E suite (structured logging) | Every CLI workflow/flag/error path against the real binary | `scripts/e2e/run-all.sh` |
 | Everything at once | The full gauntlet with a combined report | `scripts/test-all.sh` (`--fast` to skip coverage + e2e) |

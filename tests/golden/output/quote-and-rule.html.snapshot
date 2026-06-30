@@ -1,0 +1,11 @@
+bytes=29593
+fingerprint=548d5f3723c3b61d
+--- body ---
+<main class="fmd">
+<blockquote>
+<p>A blockquote
+spanning two lines.</p>
+</blockquote>
+<hr>
+<p>Closing paragraph.</p>
+</main>

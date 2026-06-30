@@ -1,0 +1,17 @@
+bytes=53392
+fingerprint=9a8b61566bce0503
+--- body ---
+<main class="fmd">
+<div class="table-wrap" role="region" aria-label="Markdown table" tabindex="0">
+<table>
+<thead>
+<tr><th style="text-align:left">Name</th><th style="text-align:right">Value</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align:left">alpha</td><td style="text-align:right">1</td></tr>
+<tr><td style="text-align:left">beta</td><td style="text-align:right">22</td></tr>
+<tr><td style="text-align:left">gamma</td><td style="text-align:right">333</td></tr>
+</tbody>
+</table>
+</div>
+</main>

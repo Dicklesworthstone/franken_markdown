@@ -1,0 +1,8 @@
+bytes=112848
+fingerprint=607a871e1b6614f4
+--- body ---
+<main class="fmd">
+<h1 id="title">Title</h1>
+<p>A paragraph with <strong>strong</strong>, <em>emphasis</em>, <code>inline code</code>, <del>strike</del>, and a <a href="https://example.com">link</a>.</p>
+<p>Second paragraph for measure.</p>
+</main>

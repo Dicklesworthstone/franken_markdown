@@ -1,0 +1,19 @@
+bytes=29739
+fingerprint=88cc564832d94d6c
+--- body ---
+<main class="fmd">
+<ul>
+<li>alpha</li>
+<li>beta
+<ul>
+<li>nested gamma</li>
+</ul>
+</li>
+<li class="task"><input type="checkbox" disabled checked> done</li>
+<li class="task"><input type="checkbox" disabled> todo</li>
+</ul>
+<ol>
+<li>first</li>
+<li>second</li>
+</ol>
+</main>

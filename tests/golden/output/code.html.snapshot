@@ -1,0 +1,10 @@
+bytes=40285
+fingerprint=6624816eb590feb3
+--- body ---
+<main class="fmd">
+<pre><code class="language-rust"><span class="tok-kw">fn</span> <span class="tok-fn">main</span><span class="tok-pn">(</span><span class="tok-pn">)</span> <span class="tok-pn">{</span>
+    <span class="tok-kw">let</span> x <span class="tok-op">=</span> <span class="tok-nu">42</span><span class="tok-pn">;</span>
+    println<span class="tok-op">!</span><span class="tok-pn">(</span><span class="tok-st">"{x}"</span><span class="tok-pn">)</span><span class="tok-pn">;</span>
+<span class="tok-pn">}</span>
+</code></pre>
+</main>

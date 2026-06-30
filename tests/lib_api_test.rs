@@ -208,3 +208,71 @@ fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
         "clean ASCII must not warn"
     );
 }
+
+#[test]
+fn render_warnings_walks_images_and_text_in_nested_blocks() {
+    use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
+
+    // Images nested in a list item and a table cell; glyphless text in a
+    // blockquote and a code block — every block/inline walker arm is exercised.
+    let md = "- ![inlist](a.png)\n\n> 中文 quote\n\n```\n日本語\n```\n\n\
+              | ![incell](b.png) | x |\n|---|---|\n| *em* | `c` |";
+    let warns = render_warnings(&parse_markdown(md), &PdfOptions::default());
+    let images = warns
+        .iter()
+        .filter(|w| matches!(w, RenderWarning::UnresolvedImage(_)))
+        .count();
+    assert!(
+        images >= 2,
+        "images in a list and a table cell must warn: {warns:?}"
+    );
+    assert!(
+        warns
+            .iter()
+            .any(|w| matches!(w, RenderWarning::MissingGlyphs { .. })),
+        "CJK in a blockquote/code block must warn: {warns:?}"
+    );
+}
+
+#[test]
+fn render_warnings_skips_empty_image_destinations() {
+    use franken_markdown::{PdfOptions, parse_markdown, render_warnings};
+    // An image with an empty destination has nothing to resolve and must not
+    // produce a spurious warning (covers the empty-dest skip branch).
+    let doc = parse_markdown("![alt]()");
+    assert!(render_warnings(&doc, &PdfOptions::default()).is_empty());
+}
+
+#[test]
+fn render_warnings_quiet_when_image_asset_is_valid() {
+    use franken_markdown::compress::zlib_compress;
+    use franken_markdown::{PdfImageAsset, PdfOptions, parse_markdown, render_warnings};
+
+    // Build a minimal valid 1x1 8-bit RGB PNG (CRCs are not verified by the
+    // decoder). A resolved, decodable asset must produce NO warning — covers the
+    // supported-asset branch of render_warnings.
+    let chunk = |kind: &[u8; 4], data: &[u8]| {
+        let mut c = Vec::new();
+        c.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        c.extend_from_slice(kind);
+        c.extend_from_slice(data);
+        c.extend_from_slice(&0u32.to_be_bytes());
+        c
+    };
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let idat = zlib_compress(&[0u8, 10, 20, 30]);
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&chunk(b"IHDR", &ihdr));
+    png.extend_from_slice(&chunk(b"IDAT", &idat));
+    png.extend_from_slice(&chunk(b"IEND", &[]));
+
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("ok.png", png)],
+        ..PdfOptions::default()
+    };
+    assert!(render_warnings(&parse_markdown("![x](ok.png)"), &opts).is_empty());
+}

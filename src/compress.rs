@@ -947,4 +947,41 @@ mod tests {
         // A cap below the true size must fail rather than allocate unbounded.
         assert!(zlib_decompress(&comp, 100).is_none());
     }
+
+    #[test]
+    fn production_inflater_rejects_malformed_streams() {
+        // Empty / truncated headers.
+        assert!(zlib_decompress(&[], 100).is_none());
+        assert!(zlib_decompress(&[0x78], 100).is_none());
+        // Wrong compression method (CMF low nibble must be 8).
+        assert!(zlib_decompress(&[0x79, 0x9c, 0x03, 0x00], 100).is_none());
+        // Preset dictionary (FDICT bit set) is unsupported.
+        assert!(zlib_decompress(&[0x78, 0xbb, 0x03, 0x00], 100).is_none());
+        // Reserved DEFLATE block type 3 (bfinal=1, btype=11 -> low 3 bits 0b111).
+        assert!(zlib_decompress(&[0x78, 0x9c, 0x07], 100).is_none());
+        // Stored block whose declared length runs past the input.
+        assert!(zlib_decompress(&[0x78, 0x9c, 0x01, 0xff, 0x00], 100).is_none());
+        // Body that ends mid-symbol (bit reader runs dry inside a Huffman block).
+        assert!(zlib_decompress(&[0x78, 0x9c, 0x4b], 100).is_none());
+        // A dynamic-Huffman block (btype=10) truncated before its header is read
+        // exercises the dynamic-table reject path.
+        assert!(zlib_decompress(&[0x78, 0x9c, 0x05], 100).is_none());
+    }
+
+    #[test]
+    fn production_inflater_round_trips_a_stored_only_stream() {
+        // Incompressible input forces the stored-block path through the production
+        // inflater (covers the stored-block branch end to end).
+        let mut v = Vec::with_capacity(70_000);
+        let mut s: u64 = 0xdead_beef_cafe_f00d;
+        for _ in 0..70_000 {
+            s = s.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+            v.push((s >> 40) as u8);
+        }
+        let comp = zlib_compress(&v);
+        assert_eq!(
+            zlib_decompress(&comp, v.len() + 64).as_deref(),
+            Some(v.as_slice())
+        );
+    }
 }

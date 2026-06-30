@@ -2183,3 +2183,16 @@ fn pdf_table_cells_render_inline_styling_and_links() {
         "cell link URI must be embedded"
     );
 }
+
+#[test]
+fn pdf_table_cells_wrap_and_align_without_panic() {
+    // A right-aligned numeric column, a centered column, an empty cell, and a
+    // long cell that must wrap exercise the styled cell alignment + wrapping.
+    let md = "| Left | Mid | Right |\n|:---|:--:|---:|\n\
+              | a very long cell that has to wrap across several lines inside its column | m | 12345 |\n\
+              |  | **b** | 9 |";
+    let pdf = render_pdf(md, &PdfOptions::default()).unwrap();
+    assert!(pdf.starts_with(b"%PDF-") && pdf.ends_with(b"%%EOF\n"));
+    let raw = as_text(&pdf);
+    assert!(raw.contains("/StructTreeRoot"), "table stays tagged");
+}

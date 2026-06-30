@@ -6292,10 +6292,30 @@ mod render_tree_golden_tests {
 )]
 mod png_decode_tests {
     use super::{
-        DecodedPng, PNG_ADAM7, PdfImageColor, PngChunks, decode_png_full, parse_png_image_asset,
-        png_pass_count,
+        DecodedPng, PNG_ADAM7, PdfImageColor, PngChunks, decode_png_full, parse_png_chunks,
+        parse_png_image_asset, png_paeth, png_pass_count,
     };
     use crate::compress::zlib_compress;
+
+    /// Forward PNG filter (the inverse of the decoder's unfilter) so a test can
+    /// build scanlines that exercise every reconstruction branch.
+    fn forward_filter(row: &[u8], prev: &[u8], bpp: usize, filter: u8) -> Vec<u8> {
+        let mut out = vec![0u8; row.len()];
+        for i in 0..row.len() {
+            let a = if i >= bpp { row[i - bpp] } else { 0 };
+            let b = prev[i];
+            let c = if i >= bpp { prev[i - bpp] } else { 0 };
+            let pred = match filter {
+                1 => a,
+                2 => b,
+                3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                4 => png_paeth(a, b, c),
+                _ => 0,
+            };
+            out[i] = row[i].wrapping_sub(pred);
+        }
+        out
+    }
 
     /// Build a `PngChunks` from raw (unfiltered, filter-type-0) scanlines.
     fn chunks(
@@ -6370,6 +6390,21 @@ mod png_decode_tests {
     }
 
     #[test]
+    fn rgba16_downsamples_color_and_alpha_to_high_byte() {
+        // 16-bit RGBA: 4 channels × 2 bytes, big-endian; keep the high byte of
+        // each (covers the 16-bit alpha-extraction path).
+        let rows = vec![vec![
+            0x12, 0x00, 0x34, 0x00, 0x56, 0x00, 0xAB, 0x00, // px0 rgba hi=12,34,56 a=AB
+            0x78, 0xFF, 0x9A, 0xFF, 0xBC, 0xFF, 0x10, 0x00, // px1 rgba hi=78,9A,BC a=10
+        ]];
+        let png = chunks(2, 1, 16, 6, 0, &rows, vec![], vec![]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.color, PdfImageColor::Rgb);
+        assert_eq!(d.samples, vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]);
+        assert_eq!(d.alpha, Some(vec![0xAB, 0x10]));
+    }
+
+    #[test]
     fn rgb16_downsamples_to_high_byte() {
         // 2 pixels, each channel 16-bit big-endian; keep the high byte.
         let rows = vec![vec![
@@ -6379,6 +6414,16 @@ mod png_decode_tests {
         let d = decode_png_full(&png).unwrap();
         assert_eq!(d.samples, vec![0x12, 0x56, 0x9a, 0xde, 0x11, 0x22]);
         assert_eq!(d.alpha, None);
+    }
+
+    #[test]
+    fn gray1_and_gray2_subbyte_unpack_and_scale() {
+        // 1-bit grayscale: two pixels in the top two bits scale to 255 and 0.
+        let g1 = chunks(2, 1, 1, 0, 0, &[vec![0b1000_0000]], vec![], vec![]);
+        assert_eq!(decode_png_full(&g1).unwrap().samples, vec![255, 0]);
+        // 2-bit grayscale: 0b11 -> 255, 0b00 -> 0.
+        let g2 = chunks(2, 1, 2, 0, 0, &[vec![0b1100_0000]], vec![], vec![]);
+        assert_eq!(decode_png_full(&g2).unwrap().samples, vec![255, 0]);
     }
 
     #[test]
@@ -6429,6 +6474,96 @@ mod png_decode_tests {
             }
         }
         assert_eq!(d.samples, expect);
+    }
+
+    #[test]
+    fn unfilter_reconstructs_every_png_filter_type() {
+        // A 2px-wide RGB image with one row per PNG filter (0=None, 1=Sub,
+        // 2=Up, 3=Average, 4=Paeth). Width 2 ensures a left neighbor exists, so
+        // every `a`/`b`/`c` branch in the unfilter runs.
+        let rows: [[u8; 6]; 5] = [
+            [10, 20, 30, 40, 50, 60],
+            [11, 22, 33, 44, 55, 66],
+            [12, 24, 36, 48, 60, 72],
+            [13, 26, 39, 52, 65, 78],
+            [14, 28, 42, 56, 70, 84],
+        ];
+        let bpp = 3;
+        let mut idat_raw = Vec::new();
+        let mut prev = [0u8; 6];
+        for (r, row) in rows.iter().enumerate() {
+            let filter = r as u8; // 0,1,2,3,4
+            idat_raw.push(filter);
+            idat_raw.extend_from_slice(&forward_filter(row, &prev, bpp, filter));
+            prev = *row;
+        }
+        let png = PngChunks {
+            width: 2,
+            height: 5,
+            bit_depth: 8,
+            color_type: 2,
+            interlace: 0,
+            palette: vec![],
+            trns: vec![],
+            idat: zlib_compress(&idat_raw),
+        };
+        let d = decode_png_full(&png).unwrap();
+        let expect: Vec<u8> = rows.iter().flatten().copied().collect();
+        assert_eq!(
+            d.samples, expect,
+            "all filter types must reconstruct exactly"
+        );
+    }
+
+    #[test]
+    fn malformed_or_unsupported_pngs_are_rejected() {
+        // Bad signature.
+        assert!(parse_png_chunks(b"definitely not a png at all").is_none());
+        // Truncated below the 8-byte signature.
+        assert!(parse_png_chunks(b"\x89PNG").is_none());
+
+        // Palette color type with no PLTE cannot be decoded.
+        let no_plte = chunks(2, 1, 8, 3, 0, &[vec![0, 1]], vec![], vec![]);
+        assert!(decode_png_full(&no_plte).is_none());
+
+        // Palette at 16-bit depth is unsupported (indices are <= 8-bit).
+        let pal16 = chunks(1, 1, 16, 3, 0, &[vec![0, 0]], vec![[1, 2, 3]], vec![]);
+        assert!(decode_png_full(&pal16).is_none());
+
+        // A corrupt IDAT (not a valid zlib stream) fails cleanly, no panic.
+        let mut bad_idat = chunks(
+            2,
+            1,
+            8,
+            6,
+            0,
+            &[vec![10, 20, 30, 40, 50, 60, 70, 80]],
+            vec![],
+            vec![],
+        );
+        bad_idat.idat = vec![0xFF, 0xFF, 0xFF, 0xFF];
+        assert!(decode_png_full(&bad_idat).is_none());
+    }
+
+    #[test]
+    fn gray_with_trns_marks_the_transparent_sample() {
+        // 8-bit grayscale with a single transparent value (tRNS = 2 bytes; the
+        // low byte is the transparent gray level). Pixel 0 (=200) is transparent.
+        let rows = vec![vec![200, 100]];
+        let png = chunks(2, 1, 8, 0, 0, &rows, vec![], vec![0, 200]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.color, PdfImageColor::Gray);
+        assert_eq!(d.alpha, Some(vec![0, 255]));
+    }
+
+    #[test]
+    fn rgb_with_trns_marks_the_transparent_color() {
+        // 8-bit RGB with a single transparent colour (tRNS = 6 bytes, hi/lo per
+        // channel). The second pixel matches and is transparent.
+        let rows = vec![vec![10, 20, 30, 40, 50, 60]];
+        let png = chunks(2, 1, 8, 2, 0, &rows, vec![], vec![0, 40, 0, 50, 0, 60]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.alpha, Some(vec![255, 0]));
     }
 
     #[test]

@@ -792,10 +792,32 @@ fn blockquote_heading_is_not_lazily_continued() {
 
 #[test]
 fn html_block_recognizes_comments_declarations_and_processing_instructions() {
+    // A comment that closes on its own line is a single HTML block; per
+    // CommonMark (type 2) it ends at the line containing `-->`, so any text
+    // after that line is its own block.
     assert!(matches!(
-        only_block("<!-- a comment -->\nstill the comment block"),
+        only_block("<!-- a comment -->"),
         Block::HtmlBlock(_)
     ));
+    let after = parse_markdown("<!-- a comment -->\nstill text");
+    assert_eq!(
+        after.blocks.len(),
+        2,
+        "text after the close marker is separate"
+    );
+    assert!(matches!(after.blocks[0], Block::HtmlBlock(_)));
+
+    // A comment whose `-->` is on a later line runs across the intervening
+    // lines — including blank lines — until the close marker (the fix for the
+    // previous bug that split type 1/2 blocks at the first blank line).
+    let spanning = parse_markdown("<!-- a\n\nb -->");
+    assert_eq!(
+        spanning.blocks.len(),
+        1,
+        "comment must span across the blank line to -->"
+    );
+    assert!(matches!(spanning.blocks[0], Block::HtmlBlock(_)));
+
     assert!(matches!(only_block("<!DOCTYPE html>"), Block::HtmlBlock(_)));
     assert!(matches!(
         only_block("<?php echo 1; ?>"),
@@ -991,4 +1013,75 @@ fn image_alt_text_flattens_every_inline_kind() {
         },
         other => panic!("expected a paragraph, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for the 2026-06-30 "no fakes" parser fixes: each construct
+// below previously dropped/faked output and now renders for real.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn numeric_references_fold_invalid_code_points_to_replacement_char() {
+    // U+0000, surrogates, and out-of-range scalars must become U+FFFD — never a
+    // raw NUL byte or literal leak (CommonMark sanitization).
+    let out = html("a[&#0;]b &#xD800; &#99999999; &#x110000;");
+    assert!(
+        !out.contains('\u{0}'),
+        "no raw NUL byte may reach the output"
+    );
+    assert!(out.contains('\u{FFFD}'), "invalid refs decode to U+FFFD");
+    // A valid numeric reference still decodes normally.
+    assert!(html("&#9731;").contains('\u{2603}')); // ☃
+}
+
+#[test]
+fn opaque_scheme_and_email_autolinks_are_linkified() {
+    // tel:/urn: lack `://` and `@` yet are valid CommonMark URI autolinks.
+    assert!(html("<tel:+15551234>").contains("href=\"tel:+15551234\""));
+    assert!(html("<mailto:a@b.com>").contains("href=\"mailto:a@b.com\""));
+    // Email autolinks get a mailto: destination.
+    assert!(html("<a@b.com>").contains("href=\"mailto:a@b.com\""));
+    // http(s) autolinks keep working.
+    assert!(html("<http://x.com>").contains("href=\"http://x.com\""));
+    // A plain `<` that is not an autolink is not turned into a link.
+    assert!(!html("a < b").contains("<a "));
+}
+
+#[test]
+fn full_html5_named_entities_decode() {
+    // Entities far outside the old 11-entry stub now resolve.
+    assert!(html("&hellip;").contains('\u{2026}')); // …
+    assert!(html("&auml;").contains('\u{e4}')); // ä
+    assert!(html("&aring;").contains('\u{e5}')); // å
+    // A multi-code-point entity resolves to both scalars.
+    let amacr = html("&nLeftrightarrow;");
+    assert!(amacr.contains('\u{21ce}'));
+    // An unknown entity stays literal (escaped), not silently dropped.
+    assert!(html("&notarealentity;").contains("&amp;notarealentity;"));
+}
+
+#[test]
+fn tab_indented_lines_form_indented_code_blocks() {
+    // A single leading tab is four columns of indentation -> indented code, and
+    // tabs inside the content are preserved verbatim.
+    let out = html("\tcode_one\n\tcode_two");
+    assert!(
+        out.contains("<pre><code>"),
+        "tab indent must start a code block"
+    );
+    assert!(out.contains("code_one"));
+    let preserved = html("\tfoo\tbar");
+    assert!(preserved.contains("foo\tbar"), "interior tabs stay literal");
+}
+
+#[test]
+fn entity_references_inside_link_destinations_decode_once() {
+    // `&amp;` in a destination decodes to `&`, then the emitter escapes it once
+    // — no double-escaping into `&amp;amp;`.
+    let out = html("[x](http://e.com?a=1&amp;b=2)");
+    assert!(out.contains("href=\"http://e.com?a=1&amp;b=2\""));
+    assert!(
+        !out.contains("&amp;amp;"),
+        "destination must not double-escape"
+    );
 }

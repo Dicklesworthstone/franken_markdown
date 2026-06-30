@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
+mod entities;
+
 #[cfg(not(target_arch = "wasm32"))]
 type ParseStageStart = std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -346,12 +348,9 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
             continue;
         }
 
-        if html_block_start(line) {
+        if let Some(end_cond) = html_block_kind(line) {
             let start = i;
-            i += 1;
-            while i < lines.len() && !lines[i].text.trim().is_empty() {
-                i += 1;
-            }
+            i = html_block_end(&lines, i, end_cond, |l| l.text);
             spans.push(span_for_lines(&lines, start, i));
             continue;
         }
@@ -652,13 +651,10 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::BlockQuote(inner_blocks));
             continue;
         }
-        if html_block_start(line) {
+        if let Some(end_cond) = html_block_kind(line) {
             let started = profiler.checkpoint();
             let start = i;
-            i += 1;
-            while i < lines.len() && !lines[i].trim().is_empty() {
-                i += 1;
-            }
+            i = html_block_end(lines, i, end_cond, |l| *l);
             let html = lines[start..i].join("\n");
             profiler.record_since(
                 "html_block",
@@ -1034,15 +1030,108 @@ fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
         && !list_marker_interrupts_paragraph(line)
 }
 
-fn html_block_start(line: &str) -> bool {
+/// The end condition for a started HTML block (CommonMark block types 1-7).
+#[derive(Clone, Copy)]
+enum HtmlBlockEnd {
+    /// Types 1-5: continue until (and including) the first line that contains
+    /// one of these end markers — even across blank lines.
+    Marker(&'static [&'static str]),
+    /// Types 6-7: continue until the next blank line.
+    Blank,
+}
+
+/// Classify an HTML block start and return its end condition, or `None` when the
+/// line does not begin an HTML block. Types 1-5 end at a literal closing token
+/// (`-->`, `</pre>`, ...) that may sit on a later line; types 6-7 end at a blank
+/// line. The previous implementation blank-terminated *every* type, which split
+/// `<pre>`/comment blocks at the first blank line and emitted unterminated tags.
+fn html_block_kind(line: &str) -> Option<HtmlBlockEnd> {
     let t = line.trim_start();
-    if t.starts_with("<!--") || t.starts_with("<!") || t.starts_with("<?") {
-        return true;
+    // Type 2: comment.
+    if t.starts_with("<!--") {
+        return Some(HtmlBlockEnd::Marker(&["-->"]));
     }
-    let Some(name) = html_tag_name(t) else {
-        return false;
-    };
-    is_html_block_tag(name)
+    // Type 5: CDATA section.
+    if t.starts_with("<![CDATA[") {
+        return Some(HtmlBlockEnd::Marker(&["]]>"]));
+    }
+    // Type 3: processing instruction.
+    if t.starts_with("<?") {
+        return Some(HtmlBlockEnd::Marker(&["?>"]));
+    }
+    // Type 4: declaration `<!` + ASCII letter (e.g. `<!DOCTYPE html>`).
+    if t.starts_with("<!") {
+        return if t.as_bytes().get(2).is_some_and(u8::is_ascii_alphabetic) {
+            Some(HtmlBlockEnd::Marker(&[">"]))
+        } else {
+            // Preserve the historical bare-`<!` start (blank-terminated).
+            Some(HtmlBlockEnd::Blank)
+        };
+    }
+    // Type 1: raw-text elements (`<script>`, `<pre>`, `<style>`, `<textarea>`).
+    if let Some(markers) = html_raw_text_end_markers(t) {
+        return Some(HtmlBlockEnd::Marker(markers));
+    }
+    // Types 6-7: recognized block-level tags terminate at the next blank line.
+    let name = html_tag_name(t)?;
+    is_html_block_tag(name).then_some(HtmlBlockEnd::Blank)
+}
+
+fn html_block_start(line: &str) -> bool {
+    html_block_kind(line).is_some()
+}
+
+/// End markers for CommonMark type-1 raw-text HTML blocks. A start matches
+/// `<name` (case-insensitive) followed by whitespace, `>`, `/`, or end of line.
+fn html_raw_text_end_markers(t: &str) -> Option<&'static [&'static str]> {
+    const RAW: [(&str, &[&str]); 4] = [
+        ("script", &["</script>"]),
+        ("pre", &["</pre>"]),
+        ("style", &["</style>"]),
+        ("textarea", &["</textarea>"]),
+    ];
+    let lower = t.to_ascii_lowercase();
+    for (name, markers) in RAW {
+        if let Some(after) = lower.strip_prefix('<').and_then(|s| s.strip_prefix(name)) {
+            match after.chars().next() {
+                None => return Some(markers),
+                Some(c) if c.is_whitespace() || c == '>' || c == '/' => return Some(markers),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Given an HTML block that starts at `start`, return the exclusive end line
+/// index per its `end` condition. `text` extracts the raw text of a line.
+fn html_block_end<T>(
+    lines: &[T],
+    start: usize,
+    end: HtmlBlockEnd,
+    text: impl Fn(&T) -> &str,
+) -> usize {
+    match end {
+        HtmlBlockEnd::Marker(markers) => {
+            let mut k = start;
+            while k < lines.len() {
+                let lower = text(&lines[k]).to_ascii_lowercase();
+                let hit = markers.iter().any(|m| lower.contains(m));
+                k += 1;
+                if hit {
+                    break;
+                }
+            }
+            k
+        }
+        HtmlBlockEnd::Blank => {
+            let mut k = start + 1;
+            while k < lines.len() && !text(&lines[k]).trim().is_empty() {
+                k += 1;
+            }
+            k
+        }
+    }
 }
 
 fn html_tag_name(t: &str) -> Option<&str> {
@@ -1608,8 +1697,8 @@ fn parse_inlines_with_refs_profiled(
                 }
             }
             '&' => {
-                if let Some((ch, next)) = parse_character_reference(&bytes, i) {
-                    buf.push(ch);
+                if let Some((decoded, next)) = parse_character_reference(&bytes, i) {
+                    buf.push_str(&decoded);
                     i = next;
                 } else {
                     buf.push(c);
@@ -2084,6 +2173,15 @@ fn parse_angle_link_destination(chars: &[char], i: &mut usize) -> Option<String>
                 dest.push(chars[*i + 1]);
                 *i += 2;
             }
+            '&' => {
+                if let Some((decoded, next)) = parse_character_reference(chars, *i) {
+                    dest.push_str(&decoded);
+                    *i = next;
+                } else {
+                    dest.push(ch);
+                    *i += 1;
+                }
+            }
             _ => {
                 dest.push(ch);
                 *i += 1;
@@ -2115,6 +2213,15 @@ fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> 
             '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
                 dest.push(chars[*i + 1]);
                 *i += 2;
+            }
+            '&' => {
+                if let Some((decoded, next)) = parse_character_reference(chars, *i) {
+                    dest.push_str(&decoded);
+                    *i = next;
+                } else {
+                    dest.push(ch);
+                    *i += 1;
+                }
             }
             _ => {
                 dest.push(ch);
@@ -2198,26 +2305,110 @@ fn parse_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
     if chars.get(i) != Some(&'<') {
         return None;
     }
+    // Autolink content runs to the closing `>` and may not contain whitespace,
+    // `<`, or ASCII control characters (CommonMark).
     let mut j = i + 1;
-    let mut url = String::new();
-    while j < chars.len() && chars[j] != '>' && chars[j] != ' ' && chars[j] != '\n' {
-        url.push(chars[j]);
+    let mut content = String::new();
+    while j < chars.len() {
+        let ch = chars[j];
+        if ch == '>' {
+            break;
+        }
+        if ch == '<' || ch.is_whitespace() || ch.is_control() {
+            return None;
+        }
+        content.push(ch);
         j += 1;
     }
-    if chars.get(j) == Some(&'>') && (url.contains("://") || url.contains('@')) {
-        let label = url;
-        let dest = if label.contains('@') && !label.contains("://") {
-            format!("mailto:{label}")
-        } else {
-            label.clone()
-        };
-        Some((label, dest, j + 1))
+    if chars.get(j) != Some(&'>') || content.is_empty() {
+        return None;
+    }
+    if is_uri_autolink(&content) {
+        // URI autolinks keep the destination verbatim (including `tel:`, `urn:`,
+        // `mailto:`, and other opaque schemes that lack `://`).
+        Some((content.clone(), content, j + 1))
+    } else if is_email_autolink(&content) {
+        let dest = format!("mailto:{content}");
+        Some((content, dest, j + 1))
     } else {
         None
     }
 }
 
-fn parse_character_reference(chars: &[char], i: usize) -> Option<(char, usize)> {
+/// A CommonMark absolute-URI autolink scheme: an ASCII letter followed by 1..=31
+/// of `[A-Za-z0-9+.-]`, then a `:`. The body after the colon is validated by the
+/// caller (no whitespace / `<` / control characters).
+fn is_uri_autolink(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.first().is_none_or(|b| !b.is_ascii_alphabetic()) {
+        return false;
+    }
+    let mut k = 1;
+    while k < bytes.len() {
+        let b = bytes[k];
+        if b == b':' {
+            // Scheme is `bytes[..k]`; total scheme length must be 2..=32.
+            return (2..=32).contains(&k);
+        }
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-') {
+            k += 1;
+        } else {
+            return false;
+        }
+    }
+    false
+}
+
+/// A CommonMark email autolink (the HTML5 email-address production).
+fn is_email_autolink(s: &str) -> bool {
+    let Some(at) = s.find('@') else {
+        return false;
+    };
+    let (local, domain) = (&s[..at], &s[at + 1..]);
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    let local_ok = local.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'.' | b'!'
+                    | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'/'
+                    | b'='
+                    | b'?'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'{'
+                    | b'|'
+                    | b'}'
+                    | b'~'
+                    | b'-'
+            )
+    });
+    if !local_ok {
+        return false;
+    }
+    // Domain: dot-separated labels of `[A-Za-z0-9-]`, each 1..=63 chars and not
+    // starting or ending with `-`.
+    domain.split('.').all(|label| {
+        let b = label.as_bytes();
+        !b.is_empty()
+            && b.len() <= 63
+            && b[0] != b'-'
+            && b[b.len() - 1] != b'-'
+            && b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'-')
+    })
+}
+
+fn parse_character_reference(chars: &[char], i: usize) -> Option<(String, usize)> {
     if chars.get(i) != Some(&'&') {
         return None;
     }
@@ -2229,14 +2420,16 @@ fn parse_character_reference(chars: &[char], i: usize) -> Option<(char, usize)> 
         return None;
     }
     let body = chars[i + 1..semi].iter().collect::<String>();
-    let decoded = if let Some(numeric) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
-    {
-        decode_numeric_reference(numeric, 16)
-    } else if let Some(numeric) = body.strip_prefix('#') {
-        decode_numeric_reference(numeric, 10)
-    } else {
-        decode_named_reference(&body)
-    }?;
+    let decoded: String =
+        if let Some(numeric) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
+            decode_numeric_reference(numeric, 16)?.to_string()
+        } else if let Some(numeric) = body.strip_prefix('#') {
+            decode_numeric_reference(numeric, 10)?.to_string()
+        } else {
+            // Full HTML5 named character reference set (semicolon-terminated, as
+            // CommonMark requires). A few entities resolve to two code points.
+            entities::lookup(&body)?.to_string()
+        };
     Some((decoded, semi + 1))
 }
 
@@ -2369,25 +2562,23 @@ fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
     if value.is_empty() {
         return None;
     }
-    let code = u32::from_str_radix(value, radix).ok()?;
-    char::from_u32(code)
-}
-
-const fn decode_named_reference(name: &str) -> Option<char> {
-    match name.as_bytes() {
-        b"amp" => Some('&'),
-        b"lt" => Some('<'),
-        b"gt" => Some('>'),
-        b"quot" => Some('"'),
-        b"apos" => Some('\''),
-        b"nbsp" => Some('\u{00a0}'),
-        b"copy" => Some('\u{00a9}'),
-        b"reg" => Some('\u{00ae}'),
-        b"trade" => Some('\u{2122}'),
-        b"ndash" => Some('\u{2013}'),
-        b"mdash" => Some('\u{2014}'),
-        _ => None,
+    // Only an all-digits run (in the given radix) is a numeric reference at all;
+    // anything else stays literal (`&#xyz;` etc.).
+    if !value.chars().all(|c| c.is_digit(radix)) {
+        return None;
     }
+    // CommonMark: the NUL code point (U+0000), out-of-range values (> U+10FFFF,
+    // including digit runs that overflow `u32`), and surrogate code points
+    // (U+D800..=U+DFFF) all decode to the replacement character U+FFFD rather
+    // than emitting a raw/invalid byte. `char::from_u32` already rejects
+    // surrogates and out-of-range scalars; we additionally fold U+0000 so a
+    // literal NUL never reaches the output.
+    let code = u32::from_str_radix(value, radix).unwrap_or(u32::MAX);
+    Some(
+        char::from_u32(code)
+            .filter(|&c| c != '\0')
+            .unwrap_or('\u{FFFD}'),
+    )
 }
 
 fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
@@ -2496,8 +2687,20 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
 
 // ---- small helpers ----------------------------------------------------------
 
+/// Width, in columns, of a line's leading indentation. Tabs advance to the next
+/// 4-column tab stop (CommonMark), so a single leading tab counts as the four
+/// columns that make a line indented code. Only the leading run is measured;
+/// tabs elsewhere on the line are left for the content to keep verbatim.
 fn leading_spaces(line: &str) -> usize {
-    line.chars().take_while(|&c| c == ' ').count()
+    let mut col = 0usize;
+    for ch in line.chars() {
+        match ch {
+            ' ' => col += 1,
+            '\t' => col += 4 - col % 4,
+            _ => break,
+        }
+    }
+    col
 }
 
 fn trim_space_tab(s: &str) -> &str {
@@ -2526,9 +2729,28 @@ fn is_space_or_tab_byte(byte: u8) -> bool {
     byte == b' ' || byte == b'\t'
 }
 
+/// Remove up to `n` columns of leading indentation, expanding tabs to 4-column
+/// tab stops. A tab that would straddle the `n`-column boundary is left intact
+/// (we never split a tab into spaces, so the result stays a borrowed slice).
 fn strip_n(line: &str, n: usize) -> &str {
-    let take = line.chars().take(n).take_while(|&c| c == ' ').count();
-    &line[take..]
+    let mut col = 0usize;
+    for (idx, ch) in line.char_indices() {
+        if col >= n {
+            return &line[idx..];
+        }
+        match ch {
+            ' ' => col += 1,
+            '\t' => {
+                let next = col + (4 - col % 4);
+                if next > n {
+                    return &line[idx..];
+                }
+                col = next;
+            }
+            _ => return &line[idx..],
+        }
+    }
+    ""
 }
 
 fn is_ascii_punct(c: char) -> bool {

@@ -609,8 +609,8 @@ Honest about what the renderer does not do yet.
   table cells, inline images within running prose, or arbitrary CSS. PDF images
   are host-supplied standalone PNGs via `--pdf-image`.
 - **CommonMark coverage is partial and measured.** Against the official
-  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **357/652
-  examples match** after normalizing fmd's styled HTML (60.4% of the 591 in-scope
+  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **362/652
+  examples match** after normalizing fmd's styled HTML (61.3% of the 591 in-scope
   examples; the 61 raw-HTML examples are intentional non-goals, since fmd escapes
   raw HTML by default). This is a ratcheted floor: CI fails if it drops.
 - **HTML font subsets are TTF data URLs, not WOFF2.** Output is deterministic and

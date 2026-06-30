@@ -605,9 +605,10 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
-- **PDF vs HTML gaps.** The PDF path does not yet render inline styling inside
-  table cells, inline images within running prose, or arbitrary CSS. PDF images
-  are host-supplied standalone PNGs via `--pdf-image`.
+- **PDF vs HTML gaps.** The PDF path does not yet render inline images within
+  running prose or arbitrary CSS. (Inline styling and links *inside table cells*
+  now render, with bold/italic/mono faces and clickable link annotations.) PDF
+  images are host-supplied standalone PNGs via `--pdf-image`.
 - **CommonMark coverage is partial and measured.** Against the official
   CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **362/652
   examples match** after normalizing fmd's styled HTML (61.3% of the 591 in-scope

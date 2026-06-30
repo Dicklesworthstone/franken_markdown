@@ -2152,3 +2152,34 @@ fn pdf_accepts_supplied_bundled_font_assets() {
     );
     assert!(text.contains("/Subtype /Type0") && text.contains("/ToUnicode"));
 }
+
+#[test]
+fn pdf_table_cells_render_inline_styling_and_links() {
+    // A single body cell mixes bold/italic/code/strikethrough; another holds a
+    // link. Previously every cell was flattened to one plain slot with no link.
+    let md = "| Style | Link |\n|---|---|\n\
+              | **bold** *ital* `code` ~~s~~ | [site](https://example.com) |";
+    let pdf = render_pdf(md, &PdfOptions::default()).unwrap();
+
+    // The decompressed page content uses distinct faces inside one row: body
+    // (F1), bold (F2), italic (F3), and mono (F4) — proof the cell is no longer
+    // collapsed to a single slot.
+    let streams = text_streams(&pdf).join("\n");
+    for (slot, what) in [("F2", "bold"), ("F3", "italic"), ("F4", "mono")] {
+        assert!(
+            streams.contains(&format!("/{slot} 10.00 Tf")),
+            "table cell should render a {what} run (/{slot})"
+        );
+    }
+
+    // The cell link is a real clickable annotation with its URI, not dead text.
+    let raw = as_text(&pdf);
+    assert!(
+        raw.contains("/Subtype /Link"),
+        "cell link must be an annotation"
+    );
+    assert!(
+        raw.contains("https://example.com"),
+        "cell link URI must be embedded"
+    );
+}

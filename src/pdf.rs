@@ -1741,6 +1741,130 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
     }
 }
 
+/// One styled run within a wrapped table-cell line: text drawn in a single font
+/// slot, optionally linked / struck-through.
+struct CellRun {
+    slot: u8,
+    text: String,
+    link: Option<LinkTarget>,
+    strike: bool,
+    width: f32,
+}
+
+/// One wrapped visual line of a table cell: its styled runs and total width.
+struct CellWrapLine {
+    runs: Vec<CellRun>,
+    width: f32,
+}
+
+/// Tokenize a cell's inlines into styled tokens, inheriting a bold base style for
+/// header cells (so `**x**`/`*x*`/`` `x` ``/links inside cells keep their faces,
+/// strikethrough, and clickable destinations instead of being flattened).
+fn cell_tokens(inlines: &[Inline], header: bool) -> Vec<Tok> {
+    let mut toks = Vec::new();
+    tokenize(inlines, header, false, false, None, &mut toks);
+    toks
+}
+
+/// Single-line width of a cell (word advances in each run's own slot plus one
+/// space between adjacent words). Used to size columns.
+fn cell_natural_width(toks: &[Tok], size: f32, faces: &Faces) -> f32 {
+    let mut w = 0.0;
+    let mut started = false;
+    let mut pending_space: Option<u8> = None;
+    for t in toks {
+        if t.space {
+            if started {
+                pending_space = Some(t.slot);
+            }
+        } else {
+            if let Some(slot) = pending_space.take() {
+                w += text_width(" ", size, slot, faces);
+            }
+            w += text_width(&t.text, size, t.slot, faces);
+            started = true;
+        }
+    }
+    w
+}
+
+/// Merge a line's tokens into runs of identical style, measuring each run.
+fn build_cell_line(toks: &[Tok], size: f32, faces: &Faces) -> CellWrapLine {
+    let mut runs: Vec<CellRun> = Vec::new();
+    for t in toks {
+        let merge = runs
+            .last()
+            .is_some_and(|r| r.slot == t.slot && r.link == t.link && r.strike == t.strike);
+        if merge {
+            if let Some(last) = runs.last_mut() {
+                last.text.push_str(&t.text);
+            }
+        } else {
+            runs.push(CellRun {
+                slot: t.slot,
+                text: t.text.clone(),
+                link: t.link.clone(),
+                strike: t.strike,
+                width: 0.0,
+            });
+        }
+    }
+    let mut total = 0.0;
+    for run in &mut runs {
+        run.width = text_width(&run.text, size, run.slot, faces);
+        total += run.width;
+    }
+    CellWrapLine { runs, width: total }
+}
+
+/// Greedily wrap styled cell tokens to `max_width`, preserving per-run styling.
+fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> Vec<CellWrapLine> {
+    let mut lines = Vec::new();
+    let mut cur: Vec<Tok> = Vec::new();
+    let mut cur_w = 0.0;
+    let mut pending: Option<Tok> = None;
+    for t in toks {
+        if t.hard_break {
+            pending = None;
+            if !cur.is_empty() {
+                lines.push(build_cell_line(&cur, size, faces));
+                cur.clear();
+                cur_w = 0.0;
+            }
+            continue;
+        }
+        if t.space {
+            if !cur.is_empty() {
+                pending = Some(t.clone());
+            }
+            continue;
+        }
+        let ww = text_width(&t.text, size, t.slot, faces);
+        let sw = pending
+            .as_ref()
+            .map_or(0.0, |s| text_width(" ", size, s.slot, faces));
+        if !cur.is_empty() && cur_w + sw + ww > max_width {
+            lines.push(build_cell_line(&cur, size, faces));
+            cur.clear();
+            cur_w = 0.0;
+            pending = None;
+            cur.push(t.clone());
+            cur_w += ww;
+        } else {
+            if let Some(sp) = pending.take() {
+                cur.push(sp);
+                cur_w += sw;
+            }
+            cur.push(t.clone());
+            cur_w += ww;
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(build_cell_line(&cur, size, faces));
+    }
+    lines
+}
+
 /// Lay out a GFM pipe table as a measured-column grid: a bold header row with a
 /// rule beneath it and a closing rule (booktabs-style), columns sized to their
 /// content and scaled to fill the measure, with per-cell alignment.
@@ -1764,17 +1888,18 @@ fn layout_table(
     let avail = (page.content_w - indent).max(72.0);
     let pad = 14.0; // inter-column gutter (half on each side of a column)
 
-    // Natural (unwrapped) text width per column across the header + every row.
+    // Natural (unwrapped) text width per column across the header + every row,
+    // measured from styled runs so mixed bold/italic/mono cells size correctly.
     let mut natural = vec![0f32; ncol];
     for (k, cell) in table.head.iter().enumerate() {
         if let Some(w) = natural.get_mut(k) {
-            *w = w.max(text_width(&inline_text(cell), size, F_BOLD, faces));
+            *w = w.max(cell_natural_width(&cell_tokens(cell, true), size, faces));
         }
     }
     for row in &table.rows {
         for (k, cell) in row.iter().enumerate() {
             if let Some(w) = natural.get_mut(k) {
-                *w = w.max(text_width(&inline_text(cell), size, F_BODY, faces));
+                *w = w.max(cell_natural_width(&cell_tokens(cell, false), size, faces));
             }
         }
     }
@@ -1799,17 +1924,18 @@ fn layout_table(
     }
 
     let row_lines =
-        |cells: &[Vec<Inline>], slot: u8, gap_after: f32, kind: FlowKind, shade: bool| {
-            let wrapped: Vec<Vec<String>> = (0..ncol)
+        |cells: &[Vec<Inline>], header: bool, gap_after: f32, kind: FlowKind, shade: bool| {
+            // Wrap each cell's STYLED tokens to its column width so bold/italic/
+            // code faces, strikethrough, and clickable links survive (they used
+            // to be flattened to one plain slot per cell).
+            let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
                 .map(|k| {
-                    let text = cells.get(k).map(|c| inline_text(c)).unwrap_or_default();
-                    wrap_table_cell(
-                        &text,
-                        colw.get(k).copied().unwrap_or(12.0),
-                        size,
-                        slot,
-                        faces,
-                    )
+                    let cw = colw.get(k).copied().unwrap_or(12.0);
+                    let toks = cells
+                        .get(k)
+                        .map(|c| cell_tokens(c, header))
+                        .unwrap_or_default();
+                    wrap_cell_styled(&toks, cw, size, faces)
                 })
                 .collect();
             let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
@@ -1818,36 +1944,47 @@ fn layout_table(
             for row_idx in 0..depth {
                 let mut segs = Vec::new();
                 // Source grid column of each emitted seg, kept parallel to `segs`
-                // so the structure tree can tag per-cell `/TH`/`/TD`. An empty
-                // cell emits no seg (and no column), so it is simply omitted from
-                // its row's structure — a known limitation (no empty-`/TD`
-                // backfill); see docs/PDF_ACCESSIBILITY.md.
+                // so the structure tree can tag per-cell `/TH`/`/TD`. Multiple
+                // styled runs of one cell share that cell's column key, so they
+                // collapse into a single `/TH`/`/TD` with several marked-content
+                // runs. An empty cell emits no seg (and no column), so it is
+                // simply omitted from its row's structure — a known limitation
+                // (no empty-`/TD` backfill); see docs/PDF_ACCESSIBILITY.md.
                 let mut cols = Vec::new();
                 for k in 0..ncol {
-                    let Some(text) = wrapped.get(k).and_then(|parts| parts.get(row_idx)) else {
+                    let Some(cell_line) = wrapped.get(k).and_then(|parts| parts.get(row_idx))
+                    else {
                         continue;
                     };
-                    if text.trim().is_empty() {
+                    if cell_line.runs.is_empty() {
                         continue;
                     }
-                    let w = text_width(text, size, slot, faces);
                     let cw = colw.get(k).copied().unwrap_or(0.0);
                     let base = tx.get(k).copied().unwrap_or(left);
-                    let x = match table.align.get(k) {
-                        Some(Align::Right) => base + (cw - w),
-                        Some(Align::Center) => base + (cw - w) / 2.0,
-                        _ => base,
+                    let offset = match table.align.get(k) {
+                        Some(Align::Right) => (cw - cell_line.width).max(0.0),
+                        Some(Align::Center) => ((cw - cell_line.width) / 2.0).max(0.0),
+                        _ => 0.0,
                     };
-                    segs.push(Seg {
-                        x: x.max(base),
-                        slot,
-                        text: text.clone(),
-                        link: None,
-                        fill: Fill::Black,
-                        strike: false,
-                        width: w,
-                    });
-                    cols.push(k as u32);
+                    let mut x = base + offset;
+                    for run in &cell_line.runs {
+                        let fill = if run.link.is_some() {
+                            Fill::Link
+                        } else {
+                            Fill::Black
+                        };
+                        segs.push(Seg {
+                            x,
+                            slot: run.slot,
+                            text: run.text.clone(),
+                            link: run.link.clone(),
+                            fill,
+                            strike: run.strike,
+                            width: run.width,
+                        });
+                        cols.push(k as u32);
+                        x += run.width;
+                    }
                 }
                 lines.push(Line {
                     size,
@@ -1899,7 +2036,7 @@ fn layout_table(
 
     out.extend(row_lines(
         &table.head,
-        F_BOLD,
+        true,
         3.0,
         FlowKind::TableHeader,
         false,
@@ -1911,7 +2048,7 @@ fn layout_table(
         // modern look. Deterministic from the logical row index.
         out.extend(row_lines(
             row,
-            F_BODY,
+            false,
             if i + 1 == nrows { 3.0 } else { 2.5 },
             FlowKind::TableRow,
             i % 2 == 0,
@@ -1919,62 +2056,6 @@ fn layout_table(
     }
     out.push(rule(0.0));
     gap(out, 8.0);
-}
-
-fn wrap_table_cell(text: &str, max_width: f32, size: f32, slot: u8, faces: &Faces) -> Vec<String> {
-    let words: Vec<&str> = split_breakable_words(text);
-    if words.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in words {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-
-        if text_width(&candidate, size, slot, faces) <= max_width || current.is_empty() {
-            current = candidate;
-            if text_width(&current, size, slot, faces) > max_width {
-                lines.extend(split_table_word(&current, max_width, size, slot, faces));
-                current.clear();
-            }
-        } else {
-            lines.push(std::mem::take(&mut current));
-            if text_width(word, size, slot, faces) > max_width {
-                lines.extend(split_table_word(word, max_width, size, slot, faces));
-            } else {
-                current.push_str(word);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
-fn split_table_word(word: &str, max_width: f32, size: f32, slot: u8, faces: &Faces) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for ch in word.chars() {
-        let mut candidate = current.clone();
-        candidate.push(ch);
-        if !current.is_empty() && text_width(&candidate, size, slot, faces) > max_width {
-            lines.push(std::mem::take(&mut current));
-            current.push(ch);
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
 }
 
 fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
@@ -3067,24 +3148,6 @@ fn expand_code_tabs(text: &str) -> String {
         }
     }
     out
-}
-
-fn split_breakable_words(text: &str) -> Vec<&str> {
-    let mut words = Vec::new();
-    let mut start: Option<usize> = None;
-    for (idx, ch) in text.char_indices() {
-        if is_breakable_whitespace(ch) {
-            if let Some(s) = start.take() {
-                words.push(&text[s..idx]);
-            }
-        } else if start.is_none() {
-            start = Some(idx);
-        }
-    }
-    if let Some(s) = start {
-        words.push(&text[s..]);
-    }
-    words
 }
 
 fn fill_for_highlight(kind: HighlightTok) -> Fill {
@@ -5950,23 +6013,6 @@ fn text_width(s: &str, size: f32, font: u8, faces: &Faces) -> f32 {
 
 fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
     faces.advance(font, ch) * size / 1000.0
-}
-
-fn inline_text(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    for inl in inlines {
-        match inl {
-            Inline::Text(t) | Inline::Code(t) => s.push_str(t),
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                s.push_str(&inline_text(c));
-            }
-            Inline::Link { content, .. } => s.push_str(&inline_text(content)),
-            Inline::Image { alt, .. } => s.push_str(alt),
-            Inline::SoftBreak | Inline::HardBreak => s.push(' '),
-            Inline::Html(html) => s.push_str(html),
-        }
-    }
-    s
 }
 
 #[cfg(test)]

@@ -3,8 +3,11 @@
 
 use std::collections::BTreeSet;
 
+use franken_markdown::ast::{Block, Inline};
+use franken_markdown::parse::parse_inlines;
 use franken_markdown::{
-    HtmlOptions, parse_markdown, parse_markdown_profiled, render_html, scan_markdown_line,
+    HtmlOptions, parse_markdown, parse_markdown_profiled, parse_markdown_spanned, render_html,
+    scan_markdown_line,
 };
 
 fn html(md: &str) -> String {
@@ -645,4 +648,347 @@ fn blank_separated_blocks_loosen_only_their_own_list() {
     let nested = html("- a\n  - b\n\n    cont");
     assert!(nested.contains("<li>a\n<ul>"));
     assert!(nested.contains("<li><p>b</p>\n<p>cont</p>"));
+}
+
+// ---------------------------------------------------------------------------
+// grn.2.5 mock-free coverage: real Markdown strings exercising parser edge
+// cases. Each test names the construct it targets.
+// ---------------------------------------------------------------------------
+
+/// Parse `md` and assert it produced exactly one top-level block, returning it.
+fn only_block(md: &str) -> Block {
+    let mut doc = parse_markdown(md);
+    assert_eq!(doc.blocks.len(), 1, "expected exactly one block for {md:?}");
+    doc.blocks.remove(0)
+}
+
+/// Pull the inline children of a single-paragraph document.
+fn paragraph_inlines(md: &str) -> Vec<Inline> {
+    match only_block(md) {
+        Block::Paragraph(inlines) => inlines,
+        other => panic!("expected a paragraph for {md:?}, got {other:?}"),
+    }
+}
+
+#[test]
+fn spanned_html_block_spans_every_non_blank_line() {
+    // The spanned-block collector walks an HTML block until the next blank line,
+    // so a multi-line `<div>` yields one span covering all of its lines.
+    let src = "<div>\nstill html\nmore html\n\nafter";
+    let doc = parse_markdown_spanned(src);
+
+    assert_eq!(doc.blocks.len(), 2);
+    assert_eq!(
+        doc.blocks[0].span.slice(src).unwrap(),
+        "<div>\nstill html\nmore html"
+    );
+    assert!(matches!(doc.blocks[0].node, Block::HtmlBlock(_)));
+    assert_eq!(doc.blocks[1].span.slice(src).unwrap(), "after");
+}
+
+#[test]
+fn spanned_paragraph_span_stops_at_interrupting_block_starter() {
+    // A heading on the line directly after prose interrupts the paragraph; the
+    // spanned collector must end the paragraph span before the heading.
+    let src = "intro paragraph\n# Heading\n\nbody";
+    let doc = parse_markdown_spanned(src);
+
+    assert_eq!(doc.blocks.len(), 3);
+    assert_eq!(doc.blocks[0].span.slice(src).unwrap(), "intro paragraph");
+    assert!(matches!(doc.blocks[0].node, Block::Paragraph(_)));
+    assert_eq!(doc.blocks[1].span.slice(src).unwrap(), "# Heading");
+    assert!(matches!(
+        doc.blocks[1].node,
+        Block::Heading { level: 1, .. }
+    ));
+    assert_eq!(doc.blocks[2].span.slice(src).unwrap(), "body");
+}
+
+#[test]
+fn reference_definition_with_empty_angle_destination_is_rejected() {
+    // `<>` is an empty angle destination, so the line is not a valid reference
+    // definition and stays as visible paragraph text; `[a]` does not resolve.
+    let out = html("[a]: <>\n\nUse [a].");
+
+    assert!(out.contains("[a]: &lt;&gt;"));
+    assert!(out.contains("Use [a]."));
+    assert!(!out.contains("<a href"));
+}
+
+#[test]
+fn reference_definition_accepts_parenthesized_title() {
+    // A parenthesized title on the same line as the definition resolves.
+    let out = html("[ref]: /url (Paren title)\n\nSee [ref].");
+
+    assert!(out.contains("<a href=\"/url\" title=\"Paren title\">ref</a>"));
+}
+
+#[test]
+fn reference_definition_with_unterminated_title_quote_stays_text() {
+    // The opening title quote is never closed, so the definition is malformed and
+    // remains literal text instead of resolving a link.
+    let out = html("[ref]: /url \"open\n\nSee [ref].");
+
+    assert!(out.contains("/url \"open"));
+    assert!(!out.contains("<a href=\"/url\""));
+}
+
+#[test]
+fn reference_definition_with_trailing_junk_after_title_stays_text() {
+    // Trailing non-space content after a complete title invalidates the
+    // definition.
+    let out = html("[ref]: /url \"Title\" junk\n\nSee [ref].");
+
+    assert!(out.contains("[ref]: /url"));
+    assert!(!out.contains("<a href=\"/url\""));
+}
+
+#[test]
+fn atx_heading_requires_a_space_after_the_hashes() {
+    // `#text` (no space) is not a heading; it stays paragraph text.
+    assert_eq!(
+        paragraph_inlines("#nospace"),
+        vec![Inline::Text("#nospace".to_string())]
+    );
+}
+
+#[test]
+fn backtick_fence_info_string_may_not_contain_a_backtick() {
+    // ```` ```js`x ```` has a backtick inside its info string, so it is not a
+    // fenced code block — it is paragraph text.
+    assert!(matches!(only_block("```js`x"), Block::Paragraph(_)));
+}
+
+#[test]
+fn indented_code_block_keeps_internal_blank_lines() {
+    // Blank lines between indented code lines stay inside the code block, and a
+    // following non-indented line ends it.
+    let blocks = parse_markdown("    a\n\n\n    b\nx").blocks;
+    assert_eq!(blocks.len(), 2);
+    match &blocks[0] {
+        Block::CodeBlock { lang, code } => {
+            assert_eq!(*lang, None);
+            assert_eq!(code, "a\n\n\nb\n");
+        }
+        other => panic!("expected code block, got {other:?}"),
+    }
+    assert_eq!(
+        blocks[1],
+        Block::Paragraph(vec![Inline::Text("x".to_string())])
+    );
+}
+
+#[test]
+fn blockquote_heading_is_not_lazily_continued() {
+    // The previous quoted line is a heading (not an open paragraph), so a
+    // following bare line ends the quote instead of lazily continuing it.
+    let out = html("> # Quoted heading\nplain line");
+
+    assert!(
+        out.contains("<blockquote>\n<h1 id=\"quoted-heading\">Quoted heading</h1>\n</blockquote>")
+    );
+    assert!(out.contains("<p>plain line</p>"));
+}
+
+#[test]
+fn html_block_recognizes_comments_declarations_and_processing_instructions() {
+    assert!(matches!(
+        only_block("<!-- a comment -->\nstill the comment block"),
+        Block::HtmlBlock(_)
+    ));
+    assert!(matches!(only_block("<!DOCTYPE html>"), Block::HtmlBlock(_)));
+    assert!(matches!(
+        only_block("<?php echo 1; ?>"),
+        Block::HtmlBlock(_)
+    ));
+}
+
+#[test]
+fn html_block_tag_classification_handles_late_alphabet_and_unknown_tags() {
+    // Tags late in the block-tag table are recognized as HTML blocks.
+    assert!(matches!(
+        only_block("<table>\n<tr><td>x</td></tr>\n</table>"),
+        Block::HtmlBlock(_)
+    ));
+    assert!(matches!(
+        only_block("<ul>\n<li>x</li>\n</ul>"),
+        Block::HtmlBlock(_)
+    ));
+    // An unknown tag name forces the classifier to evaluate every alternative and
+    // fall through to "not a block tag", so the line is an ordinary paragraph.
+    assert!(matches!(
+        only_block("<videocustomtag>not a block</videocustomtag>"),
+        Block::Paragraph(_)
+    ));
+}
+
+#[test]
+fn list_with_multiple_blank_lines_between_items_is_loose() {
+    // Two blank lines between same-level items still produce one loose list.
+    match only_block("- a\n\n\n- b") {
+        Block::List(list) => {
+            assert!(!list.tight, "blank-separated items should loosen the list");
+            assert_eq!(list.items.len(), 2);
+        }
+        other => panic!("expected a list, got {other:?}"),
+    }
+}
+
+#[test]
+fn pipe_line_followed_by_non_delimiter_is_not_a_table() {
+    // The second line has no `-`, so it is not a delimiter row: the two pipe lines
+    // form a single paragraph, not a table.
+    assert!(matches!(only_block("a | b\nc | d"), Block::Paragraph(_)));
+    assert!(!html("a | b\nc | d").contains("<table>"));
+}
+
+#[test]
+fn public_parse_inlines_entry_point_resolves_emphasis() {
+    let inlines = parse_inlines("plain *em* text");
+
+    assert_eq!(
+        inlines,
+        vec![
+            Inline::Text("plain ".to_string()),
+            Inline::Emphasis(vec![Inline::Text("em".to_string())]),
+            Inline::Text(" text".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn unclosed_code_span_backtick_is_literal_text() {
+    // No closing backtick: the run degrades to literal text, no code span.
+    let inlines = parse_inlines("a `b c");
+    assert_eq!(inlines, vec![Inline::Text("a `b c".to_string())]);
+    assert!(!inlines.iter().any(|i| matches!(i, Inline::Code(_))));
+}
+
+#[test]
+fn code_span_strips_one_surrounding_padding_space() {
+    // A single space immediately inside both delimiters is stripped.
+    assert_eq!(parse_inlines("` a `"), vec![Inline::Code("a".to_string())]);
+}
+
+#[test]
+fn strikethrough_delimiter_edge_cases() {
+    // Valid strikethrough, including a lone interior `~` that is not a closer.
+    assert_eq!(
+        parse_inlines("~~a~b~~"),
+        vec![Inline::Strikethrough(vec![Inline::Text("a~b".to_string())])]
+    );
+    // A space right after the opener prevents a strikethrough run.
+    let spaced = parse_inlines("~~ x~~");
+    assert!(!spaced.iter().any(|i| matches!(i, Inline::Strikethrough(_))));
+    // An unterminated run stays literal.
+    let unterminated = parse_inlines("~~foo");
+    assert_eq!(unterminated, vec![Inline::Text("~~foo".to_string())]);
+}
+
+#[test]
+fn inline_link_with_trailing_junk_after_title_is_literal() {
+    // `[a](b "t" x)` has stray content after the title before `)`, so it is not a
+    // link.
+    let out = html("[a](b \"t\" x)");
+    assert!(!out.contains("<a href"));
+    assert!(out.contains("[a](b"));
+}
+
+#[test]
+fn angle_link_destination_escapes_and_rejects() {
+    // Backslash-escaped punctuation inside an angle destination is unescaped.
+    assert!(html("[esc](<a\\)b>)").contains("<a href=\"a)b\">esc</a>"));
+    // A literal `<` inside the angle destination is invalid: not a link.
+    assert!(!html("[x](<a<b>)").contains("<a href"));
+}
+
+#[test]
+fn bare_link_destination_rejects_angle_and_unbalanced_parens() {
+    // A `<` inside a bare destination invalidates the link.
+    assert!(!html("[x](a<b)").contains("<a href"));
+    // Unbalanced opening parens leave no valid destination.
+    assert!(!html("[x](a(b").contains("<a href"));
+    assert!(html("[x](a(b").contains("[x](a(b"));
+}
+
+#[test]
+fn link_title_spanning_a_newline_is_not_a_link() {
+    // The title quote is interrupted by a line break, so the link does not form.
+    let out = html("[x](/u \"a\nb\")");
+    assert!(!out.contains("href=\"/u\""));
+    assert!(out.contains("[x](/u"));
+}
+
+#[test]
+fn empty_and_numeric_only_character_references_stay_literal() {
+    // `&;` is empty; `&#;` and `&#x;` have empty numeric bodies. None decode.
+    assert_eq!(
+        parse_inlines("&; &#; &#x;"),
+        vec![Inline::Text("&; &#; &#x;".to_string())]
+    );
+}
+
+#[test]
+fn named_character_references_decode_the_full_table() {
+    assert_eq!(
+        parse_inlines("&gt; &apos; &reg; &ndash; &mdash; &quot; &nbsp; &trade;"),
+        vec![Inline::Text(
+            "> ' \u{ae} \u{2013} \u{2014} \" \u{a0} \u{2122}".to_string()
+        )]
+    );
+}
+
+#[test]
+fn bare_www_autolink_requires_more_than_the_prefix() {
+    // A bare `www.` with nothing after the prefix is not autolinked.
+    let out = html("see www. here");
+    assert!(!out.contains("<a href"));
+    assert!(out.contains("www."));
+}
+
+#[test]
+fn bare_email_domain_may_not_end_in_dash_or_underscore() {
+    // The domain ends in `-`, so it is not treated as an email autolink.
+    let out = html("mail x@y- here");
+    assert!(!out.contains("mailto:"));
+}
+
+#[test]
+fn inline_html_comment_is_recognized_mid_paragraph() {
+    let inlines = paragraph_inlines("see <!-- note --> end");
+    assert!(
+        inlines
+            .iter()
+            .any(|i| matches!(i, Inline::Html(h) if h == "<!-- note -->")),
+        "expected an inline HTML comment node, got {inlines:?}"
+    );
+}
+
+#[test]
+fn link_text_may_contain_an_escaped_closing_bracket() {
+    // The escaped `]` inside the link text is skipped by bracket matching.
+    let out = html("[foo\\]bar](/url)");
+    assert!(out.contains("<a href=\"/url\">foo]bar</a>"));
+}
+
+#[test]
+fn image_alt_text_flattens_every_inline_kind() {
+    // The alt text is built by flattening every inline variant to plain text:
+    // emphasis/strong/strike, code, nested link, nested image, raw HTML, and a
+    // soft break (the embedded newline) all contribute.
+    let src = "![start *em* **str** ~~strike~~ `code` [link](/l) ![img](/i) <span>h</span> and\nmore](/dest)";
+    match only_block(src) {
+        Block::Paragraph(inlines) => match inlines.as_slice() {
+            [Inline::Image { dest, title, alt }] => {
+                assert_eq!(dest, "/dest");
+                assert_eq!(*title, None);
+                assert_eq!(
+                    alt,
+                    "start em str strike code link img <span>h</span> and more"
+                );
+            }
+            other => panic!("expected a single image, got {other:?}"),
+        },
+        other => panic!("expected a paragraph, got {other:?}"),
+    }
 }

@@ -82,3 +82,27 @@ fn dark_mode_policy_can_emit_light_only_css() {
 
     assert!(!html.contains("@media (prefers-color-scheme: dark)"));
 }
+
+// --- grn.2.8: small-module coverage for the theme model ---------------------
+
+#[test]
+fn dark_mode_policy_as_str_covers_both_variants() {
+    assert_eq!(DarkModePolicy::Auto.as_str(), "auto");
+    assert_eq!(DarkModePolicy::Disabled.as_str(), "disabled");
+}
+
+#[test]
+fn theme_colors_default_is_the_light_palette() {
+    let def = ThemeColors::default();
+    let light = ThemeColors::light();
+    assert_eq!(def, light);
+    // And the dark palette is genuinely different.
+    assert_ne!(def.bg, ThemeColors::dark().bg);
+}
+
+#[test]
+fn theme_sans_constructor_equals_default_and_serif_differs() {
+    assert_eq!(Theme::sans().font, franken_markdown::FontFamily::Sans);
+    assert_eq!(Theme::sans(), Theme::default());
+    assert_ne!(Theme::serif().font, Theme::sans().font);
+}

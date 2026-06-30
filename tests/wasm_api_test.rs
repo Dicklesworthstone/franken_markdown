@@ -243,3 +243,88 @@ fn wasm_capabilities_json_exposes_browser_safe_contract() {
     assert!(json.contains("\"image_assets\":\"png_v0_host_supplied_bytes\""));
     assert!(json.contains("\"font_assets\":\"ttf_v0_host_supplied_bytes\""));
 }
+
+// --- grn.2.8: small-module coverage for the wasm core surface ---------------
+
+#[test]
+fn wasm_output_format_spellings_are_stable() {
+    assert_eq!(WasmOutputFormat::Html.as_str(), "html");
+    assert_eq!(WasmOutputFormat::Pdf.as_str(), "pdf");
+    assert_eq!(WasmOutputFormat::Html.extension(), "html");
+    assert_eq!(WasmOutputFormat::Pdf.extension(), "pdf");
+    assert_eq!(
+        WasmOutputFormat::Html.mime_type(),
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(WasmOutputFormat::Pdf.mime_type(), "application/pdf");
+}
+
+#[test]
+fn wasm_render_options_constructors_and_font_builder() {
+    // sans() is the default; serif() flips the body font to the serif family.
+    let sans = WasmRenderOptions::sans();
+    assert_eq!(sans.theme.font, FontFamily::Sans);
+    let serif = WasmRenderOptions::serif();
+    assert_eq!(serif.theme.font, FontFamily::Serif);
+    assert_ne!(serif.theme.font, sans.theme.font);
+
+    // with_font_asset_name resolves a stable slot spelling and validates REAL bytes
+    // (this is the success path that delegates to with_font_asset_bytes).
+    let regular = fonts::body_bytes(FontFamily::Sans, FontStyle::Regular).to_vec();
+    let opts = WasmRenderOptions::sans()
+        .with_font_asset_name("body-regular", regular)
+        .unwrap();
+    assert!(!opts.font_assets.is_empty());
+}
+
+#[test]
+fn wasm_render_output_accessors_reflect_format() {
+    let html = render_html("# Hi\n\nbody", &WasmRenderOptions::sans()).unwrap();
+    assert!(!html.is_empty());
+    assert_eq!(html.len(), html.bytes.len());
+    assert!(html.len() > 100, "a self-contained HTML doc is non-trivial");
+    assert!(html.html().expect("html() Some for HTML").contains("<main"));
+
+    let pdf = render_pdf("# Hi", &WasmRenderOptions::sans()).unwrap();
+    assert!(!pdf.is_empty());
+    assert!(pdf.html().is_none(), "html() must be None for PDF output");
+}
+
+#[test]
+fn wasm_diagnostics_json_escapes_control_and_quote_characters() {
+    // Build a result by hand (its fields are public) to drive the JSON escaper
+    // across every branch: quote, backslash, newline, tab, CR, control char; the
+    // two diagnostics also exercise the comma-join branch.
+    let out = franken_markdown::wasm::WasmRenderOutput {
+        format: WasmOutputFormat::Html,
+        mime_type: WasmOutputFormat::Html.mime_type(),
+        extension: WasmOutputFormat::Html.extension(),
+        bytes: b"<main></main>".to_vec(),
+        diagnostics: vec![
+            franken_markdown::wasm::WasmDiagnostic {
+                severity: "warning",
+                start: 0,
+                end: 3,
+                message: "first".to_string(),
+            },
+            franken_markdown::wasm::WasmDiagnostic {
+                severity: "error",
+                start: 4,
+                end: 9,
+                message: "say \"hi\"\n\twith \\ and \r and \u{0001} control".to_string(),
+            },
+        ],
+        source_len: 13,
+    };
+    let json = out.diagnostics_json();
+    assert!(json.starts_with('['));
+    assert!(json.contains("\"severity\":\"warning\""));
+    assert!(json.contains("\"severity\":\"error\""));
+    assert!(json.contains("\\\"hi\\\""), "quotes escaped: {json}");
+    assert!(json.contains("\\n"), "newline escaped: {json}");
+    assert!(json.contains("\\t"), "tab escaped: {json}");
+    assert!(json.contains("\\r"), "carriage return escaped: {json}");
+    assert!(json.contains("\\\\"), "backslash escaped: {json}");
+    assert!(json.contains("},{"), "diagnostics comma-separated: {json}");
+    assert!(json.ends_with(']'));
+}

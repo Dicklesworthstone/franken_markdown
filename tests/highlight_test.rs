@@ -55,6 +55,14 @@ fn kind_code(kind: Tok) -> u64 {
     }
 }
 
+/// True when highlighting `code` for `lang` yields at least one span of `kind`
+/// whose exact tokenized substring equals `text`.
+fn has_span(lang: &str, code: &str, kind: Tok, text: &str) -> bool {
+    highlight(lang, code)
+        .iter()
+        .any(|s| s.kind == kind && &code[s.start..s.end] == text)
+}
+
 fn highlight_stress_digest(rounds: usize) -> (usize, usize, u64) {
     let samples = [
         ("rust", include_str!("fixtures/highlight/rust.code")),
@@ -317,4 +325,476 @@ fn unknown_language_code_block_falls_back_to_plain_escaped() {
     let html = render_html("```nope\n1 < 2 && 3\n```\n", &HtmlOptions::default()).unwrap();
     assert!(html.contains("1 &lt; 2 &amp;&amp; 3"));
     assert!(!html.contains("<span class=\"tok-"));
+}
+
+// ---------------------------------------------------------------------------
+// Token -> CSS class mapping (every variant, incl. the Comment arm).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tok_css_classes_cover_every_variant() {
+    assert_eq!(Tok::Plain.css_class(), None);
+    assert_eq!(Tok::Keyword.css_class(), Some("tok-kw"));
+    assert_eq!(Tok::Type.css_class(), Some("tok-ty"));
+    assert_eq!(Tok::Func.css_class(), Some("tok-fn"));
+    assert_eq!(Tok::Str.css_class(), Some("tok-st"));
+    assert_eq!(Tok::Number.css_class(), Some("tok-nu"));
+    assert_eq!(Tok::Comment.css_class(), Some("tok-cm"));
+    assert_eq!(Tok::Operator.css_class(), Some("tok-op"));
+    assert_eq!(Tok::Punct.css_class(), Some("tok-pn"));
+}
+
+// ---------------------------------------------------------------------------
+// Generic lexer branches (exercised through Rust, which has a full rule set).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generic_block_comments_terminated_and_unterminated() {
+    let closed = "let a = 1; /* a block */ let b = 2;";
+    assert_spans_tile("rust", closed);
+    assert!(has_span("rust", closed, Tok::Comment, "/* a block */"));
+
+    // No closing delimiter: the block comment runs to end-of-input.
+    let open = "x /* never closed";
+    assert_spans_tile("rust", open);
+    assert!(has_span("rust", open, Tok::Comment, "/* never closed"));
+}
+
+#[test]
+fn generic_unterminated_string_runs_to_eof() {
+    let code = "let s = \"no closing quote";
+    assert_spans_tile("rust", code);
+    assert!(has_span("rust", code, Tok::Str, "\"no closing quote"));
+}
+
+#[test]
+fn generic_string_backslash_escape_is_consumed() {
+    // The escaped quote must not terminate the string literal.
+    let code = "let s = \"a\\\"b\";";
+    assert_spans_tile("rust", code);
+    assert!(has_span("rust", code, Tok::Str, "\"a\\\"b\""));
+}
+
+#[test]
+fn generic_numeric_literal_variants() {
+    for (code, num) in [
+        ("let a = 0xFF;", "0xFF"),
+        ("let b = 3.14;", "3.14"),
+        ("let c = 1_000_000;", "1_000_000"),
+        ("let d = 0b1010;", "0b1010"),
+        ("let e = 0o17;", "0o17"),
+        ("let f = 2.5e10;", "2.5e10"),
+    ] {
+        assert_spans_tile("rust", code);
+        assert!(has_span("rust", code, Tok::Number, num), "number {num}");
+    }
+
+    // Number that runs to end-of-input (loop exits via the length guard).
+    let eof = "99";
+    assert_spans_tile("rust", eof);
+    assert!(has_span("rust", eof, Tok::Number, "99"));
+}
+
+#[test]
+fn generic_identifier_underscore_start_and_eof() {
+    // Leading underscore, interior underscores + digits, runs to EOF, no '('
+    // afterwards -> a single Plain identifier span.
+    let code = "_private_value1";
+    let spans = highlight("rust", code);
+    assert_spans_tile("rust", code);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].kind, Tok::Plain);
+    assert_eq!(&code[spans[0].start..spans[0].end], "_private_value1");
+}
+
+#[test]
+fn generic_type_detection_known_and_uppercase_heuristic() {
+    let code = "let v: Vec<i32> = MyStruct::new();";
+    assert_spans_tile("rust", code);
+    assert!(has_span("rust", code, Tok::Type, "Vec")); // in the type table
+    assert!(has_span("rust", code, Tok::Type, "i32")); // in the type table
+    assert!(has_span("rust", code, Tok::Type, "MyStruct")); // uppercase heuristic
+    assert!(has_span("rust", code, Tok::Func, "new")); // followed by '('
+}
+
+#[test]
+fn generic_empty_type_table_skips_uppercase_heuristic() {
+    // Bash has no type table: an uppercase word must stay Plain, not become Type.
+    let code = "echo $HOME";
+    assert_spans_tile("bash", code);
+    let kinds: Vec<Tok> = highlight("bash", code).iter().map(|s| s.kind).collect();
+    assert!(
+        !kinds.contains(&Tok::Type),
+        "an empty type table must not classify uppercase words as types"
+    );
+    assert!(has_span("bash", code, Tok::Plain, "HOME"));
+    // '$' is neither operator nor punctuation in the generic table -> Plain.
+    assert!(has_span("bash", code, Tok::Plain, "$"));
+}
+
+#[test]
+fn generic_operator_punctuation_and_stray_plain_dispatch() {
+    let code = "let total = a + b * 2; # $";
+    assert_spans_tile("rust", code);
+    assert!(has_span("rust", code, Tok::Operator, "=")); // operator class
+    assert!(has_span("rust", code, Tok::Operator, "+"));
+    assert!(has_span("rust", code, Tok::Operator, "*"));
+    assert!(has_span("rust", code, Tok::Punct, ";")); // punctuation class
+    // '#' and '$' fall through both tables -> Plain.
+    assert!(has_span("rust", code, Tok::Plain, "#"));
+    assert!(has_span("rust", code, Tok::Plain, "$"));
+}
+
+// ---------------------------------------------------------------------------
+// HTML lexer branches.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn html_self_closing_and_quote_variants() {
+    let code = "<img src='logo.png' alt=\"x\"/>";
+    assert_spans_tile("html", code);
+    assert!(has_span("html", code, Tok::Operator, "/>")); // self-closing
+    assert!(has_span("html", code, Tok::Str, "'logo.png'")); // single-quoted attr
+    assert!(has_span("html", code, Tok::Str, "\"x\"")); // double-quoted attr
+    assert!(has_span("html", code, Tok::Keyword, "img")); // tag name
+    assert!(has_span("html", code, Tok::Type, "src")); // attribute name
+    assert!(has_span("html", code, Tok::Type, "alt"));
+}
+
+#[test]
+fn html_unterminated_tag_runs_attribute_loop_to_eof() {
+    let code = "<div class=\"main\"";
+    assert_spans_tile("html", code);
+    assert!(has_span("html", code, Tok::Keyword, "div"));
+    assert!(has_span("html", code, Tok::Type, "class"));
+    assert!(has_span("html", code, Tok::Str, "\"main\""));
+}
+
+#[test]
+fn html_unusual_character_inside_tag_is_punctuation() {
+    let code = "<button @click=\"go\">x</button>";
+    assert_spans_tile("html", code);
+    assert!(has_span("html", code, Tok::Punct, "@")); // not a name/quote/op char
+    assert!(has_span("html", code, Tok::Keyword, "button"));
+    assert!(has_span("html", code, Tok::Type, "click"));
+}
+
+#[test]
+fn html_truncated_brackets_at_eof_are_not_tags() {
+    // A lone '<' at end-of-input is not a tag opener.
+    let lt = "text <";
+    assert_spans_tile("html", lt);
+    assert!(has_span("html", lt, Tok::Operator, "<"));
+
+    // '<' + '/' at end-of-input is also not a (closing) tag.
+    let slash = "text </";
+    assert_spans_tile("html", slash);
+    assert!(has_span("html", slash, Tok::Operator, "<"));
+}
+
+#[test]
+fn html_unterminated_comment_runs_to_eof() {
+    let code = "<!-- no end";
+    assert_spans_tile("html", code);
+    assert!(has_span("html", code, Tok::Comment, "<!-- no end"));
+}
+
+// ---------------------------------------------------------------------------
+// CSS lexer branches.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn css_combinators_and_numeric_units() {
+    let code = "a > b + c ~ d { width: 1.5em; line-height: 100%; z-index: 5; }";
+    assert_spans_tile("css", code);
+    assert!(has_span("css", code, Tok::Operator, ">"));
+    assert!(has_span("css", code, Tok::Operator, "+"));
+    assert!(has_span("css", code, Tok::Operator, "~"));
+    assert!(has_span("css", code, Tok::Number, "1.5em")); // is_css_number_char: '.', alpha
+    assert!(has_span("css", code, Tok::Number, "100%")); // is_css_number_char: '%'
+    assert!(has_span("css", code, Tok::Number, "5"));
+}
+
+#[test]
+fn css_string_quotes_escapes_and_unterminated() {
+    let single = ".x { content: 'hi'; }";
+    assert_spans_tile("css", single);
+    assert!(has_span("css", single, Tok::Str, "'hi'")); // single-quoted
+
+    // Backslash escape inside a double-quoted value must not end the string.
+    let esc = ".x { content: \"a\\\"b\"; }";
+    assert_spans_tile("css", esc);
+    assert!(has_span("css", esc, Tok::Str, "\"a\\\"b\""));
+
+    let unterm = ".x { content: \"oops";
+    assert_spans_tile("css", unterm);
+    assert!(has_span("css", unterm, Tok::Str, "\"oops"));
+}
+
+#[test]
+fn css_id_selector_that_is_not_a_hex_color() {
+    // `#main` is not a 3/4/6/8-digit hex color, so '#' falls through to Plain
+    // and `main` is lexed as a normal identifier.
+    let code = "#main { color: red; }";
+    assert_spans_tile("css", code);
+    assert!(has_span("css", code, Tok::Plain, "#"));
+    assert!(has_span("css", code, Tok::Type, "color")); // property before ':'
+}
+
+#[test]
+fn css_identifier_classification_paths() {
+    // Property name immediately before ':' -> Type.
+    let prop = "x { color: red; }";
+    assert!(has_span("css", prop, Tok::Type, "color"));
+
+    // Identifier directly after '.'/'#' selector punctuation -> Type.
+    let sel = ".hero { }";
+    assert!(has_span("css", sel, Tok::Type, "hero"));
+
+    // Bare identifier at the very start, not a property and not a selector -> Plain
+    // (it merges with the following whitespace into one Plain run).
+    let bare = "div { }";
+    assert_spans_tile("css", bare);
+    let bare_spans = highlight("css", bare);
+    assert!(
+        bare_spans
+            .iter()
+            .any(|s| s.kind == Tok::Plain && bare[s.start..s.end].starts_with("div")),
+        "bare identifier must be Plain"
+    );
+    assert!(
+        !bare_spans
+            .iter()
+            .any(|s| s.kind == Tok::Type && bare[s.start..s.end].contains("div")),
+        "bare identifier must not be a Type"
+    );
+
+    // Identifiers followed only by whitespace to EOF: next_non_space_is finds no ':'
+    // and there is no selector prefix, so the whole input collapses to one Plain run.
+    let trailing = "a b";
+    assert_spans_tile("css", trailing);
+    let trailing_spans = highlight("css", trailing);
+    assert_eq!(trailing_spans.len(), 1);
+    assert_eq!(trailing_spans[0].kind, Tok::Plain);
+    assert_eq!(
+        &trailing[trailing_spans[0].start..trailing_spans[0].end],
+        "a b"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Markdown lexer branches.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn markdown_html_comment_block() {
+    let code = "<!-- note -->\nplain text";
+    assert_spans_tile("markdown", code);
+    assert!(has_span("markdown", code, Tok::Comment, "<!-- note -->"));
+}
+
+#[test]
+fn markdown_leading_whitespace_and_plain_to_eof() {
+    // Leading indentation is consumed at line start; the following bullet marker
+    // keeps it as its own Plain run, and the item text then runs to end-of-input.
+    let code = "   - item runs to eof";
+    assert_spans_tile("markdown", code);
+    assert!(has_span("markdown", code, Tok::Plain, "   ")); // leading indentation
+    assert!(has_span("markdown", code, Tok::Operator, "-")); // bullet marker
+    assert!(has_span("markdown", code, Tok::Plain, " item runs to eof")); // plain to EOF
+}
+
+#[test]
+fn markdown_adjacent_plain_spans_merge() {
+    // Text, newline, indentation and trailing text are all Plain and contiguous;
+    // push_span must coalesce them into a single span.
+    let code = "x\n  y";
+    assert_spans_tile("markdown", code);
+    let spans = highlight("markdown", code);
+    assert_eq!(spans.len(), 1, "adjacent Plain spans must merge");
+    assert_eq!(spans[0].kind, Tok::Plain);
+    assert_eq!(&code[spans[0].start..spans[0].end], "x\n  y");
+}
+
+#[test]
+fn markdown_emphasis_marker_runs() {
+    let code = "this is **bold** and _em_ and ~~strike~~ text";
+    assert_spans_tile("markdown", code);
+    assert!(has_span("markdown", code, Tok::Operator, "**"));
+    assert!(has_span("markdown", code, Tok::Operator, "_"));
+    assert!(has_span("markdown", code, Tok::Operator, "~~"));
+}
+
+#[test]
+fn markdown_digits_and_ordered_list_markers() {
+    // A line starting with digits that is not a marker -> Number token.
+    let plain_num = "42 reasons\n";
+    assert_spans_tile("markdown", plain_num);
+    assert!(has_span("markdown", plain_num, Tok::Number, "42"));
+
+    // Valid single- and multi-digit ordered markers, both '.' and ')'.
+    let single = "1. first\n";
+    assert_spans_tile("markdown", single);
+    assert!(has_span("markdown", single, Tok::Operator, "1."));
+
+    let multi = "12) twelfth\n";
+    assert_spans_tile("markdown", multi);
+    assert!(has_span("markdown", multi, Tok::Operator, "12)"));
+
+    // Ordered marker that ends the input (no trailing char after the dot).
+    let eof_marker = "x\n3.";
+    assert_spans_tile("markdown", eof_marker);
+    assert!(has_span("markdown", eof_marker, Tok::Operator, "3."));
+
+    // Digits running to EOF are not a list marker.
+    let all_digits = "x\n789";
+    assert_spans_tile("markdown", all_digits);
+    assert!(has_span("markdown", all_digits, Tok::Number, "789"));
+
+    // A digit immediately followed by a non-marker char is not a list marker.
+    let typo = "12abc\n";
+    assert_spans_tile("markdown", typo);
+    assert!(has_span("markdown", typo, Tok::Number, "12"));
+
+    // A bare dash at end-of-input is still a (bullet) list marker.
+    let dash_eof = "x\n-";
+    assert_spans_tile("markdown", dash_eof);
+    assert!(has_span("markdown", dash_eof, Tok::Operator, "-"));
+}
+
+#[test]
+fn markdown_inline_code_and_triple_backtick_fence() {
+    let inline = "use `code` here";
+    assert_spans_tile("markdown", inline);
+    assert!(has_span("markdown", inline, Tok::Str, "`code`"));
+
+    // A run of three or more backticks (a fence) is emitted as-is.
+    let fence = "```rust\nlet x = 1;\n```";
+    assert_spans_tile("markdown", fence);
+    assert!(has_span("markdown", fence, Tok::Str, "```"));
+}
+
+// ---------------------------------------------------------------------------
+// Per-language rule tables (keywords / types / comments / strings / numbers).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn python_tokens_classified() {
+    let code = "def add(a, b):\n    return a + b  # sum\nx = 'hi'";
+    assert_spans_tile("python", code);
+    assert!(has_span("python", code, Tok::Keyword, "def"));
+    assert!(has_span("python", code, Tok::Keyword, "return"));
+    assert!(has_span("python", code, Tok::Func, "add"));
+    assert!(has_span("python", code, Tok::Comment, "# sum"));
+    assert!(has_span("python", code, Tok::Str, "'hi'"));
+
+    let typed = "n: int = 5";
+    assert!(has_span("python", typed, Tok::Type, "int"));
+    assert!(has_span("python", typed, Tok::Number, "5"));
+}
+
+#[test]
+fn javascript_and_typescript_tokens_classified() {
+    let js = "const f = (x) => `tmpl ${x}`; // c\n/* b */";
+    assert_spans_tile("js", js);
+    assert!(has_span("js", js, Tok::Keyword, "const"));
+    assert!(has_span("js", js, Tok::Str, "`tmpl ${x}`")); // backtick template string
+    assert!(has_span("js", js, Tok::Comment, "// c"));
+    assert!(has_span("js", js, Tok::Comment, "/* b */"));
+
+    let ts = "let n: number = 42;";
+    assert_spans_tile("ts", ts);
+    assert!(has_span("ts", ts, Tok::Keyword, "let"));
+    assert!(has_span("ts", ts, Tok::Type, "number"));
+    assert!(has_span("ts", ts, Tok::Number, "42"));
+}
+
+#[test]
+fn json_tokens_classified() {
+    let code = "{\n  \"key\": \"value\",\n  \"num\": 42,\n  \"ok\": true,\n  \"x\": null\n}";
+    assert_spans_tile("json", code);
+    assert!(has_span("json", code, Tok::Str, "\"key\""));
+    assert!(has_span("json", code, Tok::Str, "\"value\""));
+    assert!(has_span("json", code, Tok::Number, "42"));
+    assert!(has_span("json", code, Tok::Keyword, "true"));
+    assert!(has_span("json", code, Tok::Keyword, "null"));
+}
+
+#[test]
+fn bash_tokens_classified() {
+    let code = "for f in *.txt; do\n  echo \"$f\" # log\ndone";
+    assert_spans_tile("bash", code);
+    assert!(has_span("bash", code, Tok::Keyword, "for"));
+    assert!(has_span("bash", code, Tok::Keyword, "in"));
+    assert!(has_span("bash", code, Tok::Keyword, "do"));
+    assert!(has_span("bash", code, Tok::Keyword, "echo"));
+    assert!(has_span("bash", code, Tok::Keyword, "done"));
+    assert!(has_span("bash", code, Tok::Comment, "# log"));
+    assert!(has_span("bash", code, Tok::Str, "\"$f\""));
+}
+
+#[test]
+fn go_tokens_classified() {
+    let code = "func main() {\n\tvar n int = 3\n\ts := `raw`\n}";
+    assert_spans_tile("go", code);
+    assert!(has_span("go", code, Tok::Keyword, "func"));
+    assert!(has_span("go", code, Tok::Keyword, "var"));
+    assert!(has_span("go", code, Tok::Type, "int"));
+    assert!(has_span("go", code, Tok::Str, "`raw`")); // backtick raw string
+    assert!(has_span("go", code, Tok::Func, "main"));
+}
+
+#[test]
+fn c_and_cpp_tokens_classified() {
+    let code = "int main(void) {\n    char *s = \"hi\";\n    return 0; // ok\n}";
+    assert_spans_tile("c", code);
+    assert!(has_span("c", code, Tok::Type, "int"));
+    assert!(has_span("c", code, Tok::Type, "char"));
+    assert!(has_span("c", code, Tok::Keyword, "return"));
+    assert!(has_span("c", code, Tok::Str, "\"hi\""));
+    assert!(has_span("c", code, Tok::Comment, "// ok"));
+
+    let cpp = "template<class T> class Foo { public: Foo(); };";
+    assert_spans_tile("cpp", cpp);
+    assert!(has_span("cpp", cpp, Tok::Keyword, "template"));
+    assert!(has_span("cpp", cpp, Tok::Keyword, "class"));
+    assert!(has_span("cpp", cpp, Tok::Keyword, "public"));
+    assert!(has_span("cpp", cpp, Tok::Type, "Foo")); // uppercase heuristic
+}
+
+#[test]
+fn toml_and_ini_tokens_classified() {
+    let code = "[section]\nname = \"value\"\nenabled = true\nport = 8080 # c";
+    assert_spans_tile("toml", code);
+    assert!(has_span("toml", code, Tok::Str, "\"value\""));
+    assert!(has_span("toml", code, Tok::Keyword, "true"));
+    assert!(has_span("toml", code, Tok::Number, "8080"));
+    assert!(has_span("toml", code, Tok::Comment, "# c"));
+}
+
+#[test]
+fn yaml_tokens_classified() {
+    let code = "name: value\nenabled: true\nactive: no\nitems:\n  - 1 # c";
+    assert_spans_tile("yaml", code);
+    assert!(has_span("yaml", code, Tok::Keyword, "true"));
+    assert!(has_span("yaml", code, Tok::Keyword, "no"));
+    assert!(has_span("yaml", code, Tok::Comment, "# c"));
+    assert!(has_span("yaml", code, Tok::Number, "1"));
+}
+
+#[test]
+fn sql_tokens_classified() {
+    let code = "SELECT id, name FROM users WHERE age > 18; -- note\n/* block */";
+    assert_spans_tile("sql", code);
+    assert!(has_span("sql", code, Tok::Keyword, "SELECT"));
+    assert!(has_span("sql", code, Tok::Keyword, "FROM"));
+    assert!(has_span("sql", code, Tok::Keyword, "WHERE"));
+    assert!(has_span("sql", code, Tok::Number, "18"));
+    assert!(has_span("sql", code, Tok::Comment, "-- note")); // '--' line comment
+    assert!(has_span("sql", code, Tok::Comment, "/* block */"));
+
+    let typed = "CREATE TABLE t (id INTEGER, label VARCHAR);";
+    assert_spans_tile("sql", typed);
+    assert!(has_span("sql", typed, Tok::Type, "INTEGER"));
+    assert!(has_span("sql", typed, Tok::Type, "VARCHAR"));
 }

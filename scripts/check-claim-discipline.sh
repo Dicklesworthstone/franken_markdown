@@ -69,6 +69,41 @@ run_gate() {
   return "$rc"
 }
 
+# Test-rigor claim-discipline (bead grn.6.2): a "tested/covered" marketing claim in
+# the README must be backed by the committed evidence — the ratcheted coverage
+# floor, the mutation survivor ceiling, and the e2e suite. Like the registry gate,
+# it never invents a claim: it is a no-op unless the README actually markets one.
+check_test_rigor() {
+  local readme="$1" rc=0
+  # A coverage-percentage claim, e.g. "95% line coverage" / "97% code coverage".
+  local claimed
+  claimed="$(grep -oiE '[0-9]{1,3}% (line |code |test |unit )*coverage' "$readme" \
+    | grep -oE '^[0-9]+' | head -1)"
+  if [ -n "$claimed" ]; then
+    if [ ! -f tests/fixtures/coverage/coverage-floor.txt ]; then
+      echo "  test-rigor: README markets coverage but no committed floor exists" >&2; rc=1
+    fi
+    local measured
+    measured="$(grep -F '| lines |' tests/artifacts/coverage/baseline.md 2>/dev/null \
+      | grep -oE '[0-9]+\.[0-9]+' | head -1 | grep -oE '^[0-9]+')"
+    if [ -n "$measured" ] && [ "$claimed" -gt "$measured" ]; then
+      echo "  test-rigor: README claims ${claimed}% coverage but the measured baseline is ${measured}%" >&2
+      rc=1
+    fi
+  fi
+  # Mutation-testing marketing must be backed by the committed survivor ceiling.
+  if grep -qiE 'mutation[ -](tested|testing|coverage)' "$readme"; then
+    [ -f tests/fixtures/mutation/survivor-ceiling.txt ] \
+      || { echo "  test-rigor: README markets mutation testing but no committed ceiling exists" >&2; rc=1; }
+  fi
+  # End-to-end marketing must be backed by the e2e suite.
+  if grep -qiE 'end-to-end[ -]tested|e2e[ -]tested|comprehensive(ly)? e2e' "$readme"; then
+    [ -f scripts/e2e/run-all.sh ] \
+      || { echo "  test-rigor: README markets e2e testing but no run-all suite exists" >&2; rc=1; }
+  fi
+  return "$rc"
+}
+
 if [ "$SELF_TEST" -eq 1 ]; then
   echo "=== claim-discipline self-test ==="
   echo "-- (1) real README must PASS --"
@@ -82,15 +117,28 @@ if [ "$SELF_TEST" -eq 1 ]; then
   else
     echo "  overclaimed README: correctly FAILED (gate has teeth)"
   fi
+  echo "-- (3) real README must pass the test-rigor cross-check --"
+  if check_test_rigor "README.md"; then echo "  real README test-rigor: PASS"; else echo "  real README test-rigor: unexpectedly FAILED"; exit 1; fi
+  echo "-- (4) an over-claimed coverage % must FAIL the test-rigor cross-check --"
+  RIGOR_FAKE="${ART}/rigor-overclaim-README.md"
+  printf 'This renderer has 100%% line coverage and is exhaustively tested.\n' >"$RIGOR_FAKE"
+  if check_test_rigor "$RIGOR_FAKE"; then
+    echo "  over-claimed coverage: UNEXPECTEDLY PASSED — test-rigor gate has no teeth"; exit 1
+  else
+    echo "  over-claimed coverage: correctly FAILED (test-rigor gate has teeth)"
+  fi
   echo "claim-discipline self-test: ok"
   exit 0
 fi
 
 echo "=== claim-discipline run=${RUN_ID} readme=${README} ==="
-if run_gate "$README" "${ART}/report.txt"; then
-  echo "claim-discipline: ok — every marketed capability is backed by a capability flag and a proof artifact."
+gate_rc=0
+run_gate "$README" "${ART}/report.txt" || gate_rc=1
+check_test_rigor "$README" || gate_rc=1
+if [ "$gate_rc" -eq 0 ]; then
+  echo "claim-discipline: ok — every marketed capability is backed by a flag/proof, and every test-rigor claim by committed evidence."
   exit 0
 else
-  echo "claim-discipline: FAILED — a marketed claim lacks a matching capability flag or proof (see FAIL rows)."
+  echo "claim-discipline: FAILED — a marketed claim lacks a matching capability flag, proof artifact, or test-rigor evidence (see above)."
   exit 1
 fi

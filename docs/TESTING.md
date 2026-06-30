@@ -57,7 +57,14 @@ double from being introduced without this kind of justification.
 | Clean-room policy | Zero-dep core, no banned crates, no `unsafe`, batch isolation | `scripts/check-policy.sh` |
 | WASM core + package | `--no-default-features` + wasm32 build, headless render, native parity | `scripts/check-wasm-core.sh`, `scripts/check-wasm-package.sh` |
 | CLI output contract | stdout=data / stderr=diagnostics, JSON envelopes, exit codes | `scripts/cli-output-contract.sh`, `tests/cli_contract.rs` |
-| Coverage | Line/region/branch coverage across all feature configs | `scripts/coverage.sh` |
+| Coverage (ratcheted floor) | Line/region/branch coverage across all feature configs | `scripts/coverage.sh` |
+| Property + metamorphic | Cross-cutting invariants over generated inputs (injection-safety, determinism, PDF structure) | `tests/parser_metamorphic.rs` (via `cargo test`) |
+| Fuzz (generative) | No panic / termination / balanced spans over arbitrary bytes + deep nesting | `tests/parser_fuzz.rs` (via `cargo test`) |
+| Golden output (regenerable) | HTML + PDF rendered-output regression snapshots | `tests/golden_output.rs`; update with `UPDATE_GOLDEN=1` |
+| Mutation (ratcheted ceiling) | Tests actually *fail* when the code is wrong | `scripts/mutation.sh` |
+| Test-double gate | No new undocumented Stub/Mock/Fake/Dummy doubles | `scripts/check-test-doubles.sh` |
+| E2E suite (structured logging) | Every CLI workflow/flag/error path against the real binary | `scripts/e2e/run-all.sh` |
+| Everything at once | The full gauntlet with a combined report | `scripts/test-all.sh` (`--fast` to skip coverage + e2e) |
 | Perf proofs | Profile-guided, evidence-gated optimization decisions | `scripts/perf-*.sh` |
 
 ## Coverage methodology
@@ -104,6 +111,30 @@ in `rust-toolchain.toml` to keep the default dev install light).
 
 Exit codes: `0` success · `2` missing prerequisite · `3` a coverage pass failed
 under instrumentation · `4` report/aggregation failure.
+
+## Beyond line coverage
+
+Line/branch coverage proves a line *ran*; it does not prove a test would *fail* if
+that line were wrong. Three further tiers close that gap:
+
+- **Mutation testing** (`scripts/mutation.sh`, cargo-mutants). It rewrites the
+  source (negate a condition, swap an operator, change a return) and reruns the
+  suite; a surviving mutant is a hole in test *effectiveness*. Because a full-tree
+  run is hours, it gates a curated, well-tested scope (`FMD_MUTANTS_FILES` to
+  override) with a **ratcheted survivor ceiling**
+  (`tests/fixtures/mutation/survivor-ceiling.txt`): survivors can only go down.
+  The escaped mutants are recorded in `tests/fixtures/mutation/survivors.txt` for
+  triage. Raise/lower with `scripts/mutation.sh --update-ceiling`.
+- **Property + metamorphic** (`tests/parser_metamorphic.rs`) and **generative
+  fuzz** (`tests/parser_fuzz.rs`): invariants over thousands of seeded inputs —
+  no panic, termination (the block-nesting recursion bound), balanced source
+  spans, HTML injection-safety, render determinism, and PDF structural soundness.
+  Both run under the normal `cargo test`.
+- **Golden output regression** (`tests/golden_output.rs`): deterministic HTML +
+  PDF snapshots of representative documents. A change in the emitter, theme,
+  highlighter, or PDF writer moves a fingerprint and fails the test; regenerate
+  after a reviewed intentional change with `UPDATE_GOLDEN=1 cargo test --test
+  golden_output`.
 
 ## Current numbers
 

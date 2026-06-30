@@ -11,7 +11,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{
     FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Theme,
-    render_html, render_pdf,
+    parse_markdown, render_html, render_pdf, render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -423,6 +423,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                             json,
                         );
                     }
+                    report_pdf_warnings(&src, &opts, json);
                     report_write("pdf", &path, bytes.len(), json);
                 }
                 None => {
@@ -894,6 +895,24 @@ fn fail_json(code: u8, err_code: &str, msg: &str, json: bool) -> ExitCode {
 
 fn fail_render(err: RenderError, json: bool) -> ExitCode {
     fail_json(70, err.code(), &err.to_string(), json)
+}
+
+/// Print non-fatal PDF render warnings (degraded content that would otherwise be
+/// dropped silently) so they are never invisible. In `--json` mode each warning
+/// is its own JSONL object before the `wrote` envelope; otherwise a plain line.
+fn report_pdf_warnings(src: &str, opts: &PdfOptions, json: bool) {
+    let doc = parse_markdown(src);
+    for warning in render_warnings(&doc, opts) {
+        if json {
+            eprintln!(
+                "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                warning.code(),
+                json_escape(&warning.message())
+            );
+        } else {
+            eprintln!("fmd: warning: {}", warning.message());
+        }
+    }
 }
 
 fn report_write(kind: &str, path: &Path, bytes: usize, json: bool) {

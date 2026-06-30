@@ -510,6 +510,196 @@ pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> 
     render_inner(doc, opts, true)
 }
 
+/// A non-fatal diagnostic about a PDF render: content that was *degraded* rather
+/// than embedded, which the renderer would otherwise drop silently. Pure and
+/// WASM-safe — the caller (e.g. the `fmd` CLI) decides how to surface it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderWarning {
+    /// An image whose destination had no matching `PdfImageAsset`; rendered as
+    /// alt text instead of being embedded.
+    UnresolvedImage(String),
+    /// A supplied image asset could not be decoded (e.g. an unsupported PNG
+    /// variant); rendered as alt text instead of being embedded.
+    UnsupportedImage(String),
+    /// `count` characters had no glyph in the embedded fonts and were rendered
+    /// as `.notdef` boxes (and are not selectable). `sample` shows a few.
+    MissingGlyphs { count: usize, sample: String },
+}
+
+impl RenderWarning {
+    /// Stable machine selector for robot/JSON output.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnresolvedImage(_) => "unresolved_image",
+            Self::UnsupportedImage(_) => "unsupported_image",
+            Self::MissingGlyphs { .. } => "missing_glyphs",
+        }
+    }
+
+    /// Human-readable message naming the problem and, where possible, the fix.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::UnresolvedImage(dest) => format!(
+                "image '{dest}' has no --pdf-image mapping; rendered as alt text \
+                 (add --pdf-image '{dest}=PATH')"
+            ),
+            Self::UnsupportedImage(dest) => format!(
+                "image '{dest}' could not be decoded (unsupported PNG); rendered as alt text"
+            ),
+            Self::MissingGlyphs { count, sample } => format!(
+                "{count} character(s) have no glyph in the embedded fonts and were rendered \
+                 as .notdef boxes (e.g. {sample:?})"
+            ),
+        }
+    }
+}
+
+/// Compute non-fatal warnings for a PDF render of `doc` with `opts`: images that
+/// will not embed (missing or undecodable assets) and characters that have no
+/// glyph in the embedded fonts. Pure (no I/O); intended for the CLI to print to
+/// stderr so degraded output is never silent.
+#[must_use]
+pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
+    let mut warnings = Vec::new();
+
+    let mut dests = Vec::new();
+    collect_image_dests(&doc.blocks, &mut dests);
+    for dest in dests {
+        let trimmed = dest.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match opts
+            .image_assets
+            .iter()
+            .find(|asset| asset.destination.trim() == trimmed)
+        {
+            None => warnings.push(RenderWarning::UnresolvedImage(dest)),
+            Some(asset) => {
+                if parse_png_image_asset(trimmed, &asset.bytes).is_none() {
+                    warnings.push(RenderWarning::UnsupportedImage(dest));
+                }
+            }
+        }
+    }
+
+    if let Ok(faces) = Faces::load(opts) {
+        let mut text = String::new();
+        collect_text(&doc.blocks, &mut text);
+        let mut missing = 0usize;
+        let mut seen = BTreeSet::new();
+        let mut sample = String::new();
+        for c in text.chars() {
+            if c.is_whitespace() || c.is_control() {
+                continue;
+            }
+            let mapped = faces.body.glyph_index(c) != 0
+                || faces.bold.glyph_index(c) != 0
+                || faces.italic.glyph_index(c) != 0
+                || faces.bolditalic.glyph_index(c) != 0
+                || faces.mono.glyph_index(c) != 0;
+            if !mapped {
+                missing += 1;
+                if seen.insert(c) && sample.chars().count() < 8 {
+                    sample.push(c);
+                }
+            }
+        }
+        if missing > 0 {
+            warnings.push(RenderWarning::MissingGlyphs {
+                count: missing,
+                sample,
+            });
+        }
+    }
+
+    warnings
+}
+
+fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
+    for block in blocks {
+        match block {
+            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                collect_image_dests_inlines(inlines, out);
+            }
+            Block::BlockQuote(inner) => collect_image_dests(inner, out),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_image_dests(&item.blocks, out);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    collect_image_dests_inlines(cell, out);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        collect_image_dests_inlines(cell, out);
+                    }
+                }
+            }
+            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+        }
+    }
+}
+
+fn collect_image_dests_inlines(inlines: &[Inline], out: &mut Vec<String>) {
+    for inline in inlines {
+        match inline {
+            Inline::Image { dest, .. } => out.push(dest.clone()),
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                collect_image_dests_inlines(c, out);
+            }
+            Inline::Link { content, .. } => collect_image_dests_inlines(content, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_text(blocks: &[Block], out: &mut String) {
+    for block in blocks {
+        match block {
+            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                collect_text_inlines(inlines, out);
+            }
+            Block::CodeBlock { code, .. } => out.push_str(code),
+            Block::BlockQuote(inner) => collect_text(inner, out),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_text(&item.blocks, out);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    collect_text_inlines(cell, out);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        collect_text_inlines(cell, out);
+                    }
+                }
+            }
+            Block::ThematicBreak | Block::HtmlBlock(_) => {}
+        }
+    }
+}
+
+fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                collect_text_inlines(c, out);
+            }
+            Inline::Link { content, .. } => collect_text_inlines(content, out),
+            Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::SoftBreak | Inline::HardBreak | Inline::Html(_) => {}
+        }
+    }
+}
+
 fn render_inner(doc: &Document, opts: &PdfOptions, profiled: bool) -> Result<PdfProfile> {
     let mut profiler = if profiled {
         PdfProfiler::enabled()

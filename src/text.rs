@@ -397,7 +397,10 @@ impl Font {
         }
     }
 
-    /// Advance width of `ch` in 1/1000 em (PDF text-space units), `0` if unmapped.
+    /// Advance width of `ch` in 1/1000 em (PDF text-space units). An unmapped
+    /// `ch` resolves to glyph 0 (`.notdef`) and reserves that glyph's advance
+    /// (so a tofu box still occupies its natural width); only an unparsable face
+    /// with `units_per_em == 0` yields `0`.
     #[must_use]
     pub fn advance_1000(&self, ch: char) -> u32 {
         if self.units_per_em == 0 {

@@ -57,7 +57,7 @@ pub mod batch;
 pub use ast::Document;
 pub use error::{RenderError, Result};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
-pub use pdf::{PdfProfile, PdfStageSummary};
+pub use pdf::{PdfProfile, PdfStageSummary, RenderWarning, render_warnings};
 pub use scanner::{
     ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
     classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_pdf_escape,

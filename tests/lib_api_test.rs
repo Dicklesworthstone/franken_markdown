@@ -146,3 +146,65 @@ fn parse_entry_point_builds_a_document_ast() {
     );
     assert!(!doc.blocks.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// PDF render warnings (the 2026-06-30 "no silent drop" diagnostics): degraded
+// content must be reported, and clean content must produce no warnings.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_warnings_flags_unresolved_and_unsupported_images() {
+    use franken_markdown::{
+        PdfImageAsset, PdfOptions, RenderWarning, parse_markdown, render_warnings,
+    };
+
+    // No --pdf-image asset for the destination.
+    let doc = parse_markdown("![chart](images/chart.png)");
+    let warns = render_warnings(&doc, &PdfOptions::default());
+    assert!(
+        warns
+            .iter()
+            .any(|w| matches!(w, RenderWarning::UnresolvedImage(d) if d == "images/chart.png")),
+        "unresolved image must warn: {warns:?}"
+    );
+
+    // Asset present but not a decodable PNG.
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "images/chart.png",
+            b"not a png".to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let warns = render_warnings(&doc, &opts);
+    assert!(
+        warns
+            .iter()
+            .any(|w| matches!(w, RenderWarning::UnsupportedImage(_))),
+        "undecodable asset must warn: {warns:?}"
+    );
+    assert_eq!(warns[0].code(), "unsupported_image");
+}
+
+#[test]
+fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
+    use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
+
+    let doc = parse_markdown("Hello 中文 😀 world");
+    let warns = render_warnings(&doc, &PdfOptions::default());
+    let missing = warns
+        .iter()
+        .find_map(|w| match w {
+            RenderWarning::MissingGlyphs { count, .. } => Some(*count),
+            _ => None,
+        })
+        .expect("non-Latin characters must warn");
+    assert!(missing >= 3, "expected >=3 glyphless chars, got {missing}");
+
+    // Pure ASCII renders cleanly with no warnings.
+    let clean = parse_markdown("Just plain ASCII text, 123.");
+    assert!(
+        render_warnings(&clean, &PdfOptions::default()).is_empty(),
+        "clean ASCII must not warn"
+    );
+}

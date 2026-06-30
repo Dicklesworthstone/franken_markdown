@@ -29,7 +29,7 @@ cargo tree --target wasm32-unknown-unknown --no-default-features --features wasm
 Observed tree on 2026-06-28:
 
 ```text
-franken_markdown v0.0.0 (/data/projects/franken_markdown)
+franken_markdown v0.1.0 (/data/projects/franken_markdown)
 wasm-bindgen v0.2.126
 cfg-if v1.0.4
 once_cell v1.21.4

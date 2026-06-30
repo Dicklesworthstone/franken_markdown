@@ -8,17 +8,17 @@ repository files, the checked-in beads tracker (`.beads/`), and the docs under
 a date-based timeline kept visible so chronology is never lost. Representative
 commits are linked directly.
 
-This is **pre-release development history**. As of this writing the project has
-**no git tags and no GitHub Releases**; nothing has been published to crates.io
-or npm. Where this document says "landed," it means the capability is present in
-the `main` branch working history, not that a version was cut. Conformance and
+This changelog began as reconstructed pre-release development history and now
+records the first binary release. `franken_markdown` is not published to
+crates.io; the GitHub release ships standalone `fmd` CLI archives, while the
+WASM/npm package is handled by the separate tag-gated workflow. Conformance and
 status numbers below are the measured, ratcheted floors enforced in CI, not
 aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (109 commits, 2026-06-26 to
-  2026-06-29), the working tree, `.beads/issues.jsonl`, `docs/`, and the CI
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-06-30), the
+  working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **Unreleased / `0.0.0` development.** No tags, no releases.
+- Version state: **`0.1.0` initial binary release.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -30,10 +30,11 @@ aspirational targets.
 | 2026-06-27 | Typography deepens | Font subsetting and embedding, GPOS kerning, GSUB ligatures, Knuth-Plass breaking, hyphenation, measured tables, styled inline runs, FlateDecode compression, and a large parser-correctness fix wave |
 | 2026-06-28 | Hardening + WASM assets | Browser/WASM package assets, justified hyphen breaks, list looseness/tightness fixes, theme-color unification across HTML and PDF, and CI claim-discipline + keep-with-next pagination |
 | 2026-06-29 | Proof gates + accessibility + batch | Real WASM proof gate with native parity, CommonMark 0.31.2 conformance harness, hierarchical accessible tagged-PDF, deterministic render-tree golden, the performance-proof track, and the native Asupersync batch contract |
+| 2026-06-30 | First binary release | `0.1.0` release prep fixes installer asset lookup, switches the optional Asupersync dependency to the published crate, and cuts GitHub release archives instead of forcing source builds |
 
-## Unreleased (`0.0.0` development)
+## 0.1.0 - 2026-06-30
 
-What follows are the capability waves that make up the current `main` history.
+Initial binary release of the `fmd` CLI and library source.
 
 ### Cross-platform release and installer hardening (08f)
 
@@ -245,9 +246,10 @@ added.
 
 ## Notes for agents
 
-- **No tags or releases exist.** Do not write release notes that imply a `0.0.0`
-  (or any) version was published. The crate sets `publish = false`; the npm
-  package (`@franken-suite/franken-markdown`) is publish-ready but unpublished.
+- **Rust crate publishing remains disabled.** The first release is a GitHub
+  binary/source release for `fmd`; `Cargo.toml` still sets `publish = false`.
+  The npm package (`@franken-suite/franken-markdown`) is handled by the separate
+  tag-gated WASM workflow.
 - **Status numbers are ratcheted floors, not goals.** CommonMark is 357/652
   in-scope normalized matches and CI fails if it regresses;
   `capabilities --json` reports the same number via a drift guard.

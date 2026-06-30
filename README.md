@@ -26,13 +26,12 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > wasm-bindgen module that loads in node and the browser and renders HTML and PDF
 > with byte-identical parity to the native core; it is publish-ready (validated
 > manifest plus a tag-gated npm release workflow), proven by
-> `scripts/check-wasm-package.sh`. The actual npm publish (one tag push) and
-> deeper pagination controls remain active roadmap work tracked in beads.
-> Version `0.0.0`; no release is tagged yet. Prebuilt `fmd` binaries for Linux,
-> macOS (Intel + Apple Silicon), and Windows are produced by the tag-gated
+> `scripts/check-wasm-package.sh`. Deeper pagination controls remain active
+> roadmap work tracked in beads.
+> Version `0.1.0`. Prebuilt `fmd` binaries for Linux, macOS (Intel + Apple
+> Silicon), and Windows are produced by the tag-gated
 > `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
-> until a tag is pushed, build from source as shown under
-> [Installation](#installation).
+> source builds remain available as a fallback under [Installation](#installation).
 
 ---
 
@@ -166,10 +165,10 @@ bottom.
 
 ## Installation
 
-> The `curl`/PowerShell installers (`install.sh` / `install.ps1`) are present.
-> Until a release is tagged they build `fmd` from source on your machine; once a
-> `v*` tag is pushed they download and verify the prebuilt binary instead. The
-> from-source path below always works today.
+> The `curl`/PowerShell installers (`install.sh` / `install.ps1`) prefer
+> prebuilt release archives and verify checksums when `SHA256SUMS` is published.
+> Use `--from-source` / `-FromSource`, or the source commands below, only when
+> you intentionally want to compile locally.
 
 ### One-line install (Unix: macOS, Linux)
 
@@ -198,7 +197,7 @@ one-liner):
 | `--no-gum` | Skip the prettified prompts and use plain output |
 | `--force` | Overwrite an existing install without asking |
 
-### From source (works today)
+### From source
 
 ```bash
 git clone https://github.com/Dicklesworthstone/franken_markdown
@@ -216,7 +215,7 @@ fmd --help
 `fmd` and the long alias `franken_markdown` are the same program built from one
 shared entrypoint; type whichever you like.
 
-### Prebuilt binaries and npm (on a tagged release)
+### Prebuilt binaries and npm
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds,
 smoke-tests, and attaches a `fmd` archive per platform — Linux
@@ -625,8 +624,9 @@ Honest about what the renderer does not do yet.
   header column scope), blockquotes, figures, and links are tagged; H4-H6 levels,
   cell-to-header id linkage, sub-line inline-link tagging, and page-spanning
   logical elements remain roadmap. See [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
-- **No published release or installer yet.** Binaries build from source until a
-  version is tagged.
+- **Release binaries are tag-driven.** The installers prefer the GitHub release
+  assets and fall back to local compilation only when explicitly requested or
+  when no matching asset exists for the current platform.
 
 ---
 

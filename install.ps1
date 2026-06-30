@@ -13,9 +13,9 @@
         irm https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.ps1 -OutFile install.ps1
         .\install.ps1 -FromSource -Verify
 
-    There are no prebuilt release binaries yet, so today the installer falls back
-    to a from-source build (cargo build --release --bin fmd). The download tiers
-    are wired correctly so they work as soon as releases are published.
+    Tagged releases publish prebuilt fmd archives. The installer prefers those
+    archives and only builds from source when -FromSource is requested or no
+    matching release asset exists for the current platform.
 
     Proxy support: set HTTPS_PROXY / HTTP_PROXY and downloads honor it.
 
@@ -299,16 +299,14 @@ function Build-FromSource {
         }
     }
 
-    # The optional `batch` feature depends on a sibling path crate (..\asupersync)
-    # absent in a standalone clone. The default `fmd` build never enables `batch`,
-    # but cargo still resolves declared path deps while building the graph, so
-    # neutralize the optional dep + feature for a clean default build. Only ever
-    # mutate our own throwaway clone - never the user's local checkout.
+    # The default `fmd` build never enables `batch`; if a source fallback lands on
+    # an older tag with a non-portable optional Asupersync source, neutralize that
+    # optional dep in our throwaway clone only. Never mutate the user's checkout.
     $sibling = Join-Path (Split-Path -Parent $src) 'asupersync'
     $cargoToml = Join-Path $src 'Cargo.toml'
     if ($srcIsClone -and -not (Test-Path -LiteralPath $sibling) -and (Test-Path -LiteralPath $cargoToml)) {
         (Get-Content -LiteralPath $cargoToml) |
-            Where-Object { $_ -notmatch '^asupersync\s*=\s*{\s*path\s*=\s*"\.\./asupersync"' } |
+            Where-Object { $_ -notmatch '^asupersync\s*=\s*{' } |
             ForEach-Object { $_ -replace '^batch\s*=.*$', 'batch = ["cli"]' } |
             Set-Content -LiteralPath $cargoToml
     }
@@ -353,6 +351,7 @@ function Get-Binary {
     $candidates = @()
     if ($env:ARTIFACT_URL) { $candidates += $env:ARTIFACT_URL }
     if ($Version) {
+        $candidates += "https://github.com/$Owner/$Repo/releases/download/$Version/$BinaryName-$Version-$Target.$Ext"
         $candidates += "https://github.com/$Owner/$Repo/releases/download/$Version/$BinaryName-$VersionBare-$Target.$Ext"
         $candidates += "https://github.com/$Owner/$Repo/releases/download/$Version/$BinaryName-$Target.$Ext"
     }

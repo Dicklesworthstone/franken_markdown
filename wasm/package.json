@@ -1,6 +1,6 @@
 {
   "name": "@franken-suite/franken-markdown",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Browser/WASM package for franken_markdown Markdown to HTML/PDF rendering.",
   "type": "module",
   "sideEffects": false,

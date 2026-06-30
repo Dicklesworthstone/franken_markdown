@@ -22,10 +22,9 @@
 #   -h, --help         Show help and exit
 #
 # Notes:
-#   * There are no prebuilt release binaries yet. Until releases are published the
-#     download tiers will 404 and the installer transparently falls back to a
-#     from-source build via `cargo build --release --bin fmd`. The download tiers
-#     are wired correctly so they "just work" once releases exist.
+#   * Tagged releases publish prebuilt `fmd` archives. The installer prefers
+#     those archives and only builds from source when --from-source is requested
+#     or no matching release asset exists for the current platform.
 #   * Build-from-source needs the Rust toolchain (cargo). If cargo is missing the
 #     installer prints clear rustup guidance and exits.
 #   * Proxy support: set HTTPS_PROXY / HTTP_PROXY and every download honors it.
@@ -248,7 +247,7 @@ fi
 setup_proxy
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Platform detection (OS x ARCH -> Rust triple, musl for Linux, WSL warning)
+# Platform detection (OS x ARCH -> release Rust triple, WSL warning)
 # ─────────────────────────────────────────────────────────────────────────────
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -261,8 +260,8 @@ esac
 TARGET=""
 EXT="tar.gz"
 case "${OS}-${ARCH}" in
-  linux-x86_64)   TARGET="x86_64-unknown-linux-musl" ;;
-  linux-aarch64)  TARGET="aarch64-unknown-linux-musl" ;;
+  linux-x86_64)   TARGET="x86_64-unknown-linux-gnu" ;;
+  linux-aarch64)  TARGET="aarch64-unknown-linux-gnu" ;;
   darwin-x86_64)  TARGET="x86_64-apple-darwin" ;;
   darwin-aarch64) TARGET="aarch64-apple-darwin" ;;
   *) warn "No prebuilt target for ${OS}/${ARCH}; will build from source"; FROM_SOURCE=1 ;;
@@ -442,7 +441,7 @@ install_binary() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build-from-source fallback (the working path until releases exist).
+# Build-from-source fallback.
 #   cargo build --release --bin fmd   ->   target/release/fmd
 # ─────────────────────────────────────────────────────────────────────────────
 build_from_source() {
@@ -475,14 +474,12 @@ build_from_source() {
     fi
   fi
 
-  # The optional `batch` feature depends on a sibling path crate (../asupersync)
-  # that is absent in a standalone clone. The default `fmd` build never enables
-  # `batch`, but cargo still resolves declared path deps while building the graph,
-  # so neutralize the optional dep + feature for a clean default build. Only ever
-  # mutate our own throwaway clone — never the user's local checkout.
+  # The default `fmd` build never enables `batch`; if a source fallback lands on
+  # an older tag with a non-portable optional Asupersync source, neutralize that
+  # optional dep in our throwaway clone only. Never mutate the user's checkout.
   if [ "$src_is_clone" -eq 1 ] && [ ! -d "$src/../asupersync" ] && [ -f "$src/Cargo.toml" ]; then
     sed -i.bak \
-      -e '/^asupersync[[:space:]]*=[[:space:]]*{[[:space:]]*path[[:space:]]*=[[:space:]]*"\.\.\/asupersync"/d' \
+      -e '/^asupersync[[:space:]]*=[[:space:]]*{/d' \
       -e 's/^batch[[:space:]]*=.*$/batch = ["cli"]/' \
       "$src/Cargo.toml"
     rm -f "$src/Cargo.toml.bak"
@@ -534,12 +531,14 @@ acquire_binary() {
     candidates+=("$ARTIFACT_URL")
   fi
   if [ -n "$VERSION" ]; then
-    # Tier 1: versioned artifact under the release tag.
+    # Tier 1: release workflow artifact under the tag. The archive name includes
+    # the literal tag, e.g. fmd-v0.1.0-aarch64-apple-darwin.tar.gz.
+    candidates+=("https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${VERSION}-${TARGET}.${EXT}")
+    # Tier 2: compatibility names for any hand-uploaded assets.
     candidates+=("https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${VERSION_BARE}-${TARGET}.${EXT}")
-    # Tier 2: versionless name under the release tag.
     candidates+=("https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${TARGET}.${EXT}")
   fi
-  # Tier 3: /releases/latest/download/ (no version needed) + simple OS-ARCH name.
+  # Tier 3: /releases/latest/download/ compatibility aliases.
   candidates+=("https://github.com/${OWNER}/${REPO}/releases/latest/download/${BINARY_NAME}-${TARGET}.${EXT}")
   candidates+=("https://github.com/${OWNER}/${REPO}/releases/latest/download/${BINARY_NAME}-${OS}-${ARCH}.${EXT}")
 

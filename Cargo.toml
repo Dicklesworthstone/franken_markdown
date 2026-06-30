@@ -14,7 +14,7 @@
 #     path so the core stays trivially auditable).
 [package]
 name = "franken_markdown"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 default-run = "fmd"
@@ -71,10 +71,10 @@ wasm-bindgen = { version = "0.2.126", optional = true }
 # Native-only, opt-in via the `batch` feature. Justification: the project's own
 # orchestration framework (the Franken suite), used solely for the native batch
 # renderer's structured concurrency / cancellation / budget semantics; it never
-# enters the render core or any wasm/no-default build. A git source (not a path)
-# so feature-off builds and CI — which do not vendor a sibling checkout — still
-# resolve the manifest. Cargo.lock pins the exact commit for reproducibility.
-asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", optional = true }
+# enters the render core or any wasm/no-default build. Use the published crate,
+# not a moving git checkout, so default installs and release builds do not fetch
+# unrelated repository fixtures before compiling `fmd`.
+asupersync = { version = "0.3.5", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

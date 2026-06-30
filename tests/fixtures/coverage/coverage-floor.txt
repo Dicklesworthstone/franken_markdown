@@ -2,7 +2,7 @@
 # drops below these integers. Raise with: scripts/coverage.sh --update-floor.
 # Whole-percent floors absorb cross-platform instrumentation noise while
 # still catching real regressions.
-lines=88
-regions=87
-branches=76
-functions=90
+lines=95
+regions=94
+branches=85
+functions=97

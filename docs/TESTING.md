@@ -108,12 +108,13 @@ under instrumentation · `4` report/aggregation failure.
 ## Current numbers
 
 The committed baseline is [`../tests/artifacts/coverage/baseline.md`](../tests/artifacts/coverage/baseline.md)
-(machine form: `baseline.tsv`). As of 2026-06-29, merging all three feature
-passes: **88.1% line · 87.8% region · 76.5% branch · 90.8% function.** The
-worst-covered modules — and therefore the phase-B gap-fill targets — are
-`wasm_abi.rs` (0%, native-unreachable today), `error.rs` (19%), `config.rs`
-(62%), and `cli.rs` (67%); see the ledger for the full per-module table and the
-owning bead for each.
-
-A ratcheted coverage floor enforced in CI (mirroring the CommonMark conformance
-floor) is tracked by `grn.1.3`.
+(machine form: `baseline.tsv`). As of 2026-06-30, after the grn.2 mock-free
+per-module gap-fill, merging all three feature passes: **95.6% line · 94.3%
+region · 85.7% branch · 97.4% function** (up from a pre-gap-fill 88.1% line /
+76.5% branch). Every module is now ≥ 92% line except `cli.rs` (81.6%, whose
+residual lines are the `batch`-feature surface that the default binary the
+contract tests drive does not compile). The committed floor
+(`tests/fixtures/coverage/coverage-floor.txt`: lines ≥ 95, regions ≥ 94, branches
+≥ 85, functions ≥ 97) is enforced by the CI `coverage` job
+(`scripts/coverage.sh --check`), mirroring the CommonMark conformance floor: the
+number can only go up. Raise it with `scripts/coverage.sh --update-floor`.

@@ -1,24 +1,24 @@
-# franken_markdown coverage baseline ledger (grn.1.2)
-# Measured 2026-06-29 with scripts/coverage.sh (cargo-llvm-cov --branch),
+# franken_markdown coverage baseline ledger (grn.1.2; ratcheted post-Phase-B)
+# Measured 2026-06-30 with scripts/coverage.sh --update-floor (cargo-llvm-cov --branch),
 # merging default(cli) + batch + wasm-bindgen feature passes.
 # Columns: percentages are of covered/total. Regenerate: scripts/coverage.sh <run-id>
 module	line_pct	line_cov	region_pct	branch_pct	branch_cov	fn_pct	missed_lines
-TOTAL	88.1	10726/12171	87.8	76.5	2098/2744	90.8	1445
-src/wasm_abi.rs	0.0	0/276	0.0	0.0	0/0	0.0	276
-src/error.rs	19.1	4/21	22.2	0.0	0/0	25.0	17
-src/config.rs	62.3	162/260	55.5	57.4	31/54	63.9	98
-src/cli.rs	66.9	410/613	68.5	73.1	95/130	78.0	203
-src/lib.rs	74.2	89/120	76.0	28.6	4/14	85.0	31
-src/wasm.rs	85.9	170/198	83.6	75.0	6/8	82.1	28
-src/text.rs	87.4	916/1048	84.7	64.1	200/312	98.8	132
-src/highlight.rs	88.9	559/629	87.8	76.9	183/238	89.4	70
-src/batch.rs	91.3	548/600	88.5	67.3	35/52	90.4	52
-src/pdf.rs	92.0	3686/4007	91.6	75.1	535/712	96.9	321
-src/theme.rs	93.3	167/179	88.2	75.0	6/8	91.7	12
-src/parse/mod.rs	93.4	1833/1963	93.9	80.6	651/808	95.5	130
-src/layout.rs	94.8	989/1043	93.6	84.5	142/168	94.4	54
+TOTAL	95.6	11952/12501	94.3	85.7	2370/2766	97.4	549
+src/cli.rs	81.6	500/613	81.1	92.3	120/130	82.9	113
+src/text.rs	92.3	967/1048	88.3	76.6	239/312	98.8	81
+src/pdf.rs	94.5	3788/4007	93.5	79.1	563/712	97.3	219
+src/wasm_abi.rs	94.6	261/276	91.0	61.1	11/18	96.3	15
+src/lib.rs	96.7	116/120	98.8	92.9	13/14	100.0	4
 src/scanner.rs	97.1	167/172	98.5	86.8	59/68	100.0	5
-src/html.rs	97.8	590/603	96.9	86.9	73/84	98.3	13
+src/theme.rs	97.2	174/179	91.2	75.0	6/8	100.0	5
+src/parse/mod.rs	97.7	1939/1985	97.7	90.3	733/812	97.5	46
+src/batch.rs	97.8	888/908	97.5	88.5	46/52	95.8	20
+src/highlight.rs	98.1	617/629	98.6	91.6	218/238	100.0	12
+src/html.rs	98.2	592/603	97.5	86.9	73/84	98.3	11
+src/layout.rs	98.8	1031/1043	98.0	89.9	151/168	97.2	12
 src/compress.rs	99.2	369/372	95.7	89.3	75/84	100.0	3
+src/config.rs	99.2	258/260	98.0	96.3	52/54	100.0	2
+src/wasm.rs	99.5	197/198	99.3	100.0	8/8	100.0	1
+src/error.rs	100.0	21/21	100.0	0.0	0/0	100.0	0
 src/fonts.rs	100.0	27/27	100.0	0.0	0/0	100.0	0
 src/span.rs	100.0	40/40	100.0	75.0	3/4	100.0	0

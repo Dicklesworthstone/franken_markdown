@@ -29,10 +29,12 @@ fi
 export FMD_BIN="$FMD_TARGET_DIR/release/fmd"
 [ -x "$FMD_BIN" ] || { log "run-all: fmd binary missing at $FMD_BIN"; exit 66; }
 
-# Discover suites (the optional parity/installer suites are folded in when present).
+# Discover suites. The parity/installer suites are heavy (wasm build / from-source
+# build), so they are opt-in: set E2E_RUN_PARITY=1 / E2E_RUN_INSTALLER=1 to fold
+# them in. Run them directly any time (scripts/e2e/installer.sh).
 SUITES=(cli-surface render-matrix error-paths)
-[ -f scripts/e2e/parity.sh ] && SUITES+=(parity)
-[ -f scripts/e2e/installer.sh ] && SUITES+=(installer)
+[ -f scripts/e2e/parity.sh ] && [ "${E2E_RUN_PARITY:-0}" = "1" ] && SUITES+=(parity)
+[ -f scripts/e2e/installer.sh ] && [ "${E2E_RUN_INSTALLER:-0}" = "1" ] && SUITES+=(installer)
 
 fail=0
 SUMMARIES=()

@@ -3,10 +3,20 @@
 //! third-party fuzz/differential crates so production and dev builds stay lean.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::{HtmlOptions, parse_markdown, render_html, render_html_document};
+use franken_markdown::{
+    HtmlOptions, PdfOptions, parse_markdown, render_html, render_html_document, render_pdf,
+};
 
 fn render(src: &str) -> String {
     render_html(src, &HtmlOptions::default()).unwrap()
+}
+
+fn render_pdf_pinned(src: &str) -> Vec<u8> {
+    let opts = PdfOptions {
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    render_pdf(src, &opts).unwrap()
 }
 
 fn render_parsed(src: &str) -> String {
@@ -114,4 +124,120 @@ fn reference_label_case_and_whitespace_variants_are_equivalent() {
     let spaced = "[  MULTI   WORD  ]: /ok\n\nSee [this][Multi   Word].";
 
     assert_eq!(render(compact), render(spaced));
+}
+
+// --- grn.5.2: cross-cutting invariants over generated inputs -----------------
+
+/// Adversarial blocks whose TEXT carries HTML/JS-injection payloads. Rendered with
+/// the default (escaping) policy, none of these must survive as live markup.
+const INJECTION_BLOCKS: &[&str] = &[
+    "A paragraph with <script>alert('xss')</script> and <img src=x onerror=alert(1)>.\n",
+    "Ampersand & entity &amp; and a bare < and > in text.\n",
+    "Inline `code with <b>tags</b> & amps` stays literal.\n",
+    "> quote with <iframe src=evil></iframe>\n",
+    "- list <svg/onload=alert(1)> item\n",
+    "[link](javascript:alert(1)) and ![img](x\"onerror=alert(1)).\n",
+];
+
+fn injection_document(rng: &mut Lcg, blocks: usize) -> String {
+    let mut out = String::new();
+    for idx in 0..blocks {
+        if idx > 0 {
+            out.push_str("\n\n");
+        }
+        out.push_str(INJECTION_BLOCKS[rng.next_usize(INJECTION_BLOCKS.len())]);
+    }
+    out
+}
+
+#[test]
+fn generated_html_never_emits_live_injected_markup() {
+    let mut rng = Lcg::new(0x1235_c70a_5afe_0001);
+    for _ in 0..120 {
+        let blocks = 1 + rng.next_usize(6);
+        let html = render(&injection_document(&mut rng, blocks));
+        // Inspect only rendered USER content (after the trusted fmd <head>/<style>).
+        let body = html.split("</head>").nth(1).unwrap_or(&html);
+        // Tags fmd NEVER legitimately emits — their presence would mean raw-HTML
+        // pass-through of user text (a default-escaping breach). (Markdown images
+        // legitimately produce <img>, so it is intentionally NOT in this set.)
+        for tag in [
+            "<script", "<iframe", "<svg", "<b>", "</b>", "<object", "<embed",
+        ] {
+            assert!(!body.contains(tag), "raw HTML tag {tag:?} leaked into body");
+        }
+        // No live attribute-breakout or event handler: fmd escapes `"` to &quot;, so
+        // a raw quote-then-handler can never appear, and it never builds a
+        // javascript: href.
+        for breakout in [
+            "\"onerror",
+            "\"onload",
+            "\"onmouseover",
+            "href=\"javascript:",
+        ] {
+            assert!(
+                !body.contains(breakout),
+                "attribute breakout {breakout:?} leaked"
+            );
+        }
+        // The escaped forms must be present (chars were kept, just neutralized).
+        assert!(body.contains("&lt;") || body.contains("&amp;") || body.contains("&quot;"));
+    }
+}
+
+/// Count well-formedness / structural invariants on a real PDF's raw bytes.
+fn pdf_is_structurally_sound(pdf: &[u8]) -> Result<(), String> {
+    if !pdf.starts_with(b"%PDF-") {
+        return Err("missing %PDF- header".into());
+    }
+    let text = String::from_utf8_lossy(pdf);
+    if !text.trim_end().ends_with("%%EOF") {
+        return Err("missing %%EOF trailer".into());
+    }
+    if !text.contains("startxref") {
+        return Err("missing startxref".into());
+    }
+    // Every indirect object opens with "<n> 0 obj" and closes with "endobj".
+    let opens = text.matches(" 0 obj").count();
+    let closes = text.matches("endobj").count();
+    if opens != closes {
+        return Err(format!(
+            "unbalanced objects: {opens} ' 0 obj' vs {closes} 'endobj'"
+        ));
+    }
+    // Tagged-PDF contract: the structure tree root must be present.
+    if !text.contains("/StructTreeRoot") {
+        return Err("missing /StructTreeRoot (not a tagged PDF)".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn generated_pdf_is_structurally_sound_and_deterministic() {
+    let mut rng = Lcg::new(0x0dfd_5a1e_de7e_4321);
+    for _ in 0..40 {
+        let blocks = 1 + rng.next_usize(6);
+        let src = generated_document(&mut rng, blocks);
+        let a = render_pdf_pinned(&src);
+        let b = render_pdf_pinned(&src);
+        assert_eq!(a, b, "pinned-epoch PDF must be byte-identical across runs");
+        if let Err(why) = pdf_is_structurally_sound(&a) {
+            panic!("PDF structural invariant violated: {why}\nsource:\n{src}");
+        }
+    }
+}
+
+#[test]
+fn small_tagged_pdf_balances_marked_content_operators() {
+    // A small document keeps its content stream uncompressed, so the marked-content
+    // operators are visible in the raw bytes. Each BDC/BMC must have a matching EMC.
+    let pdf = render_pdf_pinned("# Title\n\nA paragraph.\n\n- item one\n- item two\n\n> a quote\n");
+    let text = String::from_utf8_lossy(&pdf);
+    let opens = text.matches("BDC").count() + text.matches("BMC").count();
+    let closes = text.matches("EMC").count();
+    assert!(opens > 0, "a tagged PDF must emit marked content");
+    assert_eq!(
+        opens, closes,
+        "marked content must balance: {opens} open vs {closes} EMC"
+    );
 }

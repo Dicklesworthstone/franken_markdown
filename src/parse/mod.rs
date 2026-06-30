@@ -66,6 +66,11 @@ pub struct ParseStageSummary {
 struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
+    /// Current block-nesting recursion depth, used to bound deeply-nested
+    /// blockquote/list input so pathological untrusted documents cannot overflow
+    /// the stack (a DoS). Threaded for free since the profiler is already `&mut`
+    /// through every block-parsing call.
+    block_depth: usize,
 }
 
 impl ParseProfiler {
@@ -73,6 +78,7 @@ impl ParseProfiler {
         Self {
             enabled: false,
             stages: Vec::new(),
+            block_depth: 0,
         }
     }
 
@@ -80,6 +86,7 @@ impl ParseProfiler {
         Self {
             enabled: true,
             stages: Vec::new(),
+            block_depth: 0,
         }
     }
 
@@ -504,6 +511,38 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
     (consumed, refs)
 }
 
+/// Defensive recursion bound for block nesting (blockquotes, lists). Real
+/// documents nest only a handful of levels; this cap is far beyond any legitimate
+/// use yet low enough that even a debug build (with large stack frames) cannot
+/// overflow on adversarial input such as `">".repeat(100_000)`.
+const MAX_BLOCK_NESTING_DEPTH: usize = 128;
+
+/// Recurse into nested block content (a blockquote body or a list item body) with
+/// a depth guard. Past [`MAX_BLOCK_NESTING_DEPTH`] levels, stop nesting and emit
+/// the remaining content as one flat paragraph instead of recursing — this keeps
+/// the text while making a stack-overflow DoS on deeply-nested untrusted input
+/// impossible. Inline parsing is iterative (bounded), so the fallback is safe.
+fn parse_blocks_bounded(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Block> {
+    if profiler.block_depth >= MAX_BLOCK_NESTING_DEPTH {
+        let text = lines.join("\n");
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        return vec![Block::Paragraph(parse_inlines_with_refs_profiled(
+            trimmed, refs, profiler,
+        ))];
+    }
+    profiler.block_depth += 1;
+    let blocks = parse_blocks_with_refs_profiled(lines, refs, profiler);
+    profiler.block_depth -= 1;
+    blocks
+}
+
 fn parse_blocks_with_refs_profiled(
     lines: &[&str],
     refs: &ReferenceMap,
@@ -601,7 +640,7 @@ fn parse_blocks_with_refs_profiled(
                 }
             }
             let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
-            let inner_blocks = parse_blocks_with_refs_profiled(&inner_refs, refs, profiler);
+            let inner_blocks = parse_blocks_bounded(&inner_refs, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
                 inner.len(),
@@ -1283,7 +1322,7 @@ fn parse_list_profiled(
         let item_refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
         items.push(ListItem {
             task,
-            blocks: parse_blocks_with_refs_profiled(&item_refs, refs, profiler),
+            blocks: parse_blocks_bounded(&item_refs, refs, profiler),
         });
     }
     (

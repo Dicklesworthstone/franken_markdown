@@ -2088,19 +2088,13 @@ fn process_emphasis(
             InlineEl::Delim { count, .. } => *count,
             _ => 0,
         };
-        // Pair delimiters into strong (2) or emphasis (1). A single multi-run gets
-        // strong as the OUTER wrapper (`***x***` -> <strong><em>x</em></strong>)
-        // by consuming the lone emphasis delimiter first — but ONLY when an odd
-        // delimiter is actually left over (both runs odd). Even runs pair entirely
-        // into strong, so `****x****` is <strong><strong>x</strong></strong>
-        // (bold), never nested emphasis (which would wrongly render as italic).
-        let use_delims = if ocount >= 3 && ccount >= 3 && ocount % 2 == 1 && ccount % 2 == 1 {
-            1
-        } else if ocount >= 2 && ccount >= 2 {
-            2
-        } else {
-            1
-        };
+        // Pair delimiters into strong (2) or emphasis (1). CommonMark consumes the
+        // delimiters nearest the content first: when both the opener and closer
+        // have >= 2 delimiters this pairing is strong (the INNER wrapper), and any
+        // leftover single delimiter becomes the outer emphasis on a later pass.
+        // So `***x***` -> <em><strong>x</strong></em> (strong inner, em outer), and
+        // `****x****` pairs entirely into <strong><strong>x</strong></strong>.
+        let use_delims = if ocount >= 2 && ccount >= 2 { 2 } else { 1 };
 
         // Bound nesting depth before building anything: the deepest node strictly
         // between opener and closer determines the wrapper's depth. Past the cap
@@ -3006,6 +3000,8 @@ mod emphasis_dos_tests {
     #[test]
     fn normal_emphasis_is_unaffected() {
         // The cap/budget never trip on ordinary input: exact shapes still hold.
+        // `***c***` is <em><strong>c</strong></em> — strong inner, emphasis outer
+        // (CommonMark consumes the delimiters nearest the content first).
         assert_eq!(
             parse_inlines("*a* **b** ***c***"),
             vec![
@@ -3013,7 +3009,7 @@ mod emphasis_dos_tests {
                 Inline::Text(" ".into()),
                 Inline::Strong(vec![Inline::Text("b".into())]),
                 Inline::Text(" ".into()),
-                Inline::Strong(vec![Inline::Emphasis(vec![Inline::Text("c".into())])]),
+                Inline::Emphasis(vec![Inline::Strong(vec![Inline::Text("c".into())])]),
             ]
         );
     }

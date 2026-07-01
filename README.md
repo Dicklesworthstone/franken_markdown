@@ -611,8 +611,8 @@ Honest about what the renderer does not do yet.
   now render, with bold/italic/mono faces and clickable link annotations.) PDF
   images are host-supplied standalone PNGs via `--pdf-image`.
 - **CommonMark coverage is partial and measured.** Against the official
-  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **363/652
-  examples match** after normalizing fmd's styled HTML (61.4% of the 591 in-scope
+  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **366/652
+  examples match** after normalizing fmd's styled HTML (61.9% of the 591 in-scope
   examples; the 61 raw-HTML examples are intentional non-goals, since fmd escapes
   raw HTML by default). This is a ratcheted floor: CI fails if it drops.
 - **HTML font subsets are TTF data URLs, not WOFF2.** Output is deterministic and

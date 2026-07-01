@@ -633,10 +633,11 @@ fn bare_email_autolink_is_conservative() {
 fn even_length_emphasis_runs_are_bold_not_italic() {
     // Four delimiters pair entirely into strong (bold), never nested emphasis.
     assert!(html("****x****").contains("<p><strong><strong>x</strong></strong></p>"));
-    // Three delimiters keep the strong-outer / emphasis-inner shape (unchanged).
-    assert!(html("***x***").contains("<p><strong><em>x</em></strong></p>"));
-    // Five delimiters: bold wrappers with a single inner emphasis (odd leftover).
-    assert!(html("*****x*****").contains("<strong><strong><em>x</em></strong></strong>"));
+    // Three delimiters: strong is consumed first (inner), emphasis is the leftover
+    // outer wrapper — CommonMark takes the delimiters nearest the content first.
+    assert!(html("***x***").contains("<p><em><strong>x</strong></em></p>"));
+    // Five delimiters: two strong wrappers (inner) with a single outer emphasis.
+    assert!(html("*****x*****").contains("<em><strong><strong>x</strong></strong></em>"));
 }
 
 #[test]

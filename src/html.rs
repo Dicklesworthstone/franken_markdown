@@ -537,6 +537,13 @@ fn css_token(s: &str) -> String {
 }
 
 fn css_num(value: f32) -> String {
+    // A non-finite value (NaN/inf) would serialize to `NaN`/`inf`, which is an
+    // invalid CSS token. A library caller can put such a value in a directly
+    // constructed theme, so fold it to `0` (matching the PDF writer's
+    // non-finite handling) rather than emitting a broken declaration.
+    if !value.is_finite() {
+        return "0".to_string();
+    }
     let mut s = format!("{value:.3}");
     while s.ends_with('0') {
         s.pop();
@@ -1011,7 +1018,18 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, sanitize_custom_css, slug};
+    use super::{base64_encode, css_num, sanitize_custom_css, slug};
+
+    #[test]
+    fn css_num_folds_non_finite_to_zero() {
+        // NaN/inf would otherwise serialize to invalid CSS tokens.
+        assert_eq!(css_num(f32::NAN), "0");
+        assert_eq!(css_num(f32::INFINITY), "0");
+        assert_eq!(css_num(f32::NEG_INFINITY), "0");
+        // Finite values are unaffected.
+        assert_eq!(css_num(1.5), "1.5");
+        assert_eq!(css_num(0.0), "0");
+    }
 
     #[test]
     fn sanitize_custom_css_neutralizes_style_end_tag() {

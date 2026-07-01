@@ -197,11 +197,25 @@ impl FontAssets {
     }
 }
 
+/// Upper bound on host-supplied font bytes per slot. A font is cloned and
+/// subset, so an unbounded blob is an unmetered memory/CPU cost — the same
+/// host-supplied-bytes threat the PDF image path already caps. 32 MiB is far
+/// larger than any real subsettable TrueType face (even large CJK fonts) yet
+/// bounds the worst case.
+const MAX_FONT_ASSET_BYTES: usize = 32 * 1024 * 1024;
+
 fn validate_font_asset(slot: FontAssetSlot, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() {
         return Err(RenderError::InvalidInput(format!(
             "{} font bytes must not be empty",
             slot.as_str()
+        )));
+    }
+    if bytes.len() > MAX_FONT_ASSET_BYTES {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font bytes are {} bytes, over the {MAX_FONT_ASSET_BYTES}-byte limit",
+            slot.as_str(),
+            bytes.len()
         )));
     }
     let font = text::Font::parse(bytes.to_vec()).map_err(|err| {
@@ -331,8 +345,9 @@ pub fn parse_markdown_spanned_profiled(src: &str) -> SpannedParseProfile {
 /// (HTML and PDF) from one AST — the document-centric pipeline.
 ///
 /// # Errors
-/// Currently infallible for the HTML path, but returns [`Result`] so callers do
-/// not have to change signatures as richer validation lands.
+/// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
+/// invalid (empty, over the size limit, or not a subsettable TrueType face);
+/// the render itself is otherwise infallible.
 pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
     opts.font_assets.validate()?;
     Ok(html::render(doc, opts))
@@ -380,11 +395,25 @@ pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::VERSION;
+    use super::{FontAssetSlot, FontAssets, MAX_FONT_ASSET_BYTES, VERSION};
 
     #[test]
     fn version_constant_matches_package_metadata() {
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
         assert!(!VERSION.trim().is_empty());
+    }
+
+    #[test]
+    fn oversized_font_bytes_are_rejected() {
+        // A host-supplied font over the per-slot cap is refused before it is
+        // cloned and subset (bounds an unmetered memory/CPU cost).
+        let mut assets = FontAssets::default();
+        let too_big = vec![0u8; MAX_FONT_ASSET_BYTES + 1];
+        assert!(
+            assets
+                .set_slot(FontAssetSlot::BodyRegular, too_big)
+                .is_err(),
+            "font bytes over the cap must be rejected"
+        );
     }
 }

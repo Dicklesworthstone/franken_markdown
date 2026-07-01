@@ -15,6 +15,7 @@ use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 mod entities;
+mod unicode_punct;
 
 #[cfg(not(target_arch = "wasm32"))]
 type ParseStageStart = std::time::Instant;
@@ -1854,10 +1855,14 @@ enum InlineEl {
 /// whitespace). For `_`, the additional intraword rule applies so that
 /// `foo_bar` stays literal while `_foo_` opens/closes emphasis.
 fn emphasis_flanking(before: Option<char>, after: Option<char>, ch: char) -> (bool, bool) {
+    // CommonMark 0.31.2 counts an ASCII punctuation character OR any Unicode P
+    // (punctuation) or S (symbol) code point as "punctuation" for flanking, so a
+    // symbol like `£`/`€` adjacent to a delimiter suppresses emphasis just like
+    // ASCII punctuation does.
     let before_ws = before.is_none_or(char::is_whitespace);
-    let before_punct = before.is_some_and(|c| c.is_ascii_punctuation());
+    let before_punct = before.is_some_and(unicode_punct::is_unicode_punctuation);
     let after_ws = after.is_none_or(char::is_whitespace);
-    let after_punct = after.is_some_and(|c| c.is_ascii_punctuation());
+    let after_punct = after.is_some_and(unicode_punct::is_unicode_punctuation);
 
     let left_flanking = !after_ws && (!after_punct || before_ws || before_punct);
     let right_flanking = !before_ws && (!before_punct || after_ws || after_punct);
@@ -3202,6 +3207,32 @@ mod refdef_paragraph_tests {
         assert!(!line_is_paragraph_text("> quote"));
         assert!(!line_is_paragraph_text("---"));
         assert!(!line_is_paragraph_text("```"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod unicode_flanking_tests {
+    use crate::{HtmlOptions, render_html};
+
+    fn html(src: &str) -> String {
+        render_html(src, &HtmlOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn a_unicode_symbol_next_to_a_delimiter_suppresses_emphasis() {
+        // CommonMark example 354: a symbol (Sc) counts as punctuation for
+        // flanking, so `*£*bravo.` stays literal rather than emphasizing `£`.
+        assert!(html("*£*bravo.").contains("*£*bravo."));
+        assert!(!html("*£*bravo.").contains("<em>£</em>"));
+        assert!(html("*€*charlie.").contains("*€*charlie."));
+    }
+
+    #[test]
+    fn ordinary_emphasis_and_ascii_punctuation_are_unchanged() {
+        assert!(html("a *em* b").contains("<em>em</em>"));
+        // ASCII punctuation adjacency was already handled and must stay literal.
+        assert!(html("*$*alpha.").contains("*$*alpha."));
     }
 }
 

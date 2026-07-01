@@ -193,12 +193,18 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     );
     let reference_started = profiler.checkpoint();
     let (lines, mut refs) = collect_link_references(&lines);
-    // Also collect definitions nested inside blockquotes, so a use anywhere in
-    // the document (including a forward reference) can resolve a definition that
-    // lives inside a container. CommonMark allows definitions inside block
-    // containers; the blockquote body's own definition lines are removed when
-    // the blockquote is parsed (see the blockquote branch below).
-    collect_nested_references(&lines, &mut refs, 0);
+    // Also collect definitions nested inside blockquotes/list items, so a use
+    // anywhere in the document (including a forward reference) can resolve a
+    // definition that lives inside a container. CommonMark allows definitions
+    // inside block containers; the container body's own definition lines are
+    // removed when it is parsed (see the blockquote branch / parse_list). The
+    // `]:` guard skips this whole traversal when no line can be a reference
+    // definition (every ref-def has `]:` where its label closes), so a document
+    // with no references — including a pathologically deep nested list — never
+    // pays for the extra structural walk.
+    if lines.iter().any(|line| line.contains("]:")) {
+        collect_nested_references(&lines, &mut refs, 0);
+    }
     profiler.record_since(
         "reference_collection",
         refs.len(),
@@ -502,6 +508,15 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
             continue;
         }
 
+        // HTML block contents are literal text, never reference definitions.
+        // Skip the whole block (matching the block parser) so a `[label]: dest`-
+        // looking line inside raw HTML is not extracted and resolved.
+        if let Some(end_cond) = html_block_kind(lines[i]) {
+            i = html_block_end(lines, i, end_cond, |l| *l);
+            in_paragraph = false;
+            continue;
+        }
+
         if lines[i].trim().is_empty() {
             in_paragraph = false;
             i += 1;
@@ -528,6 +543,18 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
             i += used;
             // Leading reference definitions do not themselves open a paragraph.
             in_paragraph = false;
+            continue;
+        }
+
+        // A setext underline (`===`/`---`) following paragraph text closes that
+        // paragraph into a heading — the block parser does exactly this — so the
+        // next line is at a block boundary. Without this, a `===` (which
+        // `line_is_paragraph_text` treats as ordinary text) would keep the
+        // paragraph "open" and a following reference definition would be wrongly
+        // absorbed as a lazy continuation and dropped.
+        if in_paragraph && setext_underline(lines[i]).is_some() {
+            in_paragraph = false;
+            i += 1;
             continue;
         }
 
@@ -593,6 +620,13 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // container never starts at 4+ columns, so skipping the line is safe.
         if indented_code_start(line) {
             i += 1;
+            continue;
+        }
+        // HTML block contents are literal — skip the whole block so a
+        // `> [x]: dest`/`- [x]: dest`-looking line inside raw HTML is not read as
+        // a nested container and its "definition" collected.
+        if let Some(end_cond) = html_block_kind(line) {
+            i = html_block_end(lines, i, end_cond, |l| *l);
             continue;
         }
         if line.trim_start().starts_with('>') {
@@ -3382,6 +3416,39 @@ mod refdef_paragraph_tests {
         let out = html("- one\n- two\n");
         assert!(out.contains("<li>one</li>"));
         assert!(out.contains("<li>two</li>"));
+    }
+
+    #[test]
+    fn a_definition_after_a_setext_underline_is_collected() {
+        // `foo\n===` is a setext heading (a complete block), so a following
+        // definition is at a block boundary and must resolve — not be absorbed
+        // as a lazy continuation of the (now-closed) paragraph.
+        let out = html("foo\n===\n[bar]: /url\n\nsee [bar]");
+        assert!(out.contains("<h1"), "foo\\n=== is a setext h1: {out}");
+        assert!(
+            out.contains("href=\"/url\""),
+            "the def after === must resolve: {out}"
+        );
+        // A `===` that does NOT follow paragraph text is itself a paragraph, so a
+        // following def-looking line is a lazy continuation (not a definition).
+        assert!(!html("===\n[x]: /y\n\n[x]").contains("href=\"/y\""));
+    }
+
+    #[test]
+    fn a_definition_inside_an_html_block_is_not_collected() {
+        // HTML block contents are literal; a `[x]: /y` / `> [x]: /y` /
+        // `- [x]: /y` line inside raw HTML is not a definition, so a later use
+        // stays literal (matches the block parser, which treats the block as raw).
+        for src in [
+            "<div>\n[foo]: /url\n</div>\n\n[foo]",
+            "<div>\n- [foo]: /url\n</div>\n\n[foo]",
+            "<div>\n> [foo]: /url\n</div>\n\n[foo]",
+        ] {
+            assert!(
+                !html(src).contains("href=\"/url\""),
+                "def inside an HTML block must not resolve: {src}"
+            );
+        }
     }
 
     #[test]

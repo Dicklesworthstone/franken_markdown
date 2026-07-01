@@ -85,8 +85,11 @@ struct BatchArgs {
     /// (bytes / 64 MiB-per-job), NOT by measuring real resident memory.
     #[arg(long)]
     mem_budget: Option<u64>,
-    /// Wall-clock deadline in seconds. When it fires the run cancels at the next
-    /// per-file checkpoint and the receipt is marked `cancelled`.
+    /// Wall-clock deadline in seconds (best-effort). It is only checked at per-file
+    /// boundaries — the render core never checkpoints mid-file — so a single large
+    /// file runs to completion before the deadline can stop the remaining files.
+    /// When it fires, not-yet-started files are skipped and the receipt is marked
+    /// `cancelled`.
     #[arg(long)]
     timeout: Option<u64>,
     /// Refuse any single input larger than this many bytes (default 64 MiB),
@@ -453,6 +456,17 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};
 
     let json = global_json || args.json;
+
+    // `--workers 0` would otherwise collapse into "unset" (automatic sizing);
+    // reject it explicitly so the flag never silently means the opposite.
+    if args.workers == Some(0) {
+        return fail_json(
+            64,
+            "usage_error",
+            "--workers must be at least 1 (omit --workers for automatic sizing)",
+            json,
+        );
+    }
 
     let config = match load_config(no_config) {
         Ok(config) => config,

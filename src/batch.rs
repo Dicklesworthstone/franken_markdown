@@ -150,10 +150,13 @@ pub struct BatchOptions {
     pub mem_budget: Option<u64>,
     /// When true, per-file failures do not fail the whole run.
     pub continue_on_error: bool,
-    /// Wall-clock deadline in seconds (`None` = no deadline). When it fires, the
-    /// run cooperatively cancels at the next per-file checkpoint and the receipt
-    /// is marked `cancelled`. This is the CLI-reachable cancellation path (the
-    /// crate forbids `unsafe`, so no POSIX signal handler is installed).
+    /// Wall-clock deadline in seconds (`None` = no deadline). Best-effort: it is
+    /// checked only at per-file `checkpoint`s, and the render core never
+    /// checkpoints mid-file, so a single in-progress file runs to completion
+    /// before the deadline can skip the remaining files. When it fires, the
+    /// not-yet-started files are skipped and the receipt is marked `cancelled`.
+    /// This is the CLI-reachable cancellation path (the crate forbids `unsafe`,
+    /// so no POSIX signal handler is installed).
     pub timeout_secs: Option<u64>,
     /// Per-file input-size limit in bytes: a file larger than this is recorded as
     /// a failed entry rather than loaded whole, so a batch over a large tree
@@ -547,6 +550,9 @@ pub enum BatchError {
     /// The run was cancelled (the `--timeout` deadline fired, or the host
     /// cancelled the context) before it could complete normally.
     Cancelled,
+    /// The top-level batch task panicked. Per-file renders are already isolated
+    /// with `catch_unwind`, so this only fires for a panic outside that guard.
+    Panicked,
 }
 
 impl std::fmt::Display for BatchError {
@@ -554,6 +560,7 @@ impl std::fmt::Display for BatchError {
         match self {
             BatchError::NoContext => write!(f, "runtime did not provide a root context"),
             BatchError::Cancelled => write!(f, "batch cancelled before completion (timeout)"),
+            BatchError::Panicked => write!(f, "batch task panicked"),
         }
     }
 }
@@ -752,12 +759,15 @@ pub fn run_batch_blocking(
         }
     });
 
+    // `render_batch` folds its own per-file cancellation into `Ok(receipt)`, so in
+    // normal operation only `Ok`/`Err` occur here. The remaining arms fire only if
+    // the top-level `block_on` task itself is cancelled or panics; handle each
+    // explicitly rather than mislabeling a panic as a timeout.
     match outcome {
         Outcome::Ok(receipt) => Ok(receipt),
         Outcome::Err(e) => Err(e),
-        // A non-Ok/non-Err outcome is a cancelled runtime shard — report it as
-        // cancellation, not the misleading "no root context".
-        _ => Err(BatchError::Cancelled),
+        Outcome::Cancelled(_) => Err(BatchError::Cancelled),
+        Outcome::Panicked(_) => Err(BatchError::Panicked),
     }
 }
 
@@ -1374,16 +1384,23 @@ mod tests {
     }
 
     #[test]
-    fn batch_error_cancelled_is_distinct_from_no_context() {
+    fn batch_error_variants_have_distinct_messages() {
         // A cancelled runtime shard must report cancellation, not the misleading
-        // "no root context" message.
+        // "no root context" message; and a panic must not be mislabeled a timeout.
         assert_eq!(
             BatchError::Cancelled.to_string(),
             "batch cancelled before completion (timeout)"
         );
-        assert_ne!(
+        assert_eq!(BatchError::Panicked.to_string(), "batch task panicked");
+        let msgs = [
+            BatchError::NoContext.to_string(),
             BatchError::Cancelled.to_string(),
-            BatchError::NoContext.to_string()
+            BatchError::Panicked.to_string(),
+        ];
+        assert_eq!(
+            msgs.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            3,
+            "each BatchError variant has a distinct message"
         );
     }
 

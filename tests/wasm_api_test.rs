@@ -206,6 +206,40 @@ fn wasm_pdf_accepts_browser_supplied_image_bytes() {
 }
 
 #[test]
+fn wasm_pdf_surfaces_degraded_content_as_warning_diagnostics() {
+    // A browser host must receive the same "content was degraded" signal the
+    // native CLI prints: an image with no supplied asset (rendered as alt text)
+    // and a CJK character with no glyph in the bundled Latin fonts. Without this
+    // the drop would be silent — contrary to the no-silent-drop doctrine.
+    let output = render_pdf(
+        "![chart](missing.png)\n\n中文 body text",
+        &WasmRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(output.format, WasmOutputFormat::Pdf);
+    assert!(!output.is_empty());
+
+    let warnings: Vec<&str> = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == "warning")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        warnings.iter().any(|m| m.contains("missing.png")),
+        "unresolved-image warning missing: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|m| m.contains("glyph")),
+        "missing-glyph warning missing: {warnings:?}"
+    );
+    // The same warnings must appear in the serialized diagnostics JSON hosts read.
+    let json = output.diagnostics_json();
+    assert!(json.contains("\"severity\":\"warning\""));
+    assert!(json.contains("missing.png"));
+}
+
+#[test]
 fn wasm_pdf_accepts_browser_supplied_font_bytes() {
     let options = WasmRenderOptions::default()
         .with_font_asset_bytes(

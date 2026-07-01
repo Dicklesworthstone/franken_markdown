@@ -9,7 +9,7 @@
 use crate::{
     DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlOptions,
     PdfImageAsset, PdfOptions, RenderError, Result, Theme, parse_markdown_spanned,
-    render_html_document, render_pdf_document,
+    render_html_document, render_pdf_document, render_warnings,
 };
 
 /// Output kind requested by a browser/WASM caller.
@@ -294,9 +294,22 @@ pub fn render_html(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRe
 /// Propagates renderer errors.
 pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRenderOutput> {
     let parsed = parse_markdown_spanned(markdown);
-    let diagnostics = wasm_diagnostics(&parsed.diagnostics);
+    let mut diagnostics = wasm_diagnostics(&parsed.diagnostics);
     let doc = parsed.into_document();
-    let bytes = render_pdf_document(&doc, &options.pdf_options())?;
+    let pdf_options = options.pdf_options();
+    // Surface content the PDF renderer degrades rather than embeds — unresolved
+    // or undecodable images (rendered as alt text) and characters with no glyph
+    // (rendered as .notdef). The native CLI prints these to stderr; a browser
+    // host must get the same signal so degradation is never silent.
+    for warning in render_warnings(&doc, &pdf_options) {
+        diagnostics.push(WasmDiagnostic {
+            severity: "warning",
+            start: 0,
+            end: 0,
+            message: warning.message(),
+        });
+    }
+    let bytes = render_pdf_document(&doc, &pdf_options)?;
     Ok(WasmRenderOutput {
         format: WasmOutputFormat::Pdf,
         mime_type: WasmOutputFormat::Pdf.mime_type(),
@@ -373,5 +386,48 @@ fn json_escape_into(s: &str, out: &mut String) {
             c if c.is_control() => out.push(' '),
             c => out.push(c),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod render_warning_tests {
+    use super::{WasmRenderOptions, render_pdf};
+
+    #[test]
+    fn pdf_render_surfaces_dropped_image_and_missing_glyph_warnings() {
+        // An image with no host-supplied asset (dropped to alt text) and a CJK
+        // character with no glyph in the bundled Latin fonts must both surface as
+        // "warning" diagnostics, so a browser host is never blind to degraded
+        // output (parity with the native CLI's stderr warnings).
+        let out = render_pdf("![chart](missing.png)\n\n中文 body", &WasmRenderOptions::default())
+            .unwrap();
+        assert!(!out.is_empty());
+        let warnings: Vec<&str> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == "warning")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            warnings.iter().any(|m| m.contains("missing.png")),
+            "expected an unresolved-image warning, got {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|m| m.contains("glyph")),
+            "expected a missing-glyph warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn clean_pdf_render_reports_no_render_warnings() {
+        // Plain ASCII with no images must not fabricate warnings.
+        let out =
+            render_pdf("# Title\n\nPlain body.", &WasmRenderOptions::default()).unwrap();
+        assert!(
+            out.diagnostics.iter().all(|d| d.severity != "warning"),
+            "unexpected warnings: {:?}",
+            out.diagnostics
+        );
     }
 }

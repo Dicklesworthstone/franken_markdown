@@ -81,7 +81,7 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("result.free()"));
     assert!(js.contains("function parseJson"));
     assert!(js.contains("Invalid ${label} returned by franken_markdown wasm core"));
-    assert!(js.contains("function cssOption"));
+    assert!(js.contains("function verbatimOption"));
     assert!(js.contains("metadataEpochSeconds must be a number"));
     assert!(js.contains("Number.isSafeInteger"));
     assert!(js.contains("Number.MAX_SAFE_INTEGER"));

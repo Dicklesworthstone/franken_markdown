@@ -40,7 +40,7 @@ export interface FmdRenderOptions {
   /** Finite non-negative integer seconds, <= Number.MAX_SAFE_INTEGER. */
   metadataEpochSeconds?: number;
   codeLineNumbers?: boolean;
-  /** Host-supplied PDF image bytes. The package v0 accepts at most one asset per render call. */
+  /** Host-supplied PDF image bytes; any number of assets may be supplied per render call. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */
   fontAssets?: FmdFontAsset[];

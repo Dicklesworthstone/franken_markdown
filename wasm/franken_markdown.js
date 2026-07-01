@@ -33,8 +33,8 @@ export async function renderHtml(markdown, options = {}) {
         String(markdown),
         stringOption(options.font),
         darkModeOption(options.darkMode),
-        stringOption(options.title),
-        cssOption(options.customCss),
+        verbatimOption(options.title),
+        verbatimOption(options.customCss),
         Boolean(options.allowRawHtml),
         fontBytesForSlot(fontAssets, "body-regular"),
         fontBytesForSlot(fontAssets, "body-bold"),
@@ -49,8 +49,8 @@ export async function renderHtml(markdown, options = {}) {
       String(markdown),
       stringOption(options.font),
       darkModeOption(options.darkMode),
-      stringOption(options.title),
-      cssOption(options.customCss),
+      verbatimOption(options.title),
+      verbatimOption(options.customCss),
       Boolean(options.allowRawHtml)
     )
   );
@@ -79,8 +79,8 @@ export async function renderPdf(markdown, options = {}) {
       String(markdown),
       stringOption(options.font),
       darkModeOption(options.darkMode),
-      stringOption(options.title),
-      stringOption(options.author),
+      verbatimOption(options.title),
+      verbatimOption(options.author),
       epochOption(options.metadataEpochSeconds),
       Boolean(options.allowRawHtml),
       Boolean(options.codeLineNumbers),
@@ -171,12 +171,17 @@ function stringOption(value) {
   return text === "" ? undefined : text;
 }
 
-function cssOption(value) {
+// Preserve a caller value VERBATIM (including surrounding whitespace), mapping
+// only null/undefined/"" to `undefined`. Mirrors the Rust ABI's
+// `nonempty_verbatim` so title/author/customCss reach the renderer byte-for-byte
+// identical to the native CLI (native never trims them). `stringOption` (which
+// trims) is kept only for the enum-like `font` value.
+function verbatimOption(value) {
   if (value === undefined || value === null) {
     return undefined;
   }
   const text = String(value);
-  return text.trim() === "" ? undefined : text;
+  return text === "" ? undefined : text;
 }
 
 function darkModeOption(value) {

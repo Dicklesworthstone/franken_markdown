@@ -139,4 +139,13 @@ if (!multiText.includes("/Alt (Alpha)") || !multiText.includes("/Alt (Beta)")) {
 }
 console.log("smoke: multi-image ok");
 
+// Title/author must reach output VERBATIM through the wrapper (no trimming), to
+// keep byte-identical native↔WASM parity for padded metadata.
+console.log("smoke: verbatim-metadata check");
+const padded = await mod.renderHtml("# body", { title: "  Padded Title  " });
+if (!dec.decode(padded.bytes).includes("<title>  Padded Title  </title>")) {
+  fail("renderHtml must pass a padded title verbatim (no trimming)");
+}
+console.log("smoke: verbatim-metadata ok");
+
 console.log("smoke: ok — generated wasm module loaded, rendered deterministically, and enforced the API contract.");

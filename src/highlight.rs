@@ -134,33 +134,30 @@ fn lex_generic(code: &str, r: &Rules) -> Vec<Span> {
 
         // C/C++ preprocessor directive: `#word` at the start of a line (only
         // whitespace before it). Colours `#include`, `#define`, ... as keywords.
-        if r.hash_directives && c == '#' {
-            let line_prefix = code[..pos].rsplit('\n').next().unwrap_or("");
-            if line_prefix.trim().is_empty() {
-                let start = pos;
-                let mut p = pos + clen;
-                while p < len
-                    && code[p..]
-                        .chars()
-                        .next()
-                        .is_some_and(|ch| ch == ' ' || ch == '\t')
-                {
-                    p += 1;
-                }
-                while p < len {
-                    match code[p..].chars().next() {
-                        Some(ch) if ch.is_ascii_alphabetic() => p += ch.len_utf8(),
-                        _ => break,
-                    }
-                }
-                spans.push(Span {
-                    kind: Tok::Keyword,
-                    start,
-                    end: p,
-                });
-                pos = p;
-                continue;
+        if r.hash_directives && c == '#' && line_prefix_is_blank(code, pos) {
+            let start = pos;
+            let mut p = pos + clen;
+            while p < len
+                && code[p..]
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch == ' ' || ch == '\t')
+            {
+                p += 1;
             }
+            while p < len {
+                match code[p..].chars().next() {
+                    Some(ch) if ch.is_ascii_alphabetic() => p += ch.len_utf8(),
+                    _ => break,
+                }
+            }
+            spans.push(Span {
+                kind: Tok::Keyword,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
         }
 
         // Line comment.
@@ -592,6 +589,27 @@ fn consume_quoted(code: &str, pos: usize, quote: char) -> usize {
         }
     }
     p
+}
+
+/// True iff everything before `pos` on the current line is whitespace, i.e.
+/// `pos` is the first non-blank column of its line. Scans backward only to the
+/// previous newline and short-circuits at the first non-whitespace char, so it
+/// is O(1) amortized on a line densely packed with the trigger character. It
+/// replaces `code[..pos].rsplit('\n').next().trim().is_empty()`, which rescanned
+/// the whole line prefix on every call and made a long `#####…` line O(n^2) to
+/// highlight in the C/C++ preprocessor-directive path (matches the same
+/// semantics: the newline terminates the line, all other whitespace is blank).
+fn line_prefix_is_blank(code: &str, pos: usize) -> bool {
+    for ch in code[..pos].chars().rev() {
+        if ch == '\n' {
+            return true; // reached the start of this line
+        }
+        if ch.is_whitespace() {
+            continue; // spaces/tabs (and a stray \r) before pos on this line
+        }
+        return false; // a non-space character precedes pos on this line
+    }
+    true // start of input: nothing but (optional) whitespace precedes pos
 }
 
 fn previous_non_space_is_tag_open(code: &str, start: usize) -> bool {
@@ -1112,3 +1130,50 @@ const SQL_TY: &[&str] = &[
     "SERIAL",
     "BLOB",
 ];
+
+#[cfg(test)]
+mod line_prefix_dos_tests {
+    use super::{Tok, highlight, line_prefix_is_blank};
+
+    #[test]
+    fn line_prefix_blank_detection_matches_trim_semantics() {
+        // Start of input, after a newline, and after only spaces/tabs are blank;
+        // any non-space character on the line makes it non-blank.
+        assert!(line_prefix_is_blank("#x", 0)); // start of input
+        assert!(line_prefix_is_blank("a\n#x", 2)); // right after '\n'
+        assert!(line_prefix_is_blank("a\n  \t#x", 5)); // only spaces/tabs on line
+        assert!(!line_prefix_is_blank("a#x", 1)); // 'a' precedes on the line
+        assert!(!line_prefix_is_blank("##", 1)); // a '#' precedes on the line
+        assert!(line_prefix_is_blank("x\r\n#", 3)); // CRLF: '\n' terminates the line
+    }
+
+    #[test]
+    fn c_preprocessor_directive_still_highlights() {
+        // The behavior the helper guards is unchanged: a line-initial `#include`
+        // (optionally indented) is one Keyword token.
+        let spans = highlight("c", "  #include <stdio.h>");
+        let kw = spans
+            .iter()
+            .find(|s| matches!(s.kind, Tok::Keyword))
+            .expect("directive keyword");
+        assert_eq!(&"  #include <stdio.h>"[kw.start..kw.end], "#include");
+    }
+
+    #[test]
+    fn dense_hash_line_stays_linear_and_loses_no_bytes() {
+        // The DoS shape: one long line of '#'. Previously each '#' rescanned the
+        // whole line prefix (O(n^2)); now each is O(1). Completing quickly is the
+        // proof of linearity; span tiling proves every byte is preserved.
+        let code = "#".repeat(200_000);
+        let spans = highlight("c", &code);
+        assert!(!spans.is_empty());
+        // Spans must tile [0, len) with no gaps or overlaps (no dropped bytes).
+        let mut next = 0usize;
+        for s in &spans {
+            assert_eq!(s.start, next, "gap/overlap in highlight spans");
+            assert!(s.end > s.start);
+            next = s.end;
+        }
+        assert_eq!(next, code.len(), "spans must cover the whole input");
+    }
+}

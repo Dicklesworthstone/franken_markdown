@@ -586,6 +586,15 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             i += 1;
             continue;
         }
+        // An indented (4+ column) line is indented code, not a container — the
+        // block parser checks this before blockquotes/lists, so we must too, or
+        // a `> [x]: dest`/`- [x]: dest`-looking code line would be wrongly read
+        // as a nested blockquote/list and its "definition" collected. A real
+        // container never starts at 4+ columns, so skipping the line is safe.
+        if indented_code_start(line) {
+            i += 1;
+            continue;
+        }
         if line.trim_start().starts_with('>') {
             let mut inner = Vec::new();
             while i < lines.len() {
@@ -3373,6 +3382,27 @@ mod refdef_paragraph_tests {
         let out = html("- one\n- two\n");
         assert!(out.contains("<li>one</li>"));
         assert!(out.contains("<li>two</li>"));
+    }
+
+    #[test]
+    fn a_definition_looking_line_in_indented_code_is_not_collected() {
+        // A `> [x]: /y` / `- [x]: /y` line inside an INDENTED CODE block is
+        // literal code, not a nested-container definition — nested collection
+        // must mirror the block parser (indented code beats blockquote/list), so
+        // the use stays unresolved and the text stays in the code block.
+        let bq = html("text\n\n    > [x]: /y\n\n[x]");
+        assert!(
+            bq.contains("<code>&gt; [x]: /y"),
+            "the line stays as code: {bq}"
+        );
+        assert!(
+            !bq.contains("href=\"/y\""),
+            "the code def must NOT resolve: {bq}"
+        );
+
+        let li = html("text\n\n    - [y]: /z\n\n[y]");
+        assert!(li.contains("<code>- [y]: /z"));
+        assert!(!li.contains("href=\"/z\""));
     }
 }
 

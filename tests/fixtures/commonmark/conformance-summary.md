@@ -1,9 +1,9 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 370 / 652 (56.7%)**
-- in-scope match (excl. intentional non-goals): 370 / 591 (62.6%)
+- **pass: 371 / 652 (56.9%)**
+- in-scope match (excl. intentional non-goals): 371 / 591 (62.8%)
 - intentional_non_goal: 61 (raw-HTML default-escape policy)
-- known_gap: 221
+- known_gap: 220
 
 | Section | Pass | Total |
 |---|---:|---:|
@@ -21,7 +21,7 @@
 | Images | 2 | 22 |
 | Indented code blocks | 7 | 12 |
 | Inlines | 1 | 1 |
-| Link reference definitions | 14 | 27 |
+| Link reference definitions | 15 | 27 |
 | Links | 60 | 90 |
 | List items | 17 | 48 |
 | Lists | 6 | 26 |

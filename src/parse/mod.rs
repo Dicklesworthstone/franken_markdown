@@ -192,7 +192,13 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         |lines| (lines.len(), src.len(), 1),
     );
     let reference_started = profiler.checkpoint();
-    let (lines, refs) = collect_link_references(&lines);
+    let (lines, mut refs) = collect_link_references(&lines);
+    // Also collect definitions nested inside blockquotes, so a use anywhere in
+    // the document (including a forward reference) can resolve a definition that
+    // lives inside a container. CommonMark allows definitions inside block
+    // containers; the blockquote body's own definition lines are removed when
+    // the blockquote is parsed (see the blockquote branch below).
+    collect_nested_references(&lines, &mut refs, 0);
     profiler.record_since(
         "reference_collection",
         refs.len(),
@@ -552,6 +558,59 @@ fn line_is_paragraph_text(line: &str) -> bool {
         && !list_marker_interrupts_paragraph(line)
 }
 
+/// Collect link reference definitions nested inside blockquotes and merge them
+/// into `refs` (existing keys win, matching CommonMark "first definition wins").
+/// The blockquote body is extracted exactly as the block parser extracts it
+/// (`strip_blockquote` + lazy continuation) so the two agree on scope, and the
+/// definition is collected paragraph-aware just like the top level. Fenced code
+/// is skipped so a `[label]: dest`-looking code line is never treated as a
+/// definition. Bounded by [`MAX_BLOCK_NESTING_DEPTH`] against adversarial
+/// nesting. (List-item bodies are a separate, deliberately-scoped follow-up.)
+fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usize) {
+    if depth >= MAX_BLOCK_NESTING_DEPTH {
+        return;
+    }
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim().is_empty() {
+            i += 1;
+            continue;
+        }
+        // Fenced code contents are literal, never definitions — skip the fence.
+        if let Some((fence_ch, fence_len, _info)) = open_fence(line) {
+            i += 1;
+            while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if line.trim_start().starts_with('>') {
+            let mut inner = Vec::new();
+            while i < lines.len() {
+                if lines[i].trim_start().starts_with('>') {
+                    inner.push(strip_blockquote(lines[i]));
+                    i += 1;
+                } else if blockquote_lazy_continuation(inner.last().map(String::as_str), lines[i]) {
+                    inner.push(lines[i].trim_start().to_string());
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            let inner_slice: Vec<&str> = inner.iter().map(String::as_str).collect();
+            let (_, bq_refs) = collect_link_reference_metadata(&inner_slice);
+            for (label, reference) in bq_refs {
+                refs.entry(label).or_insert(reference);
+            }
+            collect_nested_references(&inner_slice, refs, depth + 1);
+            continue;
+        }
+        i += 1;
+    }
+}
+
 /// Defensive recursion bound for block nesting (blockquotes, lists). Real
 /// documents nest only a handful of levels; this cap is far beyond any legitimate
 /// use yet low enough that even a debug build (with large stack frames) cannot
@@ -684,7 +743,17 @@ fn parse_blocks_with_refs_profiled(
                 }
             }
             let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
-            let inner_blocks = parse_blocks_bounded(&inner_refs, refs, profiler);
+            // Remove reference-definition lines from the blockquote body so they
+            // are not rendered as literal text; they were already collected into
+            // the shared `refs` map by `collect_nested_references`.
+            let (consumed, _) = collect_link_reference_metadata(&inner_refs);
+            let inner_kept: Vec<&str> = inner_refs
+                .iter()
+                .zip(consumed)
+                .filter(|(_, c)| !c)
+                .map(|(l, _)| *l)
+                .collect();
+            let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
                 inner.len(),
@@ -3207,6 +3276,32 @@ mod refdef_paragraph_tests {
         assert!(!line_is_paragraph_text("> quote"));
         assert!(!line_is_paragraph_text("---"));
         assert!(!line_is_paragraph_text("```"));
+    }
+
+    #[test]
+    fn a_definition_inside_a_blockquote_resolves_a_use_and_leaves_no_text() {
+        // CommonMark example 218: a forward reference resolves against a
+        // definition inside a blockquote, and the definition line does not
+        // render as text (the blockquote body is emptied).
+        let out = html("[foo]\n\n> [foo]: /url");
+        assert!(out.contains("href=\"/url\""), "the use must resolve: {out}");
+        assert!(
+            !out.contains("[foo]: /url"),
+            "the definition must not leak into the blockquote as text: {out}"
+        );
+    }
+
+    #[test]
+    fn a_definition_used_within_the_same_blockquote_still_resolves() {
+        let out = html("> [foo]: /url\n>\n> see [foo]");
+        assert!(out.contains("href=\"/url\""));
+    }
+
+    #[test]
+    fn a_plain_blockquote_without_definitions_is_unchanged() {
+        let out = html("> just a quote\n");
+        assert!(out.contains("<blockquote>"));
+        assert!(out.contains("just a quote"));
     }
 }
 

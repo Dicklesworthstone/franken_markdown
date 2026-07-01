@@ -1,9 +1,9 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 366 / 652 (56.1%)**
-- in-scope match (excl. intentional non-goals): 366 / 591 (61.9%)
+- **pass: 369 / 652 (56.6%)**
+- in-scope match (excl. intentional non-goals): 369 / 591 (62.4%)
 - intentional_non_goal: 61 (raw-HTML default-escape policy)
-- known_gap: 225
+- known_gap: 222
 
 | Section | Pass | Total |
 |---|---:|---:|
@@ -15,7 +15,7 @@
 | Code spans | 13 | 22 |
 | Emphasis and strong emphasis | 121 | 132 |
 | Entity and numeric character references | 10 | 17 |
-| Fenced code blocks | 26 | 29 |
+| Fenced code blocks | 29 | 29 |
 | HTML blocks | 0 | 44 |
 | Hard line breaks | 5 | 15 |
 | Images | 2 | 22 |

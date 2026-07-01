@@ -20,7 +20,7 @@ if the capability is real and proven.
 | Asupersync-native batch orchestration (off the render core) | **Implemented** | `src/batch.rs` behind the `batch` feature, `fmd batch`, deterministic receipts, cancellation lab test; isolation proven (`check-wasm-core.sh` + asupersync-only-under-`--features batch` in `check-policy.sh`) |
 | Performance proof discipline | **Implemented** | qw1.8 perf track (shared schema, counters, comparer), `tests/artifacts/perf/qw1.7-reprofile/DECISION.md`; layout micro-opts rejected on evidence (qw1.7.2/.4) |
 | Microtypography (LaTeX-grade) | **Hooks implemented; default wiring gated** | fixed-point protrusion/expansion hooks + tests, `docs/MICROTYPOGRAPHY.md`; default-render wiring deferred by the re-profile DECISION (bead qw1.7.5) |
-| Official CommonMark conformance | **Implemented (ratcheted floor)** | `commonmark-conformance.sh ci` — 366/652 spec examples (366/591 in-scope, 61.9%), pass count at the enforced floor of 366 |
+| Official CommonMark conformance | **Implemented (ratcheted floor)** | `commonmark-conformance.sh ci` — 369/652 spec examples (369/591 in-scope, 62.4%), pass count at the enforced floor of 369 |
 | Determinism across runs/OSes | **Implemented** | `check-determinism.sh` (byte-stable across `SOURCE_DATE_EPOCH`) |
 | Cross-platform release + installers | **Implemented; tag push gated** | Win/macOS/Linux + WASM CI; `install.sh`/`install.ps1`; tag-gated `release.yml` (4 targets, checksums, per-platform smoke); README Installation section (bead 08f) |
 
@@ -30,7 +30,7 @@ if the capability is real and proven.
 `cargo clippy --all-targets -- -D warnings` · `cargo test` ·
 `check-policy.sh` · `check-claim-discipline.sh` · `check-wasm-core.sh` ·
 `check-determinism.sh` · `parser-diff.sh` · `commonmark-conformance.sh ci`
-(pass 366/652 ≥ floor 366) · `cargo test --features batch` (7) + batch clippy ·
+(pass 369/652 ≥ floor 369) · `cargo test --features batch` (7) + batch clippy ·
 `release-smoke.sh` · `perf-counters.sh --self-test` ·
 `perf-compare.sh --self-test`.
 

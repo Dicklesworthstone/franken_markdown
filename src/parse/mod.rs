@@ -625,6 +625,9 @@ fn parse_blocks_with_refs_profiled(
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
             };
+            // CommonMark: up to N columns of leading indentation are removed from
+            // each content line, where N is the opening fence's own indentation.
+            let fence_indent = leading_spaces(line);
             let mut code = String::new();
             i += 1;
             while i < lines.len() {
@@ -632,7 +635,7 @@ fn parse_blocks_with_refs_profiled(
                     i += 1;
                     break;
                 }
-                code.push_str(lines[i]);
+                code.push_str(strip_fence_indent(lines[i], fence_indent));
                 code.push('\n');
                 i += 1;
             }
@@ -2896,6 +2899,33 @@ fn leading_spaces(line: &str) -> usize {
     col
 }
 
+/// Strip up to `n` columns of leading indentation from a fenced code block's
+/// content line, matching the opening fence's indent (CommonMark). Spaces are
+/// one column each; a leading tab (advancing to the next 4-column stop) is only
+/// removed whole, so it is left intact when fewer columns than it spans remain
+/// to strip — a partial tab is never split.
+fn strip_fence_indent(line: &str, n: usize) -> &str {
+    if n == 0 {
+        return line;
+    }
+    let mut col = 0usize;
+    let mut byte = 0usize;
+    for ch in line.chars() {
+        match ch {
+            ' ' if col < n => {
+                col += 1;
+                byte += 1;
+            }
+            '\t' if col + (4 - col % 4) <= n => {
+                col += 4 - col % 4;
+                byte += 1;
+            }
+            _ => break,
+        }
+    }
+    &line[byte..]
+}
+
 fn trim_space_tab(s: &str) -> &str {
     trim_start_space_tab(trim_end_space_tab(s))
 }
@@ -3172,6 +3202,42 @@ mod refdef_paragraph_tests {
         assert!(!line_is_paragraph_text("> quote"));
         assert!(!line_is_paragraph_text("---"));
         assert!(!line_is_paragraph_text("```"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod fenced_indent_tests {
+    use super::strip_fence_indent;
+    use crate::{HtmlOptions, render_html};
+
+    fn html(src: &str) -> String {
+        render_html(src, &HtmlOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn strips_up_to_n_leading_space_columns() {
+        assert_eq!(strip_fence_indent("  code", 2), "code");
+        assert_eq!(strip_fence_indent("    code", 2), "  code"); // only 2 removed
+        assert_eq!(strip_fence_indent("code", 2), "code"); // fewer than n present
+        assert_eq!(strip_fence_indent(" code", 0), " code"); // n == 0 is a no-op
+    }
+
+    #[test]
+    fn a_leading_tab_is_removed_whole_or_not_at_all() {
+        // A tab spans to the next 4-column stop; with only 3 columns to strip it
+        // is left intact rather than partially removed.
+        assert_eq!(strip_fence_indent("\tcode", 3), "\tcode");
+        // With a 4-column budget the whole tab is removed.
+        assert_eq!(strip_fence_indent("\tcode", 4), "code");
+    }
+
+    #[test]
+    fn indented_fence_content_is_dedented_but_an_unindented_fence_is_verbatim() {
+        // The opening fence's indentation (2) is stripped from each content line.
+        assert!(html("  ```\n  code\n  ```").contains("<code>code\n</code>"));
+        // A fence with no indentation preserves the content's own leading spaces.
+        assert!(html("```\n  code\n```").contains("<code>  code\n</code>"));
     }
 }
 

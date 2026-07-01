@@ -357,6 +357,32 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let want_html = matches!(args.to, Target::Html | Target::Both);
     let want_pdf = matches!(args.to, Target::Pdf | Target::Both);
     let single = !matches!(args.to, Target::Both);
+
+    // Refuse to overwrite the input file. `read_input` already slurped the
+    // source into memory, so writing an output onto the same path would
+    // silently destroy the user's Markdown (e.g. `fmd README.md --out
+    // README.md`, `fmd notes.md --to pdf --out notes.md`, or a `.md` file
+    // misnamed `doc.pdf` rendered with `--to pdf`). Check every file target
+    // before writing any of them so we fail fast with nothing written.
+    let mut file_targets: Vec<PathBuf> = Vec::new();
+    if want_html && let Some(p) = out_path(&args, single, "html") {
+        file_targets.push(p);
+    }
+    if want_pdf && let Some(p) = out_path(&args, single, "pdf") {
+        file_targets.push(p);
+    }
+    if let Some(clash) = find_input_overwrite(args.input.as_deref(), &file_targets) {
+        return fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "refusing to overwrite the input file {} with rendered output; write to a different --out path",
+                clash.display()
+            ),
+            json,
+        );
+    }
+
     let pdf_metadata_epoch = if want_pdf {
         match source_date_epoch() {
             Ok(epoch) => epoch,
@@ -907,6 +933,20 @@ fn is_stdout_path(path: &Path) -> bool {
     path == Path::new("-")
 }
 
+/// Return the first `output` path that names the same existing on-disk file as
+/// `input`, or `None` if writing every output is safe. `canonicalize` resolves
+/// symlinks and `./x` vs `x`, and fails for a path that does not exist yet — so
+/// an output that is not already present can never be the input we just read.
+/// stdin (`-`) and `--text` (`None`) have no source file to clobber.
+fn find_input_overwrite(input: Option<&str>, outputs: &[PathBuf]) -> Option<PathBuf> {
+    let input = input.filter(|p| *p != "-")?;
+    let input_canon = std::fs::canonicalize(input).ok()?;
+    outputs
+        .iter()
+        .find(|out| std::fs::canonicalize(out).ok().as_ref() == Some(&input_canon))
+        .cloned()
+}
+
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("fmd: {msg}");
     ExitCode::from(code)
@@ -1088,4 +1128,66 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod overwrite_guard_tests {
+    use super::find_input_overwrite;
+    use std::path::PathBuf;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let mut d = std::env::temp_dir();
+        d.push(format!("fmd_overwrite_test_{}_{tag}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn refuses_when_an_output_equals_the_input() {
+        let dir = tmp_dir("same");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, b"# hi").unwrap();
+        let clash = find_input_overwrite(input.to_str(), std::slice::from_ref(&input));
+        assert_eq!(clash.as_deref(), Some(input.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn allows_distinct_and_not_yet_existing_output_paths() {
+        let dir = tmp_dir("diff");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, b"# hi").unwrap();
+        let html = dir.join("doc.html"); // distinct, exists
+        std::fs::write(&html, b"x").unwrap();
+        let pdf = dir.join("doc.pdf"); // does not exist yet
+        assert!(find_input_overwrite(input.to_str(), &[html, pdf]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detects_overwrite_through_a_relative_alias() {
+        // canonicalize collapses `dir/./doc.md` onto the same file as the input.
+        let dir = tmp_dir("alias");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, b"# hi").unwrap();
+        let aliased = dir.join(".").join("doc.md");
+        assert!(find_input_overwrite(input.to_str(), &[aliased]).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stdin_and_text_inputs_have_no_file_to_clobber() {
+        let outputs = [PathBuf::from("out.html")];
+        assert!(find_input_overwrite(Some("-"), &outputs).is_none()); // stdin
+        assert!(find_input_overwrite(None, &outputs).is_none()); // --text
+    }
+
+    #[test]
+    fn a_nonexistent_input_path_is_never_a_clash() {
+        // Exercises the `canonicalize(input)` failure arm: a missing input can't
+        // be overwritten, so the guard stays out of the way.
+        let outputs = [PathBuf::from("out.html")];
+        assert!(find_input_overwrite(Some("/no/such/fmd/input/doc.md"), &outputs).is_none());
+    }
 }

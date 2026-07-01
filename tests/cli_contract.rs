@@ -974,6 +974,47 @@ fn both_target_with_out_swaps_extension_per_format() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Rendering must never clobber the input file: `fmd doc.md --out doc.md` (and
+/// the `--to pdf`/`--to both` variants that resolve an output onto the source)
+/// are refused with a usage error (exit 64) and the source is left untouched,
+/// while a distinct `--out` still succeeds.
+#[test]
+fn refuses_to_overwrite_the_input_file() {
+    let dir = temp_dir("overwrite-input");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("doc.md");
+    let source = "# Title\n\nBody paragraph.\n";
+    fs::write(&input, source).unwrap();
+    let input_s = input.display().to_string();
+
+    // HTML directly onto the input.
+    let out = fmd(&[&input_s, "--out", &input_s]);
+    assert_eq!(out.status.code(), Some(64), "should be a usage error");
+    assert!(
+        text(&out.stderr).contains("refusing to overwrite the input file"),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&input).unwrap(),
+        source,
+        "input source must be left untouched"
+    );
+
+    // PDF directly onto the input (a .md misnamed target, or a typo).
+    let out = fmd(&[&input_s, "--to", "pdf", "--out", &input_s]);
+    assert_eq!(out.status.code(), Some(64));
+    assert_eq!(fs::read_to_string(&input).unwrap(), source);
+
+    // A distinct output path still renders normally.
+    let html = dir.join("doc.html").display().to_string();
+    let out = fmd(&[&input_s, "--out", &html]);
+    assert!(out.status.success(), "distinct --out must still work");
+    assert!(dir.join("doc.html").exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// `doctor` prints a human report by default and a JSON envelope when the
 /// global `--json` flag precedes the subcommand.
 #[test]

@@ -1852,6 +1852,28 @@ fn emit_inline_el(el: &InlineEl, out: &mut Vec<Inline>) {
     }
 }
 
+/// Move an element's content into `out` without cloning.
+///
+/// Used when consuming the nodes enclosed by a matched delimiter pair: those
+/// nodes are marked dead and spliced out of the list, so they are never read
+/// again and their (possibly deeply nested) subtree can be moved rather than
+/// cloned. Cloning here made repeated wrapping — e.g. `***…***x***…***`, which
+/// nests one `Strong`/`Emphasis` per delimiter pair — quadratic, because each
+/// pair re-cloned the whole growing subtree.
+fn emit_inline_el_owned(el: InlineEl, out: &mut Vec<Inline>) {
+    match el {
+        InlineEl::Text(s) => push_inline_text(out, &s),
+        InlineEl::Node(inl) => out.push(inl),
+        InlineEl::Delim { ch, count, .. } => {
+            let mut s = String::with_capacity(count);
+            for _ in 0..count {
+                s.push(ch);
+            }
+            push_inline_text(out, &s);
+        }
+    }
+}
+
 /// Resolve a flat token list into a nested inline tree using the CommonMark
 /// "process emphasis" delimiter-stack algorithm, then linearize what remains.
 fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
@@ -1862,9 +1884,19 @@ fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
     let mut prev: Vec<Option<usize>> = (0..n).map(|i| i.checked_sub(1)).collect();
     let mut next: Vec<Option<usize>> = (0..n).map(|i| (i + 1 < n).then_some(i + 1)).collect();
     let mut alive: Vec<bool> = vec![true; n];
+    // Nesting depth of the subtree each node represents (1 for a leaf token).
+    // Used to bound how deep emphasis/strong wrapping may go.
+    let mut node_depth: Vec<usize> = vec![1; n];
     let mut head: Option<usize> = (n > 0).then_some(0);
 
-    process_emphasis(&mut els, &mut prev, &mut next, &mut alive, &mut head);
+    process_emphasis(
+        &mut els,
+        &mut prev,
+        &mut next,
+        &mut alive,
+        &mut node_depth,
+        &mut head,
+    );
 
     let mut out = Vec::new();
     let mut idx = head;
@@ -1897,20 +1929,41 @@ fn unlink_el(
     alive[x] = false;
 }
 
+/// Defensive bound on emphasis/strong nesting depth. Real prose never nests
+/// inline emphasis more than a handful deep; a pathological run like
+/// `***…***x***…***` would otherwise build a tree thousands of levels deep,
+/// which overflows the stack when it is later rendered or dropped (recursive
+/// descent over `Inline`). Past this cap we stop wrapping and leave the surplus
+/// delimiters as literal text — mirroring [`MAX_BLOCK_NESTING_DEPTH`].
+const MAX_INLINE_NESTING_DEPTH: usize = 1000;
+
 /// The CommonMark "process emphasis" pass: walk closers left to right, match each
 /// to the nearest compatible opener honoring the rule of three, and wrap the
 /// enclosed nodes in `Strong` (2 delimiters) or `Emphasis` (1 delimiter).
+///
+/// Matching a closer means walking back over openers, and for pathological
+/// both-open-and-close runs (e.g. alternating `*_*_…`) that back-walk is
+/// quadratic even with `openers_bottom`. We cap the *total* back-walk work at a
+/// linear multiple of the token count; once spent we stop pairing and leave the
+/// remaining delimiters as literal text. Legitimate prose never approaches the
+/// budget (its openers are always nearby), so output is unaffected; only crafted
+/// worst-case input degrades, and it degrades deterministically.
 fn process_emphasis(
     els: &mut Vec<InlineEl>,
     prev: &mut Vec<Option<usize>>,
     next: &mut Vec<Option<usize>>,
     alive: &mut Vec<bool>,
+    node_depth: &mut Vec<usize>,
     head: &mut Option<usize>,
 ) {
     // Per (char, slot) lower bound below which no opener can be found; `slot`
     // folds the closer's can_open flag and run length mod 3, mirroring the
     // reference implementation's `openers_bottom`.
     let mut openers_bottom: BTreeMap<(char, usize), Option<usize>> = BTreeMap::new();
+    // Linear back-walk budget (see fn doc). 64x the token count is far above any
+    // real document yet turns the adversarial quadratic case into linear time.
+    let step_budget = els.len().saturating_mul(64).max(4096);
+    let mut steps: usize = 0;
     let mut ci = *head;
 
     while let Some(c) = ci {
@@ -1939,6 +1992,14 @@ fn process_emphasis(
         let mut opener_idx = prev[c];
         let mut found: Option<usize> = None;
         while let Some(o) = opener_idx {
+            steps += 1;
+            if steps > step_budget {
+                // Back-walk budget exhausted: stop pairing. Any still-unmatched
+                // delimiters stay alive and are emitted as literal text by the
+                // caller's final linearization. Bounds worst-case CPU on crafted
+                // both-open-and-close runs without affecting real prose.
+                return;
+            }
             if Some(o) == bound {
                 break;
             }
@@ -1996,6 +2057,28 @@ fn process_emphasis(
             1
         };
 
+        // Bound nesting depth before building anything: the deepest node strictly
+        // between opener and closer determines the wrapper's depth. Past the cap
+        // we refuse to wrap and leave this closer as literal text (advance past
+        // it) so the resulting tree cannot overflow the stack at render/drop.
+        let mut max_child_depth = 0usize;
+        {
+            let mut m = next[o];
+            while let Some(mi) = m {
+                if mi == c {
+                    break;
+                }
+                if alive[mi] {
+                    max_child_depth = max_child_depth.max(node_depth[mi]);
+                }
+                m = next[mi];
+            }
+        }
+        if max_child_depth >= MAX_INLINE_NESTING_DEPTH {
+            ci = next[c];
+            continue;
+        }
+
         // Collect and consume the nodes strictly between opener and closer.
         let mut content: Vec<Inline> = Vec::new();
         let mut m = next[o];
@@ -2003,11 +2086,17 @@ fn process_emphasis(
             if mi == c {
                 break;
             }
+            let nxt = next[mi];
             if alive[mi] {
-                emit_inline_el(&els[mi], &mut content);
                 alive[mi] = false;
+                // Move the node out rather than clone it: it is now dead and
+                // spliced out below, so it is never read again. This keeps
+                // repeated wrapping (deeply nested `Strong`/`Emphasis`) linear
+                // instead of re-cloning the growing subtree each pair.
+                let taken = std::mem::replace(&mut els[mi], InlineEl::Text(String::new()));
+                emit_inline_el_owned(taken, &mut content);
             }
-            m = next[mi];
+            m = nxt;
         }
         let node = if use_delims == 2 {
             Inline::Strong(content)
@@ -2028,6 +2117,7 @@ fn process_emphasis(
         prev.push(Some(o));
         next.push(Some(c));
         alive.push(true);
+        node_depth.push(max_child_depth + 1);
         next[o] = Some(ni);
         prev[c] = Some(ni);
 

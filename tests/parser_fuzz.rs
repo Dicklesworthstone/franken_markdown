@@ -180,6 +180,32 @@ fn fuzz_deep_structural_nesting_stays_within_bounds() {
 }
 
 #[test]
+fn fuzz_pathological_emphasis_runs_stay_linear_and_bounded() {
+    // Regression for two emphasis-resolution DoS classes that only surface at
+    // large scale (the depth-2000 nesting test above is too small to trigger
+    // either):
+    //   * a single huge delimiter run (`***…***x***…***`) nests one Strong per
+    //     pair. Before the fix this was quadratic (each pair re-cloned the
+    //     growing subtree) AND built a tree deep enough to overflow the stack at
+    //     render/drop time. Now the wrap is a move (linear) and bounded by
+    //     MAX_INLINE_NESTING_DEPTH.
+    //   * alternating both-open-and-close runs (`*_*_…`) made every closer walk
+    //     back over the opposite delimiter, quadratically. Now a linear back-walk
+    //     budget bounds it.
+    // The proof is that this test COMPLETES: a regression would hang (quadratic
+    // on 10^5-scale input) or abort the process (stack overflow).
+    let star = "*".repeat(60_000);
+    assert_robust(&format!("{star}x{star}"));
+    let triple = "***".repeat(30_000);
+    assert_robust(&format!("{triple}x{triple}"));
+    let under = "_".repeat(80_000);
+    assert_robust(&format!("{under}word{under}"));
+    let alt_open = "*_".repeat(80_000);
+    let alt_close = "_*".repeat(80_000);
+    assert_robust(&format!("{alt_open}x{alt_close}"));
+}
+
+#[test]
 fn fuzz_pdf_render_survives_a_sample_of_adversarial_inputs() {
     // PDF rendering is heavier, so sample rather than running the full corpus.
     for seed in 0..40u64 {

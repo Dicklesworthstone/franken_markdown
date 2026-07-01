@@ -1457,7 +1457,10 @@ fn batch_refuses_out_dir_dash() {
     let out = fmd_in_dir(&["batch", input.to_str().unwrap(), "--out-dir", "-"], &dir);
     assert_eq!(out.status.code(), Some(64), "stderr: {}", text(&out.stderr));
     assert!(text(&out.stderr).contains("--out-dir"));
-    assert!(!dir.join("-").exists(), "must not create a directory named '-'");
+    assert!(
+        !dir.join("-").exists(),
+        "must not create a directory named '-'"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1474,7 +1477,14 @@ fn batch_validates_source_date_epoch_only_for_pdf() {
 
     let html_out = dir.join("html");
     let ok = fmd_with_env(
-        &["batch", input_s, "--to", "html", "--out-dir", html_out.to_str().unwrap()],
+        &[
+            "batch",
+            input_s,
+            "--to",
+            "html",
+            "--out-dir",
+            html_out.to_str().unwrap(),
+        ],
         &[("SOURCE_DATE_EPOCH", "garbage")],
     );
     assert!(
@@ -1485,9 +1495,20 @@ fn batch_validates_source_date_epoch_only_for_pdf() {
 
     let pdf_out = dir.join("pdf");
     let bad = fmd_with_env(
-        &["batch", input_s, "--to", "pdf", "--out-dir", pdf_out.to_str().unwrap()],
+        &[
+            "batch",
+            input_s,
+            "--to",
+            "pdf",
+            "--out-dir",
+            pdf_out.to_str().unwrap(),
+        ],
         &[("SOURCE_DATE_EPOCH", "garbage")],
     );
-    assert_eq!(bad.status.code(), Some(64), "pdf batch must still validate the epoch");
+    assert_eq!(
+        bad.status.code(),
+        Some(64),
+        "pdf batch must still validate the epoch"
+    );
     let _ = fs::remove_dir_all(&dir);
 }

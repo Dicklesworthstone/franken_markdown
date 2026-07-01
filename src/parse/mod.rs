@@ -2995,6 +2995,7 @@ mod emphasis_dos_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod char_ref_dos_tests {
     use super::{MAX_CHAR_REF_BODY_LEN, parse_character_reference, parse_inlines};
     use crate::ast::Inline;

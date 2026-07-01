@@ -400,8 +400,11 @@ mod render_warning_tests {
         // character with no glyph in the bundled Latin fonts must both surface as
         // "warning" diagnostics, so a browser host is never blind to degraded
         // output (parity with the native CLI's stderr warnings).
-        let out = render_pdf("![chart](missing.png)\n\n中文 body", &WasmRenderOptions::default())
-            .unwrap();
+        let out = render_pdf(
+            "![chart](missing.png)\n\n中文 body",
+            &WasmRenderOptions::default(),
+        )
+        .unwrap();
         assert!(!out.is_empty());
         let warnings: Vec<&str> = out
             .diagnostics
@@ -422,8 +425,7 @@ mod render_warning_tests {
     #[test]
     fn clean_pdf_render_reports_no_render_warnings() {
         // Plain ASCII with no images must not fabricate warnings.
-        let out =
-            render_pdf("# Title\n\nPlain body.", &WasmRenderOptions::default()).unwrap();
+        let out = render_pdf("# Title\n\nPlain body.", &WasmRenderOptions::default()).unwrap();
         assert!(
             out.diagnostics.iter().all(|d| d.severity != "warning"),
             "unexpected warnings: {:?}",

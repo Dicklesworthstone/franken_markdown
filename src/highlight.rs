@@ -1132,6 +1132,7 @@ const SQL_TY: &[&str] = &[
 ];
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod line_prefix_dos_tests {
     use super::{Tok, highlight, line_prefix_is_blank};
 

@@ -155,6 +155,10 @@ pub struct BatchOptions {
     /// is marked `cancelled`. This is the CLI-reachable cancellation path (the
     /// crate forbids `unsafe`, so no POSIX signal handler is installed).
     pub timeout_secs: Option<u64>,
+    /// Per-file input-size limit in bytes: a file larger than this is recorded as
+    /// a failed entry rather than loaded whole, so a batch over a large tree
+    /// cannot exhaust memory (mirrors the single-file `--max-input-bytes` guard).
+    pub max_input_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -393,16 +397,36 @@ fn detect_output_collisions(inputs: &[PathBuf], out_dir: Option<&Path>) -> Vec<O
     collisions
 }
 
+/// Read a Markdown input, refusing anything larger than `max_bytes` BEFORE
+/// loading it whole (a `take`-bounded read, so an oversized file can't exhaust
+/// memory). Mirrors the single-file `--max-input-bytes` guard. Returns a
+/// human-readable error string on failure.
+fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(input).map_err(|e| format!("read failed: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read failed: {e}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "is larger than --max-input-bytes {max_bytes}; skipped"
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| "read failed: input is not valid UTF-8".to_string())
+}
+
 fn render_one(
     input: &Path,
     format: OutputFormat,
     out_dir: Option<&Path>,
     html: &HtmlOptions,
     pdf: &PdfOptions,
+    max_input_bytes: u64,
 ) -> FileEntry {
-    let md = match std::fs::read_to_string(input) {
+    let md = match read_input_limited(input, max_input_bytes) {
         Ok(text) => text,
-        Err(e) => return failed(input, format!("read failed: {e}")),
+        Err(e) => return failed(input, e),
     };
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
@@ -524,16 +548,22 @@ pub async fn render_batch(
         let cancelled = Arc::clone(&cancelled);
         let done = Arc::clone(&watchdog_done);
         std::thread::spawn(move || {
-            let deadline_ms = secs.saturating_mul(1000);
-            let mut waited_ms = 0u64;
-            while waited_ms < deadline_ms {
+            // Measure the deadline against a monotonic clock, not a sum of
+            // nominal sleeps (which drift long under CPU pressure).
+            let start = std::time::Instant::now();
+            let deadline = std::time::Duration::from_secs(secs);
+            while start.elapsed() < deadline {
                 if done.load(Ordering::Relaxed) {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                waited_ms = waited_ms.saturating_add(50);
             }
-            cancelled.store(true, Ordering::Relaxed);
+            // Only signal cancellation if the batch has NOT already finished:
+            // a run that completes during the final sleep must not be reported
+            // as cancelled (a cancelled receipt must imply skipped work).
+            if !done.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+            }
         })
     });
 
@@ -554,6 +584,7 @@ pub async fn render_batch(
         let pdf = opts.pdf.clone();
         let out_dir = plan.out_dir.clone();
         let format = plan.format;
+        let max_input_bytes = opts.max_input_bytes;
         tasks.push(handle.spawn(async move {
             let mut entries: Vec<(usize, FileEntry)> = Vec::new();
             let mut stop = false;
@@ -581,7 +612,14 @@ pub async fn render_batch(
                     // same as the single-file render path). The engine is designed
                     // panic-free, so this is defense-in-depth.
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        render_one(&inputs[i], format, out_dir.as_deref(), &html, &pdf)
+                        render_one(
+                            &inputs[i],
+                            format,
+                            out_dir.as_deref(),
+                            &html,
+                            &pdf,
+                            max_input_bytes,
+                        )
                     }))
                     .unwrap_or_else(|_| failed(&inputs[i], "render panicked".to_string()))
                 };
@@ -615,13 +653,19 @@ pub async fn render_batch(
         let _ = handle.join();
     }
 
+    // Derive `cancelled` from whether any file was actually skipped, not from the
+    // raw cancel flag: a run that completes cleanly (e.g. right as the --timeout
+    // watchdog's deadline passes) must never be reported cancelled. A cancelled
+    // receipt therefore always implies skipped work.
+    let cancelled_run = files.iter().any(|f| f.status == FileStatus::Skipped);
+
     Outcome::Ok(BatchReceipt {
         format: plan.format,
         mode: opts.mode,
         workers,
         queue_depth: budget.queue_depth,
         files,
-        cancelled: cancelled.load(Ordering::Relaxed),
+        cancelled: cancelled_run,
     })
 }
 
@@ -703,6 +747,7 @@ mod tests {
             mem_budget: None,
             continue_on_error: true,
             timeout_secs: None,
+            max_input_bytes: 64 * 1024 * 1024,
         }
     }
 
@@ -883,6 +928,7 @@ mod tests {
             mem_budget: None,
             continue_on_error: true,
             timeout_secs: None,
+            max_input_bytes: 64 * 1024 * 1024,
         };
 
         let r1 = run_batch_blocking(make_plan(), &opts).unwrap();
@@ -976,6 +1022,7 @@ mod tests {
             mem_budget: None,
             continue_on_error: true,
             timeout_secs: None,
+            max_input_bytes: 64 * 1024 * 1024,
         };
         let budget = WorkerBudget {
             workers: 2,
@@ -1462,6 +1509,49 @@ mod tests {
             "got {:?}",
             r.files[1].error
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_refuses_oversized_input_without_loading_it_whole() {
+        // A file larger than `max_input_bytes` must be recorded as a failed entry
+        // (via the take-bounded read) rather than loaded into memory, so a batch
+        // over a large tree cannot exhaust RAM. Smaller files still render.
+        let dir = fresh_dir("maxbytes");
+        std::fs::write(dir.join("a_small.md"), "# hi").unwrap();
+        std::fs::write(dir.join("b_large.md"), "x".repeat(100)).unwrap();
+
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(inputs.len(), 2);
+        let plan = BatchPlan {
+            inputs,
+            format: OutputFormat::Html,
+            out_dir: Some(dir.join("out")),
+        };
+        let opts = BatchOptions {
+            max_input_bytes: 16,
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+
+        assert_eq!(r.files[0].status, FileStatus::Ok, "small file renders");
+        assert_eq!(
+            r.files[1].status,
+            FileStatus::Failed,
+            "oversized file refused"
+        );
+        assert!(
+            r.files[1]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("larger than --max-input-bytes"),
+            "got {:?}",
+            r.files[1].error
+        );
+        // Refusing a file is a per-file failure, not a whole-run cancellation.
+        assert!(!r.cancelled, "size refusal must not mark the run cancelled");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

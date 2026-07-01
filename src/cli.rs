@@ -89,6 +89,10 @@ struct BatchArgs {
     /// per-file checkpoint and the receipt is marked `cancelled`.
     #[arg(long)]
     timeout: Option<u64>,
+    /// Refuse any single input larger than this many bytes (default 64 MiB),
+    /// recording it as a failed entry, so a large tree cannot exhaust memory.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
     /// Record per-file failures in the receipt instead of failing the run.
     #[arg(long)]
     continue_on_error: bool,
@@ -529,6 +533,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         mem_budget: args.mem_budget,
         continue_on_error,
         timeout_secs: args.timeout,
+        max_input_bytes: args.max_input_bytes,
     };
 
     match batch::run_batch_blocking(plan, &opts) {

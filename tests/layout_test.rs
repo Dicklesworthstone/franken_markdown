@@ -324,6 +324,37 @@ fn break_paragraph_optimizes_across_the_whole_paragraph() {
 }
 
 #[test]
+fn too_wide_token_keeps_optimal_breaking_instead_of_greedy_over_the_whole_paragraph() {
+    // A token wider than the line used to make the WHOLE paragraph fall back to
+    // greedy first-fit (states[last] == None). Overfull lines are now selectable
+    // at a large finite demerit, so the short-word region keeps its Knuth-Plass
+    // optimal breaking and only the too-wide token is forced onto its own line.
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(18_000);
+
+    // A single 8-char box (no spaces) is far wider than the line.
+    let items = paragraph_items_from_text(&metrics, "A A A A A AAAAAAAA", size);
+    let breaks = break_paragraph(&items, width);
+
+    let lines: Vec<String> = breaks
+        .iter()
+        .map(|b| line_text(&items, b.start, b.end))
+        .collect();
+    // The five short words are broken into two justified lines and the over-wide
+    // token is isolated on its own (overfull) line — not a greedy first-fit of the
+    // whole paragraph. (Greedy would pack the words maximally into the first line.)
+    assert_eq!(lines, vec!["A A", "A A A", "AAAAAAAA"], "got {lines:?}");
+    // The token's line is genuinely overfull yet was still selected rather than
+    // discarding the whole paragraph's optimal breaking.
+    assert!(
+        breaks[2].natural_width > width,
+        "the isolated token line is overfull"
+    );
+    assert_eq!(breaks[2].badness, INF_PENALTY, "overfull line badness caps");
+}
+
+#[test]
 fn line_break_certificate_locks_prefix_metric_behavior() {
     let metrics = StubMetrics;
     let size = FontSize::from_points(10);

@@ -1462,11 +1462,31 @@ pub fn break_paragraph_into(
             // start = 0 whole-prefix segment is the widest of all, so its overflow
             // says nothing about narrower predecessors — skip it, don't stop.
             let segment = scratch.metrics.segment_metrics(start, *candidate);
-            if prev_idx != j && segment.width.saturating_sub(segment.shrink) > line_width {
-                break;
-            }
+            // An INTER-candidate line (prev_idx != j) that cannot fit even fully
+            // shrunk is "overfull". Segment width grows monotonically as the start
+            // moves earlier, so the first overfull predecessor reached is the
+            // least overfull; every earlier one is strictly worse. We keep it
+            // SELECTABLE (not illegal) at a large finite demerit — `line_badness`
+            // caps at INF_PENALTY, so `line_demerits` charges ~1e8, far above any
+            // feasible line — then stop (keeping the scan O(n)). A single too-wide
+            // token (a URL, a long identifier) therefore no longer discards the
+            // whole paragraph's optimal breaking: it is isolated on one overfull
+            // line while the rest stays optimal. Feasible paragraphs are
+            // unaffected (a feasible line always wins), and greedy first-fit
+            // remains only a true last resort.
+            //
+            // The prev_idx == j whole-prefix segment is deliberately excluded: it
+            // is the widest of all, so admitting it would let the DP cram the
+            // entire paragraph onto one maximally-overfull line (all overfull
+            // lines share the capped demerit, so fewer lines would win). Its
+            // overflow says nothing about the narrower inter-candidate
+            // predecessors, so it is neither selectable-when-overfull nor a stop.
+            let overfull =
+                prev_idx != j && segment.width.saturating_sub(segment.shrink) > line_width;
             let badness = candidate_badness(*candidate, segment, line_width);
-            if badness >= INF_PENALTY {
+            // Underfull-past-stretch lines (INF badness, not overfull) stay illegal
+            // — keep scanning toward wider segments.
+            if badness >= INF_PENALTY && !overfull {
                 continue;
             }
             let prev_state = if prev_idx == j {
@@ -1474,7 +1494,15 @@ pub fn break_paragraph_into(
             } else {
                 match scratch.states[prev_idx] {
                     Some(state) => Some((prev_idx, state)),
-                    None => continue,
+                    None => {
+                        // No reachable path through this predecessor. For an
+                        // overfull line every earlier predecessor is only more
+                        // overfull, so stop; otherwise keep scanning.
+                        if overfull {
+                            break;
+                        }
+                        continue;
+                    }
                 }
             };
             let fitness = candidate_fitness(*candidate, segment, line_width);
@@ -1504,6 +1532,11 @@ pub fn break_paragraph_into(
             if best.is_none_or(|old| state.line.demerits <= old.line.demerits) {
                 best = Some(state);
             }
+            if overfull {
+                // Earlier inter-candidate predecessors are even more overfull
+                // (strictly larger demerit) and never win; stop to keep O(n).
+                break;
+            }
         }
         scratch.states[j] = best;
     }
@@ -1512,6 +1545,9 @@ pub fn break_paragraph_into(
         return;
     };
     if scratch.states[idx].is_none() {
+        // True last resort: no path exists even allowing overfull lines (e.g. a
+        // forced break makes the last candidate unreachable). Fall back to greedy
+        // first-fit rather than emitting nothing.
         greedy_break_paragraph_into(candidates, line_width, &scratch.metrics, out);
         return;
     }
@@ -1784,5 +1820,68 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
         u8::MAX
     } else {
         value as u8
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod overfull_selectability_tests {
+    use super::{
+        AdvanceMetrics, FontSize, INF_PENALTY, LayoutUnit, PairMetrics, break_paragraph,
+        paragraph_items_from_text,
+    };
+
+    struct Stub;
+    impl AdvanceMetrics for Stub {
+        fn advance_1000(&self, ch: char) -> u32 {
+            match ch {
+                ' ' => 250,
+                _ => 500,
+            }
+        }
+    }
+    impl PairMetrics for Stub {}
+
+    #[test]
+    fn too_wide_token_is_isolated_via_optimal_dp_not_greedy_over_the_paragraph() {
+        // Five short words plus a single box far wider than the line. Overfull
+        // lines are selectable, so the words keep their optimal breaking and the
+        // token is isolated on its own overfull line (three lines total) — the
+        // whole paragraph is NOT dropped to greedy first-fit.
+        let size = FontSize::from_points(10);
+        let width = LayoutUnit::from_milli_points(18_000);
+        let items = paragraph_items_from_text(&Stub, "A A A A A AAAAAAAA", size);
+        let breaks = break_paragraph(&items, width);
+        assert_eq!(breaks.len(), 3, "region optimal (2) + isolated token");
+        let last = breaks.last().unwrap();
+        assert_eq!(
+            last.badness, INF_PENALTY,
+            "the token line is overfull-capped"
+        );
+        assert!(last.natural_width > width, "the token line is overfull");
+    }
+
+    #[test]
+    fn too_wide_token_after_an_unbreakable_narrow_word_still_lays_out() {
+        // "A AAAAAAAA A": the leading single "A" cannot form its own (underfull)
+        // line, so the candidate after the token reaches an unreachable
+        // inter-candidate predecessor — exercising the overfull-unreachable stop.
+        // The paragraph must still lay out (greedy last resort) without panicking
+        // or dropping content.
+        let size = FontSize::from_points(10);
+        let width = LayoutUnit::from_milli_points(18_000);
+        let items = paragraph_items_from_text(&Stub, "A AAAAAAAA A", size);
+        let breaks = break_paragraph(&items, width);
+        assert!(!breaks.is_empty(), "must still produce a layout");
+    }
+
+    #[test]
+    fn feasible_paragraph_is_unaffected_by_overfull_selectability() {
+        // A plainly breakable paragraph still breaks feasibly (no overfull line).
+        let size = FontSize::from_points(10);
+        let width = LayoutUnit::from_milli_points(40_000);
+        let items = paragraph_items_from_text(&Stub, "A A A A", size);
+        let breaks = break_paragraph(&items, width);
+        assert!(breaks.iter().all(|b| b.badness < INF_PENALTY));
     }
 }

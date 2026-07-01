@@ -22,8 +22,8 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
         .unwrap_or_else(|| "Document".to_string());
     let css = opts
         .custom_css
-        .clone()
-        .unwrap_or_else(|| default_css(doc, opts));
+        .as_deref()
+        .map_or_else(|| default_css(doc, opts), sanitize_custom_css);
 
     let mut body = String::new();
     let mut state = RenderState::default();
@@ -36,6 +36,39 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
          <body>\n<main class=\"fmd\">\n{body}</main>\n</body>\n</html>\n",
         title = escape_text(&title),
     )
+}
+
+/// Make caller-supplied CSS safe to inline in a raw-text `<style>` element.
+///
+/// The HTML tokenizer ends a `<style>` element at the first case-insensitive
+/// `</style` regardless of CSS syntax, so a stylesheet containing
+/// `</style><script>…` would break out into live script. `</` inside a `<style>`
+/// can never be meaningful CSS except inside a string, where CSS treats `\/` as a
+/// plain `/`; inserting that backslash keeps the stylesheet's meaning while the
+/// byte sequence is no longer an HTML end tag.
+fn sanitize_custom_css(css: &str) -> String {
+    let lower = css.to_ascii_lowercase();
+    if !lower.contains("</style") {
+        return css.to_string();
+    }
+    let lower_bytes = lower.as_bytes();
+    let mut out = String::with_capacity(css.len() + 8);
+    let mut i = 0;
+    while i < css.len() {
+        if lower_bytes.get(i..i + 7) == Some(b"</style") {
+            // Insert a CSS-harmless backslash after `<`, keeping the original
+            // casing of `/style` intact.
+            out.push('<');
+            out.push('\\');
+            out.push_str(&css[i + 1..i + 7]);
+            i += 7;
+        } else {
+            let ch = css[i..].chars().next().unwrap_or('\u{FFFD}');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
 }
 
 fn first_heading_text(doc: &Document) -> Option<String> {
@@ -978,7 +1011,30 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, slug};
+    use super::{base64_encode, sanitize_custom_css, slug};
+
+    #[test]
+    fn sanitize_custom_css_neutralizes_style_end_tag() {
+        // A stylesheet that tries to close the <style> element and inject markup
+        // must not survive as a live HTML end tag.
+        let css = "body{color:red}</style><script>alert(1)</script>";
+        let out = sanitize_custom_css(css);
+        // No `</style` end tag survives to close the raw-text element early.
+        assert!(!out.to_ascii_lowercase().contains("</style"));
+        // The break-out `</style` became `<\/style` — CSS-harmless (\/ == /).
+        assert!(out.contains("<\\/style>"));
+        // Non-style markup is left as inert raw-text CSS content, unchanged.
+        assert!(out.contains("<script>alert(1)</script>"));
+        assert!(out.starts_with("body{color:red}"));
+    }
+
+    #[test]
+    fn sanitize_custom_css_preserves_case_and_passes_clean_css() {
+        assert_eq!(sanitize_custom_css("p{margin:0}"), "p{margin:0}");
+        // Mixed-case end tag is still neutralized, original casing preserved.
+        let out = sanitize_custom_css("</STYLE>");
+        assert_eq!(out, "<\\/STYLE>");
+    }
 
     #[test]
     fn base64_encoder_matches_known_vectors() {

@@ -79,3 +79,29 @@ fn explicit_raw_html_mode_still_does_not_panic() {
     }));
     assert!(result.is_ok());
 }
+
+#[test]
+fn custom_css_cannot_break_out_of_style_element() {
+    // A caller-supplied stylesheet is inlined into a raw-text <style> element.
+    // The HTML tokenizer ends that element at the first case-insensitive
+    // `</style`, so an unescaped stylesheet could inject live markup. The
+    // renderer must neutralize the end tag while keeping the CSS meaning.
+    let opts = HtmlOptions {
+        custom_css: Some(
+            "body{color:red}</style><script>alert(document.cookie)</script>".to_string(),
+        ),
+        ..HtmlOptions::default()
+    };
+    let html = render_html("# Title\n\nbody", &opts).expect("HTML render is total");
+    let lower = html.to_ascii_lowercase();
+    // Exactly one `</style` may survive: the wrapper element's own closing tag.
+    // The stylesheet's injected `</style>` must have been neutralized, so any
+    // trailing `<script>` remains inert raw-text content, never live markup.
+    assert_eq!(
+        lower.matches("</style").count(),
+        1,
+        "custom CSS broke out of the <style> element: {html}"
+    );
+    // The legitimate CSS is still present verbatim.
+    assert!(html.contains("body{color:red}"));
+}

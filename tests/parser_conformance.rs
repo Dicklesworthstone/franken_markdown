@@ -1085,3 +1085,23 @@ fn entity_references_inside_link_destinations_decode_once() {
         "destination must not double-escape"
     );
 }
+
+#[test]
+fn tab_indented_list_and_blockquote_lines_do_not_panic() {
+    // Regression: list_marker sliced `&line[indent..]` where `indent` is a
+    // tab-expanded COLUMN count, using it as a BYTE index — this panicked on any
+    // tab-indented list/blockquote/paragraph-interrupt line.
+    for src in [
+        "- a\n\tx",
+        "> \tx\ny",
+        "1. a\n\tz",
+        "- a\n  - b\n\t\tq",
+        "- a\n\t\tx",
+        "\t- x",
+        "para\n\t- item",
+    ] {
+        // Rendering must not panic (the parse is shared by HTML and PDF).
+        let out = html(src);
+        assert!(out.contains("<body"), "rendered HTML for {src:?}");
+    }
+}

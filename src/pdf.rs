@@ -1357,14 +1357,25 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 let compression = *data.get(10)?;
                 let filter = *data.get(11)?;
                 interlace = *data.get(12)?;
+                // Reject spec-invalid color-type/bit-depth PAIRS (not just each
+                // independently): truecolor/gray+alpha/RGBA are 8- or 16-bit only,
+                // and palette is <= 8-bit. An invalid combo is a malformed PNG and
+                // must be rejected (→ alt text + warning), not decoded to garbage.
+                let valid_combo = matches!(
+                    (color_type, bit_depth),
+                    (0, 1 | 2 | 4 | 8 | 16)
+                        | (2, 8 | 16)
+                        | (3, 1 | 2 | 4 | 8)
+                        | (4, 8 | 16)
+                        | (6, 8 | 16)
+                );
                 if width == 0
                     || height == 0
                     || u64::from(width).saturating_mul(u64::from(height)) > MAX_PDF_IMAGE_PIXELS
                     || compression != 0
                     || filter != 0
                     || interlace > 1
-                    || !matches!(bit_depth, 1 | 2 | 4 | 8 | 16)
-                    || !matches!(color_type, 0 | 2 | 3 | 4 | 6)
+                    || !valid_combo
                 {
                     return None;
                 }
@@ -6580,6 +6591,36 @@ mod png_decode_tests {
             d.samples, expect,
             "all filter types must reconstruct exactly"
         );
+    }
+
+    #[test]
+    fn invalid_color_type_bit_depth_combos_are_rejected() {
+        let png = |ct: u8, bd: u8| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&[bd, ct, 0, 0, 0]);
+            let push = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(kind);
+                out.extend_from_slice(data);
+                out.extend_from_slice(&0u32.to_be_bytes());
+            };
+            push(&mut bytes, b"IHDR", &ihdr);
+            push(&mut bytes, b"IDAT", &[0]);
+            push(&mut bytes, b"IEND", &[]);
+            bytes
+        };
+        // Spec-invalid pairs are rejected outright rather than decoded to garbage.
+        assert!(parse_png_chunks(&png(6, 4)).is_none(), "RGBA @ 4-bit");
+        assert!(parse_png_chunks(&png(2, 1)).is_none(), "RGB @ 1-bit");
+        assert!(parse_png_chunks(&png(4, 2)).is_none(), "gray+alpha @ 2-bit");
+        assert!(parse_png_chunks(&png(3, 16)).is_none(), "palette @ 16-bit");
+        // Valid pairs still parse (grayscale supports every depth).
+        assert!(parse_png_chunks(&png(0, 4)).is_some(), "gray @ 4-bit");
+        assert!(parse_png_chunks(&png(2, 8)).is_some(), "RGB @ 8-bit");
     }
 
     #[test]

@@ -1231,8 +1231,12 @@ struct Marker<'a> {
 }
 
 fn list_marker(line: &str) -> Option<Marker<'_>> {
+    // `indent` is a column count (a leading tab counts as up to 4 columns) used
+    // for the content-indent math below. To find the marker we must slice off the
+    // *actual* leading whitespace by pattern — using the column count as a byte
+    // index panics on any tab-indented line (a tab is 1 byte but >= 1 column).
     let indent = leading_spaces(line);
-    let t = &line[indent..];
+    let t = line.trim_start_matches(is_space_or_tab);
     if let Some(first) = t.chars().next()
         && (first == '-' || first == '*' || first == '+')
     {

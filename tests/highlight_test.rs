@@ -368,6 +368,22 @@ fn generic_unterminated_string_runs_to_eof() {
 }
 
 #[test]
+fn known_cosmetic_limitations_never_drop_bytes() {
+    // Documented, intentional cosmetic limitations (see the highlight module
+    // docs): a JS regex literal is tinted as division and a stray quote inside
+    // it can open a spurious string span. This is byte-preserving — the spans
+    // still tile the exact input, so no source character is ever added, dropped,
+    // or reordered. That invariant is what actually matters for correctness.
+    for src in [
+        "const re = /ab'c/g;\nconst n = 1;\n", // regex containing a quote
+        "let x = a / b / c;\n",                // real division stays fine
+        "x = \"oops\nnext line\n",             // unterminated string
+    ] {
+        assert_spans_tile("js", src);
+    }
+}
+
+#[test]
 fn generic_string_backslash_escape_is_consumed() {
     // The escaped quote must not terminate the string literal.
     let code = "let s = \"a\\\"b\";";

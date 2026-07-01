@@ -7,6 +7,26 @@
 //! beautiful, fast, zero-dependency result. Unknown languages fall back to plain
 //! (escaped) text. The output is byte-offset spans into the original code, so
 //! the HTML emitter can slice + escape safely.
+//!
+//! # Known limitations (cosmetic only — never a content drop)
+//!
+//! The lexer classifies *colors*; it always tiles the exact input bytes, so a
+//! mis-classification only tints a token wrongly and never adds, drops, or
+//! reorders characters. Two cases are intentionally not modeled, because a
+//! correct fix needs per-language lexer state that a single shared tokenizer
+//! cannot carry without disproportionate complexity and regression risk for a
+//! purely cosmetic gain:
+//!
+//! - **An unterminated string literal colors to end-of-block.** A quote with no
+//!   matching close is treated as a string running to EOF. Bounding it to the
+//!   line would mis-handle languages whose strings legitimately span lines
+//!   (Rust `"…"`, Go/JS raw/template literals, Bash, SQL). Real editors color
+//!   genuinely-unterminated input the same way.
+//! - **JS/TS `/regex/` literals are tinted as division.** Distinguishing a
+//!   regex from the division operator requires the previous-significant-token
+//!   state a stateless generic lexer does not track, so a `/`-delimited regex
+//!   containing a quote can open a spurious string span. Keyword/string/comment
+//!   coloring elsewhere on the line is unaffected.
 
 /// A highlight token class.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

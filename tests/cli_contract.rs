@@ -1442,3 +1442,52 @@ fn config_set_save_error_when_target_directory_is_read_only() {
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
     let _ = fs::remove_dir_all(&dir);
 }
+
+// --- batch subcommand contract (only present with the `batch` feature) --------
+
+/// `batch --out-dir -` is refused (exit 64): batch writes files and cannot
+/// stream, so `-` must not be taken to mean "a directory literally named `-`".
+#[cfg(feature = "batch")]
+#[test]
+fn batch_refuses_out_dir_dash() {
+    let dir = temp_dir("batch-out-dir-dash");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("a.md");
+    fs::write(&input, "# A\n\nBody.").unwrap();
+    let out = fmd_in_dir(&["batch", input.to_str().unwrap(), "--out-dir", "-"], &dir);
+    assert_eq!(out.status.code(), Some(64), "stderr: {}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("--out-dir"));
+    assert!(!dir.join("-").exists(), "must not create a directory named '-'");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An HTML-only batch never consults SOURCE_DATE_EPOCH, so a malformed value
+/// must not fail the run — but a PDF batch must still validate it (exit 64).
+#[cfg(feature = "batch")]
+#[test]
+fn batch_validates_source_date_epoch_only_for_pdf() {
+    let dir = temp_dir("batch-sde");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("a.md");
+    fs::write(&input, "# A\n\nBody.").unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let html_out = dir.join("html");
+    let ok = fmd_with_env(
+        &["batch", input_s, "--to", "html", "--out-dir", html_out.to_str().unwrap()],
+        &[("SOURCE_DATE_EPOCH", "garbage")],
+    );
+    assert!(
+        ok.status.success(),
+        "html-only batch must ignore SOURCE_DATE_EPOCH: {}",
+        text(&ok.stderr)
+    );
+
+    let pdf_out = dir.join("pdf");
+    let bad = fmd_with_env(
+        &["batch", input_s, "--to", "pdf", "--out-dir", pdf_out.to_str().unwrap()],
+        &[("SOURCE_DATE_EPOCH", "garbage")],
+    );
+    assert_eq!(bad.status.code(), Some(64), "pdf batch must still validate the epoch");
+    let _ = fs::remove_dir_all(&dir);
+}

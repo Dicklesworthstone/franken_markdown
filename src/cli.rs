@@ -400,7 +400,11 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Vec::new()
     };
 
-    if want_html {
+    // Render every requested format to bytes BEFORE writing any of them, so a
+    // `--to both` run whose PDF render fails never leaves a stale HTML file on
+    // disk (previously HTML was written, then a PDF failure returned exit 70
+    // with the HTML already committed).
+    let html_bytes = if want_html {
         let opts = HtmlOptions {
             theme: theme.clone(),
             title: args.title.clone(),
@@ -409,37 +413,14 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             font_assets: FontAssets::default(),
         };
         match render_html(&src, &opts) {
-            Ok(html) => {
-                let bytes = html.into_bytes();
-                match out_path(&args, single, "html") {
-                    Some(path) => {
-                        if let Err(e) = std::fs::write(&path, &bytes) {
-                            return fail_json(
-                                73,
-                                "output_error",
-                                &format!("writing {}: {e}", path.display()),
-                                json,
-                            );
-                        }
-                        report_write("html", &path, bytes.len(), json);
-                    }
-                    None => {
-                        if let Err(e) = std::io::stdout().write_all(&bytes) {
-                            return fail_json(
-                                74,
-                                "output_error",
-                                &format!("writing stdout: {e}"),
-                                json,
-                            );
-                        }
-                    }
-                }
-            }
+            Ok(html) => Some(html.into_bytes()),
             Err(e) => return fail_render(e, json),
         }
-    }
+    } else {
+        None
+    };
 
-    if want_pdf {
+    let pdf_render = if want_pdf {
         let opts = PdfOptions {
             theme: theme.clone(),
             title: args.title.clone(),
@@ -451,26 +432,53 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             font_assets: FontAssets::default(),
         };
         match render_pdf(&src, &opts) {
-            Ok(bytes) => match out_path(&args, single, "pdf") {
-                Some(path) => {
-                    if let Err(e) = std::fs::write(&path, &bytes) {
-                        return fail_json(
-                            73,
-                            "output_error",
-                            &format!("writing {}: {e}", path.display()),
-                            json,
-                        );
-                    }
-                    report_pdf_warnings(&src, &opts, json);
-                    report_write("pdf", &path, bytes.len(), json);
-                }
-                None => {
-                    return fail_json(64, "usage_error", "PDF output requires --out <path>", json);
-                }
-            },
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
+            Ok(bytes) => Some((opts, bytes)),
             Err(e) => return fail_render(e, json),
+        }
+    } else {
+        None
+    };
+
+    if let Some(bytes) = html_bytes {
+        match out_path(&args, single, "html") {
+            Some(path) => {
+                if let Err(e) = std::fs::write(&path, &bytes) {
+                    return fail_json(
+                        73,
+                        "output_error",
+                        &format!("writing {}: {e}", path.display()),
+                        json,
+                    );
+                }
+                report_write("html", &path, bytes.len(), json);
+            }
+            None => {
+                if let Err(e) = std::io::stdout().write_all(&bytes) {
+                    return fail_json(74, "output_error", &format!("writing stdout: {e}"), json);
+                }
+            }
+        }
+    }
+
+    if let Some((opts, bytes)) = pdf_render {
+        match out_path(&args, single, "pdf") {
+            Some(path) => {
+                if let Err(e) = std::fs::write(&path, &bytes) {
+                    return fail_json(
+                        73,
+                        "output_error",
+                        &format!("writing {}: {e}", path.display()),
+                        json,
+                    );
+                }
+                report_pdf_warnings(&src, &opts, json);
+                report_write("pdf", &path, bytes.len(), json);
+            }
+            None => {
+                return fail_json(64, "usage_error", "PDF output requires --out <path>", json);
+            }
         }
     }
 
@@ -490,6 +498,18 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
             64,
             "usage_error",
             "--workers must be at least 1 (omit --workers for automatic sizing)",
+            json,
+        );
+    }
+
+    // Batch cannot stream, so `--out-dir -` is meaningless; refuse it (as the
+    // docs promise) instead of silently creating a directory literally named
+    // `-` and writing every output into it.
+    if args.out_dir.as_deref() == Some(Path::new("-")) {
+        return fail_json(
+            64,
+            "usage_error",
+            "--out-dir '-' is not valid (batch writes files, it cannot stream); pass a real directory or omit --out-dir",
             json,
         );
     }
@@ -523,9 +543,16 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Target::Pdf => OutputFormat::Pdf,
         Target::Both => OutputFormat::Both,
     };
-    let pdf_epoch = match source_date_epoch() {
-        Ok(epoch) => epoch,
-        Err(e) => return fail_json(64, "usage_error", &e, json),
+    // Only PDF output consults SOURCE_DATE_EPOCH, so an HTML-only batch must not
+    // fail on a malformed value it never uses (matches single-render behavior).
+    let want_pdf = matches!(format, OutputFormat::Pdf | OutputFormat::Both);
+    let pdf_epoch = if want_pdf {
+        match source_date_epoch() {
+            Ok(epoch) => epoch,
+            Err(e) => return fail_json(64, "usage_error", &e, json),
+        }
+    } else {
+        None
     };
 
     let continue_on_error = args.continue_on_error;

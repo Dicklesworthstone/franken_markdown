@@ -472,6 +472,13 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
     let mut refs = ReferenceMap::new();
     let mut consumed = vec![false; lines.len()];
     let mut i = 0usize;
+    // Whether the current position is a lazy continuation of an open top-level
+    // paragraph. A link reference definition can only be *defined* at a block
+    // boundary; per CommonMark it cannot interrupt a paragraph. Tracking this
+    // keeps a `[label]: dest`-looking continuation line from being extracted,
+    // which used to silently delete the line and merge the surrounding text
+    // (e.g. `foo\n[bar]: /url\nbaz` dropped the middle line).
+    let mut in_paragraph = false;
 
     while i < lines.len() {
         // Fenced code block contents are literal text, never reference
@@ -484,30 +491,64 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
                 i += 1;
             }
             i += 1; // step past the closing fence (or past end if unclosed)
+            in_paragraph = false; // a code block is not paragraph text
             continue;
         }
-        let Some((label, mut reference)) = parse_reference_definition(lines[i]) else {
+
+        if lines[i].trim().is_empty() {
+            in_paragraph = false;
             i += 1;
             continue;
-        };
+        }
 
-        let mut used = 1usize;
-        if reference.title.is_none()
-            && let Some(title_line) = lines.get(i + 1)
-            && let Some(title) = parse_reference_title_line(title_line)
+        // Extract a reference definition only at a block boundary, never as a
+        // paragraph continuation.
+        if !in_paragraph && let Some((label, mut reference)) = parse_reference_definition(lines[i])
         {
-            reference.title = Some(title);
-            used = 2;
+            let mut used = 1usize;
+            if reference.title.is_none()
+                && let Some(title_line) = lines.get(i + 1)
+                && let Some(title) = parse_reference_title_line(title_line)
+            {
+                reference.title = Some(title);
+                used = 2;
+            }
+
+            refs.entry(label).or_insert(reference);
+            for consumed_line in consumed.iter_mut().skip(i).take(used) {
+                *consumed_line = true;
+            }
+            i += used;
+            // Leading reference definitions do not themselves open a paragraph.
+            in_paragraph = false;
+            continue;
         }
 
-        refs.entry(label).or_insert(reference);
-        for consumed_line in consumed.iter_mut().skip(i).take(used) {
-            *consumed_line = true;
-        }
-        i += used;
+        // Any other non-blank line is paragraph text — so a following
+        // `[label]: dest` line is a lazy continuation, not a definition — unless
+        // it begins a different block, which closes/prevents a paragraph.
+        in_paragraph = line_is_paragraph_text(lines[i]);
+        i += 1;
     }
 
     (consumed, refs)
+}
+
+/// True when `line` is ordinary paragraph text: a non-blank line that does not
+/// begin a different block. This mirrors the block parser's own
+/// paragraph-continuation rule (the break conditions in
+/// `parse_blocks_with_refs_profiled`), so reference-definition collection agrees
+/// with where an open paragraph actually exists and never mistakes a real block
+/// opener for paragraph text (which would wrongly suppress a valid definition).
+fn line_is_paragraph_text(line: &str) -> bool {
+    !line.trim().is_empty()
+        && !is_thematic_break(line)
+        && atx_heading(line).is_none()
+        && open_fence(line).is_none()
+        && !indented_code_start(line)
+        && !line.trim_start().starts_with('>')
+        && !html_block_start(line)
+        && !list_marker_interrupts_paragraph(line)
 }
 
 /// Defensive recursion bound for block nesting (blockquotes, lists). Real
@@ -3053,6 +3094,88 @@ mod char_ref_dos_tests {
             })
             .collect();
         assert_eq!(text, src, "every ampersand must survive as literal text");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod refdef_paragraph_tests {
+    use super::{collect_link_references, line_is_paragraph_text};
+    use crate::{HtmlOptions, render_html};
+
+    fn html(src: &str) -> String {
+        render_html(src, &HtmlOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn a_refdef_cannot_interrupt_a_paragraph_and_its_line_is_kept() {
+        // Regression: `foo\n[bar]: /url\nbaz` used to silently drop the middle
+        // line. It must be preserved, stay in the paragraph, and define no link.
+        let out = html("foo\n[bar]: /url\nbaz");
+        assert!(
+            out.contains("[bar]: /url"),
+            "the interrupting ref-def line must be preserved as text: {out}"
+        );
+        assert!(
+            !out.contains("href=\"/url\""),
+            "a ref-def that interrupts a paragraph must not define a link"
+        );
+    }
+
+    #[test]
+    fn an_interrupting_refdef_does_not_resolve_a_later_use() {
+        // CommonMark example 214: the text is preserved and the link is NOT
+        // resolved because the definition never took effect.
+        let out = html("Foo\n[bar]: /baz\n\n[bar]");
+        assert!(
+            out.contains("[bar]: /baz"),
+            "definition text preserved: {out}"
+        );
+        assert!(
+            !out.contains("href=\"/baz\""),
+            "definition must not resolve"
+        );
+    }
+
+    #[test]
+    fn boundary_definitions_still_resolve() {
+        // At the document start, after a blank line, and after a heading (all
+        // block boundaries), a definition is still collected and resolves.
+        assert!(html("[bar]: /url\n\n[bar]").contains("href=\"/url\""));
+        assert!(html("intro\n\n[bar]: /url\n\n[bar]").contains("href=\"/url\""));
+        assert!(html("# Heading\n[bar]: /url\n\n[bar]").contains("href=\"/url\""));
+    }
+
+    #[test]
+    fn collect_removes_only_boundary_definitions() {
+        // Leading definition consumed; the one after paragraph text is left in
+        // the stream (it is a lazy continuation, not a definition).
+        let (kept, refs) = collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
+        assert!(refs.contains_key("a"), "leading definition collected");
+        assert!(
+            !refs.contains_key("b"),
+            "interrupting definition not collected"
+        );
+        assert_eq!(
+            kept,
+            vec!["text", "[b]: /y"],
+            "only the leading def line removed"
+        );
+    }
+
+    #[test]
+    fn line_classifier_distinguishes_text_from_block_openers() {
+        assert!(line_is_paragraph_text("plain words"));
+        // A ref-def-looking line is itself paragraph text (only its position
+        // decides whether it is a definition).
+        assert!(line_is_paragraph_text(
+            "[looks like a ref]: but a continuation"
+        ));
+        assert!(!line_is_paragraph_text(""));
+        assert!(!line_is_paragraph_text("# heading"));
+        assert!(!line_is_paragraph_text("> quote"));
+        assert!(!line_is_paragraph_text("---"));
+        assert!(!line_is_paragraph_text("```"));
     }
 }
 

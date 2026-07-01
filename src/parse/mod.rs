@@ -607,6 +607,21 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             collect_nested_references(&inner_slice, refs, depth + 1);
             continue;
         }
+        // List items: split into per-item bodies exactly as the block parser
+        // does (shared `split_list_items`) and collect each item's definitions.
+        if list_marker(line).is_some() {
+            let split = split_list_items(&lines[i..]);
+            for (_, body) in &split.items {
+                let body_slice: Vec<&str> = body.iter().map(String::as_str).collect();
+                let (_, item_refs) = collect_link_reference_metadata(&body_slice);
+                for (label, reference) in item_refs {
+                    refs.entry(label).or_insert(reference);
+                }
+                collect_nested_references(&body_slice, refs, depth + 1);
+            }
+            i += split.used.max(1);
+            continue;
+        }
         i += 1;
     }
 }
@@ -1407,25 +1422,33 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
     parse_list_profiled(lines, refs, &mut profiler)
 }
 
-fn parse_list_profiled(
-    lines: &[&str],
-    refs: &ReferenceMap,
-    profiler: &mut ParseProfiler,
-) -> (List, usize) {
+/// A list split into per-item bodies (marker/indent stripped, task marker
+/// separated) without parsing them, plus the list flags and the number of lines
+/// consumed. Shared by `parse_list_profiled` (which parses + renders each body)
+/// and `collect_nested_references` (which recurses into each body to find nested
+/// reference definitions), so the two agree exactly on item boundaries.
+struct ListSplit {
+    ordered: bool,
+    start: u64,
+    tight: bool,
+    /// `(task marker, body lines)` per item.
+    items: Vec<(Option<bool>, Vec<String>)>,
+    used: usize,
+}
+
+fn split_list_items(lines: &[&str]) -> ListSplit {
     let Some(first) = list_marker(lines[0]) else {
-        return (
-            List {
-                ordered: false,
-                start: 1,
-                tight: true,
-                items: Vec::new(),
-            },
-            1,
-        );
+        return ListSplit {
+            ordered: false,
+            start: 1,
+            tight: true,
+            items: Vec::new(),
+            used: 1,
+        };
     };
     let ordered = first.ordered;
     let start = first.start;
-    let mut items: Vec<ListItem> = Vec::new();
+    let mut items: Vec<(Option<bool>, Vec<String>)> = Vec::new();
     let mut tight = true;
     let mut i = 0;
     while i < lines.len() {
@@ -1526,20 +1549,49 @@ fn parse_list_profiled(
         let mut normalized = Vec::with_capacity(item_lines.len());
         normalized.push(first_body.to_string());
         normalized.extend(item_lines.into_iter().skip(1));
-        let item_refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
+        items.push((task, normalized));
+    }
+    ListSplit {
+        ordered,
+        start,
+        tight,
+        items,
+        used: i,
+    }
+}
+
+fn parse_list_profiled(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> (List, usize) {
+    let split = split_list_items(lines);
+    let mut items = Vec::with_capacity(split.items.len());
+    for (task, body) in split.items {
+        // Remove reference-definition lines from the item body so they are not
+        // rendered as literal text; they were already collected into the shared
+        // `refs` map by `collect_nested_references`.
+        let body_refs: Vec<&str> = body.iter().map(String::as_str).collect();
+        let (consumed, _) = collect_link_reference_metadata(&body_refs);
+        let kept: Vec<&str> = body_refs
+            .iter()
+            .zip(consumed)
+            .filter(|(_, c)| !c)
+            .map(|(l, _)| *l)
+            .collect();
         items.push(ListItem {
             task,
-            blocks: parse_blocks_bounded(&item_refs, refs, profiler),
+            blocks: parse_blocks_bounded(&kept, refs, profiler),
         });
     }
     (
         List {
-            ordered,
-            start,
-            tight,
+            ordered: split.ordered,
+            start: split.start,
+            tight: split.tight,
             items,
         },
-        i,
+        split.used,
     )
 }
 
@@ -3302,6 +3354,25 @@ mod refdef_paragraph_tests {
         let out = html("> just a quote\n");
         assert!(out.contains("<blockquote>"));
         assert!(out.contains("just a quote"));
+    }
+
+    #[test]
+    fn a_definition_inside_a_list_item_resolves_a_use_and_leaves_no_text() {
+        // A definition inside a list item resolves a use (including a forward
+        // reference) and does not render as text (the item body is emptied).
+        let out = html("[foo]\n\n- [foo]: /url");
+        assert!(out.contains("href=\"/url\""), "the use must resolve: {out}");
+        assert!(
+            !out.contains("[foo]: /url"),
+            "the definition must not leak into the list item as text: {out}"
+        );
+    }
+
+    #[test]
+    fn a_plain_list_without_definitions_is_unchanged() {
+        let out = html("- one\n- two\n");
+        assert!(out.contains("<li>one</li>"));
+        assert!(out.contains("<li>two</li>"));
     }
 }
 

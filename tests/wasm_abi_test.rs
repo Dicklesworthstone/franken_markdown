@@ -13,8 +13,8 @@
 
 use franken_markdown::wasm_abi::{
     capabilities, render_html, render_html_configured, render_html_configured_with_fonts,
-    render_pdf, render_pdf_configured, render_pdf_configured_with_assets,
-    render_pdf_configured_with_image,
+    render_pdf, render_pdf_configured, render_pdf_configured_multi,
+    render_pdf_configured_with_assets, render_pdf_configured_with_image,
 };
 use franken_markdown::{FontFamily, fonts, fonts::FontStyle};
 
@@ -183,6 +183,47 @@ fn render_pdf_configured_with_image_embeds_supplied_png() {
     let pdf = String::from_utf8_lossy(&bytes);
     assert!(pdf.contains("/Subtype /Image"));
     assert!(pdf.contains("/Alt (Chart)"));
+}
+
+#[test]
+fn render_pdf_configured_multi_embeds_every_supplied_image() {
+    // Two images passed as the three parallel arrays (destinations, flattened
+    // bytes, per-image lengths) must BOTH embed — the multi entry point is what
+    // gives multi-image documents native<->WASM parity.
+    let a = tiny_rgb_png();
+    let b = tiny_rgb_png();
+    let mut flat = a.clone();
+    flat.extend_from_slice(&b);
+    let lengths = vec![a.len() as u32, b.len() as u32];
+    let out = render_pdf_configured_multi(
+        "![Alpha](a.png)\n\n![Beta](b.png)",
+        None,
+        None,
+        None,
+        None,
+        Some(1_700_000_000.0),
+        false,
+        false,
+        vec!["a.png".to_string(), "b.png".to_string()],
+        flat,
+        lengths,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("pdf with two images");
+    let bytes = out.bytes();
+    let pdf = String::from_utf8_lossy(&bytes);
+    assert!(pdf.contains("/Subtype /Image"));
+    // Both figures must be present (an unresolved image would drop to a text run
+    // with no /Alt figure attribute).
+    assert!(pdf.contains("/Alt (Alpha)"), "first image must embed");
+    assert!(pdf.contains("/Alt (Beta)"), "second image must embed");
+    // NB: the ABI's error paths (mismatched arrays) construct a JsValue, which
+    // aborts on non-wasm32, so they are exercised only by the real wasm build
+    // via scripts/check-wasm-package.sh, not here.
 }
 
 #[test]

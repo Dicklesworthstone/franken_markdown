@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { deflateSync } from "node:zlib";
 
 const [pkgDir, wasmPath, outDir, epochArg, ...corpus] = process.argv.slice(2);
 if (!pkgDir || !wasmPath || !outDir || corpus.length === 0) {
@@ -102,5 +103,40 @@ await expectThrow("invalid darkMode", () => mod.renderHtml("x", { darkMode: "bog
 await expectThrow("negative metadataEpochSeconds", () => mod.renderPdf("x", { metadataEpochSeconds: -1 }));
 await expectThrow("non-integer metadataEpochSeconds", () => mod.renderPdf("x", { metadataEpochSeconds: 1.5 }));
 console.log("smoke: negative-path ok");
+
+// Multiple PDF image assets must ALL embed (the multi-image ABI path). Build two
+// distinct minimal 1x1 RGB PNGs in-process (CRCs are not verified by the decoder).
+console.log("smoke: multi-image checks");
+function tinyPng(r, g, b) {
+  const be32 = (n) => {
+    const a = Buffer.alloc(4);
+    a.writeUInt32BE(n >>> 0);
+    return a;
+  };
+  const chunk = (type, data) =>
+    Buffer.concat([be32(data.length), Buffer.from(type, "latin1"), data, be32(0)]);
+  const ihdr = Buffer.concat([be32(1), be32(1), Buffer.from([8, 2, 0, 0, 0])]);
+  const idat = deflateSync(Buffer.from([0, r, g, b]));
+  return new Uint8Array(
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk("IHDR", ihdr),
+      chunk("IDAT", idat),
+      chunk("IEND", Buffer.alloc(0)),
+    ]),
+  );
+}
+const multi = await mod.renderPdf("![Alpha](a.png)\n\n![Beta](b.png)", {
+  metadataEpochSeconds: 1700000000,
+  pdfImages: [
+    { destination: "a.png", bytes: tinyPng(230, 60, 60) },
+    { destination: "b.png", bytes: tinyPng(60, 140, 200) },
+  ],
+});
+const multiText = dec.decode(multi.bytes);
+if (!multiText.includes("/Alt (Alpha)") || !multiText.includes("/Alt (Beta)")) {
+  fail("renderPdf with multiple images must embed every image (multi-image ABI)");
+}
+console.log("smoke: multi-image ok");
 
 console.log("smoke: ok — generated wasm module loaded, rendered deterministically, and enforced the API contract.");

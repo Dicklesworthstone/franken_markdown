@@ -2,9 +2,7 @@ import initWasm, {
   capabilities as wasmCapabilities,
   renderHtmlConfigured,
   renderHtmlConfiguredWithFonts,
-  renderPdfConfiguredWithAssets,
-  renderPdfConfigured,
-  renderPdfConfiguredWithImage
+  renderPdfConfiguredMulti
 } from "./pkg/franken_markdown.js";
 
 let initPromise = null;
@@ -62,50 +60,22 @@ export async function renderPdf(markdown, options = {}) {
   await init();
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
-  if (pdfImages.length > 1) {
-    throw new TypeError("pdfImages currently accepts at most one image asset");
+
+  // Flatten any number of images into the three parallel arrays the core ABI
+  // accepts (wasm-bindgen cannot pass a Vec<Vec<u8>>): a destination per image,
+  // all image bytes concatenated, and each image's byte length.
+  const destinations = pdfImages.map((image) => image.destination);
+  const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
+  const totalBytes = pdfImages.reduce((sum, image) => sum + image.bytes.length, 0);
+  const flatBytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const image of pdfImages) {
+    flatBytes.set(image.bytes, offset);
+    offset += image.bytes.length;
   }
-  if (fontAssets.length > 0) {
-    const image = pdfImages[0] ?? { destination: "", bytes: new Uint8Array() };
-    return normalizeResult(
-      renderPdfConfiguredWithAssets(
-        String(markdown),
-        stringOption(options.font),
-        darkModeOption(options.darkMode),
-        stringOption(options.title),
-        stringOption(options.author),
-        epochOption(options.metadataEpochSeconds),
-        Boolean(options.allowRawHtml),
-        Boolean(options.codeLineNumbers),
-        image.destination,
-        image.bytes,
-        fontBytesForSlot(fontAssets, "body-regular"),
-        fontBytesForSlot(fontAssets, "body-bold"),
-        fontBytesForSlot(fontAssets, "body-italic"),
-        fontBytesForSlot(fontAssets, "body-bold-italic"),
-        fontBytesForSlot(fontAssets, "mono-regular")
-      )
-    );
-  }
-  if (pdfImages.length === 1) {
-    const image = pdfImages[0];
-    return normalizeResult(
-      renderPdfConfiguredWithImage(
-        String(markdown),
-        stringOption(options.font),
-        darkModeOption(options.darkMode),
-        stringOption(options.title),
-        stringOption(options.author),
-        epochOption(options.metadataEpochSeconds),
-        Boolean(options.allowRawHtml),
-        Boolean(options.codeLineNumbers),
-        image.destination,
-        image.bytes
-      )
-    );
-  }
+
   return normalizeResult(
-    renderPdfConfigured(
+    renderPdfConfiguredMulti(
       String(markdown),
       stringOption(options.font),
       darkModeOption(options.darkMode),
@@ -113,7 +83,15 @@ export async function renderPdf(markdown, options = {}) {
       stringOption(options.author),
       epochOption(options.metadataEpochSeconds),
       Boolean(options.allowRawHtml),
-      Boolean(options.codeLineNumbers)
+      Boolean(options.codeLineNumbers),
+      destinations,
+      flatBytes,
+      lengths,
+      fontBytesForSlot(fontAssets, "body-regular"),
+      fontBytesForSlot(fontAssets, "body-bold"),
+      fontBytesForSlot(fontAssets, "body-italic"),
+      fontBytesForSlot(fontAssets, "body-bold-italic"),
+      fontBytesForSlot(fontAssets, "mono-regular")
     )
   );
 }

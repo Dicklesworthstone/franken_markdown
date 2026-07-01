@@ -277,6 +277,91 @@ pub fn render_pdf_configured_with_assets(
         .map_err(render_error_to_js)
 }
 
+/// Render Markdown to PDF with browser package options, ANY number of image
+/// assets, and caller-supplied font bytes. This is the general form the JS
+/// wrapper uses so multi-image documents reach native↔WASM parity (the
+/// single-image entry points above remain for a narrower ABI).
+///
+/// Images arrive as three parallel arrays — a destination per image, all image
+/// bytes concatenated, and the byte length of each image — because wasm-bindgen
+/// cannot pass a `Vec<Vec<u8>>` directly. Empty font byte arrays mean "use
+/// bundled fallback" for that slot.
+///
+/// # Errors
+/// Returns a JavaScript error when the image arrays are inconsistent, an option
+/// is invalid, or rendering fails.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderPdfConfiguredMulti)]
+pub fn render_pdf_configured_multi(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    metadata_epoch_seconds: Option<f64>,
+    allow_raw_html: bool,
+    code_line_numbers: bool,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    let mut options = pdf_options_configured(
+        font,
+        dark_mode,
+        title,
+        author,
+        metadata_epoch_seconds,
+        allow_raw_html,
+        code_line_numbers,
+    )?;
+
+    if image_destinations.len() != image_bytes_lengths.len() {
+        return Err(JsValue::from_str(
+            "image_destinations and image_bytes_lengths must have the same length",
+        ));
+    }
+    let mut offset = 0usize;
+    for (destination, &len) in image_destinations.iter().zip(image_bytes_lengths.iter()) {
+        let len = len as usize;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| JsValue::from_str("image byte lengths overflow the flattened buffer"))?;
+        let bytes = image_bytes_flat
+            .get(offset..end)
+            .ok_or_else(|| JsValue::from_str("flattened image bytes are shorter than declared"))?;
+        offset = end;
+        // A fully-empty entry is a "no image" placeholder; skip it.
+        if destination.trim().is_empty() && bytes.is_empty() {
+            continue;
+        }
+        options = options
+            .with_pdf_image_asset(destination.clone(), bytes.to_vec())
+            .map_err(render_error_to_js)?;
+    }
+    if offset != image_bytes_flat.len() {
+        return Err(JsValue::from_str(
+            "flattened image bytes are longer than the declared lengths",
+        ));
+    }
+
+    apply_font_assets(
+        &mut options,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+    )?;
+    wasm::render_pdf(markdown, &options)
+        .map(render_result)
+        .map_err(render_error_to_js)
+}
+
 fn pdf_options_configured(
     font: Option<String>,
     dark_mode: Option<String>,

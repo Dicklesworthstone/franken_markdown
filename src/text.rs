@@ -13,6 +13,17 @@
 //! PDF metrics, deterministic subset embedding, kerning, ligatures, and
 //! selectable `ToUnicode` output.
 
+/// Hard ceiling on how many glyphs a single OpenType layout structure may
+/// enumerate. A font cannot contain more than 65 536 glyphs, so a well-formed
+/// Coverage / ligature / pair table never exceeds this. It bounds the work an
+/// untrusted host font can drive: without it, a tiny malicious table (aliased
+/// offsets or a 6-byte range claiming 65 536 ids) amplifies into billions of
+/// iterations or gigabytes of retained state — a CPU-hang / OOM-kill DoS.
+const MAX_LAYOUT_GLYPHS: usize = 65_536;
+
+/// Alias of the layout ceiling used specifically for Coverage-table expansion.
+const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
+
 /// A parsed font, owning its backing bytes.
 #[derive(Debug, Clone)]
 pub struct Font {
@@ -548,22 +559,20 @@ impl Font {
             }
         }
         // Transitively pull in composite components until the set is stable.
-        loop {
-            let mut added: Vec<u16> = Vec::new();
-            for &gid in &set {
-                if self.is_composite(gid) {
-                    for c in self.glyph_components(gid) {
-                        if c < self.num_glyphs && !set.contains(&c) {
-                            added.push(c);
-                        }
+        // A worklist expands each glyph's components exactly once, so a chain of
+        // composites (glyph k referencing k-1 referencing ...) is O(n) instead of
+        // the O(n^2) that re-scanning the whole growing set each round would cost.
+        // `BTreeSet::insert` returns false for an already-present component, which
+        // also terminates cyclic/self-referential composites. The final set — and
+        // hence the ascending `old_gids` and the whole subset — is identical.
+        let mut worklist: Vec<u16> = set.iter().copied().collect();
+        while let Some(gid) = worklist.pop() {
+            if self.is_composite(gid) {
+                for c in self.glyph_components(gid) {
+                    if c < self.num_glyphs && set.insert(c) {
+                        worklist.push(c);
                     }
                 }
-            }
-            if added.is_empty() {
-                break;
-            }
-            for c in added {
-                set.insert(c);
             }
         }
         let old_gids: Vec<u16> = set.into_iter().collect(); // ascending, 0 first
@@ -1066,6 +1075,12 @@ fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
             // ranges are listed out of order.
             let mut by_index: std::collections::BTreeMap<u32, u16> =
                 std::collections::BTreeMap::new();
+            // A well-formed Coverage cannot enumerate more glyphs than exist in a
+            // font (<= 65536). Each 6-byte RangeRecord can otherwise claim up to
+            // 65536 ids, so without a cap a small malicious table drives billions
+            // of iterations (a CPU-hang DoS on an untrusted host font). Cap the
+            // total span and bail before expanding an over-claiming table.
+            let mut total: usize = 0;
             for i in 0..range_count {
                 let rec = off_mul(off(cov, 4)?, i, 6)?;
                 let start = be_u16(d, rec)? as u32;
@@ -1073,6 +1088,10 @@ fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
                 let start_idx = be_u16_at(d, rec, 4)? as u32;
                 if end < start {
                     continue;
+                }
+                total = total.checked_add((end - start + 1) as usize)?;
+                if total > MAX_COVERAGE_GLYPHS {
+                    return None;
                 }
                 let mut g = start;
                 let mut idx = start_idx;
@@ -1143,7 +1162,15 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
 
     let mut pairs: std::collections::BTreeMap<(u16, u16), i16> = std::collections::BTreeMap::new();
 
+    // Bound total work: PairSet offsets may all alias one target, so a font of
+    // O(pair_set_count + pair_value_count) bytes can otherwise drive their product
+    // in iterations — a CPU-hang DoS on an untrusted host font.
+    let mut work: usize = 0;
     for i in 0..pair_set_count {
+        work += 1;
+        if work > MAX_LAYOUT_GLYPHS {
+            break;
+        }
         // PairSet for coverage-index i is for coverage glyph at position i.
         let Some(left_glyph) = coverage.get(i).copied() else {
             continue;
@@ -1161,6 +1188,10 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
             continue;
         };
         for _ in 0..pair_value_count {
+            work += 1;
+            if work > MAX_LAYOUT_GLYPHS {
+                break;
+            }
             let Some(second) = be_u16(d, p) else {
                 break;
             };
@@ -1548,7 +1579,16 @@ fn parse_ligature_subst(
     let Some(set_offsets) = off(sub, 6) else {
         return;
     };
+    // Bound total work: LigatureSet/Ligature offsets may all alias one target, so
+    // a font of O(set_count + lig_count) bytes can otherwise drive set_count *
+    // lig_count iterations (and retained `LigRule`s) — an OOM-kill DoS. A valid
+    // font has far fewer ligature entries than the glyph ceiling.
+    let mut work: usize = 0;
     for i in 0..set_count as usize {
+        work += 1;
+        if work > MAX_LAYOUT_GLYPHS {
+            return;
+        }
         // LigatureSet i is for coverage glyph i (the ligature's first component).
         let Some(first) = coverage.get(i).copied() else {
             continue;
@@ -1566,6 +1606,10 @@ fn parse_ligature_subst(
             continue;
         };
         for j in 0..lig_count as usize {
+            work += 1;
+            if work > MAX_LAYOUT_GLYPHS {
+                return;
+            }
             let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot)) else {
                 continue;
             };
@@ -1603,5 +1647,45 @@ fn parse_ligature_subst(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+mod dos_tests {
+    use super::{MAX_COVERAGE_GLYPHS, parse_coverage_glyphs};
+
+    fn be(v: u16) -> [u8; 2] {
+        v.to_be_bytes()
+    }
+
+    #[test]
+    fn coverage_format2_valid_range_expands() {
+        // format=2, rangeCount=1, range [10..=20] at coverage index 0.
+        let mut d = Vec::new();
+        d.extend_from_slice(&be(2));
+        d.extend_from_slice(&be(1));
+        d.extend_from_slice(&be(10)); // start
+        d.extend_from_slice(&be(20)); // end
+        d.extend_from_slice(&be(0)); // startCoverageIndex
+        let got = parse_coverage_glyphs(&d, 0).unwrap();
+        assert_eq!(got, (10u16..=20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn coverage_format2_overclaiming_table_is_rejected_not_expanded() {
+        // Two ranges each spanning 0..=65535 => total 131072 > the glyph ceiling,
+        // so the parser must bail (None) instead of grinding billions of inserts.
+        let mut d = Vec::new();
+        d.extend_from_slice(&be(2));
+        d.extend_from_slice(&be(2)); // rangeCount = 2
+        for _ in 0..2 {
+            d.extend_from_slice(&be(0)); // start
+            d.extend_from_slice(&be(0xFFFF)); // end
+            d.extend_from_slice(&be(0)); // startCoverageIndex
+        }
+        assert!(parse_coverage_glyphs(&d, 0).is_none());
+        // Sanity: the ceiling is the font-wide glyph limit.
+        assert_eq!(MAX_COVERAGE_GLYPHS, 65_536);
     }
 }

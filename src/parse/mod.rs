@@ -1583,6 +1583,10 @@ fn parse_inlines_with_refs_profiled(
     // with closers and build the correct nested `Emphasis`/`Strong` tree.
     let mut els: Vec<InlineEl> = Vec::new();
     let bytes: Vec<char> = text.chars().collect();
+    // Precompute `[`→`]` matches once (linear) so each link/image attempt below
+    // is an O(1) lookup rather than an O(n) rescan per `[` (which was quadratic
+    // on pathological bracket-heavy lines).
+    let bracket_pairs = compute_bracket_pairs(&bytes);
     let mut buf = String::new();
     let mut i = 0;
     let flush = |buf: &mut String, els: &mut Vec<InlineEl>| {
@@ -1628,7 +1632,7 @@ fn parse_inlines_with_refs_profiled(
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
                 if let Some((alt, dest, title, next)) =
-                    parse_link_like(&bytes, i + 1, refs, profiler)
+                    parse_link_like(&bytes, i + 1, &bracket_pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -1638,7 +1642,7 @@ fn parse_inlines_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i + 1, refs, profiler)
+                    parse_reference_link_like(&bytes, i + 1, &bracket_pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -1654,7 +1658,7 @@ fn parse_inlines_with_refs_profiled(
             }
             '[' => {
                 if let Some((content, dest, title, next)) =
-                    parse_link_like(&bytes, i, refs, profiler)
+                    parse_link_like(&bytes, i, &bracket_pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -1664,7 +1668,7 @@ fn parse_inlines_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i, refs, profiler)
+                    parse_reference_link_like(&bytes, i, &bracket_pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -2201,13 +2205,14 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
 fn parse_link_like(
     chars: &[char],
     i: usize,
+    bracket_pairs: &[Option<usize>],
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let j = find_closing_bracket(chars, i)?;
+    let j = bracket_pairs.get(i).copied().flatten()?;
     if chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
         return None;
     }
@@ -2355,33 +2360,58 @@ fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
     None
 }
 
+/// CommonMark caps a link reference label at 999 characters inside the brackets.
+/// Rejecting longer candidates in O(1) — before collecting/normalizing them —
+/// keeps a bracket-heavy line linear instead of quadratic (each `[` would
+/// otherwise collect its whole bracket span just to fail the lookup).
+const MAX_REFERENCE_LABEL_LEN: usize = 999;
+
 fn parse_reference_link_like(
     chars: &[char],
     i: usize,
+    bracket_pairs: &[Option<usize>],
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let close = find_closing_bracket(chars, i)?;
-    let text: String = chars[i + 1..close].iter().collect();
+    let close = bracket_pairs.get(i).copied().flatten()?;
+    let text_len = close.saturating_sub(i + 1);
 
+    // Resolve the reference LABEL (used for the lookup) without collecting the
+    // possibly-huge first bracket unless it is actually the label, and reject any
+    // over-length label in O(1).
     let (label, next) = if chars.get(close + 1) == Some(&'[') {
         let label_start = close + 2;
-        let label_close = find_closing_bracket(chars, close + 1)?;
-        let raw_label: String = chars[label_start..label_close].iter().collect();
-        let label = if raw_label.is_empty() {
-            normalize_reference_label(&text)?
+        let label_close = bracket_pairs.get(close + 1).copied().flatten()?;
+        if label_close > label_start {
+            // [text][label]: the second bracket is the explicit label.
+            if label_close - label_start > MAX_REFERENCE_LABEL_LEN {
+                return None;
+            }
+            let raw_label: String = chars[label_start..label_close].iter().collect();
+            (normalize_reference_label(&raw_label)?, label_close + 1)
         } else {
-            normalize_reference_label(&raw_label)?
-        };
-        (label, label_close + 1)
+            // [text][]: collapsed — the label is the first bracket's text.
+            if text_len > MAX_REFERENCE_LABEL_LEN {
+                return None;
+            }
+            let text: String = chars[i + 1..close].iter().collect();
+            (normalize_reference_label(&text)?, label_close + 1)
+        }
     } else {
+        // [text]: shortcut — the label is the first bracket's text.
+        if text_len > MAX_REFERENCE_LABEL_LEN {
+            return None;
+        }
+        let text: String = chars[i + 1..close].iter().collect();
         (normalize_reference_label(&text)?, close + 1)
     };
 
     let reference = refs.get(&label)?;
+    // Only now, with a real reference, collect + parse the link text as content.
+    let text: String = chars[i + 1..close].iter().collect();
     Some((
         parse_inlines_with_refs_profiled(&text, refs, profiler),
         reference.dest.clone(),
@@ -2732,6 +2762,35 @@ fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {
     None
 }
 
+/// Match every `[` to its closing `]` in one pass, so link parsing can look up a
+/// bracket's partner in O(1) instead of rescanning from each `[`.
+///
+/// `pairs[open] == Some(close)` iff a `[` at `open` is closed by a `]` at
+/// `close`, with the exact nesting and backslash-escape rules of
+/// [`find_closing_bracket`] (a `\` skips the next char, so `\[`/`\]` are inert).
+/// Rescanning per `[` made a line like `[[[…]]]` quadratic; one stack pass is
+/// linear and byte-for-byte equivalent (`find_closing_bracket(open)` returns the
+/// `]` that pops `open`, which is exactly what this records).
+fn compute_bracket_pairs(chars: &[char]) -> Vec<Option<usize>> {
+    let mut pairs = vec![None; chars.len()];
+    let mut open_stack: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1, // skip the escaped char, exactly as find_closing_bracket does
+            '[' => open_stack.push(i),
+            ']' => {
+                if let Some(open) = open_stack.pop() {
+                    pairs[open] = Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    pairs
+}
+
 fn normalize_reference_label(label: &str) -> Option<String> {
     let mut out = String::new();
     let mut pending_space = false;
@@ -2922,5 +2981,59 @@ mod emphasis_dos_tests {
             ])]
         );
         assert_eq!(inline_depth(&out), 3);
+    }
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::compute_bracket_pairs;
+    use crate::{HtmlOptions, render_html};
+
+    fn pairs(s: &str) -> Vec<Option<usize>> {
+        compute_bracket_pairs(&s.chars().collect::<Vec<char>>())
+    }
+
+    #[test]
+    fn bracket_pairs_handle_nesting_escapes_and_unmatched() {
+        // simple pair
+        assert_eq!(pairs("[a]"), vec![Some(2), None, None]);
+        // nested: outer 0->4, inner 1->3
+        let nested = pairs("[[x]]");
+        assert_eq!((nested[0], nested[1]), (Some(4), Some(3)));
+        // a lone `]` pops nothing; a lone `[` never closes
+        assert_eq!(pairs("]["), vec![None, None]);
+        // escaped brackets are inert (`\` skips the next char)
+        assert_eq!(pairs("\\[\\]"), vec![None, None, None, None]);
+    }
+
+    #[test]
+    fn reference_links_resolve_across_forms() {
+        let opts = HtmlOptions::default();
+        for src in [
+            "[foo]\n\n[foo]: /u",      // shortcut
+            "[foo][]\n\n[foo]: /u",    // collapsed
+            "[bar][foo]\n\n[foo]: /u", // full
+        ] {
+            let html = render_html(src, &opts).unwrap_or_default();
+            assert!(html.contains("href=\"/u\""), "did not resolve: {src:?}");
+        }
+    }
+
+    #[test]
+    fn over_long_reference_label_does_not_resolve() {
+        let opts = HtmlOptions::default();
+        let long = "a".repeat(1000); // exceeds the 999-char CommonMark label cap
+        // shortcut with an over-long label
+        let html = render_html(&format!("[{long}]\n\n[{long}]: /u"), &opts).unwrap_or_default();
+        assert!(
+            !html.contains("href=\"/u\""),
+            "over-long shortcut label resolved"
+        );
+        // full form with an over-long explicit label
+        let html2 = render_html(&format!("[x][{long}]\n\n[{long}]: /u"), &opts).unwrap_or_default();
+        assert!(
+            !html2.contains("href=\"/u\""),
+            "over-long full label resolved"
+        );
     }
 }

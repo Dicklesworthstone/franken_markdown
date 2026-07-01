@@ -206,6 +206,20 @@ fn fuzz_pathological_emphasis_runs_stay_linear_and_bounded() {
 }
 
 #[test]
+fn fuzz_pathological_bracket_runs_stay_linear() {
+    // Regression for the O(n^2) bracket/link scan: a line of deeply nested
+    // brackets (`[[[…x…]]]`) once called an O(n) forward scan (and a full-span
+    // String collect) from every `[`. With one-pass bracket-pair precomputation
+    // and the CommonMark 999-char label cap this is linear. Completing is proof:
+    // a regression would hang on 10^5-scale bracket input.
+    let open = "[".repeat(80_000);
+    let close = "]".repeat(80_000);
+    assert_robust(&format!("{open}x{close}"));
+    // Also the reference-style variant that used to collect each span.
+    assert_robust(&format!("{open}x{close}(u)"));
+}
+
+#[test]
 fn fuzz_pdf_render_survives_a_sample_of_adversarial_inputs() {
     // PDF rendering is heavier, so sample rather than running the full corpus.
     for seed in 0..40u64 {

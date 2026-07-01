@@ -66,6 +66,16 @@ const QUOTE_BG_PAD_V: f32 = 3.0;
 const PDF_IMAGE_DPI_SCALE: f32 = 72.0 / 96.0;
 const MAX_PDF_IMAGE_COMPRESSED_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PDF_IMAGE_PIXELS: u64 = 24_000_000;
+/// Ceiling on a PNG's *decoded* raw sample bytes (`pixels * channels * bytes/sample`).
+///
+/// The pixel cap alone is blind to bit depth, so a 24-megapixel 16-bit RGBA image
+/// (a few-KB IDAT of zlib-compressed zeros) would drive a ~380 MB transient
+/// allocation — fine on a desktop, but a memory trap on a constrained
+/// browser/worker wasm instance. This bit-depth-aware cap bounds the largest
+/// decode buffer (the RGBA8/16 raw samples) uniformly on every target, so output
+/// stays deterministic across native and wasm. 8-bit RGBA up to the pixel cap
+/// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
+const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
 // Font slots referenced in page Resources as /F1../F5.
 const F_BODY: u8 = 1;
@@ -1369,9 +1379,24 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                         | (4, 8 | 16)
                         | (6, 8 | 16)
                 );
+                // Bit-depth-aware bound on the decoded raw sample buffer
+                // (`pixels * channels * bytes/sample`), so a 16-bit image cannot
+                // slip a multi-hundred-MB transient past the pixel cap.
+                let channels: u64 = match color_type {
+                    2 => 3, // truecolor
+                    4 => 2, // grayscale + alpha
+                    6 => 4, // truecolor + alpha
+                    _ => 1, // grayscale (0) / palette (3): 1 sample/pixel
+                };
+                let sample_bytes: u64 = if bit_depth == 16 { 2 } else { 1 };
+                let decoded_bytes = u64::from(width)
+                    .saturating_mul(u64::from(height))
+                    .saturating_mul(channels)
+                    .saturating_mul(sample_bytes);
                 if width == 0
                     || height == 0
                     || u64::from(width).saturating_mul(u64::from(height)) > MAX_PDF_IMAGE_PIXELS
+                    || decoded_bytes > MAX_PDF_IMAGE_DECODED_BYTES
                     || compression != 0
                     || filter != 0
                     || interlace > 1
@@ -6621,6 +6646,47 @@ mod png_decode_tests {
         // Valid pairs still parse (grayscale supports every depth).
         assert!(parse_png_chunks(&png(0, 4)).is_some(), "gray @ 4-bit");
         assert!(parse_png_chunks(&png(2, 8)).is_some(), "RGB @ 8-bit");
+    }
+
+    #[test]
+    fn oversized_decoded_image_is_rejected_by_the_byte_cap() {
+        // Build a PNG whose IHDR claims large dimensions but whose IDAT is tiny —
+        // the bit-depth-aware decoded-bytes cap must refuse it in IHDR validation,
+        // before any multi-hundred-MB decode buffer is allocated.
+        let png = |w: u32, h: u32, bd: u8, ct: u8| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&w.to_be_bytes());
+            ihdr.extend_from_slice(&h.to_be_bytes());
+            ihdr.extend_from_slice(&[bd, ct, 0, 0, 0]);
+            let push = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(kind);
+                out.extend_from_slice(data);
+                out.extend_from_slice(&0u32.to_be_bytes());
+            };
+            push(&mut bytes, b"IHDR", &ihdr);
+            push(&mut bytes, b"IDAT", &[0]);
+            push(&mut bytes, b"IEND", &[]);
+            bytes
+        };
+        // 24 MP 16-bit RGBA = 192 MB decoded > 96 MB cap -> refused.
+        assert!(
+            parse_png_chunks(&png(6000, 4000, 16, 6)).is_none(),
+            "24MP RGBA16 must be refused by the decoded-bytes cap"
+        );
+        // The SAME pixel count at 8-bit RGBA = ~91.5 MiB <= cap -> still accepted
+        // (the cap is bit-depth-aware, not a blanket pixel-count reduction).
+        assert!(
+            parse_png_chunks(&png(6000, 4000, 8, 6)).is_some(),
+            "24MP RGBA8 is within the byte cap"
+        );
+        // A 16-bit RGBA image small enough to fit the byte cap is accepted.
+        assert!(
+            parse_png_chunks(&png(2000, 2000, 16, 6)).is_some(),
+            "4MP RGBA16 fits the byte cap"
+        );
     }
 
     #[test]

@@ -1443,6 +1443,37 @@ fn config_set_save_error_when_target_directory_is_read_only() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A reader that closes the pipe without draining (e.g. `fmd capabilities
+/// --json | true`) must not make a discovery/JSON command panic on the failed
+/// stdout write (exit 101); the stdout-is-data / stable-exit-code contract has
+/// to survive piping.
+#[test]
+fn discovery_commands_do_not_panic_on_a_broken_pipe() {
+    for args in [
+        vec!["capabilities", "--json"],
+        vec!["doctor"],
+        vec!["--robot-triage"],
+        vec!["robot-docs"],
+        vec!["config", "path"],
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fmd"))
+            .args(&args)
+            .env_remove("SOURCE_DATE_EPOCH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        // Close the read end without reading, then let fmd finish.
+        drop(child.stdout.take());
+        let status = child.wait().unwrap();
+        assert_ne!(
+            status.code(),
+            Some(101),
+            "fmd {args:?} panicked on a broken pipe"
+        );
+    }
+}
+
 // --- batch subcommand contract (only present with the `batch` feature) --------
 
 /// `batch --out-dir -` is refused (exit 64): batch writes files and cannot

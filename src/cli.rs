@@ -280,19 +280,14 @@ pub fn main() -> ExitCode {
     let _no_color = cli.no_color;
     let no_config = cli.no_config;
     if cli.robot_triage {
-        print_robot_triage();
-        return ExitCode::SUCCESS;
+        return print_robot_triage();
     }
     match cli.command {
         Some(Command::Render(args)) => run_render(args, json, no_config),
-        Some(Command::Capabilities) => {
-            print_capabilities();
-            ExitCode::SUCCESS
-        }
+        Some(Command::Capabilities) => print_capabilities(),
         Some(Command::RobotDocs(args)) => {
             let _guide = args.command.unwrap_or(RobotDocsCommand::Guide);
-            print_robot_docs();
-            ExitCode::SUCCESS
+            print_robot_docs()
         }
         Some(Command::Doctor(args)) => run_doctor(json || args.json),
         Some(Command::Config(args)) => run_config(args, json, no_config),
@@ -630,9 +625,11 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 ));
             }
             // stdout is data (the receipt JSON) only with --json; otherwise a
-            // human summary goes to stderr and stdout stays empty.
+            // human summary goes to stderr and stdout stays empty. A broken pipe
+            // is swallowed here so it never panics or overrides the batch result
+            // exit code computed below.
             if json {
-                println!("{}", receipt.to_json());
+                let _ = emit_stdout(&receipt.to_json());
             } else {
                 eprintln!(
                     "fmd batch: {} ok, {} failed, {} skipped across {} input(s) on {} worker(s)",
@@ -669,8 +666,7 @@ fn run_config(args: ConfigArgs, global_json: bool, no_config: bool) -> ExitCode 
                     return fail_json(66, "config_error", &format!("reading config: {e}"), json);
                 }
             };
-            print_config_show(&config, json);
-            ExitCode::SUCCESS
+            print_config_show(&config, json)
         }
         ConfigCommand::Get(args) => {
             let json = global_json || args.json;
@@ -692,17 +688,17 @@ fn run_config(args: ConfigArgs, global_json: bool, no_config: bool) -> ExitCode 
                     json,
                 );
             };
-            if json {
-                println!(
+            let out = if json {
+                format!(
                     "{{\"ok\":true,\"key\":\"{}\",\"value\":\"{}\",\"path\":\"{}\"}}",
                     json_escape(&args.key),
                     json_escape(&value),
                     json_escape(&config_path().display().to_string())
-                );
+                )
             } else {
-                println!("{value}");
-            }
-            ExitCode::SUCCESS
+                value
+            };
+            emit_stdout(&out)
         }
         ConfigCommand::Set(args) => {
             let json = global_json || args.json;
@@ -730,52 +726,56 @@ fn run_config(args: ConfigArgs, global_json: bool, no_config: bool) -> ExitCode 
                 }
             };
             let value = config.get_resolved(&args.key).unwrap_or_default();
-            if json {
-                println!(
+            let out = if json {
+                format!(
                     "{{\"ok\":true,\"event\":\"config_set\",\"key\":\"{}\",\"value\":\"{}\",\"path\":\"{}\"}}",
                     json_escape(&args.key),
                     json_escape(&value),
                     json_escape(&path.display().to_string())
-                );
+                )
             } else {
-                println!("fmd: set {}={} in {}", args.key, value, path.display());
-            }
-            ExitCode::SUCCESS
+                format!("fmd: set {}={} in {}", args.key, value, path.display())
+            };
+            emit_stdout(&out)
         }
         ConfigCommand::Path(args) => {
             let json = global_json || args.json;
             let path = config_path();
-            if json {
-                println!(
+            let out = if json {
+                format!(
                     "{{\"ok\":true,\"path\":\"{}\"}}",
                     json_escape(&path.display().to_string())
-                );
+                )
             } else {
-                println!("{}", path.display());
-            }
-            ExitCode::SUCCESS
+                path.display().to_string()
+            };
+            emit_stdout(&out)
         }
     }
 }
 
-fn print_config_show(config: &FmdConfig, json: bool) {
+fn print_config_show(config: &FmdConfig, json: bool) -> ExitCode {
     let path = config_path();
-    if json {
-        println!(
+    let out = if json {
+        format!(
             "{{\"ok\":true,\"path\":\"{}\",\"config\":{},\"theme\":{}}}",
             json_escape(&path.display().to_string()),
             config.to_json(),
             config.to_theme().to_config_json()
-        );
+        )
     } else {
-        println!("fmd config");
-        println!("  path: {}", path.display());
+        let mut lines = vec![
+            "fmd config".to_string(),
+            format!("  path: {}", path.display()),
+        ];
         for key in CONFIG_KEYS {
             if let Some(value) = config.get_resolved(key) {
-                println!("  {key}: {value}");
+                lines.push(format!("  {key}: {value}"));
             }
         }
-    }
+        lines.join("\n")
+    };
+    emit_stdout(&out)
 }
 
 fn load_config(no_config: bool) -> std::result::Result<FmdConfig, crate::config::ConfigError> {
@@ -979,6 +979,24 @@ fn fail(code: u8, msg: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// Write `text` plus a trailing newline to stdout, returning the process exit
+/// code. A broken pipe — the reader closed early, e.g. `fmd capabilities --json
+/// | head` — exits cleanly (0) instead of the panic `println!` would raise, so
+/// the "stdout is data, exit codes are stable" contract survives piping. Any
+/// other write failure is a stdout/write error (74). Equivalent to
+/// `println!("{text}")` byte-for-byte on success.
+fn emit_stdout(text: &str) -> ExitCode {
+    let mut out = std::io::stdout().lock();
+    match out
+        .write_all(text.as_bytes())
+        .and_then(|()| out.write_all(b"\n"))
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == IoErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(_) => ExitCode::from(74),
+    }
+}
+
 fn handle_parse_error(err: clap::Error) -> ExitCode {
     let kind = err.kind();
     if err.print().is_err() {
@@ -1045,45 +1063,48 @@ fn report_write(kind: &str, path: &Path, bytes: usize, json: bool) {
 }
 
 fn run_doctor(json: bool) -> ExitCode {
-    if json {
-        println!(
+    let out = if json {
+        format!(
             "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
             env!("CARGO_PKG_VERSION"),
             Theme::default().to_config_json()
-        );
+        )
     } else {
-        println!("fmd doctor");
-        println!("  html: available");
-        println!("  pdf: available v0 (embedded subset fonts, deterministic writer, hyphenation)");
-        println!("  syntax highlighting: available for common documentation languages");
-        println!("  theme model: structured v1");
-        println!("  core dependencies: std-only");
-        println!("  cli dependency: clap");
-        println!("  wasm posture: core builds with --no-default-features");
-        println!("  license: MIT with OpenAI/Anthropic rider");
-    }
-    ExitCode::SUCCESS
+        [
+            "fmd doctor",
+            "  html: available",
+            "  pdf: available v0 (embedded subset fonts, deterministic writer, hyphenation)",
+            "  syntax highlighting: available for common documentation languages",
+            "  theme model: structured v1",
+            "  core dependencies: std-only",
+            "  cli dependency: clap",
+            "  wasm posture: core builds with --no-default-features",
+            "  license: MIT with OpenAI/Anthropic rider",
+        ]
+        .join("\n")
+    };
+    emit_stdout(&out)
 }
 
-fn print_capabilities() {
-    println!(
+fn print_capabilities() -> ExitCode {
+    emit_stdout(&format!(
         "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"pdf_image_assets\":\"available_png_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"publishable_unpublished\",\"commonmark_spec\":\"0.31.2_ratcheted_min_369_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
-    );
+    ))
 }
 
-fn print_robot_triage() {
-    println!(
+fn print_robot_triage() -> ExitCode {
+    emit_stdout(&format!(
         "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"quick_ref\":[\"fmd README.md --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd config show --json\",\"fmd capabilities --json\",\"fmd doctor --json\"],\"health\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"syntax_highlighting\":\"available\",\"theme_model\":\"structured_v1\",\"native_config\":\"available\",\"wasm_core\":\"no-default-features\"}},\"recommended_next_actions\":[{{\"command\":\"fmd capabilities --json\",\"reason\":\"discover the stable command and exit-code contract\"}},{{\"command\":\"fmd config show --json\",\"reason\":\"inspect native defaults without reading external docs\"}},{{\"command\":\"fmd robot-docs guide\",\"reason\":\"read the in-tool agent guide\"}},{{\"command\":\"fmd README.md --out README.html --json\",\"reason\":\"render HTML and receive machine-readable write status on stderr\"}},{{\"command\":\"fmd README.md --to pdf --out README.pdf --json\",\"reason\":\"render the current embedded-font PDF v0 and receive machine-readable write status on stderr\"}}]}}",
         env!("CARGO_PKG_VERSION")
-    );
+    ))
 }
 
-fn print_robot_docs() {
-    println!(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  --pdf-image maps one Markdown image destination to a local file as DEST=PATH for PDF rendering; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG image assets via --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs."
-    );
+fn print_robot_docs() -> ExitCode {
+    emit_stdout(
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  --pdf-image maps one Markdown image destination to a local file as DEST=PATH for PDF rendering; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG image assets via --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
+    )
 }
 
 fn normalized_args() -> Vec<String> {

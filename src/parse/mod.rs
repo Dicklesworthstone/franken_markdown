@@ -2527,12 +2527,22 @@ fn is_email_autolink(s: &str) -> bool {
     })
 }
 
+/// Longest possible body between `&` and `;` for a *valid* character reference.
+/// CommonMark 0.31.2 bounds every form: the longest HTML5 named entity is
+/// `CounterClockwiseContourIntegral` (31 chars), decimal numeric refs are at
+/// most 7 digits (`&#` + 7), and hex at most 6 (`&#x` + 6). Anything longer can
+/// never resolve, so we refuse to scan past this window. Capping the `;` search
+/// keeps `&`-dense untrusted input linear instead of O(n^2) (each `&` otherwise
+/// scanned to end-of-input) without changing the result for any valid input.
+const MAX_CHAR_REF_BODY_LEN: usize = 32;
+
 fn parse_character_reference(chars: &[char], i: usize) -> Option<(String, usize)> {
     if chars.get(i) != Some(&'&') {
         return None;
     }
     let semi = chars[i + 1..]
         .iter()
+        .take(MAX_CHAR_REF_BODY_LEN + 1)
         .position(|&ch| ch == ';')
         .map(|offset| i + 1 + offset)?;
     if semi == i + 1 {
@@ -2981,6 +2991,67 @@ mod emphasis_dos_tests {
             ])]
         );
         assert_eq!(inline_depth(&out), 3);
+    }
+}
+
+#[cfg(test)]
+mod char_ref_dos_tests {
+    use super::{MAX_CHAR_REF_BODY_LEN, parse_character_reference, parse_inlines};
+    use crate::ast::Inline;
+
+    fn as_chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    #[test]
+    fn valid_references_still_decode() {
+        // Named, decimal, and hex forms all still resolve — the window cap is
+        // wide enough for every valid reference.
+        for (src, want) in [("&amp;", "&"), ("&#65;", "A"), ("&#x41;", "A")] {
+            let cs = as_chars(src);
+            let (out, next) = parse_character_reference(&cs, 0).expect(src);
+            assert_eq!(out, want, "decoding {src}");
+            assert_eq!(next, cs.len());
+        }
+    }
+
+    #[test]
+    fn longest_named_entity_is_within_the_window() {
+        // The longest HTML5 named entity (31 chars) must still decode: the cap
+        // must never be tighter than the real maximum body length.
+        let src = "&CounterClockwiseContourIntegral;";
+        let cs = as_chars(src);
+        // body length (between & and ;) is 31, comfortably under the cap.
+        assert!("CounterClockwiseContourIntegral".len() <= MAX_CHAR_REF_BODY_LEN);
+        let (out, next) = parse_character_reference(&cs, 0).expect(src);
+        assert_eq!(out, "\u{2233}"); // ∳ CONTOUR INTEGRAL (counterclockwise)
+        assert_eq!(next, cs.len());
+    }
+
+    #[test]
+    fn overlong_body_is_not_a_reference() {
+        // A `;` beyond the spec-max window can never be a valid reference, so we
+        // stop scanning and report "not a reference" (the `&` stays literal).
+        let long = format!("&{};", "a".repeat(MAX_CHAR_REF_BODY_LEN + 1));
+        assert!(parse_character_reference(&as_chars(&long), 0).is_none());
+    }
+
+    #[test]
+    fn ampersand_dense_input_stays_linear_and_literal() {
+        // The DoS shape: many `&` with no nearby `;`. Before the cap each `&`
+        // scanned to end-of-input (O(n^2)); now each looks at most a fixed window
+        // ahead. The test completing quickly is the proof it stays bounded, and
+        // every `&` is preserved as literal text (no silent drop).
+        let src = "&".repeat(200_000);
+        let out = parse_inlines(&src);
+        let text: String = out
+            .iter()
+            .map(|i| match i {
+                Inline::Text(t) => t.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(text, src, "every ampersand must survive as literal text");
     }
 }
 

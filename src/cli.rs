@@ -488,18 +488,34 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Err(e) => return fail_json(64, "usage_error", &e, json),
     };
 
-    let inputs = match batch::expand_inputs(&args.inputs) {
-        Ok(found) if !found.is_empty() => found,
-        Ok(_) => {
-            return fail_json(
-                66,
-                "input_error",
-                "no Markdown inputs found (files/dirs expanded to nothing)",
-                json,
-            );
-        }
-        Err(e) => return fail_json(66, "input_error", &format!("expanding inputs: {e}"), json),
-    };
+    let continue_on_error = args.continue_on_error;
+    let batch::ExpandedInputs {
+        inputs,
+        errors: expand_errors,
+    } = batch::expand_inputs(&args.inputs);
+
+    // In strict mode (the default) any unexpandable path aborts the whole run
+    // (exit 66), as before. With --continue-on-error the bad paths are recorded
+    // as per-file failures in the receipt and the valid files still render.
+    if !continue_on_error && let Some(first) = expand_errors.first() {
+        return fail_json(
+            66,
+            "input_error",
+            &format!("expanding {}: {}", first.path.display(), first.message),
+            json,
+        );
+    }
+    if inputs.is_empty() {
+        let msg = if expand_errors.is_empty() {
+            "no Markdown inputs found (files/dirs expanded to nothing)".to_string()
+        } else {
+            format!(
+                "no readable Markdown inputs ({} path(s) could not be expanded)",
+                expand_errors.len()
+            )
+        };
+        return fail_json(66, "input_error", &msg, json);
+    }
 
     let html = HtmlOptions {
         theme: theme.clone(),
@@ -519,7 +535,6 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         font_assets: FontAssets::default(),
     };
 
-    let continue_on_error = args.continue_on_error;
     let plan = BatchPlan {
         inputs,
         format,
@@ -537,7 +552,16 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     };
 
     match batch::run_batch_blocking(plan, &opts) {
-        Ok(receipt) => {
+        Ok(mut receipt) => {
+            // Record any unexpandable paths as per-file failures. Strict mode
+            // already returned above, so this only runs under --continue-on-error
+            // (or when there were no expansion errors at all).
+            for e in &expand_errors {
+                receipt.files.push(batch::FileEntry::expansion_failure(
+                    &e.path,
+                    e.message.clone(),
+                ));
+            }
             // stdout is data (the receipt JSON) only with --json; otherwise a
             // human summary goes to stderr and stdout stays empty.
             if json {

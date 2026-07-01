@@ -193,6 +193,18 @@ impl FileEntry {
             error: None,
         }
     }
+
+    /// A path that failed to expand into inputs (missing, or an unreadable
+    /// directory), recorded as a per-file failure so a `--continue-on-error`
+    /// receipt reports it without the run having aborted.
+    pub fn expansion_failure(input: &Path, message: String) -> Self {
+        FileEntry {
+            input: input.to_path_buf(),
+            status: FileStatus::Failed,
+            outputs: Vec::new(),
+            error: Some(message),
+        }
+    }
 }
 
 /// The deterministic outcome of a batch run. Golden fields are timing-free so
@@ -311,29 +323,70 @@ fn is_markdown(path: &Path) -> bool {
     )
 }
 
-/// Expand files, directories (recursively collecting `*.md`/`*.markdown`), into
+/// A CLI input path that could not be expanded (missing, or an unreadable
+/// directory). Recorded rather than aborting the whole expansion so a batch can
+/// honor `--continue-on-error` and still render the paths that are valid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Outcome of expanding CLI input paths: the valid, sorted, de-duplicated
+/// Markdown inputs plus any paths that failed to expand. Both lists are sorted so
+/// the result is deterministic regardless of filesystem enumeration order.
+#[derive(Clone, Debug, Default)]
+pub struct ExpandedInputs {
+    pub inputs: Vec<PathBuf>,
+    pub errors: Vec<InputError>,
+}
+
+/// Expand files and directories (recursively collecting `*.md`/`*.markdown`) into
 /// a deterministically-sorted, de-duplicated input list.
-pub fn expand_inputs(paths: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
+///
+/// This is total: a missing top-level path or an unreadable subdirectory is
+/// recorded in [`ExpandedInputs::errors`] instead of aborting, so one bad path
+/// no longer discards every valid file in the run. The caller decides whether to
+/// treat the errors as fatal (strict mode) or as per-file failures
+/// (`--continue-on-error`).
+pub fn expand_inputs(paths: &[PathBuf]) -> ExpandedInputs {
     let mut out: Vec<PathBuf> = Vec::new();
+    let mut errors: Vec<InputError> = Vec::new();
     for p in paths {
-        let meta = std::fs::metadata(p)?;
-        if meta.is_dir() {
-            collect_dir(p, &mut out)?;
-        } else {
-            out.push(p.clone());
+        match std::fs::metadata(p) {
+            Ok(meta) if meta.is_dir() => collect_dir(p, &mut out, &mut errors),
+            Ok(_) => out.push(p.clone()),
+            Err(e) => errors.push(InputError {
+                path: p.clone(),
+                message: format!("cannot read input: {e}"),
+            }),
         }
     }
     out.sort();
     out.dedup();
-    Ok(out)
+    errors.sort_by(|a, b| a.path.cmp(&b.path));
+    errors.dedup();
+    ExpandedInputs {
+        inputs: out,
+        errors,
+    }
 }
 
-fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<InputError>) {
     // Read the directory into a sorted vector first so recursion order is
-    // deterministic regardless of filesystem enumeration order.
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
+    // deterministic regardless of filesystem enumeration order. An unreadable
+    // directory is recorded and skipped, not propagated as a whole-run failure.
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            errors.push(InputError {
+                path: dir.to_path_buf(),
+                message: format!("cannot read directory: {e}"),
+            });
+            return;
+        }
+    };
+    let mut entries: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();
     for entry in entries {
         // Never follow symlinks during the recursive walk: a directory symlink
@@ -344,12 +397,11 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
             continue;
         }
         if entry.is_dir() {
-            collect_dir(&entry, out)?;
+            collect_dir(&entry, out, errors);
         } else if is_markdown(&entry) {
             out.push(entry);
         }
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -911,7 +963,7 @@ mod tests {
             std::fs::write(dir.join(name), body).unwrap();
         }
 
-        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).inputs;
         assert_eq!(inputs.len(), 5, "directory expansion collected every .md");
 
         let out_dir = dir.join("out");
@@ -1006,7 +1058,7 @@ mod tests {
         for name in ["a.md", "b.md", "c.md"] {
             std::fs::write(dir.join(name), "# Title\n\nbody").unwrap();
         }
-        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).inputs;
         assert_eq!(inputs.len(), 3);
         let out_dir = dir.join("out");
         let plan = BatchPlan {
@@ -1173,19 +1225,67 @@ mod tests {
     }
 
     #[test]
-    fn expand_inputs_accepts_files_and_propagates_missing_paths() {
+    fn expand_inputs_accepts_files_and_records_missing_paths() {
         let dir = fresh_dir("file-direct");
         let f = dir.join("solo.md");
         std::fs::write(&f, "# solo").unwrap();
 
         // A plain file path is accepted directly (the non-directory branch of
         // `expand_inputs`) and the same file given twice is de-duplicated.
-        let got = expand_inputs(&[f.clone(), f.clone()]).unwrap();
-        assert_eq!(got, vec![f.clone()]);
+        let got = expand_inputs(&[f.clone(), f.clone()]);
+        assert_eq!(got.inputs, vec![f.clone()]);
+        assert!(got.errors.is_empty());
 
-        // A path that does not exist surfaces the io error from `metadata`.
+        // A path that does not exist is RECORDED as an expansion error rather than
+        // aborting the whole run, and the valid file alongside it still expands —
+        // so --continue-on-error can render the good inputs.
         let missing = dir.join("nope.md");
-        assert!(expand_inputs(std::slice::from_ref(&missing)).is_err());
+        let got = expand_inputs(&[f.clone(), missing.clone()]);
+        assert_eq!(got.inputs, vec![f.clone()], "valid file still expanded");
+        assert_eq!(got.errors.len(), 1, "missing path recorded as one error");
+        assert_eq!(got.errors[0].path, missing);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continue_on_error_renders_valid_inputs_despite_a_bad_path() {
+        // The regression zi4q targets: one unexpandable path must not discard the
+        // valid files. Expand a real file alongside a missing path, render the
+        // valid one, and record the bad path as a per-file failure (as the CLI
+        // does under --continue-on-error).
+        let dir = fresh_dir("continue-on-error");
+        let good = dir.join("good.md");
+        std::fs::write(&good, "# ok").unwrap();
+        let missing = dir.join("missing.md");
+
+        let expanded = expand_inputs(&[good.clone(), missing.clone()]);
+        assert_eq!(expanded.inputs, vec![good.clone()]);
+        assert_eq!(expanded.errors.len(), 1);
+
+        let plan = BatchPlan {
+            inputs: expanded.inputs,
+            format: OutputFormat::Html,
+            out_dir: Some(dir.join("out")),
+        };
+        let mut receipt = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(receipt.ok_count(), 1, "the valid file still rendered");
+
+        // Mirror the CLI: append unexpandable paths as per-file failures.
+        for e in &expanded.errors {
+            receipt
+                .files
+                .push(FileEntry::expansion_failure(&e.path, e.message.clone()));
+        }
+        assert_eq!(receipt.ok_count(), 1);
+        assert_eq!(receipt.failed_count(), 1);
+        let failed = receipt
+            .files
+            .iter()
+            .find(|f| f.status == FileStatus::Failed)
+            .unwrap();
+        assert_eq!(failed.input, missing);
+        assert!(failed.error.as_deref().unwrap().contains("cannot read"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1204,7 +1304,7 @@ mod tests {
         std::fs::write(dir.join("README"), "ignored").unwrap();
         std::fs::write(dir.join("sub/skip.rst"), "ignored").unwrap();
 
-        let got = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let got = expand_inputs(std::slice::from_ref(&dir)).inputs;
         let names: Vec<String> = got
             .iter()
             .map(|p| {
@@ -1233,7 +1333,7 @@ mod tests {
         // bound if followed; the walk must skip it.
         std::os::unix::fs::symlink(&dir, dir.join("nested/loop")).unwrap();
 
-        let got = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let got = expand_inputs(std::slice::from_ref(&dir)).inputs;
         let names: Vec<String> = got
             .iter()
             .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
@@ -1482,7 +1582,7 @@ mod tests {
         std::fs::write(dir.join("a/doc.md"), "# from a").unwrap();
         std::fs::write(dir.join("b/doc.md"), "# from b").unwrap();
 
-        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).inputs;
         assert_eq!(inputs.len(), 2);
         let out = dir.join("out");
         let plan = BatchPlan {
@@ -1522,7 +1622,7 @@ mod tests {
         std::fs::write(dir.join("a_small.md"), "# hi").unwrap();
         std::fs::write(dir.join("b_large.md"), "x".repeat(100)).unwrap();
 
-        let inputs = expand_inputs(std::slice::from_ref(&dir)).unwrap();
+        let inputs = expand_inputs(std::slice::from_ref(&dir)).inputs;
         assert_eq!(inputs.len(), 2);
         let plan = BatchPlan {
             inputs,

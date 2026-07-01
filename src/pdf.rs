@@ -1425,8 +1425,14 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 idat.extend_from_slice(data);
             }
             b"IEND" => {
-                // IEND must be empty and the final chunk (no trailing bytes).
-                if len != 0 || next != bytes.len() {
+                // IEND terminates the PNG datastream and carries no data. Stop
+                // here and ignore anything after it: real files sometimes append
+                // a trailer or get concatenated, and every conformant decoder
+                // renders them (the trailing bytes never enter the PDF — decode
+                // discards them). A non-empty IEND is still malformed and
+                // rejected. Each chunk above is bounds-checked, so ignoring the
+                // tail is safe.
+                if len != 0 {
                     return None;
                 }
                 seen_iend = true;
@@ -6791,6 +6797,49 @@ mod png_decode_tests {
         );
         assert!(data.smask.is_none());
         assert_eq!(data.color, PdfImageColor::Rgb);
+    }
+
+    /// Assemble a minimal 1x1 8-bit RGB PNG, optionally with `iend_data` (an
+    /// invalid non-empty IEND) and `trailer` bytes appended after IEND. CRCs are
+    /// not verified by the decoder, so they are zeroed.
+    fn png_1x1(iend_data: &[u8], trailer: &[u8]) -> Vec<u8> {
+        let push = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&0u32.to_be_bytes());
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.extend_from_slice(&1u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit, RGB, no interlace
+        let idat = crate::compress::zlib_compress(&[0u8, 10, 20, 30]); // filter 0 + one RGB pixel
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+        push(&mut bytes, b"IHDR", &ihdr);
+        push(&mut bytes, b"IDAT", &idat);
+        push(&mut bytes, b"IEND", iend_data);
+        bytes.extend_from_slice(trailer);
+        bytes
+    }
+
+    #[test]
+    fn trailing_bytes_after_iend_are_ignored_not_rejected() {
+        // A clean PNG parses; the same PNG with a trailer (exporters append
+        // metadata, files get concatenated) must still parse and decode instead
+        // of being dropped to alt text.
+        assert!(parse_png_chunks(&png_1x1(&[], &[])).is_some());
+        let with_trailer = png_1x1(&[], b"trailing junk after IEND\n\x00\xFF");
+        let parsed = parse_png_chunks(&with_trailer).expect("trailing bytes must not reject a PNG");
+        assert_eq!((parsed.width, parsed.height), (1, 1));
+        // And the whole asset still resolves to embeddable image data.
+        assert!(parse_png_image_asset("x.png", &with_trailer).is_some());
+    }
+
+    #[test]
+    fn a_non_empty_iend_is_still_rejected() {
+        // IEND must carry no data; a non-empty IEND is malformed.
+        assert!(parse_png_chunks(&png_1x1(b"junk", &[])).is_none());
     }
 }
 

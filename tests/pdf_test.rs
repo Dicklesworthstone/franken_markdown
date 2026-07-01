@@ -441,10 +441,11 @@ fn pdf_images_fall_back_to_alt_text_when_asset_missing_or_unsupported() {
         "unsupported image asset should render visible alt text"
     );
 
+    // A genuinely-malformed envelope (a chunk before IHDR, or a non-empty IEND)
+    // still degrades to alt text.
     for (dest, bytes) in [
         ("images/prefix.png", tiny_rgb_png_with_prefix_chunk()),
         ("images/bad-iend.png", tiny_rgb_png_with_nonempty_iend()),
-        ("images/trailing.png", tiny_rgb_png_with_trailing_bytes()),
     ] {
         let opts = PdfOptions {
             image_assets: vec![PdfImageAsset::new(dest, bytes)],
@@ -458,6 +459,22 @@ fn pdf_images_fall_back_to_alt_text_when_asset_missing_or_unsupported() {
             "malformed PNG envelope should render visible alt text"
         );
     }
+
+    // A VALID PNG that merely carries trailing bytes after IEND is not malformed;
+    // every real decoder renders it, so it embeds as an image (the trailing bytes
+    // are discarded during decode and never enter the PDF).
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "images/trailing.png",
+            tiny_rgb_png_with_trailing_bytes(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Trailing bytes](images/trailing.png)", &opts).unwrap();
+    assert!(
+        as_text(&pdf).contains("/Subtype /Image"),
+        "a valid PNG with trailing bytes after IEND should still embed as an image"
+    );
 }
 
 #[test]

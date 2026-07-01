@@ -1824,64 +1824,96 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod overfull_selectability_tests {
-    use super::{
-        AdvanceMetrics, FontSize, INF_PENALTY, LayoutUnit, PairMetrics, break_paragraph,
-        paragraph_items_from_text,
-    };
+    //! Real bundled-font metrics (no test doubles): `Font` implements
+    //! `AdvanceMetrics`/`PairMetrics`, so these drive the real breaker end to end.
+    use super::{FontSize, INF_PENALTY, LayoutUnit, break_paragraph, paragraph_items_from_text};
+    use crate::FontFamily;
+    use crate::fonts::{FontStyle, load_body};
+    use crate::text::Font;
 
-    struct Stub;
-    impl AdvanceMetrics for Stub {
-        fn advance_1000(&self, ch: char) -> u32 {
-            match ch {
-                ' ' => 250,
-                _ => 500,
-            }
-        }
+    fn body() -> Font {
+        load_body(FontFamily::Sans, FontStyle::Regular).expect("bundled body font parses")
     }
-    impl PairMetrics for Stub {}
 
     #[test]
     fn too_wide_token_is_isolated_via_optimal_dp_not_greedy_over_the_paragraph() {
-        // Five short words plus a single box far wider than the line. Overfull
-        // lines are selectable, so the words keep their optimal breaking and the
-        // token is isolated on its own overfull line (three lines total) — the
-        // whole paragraph is NOT dropped to greedy first-fit.
+        // A ~100-char single token is far wider than a 200pt line, while the
+        // surrounding words fit feasibly. Overfull lines are now selectable, so the
+        // words keep their optimal breaking and the token is isolated on its own
+        // overfull line — the whole paragraph is NOT dropped to greedy first-fit.
+        let font = body();
         let size = FontSize::from_points(10);
-        let width = LayoutUnit::from_milli_points(18_000);
-        let items = paragraph_items_from_text(&Stub, "A A A A A AAAAAAAA", size);
+        let width = LayoutUnit::from_points(200);
+        let token = "W".repeat(100);
+        let text = format!("the quick brown fox {token} jumps over the lazy dog");
+        let items = paragraph_items_from_text(&font, &text, size);
         let breaks = break_paragraph(&items, width);
-        assert_eq!(breaks.len(), 3, "region optimal (2) + isolated token");
-        let last = breaks.last().unwrap();
-        assert_eq!(
-            last.badness, INF_PENALTY,
-            "the token line is overfull-capped"
+
+        let dbg: Vec<(i32, i32)> = breaks
+            .iter()
+            .map(|b| (b.badness, b.natural_width.milli_points()))
+            .collect();
+        assert!(breaks.len() >= 3, "multi-line layout; breaks {dbg:?}");
+        // A PHYSICALLY overfull line (natural width past the line) is present — the
+        // isolated too-wide token — and it is selectable at the capped demerit;
+        // feasible lines coexist, so the paragraph was broken by the DP, not
+        // collapsed. (The exact optimal split is pinned by the integration test
+        // with fixed StubMetrics.)
+        let overfull: Vec<_> = breaks.iter().filter(|b| b.natural_width > width).collect();
+        assert!(
+            !overfull.is_empty(),
+            "expected an overfull line; breaks {dbg:?}"
         );
-        assert!(last.natural_width > width, "the token line is overfull");
+        assert!(
+            overfull.iter().all(|b| b.badness >= INF_PENALTY),
+            "overfull lines carry the capped demerit; breaks {dbg:?}"
+        );
+        assert!(
+            breaks.iter().any(|b| b.badness < INF_PENALTY),
+            "feasible lines coexist (not greedy-collapsed); breaks {dbg:?}"
+        );
     }
 
     #[test]
     fn too_wide_token_after_an_unbreakable_narrow_word_still_lays_out() {
-        // "A AAAAAAAA A": the leading single "A" cannot form its own (underfull)
-        // line, so the candidate after the token reaches an unreachable
-        // inter-candidate predecessor — exercising the overfull-unreachable stop.
-        // The paragraph must still lay out (greedy last resort) without panicking
-        // or dropping content.
+        // A leading single narrow word cannot form its own (underfull) line, so the
+        // candidate after the token reaches an unreachable inter-candidate
+        // predecessor — exercising the overfull-unreachable stop. The paragraph
+        // must still lay out (greedy last resort) without panicking or losing text.
+        let font = body();
         let size = FontSize::from_points(10);
-        let width = LayoutUnit::from_milli_points(18_000);
-        let items = paragraph_items_from_text(&Stub, "A AAAAAAAA A", size);
+        let width = LayoutUnit::from_points(200);
+        let token = "W".repeat(100);
+        let items = paragraph_items_from_text(&font, &format!("a {token} b"), size);
         let breaks = break_paragraph(&items, width);
         assert!(!breaks.is_empty(), "must still produce a layout");
     }
 
     #[test]
-    fn feasible_paragraph_is_unaffected_by_overfull_selectability() {
-        // A plainly breakable paragraph still breaks feasibly (no overfull line).
+    fn feasible_paragraph_never_emits_an_overfull_line() {
+        // A plainly breakable paragraph still breaks feasibly (no overfull line),
+        // confirming overfull selectability does not perturb normal layout.
+        let font = body();
         let size = FontSize::from_points(10);
-        let width = LayoutUnit::from_milli_points(40_000);
-        let items = paragraph_items_from_text(&Stub, "A A A A", size);
+        let width = LayoutUnit::from_points(400);
+        let items = paragraph_items_from_text(&font, "the quick brown fox", size);
         let breaks = break_paragraph(&items, width);
         assert!(breaks.iter().all(|b| b.badness < INF_PENALTY));
+    }
+
+    #[test]
+    fn clamp_usize_helpers_saturate_on_overflow_and_pass_through_small_values() {
+        use super::{clamp_usize_to_u8, clamp_usize_to_u16, clamp_usize_to_u32};
+        // On 64-bit hosts usize::MAX exceeds each target's max, exercising the
+        // saturating branch; small values pass through unchanged. The asserted
+        // results also hold on 32-bit (where usize::MAX == u32::MAX).
+        assert_eq!(clamp_usize_to_u32(usize::MAX), u32::MAX);
+        assert_eq!(clamp_usize_to_u16(usize::MAX), u16::MAX);
+        assert_eq!(clamp_usize_to_u8(usize::MAX), u8::MAX);
+        assert_eq!(clamp_usize_to_u32(7), 7);
+        assert_eq!(clamp_usize_to_u16(7), 7);
+        assert_eq!(clamp_usize_to_u8(7), 7);
     }
 }

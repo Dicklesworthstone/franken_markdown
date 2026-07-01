@@ -2061,18 +2061,13 @@ fn process_emphasis(
         // between opener and closer determines the wrapper's depth. Past the cap
         // we refuse to wrap and leave this closer as literal text (advance past
         // it) so the resulting tree cannot overflow the stack at render/drop.
+        // The `next` chain only threads live nodes, so every visited index is
+        // alive; the `filter` folds the `!= c` terminator into the loop head.
         let mut max_child_depth = 0usize;
-        {
-            let mut m = next[o];
-            while let Some(mi) = m {
-                if mi == c {
-                    break;
-                }
-                if alive[mi] {
-                    max_child_depth = max_child_depth.max(node_depth[mi]);
-                }
-                m = next[mi];
-            }
+        let mut m = next[o];
+        while let Some(mi) = m.filter(|&mi| mi != c) {
+            max_child_depth = max_child_depth.max(node_depth[mi]);
+            m = next[mi];
         }
         if max_child_depth >= MAX_INLINE_NESTING_DEPTH {
             ci = next[c];
@@ -2849,4 +2844,83 @@ fn strip_n(line: &str, n: usize) -> &str {
 
 fn is_ascii_punct(c: char) -> bool {
     c.is_ascii_punctuation()
+}
+
+#[cfg(test)]
+mod emphasis_dos_tests {
+    use super::{MAX_INLINE_NESTING_DEPTH, parse_inlines};
+    use crate::ast::Inline;
+
+    /// Deepest chain of nested emphasis/strong/strike in an inline list. (These
+    /// tests only build `*`/`_`/`~~` nesting, so other recursive variants need
+    /// not be walked; `fold` avoids an empty-input branch.)
+    fn inline_depth(inlines: &[Inline]) -> usize {
+        inlines
+            .iter()
+            .map(|i| match i {
+                Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                    1 + inline_depth(c)
+                }
+                _ => 1,
+            })
+            .fold(0, usize::max)
+    }
+
+    #[test]
+    fn deep_emphasis_run_is_depth_capped_not_stack_overflowing() {
+        // ~1500 nesting levels would result without the cap. The cap flattens the
+        // surplus to literal text (bounded depth), and the move-based wrapping
+        // keeps it linear rather than re-cloning the growing subtree per pair.
+        let stars = "*".repeat(3000);
+        let out = parse_inlines(&format!("{stars}x{stars}"));
+        assert!(!out.is_empty());
+        assert!(
+            inline_depth(&out) <= MAX_INLINE_NESTING_DEPTH + 1,
+            "emphasis nesting {} exceeded cap {MAX_INLINE_NESTING_DEPTH}",
+            inline_depth(&out)
+        );
+    }
+
+    #[test]
+    fn alternating_delimiter_runs_hit_backwalk_budget_and_stay_bounded() {
+        // Alternating both-open-and-close runs make every closer walk back over the
+        // opposite delimiter; the linear back-walk budget stops pairing before this
+        // goes quadratic. The test completing is the proof it stays bounded.
+        let open = "*_".repeat(20_000);
+        let close = "_*".repeat(20_000);
+        let out = parse_inlines(&format!("{open}x{close}"));
+        assert!(!out.is_empty());
+        assert!(inline_depth(&out) <= MAX_INLINE_NESTING_DEPTH + 1);
+    }
+
+    #[test]
+    fn normal_emphasis_is_unaffected() {
+        // The cap/budget never trip on ordinary input: exact shapes still hold.
+        assert_eq!(
+            parse_inlines("*a* **b** ***c***"),
+            vec![
+                Inline::Emphasis(vec![Inline::Text("a".into())]),
+                Inline::Text(" ".into()),
+                Inline::Strong(vec![Inline::Text("b".into())]),
+                Inline::Text(" ".into()),
+                Inline::Strong(vec![Inline::Emphasis(vec![Inline::Text("c".into())])]),
+            ]
+        );
+    }
+
+    #[test]
+    fn strikethrough_and_emphasis_nest_and_measure() {
+        // Exercises the `~~` strikethrough recursion path and the Strikethrough
+        // arm of the depth measure, and confirms mixed nesting is preserved.
+        let out = parse_inlines("~~a *b* c~~");
+        assert_eq!(
+            out,
+            vec![Inline::Strikethrough(vec![
+                Inline::Text("a ".into()),
+                Inline::Emphasis(vec![Inline::Text("b".into())]),
+                Inline::Text(" c".into()),
+            ])]
+        );
+        assert_eq!(inline_depth(&out), 3);
+    }
 }

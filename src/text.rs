@@ -755,7 +755,12 @@ impl Font {
         loop {
             let flags = be_u16(&out, p)?;
             let comp_old = be_u16_at(&out, p, 2)?;
-            let comp_new = *new_of.get(&comp_old)?;
+            // A component that fell outside the subset (e.g. a component gid
+            // >= numGlyphs in a malformed font — the closure never reaches it)
+            // is substituted with `.notdef` (new gid 0, always present) rather
+            // than failing the whole font. The composite still renders, minus
+            // the one bad component.
+            let comp_new = new_of.get(&comp_old).copied().unwrap_or(0);
             let nb = comp_new.to_be_bytes();
             *out.get_mut(off(p, 2)?)? = nb[0];
             *out.get_mut(off(p, 3)?)? = nb[1];
@@ -791,7 +796,12 @@ impl Font {
                 continue;
             }
             let old = self.glyph_index(ch);
-            let ng = *new_of.get(&old)?;
+            // Skip a char whose glyph is not in the subset (a malformed source
+            // cmap, or a glyph the closure could not reach) instead of failing the
+            // whole font; it falls back to `.notdef` at render time.
+            let Some(&ng) = new_of.get(&old) else {
+                continue;
+            };
             codes.insert(cp as u16, ng);
         }
         let entries: Vec<(u16, u16)> = codes.into_iter().collect();
@@ -1687,5 +1697,77 @@ mod dos_tests {
         assert!(parse_coverage_glyphs(&d, 0).is_none());
         // Sanity: the ceiling is the font-wide glyph limit.
         assert_eq!(MAX_COVERAGE_GLYPHS, 65_536);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod subset_degradation_tests {
+    use super::Font;
+    use std::collections::BTreeMap;
+
+    fn cm_regular() -> Font {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fonts/computer-modern/cmunrm.ttf"
+        ))
+        .expect("read bundled font");
+        Font::parse(bytes).expect("parse bundled font")
+    }
+
+    fn all_faces() -> Vec<Font> {
+        let base = env!("CARGO_MANIFEST_DIR");
+        [
+            "/fonts/computer-modern/cmunrm.ttf",
+            "/fonts/computer-modern/cmunbx.ttf",
+            "/fonts/computer-modern/cmunti.ttf",
+            "/fonts/computer-modern/cmunbi.ttf",
+            "/fonts/computer-modern/cmuntt.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf",
+        ]
+        .iter()
+        .filter_map(|p| Font::parse(std::fs::read(format!("{base}{p}")).ok()?).ok())
+        .collect()
+    }
+
+    #[test]
+    fn subset_skips_cmap_char_whose_glyph_is_absent_from_the_set() {
+        // `subset_glyphs` takes the glyph set explicitly but builds the cmap from
+        // `cmap_chars`. A cmap char whose glyph is not in the set must be skipped,
+        // not abort the whole subset (which would deny an otherwise-usable font).
+        let font = cm_regular();
+        let g_b = font.glyph_index('B');
+        assert_ne!(g_b, 0, "test font must map 'B'");
+        // Provide only B's glyph, but ask the cmap to also map 'A' (absent).
+        let out = font.subset_glyphs(&[g_b], &['A', 'B']);
+        let (bytes, _) = out.expect("un-subsettable cmap char must be skipped, not abort");
+        // The produced subset must still be a parseable font.
+        assert!(Font::parse(bytes).is_ok());
+    }
+
+    #[test]
+    fn subset_glyph_bytes_substitutes_notdef_for_a_missing_component() {
+        // A composite whose component is not in `new_of` (a malformed out-of-range
+        // component gid) must be substituted with `.notdef`, not abort.
+        let (font, comp) = all_faces()
+            .into_iter()
+            .find_map(|f| {
+                (1..f.num_glyphs)
+                    .find(|&g| f.is_composite(g))
+                    .map(|g| (f, g))
+            })
+            .expect("at least one bundled face has a composite glyph");
+        // Map .notdef and the composite itself, but NONE of its components, so the
+        // component lookup misses and must fall back to gid 0.
+        let mut new_of = BTreeMap::new();
+        new_of.insert(0u16, 0u16);
+        new_of.insert(comp, 1u16);
+        let bytes = font
+            .subset_glyph_bytes(comp, &new_of)
+            .expect("missing component must be substituted, not abort");
+        assert!(!bytes.is_empty(), "a composite glyph is non-empty");
     }
 }

@@ -2141,3 +2141,23 @@ pub(crate) fn lookup(name: &str) -> Option<&'static str> {
         .ok()
         .map(|idx| HTML5_ENTITIES[idx].1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{HTML5_ENTITIES, lookup};
+
+    #[test]
+    fn table_is_strictly_sorted_and_lookups_resolve() {
+        // `lookup` binary-searches, so the table MUST be strictly ascending by
+        // name (a single out-of-order entry would silently break lookups).
+        assert!(
+            HTML5_ENTITIES.windows(2).all(|w| w[0].0 < w[1].0),
+            "HTML5_ENTITIES must be strictly sorted by name"
+        );
+        assert_eq!(lookup("amp"), Some("&"));
+        assert_eq!(lookup("lt"), Some("<"));
+        assert_eq!(lookup("hellip"), Some("\u{2026}"));
+        assert_eq!(lookup("auml"), Some("\u{e4}"));
+        assert_eq!(lookup("not_a_real_entity"), None);
+    }
+}

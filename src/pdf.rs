@@ -1681,10 +1681,12 @@ impl PngSampleCtx<'_> {
     }
 
     /// Alpha for a grayscale pixel given a possible single-value tRNS.
-    fn gray_trns_alpha(&self, raw_sample: u8) -> u8 {
-        // tRNS for grayscale is a single 16-bit value (2 bytes); we compare the
-        // low byte against the raw sample (depths <= 8 store the value there).
-        if self.trns.len() >= 2 && self.trns[1] == raw_sample {
+    fn gray_trns_alpha(&self, sample: u8) -> u8 {
+        // tRNS for grayscale is one big-endian 16-bit value. The `sample` we
+        // compare is the high byte for 16-bit images and the 0..=255 value for
+        // depths <= 8 (which lives in the low byte), so pick the matching byte.
+        let idx = if self.bit_depth == 16 { 0 } else { 1 };
+        if self.trns.len() > idx && self.trns[idx] == sample {
             0
         } else {
             255
@@ -1693,7 +1695,14 @@ impl PngSampleCtx<'_> {
 
     /// Alpha for an RGB pixel given a possible single-color tRNS.
     fn rgb_trns_alpha(&self, r: u8, g: u8, b: u8) -> u8 {
-        if self.trns.len() >= 6 && self.trns[1] == r && self.trns[3] == g && self.trns[5] == b {
+        // tRNS for truecolor is three big-endian 16-bit samples; compare the same
+        // byte we kept per channel (high byte at 16-bit, else the low/value byte).
+        let (ir, ig, ib) = if self.bit_depth == 16 {
+            (0, 2, 4)
+        } else {
+            (1, 3, 5)
+        };
+        if self.trns.len() >= 6 && self.trns[ir] == r && self.trns[ig] == g && self.trns[ib] == b {
             0
         } else {
             255
@@ -1840,6 +1849,50 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
             continue;
         }
         let ww = text_width(&t.text, size, t.slot, faces);
+        // A single word wider than the whole column is hard-split on character
+        // boundaries so it can never overflow the column (and run off the page);
+        // this preserves the run's style. The leftover tail stays on the current
+        // line so a following word can still pack after it.
+        if ww > max_width && max_width > 0.0 {
+            if !cur.is_empty() {
+                lines.push(build_cell_line(&cur, size, faces));
+                cur.clear();
+                cur_w = 0.0;
+            }
+            pending = None;
+            let mut buf = [0u8; 4];
+            let mut chunk = String::new();
+            let mut chunk_w = 0.0;
+            for ch in t.text.chars() {
+                let cw = text_width(ch.encode_utf8(&mut buf), size, t.slot, faces);
+                if !chunk.is_empty() && chunk_w + cw > max_width {
+                    let tok = Tok {
+                        text: std::mem::take(&mut chunk),
+                        slot: t.slot,
+                        space: false,
+                        hard_break: false,
+                        link: t.link.clone(),
+                        strike: t.strike,
+                    };
+                    lines.push(build_cell_line(std::slice::from_ref(&tok), size, faces));
+                    chunk_w = 0.0;
+                }
+                chunk.push(ch);
+                chunk_w += cw;
+            }
+            if !chunk.is_empty() {
+                cur.push(Tok {
+                    text: chunk,
+                    slot: t.slot,
+                    space: false,
+                    hard_break: false,
+                    link: t.link.clone(),
+                    strike: t.strike,
+                });
+                cur_w = chunk_w;
+            }
+            continue;
+        }
         let sw = pending
             .as_ref()
             .map_or(0.0, |s| text_width(" ", size, s.slot, faces));
@@ -3799,7 +3852,7 @@ struct PageContent {
 /// the same `TableRow`, every wrapped line of one paragraph reuses the same
 /// `Paragraph`). Two marks open/extend the same element iff their keys compare
 /// equal at the same path depth.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
     BlockQuote(usize),
     List(u32),
@@ -3911,6 +3964,13 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         let mut leaf_for_mcid: Vec<usize> = Vec::new();
         // Currently open path elements below /Document: (sharing key, node index).
         let mut open: Vec<(SKey, usize)> = Vec::new();
+        // Existing child of a parent, keyed by (parent node, element key). Reset
+        // per page so a block split across a page break becomes two siblings.
+        // This lets a logical element's fragments re-find their node even when a
+        // sibling intervened — e.g. a table cell that wraps onto later lines
+        // reappears after the other columns, and MUST extend its existing /TD
+        // rather than spawn a duplicate one (which would tear reading order).
+        let mut child_by_key: BTreeMap<(usize, SKey), usize> = BTreeMap::new();
 
         let mut marks: Vec<&StructMark> = page.marks.iter().collect();
         marks.sort_by_key(|m| m.mcid);
@@ -3928,6 +3988,12 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
             open.truncate(common);
             for elem in &mark.path[common..] {
                 let parent_node = open.last().map_or(0, |&(_, idx)| idx);
+                if let Some(&existing) = child_by_key.get(&(parent_node, elem.key.clone())) {
+                    // A fragment of an element that already exists under this
+                    // parent (a wrapped/re-entered cell, list item, ...): extend it.
+                    open.push((elem.key.clone(), existing));
+                    continue;
+                }
                 let node_index = nodes.len();
                 nodes.push(SNode {
                     tag: elem.tag,
@@ -3939,6 +4005,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                     page: None,
                 });
                 nodes[parent_node].kids.push(SKid::Node(node_index));
+                child_by_key.insert((parent_node, elem.key.clone()), node_index);
                 open.push((elem.key.clone(), node_index));
             }
 
@@ -6557,6 +6624,29 @@ mod png_decode_tests {
     }
 
     #[test]
+    fn rgb16_with_trns_matches_on_the_high_byte() {
+        // 16-bit RGB with a color-key tRNS (3 × 16-bit big-endian). We keep and
+        // compare the high byte of each channel; pixel 1's high bytes match the
+        // tRNS high bytes, so it is transparent.
+        let rows = vec![vec![
+            0x10, 0x00, 0x20, 0x00, 0x30, 0x00, // px0 hi = 10,20,30
+            0x40, 0xFF, 0x50, 0xFF, 0x60, 0xFF, // px1 hi = 40,50,60
+        ]];
+        let png = chunks(
+            2,
+            1,
+            16,
+            2,
+            0,
+            &rows,
+            vec![],
+            vec![0x40, 0x00, 0x50, 0x00, 0x60, 0x00],
+        );
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.alpha, Some(vec![255, 0]));
+    }
+
+    #[test]
     fn rgb_with_trns_marks_the_transparent_color() {
         // 8-bit RGB with a single transparent colour (tRNS = 6 bytes, hi/lo per
         // channel). The second pixel matches and is transparent.
@@ -6594,5 +6684,36 @@ mod png_decode_tests {
         );
         assert!(data.smask.is_none());
         assert_eq!(data.color, PdfImageColor::Rgb);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+mod table_wrap_tests {
+    use super::{Faces, cell_tokens, wrap_cell_styled};
+    use crate::PdfOptions;
+    use crate::ast::Inline;
+
+    #[test]
+    fn over_wide_word_is_char_split_to_fit_the_column() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        // A single 200-character word with no break opportunities.
+        let cell = vec![Inline::Text("X".repeat(200))];
+        let toks = cell_tokens(&cell, false);
+        let max_width = 100.0;
+        let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces);
+        assert!(
+            lines.len() > 1,
+            "a long unbreakable word must wrap to multiple lines, got {}",
+            lines.len()
+        );
+        for line in &lines {
+            assert!(
+                line.width <= max_width + 1.0,
+                "a wrapped line ({:.1}pt) must fit the column ({:.1}pt) and not overflow the page",
+                line.width,
+                max_width
+            );
+        }
     }
 }

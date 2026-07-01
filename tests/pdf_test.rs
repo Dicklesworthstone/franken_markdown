@@ -2196,3 +2196,35 @@ fn pdf_table_cells_wrap_and_align_without_panic() {
     let raw = as_text(&pdf);
     assert!(raw.contains("/StructTreeRoot"), "table stays tagged");
 }
+
+#[test]
+fn pdf_wrapped_table_cells_are_not_duplicated_in_structure() {
+    // Both body cells wrap to multiple visual lines in a 2-column table. Each
+    // row's /TR must reference EXACTLY 2 cell children — a wrapped cell extends
+    // its existing /TD (or /TH), never spawns a duplicate. A duplicate would make
+    // a screen reader read each logical cell torn in half and interleaved.
+    let md = "| Col A wide header | Col B wide header |\n|---|---|\n\
+              | cell one has quite a lot of text so it wraps to two lines here | cell two also has plenty making both columns narrow |\n\
+              | a | b |";
+    let pdf = render_pdf(md, &PdfOptions::default()).unwrap();
+    let raw = as_text(&pdf);
+    let mut checked = 0;
+    let mut rest = raw.as_str();
+    while let Some(p) = rest.find("/S /TR") {
+        let after = &rest[p..];
+        let k = after.find("/K [").expect("a /TR must have a /K array");
+        let arr = &after[k + 4..];
+        let end = arr.find(']').expect("the /K array must close");
+        let cells = arr[..end].matches(" 0 R").count();
+        assert_eq!(
+            cells, 2,
+            "each /TR must reference exactly 2 cells, got {cells}"
+        );
+        checked += 1;
+        rest = &after[k + 4..];
+    }
+    assert!(
+        checked >= 2,
+        "expected header + body rows, checked {checked}"
+    );
+}

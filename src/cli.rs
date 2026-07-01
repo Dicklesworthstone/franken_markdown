@@ -644,7 +644,17 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
             let hard_failure = (!continue_on_error && receipt.failed_count() > 0)
                 || (total > 0 && receipt.ok_count() == 0);
             if hard_failure {
-                ExitCode::from(70)
+                // Return the documented exit code for the FIRST failure's
+                // category, so agents keying on exit codes get the same
+                // 66/70/73 distinction as a single render instead of a blanket
+                // 70 (docs/BATCH_ORCHESTRATION.md). No typed failure (e.g. an
+                // all-skipped cancelled run) falls back to 70.
+                let code = match receipt.first_failure_kind() {
+                    Some(batch::FileErrorKind::Input) => 66,
+                    Some(batch::FileErrorKind::Output) => 73,
+                    Some(batch::FileErrorKind::Render) | None => 70,
+                };
+                ExitCode::from(code)
             } else {
                 ExitCode::SUCCESS
             }

@@ -1543,3 +1543,64 @@ fn batch_validates_source_date_epoch_only_for_pdf() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Batch strict-mode maps the FIRST per-file failure's category to the
+/// documented exit code (66 input / 73 output / 70 render) instead of a blanket
+/// 70, and the receipt JSON carries the `error_kind`.
+#[cfg(feature = "batch")]
+#[test]
+fn batch_strict_mode_maps_failure_kinds_to_documented_exit_codes() {
+    let dir = temp_dir("batch-exit-kinds");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("a.md");
+    fs::write(&input, "# A\n\nBody with enough text to exceed a tiny cap.").unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // Input error (oversized) -> 66.
+    let o1 = dir.join("o1");
+    let out = fmd(&[
+        "batch",
+        input_s,
+        "--max-input-bytes",
+        "8",
+        "--out-dir",
+        o1.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(66),
+        "oversized input should be 66: {}",
+        text(&out.stderr)
+    );
+
+    // Output error (out-dir path is a regular file) -> 73.
+    let blocker = dir.join("blocker");
+    fs::write(&blocker, "x").unwrap();
+    let sub = blocker.join("sub");
+    let out = fmd(&["batch", input_s, "--out-dir", sub.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(73),
+        "unwritable out-dir should be 73: {}",
+        text(&out.stderr)
+    );
+
+    // The receipt JSON carries the failure kind.
+    let o2 = dir.join("o2");
+    let out = fmd(&[
+        "batch",
+        input_s,
+        "--max-input-bytes",
+        "8",
+        "--out-dir",
+        o2.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(
+        text(&out.stdout).contains("\"error_kind\":\"input\""),
+        "receipt should carry error_kind: {}",
+        text(&out.stdout)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

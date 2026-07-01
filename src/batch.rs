@@ -171,6 +171,33 @@ pub enum FileStatus {
     Skipped,
 }
 
+/// The category of a per-file failure, so a strict-mode run can return the
+/// documented exit code for the *first* failure rather than flattening every
+/// failure to a generic render error. Mirrors the single-render exit codes:
+/// input errors (66), output-write errors (73), render failures (70).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileErrorKind {
+    /// Reading/expanding the input failed (missing, unreadable, oversized, or
+    /// non-UTF-8) — maps to exit 66.
+    Input,
+    /// Writing an output (or creating the output directory) failed — exit 73.
+    Output,
+    /// The renderer itself failed on otherwise-valid input — exit 70.
+    Render,
+}
+
+impl FileErrorKind {
+    /// Stable machine selector for the receipt JSON.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Output => "output",
+            Self::Render => "render",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OutputEntry {
     pub path: PathBuf,
@@ -185,6 +212,9 @@ pub struct FileEntry {
     pub status: FileStatus,
     pub outputs: Vec<OutputEntry>,
     pub error: Option<String>,
+    /// The failure category (only set when `status == Failed`), used to pick the
+    /// documented strict-mode exit code.
+    pub error_kind: Option<FileErrorKind>,
 }
 
 impl FileEntry {
@@ -194,18 +224,21 @@ impl FileEntry {
             status: FileStatus::Skipped,
             outputs: Vec::new(),
             error: None,
+            error_kind: None,
         }
     }
 
     /// A path that failed to expand into inputs (missing, or an unreadable
     /// directory), recorded as a per-file failure so a `--continue-on-error`
-    /// receipt reports it without the run having aborted.
+    /// receipt reports it without the run having aborted. An expansion failure
+    /// is an input error.
     pub fn expansion_failure(input: &Path, message: String) -> Self {
         FileEntry {
             input: input.to_path_buf(),
             status: FileStatus::Failed,
             outputs: Vec::new(),
             error: Some(message),
+            error_kind: Some(FileErrorKind::Input),
         }
     }
 }
@@ -227,6 +260,17 @@ impl BatchReceipt {
             .iter()
             .filter(|f| f.status == FileStatus::Ok)
             .count()
+    }
+
+    /// The failure category of the first failed file in receipt order, so a
+    /// strict-mode caller can return the documented exit code for that failure
+    /// instead of flattening every failure to a generic render error.
+    #[must_use]
+    pub fn first_failure_kind(&self) -> Option<FileErrorKind> {
+        self.files
+            .iter()
+            .find(|f| f.status == FileStatus::Failed)
+            .and_then(|f| f.error_kind)
     }
     pub fn failed_count(&self) -> usize {
         self.files
@@ -272,6 +316,9 @@ impl BatchReceipt {
                 out.push_str(",\"error\":\"");
                 json_escape_into(&mut out, err);
                 out.push('"');
+            }
+            if let Some(kind) = f.error_kind {
+                out.push_str(&format!(",\"error_kind\":\"{}\"", kind.as_str()));
             }
             out.push_str(",\"outputs\":[");
             for (j, o) in f.outputs.iter().enumerate() {
@@ -481,12 +528,16 @@ fn render_one(
 ) -> FileEntry {
     let md = match read_input_limited(input, max_input_bytes) {
         Ok(text) => text,
-        Err(e) => return failed(input, e),
+        Err(e) => return failed(input, FileErrorKind::Input, e),
     };
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
     {
-        return failed(input, format!("create out-dir failed: {e}"));
+        return failed(
+            input,
+            FileErrorKind::Output,
+            format!("create out-dir failed: {e}"),
+        );
     }
 
     let mut outputs = Vec::new();
@@ -495,7 +546,11 @@ fn render_one(
             Ok(doc) => {
                 let path = output_path(input, out_dir, "html");
                 if let Err(e) = std::fs::write(&path, doc.as_bytes()) {
-                    return failed(input, format!("write html failed: {e}"));
+                    return failed(
+                        input,
+                        FileErrorKind::Output,
+                        format!("write html failed: {e}"),
+                    );
                 }
                 outputs.push(OutputEntry {
                     path,
@@ -503,7 +558,13 @@ fn render_one(
                     fnv1a64: fnv1a64(doc.as_bytes()),
                 });
             }
-            Err(e) => return failed(input, format!("render html failed: {e}")),
+            Err(e) => {
+                return failed(
+                    input,
+                    FileErrorKind::Render,
+                    format!("render html failed: {e}"),
+                );
+            }
         }
     }
     if format.wants_pdf() {
@@ -511,7 +572,11 @@ fn render_one(
             Ok(bytes) => {
                 let path = output_path(input, out_dir, "pdf");
                 if let Err(e) = std::fs::write(&path, &bytes) {
-                    return failed(input, format!("write pdf failed: {e}"));
+                    return failed(
+                        input,
+                        FileErrorKind::Output,
+                        format!("write pdf failed: {e}"),
+                    );
                 }
                 outputs.push(OutputEntry {
                     path,
@@ -519,7 +584,13 @@ fn render_one(
                     fnv1a64: fnv1a64(&bytes),
                 });
             }
-            Err(e) => return failed(input, format!("render pdf failed: {e}")),
+            Err(e) => {
+                return failed(
+                    input,
+                    FileErrorKind::Render,
+                    format!("render pdf failed: {e}"),
+                );
+            }
         }
     }
 
@@ -528,15 +599,17 @@ fn render_one(
         status: FileStatus::Ok,
         outputs,
         error: None,
+        error_kind: None,
     }
 }
 
-fn failed(input: &Path, message: String) -> FileEntry {
+fn failed(input: &Path, kind: FileErrorKind, message: String) -> FileEntry {
     FileEntry {
         input: input.to_path_buf(),
         status: FileStatus::Failed,
         outputs: Vec::new(),
         error: Some(message),
+        error_kind: Some(kind),
     }
 }
 
@@ -660,6 +733,7 @@ pub async fn render_batch(
                     // Refuse to silently overwrite an earlier input's output.
                     failed(
                         &inputs[i],
+                        FileErrorKind::Output,
                         format!(
                             "output path collides with earlier input {} (same name under --out-dir); rename or use distinct output directories",
                             inputs[first].display()
@@ -680,7 +754,13 @@ pub async fn render_batch(
                             max_input_bytes,
                         )
                     }))
-                    .unwrap_or_else(|_| failed(&inputs[i], "render panicked".to_string()))
+                    .unwrap_or_else(|_| {
+                        failed(
+                            &inputs[i],
+                            FileErrorKind::Render,
+                            "render panicked".to_string(),
+                        )
+                    })
                 };
                 entries.push((i, entry));
                 i += workers;
@@ -935,12 +1015,14 @@ mod tests {
                         fnv1a64: 0x1234,
                     }],
                     error: None,
+                    error_kind: None,
                 },
                 FileEntry {
                     input: PathBuf::from("bad.md"),
                     status: FileStatus::Failed,
                     outputs: vec![],
                     error: Some("render html failed: x".to_string()),
+                    error_kind: Some(FileErrorKind::Render),
                 },
             ],
             cancelled: false,

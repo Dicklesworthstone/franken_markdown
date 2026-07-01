@@ -105,8 +105,8 @@ pub fn render_html_configured(
     allow_raw_html: bool,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
-    options.title = empty_to_none(title);
-    options.custom_css = blank_to_none(custom_css);
+    options.title = nonempty_verbatim(title);
+    options.custom_css = nonempty_verbatim(custom_css);
     options.allow_raw_html = allow_raw_html;
     wasm::render_html(markdown, &options)
         .map(render_result)
@@ -136,8 +136,8 @@ pub fn render_html_configured_with_fonts(
     mono_regular: Vec<u8>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
-    options.title = empty_to_none(title);
-    options.custom_css = blank_to_none(custom_css);
+    options.title = nonempty_verbatim(title);
+    options.custom_css = nonempty_verbatim(custom_css);
     options.allow_raw_html = allow_raw_html;
     apply_font_assets(
         &mut options,
@@ -287,8 +287,8 @@ fn pdf_options_configured(
     code_line_numbers: bool,
 ) -> std::result::Result<WasmRenderOptions, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
-    options.title = empty_to_none(title);
-    options.author = empty_to_none(author);
+    options.title = nonempty_verbatim(title);
+    options.author = nonempty_verbatim(author);
     options.metadata_epoch_seconds = parse_epoch(metadata_epoch_seconds)?;
     options.allow_raw_html = allow_raw_html;
     options.code_line_numbers = code_line_numbers;
@@ -366,8 +366,14 @@ fn empty_to_none(value: Option<String>) -> Option<String> {
     })
 }
 
-fn blank_to_none(value: Option<String>) -> Option<String> {
-    value.filter(|s| !s.trim().is_empty())
+/// Map an absent or empty JS string to `None`, but preserve any non-empty value
+/// VERBATIM — including surrounding whitespace. Titles, authors, and custom CSS
+/// must reach the renderer byte-for-byte identical to the native CLI, which
+/// passes them through untouched; trimming (as `empty_to_none` does for
+/// enum-like values) would break native↔WASM output parity for padded metadata
+/// such as `"  Draft  "`.
+fn nonempty_verbatim(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
 }
 
 fn parse_epoch(value: Option<f64>) -> std::result::Result<Option<u64>, JsValue> {

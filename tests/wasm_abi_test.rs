@@ -102,6 +102,26 @@ fn render_html_configured_applies_font_dark_mode_title_and_css() {
 }
 
 #[test]
+fn configured_title_reaches_output_verbatim_without_trimming() {
+    // A padded, non-empty title must survive byte-for-byte so the browser
+    // package keeps native↔WASM output parity. The ABI previously trimmed it.
+    let out = render_html_configured(
+        "# Body",
+        None,
+        None,
+        Some("  Draft Title  ".to_string()),
+        None,
+        false,
+    )
+    .expect("configured html");
+    let html = String::from_utf8(out.bytes()).unwrap();
+    assert!(
+        html.contains("<title>  Draft Title  </title>"),
+        "padded title must be preserved verbatim, not trimmed"
+    );
+}
+
+#[test]
 fn render_html_configured_with_fonts_accepts_real_font_bytes() {
     let serif_regular = fonts::body_bytes(FontFamily::Serif, FontStyle::Regular).to_vec();
     let out = render_html_configured_with_fonts(

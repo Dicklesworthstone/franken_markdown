@@ -1427,14 +1427,23 @@ pub fn break_paragraph_into(
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
 
-        for (prev_idx, prev_candidate) in candidates.iter().enumerate().take(j + 1) {
-            let (prev_state, start) = if prev_idx == j {
-                (None, 0)
+        // Predecessors are scanned NEAREST-first (prev_idx descending). Segment
+        // width grows monotonically as the start moves earlier (prefix sums), so
+        // once an inter-candidate predecessor's line is overfull past its shrink
+        // budget, every earlier (wider) predecessor is too — we stop instead of
+        // the old unconditional 0..=j scan, which was O(candidates^2) and a
+        // practical DoS on a single large paragraph. The result is IDENTICAL: the
+        // pruned predecessors are exactly those the old loop rejected as
+        // INF-badness, and the `<=` tie-break below (with the reversed order)
+        // keeps the same lowest-prev_idx winner the old forward `<` produced.
+        for prev_idx in (0..=j).rev() {
+            let start = if prev_idx == j {
+                0
             } else {
-                let Some(state) = scratch.states[prev_idx] else {
-                    continue;
-                };
-                (Some((prev_idx, state)), prev_candidate.next)
+                match candidates.get(prev_idx) {
+                    Some(prev_candidate) => prev_candidate.next,
+                    None => continue,
+                }
             };
             if start > candidate.item_index {
                 continue;
@@ -1442,11 +1451,32 @@ pub fn break_paragraph_into(
             if forced_break_between(&scratch.forced_prefix, start, candidate.item_index) {
                 continue;
             }
+            // Evaluate the segment BEFORE the reachability check so the pruning
+            // decision is purely width-based. The break condition MUST be the
+            // monotonic "overfull past max shrink" test — `width - shrink` grows
+            // strictly as the start moves earlier (each added item widens it, each
+            // added space widens it net of its shrink), so once a line cannot fit
+            // even fully shrunk, every earlier (wider) inter-candidate predecessor
+            // cannot either. (badness alone is NOT monotonic: an underfull narrow
+            // segment can also be INF, and would wrongly stop the scan.) The
+            // start = 0 whole-prefix segment is the widest of all, so its overflow
+            // says nothing about narrower predecessors — skip it, don't stop.
             let segment = scratch.metrics.segment_metrics(start, *candidate);
+            if prev_idx != j && segment.width.saturating_sub(segment.shrink) > line_width {
+                break;
+            }
             let badness = candidate_badness(*candidate, segment, line_width);
             if badness >= INF_PENALTY {
                 continue;
             }
+            let prev_state = if prev_idx == j {
+                None
+            } else {
+                match scratch.states[prev_idx] {
+                    Some(state) => Some((prev_idx, state)),
+                    None => continue,
+                }
+            };
             let fitness = candidate_fitness(*candidate, segment, line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
             let demerits = prev_demerits.saturating_add(line_demerits(
@@ -1471,7 +1501,7 @@ pub fn break_paragraph_into(
                 flagged: candidate.flagged,
                 fitness,
             };
-            if best.is_none_or(|old| state.line.demerits < old.line.demerits) {
+            if best.is_none_or(|old| state.line.demerits <= old.line.demerits) {
                 best = Some(state);
             }
         }

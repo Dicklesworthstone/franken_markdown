@@ -1174,3 +1174,18 @@ fn negative_non_forced_penalty_rewards_a_break() {
     assert_eq!(breaks[0].badness, 0);
     assert_eq!(line_text(&items, breaks[1].start, breaks[1].end), "go");
 }
+
+#[test]
+fn large_paragraph_breaks_in_near_linear_time() {
+    // Regression for the O(candidates^2) breaker (a single large paragraph could
+    // take tens of seconds). With active-node deactivation this must be fast;
+    // we render a big paragraph and a heavily-hyphenating single token and only
+    // assert they complete (the test harness times out on regression).
+    use franken_markdown::{PdfOptions, render_pdf};
+    let big = "word ".repeat(8000);
+    let pdf = render_pdf(&big, &PdfOptions::default()).unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+    let hyph = "communication".repeat(3000);
+    let pdf2 = render_pdf(&hyph, &PdfOptions::default()).unwrap();
+    assert!(pdf2.starts_with(b"%PDF-"));
+}

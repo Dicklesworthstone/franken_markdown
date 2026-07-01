@@ -971,17 +971,35 @@ fn is_stdout_path(path: &Path) -> bool {
 }
 
 /// Return the first `output` path that names the same existing on-disk file as
-/// `input`, or `None` if writing every output is safe. `canonicalize` resolves
-/// symlinks and `./x` vs `x`, and fails for a path that does not exist yet — so
-/// an output that is not already present can never be the input we just read.
-/// stdin (`-`) and `--text` (`None`) have no source file to clobber.
+/// `input`, or `None` if writing every output is safe. stdin (`-`) and `--text`
+/// (`None`) have no source file to clobber.
 fn find_input_overwrite(input: Option<&str>, outputs: &[PathBuf]) -> Option<PathBuf> {
     let input = input.filter(|p| *p != "-")?;
-    let input_canon = std::fs::canonicalize(input).ok()?;
-    outputs
-        .iter()
-        .find(|out| std::fs::canonicalize(out).ok().as_ref() == Some(&input_canon))
-        .cloned()
+    let input = Path::new(input);
+    outputs.iter().find(|out| same_file(input, out)).cloned()
+}
+
+/// True iff `a` and `b` name the same existing on-disk file. On Unix this
+/// compares the resolved `(device, inode)` pair — which catches hard links,
+/// symlinks, `./x` vs `x`, and case-insensitive aliases; elsewhere it compares
+/// canonicalized paths. A path that does not exist yet can never be the input we
+/// just read, so a missing file compares as "not the same".
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(ca), Ok(cb)) => ca == cb,
+            _ => false,
+        }
+    }
 }
 
 fn fail(code: u8, msg: &str) -> ExitCode {
@@ -1225,12 +1243,30 @@ mod overwrite_guard_tests {
 
     #[test]
     fn detects_overwrite_through_a_relative_alias() {
-        // canonicalize collapses `dir/./doc.md` onto the same file as the input.
+        // A `dir/./doc.md` alias resolves to the same file as the input.
         let dir = tmp_dir("alias");
         let input = dir.join("doc.md");
         std::fs::write(&input, b"# hi").unwrap();
         let aliased = dir.join(".").join("doc.md");
         assert!(find_input_overwrite(input.to_str(), &[aliased]).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_overwrite_through_a_hard_link() {
+        // A hard link is a distinct path but the SAME file (inode) — writing to
+        // it destroys the source, so the guard must catch it (path comparison
+        // alone would miss it).
+        let dir = tmp_dir("hardlink");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, b"# hi").unwrap();
+        let link = dir.join("alias.md");
+        std::fs::hard_link(&input, &link).unwrap();
+        assert!(
+            find_input_overwrite(input.to_str(), std::slice::from_ref(&link)).is_some(),
+            "a hard link to the input must be treated as the same file"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

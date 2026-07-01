@@ -356,8 +356,12 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 /// Render an already-parsed document to optimized PDF bytes.
 ///
 /// # Errors
-/// Propagates renderer errors; the HTML and PDF renderers share this one AST.
+/// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
+/// invalid (empty, over the size limit, or not a subsettable TrueType face);
+/// otherwise propagates renderer errors. The HTML and PDF renderers share this
+/// one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
+    opts.font_assets.validate()?;
     pdf::render(doc, opts)
 }
 

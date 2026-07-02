@@ -304,14 +304,25 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
 
 fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
     let raw_lines = source_lines(src);
-    let consumed_reference_lines = {
-        let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
-        collect_link_reference_metadata(&line_texts).0
-    };
+    let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
+    let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
     let lines: Vec<SourceLine<'_>> = raw_lines
-        .into_iter()
+        .iter()
+        .copied()
         .enumerate()
-        .filter_map(|(idx, line)| (!consumed_reference_lines[idx]).then_some(line))
+        .filter_map(|(idx, line)| {
+            if !consumed_reference_lines[idx] {
+                Some(line)
+            } else if consumed_reference_run_separates_tables(
+                &line_texts,
+                &consumed_reference_lines,
+                idx,
+            ) {
+                Some(SourceLine { text: "", ..line })
+            } else {
+                None
+            }
+        })
         .collect();
     let refs = ReferenceMap::new();
     let mut spans = Vec::new();
@@ -472,13 +483,41 @@ fn looks_like_reference_definition(line: &str) -> bool {
 
 fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap) {
     let (consumed, refs) = collect_link_reference_metadata(lines);
+    let kept = strip_consumed_references(lines, &consumed);
+    (kept, refs)
+}
+
+fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[bool]) -> Vec<&'a str> {
     let mut kept = Vec::with_capacity(lines.len());
     for (idx, line) in lines.iter().enumerate() {
         if !consumed[idx] {
             kept.push(*line);
+        } else if consumed_reference_run_separates_tables(lines, consumed, idx) {
+            kept.push("");
         }
     }
-    (kept, refs)
+    kept
+}
+
+fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], idx: usize) -> bool {
+    if idx > 0 && consumed[idx - 1] {
+        return false;
+    }
+
+    let mut next = idx + 1;
+    while next < consumed.len() && consumed[next] {
+        next += 1;
+    }
+
+    table_ends_at(lines, idx) && table_body_row_starts_at(lines, next)
+}
+
+fn table_ends_at(lines: &[&str], end: usize) -> bool {
+    (0..end).any(|start| table_extent(&lines[start..]).is_some_and(|used| start + used == end))
+}
+
+fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
+    start < lines.len() && !lines[start].trim().is_empty() && lines[start].contains('|')
 }
 
 fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) {
@@ -631,7 +670,7 @@ fn table_extent(lines: &[&str]) -> Option<usize> {
         return None;
     }
     let cols = split_table_row(lines[0]).len();
-    if cols == 0 || split_table_row(lines[1]).len() != cols {
+    if cols == 0 || !is_table_delimiter(lines[1]) || split_table_row(lines[1]).len() != cols {
         return None;
     }
     let mut i = 2;
@@ -946,12 +985,7 @@ fn parse_blocks_with_refs_profiled(
             // are not rendered as literal text; they were already collected into
             // the shared `refs` map by `collect_nested_references`.
             let (consumed, _) = collect_link_reference_metadata(&inner_refs);
-            let inner_kept: Vec<&str> = inner_refs
-                .iter()
-                .zip(consumed)
-                .filter(|(_, c)| !c)
-                .map(|(l, _)| *l)
-                .collect();
+            let inner_kept = strip_consumed_references(&inner_refs, &consumed);
             let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
@@ -1764,12 +1798,7 @@ fn parse_list_profiled(
         // `refs` map by `collect_nested_references`.
         let body_refs: Vec<&str> = body.iter().map(String::as_str).collect();
         let (consumed, _) = collect_link_reference_metadata(&body_refs);
-        let kept: Vec<&str> = body_refs
-            .iter()
-            .zip(consumed)
-            .filter(|(_, c)| !c)
-            .map(|(l, _)| *l)
-            .collect();
+        let kept = strip_consumed_references(&body_refs, &consumed);
         items.push(ListItem {
             task,
             blocks: parse_blocks_bounded(&kept, refs, profiler),
@@ -3484,8 +3513,12 @@ mod char_ref_dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
-    use super::{collect_link_references, line_is_paragraph_text};
-    use crate::{HtmlOptions, render_html};
+    use super::{collect_link_references, line_is_paragraph_text, parse_document};
+    use crate::{
+        HtmlOptions,
+        ast::{Block, Inline},
+        render_html,
+    };
 
     fn html(src: &str) -> String {
         render_html(src, &HtmlOptions::default()).unwrap()
@@ -3637,6 +3670,99 @@ mod refdef_paragraph_tests {
         // A pipe line that is NOT a table (no delimiter row) is ordinary text, so
         // a def-looking line right after it is a lazy continuation, not a def.
         assert!(!html("a | b\n[x]: /y\n\n[x]").contains("href=\"/y\""));
+    }
+
+    #[test]
+    fn a_definition_between_adjacent_tables_preserves_the_table_boundary() {
+        let doc = parse_document(
+            "| a | b |\n\
+             | - | - |\n\
+             | 1 | 2 |\n\
+             [x]: /y\n\
+             | c | d |\n\
+             | - | - |\n\
+             | 3 | 4 |\n\
+             \n\
+             use [x]",
+        );
+
+        assert_eq!(
+            doc.blocks.len(),
+            3,
+            "expected two tables plus one paragraph: {doc:#?}"
+        );
+
+        let Block::Table(first) = &doc.blocks[0] else {
+            panic!("first block should be a table: {doc:#?}");
+        };
+        assert_eq!(
+            first.rows.len(),
+            1,
+            "the second table must not be consumed as body rows"
+        );
+
+        let Block::Table(second) = &doc.blocks[1] else {
+            panic!("second block should be a table: {doc:#?}");
+        };
+        assert_eq!(second.rows.len(), 1);
+
+        let Block::Paragraph(inlines) = &doc.blocks[2] else {
+            panic!("third block should be a paragraph: {doc:#?}");
+        };
+        assert!(
+            inlines
+                .iter()
+                .any(|inline| matches!(inline, Inline::Link { dest, .. } if dest == "/y")),
+            "the stripped definition should still resolve the later link: {inlines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_definition_after_a_table_preserves_a_following_pipe_paragraph_boundary() {
+        let doc = parse_document(
+            "| a | b |\n\
+             | - | - |\n\
+             | 1 | 2 |\n\
+             [x]: /y\n\
+             | c | d |\n\
+             \n\
+             use [x]",
+        );
+
+        assert_eq!(
+            doc.blocks.len(),
+            3,
+            "expected one table, one paragraph, and one link paragraph: {doc:#?}"
+        );
+
+        let Block::Table(first) = &doc.blocks[0] else {
+            panic!("first block should be a table: {doc:#?}");
+        };
+        assert_eq!(
+            first.rows.len(),
+            1,
+            "the pipe paragraph after the stripped definition must not merge into the table"
+        );
+
+        let Block::Paragraph(pipe_paragraph) = &doc.blocks[1] else {
+            panic!("second block should be a paragraph: {doc:#?}");
+        };
+        assert!(
+            pipe_paragraph
+                .iter()
+                .any(|inline| matches!(inline, Inline::Text(text) if text.contains("| c | d |"))),
+            "the following pipe line must remain paragraph text: {pipe_paragraph:#?}"
+        );
+
+        let Block::Paragraph(link_paragraph) = &doc.blocks[2] else {
+            panic!("third block should be a paragraph: {doc:#?}");
+        };
+        assert!(
+            link_paragraph
+                .iter()
+                .any(|inline| matches!(inline, Inline::Link { dest, .. } if dest == "/y")),
+            "the stripped definition should still resolve the later link: {link_paragraph:#?}"
+        );
     }
 
     #[test]

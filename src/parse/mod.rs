@@ -2025,8 +2025,14 @@ fn parse_inlines_with_refs_profiled(
                 }
             }
             '[' => {
+                // CommonMark forbids links inside links at any nesting level (an
+                // inner link wins; the outer brackets stay literal). Images are
+                // exempt — their description is flattened to alt text — so this
+                // guard applies only to the link-forming paths, not the `!` image
+                // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
                 if let Some((content, dest, title, next)) =
                     parse_link_like(&bytes, i, &bracket_pairs, refs, profiler)
+                        .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -2037,6 +2043,7 @@ fn parse_inlines_with_refs_profiled(
                     i = next;
                 } else if let Some((content, dest, title, next)) =
                     parse_reference_link_like(&bytes, i, &bracket_pairs, refs, profiler)
+                        .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -2514,12 +2521,23 @@ fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
 }
 
 fn find_code_close(chars: &[char], from: usize, ch: char, n: usize) -> Option<usize> {
+    // A code span opened by `n` backticks closes only on a *maximal* backtick run
+    // of exactly `n`. Stepping by 1 would let a position `m - n` bytes into a
+    // longer run of `m > n` backticks match (its forward `run_len` is `n`), falsely
+    // closing the span in the middle of that run (e.g. `` `foo``bar`` ``). So skip
+    // each backtick run whole: a run that is not length `n` cannot contain a valid
+    // closer, and the next candidate begins only after it.
     let mut i = from;
     while i < chars.len() {
-        if chars[i] == ch && run_len(chars, i, ch) == n {
-            return Some(i);
+        if chars[i] == ch {
+            let run = run_len(chars, i, ch);
+            if run == n {
+                return Some(i);
+            }
+            i += run;
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     None
 }
@@ -2565,6 +2583,18 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
         }
     }
     None
+}
+
+/// True when `inlines` contain a link at any nesting depth. CommonMark bans
+/// links inside links, so a candidate link whose text contains one must not form
+/// (the inner link wins). Recurses through emphasis/strong/strikethrough; images
+/// carry only flattened alt text, so they can never hold an inline link.
+fn contains_link(inlines: &[Inline]) -> bool {
+    inlines.iter().any(|inl| match inl {
+        Inline::Link { .. } => true,
+        Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => contains_link(c),
+        _ => false,
+    })
 }
 
 /// Parse `[content](dest "title")` starting at the `[`.
@@ -3888,5 +3918,50 @@ mod bracket_tests {
             !html2.contains("href=\"/u\""),
             "over-long full label resolved"
         );
+    }
+
+    #[test]
+    fn code_span_closer_must_be_a_maximal_run() {
+        // A span opened by N backticks closes only on a maximal run of exactly N.
+        // Previously the closer scan matched inside a longer run, so a single
+        // backtick "closed" mid `` `` `` and corrupted ordinary input.
+        let h = |s: &str| render_html(s, &HtmlOptions::default()).unwrap_or_default();
+        // Single ` cannot close on a `` `` `` run: the ` stays literal, `` `` `` forms the span.
+        let a = h("`foo``bar``");
+        assert!(a.contains("`foo<code>bar</code>"), "{a}");
+        // ` a `` -> no single-backtick closer exists, so everything is literal.
+        let b = h("`a``");
+        assert!(!b.contains("<code>"), "{b}");
+        // A `` `` `` span keeps a longer interior run verbatim.
+        let c = h("``x```y``");
+        assert!(c.contains("<code>x```y</code>"), "{c}");
+        // Equal-length open/close still works.
+        assert!(h("`code`").contains("<code>code</code>"));
+        assert!(h("``a`b``").contains("<code>a`b</code>"));
+    }
+
+    #[test]
+    fn a_link_cannot_contain_another_link() {
+        // CommonMark: links do not nest. The inner link wins; the outer brackets
+        // stay literal (never emit nested <a>).
+        let h = |s: &str| render_html(s, &HtmlOptions::default()).unwrap_or_default();
+        let nested = h("[foo [bar](/uri)](/uri)");
+        assert!(
+            nested.contains("[foo <a href=\"/uri\">bar</a>](/uri)"),
+            "outer link must stay literal: {nested}"
+        );
+        assert_eq!(
+            nested.matches("<a ").count(),
+            1,
+            "exactly one anchor: {nested}"
+        );
+        // A link nested inside emphasis inside the text also suppresses the outer.
+        let emph = h("[a **[b](/x)** c](/y)");
+        assert!(!emph.contains("href=\"/y\""), "outer suppressed: {emph}");
+        assert!(emph.contains("href=\"/x\""), "inner resolves: {emph}");
+        // Controls that MUST still form a link: plain, emphasis-in-text, image-in-link.
+        assert!(h("[text](/u)").contains("<a href=\"/u\">text</a>"));
+        assert!(h("[**b** t](/u)").contains("<a href=\"/u\"><strong>b</strong> t</a>"));
+        assert!(h("[![img](i.png)](page)").contains("<a href=\"page\"><img"));
     }
 }

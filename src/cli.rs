@@ -389,7 +389,10 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let pdf_image_assets = if want_pdf {
         match read_pdf_image_assets(&args.pdf_images, args.max_pdf_image_bytes) {
             Ok(assets) => assets,
-            Err(e) => return fail_json(66, "input_error", &e, json),
+            // A malformed `--pdf-image` spec is a usage error (64); a missing/
+            // unreadable/oversized file is an input error (66).
+            Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+            Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
         }
     } else {
         Vec::new()
@@ -450,8 +453,23 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 report_write("html", &path, bytes.len(), json);
             }
             None => {
-                if let Err(e) = std::io::stdout().write_all(&bytes) {
-                    return fail_json(74, "output_error", &format!("writing stdout: {e}"), json);
+                let mut stdout = std::io::stdout().lock();
+                match stdout.write_all(&bytes) {
+                    Ok(()) => {}
+                    // The reader closed early (e.g. `fmd doc.md | head`). A broken
+                    // pipe is a clean exit, matching `emit_stdout` for the
+                    // discovery/config commands — the "stdout is data, exit codes
+                    // are stable when piped" contract must hold for the primary
+                    // rendered-document path too, not just metadata output.
+                    Err(e) if e.kind() == IoErrorKind::BrokenPipe => {}
+                    Err(e) => {
+                        return fail_json(
+                            74,
+                            "output_error",
+                            &format!("writing stdout: {e}"),
+                            json,
+                        );
+                    }
                 }
             }
         }
@@ -641,8 +659,15 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 );
             }
             let total = receipt.files.len();
+            // A cancelled run (the `--timeout` deadline fired) leaves not-yet-started
+            // inputs *skipped*, not rendered. The documented contract is "0 = all
+            // inputs rendered", so a partial cancellation (some ok, none failed, but
+            // work skipped) must not report success — otherwise an agent keying on the
+            // exit code alone believes the batch finished. A fully-cancelled run
+            // already exits non-zero via `ok_count() == 0`; this covers the partial case.
             let hard_failure = (!continue_on_error && receipt.failed_count() > 0)
-                || (total > 0 && receipt.ok_count() == 0);
+                || (total > 0 && receipt.ok_count() == 0)
+                || receipt.cancelled;
             if hard_failure {
                 // Return the documented exit code for the FIRST failure's
                 // category, so agents keying on exit codes get the same
@@ -864,22 +889,33 @@ fn size_limit_error(label: &str, observed: u64, max_bytes: u64, flag: &str) -> E
     )
 }
 
+/// A `--pdf-image` failure, tagged with the exit-code category it maps to: a
+/// malformed spec is a usage error (64), while a missing/unreadable/oversized
+/// file is an input error (66).
+enum PdfImageError {
+    Usage(String),
+    Input(String),
+}
+
 fn read_pdf_image_assets(
     specs: &[String],
     max_bytes: u64,
-) -> std::result::Result<Vec<PdfImageAsset>, String> {
+) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
     let mut assets = Vec::with_capacity(specs.len());
     for spec in specs {
-        let (destination, path) = parse_pdf_image_spec(spec)?;
+        let (destination, path) = parse_pdf_image_spec(spec).map_err(PdfImageError::Usage)?;
         let label = format!("PDF image asset {destination} from {}", path.display());
         if let Ok(meta) = std::fs::metadata(&path)
             && meta.len() > max_bytes
         {
-            return Err(pdf_image_too_large(&label, meta.len(), max_bytes).to_string());
+            return Err(PdfImageError::Input(
+                pdf_image_too_large(&label, meta.len(), max_bytes).to_string(),
+            ));
         }
-        let file = std::fs::File::open(&path).map_err(|e| format!("reading {label}: {e}"))?;
+        let file = std::fs::File::open(&path)
+            .map_err(|e| PdfImageError::Input(format!("reading {label}: {e}")))?;
         let bytes = read_limited_with_flag(file, max_bytes, &label, "--max-pdf-image-bytes")
-            .map_err(|e| format!("reading {label}: {e}"))?;
+            .map_err(|e| PdfImageError::Input(format!("reading {label}: {e}")))?;
         assets.push(PdfImageAsset::new(destination, bytes));
     }
     Ok(assets)

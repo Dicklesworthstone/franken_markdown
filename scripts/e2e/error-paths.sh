@@ -66,8 +66,10 @@ e2e_expect_stderr_contains "stylesheet"
 e2e_run "missing --pdf-image file -> 66" -- "$E2E_BIN" --text '# x' --to pdf --out "${WORK}/img.pdf" --pdf-image a.png="${WORK}/nope.png"
 e2e_expect_exit 66
 
-e2e_run "malformed --pdf-image spec (no '=') -> 66" -- "$E2E_BIN" --text '# x' --to pdf --out "${WORK}/img.pdf" --pdf-image noequalsign
-e2e_expect_exit 66
+# A malformed spec is a USAGE error (64): the flag argument is wrong, no file was
+# consulted. (A missing/oversized file is the input error, 66, above.)
+e2e_run "malformed --pdf-image spec (no '=') -> 64" -- "$E2E_BIN" --text '# x' --to pdf --out "${WORK}/img.pdf" --pdf-image noequalsign
+e2e_expect_exit 64
 e2e_expect_stderr_contains "MARKDOWN_DEST=PATH"
 
 printf 'this is not a valid config line\n' >"${WORK}/junk.cfg"

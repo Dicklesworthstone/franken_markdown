@@ -675,9 +675,11 @@ fn pdf_image_asset_errors_are_stable_and_prevent_partial_both_output() {
         &pdf_path_s,
         "--json",
     ]);
-    assert_eq!(bad_spec.status.code(), Some(66));
+    // A malformed --pdf-image spec (no `=`) is a usage error (64), not an input
+    // error (66) — the flag argument itself is wrong, no file was consulted.
+    assert_eq!(bad_spec.status.code(), Some(64));
     let stderr = text(&bad_spec.stderr);
-    assert!(stderr.contains("\"code\":\"input_error\""));
+    assert!(stderr.contains("\"code\":\"usage_error\""));
     assert!(stderr.contains("expected MARKDOWN_DEST=PATH"));
 
     let oversized_path = temp_file("oversized-image", "png");
@@ -1097,8 +1099,9 @@ fn input_error_without_json_uses_human_readable_stderr() {
     assert!(!stderr.contains("\"code\""), "stderr: {stderr}");
 }
 
-/// A `--pdf-image` spec with a blank destination or a blank path is a distinct,
-/// stable input error (exercises both blank-side branches of the spec parser).
+/// A `--pdf-image` spec with a blank destination or a blank path is a malformed
+/// flag argument — a usage error (64), not an input error — exercising both
+/// blank-side branches of the spec parser.
 #[test]
 fn pdf_image_spec_rejects_blank_destination_and_blank_path() {
     let img = temp_file("blank-side-image", "png");
@@ -1118,10 +1121,10 @@ fn pdf_image_spec_rejects_blank_destination_and_blank_path() {
         &blank_dest_pdf_s,
         "--json",
     ]);
-    assert_eq!(blank_dest.status.code(), Some(66));
+    assert_eq!(blank_dest.status.code(), Some(64));
     let stderr = text(&blank_dest.stderr);
     assert!(
-        stderr.contains("\"code\":\"input_error\""),
+        stderr.contains("\"code\":\"usage_error\""),
         "stderr: {stderr}"
     );
     assert!(
@@ -1142,10 +1145,10 @@ fn pdf_image_spec_rejects_blank_destination_and_blank_path() {
         &blank_path_pdf_s,
         "--json",
     ]);
-    assert_eq!(blank_path.status.code(), Some(66));
+    assert_eq!(blank_path.status.code(), Some(64));
     let stderr = text(&blank_path.stderr);
     assert!(
-        stderr.contains("\"code\":\"input_error\""),
+        stderr.contains("\"code\":\"usage_error\""),
         "stderr: {stderr}"
     );
     assert!(
@@ -1472,6 +1475,41 @@ fn discovery_commands_do_not_panic_on_a_broken_pipe() {
             "fmd {args:?} panicked on a broken pipe"
         );
     }
+}
+
+/// The primary rendered-document path (HTML to stdout) must honor the same
+/// broken-pipe contract as the discovery commands: `fmd doc.md | head` exits
+/// cleanly (0), not with a stdout-write error (74). The self-contained HTML
+/// embeds fonts, so even a modest document exceeds the OS pipe buffer — a write
+/// lands after the reader closes and surfaces EPIPE.
+#[test]
+fn html_render_to_stdout_exits_cleanly_on_a_broken_pipe() {
+    let path = temp_file("broken-pipe-render", "md");
+    let mut body = String::from("# Broken Pipe Render\n\n");
+    for i in 0..2000 {
+        body.push_str(&format!(
+            "Paragraph {i} with lorem ipsum dolor sit amet.\n\n"
+        ));
+    }
+    fs::write(&path, &body).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .arg(&path)
+        .env_remove("SOURCE_DATE_EPOCH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Close the read end without reading a byte, then let fmd finish.
+    drop(child.stdout.take());
+    let status = child.wait().unwrap();
+    let _ = fs::remove_file(&path);
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a broken pipe on the HTML render path must exit cleanly (0), not 74 or 101"
+    );
 }
 
 // --- batch subcommand contract (only present with the `batch` feature) --------

@@ -523,6 +523,20 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
             continue;
         }
 
+        // A GFM table is a distinct block, so a definition after it is at a block
+        // boundary — skip the table's rows. A table cannot interrupt a paragraph,
+        // so this only applies at a boundary (in_paragraph false); mid-paragraph
+        // the rows are absorbed as ordinary continuation via line_is_paragraph_text.
+        if !in_paragraph
+            && i + 1 < lines.len()
+            && lines[i].contains('|')
+            && is_table_delimiter(lines[i + 1])
+            && let Some(used) = table_extent(&lines[i..])
+        {
+            i += used;
+            continue;
+        }
+
         // Extract a reference definition only at a block boundary, never as a
         // paragraph continuation.
         if !in_paragraph && let Some((label, mut reference)) = parse_reference_definition(lines[i])
@@ -566,6 +580,28 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
     }
 
     (consumed, refs)
+}
+
+/// If `lines` begins with a GFM pipe table (a row followed by a delimiter row of
+/// matching column count), return how many lines it spans; otherwise `None`.
+/// Mirrors `parse_table_profiled`'s extent + column-count validation exactly
+/// (same `split_table_row`, same body-row loop) but without rendering cells, so
+/// reference-definition collection can skip a table's rows — a table is a
+/// distinct block, so a following definition is at a block boundary, not a
+/// paragraph continuation.
+fn table_extent(lines: &[&str]) -> Option<usize> {
+    if lines.len() < 2 {
+        return None;
+    }
+    let cols = split_table_row(lines[0]).len();
+    if cols == 0 || split_table_row(lines[1]).len() != cols {
+        return None;
+    }
+    let mut i = 2;
+    while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
+        i += 1;
+    }
+    Some(i)
 }
 
 /// True when `line` is ordinary paragraph text: a non-blank line that does not
@@ -3432,6 +3468,22 @@ mod refdef_paragraph_tests {
         // A `===` that does NOT follow paragraph text is itself a paragraph, so a
         // following def-looking line is a lazy continuation (not a definition).
         assert!(!html("===\n[x]: /y\n\n[x]").contains("href=\"/y\""));
+    }
+
+    #[test]
+    fn a_definition_after_a_table_is_collected() {
+        // A GFM table is a distinct block, so a following definition is at a
+        // block boundary and must resolve — not be absorbed as a continuation of
+        // a paragraph the table's rows were mistaken for.
+        let out = html("| a | b |\n| --- | --- |\n[x]: /y\n\nsee [x]");
+        assert!(out.contains("<table"), "the table must render: {out}");
+        assert!(
+            out.contains("href=\"/y\""),
+            "the def after the table must resolve: {out}"
+        );
+        // A pipe line that is NOT a table (no delimiter row) is ordinary text, so
+        // a def-looking line right after it is a lazy continuation, not a def.
+        assert!(!html("a | b\n[x]: /y\n\n[x]").contains("href=\"/y\""));
     }
 
     #[test]

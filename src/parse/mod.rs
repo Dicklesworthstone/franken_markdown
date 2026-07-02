@@ -508,6 +508,43 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
             continue;
         }
 
+        // An indented (>=4 column) non-blank line is indented code, never a
+        // reference definition or an HTML block. The block parser checks indented
+        // code *before* HTML (and breaks an open paragraph on it), so we must too:
+        // otherwise `    <div>` matches the HTML-block check below and its
+        // blank-terminated skip swallows a following real definition (dropping it).
+        // A blank line — even one that is all spaces — is handled by the blank
+        // branch below, so it is excluded here.
+        if !lines[i].trim().is_empty() && indented_code_start(lines[i]) {
+            in_paragraph = false;
+            i += 1;
+            continue;
+        }
+
+        // A block quote is its own block. Consume the whole run — its `>` lines
+        // plus any lazy paragraph continuations — exactly as the block parser and
+        // `collect_nested_references` do, so a `[label]: dest` line that lazily
+        // continues the quote's open paragraph is not mistaken for a top-level
+        // boundary definition and stripped, which silently deleted the line and
+        // phantom-defined the label. Definitions genuinely inside the quote are
+        // collected separately by `collect_nested_references`.
+        if lines[i].trim_start().starts_with('>') {
+            let mut last_inner: Option<&str> = None;
+            while i < lines.len() {
+                if lines[i].trim_start().starts_with('>') {
+                    last_inner = Some(strip_blockquote_marker(lines[i]));
+                    i += 1;
+                } else if blockquote_lazy_continuation(last_inner, lines[i]) {
+                    last_inner = Some(lines[i].trim_start());
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            in_paragraph = false;
+            continue;
+        }
+
         // HTML block contents are literal text, never reference definitions.
         // Skip the whole block (matching the block parser) so a `[label]: dest`-
         // looking line inside raw HTML is not extracted and resolved.
@@ -634,9 +671,15 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         return;
     }
     let mut i = 0;
+    // Whether the previous non-blank line left an open paragraph. Mirrors the
+    // top-level collector: a list marker that cannot interrupt a paragraph (an
+    // ordered start != 1, or an empty item) is then a lazy continuation, not a
+    // list, so its "item body" must not be harvested as a nested definition.
+    let mut in_paragraph = false;
     while i < lines.len() {
         let line = lines[i];
         if line.trim().is_empty() {
+            in_paragraph = false;
             i += 1;
             continue;
         }
@@ -647,14 +690,16 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 i += 1;
             }
             i += 1;
+            in_paragraph = false;
             continue;
         }
         // An indented (4+ column) line is indented code, not a container — the
-        // block parser checks this before blockquotes/lists, so we must too, or
-        // a `> [x]: dest`/`- [x]: dest`-looking code line would be wrongly read
-        // as a nested blockquote/list and its "definition" collected. A real
-        // container never starts at 4+ columns, so skipping the line is safe.
+        // block parser checks this before blockquotes/lists (and breaks an open
+        // paragraph on it), so we must too, or a `> [x]: dest`/`- [x]: dest`-
+        // looking code line would be wrongly read as a nested blockquote/list and
+        // its "definition" collected. A real container never starts at 4+ columns.
         if indented_code_start(line) {
+            in_paragraph = false;
             i += 1;
             continue;
         }
@@ -663,6 +708,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // a nested container and its "definition" collected.
         if let Some(end_cond) = html_block_kind(line) {
             i = html_block_end(lines, i, end_cond, |l| *l);
+            in_paragraph = false;
             continue;
         }
         if line.trim_start().starts_with('>') {
@@ -684,11 +730,33 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 refs.entry(label).or_insert(reference);
             }
             collect_nested_references(&inner_slice, refs, depth + 1);
+            in_paragraph = false;
+            continue;
+        }
+        // A GFM table is a distinct block (never a container), but its rows are
+        // not recognized by `line_is_paragraph_text`, so skip them explicitly to
+        // keep `in_paragraph` accurate — otherwise a table's rows leave it wrongly
+        // "open" and a following ordered-marker list (which then sits at a block
+        // boundary) is skipped as a lazy continuation, dropping a nested def. A
+        // table cannot interrupt a paragraph, so this only applies at a boundary.
+        if !in_paragraph
+            && i + 1 < lines.len()
+            && line.contains('|')
+            && is_table_delimiter(lines[i + 1])
+            && let Some(used) = table_extent(&lines[i..])
+        {
+            i += used;
             continue;
         }
         // List items: split into per-item bodies exactly as the block parser
         // does (shared `split_list_items`) and collect each item's definitions.
+        // A marker that cannot interrupt an open paragraph is a lazy continuation
+        // of that paragraph, not a list, so skip it without harvesting.
         if list_marker(line).is_some() {
+            if in_paragraph && !list_marker_interrupts_paragraph(line) {
+                i += 1;
+                continue;
+            }
             let split = split_list_items(&lines[i..]);
             for (_, body) in &split.items {
                 let body_slice: Vec<&str> = body.iter().map(String::as_str).collect();
@@ -699,8 +767,45 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 collect_nested_references(&body_slice, refs, depth + 1);
             }
             i += split.used.max(1);
+            in_paragraph = false;
             continue;
         }
+        // A boundary reference definition does not itself open a paragraph, and it
+        // may carry its title on the following line. Skip both (mirroring the flat
+        // collector) so `in_paragraph` stays accurate — otherwise
+        // `line_is_paragraph_text` misreads the def line as open paragraph text and
+        // a following non-interrupting ordered marker (a list at a boundary) is
+        // skipped as a lazy continuation, dropping a nested definition it contains.
+        // The def itself is harvested by the `collect_link_reference_metadata` call
+        // on each container body, so this branch only advances and resets state.
+        if !in_paragraph && let Some((_, reference)) = parse_reference_definition(line) {
+            let used = if reference.title.is_none()
+                && lines
+                    .get(i + 1)
+                    .and_then(|l| parse_reference_title_line(l))
+                    .is_some()
+            {
+                2
+            } else {
+                1
+            };
+            in_paragraph = false;
+            i += used;
+            continue;
+        }
+        // A setext underline following paragraph text closes that paragraph into a
+        // heading (the block parser does this before its paragraph break checks),
+        // so the next line is at a block boundary. Without this a `===` — which
+        // `line_is_paragraph_text` treats as ordinary text — would keep the
+        // paragraph "open" and a following ordered-marker list (which then sits at
+        // a boundary) would be skipped as a lazy continuation, dropping a nested
+        // definition it contains.
+        if in_paragraph && setext_underline(line).is_some() {
+            in_paragraph = false;
+            i += 1;
+            continue;
+        }
+        in_paragraph = line_is_paragraph_text(line);
         i += 1;
     }
 }
@@ -1198,10 +1303,17 @@ fn parse_indented_code(lines: &[&str]) -> (String, usize) {
     (code, i)
 }
 
-fn strip_blockquote(line: &str) -> String {
+/// The content of a `>`-quoted line with the marker and one optional following
+/// space removed, borrowed from the input (no allocation). `strip_blockquote`
+/// is the owning form used where a `String` must be retained.
+fn strip_blockquote_marker(line: &str) -> &str {
     let t = line.trim_start();
     let rest = t.strip_prefix('>').unwrap_or(t);
-    rest.strip_prefix(' ').unwrap_or(rest).to_string()
+    rest.strip_prefix(' ').unwrap_or(rest)
+}
+
+fn strip_blockquote(line: &str) -> String {
+    strip_blockquote_marker(line).to_string()
 }
 
 /// True when `line` lazily continues an open paragraph inside a block quote.
@@ -1676,18 +1788,29 @@ fn parse_list_profiled(
 
 fn split_task_marker(text: &str) -> (Option<bool>, &str) {
     let trimmed = text.trim_start();
-    if let Some(rest) = trimmed
-        .strip_prefix("[ ] ")
-        .or_else(|| trimmed.strip_prefix("[ ]"))
+    // GFM requires the checkbox to be followed by at least one whitespace
+    // character (or to be the item's entire content). Without this, `[x]foo`
+    // renders as a checkbox plus "foo", and — worse — a list item whose text is a
+    // reference definition like `[x]: /url` is mangled into a checkbox with body
+    // ": /url", silently losing the definition.
+    let (checked, after) = if let Some(rest) = trimmed.strip_prefix("[ ]") {
+        (false, rest)
+    } else if let Some(rest) = trimmed
+        .strip_prefix("[x]")
+        .or_else(|| trimmed.strip_prefix("[X]"))
     {
-        return (Some(false), rest);
+        (true, rest)
+    } else {
+        return (None, text);
+    };
+    match after.chars().next() {
+        // A bare checkbox that is the entire item (e.g. `- [x]`).
+        None => (Some(checked), after),
+        // Consume exactly one whitespace separator, as the old prefixes did.
+        Some(c) if c == ' ' || c == '\t' => (Some(checked), &after[c.len_utf8()..]),
+        // Any other following character means this was never a checkbox.
+        _ => (None, text),
     }
-    for open in ["[x] ", "[X] ", "[x]", "[X]"] {
-        if let Some(rest) = trimmed.strip_prefix(open) {
-            return (Some(true), rest);
-        }
-    }
-    (None, text)
 }
 
 // ---- tables -----------------------------------------------------------------
@@ -3522,6 +3645,133 @@ mod refdef_paragraph_tests {
         let li = html("text\n\n    - [y]: /z\n\n[y]");
         assert!(li.contains("<code>- [y]: /z"));
         assert!(!li.contains("href=\"/z\""));
+    }
+
+    #[test]
+    fn an_ordered_marker_that_cannot_interrupt_a_paragraph_defines_no_nested_ref() {
+        // 2nd-review: `text\n2. [foo]: /y` — an ordered marker starting at a number
+        // other than 1 cannot interrupt a paragraph, so `2. [foo]: /y` is a lazy
+        // continuation, not a list item. The nested collector must not harvest
+        // `[foo]` (which phantom-linked it while the text still rendered).
+        let out = html("text\n2. [foo]: /y\n\nuse [foo]");
+        assert!(
+            !out.contains("href=\"/y\""),
+            "a non-interrupting ordered marker defines no ref: {out}"
+        );
+        assert!(
+            out.contains("2. [foo]: /y"),
+            "the paragraph text must be preserved: {out}"
+        );
+        // Control: `1.` *can* interrupt a paragraph, so its item body's def resolves.
+        assert!(html("text\n1. [foo]: /y\n\nuse [foo]").contains("href=\"/y\""));
+        // Control: a setext underline closes the paragraph, so an ordered marker
+        // after it (even start != 1) is a list at a block boundary — its nested
+        // definition must still be collected and resolve.
+        assert!(html("foo\n===\n2. [bar]: /z\n\nuse [bar]").contains("href=\"/z\""));
+        // Control: a GFM table is a distinct block, so an ordered marker right
+        // after it is also a list at a boundary — its nested def must resolve.
+        assert!(html("| a | b |\n| - | - |\n2. [baz]: /w\n\nuse [baz]").contains("href=\"/w\""));
+    }
+
+    #[test]
+    fn a_refdef_lazily_continuing_a_blockquote_is_not_stripped() {
+        // 2nd-review: `> quote\n[x]: /y` — the second line lazily continues the
+        // quote's open paragraph, so it is NOT a boundary definition. It must stay
+        // inside the blockquote (it was silently deleted and `x` phantom-defined).
+        let out = html("> quote\n[x]: /y\n\nuse [x]");
+        assert!(
+            !out.contains("href=\"/y\""),
+            "a lazy-continuation ref-def must not resolve: {out}"
+        );
+        assert!(
+            out.contains("[x]: /y"),
+            "the lazy-continuation line must be preserved in the quote: {out}"
+        );
+        // A blank line closes the quote's paragraph, so a following def is at a
+        // boundary and resolves.
+        assert!(html("> quote\n\n[x]: /y\n\nuse [x]").contains("href=\"/y\""));
+        // A def after a quoted heading (no blank) is at a boundary too — the
+        // previous quoted line is not an open paragraph — so it resolves.
+        assert!(html("> # H\n[x]: /y\n\nuse [x]").contains("href=\"/y\""));
+    }
+
+    #[test]
+    fn a_refdef_after_indented_code_is_collected_not_swallowed_as_html() {
+        // 2nd-review: `    <div>` is indented code, not an HTML block. The top-level
+        // collector must check indented code before HTML (as the block parser
+        // does), or the blank-terminated HTML-block skip swallows the following
+        // real definition and it is dropped.
+        let out = html("    <div>\n[x]: /y\n\nsee [x]");
+        assert!(out.contains("<pre><code>&lt;div&gt;"), "div is code: {out}");
+        assert!(
+            out.contains("href=\"/y\""),
+            "the def after indented code must resolve: {out}"
+        );
+    }
+
+    #[test]
+    fn a_task_checkbox_requires_trailing_whitespace() {
+        use super::split_task_marker;
+        // GFM: the checkbox must be followed by whitespace or end-of-line.
+        assert_eq!(split_task_marker("[x] done"), (Some(true), "done"));
+        assert_eq!(split_task_marker("[ ] todo"), (Some(false), "todo"));
+        assert_eq!(split_task_marker("[x]"), (Some(true), ""));
+        assert_eq!(split_task_marker("[X]\tt"), (Some(true), "t"));
+        // Not a checkbox: a non-whitespace character follows `]`.
+        assert_eq!(split_task_marker("[x]foo"), (None, "[x]foo"));
+        assert_eq!(split_task_marker("[x]: /url"), (None, "[x]: /url"));
+    }
+
+    #[test]
+    fn a_list_item_that_is_a_refdef_beginning_with_a_checkbox_glyph_resolves() {
+        // 2nd-review: `- [x]: /y` is a list item containing the definition
+        // `[x]: /y` (label "x"), not a task checkbox with body ": /y". The def must
+        // be collected so a use resolves, and no checkbox is emitted.
+        let out = html("- [x]: /y\n\nsee [x]");
+        assert!(
+            out.contains("href=\"/y\""),
+            "the list-item def must resolve: {out}"
+        );
+        assert!(!out.contains("<input"), "`[x]:` is not a checkbox: {out}");
+        // A real checkbox (with the required space) still renders as a task item.
+        assert!(html("- [x] done").contains("type=\"checkbox\""));
+        // `[x]foo` (no space) is literal text, not a checkbox.
+        let lit = html("- [x]foo");
+        assert!(
+            lit.contains("[x]foo"),
+            "no-space checkbox is literal: {lit}"
+        );
+        assert!(!lit.contains("<input"), "no phantom checkbox: {lit}");
+    }
+
+    #[test]
+    fn a_boundary_def_before_an_ordered_marker_inside_a_blockquote_keeps_both() {
+        // 2nd-review regression: a boundary ref-def resets the collector's paragraph
+        // state, so a following non-interrupting ordered marker inside the same
+        // blockquote is a list at a boundary and its nested def is still collected.
+        // Previously the def line was misread as open paragraph text, the list was
+        // skipped as a lazy continuation, and the second def was silently dropped
+        // (the block parser stripped it, leaving the use unresolved).
+        let out = html("> [a]: /x\n> 2. [b]: /y\n\n[a] and [b]");
+        assert!(out.contains("href=\"/x\""), "first def resolves: {out}");
+        assert!(
+            out.contains("href=\"/y\""),
+            "second (nested) def resolves: {out}"
+        );
+        // Same shape with a table between the def and the marker (also resets state).
+        let t = html("> [a]: /x\n> | h |\n> | - |\n> 2. [b]: /y\n\n[a] and [b]");
+        assert!(
+            t.contains("href=\"/x\"") && t.contains("href=\"/y\""),
+            "{t}"
+        );
+        // The boundary def may carry its title on the next line; both lines are
+        // skipped (the two-line form) so the following ordered marker is still at a
+        // boundary and its nested def resolves.
+        let titled = html("> [a]: /x\n> \"title for a\"\n> 2. [b]: /y\n\n[a] and [b]");
+        assert!(
+            titled.contains("title=\"title for a\"") && titled.contains("href=\"/y\""),
+            "{titled}"
+        );
     }
 }
 

@@ -27,6 +27,7 @@ use crate::{HtmlOptions, PdfOptions, render_html, render_pdf};
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
 /// ceiling when the caller does not supply one.
 const DEFAULT_PER_JOB_RSS: u64 = 64 * 1024 * 1024;
+const MAX_COLLECT_DIR_DEPTH: usize = 128;
 
 // ---------------------------------------------------------------------------
 // Worker-budget policy (bead zmd.1.1; docs/BATCH_WORKER_BUDGET.md)
@@ -91,15 +92,30 @@ pub fn worker_budget(input: &BudgetInputs) -> WorkerBudget {
     };
 
     let workers = desired.min(mem_workers).max(1);
-    // Saturating: this is a `pub` function, so guard against overflow on
-    // pathological (near-`usize::MAX`) inputs.
-    let queue_depth = workers
-        .saturating_mul(2)
-        .clamp(2, c_avail.saturating_mul(4));
+    let queue_depth = queue_depth_for_workers(workers, c_avail);
     WorkerBudget {
         workers,
         queue_depth,
     }
+}
+
+fn queue_depth_for_workers(workers: usize, c_avail: usize) -> usize {
+    // Saturating: `worker_budget` is public, so guard against overflow on
+    // pathological (near-`usize::MAX`) inputs.
+    workers
+        .max(1)
+        .saturating_mul(2)
+        .clamp(2, c_avail.max(1).saturating_mul(4))
+}
+
+fn clamp_budget_to_input_count(
+    mut budget: WorkerBudget,
+    input_count: usize,
+    c_avail: usize,
+) -> WorkerBudget {
+    budget.workers = budget.workers.min(input_count.max(1)).max(1);
+    budget.queue_depth = queue_depth_for_workers(budget.workers, c_avail);
+    budget
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +439,25 @@ pub fn expand_inputs(paths: &[PathBuf]) -> ExpandedInputs {
 }
 
 fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<InputError>) {
+    collect_dir_with_depth(dir, out, errors, 0);
+}
+
+fn collect_dir_with_depth(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    errors: &mut Vec<InputError>,
+    depth: usize,
+) {
+    if depth >= MAX_COLLECT_DIR_DEPTH {
+        errors.push(InputError {
+            path: dir.to_path_buf(),
+            message: format!(
+                "directory nesting exceeds maximum depth {MAX_COLLECT_DIR_DEPTH}; skipped"
+            ),
+        });
+        return;
+    }
+
     // Read the directory into a sorted vector first so recursion order is
     // deterministic regardless of filesystem enumeration order. An unreadable
     // directory is recorded and skipped, not propagated as a whole-run failure.
@@ -447,7 +482,7 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<InputError>)
             continue;
         }
         if entry.is_dir() {
-            collect_dir(&entry, out, errors);
+            collect_dir_with_depth(&entry, out, errors, depth + 1);
         } else if is_markdown(&entry) {
             out.push(entry);
         }
@@ -472,11 +507,62 @@ fn output_path(input: &Path, out_dir: Option<&Path>, ext: &str) -> PathBuf {
     }
 }
 
-/// Extension-independent output identity: two inputs collide (overwrite each
-/// other's outputs) exactly when this key matches, since outputs differ only by
-/// extension. Used to detect silent overwrites before rendering.
-fn output_key(input: &Path, out_dir: Option<&Path>) -> PathBuf {
-    output_path(input, out_dir, "")
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct OutputCollisionKey(String);
+
+/// Extension-independent output identity. Two inputs collide when their
+/// canonical parent/output-stem identity matches, since outputs differ only by
+/// extension.
+fn output_key(input: &Path, out_dir: Option<&Path>) -> OutputCollisionKey {
+    let dir = out_dir
+        .map(Path::to_path_buf)
+        .or_else(|| input.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let dir = stable_dir_identity(&dir);
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+    let mut key = dir.to_string_lossy().replace('\\', "/");
+    if !key.is_empty() && !key.ends_with('/') {
+        key.push('/');
+    }
+    key.push_str(&stem);
+    if output_keys_are_case_folded() {
+        key = key.to_lowercase();
+    }
+    OutputCollisionKey(key)
+}
+
+fn output_keys_are_case_folded() -> bool {
+    // Avoid false collision failures on ordinary case-sensitive Unix outputs.
+    // Windows and default macOS volumes are commonly case-insensitive, so fold
+    // there to catch Doc.md/doc.md overwrite races before rendering.
+    cfg!(any(windows, target_os = "macos"))
+}
+
+fn stable_dir_identity(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| normalize_lexical_path(dir))
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::ParentDir) | Some(Component::CurDir) | None => {
+                    normalized.push("..");
+                }
+            },
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Map each input to `Some(first_index)` when an earlier input already claims its
@@ -485,7 +571,8 @@ fn output_key(input: &Path, out_dir: Option<&Path>) -> PathBuf {
 /// order; the earliest input keeps the output and later ones are failed rather
 /// than silently overwritten.
 fn detect_output_collisions(inputs: &[PathBuf], out_dir: Option<&Path>) -> Vec<Option<usize>> {
-    let mut seen: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<OutputCollisionKey, usize> =
+        std::collections::HashMap::new();
     let mut collisions = vec![None; inputs.len()];
     for (i, input) in inputs.iter().enumerate() {
         let key = output_key(input, out_dir);
@@ -540,22 +627,15 @@ fn render_one(
         );
     }
 
-    let mut outputs = Vec::new();
+    let mut rendered = Vec::new();
     if format.wants_html() {
         match render_html(&md, html) {
             Ok(doc) => {
                 let path = output_path(input, out_dir, "html");
-                if let Err(e) = std::fs::write(&path, doc.as_bytes()) {
-                    return failed(
-                        input,
-                        FileErrorKind::Output,
-                        format!("write html failed: {e}"),
-                    );
-                }
-                outputs.push(OutputEntry {
+                rendered.push(PendingOutput {
+                    kind: "html",
                     path,
-                    bytes: doc.len(),
-                    fnv1a64: fnv1a64(doc.as_bytes()),
+                    bytes: doc.into_bytes(),
                 });
             }
             Err(e) => {
@@ -571,17 +651,10 @@ fn render_one(
         match render_pdf(&md, pdf) {
             Ok(bytes) => {
                 let path = output_path(input, out_dir, "pdf");
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    return failed(
-                        input,
-                        FileErrorKind::Output,
-                        format!("write pdf failed: {e}"),
-                    );
-                }
-                outputs.push(OutputEntry {
+                rendered.push(PendingOutput {
+                    kind: "pdf",
                     path,
-                    bytes: bytes.len(),
-                    fnv1a64: fnv1a64(&bytes),
+                    bytes,
                 });
             }
             Err(e) => {
@@ -594,12 +667,66 @@ fn render_one(
         }
     }
 
+    for item in &rendered {
+        if item.path.is_dir() {
+            return failed(
+                input,
+                FileErrorKind::Output,
+                format!("write {} failed: destination is a directory", item.kind),
+            );
+        }
+    }
+
+    let mut outputs = Vec::with_capacity(rendered.len());
+    let mut written = Vec::with_capacity(rendered.len());
+    for item in rendered {
+        let remove_on_cleanup = !item.path.exists();
+        if let Err(e) = std::fs::write(&item.path, &item.bytes) {
+            cleanup_written_outputs(&written);
+            return failed(
+                input,
+                FileErrorKind::Output,
+                format!("write {} failed: {e}", item.kind),
+            );
+        }
+        let bytes_len = item.bytes.len();
+        let fnv1a64 = fnv1a64(&item.bytes);
+        written.push(WrittenOutput {
+            path: item.path.clone(),
+            remove_on_cleanup,
+        });
+        outputs.push(OutputEntry {
+            path: item.path,
+            bytes: bytes_len,
+            fnv1a64,
+        });
+    }
+
     FileEntry {
         input: input.to_path_buf(),
         status: FileStatus::Ok,
         outputs,
         error: None,
         error_kind: None,
+    }
+}
+
+struct PendingOutput {
+    kind: &'static str,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+struct WrittenOutput {
+    path: PathBuf,
+    remove_on_cleanup: bool,
+}
+
+fn cleanup_written_outputs(outputs: &[WrittenOutput]) {
+    for output in outputs {
+        if output.remove_on_cleanup {
+            let _ = std::fs::remove_file(&output.path);
+        }
     }
 }
 
@@ -824,8 +951,10 @@ pub fn run_batch_blocking(
         mem_budget: opts.mem_budget.unwrap_or(0),
         per_job_rss: DEFAULT_PER_JOB_RSS,
     });
-    // Never spawn more workers (or runtime threads) than there are inputs.
-    budget.workers = budget.workers.min(plan.inputs.len().max(1)).max(1);
+    // Never spawn more workers (or runtime threads) than there are inputs, and
+    // keep the public receipt's queue depth aligned with the clamped worker
+    // count.
+    budget = clamp_budget_to_input_count(budget, plan.inputs.len(), c_avail);
 
     let runtime = RuntimeBuilder::multi_thread()
         .worker_threads(budget.workers)
@@ -1126,9 +1255,62 @@ mod tests {
         assert_eq!(collisions[1], Some(0), "second collides with input 0");
         assert_eq!(collisions[2], None, "distinct stem does not collide");
 
+        let case_inputs = vec![PathBuf::from("/a/Doc.md"), PathBuf::from("/b/doc.md")];
+        let case_collisions = detect_output_collisions(&case_inputs, out);
+        if output_keys_are_case_folded() {
+            assert_eq!(
+                case_collisions[1],
+                Some(0),
+                "case variants target the same file on case-insensitive filesystems"
+            );
+        } else {
+            assert!(
+                case_collisions.iter().all(Option::is_none),
+                "case variants should stay distinct on case-sensitive filesystems"
+            );
+        }
+
         // No collisions when writing alongside each input (distinct parents).
         let alongside = detect_output_collisions(&inputs, None);
         assert!(alongside.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn lexical_normalization_preserves_leading_parent_components() {
+        assert_eq!(
+            normalize_lexical_path(Path::new("../../out")),
+            PathBuf::from("../../out")
+        );
+        assert_eq!(
+            normalize_lexical_path(Path::new("a/../../out")),
+            PathBuf::from("../out")
+        );
+        assert_eq!(
+            normalize_lexical_path(Path::new("./a/../out")),
+            PathBuf::from("out")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_collisions_canonicalize_alongside_parent_aliases() {
+        let dir = fresh_dir("collision-alias");
+        let real = dir.join("real");
+        let alias = dir.join("alias");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("doc.md"), "# real").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        let inputs = vec![real.join("doc.md"), alias.join("doc.md")];
+        let collisions = detect_output_collisions(&inputs, None);
+        assert_eq!(collisions[0], None);
+        assert_eq!(
+            collisions[1],
+            Some(0),
+            "symlinked parent aliases must not race the same alongside output"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1255,6 +1437,21 @@ mod tests {
         assert_eq!(
             worker_budget(&inputs(8, 0, BatchMode::Throughput, 0, DEFAULT_PER_JOB_RSS)).queue_depth,
             16
+        );
+    }
+
+    #[test]
+    fn worker_clamp_recomputes_queue_depth_for_receipts() {
+        let budget = WorkerBudget {
+            workers: 8,
+            queue_depth: 16,
+        };
+        assert_eq!(
+            clamp_budget_to_input_count(budget, 2, 8),
+            WorkerBudget {
+                workers: 2,
+                queue_depth: 4
+            }
         );
     }
 
@@ -1413,6 +1610,40 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_dir_depth_cap_records_error_instead_of_recursing_forever() {
+        let dir = fresh_dir("expand-depth");
+        std::fs::write(dir.join("deep.md"), "x").unwrap();
+
+        let mut out = Vec::new();
+        let mut errors = Vec::new();
+        collect_dir_with_depth(&dir, &mut out, &mut errors, MAX_COLLECT_DIR_DEPTH - 1);
+        assert_eq!(out, vec![dir.join("deep.md")]);
+        assert!(errors.is_empty());
+
+        let mut capped_out = Vec::new();
+        let mut capped_errors = Vec::new();
+        collect_dir_with_depth(
+            &dir,
+            &mut capped_out,
+            &mut capped_errors,
+            MAX_COLLECT_DIR_DEPTH,
+        );
+        assert!(
+            capped_out.is_empty(),
+            "capped directory should not be descended"
+        );
+        assert_eq!(capped_errors.len(), 1);
+        assert_eq!(capped_errors[0].path, dir);
+        assert!(
+            capped_errors[0].message.contains("maximum depth"),
+            "got {:?}",
+            capped_errors[0].message
+        );
+
+        let _ = std::fs::remove_dir_all(&capped_errors[0].path);
     }
 
     #[cfg(unix)]
@@ -1610,6 +1841,45 @@ mod tests {
     }
 
     #[test]
+    fn batch_both_render_pdf_failure_leaves_no_unrecorded_html() {
+        let dir = fresh_dir("both-pdf-render-fail");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        let out = dir.join("out");
+
+        let opts = BatchOptions {
+            pdf: PdfOptions {
+                font_assets: bad_font(),
+                ..PdfOptions::default()
+            },
+            ..throughput_opts()
+        };
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Both,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(r.files[0].outputs.is_empty());
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("render pdf failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+        assert!(
+            !out.join("doc.html").exists(),
+            "Both-format render failure must not leave an unrecorded HTML file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn batch_records_write_html_failure_when_output_is_a_directory() {
         let dir = fresh_dir("html-write-fail");
         let input = dir.join("doc.md");
@@ -1664,6 +1934,75 @@ mod tests {
                 .starts_with("write pdf failed:"),
             "got {:?}",
             r.files[0].error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_both_write_pdf_preflight_leaves_no_unrecorded_html() {
+        let dir = fresh_dir("both-pdf-write-fail");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::create_dir_all(out.join("doc.pdf")).unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Both,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(r.files[0].outputs.is_empty());
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("write pdf failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+        assert!(
+            !out.join("doc.html").exists(),
+            "Both-format write preflight failure must not leave unrecorded HTML"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_both_write_pdf_failure_preserves_preexisting_html() {
+        let dir = fresh_dir("both-pdf-write-preserve");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("doc.html"), "old html").unwrap();
+        std::fs::create_dir_all(out.join("doc.pdf")).unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Both,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("write pdf failed:"),
+            "got {:?}",
+            r.files[0].error
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("doc.html")).unwrap(),
+            "old html",
+            "preflight should fail before overwriting a pre-existing HTML output"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

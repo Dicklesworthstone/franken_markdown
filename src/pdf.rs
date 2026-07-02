@@ -5603,9 +5603,9 @@ fn build_pdf(
                 &mut offsets,
                 outline_item_obj(i),
                 &format!(
-                    "<< /Title ({title}) /Parent {parent} 0 R{prev}{next} \
+                    "<< /Title {title} /Parent {parent} 0 R{prev}{next} \
                      /Dest [{page} 0 R /XYZ null {y} null] >>",
-                    title = pdf_escape(&outline.title),
+                    title = pdf_text_string(&outline.title),
                     parent = outline_root_obj,
                     page = page_obj(outline.page_index),
                     y = pdf_num(outline.y),
@@ -5691,7 +5691,7 @@ fn build_pdf(
                 .alt
                 .as_ref()
                 .filter(|alt| !alt.is_empty())
-                .map(|alt| format!(" /Alt ({})", pdf_escape(alt)))
+                .map(|alt| format!(" /Alt {}", pdf_text_string(alt)))
                 .unwrap_or_default();
             // Table header cells advertise a column scope; figures carry a layout
             // bounding box so assistive tech can locate the image region.
@@ -5723,12 +5723,12 @@ fn build_pdf(
     let title_entry = if title.is_empty() {
         String::new()
     } else {
-        format!(" /Title ({})", pdf_escape(&title))
+        format!(" /Title {}", pdf_text_string(&title))
     };
     let author_entry = if author.is_empty() {
         String::new()
     } else {
-        format!(" /Author ({})", pdf_escape(&author))
+        format!(" /Author {}", pdf_text_string(&author))
     };
     let info_date = pdf_info_date(opts.metadata_epoch_seconds);
     append_pdf_object_str(
@@ -5839,8 +5839,8 @@ fn annotation_dict(
     match &annot.target {
         LinkTarget::Uri(uri) => format!(
             "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] \
-             /A << /S /URI /URI ({uri}) >>{sp} >>",
-            uri = pdf_escape(uri),
+             /A << /S /URI /URI {uri} >>{sp} >>",
+            uri = pdf_text_string(uri),
         ),
         LinkTarget::Fragment(id) => {
             let Some(dest) = dest_by_id.get(id.as_str()) else {
@@ -6090,10 +6090,35 @@ fn slug(text: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
-fn pdf_escape(s: &str) -> String {
-    let mut o = String::with_capacity(s.len() + 4);
-    append_pdf_string_escaped(&mut o, s);
-    o
+/// Encode `s` as a complete PDF string-object token, delimiters included.
+///
+/// Printable/ASCII text becomes a literal `(...)` string (the compact common
+/// case, byte-identical to the historical output). Any string containing a
+/// non-ASCII scalar becomes a UTF-16BE hex string `<FEFF...>` with a leading
+/// byte-order mark. This matters because a PDF literal `(...)` string is decoded
+/// as PDFDocEncoding, so pushing raw UTF-8 bytes for U+0080..=U+00FF produced
+/// mojibake (`é` → `Ã©`) and U+0100.. was silently replaced with `?`. UTF-16BE is
+/// the portable way to carry Unicode in document metadata, outline titles,
+/// `/Alt` accessibility text, and `/URI` values. The returned value INCLUDES the
+/// delimiters, so callers must not add their own.
+fn pdf_text_string(s: &str) -> String {
+    if s.is_ascii() {
+        let mut o = String::with_capacity(s.len() + 2);
+        o.push('(');
+        append_pdf_string_escaped(&mut o, s);
+        o.push(')');
+        o
+    } else {
+        // UTF-16BE hex string: a `FEFF` BOM then two big-endian bytes per code
+        // unit (surrogate pairs for astral scalars, which `encode_utf16` yields).
+        let mut o = String::with_capacity(s.len() * 2 + 6);
+        o.push_str("<FEFF");
+        for unit in s.encode_utf16() {
+            let _ = write!(o, "{unit:04X}");
+        }
+        o.push('>');
+        o
+    }
 }
 
 fn append_pdf_string_escaped(out: &mut String, s: &str) {
@@ -6129,7 +6154,7 @@ mod pdf_writer_tests {
     use super::{
         append_decimal_u64_string, append_decimal_usize, append_hex_u16, append_i32_string,
         append_pdf_num, append_pdf_object_str, append_pdf_string_escaped, append_xref_in_use_row,
-        append_xref_offset,
+        append_xref_offset, pdf_text_string,
     };
 
     #[test]
@@ -6248,6 +6273,23 @@ mod pdf_writer_tests {
         append_pdf_string_escaped(&mut out, "a(b)c\\d\re\n\u{2206}");
 
         assert_eq!(out, "a\\(b\\)c\\\\d\\re ?");
+    }
+
+    #[test]
+    fn pdf_text_string_keeps_ascii_literal_and_encodes_unicode_as_utf16be() {
+        // Pure ASCII stays a literal `(...)` string, byte-identical to the old
+        // output (so ASCII metadata goldens do not change), with the same escapes.
+        assert_eq!(pdf_text_string("Plain Title"), "(Plain Title)");
+        assert_eq!(pdf_text_string("a(b)c\\d"), "(a\\(b\\)c\\\\d)");
+        assert_eq!(pdf_text_string(""), "()");
+
+        // Any non-ASCII scalar switches to a UTF-16BE hex string with a BOM, so
+        // U+0080..=U+00FF no longer mojibakes and U+0100.. is no longer dropped to
+        // `?`. `é` = U+00E9, em dash = U+2014.
+        assert_eq!(pdf_text_string("é"), "<FEFF00E9>");
+        assert_eq!(pdf_text_string("A—B"), "<FEFF004120140042>");
+        // Astral scalar (U+1F600) becomes a surrogate pair D83D DE00.
+        assert_eq!(pdf_text_string("\u{1F600}"), "<FEFFD83DDE00>");
     }
 }
 

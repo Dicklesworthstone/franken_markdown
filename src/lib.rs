@@ -374,6 +374,7 @@ pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>>
 /// # Errors
 /// See [`render_pdf_document`].
 pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
+    opts.font_assets.validate()?;
     pdf::render_profiled(doc, opts)
 }
 
@@ -399,7 +400,10 @@ pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FontAssetSlot, FontAssets, MAX_FONT_ASSET_BYTES, VERSION};
+    use super::{
+        FontAssetSlot, FontAssets, MAX_FONT_ASSET_BYTES, PdfOptions, VERSION, parse_markdown,
+        render_pdf_document_profiled,
+    };
 
     #[test]
     fn version_constant_matches_package_metadata() {
@@ -418,6 +422,25 @@ mod tests {
                 .set_slot(FontAssetSlot::BodyRegular, too_big)
                 .is_err(),
             "font bytes over the cap must be rejected"
+        );
+    }
+
+    #[test]
+    fn profiled_pdf_render_validates_font_assets_like_the_normal_path() {
+        // The profiled entry point must apply the same font validation (and size
+        // cap) as `render_pdf_document`; a directly-constructed FontAssets with
+        // invalid bytes bypasses `set_slot`, so the render call is the guard.
+        let doc = parse_markdown("# Hi");
+        let opts = PdfOptions {
+            font_assets: FontAssets {
+                body_regular: Some(vec![0u8; 8]),
+                ..FontAssets::default()
+            },
+            ..PdfOptions::default()
+        };
+        assert!(
+            render_pdf_document_profiled(&doc, &opts).is_err(),
+            "profiled PDF render must reject invalid host font assets"
         );
     }
 }

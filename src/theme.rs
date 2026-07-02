@@ -391,6 +391,13 @@ fn page_json(page: &PageStyle) -> String {
 }
 
 fn json_num(value: f32) -> String {
+    // A non-finite value would serialize to the bare tokens `NaN`/`inf`/`-inf`,
+    // which are invalid JSON. A library caller can place such a value in a
+    // directly-constructed Theme, so fold it to `0` (matching the HTML writer's
+    // `css_num`) rather than emit a document that no JSON parser accepts.
+    if !value.is_finite() {
+        return "0".to_string();
+    }
     let mut s = format!("{value:.3}");
     while s.ends_with('0') {
         s.pop();
@@ -415,4 +422,23 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::json_num;
+
+    #[test]
+    fn json_num_folds_non_finite_to_zero_and_keeps_finite() {
+        // A non-finite float would otherwise serialize to the invalid JSON tokens
+        // `NaN`/`inf`/`-inf`; fold them to `0` so `to_config_json` always parses.
+        assert_eq!(json_num(f32::NAN), "0");
+        assert_eq!(json_num(f32::INFINITY), "0");
+        assert_eq!(json_num(f32::NEG_INFINITY), "0");
+        // Finite values are unchanged (trailing zeros trimmed).
+        assert_eq!(json_num(72.0), "72");
+        assert_eq!(json_num(1.5), "1.5");
+        assert_eq!(json_num(0.0), "0");
+    }
 }

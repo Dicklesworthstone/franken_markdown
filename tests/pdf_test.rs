@@ -362,6 +362,50 @@ fn pdf_metadata_is_deterministic_even_without_title() {
     assert!(text.contains("/ModDate (D:19700101000000Z)"));
 }
 
+fn trailer_file_id(text: &str) -> (&str, &str) {
+    let marker = "/ID [<";
+    let start = text.find(marker).expect("PDF trailer should include /ID") + marker.len();
+    let first = &text[start..start + 32];
+    let rest = &text[start + 32..];
+    assert!(rest.starts_with("> <"), "unexpected /ID separator: {rest}");
+    let second = &rest[3..35];
+    assert!(
+        rest[35..].starts_with(">]"),
+        "unexpected /ID terminator: {}",
+        &rest[35..]
+    );
+    (first, second)
+}
+
+#[test]
+fn pdf_trailer_has_deterministic_content_sensitive_file_id() {
+    let opts = PdfOptions {
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    let first_pdf = render_pdf("Body.", &opts).unwrap();
+    let second_pdf = render_pdf("Body.", &opts).unwrap();
+    let changed_pdf = render_pdf("Different body.", &opts).unwrap();
+
+    assert_eq!(first_pdf, second_pdf, "same input should stay byte-stable");
+
+    let text = as_text(&first_pdf);
+    let (first, second) = trailer_file_id(&text);
+    assert_eq!(
+        first, second,
+        "generated PDFs use one stable file identifier"
+    );
+    assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(
+        first, "00000000000000000000000000000000",
+        "file ID should not be the all-zero sentinel"
+    );
+
+    let changed_text = as_text(&changed_pdf);
+    let (changed, _) = trailer_file_id(&changed_text);
+    assert_ne!(first, changed, "file ID should reflect PDF content");
+}
+
 #[test]
 fn pdf_metadata_honors_explicit_epoch_seconds() {
     let opts = PdfOptions {

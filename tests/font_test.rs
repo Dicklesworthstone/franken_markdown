@@ -333,6 +333,51 @@ fn subsets_composite_glyphs_when_dejavu_available() {
     }
 }
 
+#[test]
+fn subset_strips_composite_glyph_instructions() {
+    let font = Font::parse(build_synthetic_composite_instruction_font()).unwrap();
+    let sub = font.subset(&['A']).expect("subset produced");
+    let re = Font::parse(sub).expect("subset re-parses");
+    let g = re.glyph_index('A');
+
+    assert_ne!(g, 0, "subset maps synthetic composite glyph");
+    assert!(re.is_composite(g), "composite glyph survives subsetting");
+    let data = re.glyph_data(g).expect("subset exposes composite data");
+    let mut p = 10usize;
+    let mut component_count = 0usize;
+    loop {
+        let flags = rd_u16(data, p);
+        assert_eq!(
+            flags & 0x0100,
+            0,
+            "WE_HAVE_INSTRUCTIONS must be cleared from every component record"
+        );
+        component_count += 1;
+        p += 4;
+        p += if flags & 0x0001 != 0 { 4 } else { 2 };
+        if flags & 0x0008 != 0 {
+            p += 2;
+        } else if flags & 0x0040 != 0 {
+            p += 4;
+        } else if flags & 0x0080 != 0 {
+            p += 8;
+        }
+        if flags & 0x0020 == 0 {
+            break;
+        }
+    }
+    assert_eq!(component_count, 2, "synthetic glyph has two components");
+    assert!(
+        data.len() <= 28,
+        "stripped composite should contain header and two component records, got {} bytes",
+        data.len()
+    );
+    assert!(
+        !data.windows(3).any(|w| w == [0xAA, 0xBB, 0xCC]),
+        "subset glyph data must not retain stripped instruction bytes"
+    );
+}
+
 // ---- synthetic font builder -------------------------------------------------
 
 fn be16(v: u16) -> [u8; 2] {
@@ -395,6 +440,70 @@ fn build_synthetic_truncated_composite_font_with_end(gid1_end: u32) -> Vec<u8> {
     glyf.extend_from_slice(&[0u8; 8]);
     glyf.push(0x00);
     glyf.extend_from_slice(&[0x20, 0x12, 0x34, 0x56, 0x78]);
+
+    let mut loca = Vec::new();
+    for off in [0u32, 0, gid1_end] {
+        loca.extend_from_slice(&be32(off));
+    }
+
+    assemble_synthetic_font(vec![
+        (b"cmap", cmap),
+        (b"glyf", glyf),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+        (b"loca", loca),
+        (b"maxp", maxp),
+    ])
+}
+
+fn build_synthetic_composite_instruction_font() -> Vec<u8> {
+    let mut head = vec![0u8; 54];
+    head[18..20].copy_from_slice(&be16(1000));
+    head[50..52].copy_from_slice(&be16(1));
+
+    let mut maxp = Vec::new();
+    maxp.extend_from_slice(&be32(0x0000_5000));
+    maxp.extend_from_slice(&be16(2));
+
+    let mut hhea = vec![0u8; 36];
+    hhea[4..6].copy_from_slice(&be16(800));
+    hhea[6..8].copy_from_slice(&be16((-200i16) as u16));
+    hhea[34..36].copy_from_slice(&be16(2));
+
+    let mut hmtx = Vec::new();
+    for aw in [500u16, 600] {
+        hmtx.extend_from_slice(&be16(aw));
+        hmtx.extend_from_slice(&be16(0));
+    }
+
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(1));
+    cmap.extend_from_slice(&be16(3));
+    cmap.extend_from_slice(&be16(10));
+    cmap.extend_from_slice(&be32(12));
+    cmap.extend_from_slice(&be16(12));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be32(16 + 12));
+    cmap.extend_from_slice(&be32(0));
+    cmap.extend_from_slice(&be32(1));
+    cmap.extend_from_slice(&be32(65));
+    cmap.extend_from_slice(&be32(65));
+    cmap.extend_from_slice(&be32(1));
+
+    let mut glyf = Vec::new();
+    glyf.extend_from_slice(&(-1i16).to_be_bytes()); // composite glyph
+    glyf.extend_from_slice(&[0u8; 8]); // bbox
+    glyf.extend_from_slice(&be16(0x0121)); // ARG_WORDS | MORE | WE_HAVE_INSTRUCTIONS
+    glyf.extend_from_slice(&be16(0)); // component glyph id
+    glyf.extend_from_slice(&[0u8; 4]); // word args
+    glyf.extend_from_slice(&be16(0x0101)); // ARG_WORDS | WE_HAVE_INSTRUCTIONS
+    glyf.extend_from_slice(&be16(0)); // component glyph id
+    glyf.extend_from_slice(&[0u8; 4]); // word args
+    glyf.extend_from_slice(&be16(3)); // instructionLength
+    glyf.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // instructions to strip
+    let gid1_end = glyf.len() as u32;
 
     let mut loca = Vec::new();
     for off in [0u32, 0, gid1_end] {

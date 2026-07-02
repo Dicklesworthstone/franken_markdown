@@ -26,8 +26,8 @@ use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit,
-    ParagraphItem, Penalty, StyledText, TextBox, break_paragraph, default_interword_glue,
-    is_breakable_whitespace, measure_text_with_pairs,
+    ParagraphItem, Penalty, StyledText, TextBox, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph, default_interword_glue, is_breakable_whitespace,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -97,7 +97,7 @@ struct Seg {
     fill: Fill,
     /// `~~strikethrough~~` run: draw a thin line through the run's middle.
     strike: bool,
-    /// Layout (non-kerned) advance sum, used to size the link underline.
+    /// Shaped layout advance, used to size decorations and subsequent segments.
     width: f32,
 }
 
@@ -251,13 +251,66 @@ impl Default for FlowMark {
     }
 }
 
+/// One source face plus the OpenType layout tables used by PDF shaping.
+struct Face {
+    font: Font,
+    kern: Kerning,
+    lig: Ligatures,
+}
+
+impl Face {
+    fn load(slot: FontAssetSlot, bytes: &[u8]) -> Result<Self> {
+        let font = parse_face(slot, bytes)?;
+        let kern = font.gpos_kerning();
+        let lig = font.gsub_ligatures();
+        Ok(Self { font, kern, lig })
+    }
+
+    fn glyph_advance_1000(&self, glyph: u16) -> u32 {
+        if self.font.units_per_em == 0 {
+            return 0;
+        }
+        self.font.advance_width(glyph) as u32 * 1000 / self.font.units_per_em as u32
+    }
+
+    fn glyph_index(&self, ch: char) -> u16 {
+        self.font.glyph_index(ch)
+    }
+
+    fn shaped_width(&self, text: &str, size: FontSize) -> LayoutUnit {
+        let glyphs: Vec<u16> = text.chars().map(|ch| self.font.glyph_index(ch)).collect();
+        let shaped = self.lig.substitute(&glyphs);
+        self.shaped_glyph_width(&shaped, size)
+    }
+
+    fn shaped_width_points(&self, text: &str, size: f32) -> f32 {
+        self.shaped_width(text, font_size_of(size)).to_points_f32()
+    }
+
+    fn shaped_glyph_width(&self, glyphs: &[u16], size: FontSize) -> LayoutUnit {
+        if self.font.units_per_em == 0 {
+            return LayoutUnit::ZERO;
+        }
+        let upm = i32::from(self.font.units_per_em);
+        let mut total = LayoutUnit::ZERO;
+        for (idx, &glyph) in glyphs.iter().enumerate() {
+            total += advance_to_layout_units(self.glyph_advance_1000(glyph), size);
+            if let Some(&next) = glyphs.get(idx + 1) {
+                let adjustment_1000 = i32::from(self.kern.pair(glyph, next)) * 1000 / upm;
+                total += adjustment_to_layout_units(adjustment_1000, size);
+            }
+        }
+        total.max(LayoutUnit::ZERO)
+    }
+}
+
 /// The source faces resolved from the theme family + the registry.
 struct Faces {
-    body: Font,
-    bold: Font,
-    italic: Font,
-    bolditalic: Font,
-    mono: Font,
+    body: Face,
+    bold: Face,
+    italic: Face,
+    bolditalic: Face,
+    mono: Face,
 }
 
 /// Sanitized page geometry derived from the shared theme model.
@@ -336,30 +389,30 @@ impl Faces {
     fn load(opts: &PdfOptions) -> Result<Self> {
         let fam = opts.theme.font;
         Ok(Self {
-            body: parse_face(
+            body: Face::load(
                 FontAssetSlot::BodyRegular,
                 body_font_bytes(&opts.font_assets, fam, FontStyle::Regular),
             )?,
-            bold: parse_face(
+            bold: Face::load(
                 FontAssetSlot::BodyBold,
                 body_font_bytes(&opts.font_assets, fam, FontStyle::Bold),
             )?,
-            italic: parse_face(
+            italic: Face::load(
                 FontAssetSlot::BodyItalic,
                 body_font_bytes(&opts.font_assets, fam, FontStyle::Italic),
             )?,
-            bolditalic: parse_face(
+            bolditalic: Face::load(
                 FontAssetSlot::BodyBoldItalic,
                 body_font_bytes(&opts.font_assets, fam, FontStyle::BoldItalic),
             )?,
-            mono: parse_face(
+            mono: Face::load(
                 FontAssetSlot::MonoRegular,
                 mono_font_bytes(&opts.font_assets, FontStyle::Regular),
             )?,
         })
     }
 
-    fn get(&self, slot: u8) -> &Font {
+    fn face(&self, slot: u8) -> &Face {
         match slot {
             F_BOLD => &self.bold,
             F_ITALIC => &self.italic,
@@ -369,9 +422,21 @@ impl Faces {
         }
     }
 
+    fn get(&self, slot: u8) -> &Font {
+        &self.face(slot).font
+    }
+
     /// Advance of `c` in 1/1000 em (PDF text space) for the slot's face.
     fn advance(&self, slot: u8, c: char) -> f32 {
         self.get(slot).advance_1000(c) as f32
+    }
+
+    fn shaped_width(&self, slot: u8, text: &str, size: FontSize) -> LayoutUnit {
+        self.face(slot).shaped_width(text, size)
+    }
+
+    fn shaped_width_points(&self, slot: u8, text: &str, size: f32) -> f32 {
+        self.face(slot).shaped_width_points(text, size)
     }
 }
 
@@ -2380,15 +2445,44 @@ fn font_size_of(size: f32) -> FontSize {
     FontSize::from_milli_points((size * 1000.0).round() as u32)
 }
 
-/// Per-slot box width: sum each slot-run via the slot's own face (which already
-/// `impl PairMetrics`). Cross-slot kerning is intentionally dropped to match the
-/// renderer, which applies GPOS per-segment (per-slot) only.
+/// Per-slot box width: shape each same-segment run with that slot's GSUB
+/// ligatures and GPOS kerning, matching the content-stream text path. Cross-slot
+/// kerning is intentionally dropped because the renderer emits separate text
+/// segments for distinct faces/link/strike groups.
 fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
-    let mut w = LayoutUnit::ZERO;
-    for t in runs {
-        w += measure_text_with_pairs(faces.get(t.slot), &t.text, fs);
+    let mut total = LayoutUnit::ZERO;
+    let mut current: Option<TokMeasureRun> = None;
+    for tok in runs {
+        match &mut current {
+            Some(run)
+                if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
+            {
+                run.text.push_str(&tok.text);
+            }
+            _ => {
+                if let Some(run) = current.take() {
+                    total += faces.shaped_width(run.slot, &run.text, fs);
+                }
+                current = Some(TokMeasureRun {
+                    slot: tok.slot,
+                    link: tok.link.clone(),
+                    strike: tok.strike,
+                    text: tok.text.clone(),
+                });
+            }
+        }
     }
-    w
+    if let Some(run) = current {
+        total += faces.shaped_width(run.slot, &run.text, fs);
+    }
+    total
+}
+
+struct TokMeasureRun {
+    slot: u8,
+    link: Option<LinkTarget>,
+    strike: bool,
+    text: String,
 }
 
 /// Build a TeX item stream from styled tokens, plus a parallel token map so each
@@ -2448,7 +2542,7 @@ fn build_paragraph<'a>(
             }
             // Only emit glue *between* two words (collapses runs of spaces).
             if matches!(items.last(), Some(ParagraphItem::Box(_))) {
-                let gw = measure_text_with_pairs(faces.get(tok.slot), " ", fs);
+                let gw = faces.shaped_width(tok.slot, " ", fs);
                 items.push(ParagraphItem::Glue(default_interword_glue(gw)));
                 item_toks.push(vec![tok.clone()]);
                 break_toks.push(None);
@@ -2560,7 +2654,7 @@ fn flush_pdf_word(
                 strike: tok.strike,
             });
             let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
-                measure_text_with_pairs(cx.faces.get(tok.slot), "-", cx.fs)
+                cx.faces.shaped_width(tok.slot, "-", cx.fs)
             });
             push_pdf_word_box(items, item_toks, break_toks, part, cx.fs, cx.faces);
             items.push(ParagraphItem::Penalty(Penalty {
@@ -2960,7 +3054,7 @@ fn glue_flex(glue: Glue, delta: i64) -> i64 {
 }
 
 /// Group consecutive same-slot, same-link tokens into positioned segments,
-/// accumulating each segment's layout (non-kerned) advance width.
+/// accumulating each segment's shaped layout advance width.
 fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
     let line_toks = toks
         .iter()
@@ -2980,11 +3074,13 @@ fn build_segs_adjusted(toks: &[LineTok], left: f32, size: f32, faces: &Faces) ->
     for line_tok in toks {
         let tok = &line_tok.tok;
         let tw = token_width(tok, size, faces);
-        let advance = tw + line_tok.extra_advance;
+        let mut advance = tw + line_tok.extra_advance;
         match &mut cur {
             Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
+                let old_width = s.width;
                 s.text.push_str(&tok.text);
-                s.width += advance;
+                s.width = faces.shaped_width_points(s.slot, &s.text, size) + line_tok.extra_advance;
+                advance = s.width - old_width;
             }
             _ => {
                 if let Some(s) = cur.take() {
@@ -3329,12 +3425,7 @@ fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
 }
 
 fn token_width(tok: &Tok, size: f32, faces: &Faces) -> f32 {
-    tok.text
-        .chars()
-        .map(|c| faces.advance(tok.slot, c))
-        .sum::<f32>()
-        * size
-        / 1000.0
+    faces.shaped_width_points(tok.slot, &tok.text, size)
 }
 
 fn gap(out: &mut [Line], amount: f32) {
@@ -3387,8 +3478,9 @@ fn serialize(
     let mut shape_cache_misses = 0usize;
     let mut shape_cache_miss_bytes = 0usize;
     for &slot in &used_slots {
-        let source = faces.get(slot);
-        let lig = source.gsub_ligatures();
+        let face = faces.face(slot);
+        let source = &face.font;
+        let lig = &face.lig;
         let collect_started = profiler.checkpoint();
         let mut chars: BTreeSet<char> = BTreeSet::new();
         let mut shaped_glyphs: BTreeSet<u16> = BTreeSet::new();
@@ -3410,7 +3502,7 @@ fn serialize(
             } else {
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += seg.text.len();
-                slot_cache.insert(seg.text.clone(), shape_run(source, &lig, &seg.text));
+                slot_cache.insert(seg.text.clone(), shape_run(source, lig, &seg.text));
             }
             let Some(shaped) = slot_cache.get(seg.text.as_str()) else {
                 continue;
@@ -3462,8 +3554,8 @@ fn serialize(
             slot,
             bytes,
             font,
-            kern: source.gpos_kerning(),
-            lig,
+            kern: face.kern.clone(),
+            lig: face.lig.clone(),
             map,
             cmap_chars: keep,
             lig_uni,
@@ -3639,7 +3731,12 @@ fn serialize(
         let mut current_fill = Fill::Black;
         {
             let (r, g, b) = palette.fg;
-            body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
+            body.push_str(&format!(
+                "{} {} {} rg\n",
+                pdf_fixed3(r),
+                pdf_fixed3(g),
+                pdf_fixed3(b)
+            ));
         }
         // Per-page logical-row tracking for table cells: a new table fragment
         // (or a new logical row within it) is detected from the table flow group
@@ -3676,10 +3773,14 @@ fn serialize(
                     palette.rule
                 };
                 body.push_str(&format!(
-                    "/Artifact BMC\n{rr:.3} {rg:.3} {rb:.3} RG 0.7 w \
-                     {x:.2} {yy:.2} m {x2:.2} {yy:.2} l S\nEMC\n",
-                    x = line.rule_x,
-                    yy = y + line.size * 0.5,
+                    "/Artifact BMC\n{rr} {rg} {rb} RG 0.7 w \
+                     {x} {yy} m {x2} {yy} l S\nEMC\n",
+                    rr = pdf_fixed3(rr),
+                    rg = pdf_fixed3(rg),
+                    rb = pdf_fixed3(rb),
+                    x = pdf_fixed2(line.rule_x),
+                    yy = pdf_fixed2(y + line.size * 0.5),
+                    x2 = pdf_fixed2(x2),
                 ));
             } else if !line.table_cols.is_empty() {
                 // Table content line: emit one marked-content cell per seg so the
@@ -4318,14 +4419,20 @@ fn draw_seg(
     };
     if seg.fill != *current_fill {
         let (r, g, b) = fill_rgb(seg.fill, palette);
-        body.push_str(&format!("{r:.3} {g:.3} {b:.3} rg\n"));
+        body.push_str(&format!(
+            "{} {} {} rg\n",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
         *current_fill = seg.fill;
     }
     body.push_str(&format!(
-        "BT /F{f} {s:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm {tj} TJ ET\n",
+        "BT /F{f} {s} Tf 1 0 0 1 {x} {y} Tm {tj} TJ ET\n",
         f = seg.slot,
-        s = size,
-        x = seg.x,
+        s = pdf_fixed2(size),
+        x = pdf_fixed2(seg.x),
+        y = pdf_fixed2(y),
         tj = kerned_tj(&face.map, source, &face.kern, shaped),
     ));
     // Strikethrough: a thin stroke through the run's middle, in the text's own
@@ -4335,9 +4442,14 @@ fn draw_seg(
         let sy = y + size * 0.30;
         let sw = (size * 0.06).max(0.4);
         body.push_str(&format!(
-            "{r:.3} {g:.3} {b:.3} RG {sw:.2} w {x1:.2} {sy:.2} m {x2:.2} {sy:.2} l S\n",
-            x1 = seg.x,
-            x2 = seg.x + seg.width,
+            "{r} {g} {b} RG {sw} w {x1} {sy} m {x2} {sy} l S\n",
+            r = pdf_fixed3(r),
+            g = pdf_fixed3(g),
+            b = pdf_fixed3(b),
+            sw = pdf_fixed2(sw),
+            x1 = pdf_fixed2(seg.x),
+            sy = pdf_fixed2(sy),
+            x2 = pdf_fixed2(seg.x + seg.width),
         ));
     }
     if let Some(target) = &seg.link {
@@ -4346,10 +4458,18 @@ fn draw_seg(
         let uy = y - size * 0.12;
         let uw = (size * 0.06).max(0.4);
         body.push_str(&format!(
-            "{r:.3} {g:.3} {b:.3} RG {uw:.2} w \
-             {x1:.2} {uy:.2} m {x2:.2} {uy:.2} l S\n{fr:.3} {fg2:.3} {fb:.3} rg\n",
-            x1 = seg.x,
-            x2 = seg.x + seg.width,
+            "{r} {g} {b} RG {uw} w \
+             {x1} {uy} m {x2} {uy} l S\n{fr} {fg2} {fb} rg\n",
+            r = pdf_fixed3(r),
+            g = pdf_fixed3(g),
+            b = pdf_fixed3(b),
+            uw = pdf_fixed2(uw),
+            x1 = pdf_fixed2(seg.x),
+            uy = pdf_fixed2(uy),
+            x2 = pdf_fixed2(seg.x + seg.width),
+            fr = pdf_fixed3(fr),
+            fg2 = pdf_fixed3(fg2),
+            fb = pdf_fixed3(fb),
         ));
         *current_fill = Fill::Black;
         if seg.width > 0.0 {
@@ -4904,7 +5024,14 @@ fn flush_quote_bars(
     let (br, bg, bb) = bar;
     for (x, top, bot) in acc.values() {
         content.push_str(&format!(
-            "{br:.3} {bg:.3} {bb:.3} RG 2.50 w {x:.2} {top:.2} m {x:.2} {bot:.2} l S\n"
+            "{} {} {} RG 2.50 w {} {} m {} {} l S\n",
+            pdf_fixed3(br),
+            pdf_fixed3(bg),
+            pdf_fixed3(bb),
+            pdf_fixed2(*x),
+            pdf_fixed2(*top),
+            pdf_fixed2(*x),
+            pdf_fixed2(*bot),
         ));
     }
     acc.clear();
@@ -4914,6 +5041,11 @@ fn flush_quote_bars(
 /// color never leaks into following text. Built from 4 lines + 4 cubic Beziers
 /// (kappa = 0.5523). Returns an empty string for degenerate rectangles.
 fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f32)) -> String {
+    let x0 = finite_pdf_scalar(x0);
+    let y0 = finite_pdf_scalar(y0);
+    let x1 = finite_pdf_scalar(x1);
+    let y1 = finite_pdf_scalar(y1);
+    let r = finite_pdf_scalar(r);
     if x1 <= x0 || y1 <= y0 {
         return String::new();
     }
@@ -4921,27 +5053,34 @@ fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f
     let k = r * 0.5523; // circle -> bezier magic constant
     let (rc, gc, bc) = c;
     format!(
-        "q {rc:.3} {gc:.3} {bc:.3} rg \
-         {xa:.2} {y0:.2} m {xb:.2} {y0:.2} l \
-         {br1x:.2} {y0:.2} {x1:.2} {br2y:.2} {x1:.2} {ya:.2} c \
-         {x1:.2} {yb:.2} l \
-         {x1:.2} {tr1y:.2} {tr2x:.2} {y1:.2} {xb:.2} {y1:.2} c \
-         {xa:.2} {y1:.2} l \
-         {tl1x:.2} {y1:.2} {x0:.2} {tl2y:.2} {x0:.2} {yb:.2} c \
-         {x0:.2} {ya:.2} l \
-         {x0:.2} {bl1y:.2} {bl2x:.2} {y0:.2} {xa:.2} {y0:.2} c f Q\n",
-        xa = x0 + r,
-        xb = x1 - r,
-        ya = y0 + r,
-        yb = y1 - r,
-        br1x = x1 - r + k,
-        br2y = y0 + r - k,
-        tr1y = y1 - r + k,
-        tr2x = x1 - r + k,
-        tl1x = x0 + r - k,
-        tl2y = y1 - r + k,
-        bl1y = y0 + r - k,
-        bl2x = x0 + r - k,
+        "q {rc} {gc} {bc} rg \
+         {xa} {y0} m {xb} {y0} l \
+         {br1x} {y0} {x1} {br2y} {x1} {ya} c \
+         {x1} {yb} l \
+         {x1} {tr1y} {tr2x} {y1} {xb} {y1} c \
+         {xa} {y1} l \
+         {tl1x} {y1} {x0} {tl2y} {x0} {yb} c \
+         {x0} {ya} l \
+         {x0} {bl1y} {bl2x} {y0} {xa} {y0} c f Q\n",
+        rc = pdf_fixed3(rc),
+        gc = pdf_fixed3(gc),
+        bc = pdf_fixed3(bc),
+        x0 = pdf_fixed2(x0),
+        y0 = pdf_fixed2(y0),
+        x1 = pdf_fixed2(x1),
+        y1 = pdf_fixed2(y1),
+        xa = pdf_fixed2(x0 + r),
+        xb = pdf_fixed2(x1 - r),
+        ya = pdf_fixed2(y0 + r),
+        yb = pdf_fixed2(y1 - r),
+        br1x = pdf_fixed2(x1 - r + k),
+        br2y = pdf_fixed2(y0 + r - k),
+        tr1y = pdf_fixed2(y1 - r + k),
+        tr2x = pdf_fixed2(x1 - r + k),
+        tl1x = pdf_fixed2(x0 + r - k),
+        tl2y = pdf_fixed2(y1 - r + k),
+        bl1y = pdf_fixed2(y0 + r - k),
+        bl2x = pdf_fixed2(x0 + r - k),
     )
 }
 
@@ -5758,11 +5897,16 @@ fn build_pdf(
     for offset in offsets.iter().take(total_objs + 1).skip(1) {
         append_xref_in_use_row(&mut buf, *offset);
     }
+    let file_id = pdf_file_id(&buf, size, info_obj, xref_pos);
     buf.extend_from_slice(b"trailer\n<< /Size ");
     append_decimal_usize(&mut buf, size);
     buf.extend_from_slice(b" /Root 1 0 R /Info ");
     append_decimal_usize(&mut buf, info_obj);
-    buf.extend_from_slice(b" 0 R >>\nstartxref\n");
+    buf.extend_from_slice(b" 0 R /ID [");
+    append_pdf_hex_string(&mut buf, &file_id);
+    buf.push(b' ');
+    append_pdf_hex_string(&mut buf, &file_id);
+    buf.extend_from_slice(b"] >>\nstartxref\n");
     append_decimal_usize(&mut buf, xref_pos);
     buf.extend_from_slice(b"\n%%EOF\n");
     profiler.record_since(
@@ -5780,6 +5924,56 @@ fn build_pdf(
         build_started,
     );
     Ok(buf)
+}
+
+fn pdf_file_id(pre_trailer: &[u8], size: usize, info_obj: usize, xref_pos: usize) -> [u8; 16] {
+    let mut first = FNV_OFFSET;
+    fnv1a64_update(&mut first, b"franken_markdown/pdf-id/v1/first");
+    fnv1a64_update_usize(&mut first, size);
+    fnv1a64_update_usize(&mut first, info_obj);
+    fnv1a64_update_usize(&mut first, xref_pos);
+    fnv1a64_update(&mut first, pre_trailer);
+
+    let mut second = FNV_OFFSET ^ 0x9e37_79b9_7f4a_7c15;
+    fnv1a64_update(&mut second, b"franken_markdown/pdf-id/v1/second");
+    fnv1a64_update_u64(&mut second, first);
+    fnv1a64_update_usize(&mut second, xref_pos);
+    fnv1a64_update_usize(&mut second, info_obj);
+    fnv1a64_update_usize(&mut second, size);
+    fnv1a64_update(&mut second, pre_trailer);
+
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&first.to_be_bytes());
+    id[8..].copy_from_slice(&second.to_be_bytes());
+    id
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+fn fnv1a64_update_u64(hash: &mut u64, value: u64) {
+    fnv1a64_update(hash, &value.to_be_bytes());
+}
+
+fn fnv1a64_update_usize(hash: &mut u64, value: usize) {
+    fnv1a64_update_u64(hash, value as u64);
+}
+
+fn append_pdf_hex_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push(b'<');
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize]);
+        out.push(HEX[(byte & 0x0F) as usize]);
+    }
+    out.push(b'>');
 }
 
 fn pdf_info_date(epoch_seconds: Option<u64>) -> String {
@@ -6141,8 +6335,20 @@ fn pdf_num(value: f32) -> String {
     s
 }
 
+fn finite_pdf_scalar(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+fn pdf_fixed2(value: f32) -> String {
+    format!("{:.2}", finite_pdf_scalar(value))
+}
+
+fn pdf_fixed3(value: f32) -> String {
+    format!("{:.3}", finite_pdf_scalar(value))
+}
+
 fn text_width(s: &str, size: f32, font: u8, faces: &Faces) -> f32 {
-    s.chars().map(|c| faces.advance(font, c)).sum::<f32>() * size / 1000.0
+    faces.shaped_width_points(font, s, size)
 }
 
 fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
@@ -6152,10 +6358,116 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        append_decimal_u64_string, append_decimal_usize, append_hex_u16, append_i32_string,
-        append_pdf_num, append_pdf_object_str, append_pdf_string_escaped, append_xref_in_use_row,
-        append_xref_offset, pdf_text_string,
+        F_BODY, F_BOLD, Faces, Tok, append_decimal_u64_string, append_decimal_usize,
+        append_hex_u16, append_i32_string, append_pdf_num, append_pdf_object_str,
+        append_pdf_string_escaped, append_xref_in_use_row, append_xref_offset, build_segs,
+        font_size_of, measure_word, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
+        shape_run,
     };
+
+    #[test]
+    fn pdf_word_measurement_uses_gpos_kerning() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let tok = Tok {
+            text: "AVATAR".to_string(),
+            slot: F_BODY,
+            space: false,
+            hard_break: false,
+            link: None,
+            strike: false,
+        };
+
+        let shaped = measure_word(std::slice::from_ref(&tok), fs, &faces);
+        let advance_only = crate::layout::measure_text(faces.get(F_BODY), &tok.text, fs);
+
+        assert!(
+            shaped < advance_only,
+            "GPOS A/V-style pairs should tighten PDF layout measurement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_word_measurement_uses_gsub_ligature_advances() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let face = faces.face(F_BODY);
+        let fs = font_size_of(11.0);
+        let tok = Tok {
+            text: "fi".to_string(),
+            slot: F_BODY,
+            space: false,
+            hard_break: false,
+            link: None,
+            strike: false,
+        };
+
+        let shaped = shape_run(&face.font, &face.lig, &tok.text);
+
+        assert_eq!(
+            shaped.glyphs.len(),
+            1,
+            "bundled body face should shape fi as one ligature glyph"
+        );
+        assert_eq!(
+            measure_word(std::slice::from_ref(&tok), fs, &faces),
+            crate::layout::advance_to_layout_units(face.glyph_advance_1000(shaped.glyphs[0]), fs),
+            "PDF layout measurement should use the ligature glyph's own advance"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_segments_remeasure_merged_text_after_cross_token_shaping() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let toks = vec![
+            Tok {
+                text: "f".to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            Tok {
+                text: "i".to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            Tok {
+                text: "X".to_string(),
+                slot: F_BOLD,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+        ];
+
+        let combined = faces.shaped_width_points(F_BODY, "fi", size);
+        let separate = faces.shaped_width_points(F_BODY, "f", size)
+            + faces.shaped_width_points(F_BODY, "i", size);
+        assert!(
+            (separate - combined).abs() > 0.01,
+            "fixture must expose a cross-token ligature width difference"
+        );
+
+        let segs = build_segs(&toks, 10.0, size, &faces);
+        assert_eq!(segs.len(), 2, "body run plus bold run");
+        assert!(
+            (segs[0].width - combined).abs() < 0.01,
+            "merged segment width should match the shaped combined text"
+        );
+        assert!(
+            (segs[1].x - (10.0 + combined)).abs() < 0.01,
+            "following segment should start after the shaped combined width"
+        );
+        Ok(())
+    }
 
     #[test]
     fn decimal_writer_covers_boundary_values() {
@@ -6265,6 +6577,36 @@ mod pdf_writer_tests {
             append_pdf_num(&mut out, value);
             assert_eq!(out, legacy_pdf_num(value), "value {value}");
         }
+    }
+
+    #[test]
+    fn fixed_width_pdf_token_writers_preserve_finite_format_and_guard_non_finite() {
+        assert_eq!(pdf_fixed2(5.0), "5.00");
+        assert_eq!(pdf_fixed2(1.235), "1.24");
+        assert_eq!(pdf_fixed2(-0.0), "-0.00");
+        assert_eq!(pdf_fixed3(0.5), "0.500");
+        assert_eq!(pdf_fixed3(1.2345), "1.235");
+
+        assert_eq!(pdf_fixed2(f32::NAN), "0.00");
+        assert_eq!(pdf_fixed2(f32::INFINITY), "0.00");
+        assert_eq!(pdf_fixed2(f32::NEG_INFINITY), "0.00");
+        assert_eq!(pdf_fixed3(f32::NAN), "0.000");
+        assert_eq!(pdf_fixed3(f32::INFINITY), "0.000");
+        assert_eq!(pdf_fixed3(f32::NEG_INFINITY), "0.000");
+    }
+
+    #[test]
+    fn rounded_rect_fill_coerces_non_finite_before_degenerate_guard() {
+        assert!(
+            rounded_rect_fill(f32::NAN, 0.0, 10.0, 10.0, 0.0, (0.1, 0.2, 0.3))
+                .contains("0.00 0.00 m"),
+            "NaN x0 should be coerced to a finite PDF token"
+        );
+        assert_eq!(
+            rounded_rect_fill(0.0, 0.0, f32::NAN, 10.0, 2.0, (0.1, 0.2, 0.3)),
+            "",
+            "NaN x1 should coerce to 0 and produce a degenerate rectangle"
+        );
     }
 
     #[test]

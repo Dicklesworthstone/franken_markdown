@@ -397,6 +397,26 @@ impl Font {
             .unwrap_or(0)
     }
 
+    /// The left side bearing of glyph `gid` in design units. Glyphs past the
+    /// long-metric run share the last advance but keep their own trailing LSB.
+    #[must_use]
+    pub fn left_side_bearing(&self, gid: u16) -> i16 {
+        if self.num_h_metrics == 0 {
+            return 0;
+        }
+        let gid = gid as usize;
+        let num_h_metrics = self.num_h_metrics as usize;
+        let offset = if gid < num_h_metrics {
+            off_mul(self.hmtx_off, gid, 4).and_then(|base| off(base, 2))
+        } else {
+            off_mul(self.hmtx_off, num_h_metrics, 4)
+                .and_then(|base| off_mul(base, gid - num_h_metrics, 2))
+        };
+        offset
+            .and_then(|offset| be_i16(&self.data, offset))
+            .unwrap_or(0)
+    }
+
     /// The glyph id for a character, or `0` (`.notdef`) if unmapped.
     #[must_use]
     pub fn glyph_index(&self, ch: char) -> u16 {
@@ -616,11 +636,11 @@ impl Font {
         let mut hhea = self.data.get(hhea_off..off(hhea_off, hhea_len)?)?.to_vec();
         write_u16(&mut hhea, 34, n_u16)?;
 
-        // hmtx: n long metrics (advanceWidth, lsb=0), no trailing run.
+        // hmtx: n long metrics (advanceWidth + true lsb), no trailing run.
         let mut hmtx: Vec<u8> = Vec::with_capacity(n.checked_mul(4)?);
         for &old in &old_gids {
             hmtx.extend_from_slice(&self.advance_width(old).to_be_bytes());
-            hmtx.extend_from_slice(&0i16.to_be_bytes());
+            hmtx.extend_from_slice(&self.left_side_bearing(old).to_be_bytes());
         }
 
         // head: original bytes; zero checkSumAdjustment (@ +8), force long loca.
@@ -727,9 +747,10 @@ impl Font {
         Some((out, new_of))
     }
 
-    /// Glyph bytes for the subset: simple glyphs are copied verbatim; composite
-    /// glyphs are copied with each component `glyphIndex` (u16) rewritten from
-    /// its old gid to its new gid. Empty glyphs yield an empty `Vec`.
+    /// Glyph bytes for the subset: simple glyphs are copied without hinting
+    /// instructions; composite glyphs are copied with each component `glyphIndex`
+    /// (u16) rewritten from its old gid to its new gid and any trailing
+    /// instructions removed. Empty glyphs yield an empty `Vec`.
     fn subset_glyph_bytes(
         &self,
         old: u16,
@@ -740,20 +761,25 @@ impl Font {
         const MORE: u16 = 0x0020;
         const X_Y_SCALE: u16 = 0x0040;
         const TWO_BY_TWO: u16 = 0x0080;
+        const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
 
         let data = self.glyph_data(old).unwrap_or(&[]);
         if data.is_empty() {
             return Some(Vec::new());
         }
         let num_contours = be_i16(data, 0)?;
-        let mut out = data.to_vec();
         if num_contours >= 0 {
-            return Some(out); // simple glyph: byte-identical copy
+            return strip_simple_glyph_instructions(data, num_contours as usize);
         }
         // Composite: walk component records, rewriting each glyphIndex.
+        let mut out = data.to_vec();
         let mut p = 10usize; // skip numberOfContours + 4x i16 bbox
+        let mut instruction_flags_positions = Vec::new();
         loop {
             let flags = be_u16(&out, p)?;
+            if flags & WE_HAVE_INSTRUCTIONS != 0 {
+                instruction_flags_positions.push(p);
+            }
             let comp_old = be_u16_at(&out, p, 2)?;
             // A component that fell outside the subset (e.g. a component gid
             // >= numGlyphs in a malformed font — the closure never reaches it)
@@ -776,6 +802,19 @@ impl Font {
             if flags & MORE == 0 {
                 break;
             }
+        }
+        if !instruction_flags_positions.is_empty() {
+            for flags_pos in instruction_flags_positions {
+                let flags = be_u16(&out, flags_pos)?;
+                write_u16(&mut out, flags_pos, flags & !WE_HAVE_INSTRUCTIONS)?;
+            }
+            let instruction_len = be_u16(&out, p)? as usize;
+            let instruction_start = off(p, 2)?;
+            let instruction_end = off(instruction_start, instruction_len)?;
+            if instruction_end > out.len() {
+                return None;
+            }
+            out.drain(p..instruction_end);
         }
         Some(out)
     }
@@ -878,6 +917,22 @@ impl Font {
         }
         Some(0)
     }
+}
+
+fn strip_simple_glyph_instructions(data: &[u8], contour_count: usize) -> Option<Vec<u8>> {
+    let instruction_len_offset = off(10, contour_count.checked_mul(2)?)?;
+    let instruction_len = be_u16(data, instruction_len_offset)? as usize;
+    let instruction_start = off(instruction_len_offset, 2)?;
+    let instruction_end = off(instruction_start, instruction_len)?;
+    if instruction_end > data.len() {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(data.len().saturating_sub(instruction_len));
+    out.extend_from_slice(data.get(..instruction_len_offset)?);
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(data.get(instruction_end..)?);
+    Some(out)
 }
 
 /// Choose the best Unicode `cmap` subtable, returning its absolute offset and
@@ -1703,7 +1758,7 @@ mod dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod subset_degradation_tests {
-    use super::Font;
+    use super::{Font, be_i16, be_u16, strip_simple_glyph_instructions};
     use std::collections::BTreeMap;
 
     fn cm_regular() -> Font {
@@ -1731,6 +1786,80 @@ mod subset_degradation_tests {
         .iter()
         .filter_map(|p| Font::parse(std::fs::read(format!("{base}{p}")).ok()?).ok())
         .collect()
+    }
+
+    fn simple_instruction_len(data: &[u8]) -> Option<usize> {
+        let contours = be_i16(data, 0)?;
+        if contours < 0 {
+            return None;
+        }
+        let instruction_len_offset = 10usize.checked_add((contours as usize).checked_mul(2)?)?;
+        be_u16(data, instruction_len_offset).map(usize::from)
+    }
+
+    #[test]
+    fn simple_glyph_instruction_stripper_zeroes_length_and_removes_bytes() {
+        let mut glyph = Vec::new();
+        glyph.extend_from_slice(&1i16.to_be_bytes()); // one contour
+        glyph.extend_from_slice(&[0u8; 8]); // bbox
+        glyph.extend_from_slice(&0u16.to_be_bytes()); // endPtsOfContours[0]
+        glyph.extend_from_slice(&3u16.to_be_bytes()); // instructionLength
+        glyph.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // instructions
+        glyph.extend_from_slice(&[0x11, 0x22, 0x33]); // flag/coordinate payload
+
+        let stripped = strip_simple_glyph_instructions(&glyph, 1).expect("valid simple glyph");
+        assert_eq!(simple_instruction_len(&stripped), Some(0));
+        assert_eq!(stripped.len(), glyph.len() - 3);
+        assert_eq!(&stripped[stripped.len() - 3..], &[0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn subset_glyph_bytes_strips_simple_instructions_when_present() {
+        let Some((font, gid, original_len)) = all_faces().into_iter().find_map(|font| {
+            (1..font.num_glyphs).find_map(|gid| {
+                let data = font.glyph_data(gid)?;
+                let len = simple_instruction_len(data)?;
+                (len > 0).then_some((font.clone(), gid, len))
+            })
+        }) else {
+            eprintln!("skipping: bundled fonts have no hinted simple glyphs");
+            return;
+        };
+
+        let mut new_of = BTreeMap::new();
+        new_of.insert(0u16, 0u16);
+        new_of.insert(gid, 1u16);
+
+        let stripped = font
+            .subset_glyph_bytes(gid, &new_of)
+            .expect("hinted simple glyph should subset");
+        assert_eq!(simple_instruction_len(&stripped), Some(0));
+        assert_eq!(
+            stripped.len(),
+            font.glyph_data(gid).expect("original glyph").len() - original_len
+        );
+    }
+
+    #[test]
+    fn subset_hmtx_preserves_true_left_side_bearings() {
+        let (font, ch, old_gid, old_lsb) = all_faces()
+            .into_iter()
+            .find_map(|font| {
+                (33u8..=126).find_map(|byte| {
+                    let ch = char::from(byte);
+                    let gid = font.glyph_index(ch);
+                    let lsb = font.left_side_bearing(gid);
+                    (gid != 0 && lsb != 0).then_some((font.clone(), ch, gid, lsb))
+                })
+            })
+            .expect("at least one bundled printable glyph has a nonzero lsb");
+
+        let (bytes, remap) = font
+            .subset_glyphs(&[old_gid], &[ch])
+            .expect("subset with nonzero-lsb glyph");
+        let subset = Font::parse(bytes).expect("subset re-parses");
+        let new_gid = remap[&old_gid];
+        assert_eq!(subset.left_side_bearing(new_gid), old_lsb);
     }
 
     #[test]

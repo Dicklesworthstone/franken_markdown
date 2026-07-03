@@ -9,16 +9,16 @@ a date-based timeline kept visible so chronology is never lost. Representative
 commits are linked directly.
 
 This changelog began as reconstructed pre-release development history and now
-records the first binary release. `franken_markdown` is not published to
-crates.io; the GitHub release ships standalone `fmd` CLI archives, while the
-WASM/npm package is handled by the separate tag-gated workflow. Conformance and
-status numbers below are the measured, ratcheted floors enforced in CI, not
-aspirational targets.
+records shipped binary and crate releases. The GitHub release ships standalone
+`fmd` CLI archives, the `franken_markdown` library is published to crates.io
+starting with `0.2.0`, and the WASM/npm package is handled by the separate
+tag-gated workflow. Conformance and status numbers below are the measured,
+ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-06-30), the
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-03), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.1.0` initial binary release.**
+- Version state: **`0.2.0` crates.io and hardening release.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -31,6 +31,41 @@ aspirational targets.
 | 2026-06-28 | Hardening + WASM assets | Browser/WASM package assets, justified hyphen breaks, list looseness/tightness fixes, theme-color unification across HTML and PDF, and CI claim-discipline + keep-with-next pagination |
 | 2026-06-29 | Proof gates + accessibility + batch | Real WASM proof gate with native parity, CommonMark 0.31.2 conformance harness, hierarchical accessible tagged-PDF, deterministic render-tree golden, the performance-proof track, and the native Asupersync batch contract |
 | 2026-06-30 | First binary release | `0.1.0` release prep fixes installer asset lookup, switches the optional Asupersync dependency to the published crate, and cuts GitHub release archives instead of forcing source builds |
+| 2026-07-03 | Crates.io + hardening release | `0.2.0` enables the crates.io package, trims package contents, hardens staged native writes, validates zlib/PNG payloads more strictly, and tightens public JSON escaping |
+
+## 0.2.0 - 2026-07-03
+
+Crate publishing is enabled for `franken_markdown`. The package metadata now
+uses `license-file = "LICENSE"` for the custom MIT plus OpenAI/Anthropic rider,
+removes the first-release `publish = false` guard, and excludes local Beads
+state, performance artifacts, and the untracked source PNG from crates.io
+packages.
+
+Native output paths are safer. CLI renders, config saves, and batch renders now
+stage filesystem writes in same-directory temporary files, preflight duplicate
+and directory destinations, roll back already-committed siblings on later
+failures, and refuse batch output aliases that would overwrite the explicit
+input file.
+
+Binary asset validation is stricter. The clean-room zlib inflater now validates
+headers, Adler-32 trailers, stored-block length complements, final-block trailing
+data, and oversubscribed Huffman tables; the PDF PNG pipeline validates fast-path
+predictor payloads and rejects extra inflated scanline bytes.
+
+Output correctness and machine contracts were tightened: empty image
+destinations render alt text without an empty `src`, PDF warning collection
+includes raw HTML text preserved in layout, theme page-size names are escaped in
+public JSON, and WASM diagnostic severities are escaped like the rest of the
+diagnostic envelope.
+
+Release verification before the `0.2.0` metadata bump included
+`cargo fmt --check`, `cargo check --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`,
+`cargo build --no-default-features`,
+`cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-bindgen --lib`,
+`cargo check --all-targets --features batch`,
+`cargo clippy --all-targets --features batch -- -D warnings`, and
+`cargo test --features batch`.
 
 ## 0.1.0 - 2026-06-30
 
@@ -184,8 +219,8 @@ gate that blocks any `npm install` claim until it actually ships.
 An official CommonMark 0.31.2 conformance harness runs all 652 official
 examples, normalizes fmd's styled HTML, and reports a per-example gap ledger
 (pass / known-gap / intentional non-goal) plus a section summary. The current
-result is a committed, ratcheted floor of **357/652 matched** (60.4% of in-scope
-examples; the raw-HTML examples are intentional non-goals). The number is
+result is a committed, ratcheted floor of **379/652 matched** (with raw-HTML
+examples treated as intentional non-goals). The number is
 surfaced in `capabilities --json` with a drift guard tying the two together. The
 spec is vendored as dev-only test data.
 
@@ -246,11 +281,12 @@ added.
 
 ## Notes for agents
 
-- **Rust crate publishing remains disabled.** The first release is a GitHub
-  binary/source release for `fmd`; `Cargo.toml` still sets `publish = false`.
-  The npm package (`@franken-suite/franken-markdown`) is handled by the separate
-  tag-gated WASM workflow.
-- **Status numbers are ratcheted floors, not goals.** CommonMark is 357/652
+- **Rust crate publishing is enabled.** `franken_markdown` is published to
+  crates.io starting with `0.2.0`; the custom license rider is represented via
+  `license-file = "LICENSE"`. The npm package
+  (`@franken-suite/franken-markdown`) is handled by the separate tag-gated WASM
+  workflow.
+- **Status numbers are ratcheted floors, not goals.** CommonMark is 379/652
   in-scope normalized matches and CI fails if it regresses;
   `capabilities --json` reports the same number via a drift guard.
 - **The `batch` feature is the only Asupersync entry point.** The render core,

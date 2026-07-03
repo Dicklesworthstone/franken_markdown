@@ -14,11 +14,11 @@
 #     path so the core stays trivially auditable).
 [package]
 name = "franken_markdown"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 default-run = "fmd"
-license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-file = "LICENSE"
 description = "Pure-Rust, dependency-lean, ultra-fast Markdown -> beautiful all-in-one HTML & tiny optimized PDF (library + single-binary CLI: fmd)"
 readme = "README.md"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"
@@ -26,7 +26,11 @@ homepage = "https://github.com/Dicklesworthstone/franken_markdown"
 keywords = ["markdown", "pdf", "html", "renderer", "typesetting"]
 categories = ["command-line-utilities", "text-processing"]
 authors = ["Jeffrey Emanuel"]
-publish = false
+exclude = [
+    ".beads/**",
+    "franken_markdown_illustration.png",
+    "tests/artifacts/**",
+]
 
 [lib]
 name = "franken_markdown"

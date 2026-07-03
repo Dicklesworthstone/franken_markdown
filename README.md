@@ -28,7 +28,7 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > manifest plus a tag-gated npm release workflow), proven by
 > `scripts/check-wasm-package.sh`. Deeper pagination controls remain active
 > roadmap work tracked in beads.
-> Version `0.1.0`. Prebuilt `fmd` binaries for Linux, macOS (Intel + Apple
+> Version `0.2.0`. Prebuilt `fmd` binaries for Linux, macOS (Intel + Apple
 > Silicon), and Windows are produced by the tag-gated
 > `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
 > source builds remain available as a fallback under [Installation](#installation).
@@ -210,6 +210,9 @@ cargo build --release --bin fmd
 # Or install it onto your PATH
 cargo install --path .
 fmd --help
+
+# Or install the published crates.io package
+cargo install franken_markdown
 ```
 
 `fmd` and the long alias `franken_markdown` are the same program built from one

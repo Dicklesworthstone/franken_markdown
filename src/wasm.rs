@@ -362,7 +362,7 @@ fn diagnostics_json(diagnostics: &[WasmDiagnostic]) -> String {
             out.push(',');
         }
         out.push_str("{\"severity\":\"");
-        out.push_str(diagnostic.severity);
+        json_escape_into(diagnostic.severity, &mut out);
         out.push_str("\",\"start\":");
         out.push_str(&diagnostic.start.to_string());
         out.push_str(",\"end\":");

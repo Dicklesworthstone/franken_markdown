@@ -165,6 +165,15 @@ fn unsafe_markdown_url_schemes_are_neutralized() {
 }
 
 #[test]
+fn empty_image_destinations_render_alt_text_without_empty_src() {
+    let html = render("![fallback alt]()");
+
+    assert!(!html.contains("<img"));
+    assert!(!html.contains("src=\"\""));
+    assert!(html.contains("fallback alt"));
+}
+
+#[test]
 fn serif_theme_changes_font_stack() {
     let opts = HtmlOptions {
         theme: Theme::serif(),

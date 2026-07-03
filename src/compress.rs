@@ -333,19 +333,36 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
 /// [`zlib_compress`]. Supports all three DEFLATE block types (stored, fixed
 /// Huffman, and dynamic Huffman, which real-world encoders such as PNG writers
 /// use). `max_out` bounds the decompressed size so a hostile stream cannot blow
-/// up memory; decoding stops with `None` if the output would exceed it. Returns
-/// `None` on any malformed input — it never panics.
+/// up memory; decoding stops with `None` if the output would exceed it. The zlib
+/// header, trailer checksum, and DEFLATE block integrity are all validated.
+/// Returns `None` on any malformed input — it never panics.
 pub(crate) fn zlib_decompress(data: &[u8], max_out: usize) -> Option<Vec<u8>> {
     // zlib header: CMF, FLG (2 bytes), then the DEFLATE body, then a 4-byte
-    // big-endian Adler-32 we do not need to re-verify here.
-    let cmf = *data.first()?;
-    let flg = *data.get(1)?;
-    if cmf & 0x0f != 8 || flg & 0x20 != 0 {
-        // Not deflate, or a preset dictionary we do not support.
+    // big-endian Adler-32 of the uncompressed bytes.
+    let trailer_start = data.len().checked_sub(4)?;
+    if trailer_start < 2 {
         return None;
     }
-    let body = data.get(2..)?;
-    inflate_deflate(body, max_out)
+    let cmf = *data.first()?;
+    let flg = *data.get(1)?;
+    let header = (u16::from(cmf) << 8) | u16::from(flg);
+    if cmf & 0x0f != 8 || cmf >> 4 > 7 || flg & 0x20 != 0 || header % 31 != 0 {
+        // Not deflate, invalid window/header check, or a preset dictionary we do
+        // not support.
+        return None;
+    }
+    let body = data.get(2..trailer_start)?;
+    let expected_adler = u32::from_be_bytes([
+        *data.get(trailer_start)?,
+        *data.get(trailer_start + 1)?,
+        *data.get(trailer_start + 2)?,
+        *data.get(trailer_start + 3)?,
+    ]);
+    let out = inflate_deflate(body, max_out)?;
+    if adler32(&out) != expected_adler {
+        return None;
+    }
+    Some(out)
 }
 
 /// A canonical-Huffman decoder built from a list of code lengths.
@@ -369,6 +386,13 @@ impl Huffman {
             counts[len] += 1;
         }
         counts[0] = 0;
+        let mut left = 1i32;
+        for &count in counts.iter().take(MAX_HUFFMAN_BITS + 1).skip(1) {
+            left = (left << 1) - i32::from(count);
+            if left < 0 {
+                return None;
+            }
+        }
         // Offsets of each length's first symbol within `symbols`.
         let mut offsets = [0u16; MAX_HUFFMAN_BITS + 2];
         for len in 1..=MAX_HUFFMAN_BITS {
@@ -442,6 +466,12 @@ impl<'a> BitStream<'a> {
             self.byte += 1;
         }
     }
+    fn is_at_end_after_final_block(&self) -> bool {
+        if self.bit == 0 {
+            return self.byte == self.data.len();
+        }
+        self.byte + 1 == self.data.len()
+    }
 }
 
 fn inflate_deflate(body: &[u8], max_out: usize) -> Option<Vec<u8>> {
@@ -453,8 +483,12 @@ fn inflate_deflate(body: &[u8], max_out: usize) -> Option<Vec<u8>> {
         match btype {
             0 => {
                 br.align_to_byte();
-                let len = br.bits(16)? as usize;
-                let _nlen = br.bits(16)?;
+                let len = br.bits(16)? as u16;
+                let nlen = br.bits(16)? as u16;
+                if nlen != !len {
+                    return None;
+                }
+                let len = usize::from(len);
                 if out.len().checked_add(len)? > max_out {
                     return None;
                 }
@@ -476,7 +510,11 @@ fn inflate_deflate(body: &[u8], max_out: usize) -> Option<Vec<u8>> {
             break;
         }
     }
-    Some(out)
+    if br.is_at_end_after_final_block() {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn inflate_block(
@@ -942,6 +980,22 @@ mod tests {
     }
 
     #[test]
+    fn huffman_builder_rejects_oversubscribed_lengths() {
+        // Three one-bit codes cannot fit into the two-code one-bit namespace.
+        // Accepting this table would let malformed dynamic DEFLATE headers build
+        // a decoder that assigns impossible canonical codes.
+        assert!(Huffman::from_lengths(&[1, 1, 1]).is_none());
+        assert!(Huffman::from_lengths(&[2, 2, 2, 2, 2]).is_none());
+
+        // Sparse/incomplete trees are still legal to build. They may fail later
+        // if the stream asks for a missing code, but the table itself is not
+        // over-subscribed.
+        assert!(Huffman::from_lengths(&[1]).is_some());
+        assert!(Huffman::from_lengths(&[1, 1]).is_some());
+        assert!(Huffman::from_lengths(&[0, 0, 0]).is_some());
+    }
+
+    #[test]
     fn production_inflater_rejects_oversized_output() {
         let comp = zlib_compress(&vec![7u8; 10_000]);
         // A cap below the true size must fail rather than allocate unbounded.
@@ -949,14 +1003,55 @@ mod tests {
     }
 
     #[test]
+    fn production_inflater_accepts_unused_final_byte_bits() {
+        // The DEFLATE bitstream can end inside the final byte. The remaining
+        // high bits are outside the compressed data; common zlib accepts them
+        // even when they are non-zero. We must still reject complete extra body
+        // bytes, but not over-read or validate bits after the final EOB code.
+        let nonzero_unused_bits = [0x78, 0x9c, 0x03, 0xfc, 0x00, 0x00, 0x00, 0x01];
+
+        assert_eq!(
+            zlib_decompress(&nonzero_unused_bits, 1).as_deref(),
+            Some(&[][..])
+        );
+    }
+
+    #[test]
     fn production_inflater_rejects_malformed_streams() {
         // Empty / truncated headers.
         assert!(zlib_decompress(&[], 100).is_none());
         assert!(zlib_decompress(&[0x78], 100).is_none());
+        let valid = zlib_compress(b"abc");
+
         // Wrong compression method (CMF low nibble must be 8).
-        assert!(zlib_decompress(&[0x79, 0x9c, 0x03, 0x00], 100).is_none());
+        let mut bad_method = valid.clone();
+        bad_method[0] = 0x79;
+        assert!(zlib_decompress(&bad_method, 100).is_none());
+        // Header check bits (FCHECK) must make CMF/FLG divisible by 31.
+        let mut bad_fcheck = valid.clone();
+        bad_fcheck[1] ^= 0x01;
+        assert!(zlib_decompress(&bad_fcheck, 100).is_none());
         // Preset dictionary (FDICT bit set) is unsupported.
-        assert!(zlib_decompress(&[0x78, 0xbb, 0x03, 0x00], 100).is_none());
+        let mut bad_dict = valid.clone();
+        bad_dict[1] = 0xbb;
+        assert!(zlib_decompress(&bad_dict, 100).is_none());
+        // The trailer is required and the Adler-32 must match the decoded bytes.
+        let mut truncated_trailer = valid.clone();
+        truncated_trailer.pop();
+        assert!(zlib_decompress(&truncated_trailer, 100).is_none());
+        let mut bad_adler = valid.clone();
+        let last = bad_adler.len() - 1;
+        bad_adler[last] ^= 0x01;
+        assert!(zlib_decompress(&bad_adler, 100).is_none());
+        // Bytes between the final DEFLATE block and zlib trailer are malformed.
+        let trailer_start = valid.len() - 4;
+        let mut trailing_body = Vec::new();
+        trailing_body.extend_from_slice(&valid[..trailer_start]);
+        trailing_body.push(0);
+        trailing_body.extend_from_slice(&valid[trailer_start..]);
+        assert!(zlib_decompress(&trailing_body, 100).is_none());
+        // Stored blocks must carry NLEN as the ones-complement of LEN.
+        assert!(zlib_decompress(&[0x78, 0x9c, 0x01, 0, 0, 0, 0xff, 0, 0, 0, 1], 100).is_none());
         // Reserved DEFLATE block type 3 (bfinal=1, btype=11 -> low 3 bits 0b111).
         assert!(zlib_decompress(&[0x78, 0x9c, 0x07], 100).is_none());
         // Stored block whose declared length runs past the input.

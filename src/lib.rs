@@ -49,6 +49,8 @@ pub mod wasm_abi;
 pub mod cli;
 #[cfg(feature = "cli")]
 pub mod config;
+#[cfg(feature = "cli")]
+pub(crate) mod file_write;
 // Native-only batch renderer; pulls Asupersync. Never compiled for the core,
 // `--no-default-features`, or wasm builds.
 #[cfg(feature = "batch")]

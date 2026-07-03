@@ -756,7 +756,8 @@ fn collect_text(blocks: &[Block], out: &mut String) {
                     }
                 }
             }
-            Block::ThematicBreak | Block::HtmlBlock(_) => {}
+            Block::HtmlBlock(html) => out.push_str(html),
+            Block::ThematicBreak => {}
         }
     }
 }
@@ -770,7 +771,8 @@ fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
             }
             Inline::Link { content, .. } => collect_text_inlines(content, out),
             Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::SoftBreak | Inline::HardBreak | Inline::Html(_) => {}
+            Inline::Html(html) => out.push_str(html),
+            Inline::SoftBreak | Inline::HardBreak => {}
         }
     }
 }
@@ -1344,19 +1346,23 @@ struct DecodedPng {
 fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
     let png = parse_png_chunks(bytes)?;
 
-    // Fast path: 8-bit grayscale/RGB, non-interlaced, no transparency. Embed the
-    // raw zlib IDAT directly and let the PDF reader run the PNG predictor — no
-    // decode/re-encode needed, and byte-for-byte what the file already holds.
+    // Fast path: 8-bit grayscale/RGB, non-interlaced, no transparency. Validate
+    // that IDAT inflates to legal PNG predictor rows, then embed the original zlib
+    // bytes directly and let the PDF reader run the predictor. This avoids
+    // unfiltering/re-encoding while still refusing corrupt image payloads.
     if png.bit_depth == 8
         && png.interlace == 0
         && png.trns.is_empty()
         && matches!(png.color_type, 0 | 2)
     {
-        let color = if png.color_type == 0 {
-            PdfImageColor::Gray
+        let (color, components) = if png.color_type == 0 {
+            (PdfImageColor::Gray, 1usize)
         } else {
-            PdfImageColor::Rgb
+            (PdfImageColor::Rgb, 3usize)
         };
+        if !png_predictor_payload_is_valid(&png, components) {
+            return None;
+        }
         return Some(PdfImageData {
             key: key.to_string(),
             width_px: png.width,
@@ -1383,6 +1389,26 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         png_predictor: false,
         smask,
     })
+}
+
+fn png_predictor_payload_is_valid(png: &PngChunks, components: usize) -> bool {
+    let row_bytes = (png.width as usize).checked_mul(components);
+    let expected = row_bytes
+        .and_then(|row| row.checked_add(1))
+        .and_then(|stride| stride.checked_mul(png.height as usize));
+    let Some((row_bytes, expected)) = row_bytes.zip(expected) else {
+        return false;
+    };
+    let raw = match crate::compress::zlib_decompress(&png.idat, expected) {
+        Some(raw) => raw,
+        None => return false,
+    };
+    if raw.len() != expected {
+        return false;
+    }
+    let stride = row_bytes + 1;
+    raw.chunks_exact(stride)
+        .all(|row| matches!(row.first().copied(), Some(0..=4)))
 }
 
 /// Walk a PNG's chunk stream, collecting IHDR fields, PLTE, tRNS, and IDAT. The
@@ -1604,6 +1630,14 @@ fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
     };
 
     if png.interlace == 0 {
+        let expected = (width as usize)
+            .checked_mul(bits_per_pixel)?
+            .div_ceil(8)
+            .checked_add(1)?
+            .checked_mul(height as usize)?;
+        if raw.len() != expected {
+            return None;
+        }
         ctx.place_pass(&raw, width, height, 0, 1, 0, 1, &mut rgba)?;
     } else {
         let mut offset = 0usize;
@@ -1621,6 +1655,9 @@ fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
             let pass = raw.get(offset..offset.checked_add(pass_len)?)?;
             offset = offset.checked_add(pass_len)?;
             ctx.place_pass(pass, pw, ph, xs, xstep, ys, ystep, &mut rgba)?;
+        }
+        if offset != raw.len() {
+            return None;
         }
     }
 
@@ -7110,6 +7147,20 @@ mod png_decode_tests {
     }
 
     #[test]
+    fn full_png_decode_rejects_extra_inflated_scanline_bytes() {
+        // The full-decode path must consume exactly the image scanline payload.
+        // Extra inflated bytes after the expected rows indicate a malformed PNG
+        // datastream and must not be silently ignored.
+        let mut plain = chunks(1, 1, 8, 6, 0, &[vec![10, 20, 30, 40]], vec![], vec![]);
+        plain.idat = zlib_compress(&[0, 10, 20, 30, 40, 99]);
+        assert!(decode_png_full(&plain).is_none());
+
+        let mut interlaced = chunks(1, 1, 8, 6, 1, &[vec![10, 20, 30, 40]], vec![], vec![]);
+        interlaced.idat = zlib_compress(&[0, 10, 20, 30, 40, 99]);
+        assert!(decode_png_full(&interlaced).is_none());
+    }
+
+    #[test]
     fn gray_with_trns_marks_the_transparent_sample() {
         // 8-bit grayscale with a single transparent value (tRNS = 2 bytes; the
         // low byte is the transparent gray level). Pixel 0 (=200) is transparent.
@@ -7181,6 +7232,42 @@ mod png_decode_tests {
         );
         assert!(data.smask.is_none());
         assert_eq!(data.color, PdfImageColor::Rgb);
+    }
+
+    #[test]
+    fn fast_path_rejects_invalid_predictor_payloads() {
+        // The predictor fast path passes IDAT through to the PDF. It must still
+        // validate the zlib stream and PNG row layout, otherwise a corrupt image
+        // asset is accepted and produces a broken PDF image XObject.
+        let png_with_idat = |idat: &[u8]| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+            let push_chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(kind);
+                out.extend_from_slice(data);
+                out.extend_from_slice(&0u32.to_be_bytes());
+            };
+            push_chunk(&mut bytes, b"IHDR", &ihdr);
+            push_chunk(&mut bytes, b"IDAT", idat);
+            push_chunk(&mut bytes, b"IEND", &[]);
+            bytes
+        };
+
+        assert!(
+            parse_png_image_asset("bad-zlib.png", &png_with_idat(&[0xff, 0xff, 0xff, 0xff]))
+                .is_none()
+        );
+
+        let short_row = zlib_compress(&[0, 10, 20]);
+        assert!(parse_png_image_asset("short-row.png", &png_with_idat(&short_row)).is_none());
+
+        let bad_filter = zlib_compress(&[5, 10, 20, 30]);
+        assert!(parse_png_image_asset("bad-filter.png", &png_with_idat(&bad_filter)).is_none());
     }
 
     /// Assemble a minimal 1x1 8-bit RGB PNG, optionally with `iend_data` (an

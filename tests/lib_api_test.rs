@@ -210,6 +210,30 @@ fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
 }
 
 #[test]
+fn render_warnings_include_raw_html_preserved_as_pdf_text() {
+    use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
+
+    // PDF output preserves raw HTML source as visible text. The warning walker
+    // must inspect that same source, or glyphless characters in HTML tags and
+    // attributes render as .notdef boxes without any diagnostic.
+    let doc = parse_markdown(
+        "<div title=\"中文\">ok</div>\n\nParagraph <span title=\"日本語\">ok</span>",
+    );
+    let missing = render_warnings(&doc, &PdfOptions::default())
+        .into_iter()
+        .find_map(|w| match w {
+            RenderWarning::MissingGlyphs { count, sample } => Some((count, sample)),
+            _ => None,
+        })
+        .expect("glyphless raw HTML source must warn");
+
+    assert!(
+        missing.0 >= 5,
+        "expected glyphless CJK from block and inline raw HTML, got {missing:?}"
+    );
+}
+
+#[test]
 fn render_warnings_walks_images_and_text_in_nested_blocks() {
     use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
 

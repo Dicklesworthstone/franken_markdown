@@ -439,60 +439,57 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         None
     };
 
-    if let Some(bytes) = html_bytes {
-        match out_path(&args, single, "html") {
-            Some(path) => {
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    return fail_json(
-                        73,
-                        "output_error",
-                        &format!("writing {}: {e}", path.display()),
-                        json,
-                    );
-                }
-                report_write("html", &path, bytes.len(), json);
-            }
-            None => {
-                let mut stdout = std::io::stdout().lock();
-                match stdout.write_all(&bytes) {
-                    Ok(()) => {}
-                    // The reader closed early (e.g. `fmd doc.md | head`). A broken
-                    // pipe is a clean exit, matching `emit_stdout` for the
-                    // discovery/config commands — the "stdout is data, exit codes
-                    // are stable when piped" contract must hold for the primary
-                    // rendered-document path too, not just metadata output.
-                    Err(e) if e.kind() == IoErrorKind::BrokenPipe => {}
-                    Err(e) => {
-                        return fail_json(
-                            74,
-                            "output_error",
-                            &format!("writing stdout: {e}"),
-                            json,
-                        );
-                    }
-                }
+    let html_path = html_bytes
+        .as_ref()
+        .and_then(|_| out_path(&args, single, "html"));
+    let pdf_path = if pdf_render.is_some() {
+        match out_path(&args, single, "pdf") {
+            Some(path) => Some(path),
+            None => return fail_json(64, "usage_error", "PDF output requires --out <path>", json),
+        }
+    } else {
+        None
+    };
+
+    let mut file_outputs = Vec::new();
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+        file_outputs.push(crate::file_write::OutputFile { path, bytes });
+    }
+    if let (Some(path), Some((_, bytes))) = (pdf_path.as_deref(), pdf_render.as_ref()) {
+        file_outputs.push(crate::file_write::OutputFile { path, bytes });
+    }
+    if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
+        return fail_json(
+            73,
+            "output_error",
+            &format!("writing {}: {}", err.path.display(), err.source),
+            json,
+        );
+    }
+
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+        report_write("html", path, bytes.len(), json);
+    } else if let Some(bytes) = html_bytes.as_deref() {
+        let mut stdout = std::io::stdout().lock();
+        match stdout.write_all(bytes) {
+            Ok(()) => {}
+            // The reader closed early (e.g. `fmd doc.md | head`). A broken
+            // pipe is a clean exit, matching `emit_stdout` for the
+            // discovery/config commands — the "stdout is data, exit codes
+            // are stable when piped" contract must hold for the primary
+            // rendered-document path too, not just metadata output.
+            Err(e) if e.kind() == IoErrorKind::BrokenPipe => {}
+            Err(e) => {
+                return fail_json(74, "output_error", &format!("writing stdout: {e}"), json);
             }
         }
     }
 
-    if let Some((opts, bytes)) = pdf_render {
-        match out_path(&args, single, "pdf") {
-            Some(path) => {
-                if let Err(e) = std::fs::write(&path, &bytes) {
-                    return fail_json(
-                        73,
-                        "output_error",
-                        &format!("writing {}: {e}", path.display()),
-                        json,
-                    );
-                }
-                report_pdf_warnings(&src, &opts, json);
-                report_write("pdf", &path, bytes.len(), json);
-            }
-            None => {
-                return fail_json(64, "usage_error", "PDF output requires --out <path>", json);
-            }
-        }
+    if let Some((opts, bytes)) = pdf_render.as_ref()
+        && let Some(path) = pdf_path.as_deref()
+    {
+        report_pdf_warnings(&src, opts, json);
+        report_write("pdf", path, bytes.len(), json);
     }
 
     ExitCode::SUCCESS

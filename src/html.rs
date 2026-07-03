@@ -405,6 +405,9 @@ enum UrlScheme {
 
 fn safe_url(url: &str, context: UrlContext) -> Option<&str> {
     let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    if trimmed.is_empty() && matches!(context, UrlContext::Image) {
+        return None;
+    }
     match url_scheme(trimmed) {
         UrlScheme::None => Some(trimmed),
         UrlScheme::Scheme(scheme) if allowed_url_scheme(&scheme, context) => Some(trimmed),

@@ -380,7 +380,7 @@ fn page_json(page: &PageStyle) -> String {
     format!(
         "{{\"size\":{{\"name\":\"{}\",\"width_pt\":{},\"height_pt\":{}}},\
          \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}}}}",
-        page.size.name,
+        json_escape(page.size.name),
         json_num(page.size.width_pt),
         json_num(page.size.height_pt),
         json_num(page.margins.top_pt),

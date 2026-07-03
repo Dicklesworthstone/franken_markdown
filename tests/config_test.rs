@@ -509,6 +509,63 @@ fn save_to_path_creates_missing_parent_directories_and_writes_file() {
 }
 
 #[test]
+fn save_to_path_replaces_existing_config_without_temp_artifacts() {
+    let base = temp_file("save-replace", "dir");
+    fs::create_dir_all(&base).unwrap();
+    let path = base.join("config");
+    fs::write(&path, "font=sans\n").unwrap();
+    let cfg = FmdConfig {
+        font: Some(FontFamily::Serif),
+        dark_mode: Some(DarkModePolicy::Disabled),
+        ..FmdConfig::default()
+    };
+
+    cfg.save_to_path(&path)
+        .expect("save must replace an existing config file");
+
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "font=serif\ndark_mode=disabled\n"
+    );
+    assert!(
+        fs::read_dir(&base).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.contains(".fmd-tmp") && !name.contains(".fmd-bak")
+        }),
+        "config save must not leave staged write artifacts"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn save_to_path_rejects_directory_destination_before_staging() {
+    let base = temp_file("save-dir-dest", "dir");
+    let path = base.join("config");
+    fs::create_dir_all(&path).unwrap();
+    let cfg = FmdConfig {
+        font: Some(FontFamily::Serif),
+        ..FmdConfig::default()
+    };
+
+    let err = cfg
+        .save_to_path(&path)
+        .expect_err("a config path that is a directory must fail");
+
+    assert!(matches!(err, ConfigError::Io(_)));
+    assert!(path.is_dir(), "failed save must leave the directory intact");
+    assert!(
+        fs::read_dir(&base).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.contains(".fmd-tmp") && !name.contains(".fmd-bak")
+        }),
+        "preflight failure must not create staged write artifacts"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
 fn save_to_path_without_parent_writes_into_current_directory() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use asupersync::prelude::*;
 use asupersync::runtime::RuntimeBuilder;
 
+use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::{HtmlOptions, PdfOptions, render_html, render_pdf};
 
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
@@ -675,26 +676,43 @@ fn render_one(
                 format!("write {} failed: destination is a directory", item.kind),
             );
         }
-    }
-
-    let mut outputs = Vec::with_capacity(rendered.len());
-    let mut written = Vec::with_capacity(rendered.len());
-    for item in rendered {
-        let remove_on_cleanup = !item.path.exists();
-        if let Err(e) = std::fs::write(&item.path, &item.bytes) {
-            cleanup_written_outputs(&written);
+        if crate::file_write::same_existing_file(input, &item.path) {
             return failed(
                 input,
                 FileErrorKind::Output,
-                format!("write {} failed: {e}", item.kind),
+                format!(
+                    "write {} failed: refusing to overwrite the input file {}; write to a distinct output directory",
+                    item.kind,
+                    item.path.display()
+                ),
             );
         }
+    }
+
+    let writes: Vec<OutputFile<'_>> = rendered
+        .iter()
+        .map(|item| OutputFile {
+            path: &item.path,
+            bytes: &item.bytes,
+        })
+        .collect();
+    if let Err(err) = write_outputs_staged(&writes) {
+        let kind = rendered
+            .iter()
+            .find(|item| item.path == err.path)
+            .map(|item| item.kind)
+            .unwrap_or("output");
+        return failed(
+            input,
+            FileErrorKind::Output,
+            format!("write {kind} failed: {}", err.source),
+        );
+    }
+
+    let mut outputs = Vec::with_capacity(rendered.len());
+    for item in rendered {
         let bytes_len = item.bytes.len();
         let fnv1a64 = fnv1a64(&item.bytes);
-        written.push(WrittenOutput {
-            path: item.path.clone(),
-            remove_on_cleanup,
-        });
         outputs.push(OutputEntry {
             path: item.path,
             bytes: bytes_len,
@@ -715,19 +733,6 @@ struct PendingOutput {
     kind: &'static str,
     path: PathBuf,
     bytes: Vec<u8>,
-}
-
-struct WrittenOutput {
-    path: PathBuf,
-    remove_on_cleanup: bool,
-}
-
-fn cleanup_written_outputs(outputs: &[WrittenOutput]) {
-    for output in outputs {
-        if output.remove_on_cleanup {
-            let _ = std::fs::remove_file(&output.path);
-        }
-    }
 }
 
 fn failed(input: &Path, kind: FileErrorKind, message: String) -> FileEntry {
@@ -2003,6 +2008,41 @@ mod tests {
             std::fs::read_to_string(out.join("doc.html")).unwrap(),
             "old html",
             "preflight should fail before overwriting a pre-existing HTML output"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_refuses_to_overwrite_explicit_input_file() {
+        let dir = fresh_dir("overwrite-input");
+        let input = dir.join("doc.html");
+        let source = "# Doc\n\nThis explicit input is not a Markdown extension.";
+        std::fs::write(&input, source).unwrap();
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: None,
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+
+        assert_eq!(r.failed_count(), 1);
+        assert!(r.files[0].outputs.is_empty());
+        assert_eq!(r.files[0].error_kind, Some(FileErrorKind::Output));
+        assert!(
+            r.files[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("refusing to overwrite the input file"),
+            "got {:?}",
+            r.files[0].error
+        );
+        assert_eq!(
+            std::fs::read_to_string(&input).unwrap(),
+            source,
+            "batch render must leave the explicit input untouched"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

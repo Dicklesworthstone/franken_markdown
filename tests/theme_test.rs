@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::{
-    DarkModePolicy, HtmlOptions, Theme, ThemeColors, ThemeSpacing, render_html,
+    DarkModePolicy, HtmlOptions, PageSize, Theme, ThemeColors, ThemeSpacing, render_html,
 };
 
 #[test]
@@ -19,6 +19,31 @@ fn theme_config_json_exposes_stable_wasm_and_cli_contract() {
     assert!(json.contains("\"max_width_px\":760"));
     assert!(json.contains("\"page\""));
     assert!(json.contains("\"name\":\"letter\""));
+}
+
+#[test]
+fn theme_config_json_escapes_public_page_size_name() {
+    let theme = Theme {
+        page: franken_markdown::PageStyle {
+            size: PageSize {
+                name: "letter\"x\n\u{0001}",
+                width_pt: 612.0,
+                height_pt: 792.0,
+            },
+            ..franken_markdown::PageStyle::default()
+        },
+        ..Theme::default()
+    };
+
+    let json = theme.to_config_json();
+    assert!(
+        json.contains("\"name\":\"letter\\\"x\\n \""),
+        "page size name must be JSON-escaped: {json}"
+    );
+    assert!(
+        !json.contains("\"name\":\"letter\"x"),
+        "raw quotes would break theme JSON: {json}"
+    );
 }
 
 #[test]

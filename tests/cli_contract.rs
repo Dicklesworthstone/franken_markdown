@@ -976,6 +976,45 @@ fn both_target_with_out_swaps_extension_per_format() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A `--to both` run must reject every file destination before committing any
+/// output, otherwise a PDF write failure can leave an unreported HTML sibling.
+#[test]
+fn both_target_preflights_pdf_destination_before_writing_html() {
+    let dir = temp_dir("both-pdf-preflight");
+    fs::create_dir_all(&dir).unwrap();
+    let base = dir.join("doc.out");
+    let base_s = base.display().to_string();
+    fs::create_dir_all(dir.join("doc.pdf")).unwrap();
+
+    let out = fmd(&[
+        "--text",
+        "# Both\n\nBody.",
+        "--to",
+        "both",
+        "--out",
+        &base_s,
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(73));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"output_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("destination is a directory"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !dir.join("doc.html").exists(),
+        "failed both-format output must not leave an unrecorded HTML file"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Rendering must never clobber the input file: `fmd doc.md --out doc.md` (and
 /// the `--to pdf`/`--to both` variants that resolve an output onto the source)
 /// are refused with a usage error (exit 64) and the source is left untouched,

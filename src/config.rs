@@ -6,6 +6,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::{DarkModePolicy, FontFamily, PageMargins, Theme};
 
 /// Supported config keys.
@@ -81,7 +82,11 @@ impl FmdConfig {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, serialized)?;
+        write_outputs_staged(&[OutputFile {
+            path,
+            bytes: serialized.as_bytes(),
+        }])
+        .map_err(|err| ConfigError::Io(err.source))?;
         Ok(path.to_path_buf())
     }
 

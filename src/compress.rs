@@ -281,6 +281,11 @@ fn deflate_stored(data: &[u8]) -> Vec<u8> {
     bw.out
 }
 
+fn deflate_stored_len(input_len: usize) -> usize {
+    let blocks = input_len.div_ceil(65535).max(1);
+    input_len + blocks * 5
+}
+
 // ---------------------------------------------------------------------------
 fn adler32(data: &[u8]) -> u32 {
     const MOD: u32 = 65521;
@@ -313,9 +318,8 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     out.push(0x9C);
 
     let fixed = deflate_fixed(data);
-    let stored = deflate_stored(data);
-    if stored.len() < fixed.len() {
-        out.extend_from_slice(&stored);
+    if deflate_stored_len(data.len()) < fixed.len() {
+        out.extend_from_slice(&deflate_stored(data));
     } else {
         out.extend_from_slice(&fixed);
     }
@@ -859,6 +863,14 @@ mod tests {
             "expanded too much: {}",
             comp.len()
         );
+    }
+
+    #[test]
+    fn stored_length_estimate_matches_encoder() {
+        for len in [0usize, 1, 65_535, 65_536, 131_070, 131_071] {
+            let data = vec![0xA5; len];
+            assert_eq!(deflate_stored_len(data.len()), deflate_stored(&data).len());
+        }
     }
 
     #[test]

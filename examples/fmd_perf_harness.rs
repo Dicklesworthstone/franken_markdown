@@ -916,7 +916,7 @@ fn generated_compression_payloads() -> Vec<(&'static str, Vec<u8>)> {
     let mut repetitive = Vec::with_capacity(96_000);
     for i in 0..96_000 {
         repetitive.push(match i % 6 {
-            0 | 1 | 2 => b'A',
+            0..=2 => b'A',
             3 | 4 => b'B',
             _ => b'\n',
         });

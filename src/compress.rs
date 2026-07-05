@@ -159,20 +159,23 @@ const MAX_CHAIN: usize = 256;
 const NONE: usize = usize::MAX;
 
 fn hash3(data: &[u8], i: usize) -> usize {
-    let b0 = data.get(i).copied().unwrap_or(0) as u32;
-    let b1 = data.get(i + 1).copied().unwrap_or(0) as u32;
-    let b2 = data.get(i + 2).copied().unwrap_or(0) as u32;
+    debug_assert!(i + 2 < data.len());
+    let b0 = data[i] as u32;
+    let b1 = data[i + 1] as u32;
+    let b2 = data[i + 2] as u32;
     let v = (b0 << 16) | (b1 << 8) | b2;
     ((v.wrapping_mul(2654435761) >> (32 - HASH_BITS)) as usize) & (HASH_SIZE - 1)
 }
 
 fn match_len(data: &[u8], a: usize, b: usize, max: usize) -> usize {
+    let max = max
+        .min(data.len().saturating_sub(a))
+        .min(data.len().saturating_sub(b));
+    let left = &data[a..a + max];
+    let right = &data[b..b + max];
     let mut l = 0usize;
-    while l < max {
-        match (data.get(a + l), data.get(b + l)) {
-            (Some(x), Some(y)) if x == y => l += 1,
-            _ => break,
-        }
+    while l < max && left[l] == right[l] {
+        l += 1;
     }
     l
 }
@@ -871,6 +874,14 @@ mod tests {
             let data = vec![0xA5; len];
             assert_eq!(deflate_stored_len(data.len()), deflate_stored(&data).len());
         }
+    }
+
+    #[test]
+    fn match_len_clamps_to_available_input() {
+        let data = b"abcabcab";
+        assert_eq!(match_len(data, 0, 3, 258), 5);
+        assert_eq!(match_len(data, 0, data.len(), 258), 0);
+        assert_eq!(match_len(data, data.len(), 0, 258), 0);
     }
 
     #[test]

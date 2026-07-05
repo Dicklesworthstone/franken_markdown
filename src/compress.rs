@@ -315,13 +315,17 @@ fn adler32(data: &[u8]) -> u32 {
 /// Whichever of the fixed-Huffman and stored encodings is smaller is used, so
 /// incompressible payloads (e.g. raw TrueType font bytes) do not expand.
 pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let fixed = deflate_fixed(data);
+    let stored_len = deflate_stored_len(data.len());
+    let use_stored = stored_len < fixed.len();
+
+    let body_len = if use_stored { stored_len } else { fixed.len() };
+    let mut out = Vec::with_capacity(2 + body_len + 4);
     // zlib header: CMF = 0x78 (deflate, 32K window), FLG = 0x9C (0x789C % 31 == 0).
     out.push(0x78);
     out.push(0x9C);
 
-    let fixed = deflate_fixed(data);
-    if deflate_stored_len(data.len()) < fixed.len() {
+    if use_stored {
         out.extend_from_slice(&deflate_stored(data));
     } else {
         out.extend_from_slice(&fixed);

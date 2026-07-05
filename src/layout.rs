@@ -1428,7 +1428,14 @@ pub fn break_paragraph_into(
         out.push(line);
         return;
     }
-    forced_break_prefixes_into(items, &mut scratch.forced_prefix);
+    let has_interior_forced_break = candidates
+        .iter()
+        .any(|candidate| candidate.penalty == FORCED_BREAK_PENALTY && candidate.next < items.len());
+    if has_interior_forced_break {
+        forced_break_prefixes_into(items, &mut scratch.forced_prefix);
+    } else {
+        scratch.forced_prefix.clear();
+    }
 
     scratch.states.clear();
     scratch.states.resize(candidates.len(), None);
@@ -1456,7 +1463,9 @@ pub fn break_paragraph_into(
             if start > candidate.item_index {
                 continue;
             }
-            if forced_break_between(&scratch.forced_prefix, start, candidate.item_index) {
+            if has_interior_forced_break
+                && forced_break_between(&scratch.forced_prefix, start, candidate.item_index)
+            {
                 continue;
             }
             // Evaluate the segment BEFORE the reachability check so the pruning

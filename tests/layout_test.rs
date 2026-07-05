@@ -487,6 +487,61 @@ fn single_forced_break_fast_path_keeps_dp_semantics_without_state_buffers() {
 }
 
 #[test]
+fn paragraphs_without_hard_breaks_skip_forced_prefix_scratch() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(20_000);
+    let items = paragraph_items_from_text(&metrics, "alpha beta gamma", size);
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(&items, width, &mut scratch, &mut breaks);
+
+    assert_eq!(breaks, break_paragraph(&items, width));
+    let capacities = scratch.capacities();
+    assert_eq!(capacities.forced_prefixes, 0);
+    assert!(capacities.states > 0);
+}
+
+#[test]
+fn interior_forced_breaks_still_use_prefix_scratch_and_split_lines() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let word_width = measure_text_with_pairs(&metrics, "alpha", size);
+    let word = || {
+        ParagraphItem::Box(TextBox {
+            text: "alpha".to_string(),
+            runs: StyledText::plain("alpha"),
+            width: word_width,
+        })
+    };
+    let forced = || {
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+        })
+    };
+    let items = vec![word(), forced(), word(), forced()];
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(
+        &items,
+        LayoutUnit::from_milli_points(100_000),
+        &mut scratch,
+        &mut breaks,
+    );
+
+    assert_eq!(breaks.len(), 2);
+    assert_eq!(breaks[0].start, 0);
+    assert_eq!(breaks[0].end, 1);
+    assert_eq!(breaks[1].start, 2);
+    assert_eq!(breaks[1].end, 3);
+    assert!(scratch.capacities().forced_prefixes > 0);
+}
+
+#[test]
 fn break_paragraph_returns_empty_for_no_candidates() {
     let breaks = break_paragraph(&[], LayoutUnit::from_points(72));
 

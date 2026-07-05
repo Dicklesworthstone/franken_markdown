@@ -26,7 +26,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
         .as_deref()
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css);
 
-    let mut body = String::new();
+    let mut body = String::with_capacity(initial_body_capacity(doc.blocks.len()));
     let mut state = RenderState::default();
     render_blocks(&doc.blocks, &mut body, opts, &mut state);
 
@@ -117,6 +117,10 @@ fn render_blocks(blocks: &[Block], out: &mut String, opts: &HtmlOptions, state: 
     for block in blocks {
         render_block(block, out, opts, state);
     }
+}
+
+fn initial_body_capacity(blocks: usize) -> usize {
+    blocks.saturating_mul(4096).min(4 * 1024 * 1024)
 }
 
 fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
@@ -1139,8 +1143,8 @@ mod tests {
     use crate::ast::{Block, Document, Inline};
 
     use super::{
-        base64_encode, css_num, escape_attr, escape_text, inlines_to_plain, push_u64,
-        sanitize_custom_css, slug, slug_inlines,
+        base64_encode, css_num, escape_attr, escape_text, initial_body_capacity, inlines_to_plain,
+        push_u64, sanitize_custom_css, slug, slug_inlines,
     };
 
     #[test]
@@ -1215,6 +1219,13 @@ mod tests {
             "say &quot;hi&quot; &amp; go"
         );
         assert!(matches!(escape_attr("say \"hi\""), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn initial_body_capacity_scales_with_a_cap() {
+        assert_eq!(initial_body_capacity(0), 0);
+        assert_eq!(initial_body_capacity(8), 32_768);
+        assert_eq!(initial_body_capacity(usize::MAX), 4 * 1024 * 1024);
     }
 
     #[test]

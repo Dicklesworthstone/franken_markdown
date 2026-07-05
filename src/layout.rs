@@ -1227,6 +1227,12 @@ struct BreakCandidate {
     flagged: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BreakCandidateStats {
+    has_interior_forced_break: bool,
+    has_rewarded_break: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SegmentMetrics {
     width: LayoutUnit,
@@ -1413,7 +1419,7 @@ pub fn break_paragraph_into(
     out: &mut Vec<LineBreak>,
 ) {
     out.clear();
-    break_candidates_into(items, &mut scratch.candidates);
+    let candidate_stats = break_candidates_into(items, &mut scratch.candidates);
     if scratch.candidates.is_empty() {
         scratch.forced_prefix.clear();
         scratch.metrics.width.clear();
@@ -1424,19 +1430,8 @@ pub fn break_paragraph_into(
     }
     scratch.metrics.rebuild_from_items(items);
     let candidates = &scratch.candidates;
-    let mut has_interior_forced_break = false;
-    let mut has_rewarded_break = false;
-    for candidate in candidates {
-        if candidate.penalty == FORCED_BREAK_PENALTY {
-            if candidate.next < items.len() {
-                has_interior_forced_break = true;
-            }
-        } else if candidate.penalty < 0 {
-            has_rewarded_break = true;
-        }
-    }
-    if !has_interior_forced_break
-        && !has_rewarded_break
+    if !candidate_stats.has_interior_forced_break
+        && !candidate_stats.has_rewarded_break
         && let Some(&candidate) = candidates.last()
         && let Some(line) =
             trailing_forced_fit_break(candidate, items.len(), line_width, &scratch.metrics)
@@ -1446,7 +1441,7 @@ pub fn break_paragraph_into(
         out.push(line);
         return;
     }
-    if has_interior_forced_break {
+    if candidate_stats.has_interior_forced_break {
         forced_break_prefixes_into(items, &mut scratch.forced_prefix);
     } else {
         scratch.forced_prefix.clear();
@@ -1478,7 +1473,7 @@ pub fn break_paragraph_into(
             if start > candidate.item_index {
                 continue;
             }
-            if has_interior_forced_break
+            if candidate_stats.has_interior_forced_break
                 && forced_break_between(&scratch.forced_prefix, start, candidate.item_index)
             {
                 continue;
@@ -1655,9 +1650,13 @@ fn forced_break_between(prefix: &[usize], start: usize, end: usize) -> bool {
     before_end > before_start
 }
 
-fn break_candidates_into(items: &[ParagraphItem], out: &mut Vec<BreakCandidate>) {
+fn break_candidates_into(
+    items: &[ParagraphItem],
+    out: &mut Vec<BreakCandidate>,
+) -> BreakCandidateStats {
     out.clear();
     out.reserve(items.len());
+    let mut stats = BreakCandidateStats::default();
     for (idx, item) in items.iter().enumerate() {
         match item {
             ParagraphItem::Glue(_) => out.push(BreakCandidate {
@@ -1667,16 +1666,25 @@ fn break_candidates_into(items: &[ParagraphItem], out: &mut Vec<BreakCandidate>)
                 penalty_width: LayoutUnit::ZERO,
                 flagged: false,
             }),
-            ParagraphItem::Penalty(p) if p.penalty < INF_PENALTY => out.push(BreakCandidate {
-                item_index: idx,
-                next: idx + 1,
-                penalty: p.penalty,
-                penalty_width: p.width,
-                flagged: p.flagged,
-            }),
+            ParagraphItem::Penalty(p) if p.penalty < INF_PENALTY => {
+                let next = idx + 1;
+                if p.penalty == FORCED_BREAK_PENALTY {
+                    stats.has_interior_forced_break |= next < items.len();
+                } else if p.penalty < 0 {
+                    stats.has_rewarded_break = true;
+                }
+                out.push(BreakCandidate {
+                    item_index: idx,
+                    next,
+                    penalty: p.penalty,
+                    penalty_width: p.width,
+                    flagged: p.flagged,
+                });
+            }
             ParagraphItem::Penalty(_) | ParagraphItem::Box(_) => {}
         }
     }
+    stats
 }
 
 fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {

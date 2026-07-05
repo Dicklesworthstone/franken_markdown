@@ -611,7 +611,10 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
 
     let mut start = 0usize;
     for &point in points {
-        let end = byte_index_for_char_boundary(word, point);
+        // Hyphenation points are emitted only for ASCII alphabetic words. For
+        // those words, the character offset is also the byte offset; non-ASCII
+        // words return no points before this function is called.
+        let end = point.min(word.len());
         if end > start {
             let part = &word[start..end];
             out.push(ParagraphItem::Box(TextBox {
@@ -635,15 +638,6 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
             width: measure_text_with_pairs(metrics, part, size),
         }));
     }
-}
-
-fn byte_index_for_char_boundary(s: &str, char_idx: usize) -> usize {
-    if char_idx == 0 {
-        return 0;
-    }
-    s.char_indices()
-        .nth(char_idx)
-        .map_or_else(|| s.len(), |(idx, _)| idx)
 }
 
 /// True for whitespace where normal Markdown/PDF text layout may break a line.

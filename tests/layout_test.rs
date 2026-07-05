@@ -483,7 +483,9 @@ fn single_forced_break_fast_path_keeps_dp_semantics_without_state_buffers() {
     assert_eq!(capacities.forced_prefixes, 0);
     assert_eq!(capacities.states, 0);
     assert!(capacities.candidates > 0);
-    assert!(capacities.prefix_widths > 0);
+    assert_eq!(capacities.prefix_widths, 0);
+    assert_eq!(capacities.prefix_stretches, 0);
+    assert_eq!(capacities.prefix_shrinks, 0);
 }
 
 #[test]
@@ -528,7 +530,9 @@ fn fitting_multiword_paragraph_fast_path_skips_state_buffers() {
     assert_eq!(capacities.forced_prefixes, 0);
     assert_eq!(capacities.states, 0);
     assert!(capacities.candidates > 0);
-    assert!(capacities.prefix_widths > 0);
+    assert_eq!(capacities.prefix_widths, 0);
+    assert_eq!(capacities.prefix_stretches, 0);
+    assert_eq!(capacities.prefix_shrinks, 0);
 }
 
 #[test]

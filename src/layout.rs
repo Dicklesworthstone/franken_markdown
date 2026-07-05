@@ -1231,6 +1231,7 @@ struct BreakCandidate {
 struct BreakCandidateStats {
     has_interior_forced_break: bool,
     has_rewarded_break: bool,
+    trailing_forced_width: Option<LayoutUnit>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1428,19 +1429,22 @@ pub fn break_paragraph_into(
         scratch.states.clear();
         return;
     }
-    scratch.metrics.rebuild_from_items(items);
     let candidates = &scratch.candidates;
     if !candidate_stats.has_interior_forced_break
         && !candidate_stats.has_rewarded_break
         && let Some(&candidate) = candidates.last()
-        && let Some(line) =
-            trailing_forced_fit_break(candidate, items.len(), line_width, &scratch.metrics)
+        && let Some(width) = candidate_stats.trailing_forced_width
+        && let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width)
     {
         scratch.forced_prefix.clear();
+        scratch.metrics.width.clear();
+        scratch.metrics.stretch.clear();
+        scratch.metrics.shrink.clear();
         scratch.states.clear();
         out.push(line);
         return;
     }
+    scratch.metrics.rebuild_from_items(items);
     if candidate_stats.has_interior_forced_break {
         forced_break_prefixes_into(items, &mut scratch.forced_prefix);
     } else {
@@ -1591,23 +1595,22 @@ pub fn break_paragraph_into(
 fn trailing_forced_fit_break(
     candidate: BreakCandidate,
     item_count: usize,
+    natural_width: LayoutUnit,
     line_width: LayoutUnit,
-    metrics: &MetricPrefixes,
 ) -> Option<LineBreak> {
     if candidate.penalty != FORCED_BREAK_PENALTY || candidate.next != item_count {
         return None;
     }
-    let segment = metrics.segment_metrics(0, candidate);
-    if segment.width > line_width {
+    if natural_width > line_width {
         return None;
     }
-    let badness = candidate_badness(candidate, segment, line_width);
-    let fitness = candidate_fitness(candidate, segment, line_width);
+    let badness = 0;
+    let fitness = FitnessClass::Decent;
     Some(LineBreak {
         start: 0,
         end: candidate.item_index,
         next: candidate.next,
-        natural_width: segment.width,
+        natural_width,
         badness,
         fitness,
         demerits: line_demerits(
@@ -1657,19 +1660,32 @@ fn break_candidates_into(
     out.clear();
     out.reserve(items.len());
     let mut stats = BreakCandidateStats::default();
+    let mut running_width = 0i64;
     for (idx, item) in items.iter().enumerate() {
         match item {
-            ParagraphItem::Glue(_) => out.push(BreakCandidate {
-                item_index: idx,
-                next: idx + 1,
-                penalty: 0,
-                penalty_width: LayoutUnit::ZERO,
-                flagged: false,
-            }),
+            ParagraphItem::Box(item) => {
+                running_width += item.width.milli_points() as i64;
+            }
+            ParagraphItem::Glue(item) => {
+                running_width += item.width.milli_points() as i64;
+                out.push(BreakCandidate {
+                    item_index: idx,
+                    next: idx + 1,
+                    penalty: 0,
+                    penalty_width: LayoutUnit::ZERO,
+                    flagged: false,
+                });
+            }
             ParagraphItem::Penalty(p) if p.penalty < INF_PENALTY => {
                 let next = idx + 1;
                 if p.penalty == FORCED_BREAK_PENALTY {
-                    stats.has_interior_forced_break |= next < items.len();
+                    if next < items.len() {
+                        stats.has_interior_forced_break = true;
+                    } else {
+                        stats.trailing_forced_width = Some(LayoutUnit(clamp_i64_to_i32(
+                            running_width + p.width.milli_points() as i64,
+                        )));
+                    }
                 } else if p.penalty < 0 {
                     stats.has_rewarded_break = true;
                 }
@@ -1681,7 +1697,7 @@ fn break_candidates_into(
                     flagged: p.flagged,
                 });
             }
-            ParagraphItem::Penalty(_) | ParagraphItem::Box(_) => {}
+            ParagraphItem::Penalty(_) => {}
         }
     }
     stats

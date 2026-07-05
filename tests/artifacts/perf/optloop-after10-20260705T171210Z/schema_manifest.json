@@ -1,0 +1,36 @@
+{
+  "schema_version": "fmd-perf-artifact-v1",
+  "schema_doc": "docs/PERFORMANCE_ARTIFACT_SCHEMA.md",
+  "run_id": "optloop-after10-20260705T171210Z",
+  "artifact_dir": "tests/artifacts/perf/optloop-after10-20260705T171210Z",
+  "primary_jsonl": "inprocess.jsonl",
+  "required_record_types": [
+    "run_start",
+    "host_fingerprint",
+    "build_profile",
+    "scenario_start",
+    "stage_summary",
+    "perf_sample",
+    "hardware_counter_summary",
+    "golden_checksum",
+    "hypothesis_evaluated",
+    "proof_obligation",
+    "run_complete",
+    "next_target_recommendation"
+  ],
+  "current_gauntlet_mapping": {
+    "fingerprint.json": ["run_start", "host_fingerprint", "build_profile"],
+    "inprocess.jsonl": ["perf_sample"],
+    "golden/pdf-large-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/pdf-large-recommendation.jsonl": ["next_target_recommendation"],
+    "golden/parser-large-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/parser-large-spanned-stages.jsonl": ["scenario_start", "stage_summary", "proof_obligation"],
+    "golden/parser-large-recommendation.jsonl": ["next_target_recommendation"],
+    "golden_checksums.txt": ["golden_checksum"],
+    "hypothesis.md": ["hypothesis_evaluated"],
+    "perf-stat.stdout": ["hardware_counter_summary"],
+    "perf-stat.stderr": ["hardware_counter_summary"],
+    "BASELINE.md": ["run_complete"],
+    "hotspot_table.md": ["next_target_recommendation source evidence"]
+  }
+}

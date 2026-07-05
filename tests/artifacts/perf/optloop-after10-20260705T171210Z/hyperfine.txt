@@ -1,0 +1,26 @@
+Benchmark 1: /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/showcase.html
+  Time (mean ± σ):       4.0 ms ±   0.2 ms    [User: 1.2 ms, System: 2.8 ms]
+  Range (min … max):     3.6 ms …   4.4 ms    20 runs
+ 
+Benchmark 2: /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --to pdf --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/showcase.pdf
+  Time (mean ± σ):      19.0 ms ±   0.5 ms    [User: 14.4 ms, System: 4.6 ms]
+  Range (min … max):    18.6 ms …  20.5 ms    20 runs
+ 
+Benchmark 3: /data/tmp/cargo-target/release-perf/fmd README.md --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/readme.html
+  Time (mean ± σ):       6.4 ms ±   0.2 ms    [User: 3.3 ms, System: 3.1 ms]
+  Range (min … max):     6.0 ms …   6.8 ms    20 runs
+ 
+Benchmark 4: /data/tmp/cargo-target/release-perf/fmd README.md --to pdf --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/readme.pdf
+  Time (mean ± σ):      80.6 ms ±   2.9 ms    [User: 74.8 ms, System: 5.7 ms]
+  Range (min … max):    77.5 ms …  86.1 ms    20 runs
+ 
+Benchmark 5: for f in /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/batch-in/*.md; do /data/tmp/cargo-target/release-perf/fmd "$f" --out "/data/tmp/fmd-perf-optloop-after10-20260705T171210Z/batch-out/$(basename "$f" .md).html" >/dev/null; done
+  Time (mean ± σ):     726.9 ms ±   3.0 ms    [User: 209.3 ms, System: 526.5 ms]
+  Range (min … max):   721.9 ms … 736.3 ms    20 runs
+ 
+Summary
+  /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/showcase.html ran
+    1.62 ± 0.09 times faster than /data/tmp/cargo-target/release-perf/fmd README.md --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/readme.html
+    4.81 ± 0.26 times faster than /data/tmp/cargo-target/release-perf/fmd examples/showcase.md --to pdf --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/showcase.pdf
+   20.34 ± 1.21 times faster than /data/tmp/cargo-target/release-perf/fmd README.md --to pdf --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/readme.pdf
+  183.50 ± 8.78 times faster than for f in /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/batch-in/*.md; do /data/tmp/cargo-target/release-perf/fmd "$f" --out "/data/tmp/fmd-perf-optloop-after10-20260705T171210Z/batch-out/$(basename "$f" .md).html" >/dev/null; done

@@ -1,0 +1,29 @@
+fmd: warning: image 'https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue' has no --pdf-image mapping; rendered as alt text (add --pdf-image 'https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue=PATH')
+fmd: warning: image 'https://img.shields.io/badge/language-Rust%202024-dea584' has no --pdf-image mapping; rendered as alt text (add --pdf-image 'https://img.shields.io/badge/language-Rust%202024-dea584=PATH')
+fmd: warning: image 'https://img.shields.io/badge/status-HTML%20%26%20PDF%20already%20work-success' has no --pdf-image mapping; rendered as alt text (add --pdf-image 'https://img.shields.io/badge/status-HTML%20%26%20PDF%20already%20work-success=PATH')
+fmd: warning: image 'https://img.shields.io/badge/core-clean--room%20std--only-success' has no --pdf-image mapping; rendered as alt text (add --pdf-image 'https://img.shields.io/badge/core-clean--room%20std--only-success=PATH')
+fmd: warning: image 'https://img.shields.io/badge/WASM-first--class-654ff0' has no --pdf-image mapping; rendered as alt text (add --pdf-image 'https://img.shields.io/badge/WASM-first--class-654ff0=PATH')
+fmd: wrote /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/time-readme.pdf (242591 bytes)
+	Command being timed: "/data/tmp/cargo-target/release-perf/fmd README.md --to pdf --out /data/tmp/fmd-perf-optloop-after10-20260705T171210Z/time-readme.pdf"
+	User time (seconds): 0.07
+	System time (seconds): 0.00
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.07
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 9320
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1548
+	Voluntary context switches: 1
+	Involuntary context switches: 1
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 488
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

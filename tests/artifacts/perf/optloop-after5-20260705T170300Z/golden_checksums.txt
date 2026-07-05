@@ -1,0 +1,12 @@
+ae27e67eca265337e6d8e81d534fc9d8c9dc49a6088a566f4e3bea6285b0b04c  ./font-subset.ttf
+ec4c27544dc224946dfb453dc07e506b38049d511ff833ef2d0fc45a04f34c73  ./html-showcase.html
+e8caf211e32abbec328e65e70125da72e5022435cda24dffb5d1cf0908e33861  ./hyphen-corpus.points
+0e10c1d86c9b3e0436b50fc19f8726db595568d26fade68a5f351b273361e10f  ./paragraph-1k.breaks
+573dc37012a1b66a3fcb4bb6c33ee04059204c65b8d22815f0a020b037b9a57d  ./parser-large-recommendation.jsonl
+a5f1827203be47ad4696cf4e917ce276b4250f4510655d44a5723372055ce8c1  ./parser-large-spanned-stages.jsonl
+b8703d5326a9f7e8f845623d53b52f462427df9d67853bc7308c50dedaedff11  ./parser-large-stages.jsonl
+d4a27f03208b7af21b74576b75b5226d705db8fb0c645938bfcbfa99a9e99d10  ./parser-large.html
+3c5dbc9ebdb07dc08c5824ae7d9f80c5f7ce7eea70f0d84778b842acf5942b9c  ./pdf-large-recommendation.jsonl
+ef5146803c94cefc5e9a9300ed4bac753619dbca427e45cbfb1200f1061ab140  ./pdf-large-stages.jsonl
+11b4e0f2e1ae6f3b18dcae8ec20e9df5be3c447fd0875607e0ce5d731edbcfd1  ./pdf-large.pdf
+5326e211cd9c1c24890c3288ec8db39c5aa4d1b1760c0436b71889abc98d362b  ./pdf-showcase.pdf

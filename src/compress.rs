@@ -196,13 +196,9 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
     let insert = |head: &mut [usize], prev: &mut [usize], p: usize| {
         if p + MIN_MATCH <= n {
             let h = hash3(data, p);
-            let old = head.get(h).copied().unwrap_or(NONE);
-            if let Some(slot) = prev.get_mut(p) {
-                *slot = old;
-            }
-            if let Some(slot) = head.get_mut(h) {
-                *slot = p;
-            }
+            let old = head[h];
+            prev[p] = old;
+            head[h] = p;
         }
     };
 
@@ -214,7 +210,7 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
         if pos + MIN_MATCH <= n {
             let h = hash3(data, pos);
             let max_match = (n - pos).min(MAX_MATCH);
-            let mut cand = head.get(h).copied().unwrap_or(NONE);
+            let mut cand = head[h];
             let mut chain = MAX_CHAIN;
             while cand != NONE && chain > 0 && cand < pos {
                 let dist = pos - cand;
@@ -229,7 +225,7 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
                         break;
                     }
                 }
-                cand = prev.get(cand).copied().unwrap_or(NONE);
+                cand = prev[cand];
                 chain -= 1;
             }
         }

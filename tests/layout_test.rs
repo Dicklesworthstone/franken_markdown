@@ -504,6 +504,82 @@ fn paragraphs_without_hard_breaks_skip_forced_prefix_scratch() {
 }
 
 #[test]
+fn fitting_multiword_paragraph_fast_path_skips_state_buffers() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(100_000);
+    let items = paragraph_items_from_text(&metrics, "alpha beta gamma", size);
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(&items, width, &mut scratch, &mut breaks);
+
+    assert_eq!(breaks.len(), 1);
+    let line = breaks[0];
+    assert_eq!(line.start, 0);
+    assert_eq!(line.end, 5);
+    assert_eq!(line.next, 6);
+    assert_eq!(line_text(&items, line.start, line.end), "alpha beta gamma");
+    assert_eq!(line.badness, 0);
+    assert_eq!(line.fitness, FitnessClass::Decent);
+    assert_eq!(line.demerits, 1);
+
+    let capacities = scratch.capacities();
+    assert_eq!(capacities.forced_prefixes, 0);
+    assert_eq!(capacities.states, 0);
+    assert!(capacities.candidates > 0);
+    assert!(capacities.prefix_widths > 0);
+}
+
+#[test]
+fn fitting_paragraph_with_negative_penalty_still_uses_dp_path() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let alpha = measure_text_with_pairs(&metrics, "alpha", size);
+    let beta = measure_text_with_pairs(&metrics, "beta", size);
+    let items = vec![
+        ParagraphItem::Box(TextBox {
+            text: "alpha".to_string(),
+            runs: StyledText::plain("alpha"),
+            width: alpha,
+        }),
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: -50,
+            flagged: false,
+        }),
+        ParagraphItem::Box(TextBox {
+            text: "beta".to_string(),
+            runs: StyledText::plain("beta"),
+            width: beta,
+        }),
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: FORCED_BREAK_PENALTY,
+            flagged: false,
+        }),
+    ];
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(
+        &items,
+        LayoutUnit::from_milli_points(100_000),
+        &mut scratch,
+        &mut breaks,
+    );
+
+    assert_eq!(
+        breaks,
+        break_paragraph(&items, LayoutUnit::from_milli_points(100_000))
+    );
+    assert!(
+        scratch.capacities().states > 0,
+        "negative non-forced penalties can change optimality, so they must keep the DP path"
+    );
+}
+
+#[test]
 fn interior_forced_breaks_still_use_prefix_scratch_and_split_lines() {
     let metrics = StubMetrics;
     let size = FontSize::from_points(10);

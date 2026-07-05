@@ -1420,17 +1420,28 @@ pub fn break_paragraph_into(
     }
     scratch.metrics.rebuild_from_items(items);
     let candidates = &scratch.candidates;
-    if candidates.len() == 1
-        && let Some(line) = single_forced_fit_break(candidates[0], line_width, &scratch.metrics)
+    let mut has_interior_forced_break = false;
+    let mut has_rewarded_break = false;
+    for candidate in candidates {
+        if candidate.penalty == FORCED_BREAK_PENALTY {
+            if candidate.next < items.len() {
+                has_interior_forced_break = true;
+            }
+        } else if candidate.penalty < 0 {
+            has_rewarded_break = true;
+        }
+    }
+    if !has_interior_forced_break
+        && !has_rewarded_break
+        && let Some(&candidate) = candidates.last()
+        && let Some(line) =
+            trailing_forced_fit_break(candidate, items.len(), line_width, &scratch.metrics)
     {
         scratch.forced_prefix.clear();
         scratch.states.clear();
         out.push(line);
         return;
     }
-    let has_interior_forced_break = candidates
-        .iter()
-        .any(|candidate| candidate.penalty == FORCED_BREAK_PENALTY && candidate.next < items.len());
     if has_interior_forced_break {
         forced_break_prefixes_into(items, &mut scratch.forced_prefix);
     } else {
@@ -1578,12 +1589,13 @@ pub fn break_paragraph_into(
     out.reverse();
 }
 
-fn single_forced_fit_break(
+fn trailing_forced_fit_break(
     candidate: BreakCandidate,
+    item_count: usize,
     line_width: LayoutUnit,
     metrics: &MetricPrefixes,
 ) -> Option<LineBreak> {
-    if candidate.penalty != FORCED_BREAK_PENALTY {
+    if candidate.penalty != FORCED_BREAK_PENALTY || candidate.next != item_count {
         return None;
     }
     let segment = metrics.segment_metrics(0, candidate);

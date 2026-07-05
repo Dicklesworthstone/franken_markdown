@@ -895,12 +895,11 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             }
             let split = split_list_items(&lines[i..]);
             for (_, body) in &split.items {
-                let body_slice: Vec<&str> = body.iter().map(String::as_str).collect();
-                let item_refs = collect_link_reference_map(&body_slice);
+                let item_refs = collect_link_reference_map(body);
                 for (label, reference) in item_refs {
                     refs.entry(label).or_insert(reference);
                 }
-                collect_nested_references(&body_slice, refs, depth + 1);
+                collect_nested_references(body, refs, depth + 1);
             }
             i += split.used.max(1);
             in_paragraph = false;
@@ -1760,19 +1759,22 @@ fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
 
 /// A list split into per-item bodies (marker/indent stripped, task marker
 /// separated) without parsing them, plus the list flags and the number of lines
-/// consumed. Shared by `parse_list_profiled` (which parses + renders each body)
-/// and `collect_nested_references` (which recurses into each body to find nested
+/// consumed. Body lines borrow from the source wherever possible: marker rests,
+/// content-indent strips, and lazy continuations are all slices of the original
+/// input; inserted structural blanks use the shared empty string. Shared by
+/// `parse_list_profiled` (which parses + renders each body) and
+/// `collect_nested_references` (which recurses into each body to find nested
 /// reference definitions), so the two agree exactly on item boundaries.
-struct ListSplit {
+struct ListSplit<'a> {
     ordered: bool,
     start: u64,
     tight: bool,
     /// `(task marker, body lines)` per item.
-    items: Vec<(Option<bool>, Vec<String>)>,
+    items: Vec<(Option<bool>, Vec<&'a str>)>,
     used: usize,
 }
 
-fn split_list_items(lines: &[&str]) -> ListSplit {
+fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
     let Some(first) = list_marker(lines[0]) else {
         return ListSplit {
             ordered: false,
@@ -1784,7 +1786,7 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
     };
     let ordered = first.ordered;
     let start = first.start;
-    let mut items: Vec<(Option<bool>, Vec<String>)> = Vec::new();
+    let mut items: Vec<(Option<bool>, Vec<&str>)> = Vec::new();
     let mut tight = true;
     let mut i = 0;
     while i < lines.len() {
@@ -1803,7 +1805,7 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
         let Some(m) = list_marker(lines[i]).filter(|m| m.ordered == ordered) else {
             break;
         };
-        let mut item_lines = vec![m.rest.to_string()];
+        let mut item_lines = vec![m.rest];
         i += 1;
 
         while i < lines.len() {
@@ -1834,7 +1836,7 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
                 {
                     tight = false;
                 }
-                item_lines.push(String::new());
+                item_lines.push("");
                 i += 1;
                 continue;
             }
@@ -1847,7 +1849,7 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
             }
 
             if leading_spaces(lines[i]) >= m.content_indent {
-                let stripped = strip_n(lines[i], m.content_indent).to_string();
+                let stripped = strip_n(lines[i], m.content_indent);
                 // A non-1-start ordered marker cannot interrupt a paragraph, so
                 // after prose it would be lazily absorbed; a blank line forces it
                 // into its own sub-list. But when the previous content line is
@@ -1858,13 +1860,13 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
                     .last()
                     .is_some_and(|prev| list_marker(prev).is_some());
                 if !prev_is_list_item
-                    && list_marker(&stripped)
+                    && list_marker(stripped)
                         .is_some_and(|marker| marker.ordered && marker.start != 1)
                     && item_lines
                         .last()
                         .is_some_and(|prev| !prev.trim().is_empty())
                 {
-                    item_lines.push(String::new());
+                    item_lines.push("");
                 }
                 item_lines.push(stripped);
             } else if item_lines.last().is_some_and(|prev| prev.trim().is_empty()) {
@@ -1876,16 +1878,14 @@ fn split_list_items(lines: &[&str]) -> ListSplit {
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
                 // continues the current OPEN paragraph/list item.
-                item_lines.push(lines[i].trim_start().to_string());
+                item_lines.push(lines[i].trim_start());
             }
             i += 1;
         }
 
-        let (task, first_body) = split_task_marker(&item_lines[0]);
-        let mut normalized = Vec::with_capacity(item_lines.len());
-        normalized.push(first_body.to_string());
-        normalized.extend(item_lines.into_iter().skip(1));
-        items.push((task, normalized));
+        let (task, first_body) = split_task_marker(item_lines[0]);
+        item_lines[0] = first_body;
+        items.push((task, item_lines));
     }
     ListSplit {
         ordered,
@@ -1907,9 +1907,12 @@ fn parse_list_profiled(
         // Remove reference-definition lines from the item body so they are not
         // rendered as literal text; they were already collected into the shared
         // `refs` map by `collect_nested_references`.
-        let body_refs: Vec<&str> = body.iter().map(String::as_str).collect();
-        let (consumed, _) = collect_link_reference_metadata(&body_refs);
-        let kept = strip_consumed_references(&body_refs, &consumed);
+        let kept = if body.iter().any(|line| line.contains("]:")) {
+            let (consumed, _) = collect_link_reference_metadata(&body);
+            strip_consumed_references(&body, &consumed)
+        } else {
+            body
+        };
         items.push(ListItem {
             task,
             blocks: parse_blocks_bounded(&kept, refs, profiler),

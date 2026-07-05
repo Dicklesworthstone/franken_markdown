@@ -874,18 +874,26 @@ struct HyphenTrieEdge {
 impl HyphenTrie {
     fn apply(&self, word: &[u8], scores: &mut [u8]) {
         for start in 0..word.len() {
-            let mut node = 0u32;
-            for &byte in &word[start..] {
+            let Some(mut node) = self.child(0, word[start]) else {
+                continue;
+            };
+            self.apply_terminal_values(node, start, scores);
+            for &byte in &word[start + 1..] {
                 let Some(next) = self.child(node, byte) else {
                     break;
                 };
                 node = next;
-                if let Some(values) = self.terminal_values(node) {
-                    for (offset, &value) in values.iter().enumerate() {
-                        if let Some(score) = scores.get_mut(start + offset) {
-                            *score = (*score).max(value);
-                        }
-                    }
+                self.apply_terminal_values(node, start, scores);
+            }
+        }
+    }
+
+    #[inline]
+    fn apply_terminal_values(&self, node_idx: u32, start: usize, scores: &mut [u8]) {
+        if let Some(values) = self.terminal_values(node_idx) {
+            for (offset, &value) in values.iter().enumerate() {
+                if let Some(score) = scores.get_mut(start + offset) {
+                    *score = (*score).max(value);
                 }
             }
         }

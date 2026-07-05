@@ -637,7 +637,9 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
 
         // Extract a reference definition only at a block boundary, never as a
         // paragraph continuation.
-        if !in_paragraph && let Some((label, mut reference)) = parse_reference_definition(lines[i])
+        if !in_paragraph
+            && looks_like_reference_definition(lines[i])
+            && let Some((label, mut reference)) = parse_reference_definition(lines[i])
         {
             let mut used = 1usize;
             if reference.title.is_none()
@@ -839,7 +841,10 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // skipped as a lazy continuation, dropping a nested definition it contains.
         // The def itself is harvested by the `collect_link_reference_metadata` call
         // on each container body, so this branch only advances and resets state.
-        if !in_paragraph && let Some((_, reference)) = parse_reference_definition(line) {
+        if !in_paragraph
+            && looks_like_reference_definition(line)
+            && let Some((_, reference)) = parse_reference_definition(line)
+        {
             let used = if reference.title.is_none()
                 && lines
                     .get(i + 1)

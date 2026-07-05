@@ -530,6 +530,13 @@ fn consumed_reference_run_separates_tables(
 fn table_end_boundaries(lines: &[&str]) -> Vec<bool> {
     let mut ends = vec![false; lines.len() + 1];
     for start in 0..lines.len() {
+        if !lines[start].contains('|')
+            || !lines
+                .get(start + 1)
+                .is_some_and(|line| is_table_delimiter(line))
+        {
+            continue;
+        }
         if let Some(used) = table_extent(&lines[start..]) {
             ends[start + used] = true;
         }
@@ -710,11 +717,13 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     if lines.len() < 2 {
         return None;
     }
-    let cols = split_table_row(text(&lines[0])).len();
-    if cols == 0
-        || !is_table_delimiter(text(&lines[1]))
-        || split_table_row(text(&lines[1])).len() != cols
-    {
+    let header = text(&lines[0]);
+    let delimiter = text(&lines[1]);
+    if !header.contains('|') || !is_table_delimiter(delimiter) {
+        return None;
+    }
+    let cols = split_table_row(header).len();
+    if cols == 0 || split_table_row(delimiter).len() != cols {
         return None;
     }
     let mut i = 2;
@@ -3595,7 +3604,7 @@ mod char_ref_dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
-    use super::{collect_link_references, line_is_paragraph_text, parse_document};
+    use super::{collect_link_references, line_is_paragraph_text, parse_document, table_extent};
     use crate::{
         HtmlOptions,
         ast::{Block, Inline},
@@ -3752,6 +3761,17 @@ mod refdef_paragraph_tests {
         // A pipe line that is NOT a table (no delimiter row) is ordinary text, so
         // a def-looking line right after it is a lazy continuation, not a def.
         assert!(!html("a | b\n[x]: /y\n\n[x]").contains("href=\"/y\""));
+    }
+
+    #[test]
+    fn table_extent_requires_the_same_pipe_header_guard_as_the_block_parser() {
+        // The extent-only helper feeds reference-stripping boundary preservation.
+        // It must mirror the actual parse entry guard, which only attempts GFM
+        // table parsing for headers containing a pipe. Otherwise setext shapes
+        // like `Title\n---` look like one-column tables to the helper alone.
+        assert_eq!(table_extent(&["Title", "---"]), None);
+        assert_eq!(table_extent(&["Title", "---", "| body |"]), None);
+        assert_eq!(table_extent(&["| Title |", "| --- |"]), Some(2));
     }
 
     #[test]

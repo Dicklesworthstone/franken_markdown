@@ -543,8 +543,20 @@ fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
 }
 
 fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) {
-    let mut refs = ReferenceMap::new();
     let mut consumed = vec![false; lines.len()];
+    let refs = collect_link_reference_metadata_with_consumed(lines, Some(&mut consumed));
+    (consumed, refs)
+}
+
+fn collect_link_reference_map(lines: &[&str]) -> ReferenceMap {
+    collect_link_reference_metadata_with_consumed(lines, None)
+}
+
+fn collect_link_reference_metadata_with_consumed(
+    lines: &[&str],
+    mut consumed: Option<&mut [bool]>,
+) -> ReferenceMap {
+    let mut refs = ReferenceMap::new();
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
     // paragraph. A link reference definition can only be *defined* at a block
@@ -651,8 +663,10 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
             }
 
             refs.entry(label).or_insert(reference);
-            for consumed_line in consumed.iter_mut().skip(i).take(used) {
-                *consumed_line = true;
+            if let Some(consumed) = consumed.as_deref_mut() {
+                for consumed_line in consumed.iter_mut().skip(i).take(used) {
+                    *consumed_line = true;
+                }
             }
             i += used;
             // Leading reference definitions do not themselves open a paragraph.
@@ -679,7 +693,7 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
         i += 1;
     }
 
-    (consumed, refs)
+    refs
 }
 
 /// If `lines` begins with a GFM pipe table (a row followed by a delimiter row of
@@ -788,7 +802,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 }
             }
             let inner_slice: Vec<&str> = inner.iter().map(String::as_str).collect();
-            let (_, bq_refs) = collect_link_reference_metadata(&inner_slice);
+            let bq_refs = collect_link_reference_map(&inner_slice);
             for (label, reference) in bq_refs {
                 refs.entry(label).or_insert(reference);
             }
@@ -823,7 +837,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             let split = split_list_items(&lines[i..]);
             for (_, body) in &split.items {
                 let body_slice: Vec<&str> = body.iter().map(String::as_str).collect();
-                let (_, item_refs) = collect_link_reference_metadata(&body_slice);
+                let item_refs = collect_link_reference_map(&body_slice);
                 for (label, reference) in item_refs {
                     refs.entry(label).or_insert(reference);
                 }

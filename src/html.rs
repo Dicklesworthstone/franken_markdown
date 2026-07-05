@@ -4,6 +4,7 @@
 //! readable measure and leading, gorgeous tables with subtle striping, elegant
 //! blockquotes, and code blocks ready for syntax highlighting.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{Align, Block, Document, Inline, List};
@@ -429,34 +430,38 @@ fn highlight_code(lang: &str, code: &str, out: &mut String) {
     }
 }
 
-fn escape_text(s: &str) -> String {
-    // Bulk-copy clean runs between special bytes via the shared scalar scanner
-    // (`find_html_escape` also flags `"`, which text leaves literal — handled in
-    // the match). The specials are all ASCII, so byte indexing never splits a
-    // multi-byte UTF-8 sequence.
+fn escape_text(s: &str) -> Cow<'_, str> {
+    // Text nodes only need `&`, `<`, and `>` escaped. Quotes stay literal in
+    // text content, so quote-only strings can borrow the input unchanged.
     let bytes = s.as_bytes();
+    if find_text_escape(bytes).is_none() {
+        return Cow::Borrowed(s);
+    }
     let mut o = String::with_capacity(s.len());
     let mut start = 0;
-    while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {
+    while let Some(rel) = find_text_escape(&bytes[start..]) {
         let pos = start + rel;
         o.push_str(&s[start..pos]);
         match bytes[pos] {
             b'&' => o.push_str("&amp;"),
             b'<' => o.push_str("&lt;"),
             b'>' => o.push_str("&gt;"),
-            other => o.push(other as char), // `"` (and only `"`) stays literal in text
+            _ => {}
         }
         start = pos + 1;
     }
     o.push_str(&s[start..]);
-    o
+    Cow::Owned(o)
 }
 
-fn escape_attr(s: &str) -> String {
+fn escape_attr(s: &str) -> Cow<'_, str> {
     // The attribute escape set (`& < > "`) is exactly the scanner's
     // `find_html_escape` set, so bulk-copy clean runs and escape each special.
     // All specials are ASCII, so byte indexing is UTF-8-safe.
     let bytes = s.as_bytes();
+    if crate::scanner::find_html_escape(bytes).is_none() {
+        return Cow::Borrowed(s);
+    }
     let mut o = String::with_capacity(s.len());
     let mut start = 0;
     while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {
@@ -472,7 +477,13 @@ fn escape_attr(s: &str) -> String {
         start = pos + 1;
     }
     o.push_str(&s[start..]);
-    o
+    Cow::Owned(o)
+}
+
+fn find_text_escape(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .iter()
+        .position(|&byte| matches!(byte, b'&' | b'<' | b'>'))
 }
 
 #[derive(Clone, Copy)]
@@ -1105,11 +1116,14 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use crate::HtmlOptions;
     use crate::ast::{Block, Document, Inline};
 
     use super::{
-        base64_encode, css_num, inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
+        base64_encode, css_num, escape_attr, escape_text, inlines_to_plain, push_u64,
+        sanitize_custom_css, slug, slug_inlines,
     };
 
     #[test]
@@ -1167,6 +1181,23 @@ mod tests {
         push_u64(&mut out, u64::MAX);
 
         assert_eq!(out, "0,42,18446744073709551615");
+    }
+
+    #[test]
+    fn escape_text_and_attr_borrow_clean_inputs() {
+        assert!(matches!(
+            escape_text("plain quoted \" text"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(escape_attr("plain-path_123"), Cow::Borrowed(_)));
+
+        assert_eq!(escape_text("a < b & c").as_ref(), "a &lt; b &amp; c");
+        assert!(matches!(escape_text("a < b"), Cow::Owned(_)));
+        assert_eq!(
+            escape_attr("say \"hi\" & go").as_ref(),
+            "say &quot;hi&quot; &amp; go"
+        );
+        assert!(matches!(escape_attr("say \"hi\""), Cow::Owned(_)));
     }
 
     #[test]

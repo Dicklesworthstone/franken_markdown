@@ -408,6 +408,30 @@ fn character_references_decode_named_decimal_and_hex_forms() {
 }
 
 #[test]
+fn multiline_paragraph_inline_handoff_preserves_soft_breaks_and_references() {
+    let doc = parse_markdown("Title\n===\n[ref]: /dest \"T\"\n\n*a\n[ref]*");
+
+    assert_eq!(
+        doc.blocks,
+        vec![
+            Block::Heading {
+                level: 1,
+                inlines: vec![Inline::Text("Title".to_string())],
+            },
+            Block::Paragraph(vec![Inline::Emphasis(vec![
+                Inline::Text("a".to_string()),
+                Inline::SoftBreak,
+                Inline::Link {
+                    dest: "/dest".to_string(),
+                    title: Some("T".to_string()),
+                    content: vec![Inline::Text("ref".to_string())],
+                },
+            ])]),
+        ]
+    );
+}
+
+#[test]
 fn profiled_parser_matches_normal_ast_and_reports_required_stages() {
     let src = "# Profiled\n\n\
                A paragraph with **strong** text and [ref][id].\n\n\
@@ -443,7 +467,7 @@ fn profiled_parser_matches_normal_ast_and_reports_required_stages() {
 }
 
 #[test]
-fn profiled_parser_does_not_charge_single_line_paragraphs_for_join_allocation() {
+fn profiled_parser_counts_paragraph_handoff_allocations() {
     let profiled = parse_markdown_profiled("alpha\n\nbeta");
     let paragraph_allocations: Vec<usize> = profiled
         .stages
@@ -460,7 +484,7 @@ fn profiled_parser_does_not_charge_single_line_paragraphs_for_join_allocation() 
         .iter()
         .find(|stage| stage.stage == "paragraph_block")
         .expect("multi-line paragraph should report a paragraph stage");
-    assert_eq!(joined_paragraph.allocations, 5);
+    assert_eq!(joined_paragraph.allocations, 4);
 }
 
 #[test]

@@ -1151,13 +1151,13 @@ fn parse_blocks_with_refs_profiled(
                 && let Some(level) = setext_underline(lines[i])
             {
                 let started = profiler.checkpoint();
-                let (inlines, text_len, join_allocations) =
+                let (inlines, text_len, handoff_allocations) =
                     parse_lines_as_inlines(&lines[start..i], refs, profiler);
                 profiler.record_since(
                     "setext_heading_block",
                     i - start + 1,
                     text_len,
-                    join_allocations + 1 + inlines.len(),
+                    handoff_allocations + 1 + inlines.len(),
                     "parse one setext heading and its inline content",
                     started,
                 );
@@ -1178,13 +1178,13 @@ fn parse_blocks_with_refs_profiled(
             i += 1;
         }
         let started = profiler.checkpoint();
-        let (inlines, text_len, join_allocations) =
+        let (inlines, text_len, handoff_allocations) =
             parse_lines_as_inlines(&lines[start..i], refs, profiler);
         profiler.record_since(
             "paragraph_block",
             i - start,
             text_len,
-            join_allocations + 1 + inlines.len(),
+            handoff_allocations + 1 + inlines.len(),
             "parse one paragraph block and its inline content",
             started,
         );
@@ -1206,15 +1206,31 @@ fn parse_lines_as_inlines(
             0,
         ),
         _ => {
-            let text = lines.join("\n");
-            let len = text.len();
+            let started = profiler.checkpoint();
+            let len = inline_lines_byte_len(lines);
+            let chars = collect_inline_chars_from_lines(lines, len);
             (
-                parse_inlines_with_refs_profiled(&text, refs, profiler),
+                parse_inlines_chars_with_refs_profiled(chars, len, refs, profiler, started),
                 len,
-                1,
+                0,
             )
         }
     }
+}
+
+fn inline_lines_byte_len(lines: &[&str]) -> usize {
+    lines.iter().map(|line| line.len()).sum::<usize>() + lines.len().saturating_sub(1)
+}
+
+fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char> {
+    let mut chars = Vec::with_capacity(byte_len);
+    for (idx, line) in lines.iter().enumerate() {
+        if idx > 0 {
+            chars.push('\n');
+        }
+        chars.extend(line.chars());
+    }
+    chars
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
@@ -2083,6 +2099,17 @@ fn parse_inlines_with_refs_profiled(
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     let started = profiler.checkpoint();
+    let bytes: Vec<char> = text.chars().collect();
+    parse_inlines_chars_with_refs_profiled(bytes, text.len(), refs, profiler, started)
+}
+
+fn parse_inlines_chars_with_refs_profiled(
+    bytes: Vec<char>,
+    byte_len: usize,
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+    started: Option<ParseStageStart>,
+) -> Vec<Inline> {
     // Inline parsing is two phases. Phase 1 (this loop) tokenizes the text into a
     // flat list of `InlineEl` nodes: finalized inlines (code, links, images,
     // autolinks, raw HTML, breaks) interleaved with raw `*`/`_` emphasis
@@ -2090,7 +2117,6 @@ fn parse_inlines_with_refs_profiled(
     // "process emphasis" delimiter-stack algorithm over that list to pair openers
     // with closers and build the correct nested `Emphasis`/`Strong` tree.
     let mut els: Vec<InlineEl> = Vec::new();
-    let bytes: Vec<char> = text.chars().collect();
     // Precompute `[`→`]` matches once (linear) so each link/image attempt below
     // is an O(1) lookup rather than an O(n) rescan per `[` (which was quadratic
     // on pathological bracket-heavy lines).
@@ -2290,7 +2316,7 @@ fn parse_inlines_with_refs_profiled(
     profiler.record_since(
         "inline_parse",
         bytes.len(),
-        text.len(),
+        byte_len,
         1 + bytes.len() + out.len(),
         "parse inline delimiters, links, references, autolinks, code spans, and text",
         started,

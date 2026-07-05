@@ -363,8 +363,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
         }
 
         if indented_code_start(line) {
-            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
-            let (_code, used) = parse_indented_code(&rest);
+            let used = indented_code_extent(&lines[i..], |line| line.text);
             spans.push(span_for_lines(&lines, i, i + used));
             i += used;
             continue;
@@ -387,8 +386,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
         }
 
         if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1].text) {
-            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
-            if let Some((_table, used)) = parse_table(&rest, &refs) {
+            if let Some(used) = table_extent_with(&lines[i..], |line| line.text) {
                 spans.push(span_for_lines(&lines, i, i + used));
                 i += used;
                 continue;
@@ -705,15 +703,26 @@ fn collect_link_reference_metadata_with_consumed(
 /// distinct block, so a following definition is at a block boundary, not a
 /// paragraph continuation.
 fn table_extent(lines: &[&str]) -> Option<usize> {
+    table_extent_with(lines, |line| *line)
+}
+
+fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize> {
     if lines.len() < 2 {
         return None;
     }
-    let cols = split_table_row(lines[0]).len();
-    if cols == 0 || !is_table_delimiter(lines[1]) || split_table_row(lines[1]).len() != cols {
+    let cols = split_table_row(text(&lines[0])).len();
+    if cols == 0
+        || !is_table_delimiter(text(&lines[1]))
+        || split_table_row(text(&lines[1])).len() != cols
+    {
         return None;
     }
     let mut i = 2;
-    while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
+    while i < lines.len() {
+        let line = text(&lines[i]);
+        if line.trim().is_empty() || !line.contains('|') {
+            break;
+        }
         i += 1;
     }
     Some(i)
@@ -1379,29 +1388,40 @@ fn indented_code_start(line: &str) -> bool {
 }
 
 fn parse_indented_code(lines: &[&str]) -> (String, usize) {
+    let used = indented_code_extent(lines, |line| *line);
     let mut code = String::new();
+    for line in lines.iter().take(used) {
+        if line.trim().is_empty() {
+            code.push('\n');
+        } else {
+            code.push_str(strip_n(line, 4));
+            code.push('\n');
+        }
+    }
+    (code, used)
+}
+
+fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
     let mut i = 0usize;
     while i < lines.len() {
-        if lines[i].trim().is_empty() {
+        let line = text(&lines[i]);
+        if line.trim().is_empty() {
             let mut next = i + 1;
-            while next < lines.len() && lines[next].trim().is_empty() {
+            while next < lines.len() && text(&lines[next]).trim().is_empty() {
                 next += 1;
             }
-            if next >= lines.len() || !indented_code_start(lines[next]) {
+            if next >= lines.len() || !indented_code_start(text(&lines[next])) {
                 break;
             }
-            code.push('\n');
             i += 1;
             continue;
         }
-        if !indented_code_start(lines[i]) {
+        if !indented_code_start(line) {
             break;
         }
-        code.push_str(strip_n(lines[i], 4));
-        code.push('\n');
         i += 1;
     }
-    (code, i)
+    i
 }
 
 /// The content of a `>`-quoted line with the marker and one optional following
@@ -1970,11 +1990,6 @@ fn split_table_row(line: &str) -> Vec<String> {
     }
     cells.push(cur.trim().to_string());
     cells
-}
-
-fn parse_table(lines: &[&str], refs: &ReferenceMap) -> Option<(Table, usize)> {
-    let mut profiler = ParseProfiler::disabled();
-    parse_table_profiled(lines, refs, &mut profiler)
 }
 
 fn parse_table_profiled(

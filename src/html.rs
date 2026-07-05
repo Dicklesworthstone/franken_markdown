@@ -280,11 +280,15 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                 content,
             } => {
                 if let Some(href) = safe_url(dest, UrlContext::Link) {
-                    let t = title
-                        .as_deref()
-                        .map(|s| format!(" title=\"{}\"", escape_attr(s)))
-                        .unwrap_or_default();
-                    out.push_str(&format!("<a href=\"{}\"{t}>", escape_attr(href)));
+                    out.push_str("<a href=\"");
+                    out.push_str(&escape_attr(href));
+                    out.push('"');
+                    if let Some(title) = title.as_deref() {
+                        out.push_str(" title=\"");
+                        out.push_str(&escape_attr(title));
+                        out.push('"');
+                    }
+                    out.push('>');
                     render_inlines(content, out, opts);
                     out.push_str("</a>");
                 } else {
@@ -293,15 +297,17 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             }
             Inline::Image { dest, title, alt } => {
                 if let Some(src) = safe_url(dest, UrlContext::Image) {
-                    let t = title
-                        .as_deref()
-                        .map(|s| format!(" title=\"{}\"", escape_attr(s)))
-                        .unwrap_or_default();
-                    out.push_str(&format!(
-                        "<img src=\"{}\" alt=\"{}\"{t}>",
-                        escape_attr(src),
-                        escape_attr(alt)
-                    ));
+                    out.push_str("<img src=\"");
+                    out.push_str(&escape_attr(src));
+                    out.push_str("\" alt=\"");
+                    out.push_str(&escape_attr(alt));
+                    out.push('"');
+                    if let Some(title) = title.as_deref() {
+                        out.push_str(" title=\"");
+                        out.push_str(&escape_attr(title));
+                        out.push('"');
+                    }
+                    out.push('>');
                 } else {
                     out.push_str(&escape_text(alt));
                 }

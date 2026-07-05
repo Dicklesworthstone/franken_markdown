@@ -584,21 +584,47 @@ fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
         DarkModePolicy::Disabled => "",
     };
 
-    format!(
-        "{}{}\n\
-:root {{ --fmd-base: {}px; --fmd-measure: {}px; --fmd-line-height: {}; \
---fmd-radius: {}px; --fmd-table-pad-y: {}em; --fmd-table-pad-x: {}em; \
---fmd-font-body: {body_font}; --fmd-font-mono: {mono_font}; }}\n\
-{BASE_CSS}\n{TOKEN_CSS}\n{dark}{token_dark}",
-        embedded.css,
-        color_vars(colors),
-        spacing.base_px,
-        spacing.max_width_px,
-        css_num(spacing.line_height),
-        spacing.radius_px,
-        css_num(spacing.table_cell_padding_y_em),
-        css_num(spacing.table_cell_padding_x_em),
-    )
+    let color_vars = color_vars(colors);
+    let line_height = css_num(spacing.line_height);
+    let pad_y = css_num(spacing.table_cell_padding_y_em);
+    let pad_x = css_num(spacing.table_cell_padding_x_em);
+    let mut css = String::with_capacity(
+        embedded.css.len()
+            + color_vars.len()
+            + body_font.len()
+            + mono_font.len()
+            + BASE_CSS.len()
+            + TOKEN_CSS.len()
+            + dark.len()
+            + token_dark.len()
+            + 256,
+    );
+    css.push_str(&embedded.css);
+    css.push_str(&color_vars);
+    css.push_str("\n:root { --fmd-base: ");
+    push_u64(&mut css, u64::from(spacing.base_px));
+    css.push_str("px; --fmd-measure: ");
+    push_u64(&mut css, u64::from(spacing.max_width_px));
+    css.push_str("px; --fmd-line-height: ");
+    css.push_str(&line_height);
+    css.push_str("; --fmd-radius: ");
+    push_u64(&mut css, u64::from(spacing.radius_px));
+    css.push_str("px; --fmd-table-pad-y: ");
+    css.push_str(&pad_y);
+    css.push_str("em; --fmd-table-pad-x: ");
+    css.push_str(&pad_x);
+    css.push_str("em; --fmd-font-body: ");
+    css.push_str(&body_font);
+    css.push_str("; --fmd-font-mono: ");
+    css.push_str(&mono_font);
+    css.push_str("; }\n");
+    css.push_str(BASE_CSS);
+    css.push('\n');
+    css.push_str(TOKEN_CSS);
+    css.push('\n');
+    css.push_str(&dark);
+    css.push_str(token_dark);
+    css
 }
 
 fn color_vars(colors: &ThemeColors) -> String {

@@ -306,6 +306,11 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
     let raw_lines = source_lines(src);
     let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
     let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
+    let table_ends = if consumed_reference_lines.iter().any(|consumed| *consumed) {
+        table_end_boundaries(&line_texts)
+    } else {
+        Vec::new()
+    };
     let lines: Vec<SourceLine<'_>> = raw_lines
         .iter()
         .copied()
@@ -316,6 +321,7 @@ fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
             } else if consumed_reference_run_separates_tables(
                 &line_texts,
                 &consumed_reference_lines,
+                &table_ends,
                 idx,
             ) {
                 Some(SourceLine { text: "", ..line })
@@ -489,17 +495,27 @@ fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[bool]) -> Vec<&'a str> {
     let mut kept = Vec::with_capacity(lines.len());
+    let table_ends = if consumed.iter().any(|consumed| *consumed) {
+        table_end_boundaries(lines)
+    } else {
+        Vec::new()
+    };
     for (idx, line) in lines.iter().enumerate() {
         if !consumed[idx] {
             kept.push(*line);
-        } else if consumed_reference_run_separates_tables(lines, consumed, idx) {
+        } else if consumed_reference_run_separates_tables(lines, consumed, &table_ends, idx) {
             kept.push("");
         }
     }
     kept
 }
 
-fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], idx: usize) -> bool {
+fn consumed_reference_run_separates_tables(
+    lines: &[&str],
+    consumed: &[bool],
+    table_ends: &[bool],
+    idx: usize,
+) -> bool {
     if idx > 0 && consumed[idx - 1] {
         return false;
     }
@@ -509,11 +525,17 @@ fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], id
         next += 1;
     }
 
-    table_ends_at(lines, idx) && table_body_row_starts_at(lines, next)
+    table_ends.get(idx).copied().unwrap_or(false) && table_body_row_starts_at(lines, next)
 }
 
-fn table_ends_at(lines: &[&str], end: usize) -> bool {
-    (0..end).any(|start| table_extent(&lines[start..]).is_some_and(|used| start + used == end))
+fn table_end_boundaries(lines: &[&str]) -> Vec<bool> {
+    let mut ends = vec![false; lines.len() + 1];
+    for start in 0..lines.len() {
+        if let Some(used) = table_extent(&lines[start..]) {
+            ends[start + used] = true;
+        }
+    }
+    ends
 }
 
 fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {

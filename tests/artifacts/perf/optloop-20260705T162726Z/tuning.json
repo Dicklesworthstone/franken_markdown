@@ -1,0 +1,6 @@
+{
+  "requested": false,
+  "perf_event_paranoid": "4",
+  "kptr_restrict": "1",
+  "nmi_watchdog": "1"
+}

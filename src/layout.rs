@@ -896,6 +896,17 @@ impl HyphenTrie {
         let start = node.first_edge as usize;
         let end = start.saturating_add(node.edge_count as usize);
         let edges = self.edges.get(start..end)?;
+        if edges.len() <= 4 {
+            for edge in edges {
+                if edge.byte == byte {
+                    return Some(edge.target);
+                }
+                if edge.byte > byte {
+                    return None;
+                }
+            }
+            return None;
+        }
         edges
             .binary_search_by_key(&byte, |edge| edge.byte)
             .ok()

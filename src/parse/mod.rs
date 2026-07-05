@@ -573,11 +573,21 @@ fn collect_link_reference_metadata_with_consumed(
     let mut in_paragraph = false;
 
     while i < lines.len() {
+        let line = lines[i];
+        if line.trim().is_empty() {
+            in_paragraph = false;
+            i += 1;
+            continue;
+        }
+
+        let scan = scan_markdown_line(line);
         // Fenced code block contents are literal text, never reference
         // definitions. Skip over the whole fence (matching the block parser's
         // own fence handling) so a `[label]: dest`-looking code line is not
         // extracted and silently deleted from the rendered code block.
-        if let Some((fence_ch, fence_len, _info)) = open_fence(lines[i]) {
+        if scan.maybe_fence
+            && let Some((fence_ch, fence_len, _info)) = open_fence(line)
+        {
             i += 1;
             while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
                 i += 1;
@@ -594,7 +604,7 @@ fn collect_link_reference_metadata_with_consumed(
         // blank-terminated skip swallows a following real definition (dropping it).
         // A blank line — even one that is all spaces — is handled by the blank
         // branch below, so it is excluded here.
-        if !lines[i].trim().is_empty() && indented_code_start(lines[i]) {
+        if indented_code_start(line) {
             in_paragraph = false;
             i += 1;
             continue;
@@ -607,7 +617,7 @@ fn collect_link_reference_metadata_with_consumed(
         // boundary definition and stripped, which silently deleted the line and
         // phantom-defined the label. Definitions genuinely inside the quote are
         // collected separately by `collect_nested_references`.
-        if lines[i].trim_start().starts_with('>') {
+        if scan.maybe_blockquote && line.trim_start().starts_with('>') {
             let mut last_inner: Option<&str> = None;
             while i < lines.len() {
                 if lines[i].trim_start().starts_with('>') {
@@ -627,15 +637,11 @@ fn collect_link_reference_metadata_with_consumed(
         // HTML block contents are literal text, never reference definitions.
         // Skip the whole block (matching the block parser) so a `[label]: dest`-
         // looking line inside raw HTML is not extracted and resolved.
-        if let Some(end_cond) = html_block_kind(lines[i]) {
+        if scan.maybe_html
+            && let Some(end_cond) = html_block_kind(line)
+        {
             i = html_block_end(lines, i, end_cond, |l| *l);
             in_paragraph = false;
-            continue;
-        }
-
-        if lines[i].trim().is_empty() {
-            in_paragraph = false;
-            i += 1;
             continue;
         }
 
@@ -645,7 +651,7 @@ fn collect_link_reference_metadata_with_consumed(
         // the rows are absorbed as ordinary continuation via line_is_paragraph_text.
         if !in_paragraph
             && i + 1 < lines.len()
-            && lines[i].contains('|')
+            && scan.contains_pipe
             && is_table_delimiter(lines[i + 1])
             && let Some(used) = table_extent(&lines[i..])
         {
@@ -656,8 +662,8 @@ fn collect_link_reference_metadata_with_consumed(
         // Extract a reference definition only at a block boundary, never as a
         // paragraph continuation.
         if !in_paragraph
-            && looks_like_reference_definition(lines[i])
-            && let Some((label, mut reference)) = parse_reference_definition(lines[i])
+            && scan.maybe_reference
+            && let Some((label, mut reference)) = parse_reference_definition(line)
         {
             let mut used = 1usize;
             if reference.title.is_none()
@@ -686,7 +692,7 @@ fn collect_link_reference_metadata_with_consumed(
         // `line_is_paragraph_text` treats as ordinary text) would keep the
         // paragraph "open" and a following reference definition would be wrongly
         // absorbed as a lazy continuation and dropped.
-        if in_paragraph && setext_underline(lines[i]).is_some() {
+        if in_paragraph && scan.maybe_setext_underline && setext_underline(line).is_some() {
             in_paragraph = false;
             i += 1;
             continue;
@@ -695,7 +701,7 @@ fn collect_link_reference_metadata_with_consumed(
         // Any other non-blank line is paragraph text — so a following
         // `[label]: dest` line is a lazy continuation, not a definition — unless
         // it begins a different block, which closes/prevents a paragraph.
-        in_paragraph = line_is_paragraph_text(lines[i]);
+        in_paragraph = line_is_paragraph_text_with_scan(line, scan);
         i += 1;
     }
 
@@ -743,23 +749,27 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
 /// `parse_blocks_with_refs_profiled`), so reference-definition collection agrees
 /// with where an open paragraph actually exists and never mistakes a real block
 /// opener for paragraph text (which would wrongly suppress a valid definition).
+#[cfg(test)]
 fn line_is_paragraph_text(line: &str) -> bool {
+    line_is_paragraph_text_with_scan(line, scan_markdown_line(line))
+}
+
+fn line_is_paragraph_text_with_scan(line: &str, scan: ParserLineScan) -> bool {
     if line.trim().is_empty() {
         return false;
     }
 
-    let scan = scan_markdown_line(line);
     if line_is_plain_paragraph_fast_path(line, scan) {
         return true;
     }
 
-    !is_thematic_break(line)
-        && atx_heading(line).is_none()
-        && open_fence(line).is_none()
+    (!scan.maybe_thematic_break || !is_thematic_break(line))
+        && (!scan.maybe_heading_marker || atx_heading(line).is_none())
+        && (!scan.maybe_fence || open_fence(line).is_none())
         && !indented_code_start(line)
-        && !line.trim_start().starts_with('>')
-        && !html_block_start(line)
-        && !list_marker_interrupts_paragraph(line)
+        && (!scan.maybe_blockquote || !line.trim_start().starts_with('>'))
+        && (!scan.maybe_html || !html_block_start(line))
+        && (!scan.maybe_list_marker || !list_marker_interrupts_paragraph(line))
 }
 
 fn line_is_plain_paragraph_fast_path(line: &str, scan: ParserLineScan) -> bool {
@@ -804,8 +814,11 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             i += 1;
             continue;
         }
+        let scan = scan_markdown_line(line);
         // Fenced code contents are literal, never definitions — skip the fence.
-        if let Some((fence_ch, fence_len, _info)) = open_fence(line) {
+        if scan.maybe_fence
+            && let Some((fence_ch, fence_len, _info)) = open_fence(line)
+        {
             i += 1;
             while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
                 i += 1;
@@ -827,12 +840,14 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // HTML block contents are literal — skip the whole block so a
         // `> [x]: dest`/`- [x]: dest`-looking line inside raw HTML is not read as
         // a nested container and its "definition" collected.
-        if let Some(end_cond) = html_block_kind(line) {
+        if scan.maybe_html
+            && let Some(end_cond) = html_block_kind(line)
+        {
             i = html_block_end(lines, i, end_cond, |l| *l);
             in_paragraph = false;
             continue;
         }
-        if line.trim_start().starts_with('>') {
+        if scan.maybe_blockquote && line.trim_start().starts_with('>') {
             let mut inner = Vec::new();
             while i < lines.len() {
                 if lines[i].trim_start().starts_with('>') {
@@ -862,7 +877,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // table cannot interrupt a paragraph, so this only applies at a boundary.
         if !in_paragraph
             && i + 1 < lines.len()
-            && line.contains('|')
+            && scan.contains_pipe
             && is_table_delimiter(lines[i + 1])
             && let Some(used) = table_extent(&lines[i..])
         {
@@ -873,7 +888,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // does (shared `split_list_items`) and collect each item's definitions.
         // A marker that cannot interrupt an open paragraph is a lazy continuation
         // of that paragraph, not a list, so skip it without harvesting.
-        if list_marker(line).is_some() {
+        if scan.maybe_list_marker && list_marker(line).is_some() {
             if in_paragraph && !list_marker_interrupts_paragraph(line) {
                 i += 1;
                 continue;
@@ -900,7 +915,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // The def itself is harvested by the `collect_link_reference_metadata` call
         // on each container body, so this branch only advances and resets state.
         if !in_paragraph
-            && looks_like_reference_definition(line)
+            && scan.maybe_reference
             && let Some((_, reference)) = parse_reference_definition(line)
         {
             let used = if reference.title.is_none()
@@ -924,12 +939,12 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // paragraph "open" and a following ordered-marker list (which then sits at
         // a boundary) would be skipped as a lazy continuation, dropping a nested
         // definition it contains.
-        if in_paragraph && setext_underline(line).is_some() {
+        if in_paragraph && scan.maybe_setext_underline && setext_underline(line).is_some() {
             in_paragraph = false;
             i += 1;
             continue;
         }
-        in_paragraph = line_is_paragraph_text(line);
+        in_paragraph = line_is_paragraph_text_with_scan(line, scan);
         i += 1;
     }
 }

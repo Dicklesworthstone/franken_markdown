@@ -753,6 +753,36 @@ fn hyphenated_paragraph_items_into_matches_wrapper_and_reuses_scratch() {
 }
 
 #[test]
+fn short_words_skip_hyphenation_scratch_growth() {
+    let metrics = StubMetrics;
+    let hyphenator = Hyphenator::english();
+    let size = FontSize::from_points(10);
+    let text = "a an the to of by";
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut items = Vec::new();
+
+    hyphenated_paragraph_items_from_text_into(
+        &metrics,
+        &hyphenator,
+        text,
+        size,
+        &mut scratch,
+        &mut items,
+    );
+
+    assert_eq!(
+        items,
+        hyphenated_paragraph_items_from_text(&metrics, &hyphenator, text, size)
+    );
+    assert_eq!(line_text(&items, 0, items.len()), text);
+    let capacities = scratch.capacities();
+    assert_eq!(capacities.hyphen_lower_bytes, 0);
+    assert_eq!(capacities.hyphen_dotted_bytes, 0);
+    assert_eq!(capacities.hyphen_scores, 0);
+    assert_eq!(capacities.hyphen_points, 0);
+}
+
+#[test]
 fn hyphen_penalty_width_applies_only_when_the_break_is_chosen() {
     let metrics = StubMetrics;
     let hyphenator = Hyphenator::english();

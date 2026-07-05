@@ -790,17 +790,27 @@ impl Hyphenator {
         lower.clear();
         dotted.clear();
         scores.clear();
-        for byte in word.bytes() {
+        if word.len() <= opts.min_left.saturating_add(opts.min_right) {
+            return;
+        }
+
+        let mut has_uppercase = false;
+        for &byte in word.as_bytes() {
             if !byte.is_ascii_alphabetic() {
                 return;
             }
-            lower.push(byte.to_ascii_lowercase() as char);
+            has_uppercase |= byte.is_ascii_uppercase();
+        }
+        if has_uppercase {
+            lower.reserve(word.len());
+            for byte in word.bytes() {
+                lower.push(byte.to_ascii_lowercase() as char);
+            }
+        } else {
+            lower.push_str(word);
         }
 
         let len = lower.len();
-        if len <= opts.min_left.saturating_add(opts.min_right) {
-            return;
-        }
         if let Some(exception) = self
             .exceptions
             .iter()

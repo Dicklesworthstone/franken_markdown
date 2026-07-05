@@ -1970,24 +1970,21 @@ fn is_table_delimiter(line: &str) -> bool {
         && t.chars().any(|c| c == '|' || c == '-')
 }
 
-fn split_table_row(line: &str) -> Vec<String> {
+fn split_table_row(line: &str) -> Vec<&str> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     // Split on unescaped `|` outside inline code spans.
-    let chars: Vec<char> = t.chars().collect();
+    let bytes = t.as_bytes();
     let mut cells = Vec::new();
-    let mut cur = String::new();
+    let mut cell_start = 0usize;
     let mut code_ticks = 0usize;
     let mut prev_backslash = false;
     let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '`' && !prev_backslash {
-            let ticks = run_len(&chars, i, '`');
-            for _ in 0..ticks {
-                cur.push('`');
-            }
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'`' && !prev_backslash {
+            let ticks = ascii_run_len(bytes, i, b'`');
             if code_ticks == 0 {
                 code_ticks = ticks;
             } else if code_ticks == ticks {
@@ -1997,23 +1994,28 @@ fn split_table_row(line: &str) -> Vec<String> {
             i += ticks;
             continue;
         }
-        if c == '|' && !prev_backslash && code_ticks == 0 {
-            cells.push(cur.trim().to_string());
-            cur = String::new();
+        if c == b'|' && !prev_backslash && code_ticks == 0 {
+            cells.push(t[cell_start..i].trim());
+            cell_start = i + 1;
         } else {
-            if c == '\\' && !prev_backslash {
+            if c == b'\\' && !prev_backslash {
                 prev_backslash = true;
-                cur.push(c);
                 i += 1;
                 continue;
             }
-            cur.push(c);
         }
         prev_backslash = false;
         i += 1;
     }
-    cells.push(cur.trim().to_string());
+    cells.push(t[cell_start..].trim());
     cells
+}
+
+fn ascii_run_len(bytes: &[u8], i: usize, byte: u8) -> usize {
+    bytes[i..]
+        .iter()
+        .take_while(|&&candidate| candidate == byte)
+        .count()
 }
 
 fn parse_table_profiled(

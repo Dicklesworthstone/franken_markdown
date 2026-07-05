@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
+use crate::scanner::{ParserLineScan, scan_markdown_line};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 mod entities;
@@ -725,14 +726,39 @@ fn table_extent(lines: &[&str]) -> Option<usize> {
 /// with where an open paragraph actually exists and never mistakes a real block
 /// opener for paragraph text (which would wrongly suppress a valid definition).
 fn line_is_paragraph_text(line: &str) -> bool {
-    !line.trim().is_empty()
-        && !is_thematic_break(line)
+    if line.trim().is_empty() {
+        return false;
+    }
+
+    let scan = scan_markdown_line(line);
+    if line_is_plain_paragraph_fast_path(line, scan) {
+        return true;
+    }
+
+    !is_thematic_break(line)
         && atx_heading(line).is_none()
         && open_fence(line).is_none()
         && !indented_code_start(line)
         && !line.trim_start().starts_with('>')
         && !html_block_start(line)
         && !list_marker_interrupts_paragraph(line)
+}
+
+fn line_is_plain_paragraph_fast_path(line: &str, scan: ParserLineScan) -> bool {
+    if line
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| is_space_or_tab_byte(*byte))
+    {
+        return false;
+    }
+
+    !scan.maybe_thematic_break
+        && !scan.maybe_heading_marker
+        && !scan.maybe_fence
+        && !scan.maybe_blockquote
+        && !scan.maybe_html
+        && !scan.maybe_list_marker
 }
 
 /// Collect link reference definitions nested inside blockquotes and merge them

@@ -29,13 +29,18 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     let mut state = RenderState::default();
     render_blocks(&doc.blocks, &mut body, opts, &mut state);
 
-    format!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n<style>\n{css}</style>\n</head>\n\
-         <body>\n<main class=\"fmd\">\n{body}</main>\n</body>\n</html>\n",
-        title = escape_text(&title),
-    )
+    let escaped_title = escape_text(&title);
+    let mut html = String::with_capacity(186 + escaped_title.len() + css.len() + body.len());
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    html.push_str("<title>");
+    html.push_str(&escaped_title);
+    html.push_str("</title>\n<style>\n");
+    html.push_str(&css);
+    html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
+    html.push_str(&body);
+    html.push_str("</main>\n</body>\n</html>\n");
+    html
 }
 
 /// Make caller-supplied CSS safe to inline in a raw-text `<style>` element.

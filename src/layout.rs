@@ -1236,9 +1236,9 @@ struct SegmentMetrics {
 
 #[derive(Debug, Clone, Default)]
 struct MetricPrefixes {
-    width: Vec<i128>,
-    stretch: Vec<i128>,
-    shrink: Vec<i128>,
+    width: Vec<i64>,
+    stretch: Vec<i64>,
+    shrink: Vec<i64>,
 }
 
 impl MetricPrefixes {
@@ -1256,18 +1256,18 @@ impl MetricPrefixes {
         self.stretch.push(0);
         self.shrink.push(0);
 
-        let mut running_width = 0i128;
-        let mut running_stretch = 0i128;
-        let mut running_shrink = 0i128;
+        let mut running_width = 0i64;
+        let mut running_stretch = 0i64;
+        let mut running_shrink = 0i64;
         for item in items {
             match item {
                 ParagraphItem::Box(item) => {
-                    running_width += item.width.milli_points() as i128;
+                    running_width += item.width.milli_points() as i64;
                 }
                 ParagraphItem::Glue(item) => {
-                    running_width += item.width.milli_points() as i128;
-                    running_stretch += item.stretch.milli_points() as i128;
-                    running_shrink += item.shrink.milli_points() as i128;
+                    running_width += item.width.milli_points() as i64;
+                    running_stretch += item.stretch.milli_points() as i64;
+                    running_shrink += item.shrink.milli_points() as i64;
                 }
                 ParagraphItem::Penalty(_) => {}
             }
@@ -1279,15 +1279,15 @@ impl MetricPrefixes {
 
     fn segment_metrics(&self, start: usize, candidate: BreakCandidate) -> SegmentMetrics {
         let width = prefix_diff(&self.width, start, candidate.item_index)
-            + candidate.penalty_width.milli_points() as i128;
+            + candidate.penalty_width.milli_points() as i64;
         SegmentMetrics {
-            width: LayoutUnit(clamp_i128_to_i32(width)),
-            stretch: LayoutUnit(clamp_i128_to_i32(prefix_diff(
+            width: LayoutUnit(clamp_i64_to_i32(width)),
+            stretch: LayoutUnit(clamp_i64_to_i32(prefix_diff(
                 &self.stretch,
                 start,
                 candidate.item_index,
             ))),
-            shrink: LayoutUnit(clamp_i128_to_i32(prefix_diff(
+            shrink: LayoutUnit(clamp_i64_to_i32(prefix_diff(
                 &self.shrink,
                 start,
                 candidate.item_index,
@@ -1296,7 +1296,7 @@ impl MetricPrefixes {
     }
 }
 
-fn prefix_diff(values: &[i128], start: usize, end: usize) -> i128 {
+fn prefix_diff(values: &[i64], start: usize, end: usize) -> i64 {
     let start_value = values.get(start).copied().unwrap_or(0);
     let end_value = values
         .get(end)
@@ -1864,6 +1864,16 @@ const fn clamp_i128_to_i32(value: i128) -> i32 {
     }
 }
 
+const fn clamp_i64_to_i32(value: i64) -> i32 {
+    if value > i32::MAX as i64 {
+        i32::MAX
+    } else if value < i32::MIN as i64 {
+        i32::MIN
+    } else {
+        value as i32
+    }
+}
+
 const fn clamp_usize_to_u32(value: usize) -> u32 {
     if value > u32::MAX as usize {
         u32::MAX
@@ -1970,7 +1980,7 @@ mod overfull_selectability_tests {
 
     #[test]
     fn clamp_usize_helpers_saturate_on_overflow_and_pass_through_small_values() {
-        use super::{clamp_usize_to_u8, clamp_usize_to_u16, clamp_usize_to_u32};
+        use super::{clamp_i64_to_i32, clamp_usize_to_u8, clamp_usize_to_u16, clamp_usize_to_u32};
         // On 64-bit hosts usize::MAX exceeds each target's max, exercising the
         // saturating branch; small values pass through unchanged. The asserted
         // results also hold on 32-bit (where usize::MAX == u32::MAX).
@@ -1980,5 +1990,8 @@ mod overfull_selectability_tests {
         assert_eq!(clamp_usize_to_u32(7), 7);
         assert_eq!(clamp_usize_to_u16(7), 7);
         assert_eq!(clamp_usize_to_u8(7), 7);
+        assert_eq!(clamp_i64_to_i32(i64::MAX), i32::MAX);
+        assert_eq!(clamp_i64_to_i32(i64::MIN), i32::MIN);
+        assert_eq!(clamp_i64_to_i32(7), 7);
     }
 }

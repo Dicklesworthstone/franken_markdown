@@ -76,6 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.scenario.as_str() {
         "all" => {
             samples.push(html_showcase(args.iterations, args.out_dir.as_deref())?);
+            samples.push(html_large(args.iterations, args.out_dir.as_deref())?);
+            samples.push(html_code_heavy(args.iterations, args.out_dir.as_deref())?);
             samples.push(pdf_showcase(args.iterations, args.out_dir.as_deref())?);
             samples.push(parser_large(args.iterations, args.out_dir.as_deref())?);
             samples.push(paragraph_1k(args.iterations, args.out_dir.as_deref())?);
@@ -84,6 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             samples.push(pdf_large(args.iterations, args.out_dir.as_deref())?);
         }
         "html-showcase" => samples.push(html_showcase(args.iterations, args.out_dir.as_deref())?),
+        "html-large" => samples.push(html_large(args.iterations, args.out_dir.as_deref())?),
+        "html-code-heavy" => {
+            samples.push(html_code_heavy(args.iterations, args.out_dir.as_deref())?);
+        }
         "pdf-showcase" => samples.push(pdf_showcase(args.iterations, args.out_dir.as_deref())?),
         "parser-large" => samples.push(parser_large(args.iterations, args.out_dir.as_deref())?),
         "paragraph-1k" => samples.push(paragraph_1k(args.iterations, args.out_dir.as_deref())?),
@@ -92,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pdf-large" => samples.push(pdf_large(args.iterations, args.out_dir.as_deref())?),
         _ => {
             return Err(format!(
-                "unknown scenario '{}'; use all, html-showcase, pdf-showcase, parser-large, paragraph-1k, hyphen-corpus, font-subset, or pdf-large",
+                "unknown scenario '{}'; use all, html-showcase, html-large, html-code-heavy, pdf-showcase, parser-large, paragraph-1k, hyphen-corpus, font-subset, or pdf-large",
                 args.scenario
             )
             .into());
@@ -175,6 +181,54 @@ fn html_showcase(
         output_bytes: golden.len(),
         durations,
         notes: String::from("parse + html render of examples/showcase.md"),
+    })
+}
+
+fn html_large(
+    iterations: usize,
+    out_dir: Option<&Path>,
+) -> Result<Sample, Box<dyn std::error::Error>> {
+    let src = generated_markdown_bytes(1_048_576);
+    let doc = parse_markdown(&src);
+    let opts = HtmlOptions::default();
+    let golden = render_html_document(&doc, &opts)?;
+    write_golden(out_dir, "html-large.html", golden.as_bytes())?;
+    let durations = measure(iterations, || {
+        let html = render_html_document(&doc, &opts).unwrap_or_default();
+        black_box(html.len())
+    });
+    Ok(Sample {
+        scenario: "html-large",
+        category: "render-html",
+        iterations,
+        bytes: src.len(),
+        output_bytes: golden.len(),
+        durations,
+        notes: String::from("render pre-parsed generated 1 MiB mixed Markdown document to HTML"),
+    })
+}
+
+fn html_code_heavy(
+    iterations: usize,
+    out_dir: Option<&Path>,
+) -> Result<Sample, Box<dyn std::error::Error>> {
+    let src = generated_code_heavy_markdown(300);
+    let doc = parse_markdown(&src);
+    let opts = HtmlOptions::default();
+    let golden = render_html_document(&doc, &opts)?;
+    write_golden(out_dir, "html-code-heavy.html", golden.as_bytes())?;
+    let durations = measure(iterations, || {
+        let html = render_html_document(&doc, &opts).unwrap_or_default();
+        black_box(html.len())
+    });
+    Ok(Sample {
+        scenario: "html-code-heavy",
+        category: "render-html-highlight",
+        iterations,
+        bytes: src.len(),
+        output_bytes: golden.len(),
+        durations,
+        notes: String::from("render pre-parsed code-heavy Markdown document to highlighted HTML"),
     })
 }
 
@@ -785,6 +839,29 @@ fn generated_pdf_large() -> String {
         if i % 11 == 0 {
             out.push_str("```rust\nfn hot_path(input: &str) -> usize { input.len() }\n```\n\n");
         }
+    }
+    out
+}
+
+fn generated_code_heavy_markdown(blocks: usize) -> String {
+    let mut out = String::with_capacity(blocks.saturating_mul(420));
+    out.push_str("# fmd code-heavy HTML perf document\n\n");
+    for i in 0..blocks {
+        out.push_str("## Code Section ");
+        out.push_str(&i.to_string());
+        out.push_str("\n\n");
+        out.push_str(
+            "This section stresses escaped text, attributes, anchors, and clean-room syntax highlighting before PDF layout work starts.\n\n",
+        );
+        out.push_str("```rust\n");
+        out.push_str("pub fn rendered_token_total(input: &str) -> usize {\n");
+        out.push_str("    let mut total = 0usize;\n");
+        out.push_str("    for (idx, value) in input.split_whitespace().enumerate() {\n");
+        out.push_str("        total += idx + value.len();\n");
+        out.push_str("    }\n");
+        out.push_str("    total\n");
+        out.push_str("}\n");
+        out.push_str("```\n\n");
     }
     out
 }

@@ -90,8 +90,8 @@ struct RenderState {
 }
 
 impl RenderState {
-    fn heading_id(&mut self, text: &str) -> String {
-        let mut base = slug(text);
+    fn heading_id_from_inlines(&mut self, inlines: &[Inline]) -> String {
+        let mut base = slug_inlines(inlines);
         if base.is_empty() {
             base.push_str("section");
         }
@@ -121,7 +121,7 @@ fn render_blocks(blocks: &[Block], out: &mut String, opts: &HtmlOptions, state: 
 fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
     match block {
         Block::Heading { level, inlines } => {
-            let id = state.heading_id(&inlines_to_plain(inlines));
+            let id = state.heading_id_from_inlines(inlines);
             out.push_str(&format!("<h{level} id=\"{}\">", escape_attr(&id)));
             render_inlines(inlines, out, opts);
             out.push_str(&format!("</h{level}>\n"));
@@ -315,21 +315,55 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
     s
 }
 
+#[cfg(test)]
 fn slug(text: &str) -> String {
     let mut s = String::new();
     let mut pending_dash = false;
     for c in text.chars() {
-        if c.is_ascii_alphanumeric() {
-            if pending_dash && !s.is_empty() {
-                s.push('-');
-            }
-            s.push(c.to_ascii_lowercase());
-            pending_dash = false;
-        } else if c == ' ' || c == '-' || c == '_' {
-            pending_dash = true;
-        }
+        push_slug_char(&mut s, &mut pending_dash, c);
     }
     s
+}
+
+fn slug_inlines(inlines: &[Inline]) -> String {
+    let mut s = String::new();
+    let mut pending_dash = false;
+    push_slug_inlines(inlines, &mut s, &mut pending_dash);
+    s
+}
+
+fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
+    for inl in inlines {
+        match inl {
+            Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => {
+                for c in t.chars() {
+                    push_slug_char(out, pending_dash, c);
+                }
+            }
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                push_slug_inlines(c, out, pending_dash);
+            }
+            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
+            Inline::Image { alt, .. } => {
+                for c in alt.chars() {
+                    push_slug_char(out, pending_dash, c);
+                }
+            }
+            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
+        }
+    }
+}
+
+fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
+    if c.is_ascii_alphanumeric() {
+        if *pending_dash && !out.is_empty() {
+            out.push('-');
+        }
+        out.push(c.to_ascii_lowercase());
+        *pending_dash = false;
+    } else if c == ' ' || c == '-' || c == '_' {
+        *pending_dash = true;
+    }
 }
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token,
@@ -1026,7 +1060,11 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, css_num, sanitize_custom_css, slug};
+    use crate::ast::Inline;
+
+    use super::{
+        base64_encode, css_num, inlines_to_plain, sanitize_custom_css, slug, slug_inlines,
+    };
 
     #[test]
     fn css_num_folds_non_finite_to_zero() {
@@ -1080,5 +1118,28 @@ mod tests {
         heading.push_str("Beta---");
 
         assert_eq!(slug(&heading), "alpha-beta");
+    }
+
+    #[test]
+    fn slug_inlines_matches_plain_text_slug_semantics() {
+        let inlines = vec![
+            Inline::Text(String::from("Alpha")),
+            Inline::SoftBreak,
+            Inline::Strong(vec![Inline::Text(String::from("Beta_Gamma"))]),
+            Inline::HardBreak,
+            Inline::Link {
+                dest: String::from("https://example.com"),
+                title: None,
+                content: vec![Inline::Code(String::from("Delta-Value"))],
+            },
+            Inline::Image {
+                dest: String::from("image.png"),
+                title: Some(String::from("ignored")),
+                alt: String::from("Echo"),
+            },
+            Inline::Html(String::from("<Raw>")),
+        ];
+
+        assert_eq!(slug_inlines(&inlines), slug(&inlines_to_plain(&inlines)));
     }
 }

@@ -980,6 +980,107 @@ fn parse_blocks_bounded(
     blocks
 }
 
+#[derive(Clone, Copy)]
+struct BlockStartScan<'a> {
+    line: &'a str,
+    trimmed: &'a str,
+    trim_start: &'a str,
+    indent: usize,
+}
+
+impl<'a> BlockStartScan<'a> {
+    fn new(line: &'a str, trimmed: &'a str) -> Self {
+        Self {
+            line,
+            trimmed,
+            trim_start: line.trim_start(),
+            indent: leading_spaces(line),
+        }
+    }
+
+    fn after_indent(self) -> Option<&'a str> {
+        (self.indent <= 3).then(|| &self.line[self.indent..])
+    }
+
+    fn after_indent_first(self) -> Option<u8> {
+        self.after_indent()
+            .and_then(|tail| tail.as_bytes().first().copied())
+    }
+
+    fn first_trimmed(self) -> Option<u8> {
+        self.trimmed.as_bytes().first().copied()
+    }
+
+    fn first_trim_start(self) -> Option<u8> {
+        self.trim_start.as_bytes().first().copied()
+    }
+}
+
+fn scanned_thematic_break(scan: BlockStartScan<'_>) -> bool {
+    scan.indent <= 3
+        && matches!(scan.first_trimmed(), Some(b'-' | b'*' | b'_'))
+        && is_thematic_break(scan.line)
+}
+
+fn scanned_atx_heading(scan: BlockStartScan<'_>) -> Option<(u8, &str)> {
+    (scan.after_indent_first() == Some(b'#'))
+        .then(|| atx_heading(scan.line))
+        .flatten()
+}
+
+fn scanned_open_fence(scan: BlockStartScan<'_>) -> Option<(char, usize, &str)> {
+    matches!(scan.after_indent_first(), Some(b'`' | b'~'))
+        .then(|| open_fence(scan.line))
+        .flatten()
+}
+
+fn scanned_indented_code_start(scan: BlockStartScan<'_>) -> bool {
+    scan.indent >= 4
+}
+
+fn scanned_blockquote_start(scan: BlockStartScan<'_>) -> bool {
+    scan.first_trim_start() == Some(b'>')
+}
+
+fn scanned_html_block_kind(scan: BlockStartScan<'_>) -> Option<HtmlBlockEnd> {
+    (scan.first_trim_start() == Some(b'<'))
+        .then(|| html_block_kind(scan.line))
+        .flatten()
+}
+
+fn scanned_html_block_start(scan: BlockStartScan<'_>) -> bool {
+    scanned_html_block_kind(scan).is_some()
+}
+
+fn scanned_list_marker(scan: BlockStartScan<'_>) -> Option<Marker<'_>> {
+    matches!(
+        scan.after_indent_first(),
+        Some(b'-' | b'*' | b'+' | b'0'..=b'9')
+    )
+    .then(|| list_marker(scan.line))
+    .flatten()
+}
+
+fn scanned_list_marker_interrupts_paragraph(scan: BlockStartScan<'_>) -> bool {
+    scanned_list_marker(scan).is_some_and(|m| !m.ordered || m.start == 1)
+}
+
+fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
+    (scan.indent <= 3 && matches!(scan.first_trimmed(), Some(b'=' | b'-')))
+        .then(|| setext_underline(scan.line))
+        .flatten()
+}
+
+fn scanned_paragraph_interrupt(scan: BlockStartScan<'_>) -> bool {
+    scanned_thematic_break(scan)
+        || scanned_atx_heading(scan).is_some()
+        || scanned_open_fence(scan).is_some()
+        || scanned_indented_code_start(scan)
+        || scanned_blockquote_start(scan)
+        || scanned_html_block_start(scan)
+        || scanned_list_marker_interrupts_paragraph(scan)
+}
+
 fn parse_blocks_with_refs_profiled(
     lines: &[&str],
     refs: &ReferenceMap,
@@ -989,16 +1090,18 @@ fn parse_blocks_with_refs_profiled(
     let mut i = 0;
     'blocks: while i < lines.len() {
         let line = lines[i];
-        if line.trim().is_empty() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             i += 1;
             continue;
         }
-        if is_thematic_break(line) {
+        let scan = BlockStartScan::new(line, trimmed);
+        if scanned_thematic_break(scan) {
             blocks.push(Block::ThematicBreak);
             i += 1;
             continue;
         }
-        if let Some((level, text)) = atx_heading(line) {
+        if let Some((level, text)) = scanned_atx_heading(scan) {
             let started = profiler.checkpoint();
             let inlines = parse_inlines_with_refs_profiled(text, refs, profiler);
             profiler.record_since(
@@ -1013,7 +1116,7 @@ fn parse_blocks_with_refs_profiled(
             i += 1;
             continue;
         }
-        if let Some((fence_ch, fence_len, info)) = open_fence(line) {
+        if let Some((fence_ch, fence_len, info)) = scanned_open_fence(scan) {
             let started = profiler.checkpoint();
             let lang = {
                 let t = info.trim();
@@ -1047,7 +1150,7 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::CodeBlock { lang, code });
             continue;
         }
-        if indented_code_start(line) {
+        if scanned_indented_code_start(scan) {
             let started = profiler.checkpoint();
             let (code, used) = parse_indented_code(&lines[i..]);
             profiler.record_since(
@@ -1062,7 +1165,7 @@ fn parse_blocks_with_refs_profiled(
             i += used;
             continue;
         }
-        if line.trim_start().starts_with('>') {
+        if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
             let mut inner = Vec::new();
             while i < lines.len() {
@@ -1097,7 +1200,7 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::BlockQuote(inner_blocks));
             continue;
         }
-        if let Some(end_cond) = html_block_kind(line) {
+        if let Some(end_cond) = scanned_html_block_kind(scan) {
             let started = profiler.checkpoint();
             let start = i;
             i = html_block_end(lines, i, end_cond, |l| *l);
@@ -1129,7 +1232,7 @@ fn parse_blocks_with_refs_profiled(
                 continue;
             }
         }
-        if list_marker(line).is_some() {
+        if scanned_list_marker(scan).is_some() {
             let started = profiler.checkpoint();
             let (list, used) = parse_list_profiled(&lines[i..], refs, profiler);
             profiler.record_since(
@@ -1146,9 +1249,15 @@ fn parse_blocks_with_refs_profiled(
         }
         // Paragraph: collect until a blank line or the start of another block.
         let start = i;
-        while i < lines.len() && !lines[i].trim().is_empty() {
+        while i < lines.len() {
+            let line = lines[i];
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            let scan = BlockStartScan::new(line, trimmed);
             if i > start
-                && let Some(level) = setext_underline(lines[i])
+                && let Some(level) = scanned_setext_underline(scan)
             {
                 let started = profiler.checkpoint();
                 let (inlines, text_len, handoff_allocations) =
@@ -1165,14 +1274,7 @@ fn parse_blocks_with_refs_profiled(
                 i += 1;
                 continue 'blocks;
             }
-            if is_thematic_break(lines[i])
-                || atx_heading(lines[i]).is_some()
-                || open_fence(lines[i]).is_some()
-                || indented_code_start(lines[i])
-                || lines[i].trim_start().starts_with('>')
-                || html_block_start(lines[i])
-                || list_marker_interrupts_paragraph(lines[i])
-            {
+            if scanned_paragraph_interrupt(scan) {
                 break;
             }
             i += 1;

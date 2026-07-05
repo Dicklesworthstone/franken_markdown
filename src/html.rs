@@ -122,9 +122,15 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
     match block {
         Block::Heading { level, inlines } => {
             let id = state.heading_id_from_inlines(inlines);
-            out.push_str(&format!("<h{level} id=\"{}\">", escape_attr(&id)));
+            out.push_str("<h");
+            push_u64(out, u64::from(*level));
+            out.push_str(" id=\"");
+            out.push_str(&id);
+            out.push_str("\">");
             render_inlines(inlines, out, opts);
-            out.push_str(&format!("</h{level}>\n"));
+            out.push_str("</h");
+            push_u64(out, u64::from(*level));
+            out.push_str(">\n");
         }
         Block::Paragraph(inlines) => {
             out.push_str("<p>");
@@ -132,11 +138,13 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
             out.push_str("</p>\n");
         }
         Block::CodeBlock { lang, code } => {
-            let cls = lang
-                .as_deref()
-                .map(|l| format!(" class=\"language-{}\"", escape_attr(l)))
-                .unwrap_or_default();
-            out.push_str(&format!("<pre><code{cls}>"));
+            out.push_str("<pre><code");
+            if let Some(l) = lang.as_deref() {
+                out.push_str(" class=\"language-");
+                out.push_str(&escape_attr(l));
+                out.push('"');
+            }
+            out.push('>');
             // Clean-room syntax highlighting when we have a lexer for the
             // language; otherwise the code is rendered as escaped plain text.
             match lang.as_deref() {
@@ -160,7 +168,9 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
                 out.push_str(html);
                 out.push('\n');
             } else {
-                out.push_str(&format!("<p>{}</p>\n", escape_text(html)));
+                out.push_str("<p>");
+                out.push_str(&escape_text(html));
+                out.push_str("</p>\n");
             }
         }
     }
@@ -169,9 +179,15 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
 fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
     let tag = if list.ordered { "ol" } else { "ul" };
     if list.ordered && list.start != 1 {
-        out.push_str(&format!("<{tag} start=\"{}\">\n", list.start));
+        out.push('<');
+        out.push_str(tag);
+        out.push_str(" start=\"");
+        push_u64(out, list.start);
+        out.push_str("\">\n");
     } else {
-        out.push_str(&format!("<{tag}>\n"));
+        out.push('<');
+        out.push_str(tag);
+        out.push_str(">\n");
     }
     for item in &list.items {
         match item.task {
@@ -201,7 +217,9 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut Re
         }
         out.push_str("</li>\n");
     }
-    out.push_str(&format!("</{tag}>\n"));
+    out.push_str("</");
+    out.push_str(tag);
+    out.push_str(">\n");
 }
 
 fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions) {
@@ -211,7 +229,9 @@ fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions)
     out.push_str("<table>\n<thead>\n<tr>");
     for (idx, cell) in table.head.iter().enumerate() {
         let align = align_attr(table.align.get(idx).copied().unwrap_or(Align::None));
-        out.push_str(&format!("<th{align}>"));
+        out.push_str("<th");
+        out.push_str(align);
+        out.push('>');
         render_inlines(cell, out, opts);
         out.push_str("</th>");
     }
@@ -220,7 +240,9 @@ fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions)
         out.push_str("<tr>");
         for (idx, cell) in row.iter().enumerate() {
             let align = align_attr(table.align.get(idx).copied().unwrap_or(Align::None));
-            out.push_str(&format!("<td{align}>"));
+            out.push_str("<td");
+            out.push_str(align);
+            out.push('>');
             render_inlines(cell, out, opts);
             out.push_str("</td>");
         }
@@ -246,7 +268,11 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             Inline::Emphasis(c) => wrap(out, "em", c, opts),
             Inline::Strong(c) => wrap(out, "strong", c, opts),
             Inline::Strikethrough(c) => wrap(out, "del", c, opts),
-            Inline::Code(t) => out.push_str(&format!("<code>{}</code>", escape_text(t))),
+            Inline::Code(t) => {
+                out.push_str("<code>");
+                out.push_str(&escape_text(t));
+                out.push_str("</code>");
+            }
             Inline::Link {
                 dest,
                 title,
@@ -293,9 +319,28 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
 }
 
 fn wrap(out: &mut String, tag: &str, content: &[Inline], opts: &HtmlOptions) {
-    out.push_str(&format!("<{tag}>"));
+    out.push('<');
+    out.push_str(tag);
+    out.push('>');
     render_inlines(content, out, opts);
-    out.push_str(&format!("</{tag}>"));
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
+fn push_u64(out: &mut String, value: u64) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut idx = buf.len();
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
 }
 
 fn inlines_to_plain(inlines: &[Inline]) -> String {
@@ -1060,10 +1105,11 @@ strong { font-weight: 680; }
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::Inline;
+    use crate::HtmlOptions;
+    use crate::ast::{Block, Document, Inline};
 
     use super::{
-        base64_encode, css_num, inlines_to_plain, sanitize_custom_css, slug, slug_inlines,
+        base64_encode, css_num, inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
     };
 
     #[test]
@@ -1109,6 +1155,31 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn push_u64_writes_decimal_without_padding() {
+        let mut out = String::new();
+        push_u64(&mut out, 0);
+        out.push(',');
+        push_u64(&mut out, 42);
+        out.push(',');
+        push_u64(&mut out, u64::MAX);
+
+        assert_eq!(out, "0,42,18446744073709551615");
+    }
+
+    #[test]
+    fn heading_writer_preserves_public_ast_decimal_level() {
+        let doc = Document {
+            blocks: vec![Block::Heading {
+                level: 12,
+                inlines: vec![Inline::Text(String::from("Odd Level"))],
+            }],
+        };
+        let html = super::render(&doc, &HtmlOptions::default());
+
+        assert!(html.contains("<h12 id=\"odd-level\">Odd Level</h12>"));
     }
 
     #[test]

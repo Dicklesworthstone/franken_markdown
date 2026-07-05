@@ -920,25 +920,36 @@ fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0usize;
-    while i < bytes.len() {
+    let full_len = bytes.len() / 3 * 3;
+    while i < full_len {
         let b0 = bytes[i];
-        let b1 = bytes.get(i + 1).copied().unwrap_or(0);
-        let b2 = bytes.get(i + 2).copied().unwrap_or(0);
+        let b1 = bytes[i + 1];
+        let b2 = bytes[i + 2];
 
         out.push(TABLE[(b0 >> 2) as usize] as char);
         out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
-        if i + 1 < bytes.len() {
-            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if i + 2 < bytes.len() {
-            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
-        } else {
-            out.push('=');
-        }
+        out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
 
         i += 3;
+    }
+    match bytes.len() - full_len {
+        0 => {}
+        1 => {
+            let b0 = bytes[full_len];
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[((b0 & 0b0000_0011) << 4) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        _ => {
+            let b0 = bytes[full_len];
+            let b1 = bytes[full_len + 1];
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+            out.push(TABLE[((b1 & 0b0000_1111) << 2) as usize] as char);
+            out.push('=');
+        }
     }
     out
 }

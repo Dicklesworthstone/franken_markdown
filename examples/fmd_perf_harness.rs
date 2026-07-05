@@ -1,3 +1,4 @@
+use franken_markdown::compress::zlib_compress;
 use franken_markdown::fonts::{self, FontStyle};
 use franken_markdown::layout::{
     FontSize, HyphenationOptions, Hyphenator, LayoutUnit, break_paragraph,
@@ -83,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             samples.push(paragraph_1k(args.iterations, args.out_dir.as_deref())?);
             samples.push(hyphen_corpus(args.iterations, args.out_dir.as_deref())?);
             samples.push(font_subset(args.iterations, args.out_dir.as_deref())?);
+            samples.push(compress_corpus(args.iterations, args.out_dir.as_deref())?);
             samples.push(pdf_large(args.iterations, args.out_dir.as_deref())?);
         }
         "html-showcase" => samples.push(html_showcase(args.iterations, args.out_dir.as_deref())?),
@@ -95,10 +97,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "paragraph-1k" => samples.push(paragraph_1k(args.iterations, args.out_dir.as_deref())?),
         "hyphen-corpus" => samples.push(hyphen_corpus(args.iterations, args.out_dir.as_deref())?),
         "font-subset" => samples.push(font_subset(args.iterations, args.out_dir.as_deref())?),
+        "compress-corpus" => {
+            samples.push(compress_corpus(args.iterations, args.out_dir.as_deref())?);
+        }
         "pdf-large" => samples.push(pdf_large(args.iterations, args.out_dir.as_deref())?),
         _ => {
             return Err(format!(
-                "unknown scenario '{}'; use all, html-showcase, html-large, html-code-heavy, pdf-showcase, parser-large, paragraph-1k, hyphen-corpus, font-subset, or pdf-large",
+                "unknown scenario '{}'; use all, html-showcase, html-large, html-code-heavy, pdf-showcase, parser-large, paragraph-1k, hyphen-corpus, font-subset, compress-corpus, or pdf-large",
                 args.scenario
             )
             .into());
@@ -357,6 +362,47 @@ fn font_subset(
         output_bytes: golden.len(),
         durations,
         notes: String::from("subset bundled IBM Plex Sans over generated document character set"),
+    })
+}
+
+fn compress_corpus(
+    iterations: usize,
+    out_dir: Option<&Path>,
+) -> Result<Sample, Box<dyn std::error::Error>> {
+    let payloads = generated_compression_payloads();
+    let mut golden = String::new();
+    let mut output_bytes = 0usize;
+    for (name, data) in &payloads {
+        let compressed = zlib_compress(data);
+        output_bytes = output_bytes.saturating_add(compressed.len());
+        golden.push_str(name);
+        golden.push('\t');
+        golden.push_str(&data.len().to_string());
+        golden.push('\t');
+        golden.push_str(&compressed.len().to_string());
+        golden.push('\t');
+        golden.push_str(&fnv1a64(&compressed).to_string());
+        golden.push('\n');
+    }
+    write_golden(out_dir, "compress-corpus.lengths", golden.as_bytes())?;
+    let durations = measure(iterations, || {
+        let mut total = 0usize;
+        for (_, data) in &payloads {
+            let compressed = zlib_compress(data);
+            total = total.saturating_add(compressed.len());
+        }
+        black_box(total)
+    });
+    Ok(Sample {
+        scenario: "compress-corpus",
+        category: "compression",
+        iterations,
+        bytes: payloads.iter().map(|(_, data)| data.len()).sum(),
+        output_bytes,
+        durations,
+        notes: String::from(
+            "zlib compression over page-like, markdown, repetitive, and stored-fallback payloads",
+        ),
     })
 }
 
@@ -866,6 +912,39 @@ fn generated_code_heavy_markdown(blocks: usize) -> String {
     out
 }
 
+fn generated_compression_payloads() -> Vec<(&'static str, Vec<u8>)> {
+    let mut repetitive = Vec::with_capacity(96_000);
+    for i in 0..96_000 {
+        repetitive.push(match i % 6 {
+            0 | 1 | 2 => b'A',
+            3 | 4 => b'B',
+            _ => b'\n',
+        });
+    }
+
+    vec![
+        ("pdf-page-like", generated_pdf_large().into_bytes()),
+        (
+            "markdown-large",
+            generated_markdown_bytes(196_608).into_bytes(),
+        ),
+        ("repetitive-runs", repetitive),
+        ("lcg-incompressible", generated_lcg_bytes(98_304)),
+    ]
+}
+
+fn generated_lcg_bytes(count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count);
+    let mut state: u64 = 0x1234_5678_9abc_def0;
+    for _ in 0..count {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.push((state >> 33) as u8);
+    }
+    out
+}
+
 fn generated_words(count: usize) -> String {
     let base = [
         "deterministic",
@@ -977,4 +1056,13 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+fn fnv1a64(data: &[u8]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }

@@ -459,6 +459,34 @@ fn break_paragraph_into_matches_wrapper_and_reuses_scratch() {
 }
 
 #[test]
+fn single_forced_break_fast_path_keeps_dp_semantics_without_state_buffers() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let width = LayoutUnit::from_milli_points(100_000);
+    let items = paragraph_items_from_text(&metrics, "Heading", size);
+
+    let mut scratch = ParagraphLayoutScratch::new();
+    let mut breaks = Vec::new();
+    break_paragraph_into(&items, width, &mut scratch, &mut breaks);
+
+    assert_eq!(breaks.len(), 1);
+    let line = breaks[0];
+    assert_eq!(line.start, 0);
+    assert_eq!(line.end, 1);
+    assert_eq!(line.next, 2);
+    assert_eq!(line_text(&items, line.start, line.end), "Heading");
+    assert_eq!(line.badness, 0);
+    assert_eq!(line.fitness, FitnessClass::Decent);
+    assert_eq!(line.demerits, 1);
+
+    let capacities = scratch.capacities();
+    assert_eq!(capacities.forced_prefixes, 0);
+    assert_eq!(capacities.states, 0);
+    assert!(capacities.candidates > 0);
+    assert!(capacities.prefix_widths > 0);
+}
+
+#[test]
 fn break_paragraph_returns_empty_for_no_candidates() {
     let breaks = break_paragraph(&[], LayoutUnit::from_points(72));
 

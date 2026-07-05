@@ -1419,9 +1419,17 @@ pub fn break_paragraph_into(
         return;
     }
     scratch.metrics.rebuild_from_items(items);
+    let candidates = &scratch.candidates;
+    if candidates.len() == 1
+        && let Some(line) = single_forced_fit_break(candidates[0], line_width, &scratch.metrics)
+    {
+        scratch.forced_prefix.clear();
+        scratch.states.clear();
+        out.push(line);
+        return;
+    }
     forced_break_prefixes_into(items, &mut scratch.forced_prefix);
 
-    let candidates = &scratch.candidates;
     scratch.states.clear();
     scratch.states.resize(candidates.len(), None);
     for (j, candidate) in candidates.iter().enumerate() {
@@ -1559,6 +1567,38 @@ pub fn break_paragraph_into(
         }
     }
     out.reverse();
+}
+
+fn single_forced_fit_break(
+    candidate: BreakCandidate,
+    line_width: LayoutUnit,
+    metrics: &MetricPrefixes,
+) -> Option<LineBreak> {
+    if candidate.penalty != FORCED_BREAK_PENALTY {
+        return None;
+    }
+    let segment = metrics.segment_metrics(0, candidate);
+    if segment.width > line_width {
+        return None;
+    }
+    let badness = candidate_badness(candidate, segment, line_width);
+    let fitness = candidate_fitness(candidate, segment, line_width);
+    Some(LineBreak {
+        start: 0,
+        end: candidate.item_index,
+        next: candidate.next,
+        natural_width: segment.width,
+        badness,
+        fitness,
+        demerits: line_demerits(
+            badness,
+            candidate.penalty,
+            false,
+            candidate.flagged,
+            None,
+            fitness,
+        ),
+    })
 }
 
 fn forced_break_prefixes_into(items: &[ParagraphItem], out: &mut Vec<usize>) {

@@ -249,11 +249,16 @@ pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
 
 fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> SpannedDocument {
     let document = parse_document_inner(src, profiler);
-    let spans = profiler.measure(
+    let span_started = profiler.checkpoint();
+    let source_lines = source_lines(src);
+    let spans = collect_top_level_spans(&source_lines);
+    profiler.record_since(
         "span_collection",
+        spans.len(),
+        src.len(),
+        spans.len(),
         "collect top-level source spans for editor/WASM diagnostics",
-        || collect_top_level_spans(src),
-        |spans| (spans.len(), src.len(), spans.len()),
+        span_started,
     );
     let fallback = SourceSpan::new(0, src.len());
     let blocks = document
@@ -268,7 +273,7 @@ fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> Span
         diagnostics: profiler.measure(
             "diagnostics_collection",
             "collect recoverable parser diagnostics such as malformed references and fences",
-            || collect_parse_diagnostics(src),
+            || collect_parse_diagnostics(src, &source_lines),
             |diagnostics| (diagnostics.len(), src.len(), diagnostics.len()),
         ),
         source_len: src.len(),
@@ -303,8 +308,7 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
     lines
 }
 
-fn collect_top_level_spans(src: &str) -> Vec<SourceSpan> {
-    let raw_lines = source_lines(src);
+fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
     let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
     let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
     let table_ends = if consumed_reference_lines.iter().any(|consumed| *consumed) {
@@ -436,8 +440,7 @@ fn span_for_lines(lines: &[SourceLine<'_>], start: usize, end: usize) -> SourceS
     SourceSpan::new(first.start, last.end)
 }
 
-fn collect_parse_diagnostics(src: &str) -> Vec<ParseDiagnostic> {
-    let lines = source_lines(src);
+fn collect_parse_diagnostics(src: &str, lines: &[SourceLine<'_>]) -> Vec<ParseDiagnostic> {
     let mut diagnostics = Vec::new();
     let mut i = 0usize;
 

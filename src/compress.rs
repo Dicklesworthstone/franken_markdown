@@ -156,6 +156,7 @@ const MIN_MATCH: usize = 3;
 const MAX_MATCH: usize = 258;
 const WINDOW: usize = 32768;
 const MAX_CHAIN: usize = 256;
+const STORED_BLOCK_MAX: usize = u16::MAX as usize;
 const NONE: usize = usize::MAX;
 
 fn hash3(data: &[u8], i: usize) -> usize {
@@ -254,34 +255,46 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
     bw.out
 }
 
+/// Append one or more raw DEFLATE stored (BTYPE=00) blocks to `out`.
+/// Valid for empty input (one empty final block).
+fn append_stored_blocks(out: &mut Vec<u8>, data: &[u8]) {
+    if data.is_empty() {
+        append_stored_block(out, true, &[]);
+        return;
+    }
+
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        let take = remaining.len().min(STORED_BLOCK_MAX);
+        let (chunk, rest) = remaining.split_at(take);
+        append_stored_block(out, rest.is_empty(), chunk);
+        remaining = rest;
+    }
+}
+
+fn append_stored_block(out: &mut Vec<u8>, is_final: bool, chunk: &[u8]) {
+    // BFINAL followed by BTYPE=00, then zero padding to the next byte boundary.
+    out.push(u8::from(is_final));
+    let len = chunk.len() as u16;
+    let nlen = !len;
+    out.push((len & 0xFF) as u8); // LEN, little-endian
+    out.push((len >> 8) as u8);
+    out.push((nlen & 0xFF) as u8); // NLEN = ~LEN, little-endian
+    out.push((nlen >> 8) as u8);
+    out.extend_from_slice(chunk);
+}
+
 /// Produce a raw DEFLATE byte stream of one or more stored (BTYPE=00) blocks.
-/// Used as a fallback for incompressible data so the output never expands by
-/// more than ~5 bytes per 64KiB block. Valid for empty input (one empty block).
+/// Used by tests to keep the direct stored-block writer's length contract pinned.
+#[cfg(test)]
 fn deflate_stored(data: &[u8]) -> Vec<u8> {
-    let mut bw = BitWriter::new();
-    let mut chunks: Vec<&[u8]> = data.chunks(65535).collect();
-    if chunks.is_empty() {
-        chunks.push(&[]);
-    }
-    let last = chunks.len() - 1;
-    for (i, chunk) in chunks.iter().enumerate() {
-        let is_final = i == last;
-        bw.write_bits(is_final as u32, 1); // BFINAL
-        bw.write_bits(0, 2); // BTYPE = 00 (stored)
-        bw.finish(); // align to byte boundary (pads the 3 header bits with zeros)
-        let len = chunk.len() as u16;
-        let nlen = !len;
-        bw.out.push((len & 0xFF) as u8); // LEN, little-endian
-        bw.out.push((len >> 8) as u8);
-        bw.out.push((nlen & 0xFF) as u8); // NLEN = ~LEN, little-endian
-        bw.out.push((nlen >> 8) as u8);
-        bw.out.extend_from_slice(chunk);
-    }
-    bw.out
+    let mut out = Vec::with_capacity(deflate_stored_len(data.len()));
+    append_stored_blocks(&mut out, data);
+    out
 }
 
 fn deflate_stored_len(input_len: usize) -> usize {
-    let blocks = input_len.div_ceil(65535).max(1);
+    let blocks = input_len.div_ceil(STORED_BLOCK_MAX).max(1);
     input_len + blocks * 5
 }
 
@@ -322,7 +335,7 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     out.push(0x9C);
 
     if use_stored {
-        out.extend_from_slice(&deflate_stored(data));
+        append_stored_blocks(&mut out, data);
     } else {
         out.extend_from_slice(&fixed);
     }

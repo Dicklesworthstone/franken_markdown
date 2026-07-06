@@ -241,33 +241,46 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut Re
 }
 
 fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions) {
+    let align_attrs: Vec<&'static str> = table.align.iter().copied().map(align_attr).collect();
+
     out.push_str(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
     );
     out.push_str("<table>\n<thead>\n<tr>");
-    for (idx, cell) in table.head.iter().enumerate() {
-        let align = align_attr(table.align.get(idx).copied().unwrap_or(Align::None));
-        out.push_str("<th");
-        out.push_str(align);
-        out.push('>');
-        render_inlines(cell, out, opts);
-        out.push_str("</th>");
-    }
+    render_table_cells(&table.head, &align_attrs, "<th", "</th>", out, opts);
     out.push_str("</tr>\n</thead>\n<tbody>\n");
     for row in &table.rows {
         out.push_str("<tr>");
-        for (idx, cell) in row.iter().enumerate() {
-            let align = align_attr(table.align.get(idx).copied().unwrap_or(Align::None));
-            out.push_str("<td");
-            out.push_str(align);
-            out.push('>');
-            render_inlines(cell, out, opts);
-            out.push_str("</td>");
-        }
+        render_table_cells(row, &align_attrs, "<td", "</td>", out, opts);
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody>\n</table>\n");
     out.push_str("</div>\n");
+}
+
+fn render_table_cells(
+    cells: &[Vec<Inline>],
+    align_attrs: &[&'static str],
+    open: &str,
+    close: &str,
+    out: &mut String,
+    opts: &HtmlOptions,
+) {
+    let aligned_len = cells.len().min(align_attrs.len());
+    let (aligned_cells, unaligned_cells) = cells.split_at(aligned_len);
+    for (cell, align) in aligned_cells.iter().zip(&align_attrs[..aligned_len]) {
+        out.push_str(open);
+        out.push_str(align);
+        out.push('>');
+        render_inlines(cell, out, opts);
+        out.push_str(close);
+    }
+    for cell in unaligned_cells {
+        out.push_str(open);
+        out.push('>');
+        render_inlines(cell, out, opts);
+        out.push_str(close);
+    }
 }
 
 fn align_attr(a: Align) -> &'static str {

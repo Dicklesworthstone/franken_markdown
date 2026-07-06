@@ -209,10 +209,11 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut Re
     for item in &list.items {
         match item.task {
             Some(checked) => {
-                let mark = if checked { " checked" } else { "" };
-                out.push_str(&format!(
-                    "<li class=\"task\"><input type=\"checkbox\" disabled{mark}> "
-                ));
+                out.push_str("<li class=\"task\"><input type=\"checkbox\" disabled");
+                if checked {
+                    out.push_str(" checked");
+                }
+                out.push_str("> ");
             }
             None => out.push_str("<li>"),
         }

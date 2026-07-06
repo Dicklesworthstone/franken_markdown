@@ -218,6 +218,11 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
                 if dist > WINDOW {
                     break;
                 }
+                if best_len < max_match && data[cand + best_len] != data[pos + best_len] {
+                    cand = prev[cand];
+                    chain -= 1;
+                    continue;
+                }
                 let len = match_len(data, cand, pos, max_match);
                 if len > best_len {
                     best_len = len;

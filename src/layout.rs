@@ -1529,7 +1529,6 @@ pub fn break_paragraph_into(
     }
 
     scratch.states.clear();
-    scratch.states.resize(candidates.len(), None);
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
 
@@ -1646,7 +1645,7 @@ pub fn break_paragraph_into(
                 break;
             }
         }
-        scratch.states[j] = best;
+        scratch.states.push(best);
     }
 
     let Some(mut idx) = scratch.states.len().checked_sub(1) else {

@@ -949,10 +949,10 @@ impl HyphenTrie {
     #[inline]
     fn apply_terminal_values(&self, node_idx: u32, start: usize, scores: &mut [u8]) {
         if let Some(values) = self.terminal_values(node_idx) {
-            for (offset, &value) in values.iter().enumerate() {
-                if let Some(score) = scores.get_mut(start + offset) {
-                    *score = (*score).max(value);
-                }
+            debug_assert!(start + values.len() <= scores.len());
+            let score_window = &mut scores[start..start + values.len()];
+            for (score, &value) in score_window.iter_mut().zip(values) {
+                *score = (*score).max(value);
             }
         }
     }

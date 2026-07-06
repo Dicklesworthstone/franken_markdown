@@ -24,6 +24,21 @@ const MAX_LAYOUT_GLYPHS: usize = 65_536;
 /// Alias of the layout ceiling used specifically for Coverage-table expansion.
 const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
 
+#[derive(Debug, Clone)]
+struct Cmap4Segment {
+    start: u16,
+    end: u16,
+    id_delta: u16,
+    id_range_offset: u16,
+    id_range_offset_pos: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Cmap4Cache {
+    segments: Vec<Cmap4Segment>,
+    sorted_by_end: bool,
+}
+
 /// A parsed font, owning its backing bytes.
 #[derive(Debug, Clone)]
 pub struct Font {
@@ -42,6 +57,7 @@ pub struct Font {
     hmtx_off: usize,
     cmap_off: usize,
     cmap_format: u16,
+    cmap4_cache: Option<Cmap4Cache>,
     /// `(offset, length)` of the `glyf` table, when the font has TrueType
     /// outlines. Absent for CFF/OpenType (`OTTO`) fonts.
     glyf: Option<(usize, usize)>,
@@ -238,6 +254,11 @@ impl Font {
             be_u16(d, off(hhea, 34).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)?;
 
         let (cmap_off, cmap_format) = select_cmap(d, cmap).ok_or(FontError::NoUnicodeCmap)?;
+        let cmap4_cache = if cmap_format == 4 {
+            parse_cmap4_cache(d, cmap_off)
+        } else {
+            None
+        };
 
         // Outline tables are optional: present for TrueType (glyf) fonts, absent
         // for CFF/OpenType. Their absence is not an error here.
@@ -260,6 +281,7 @@ impl Font {
             hmtx_off: hmtx,
             cmap_off,
             cmap_format,
+            cmap4_cache,
             glyf,
             loca_off,
             loca_long,
@@ -500,6 +522,42 @@ impl Font {
             return Some(0);
         }
         let c = cp as u16;
+        if let Some(cache) = &self.cmap4_cache {
+            return self.cmap4_cached_lookup(c, cache);
+        }
+        self.cmap4_uncached_lookup(c)
+    }
+
+    fn cmap4_cached_lookup(&self, c: u16, cache: &Cmap4Cache) -> Option<u16> {
+        let segment = if cache.sorted_by_end {
+            let idx = cache.segments.partition_point(|seg| seg.end < c);
+            cache.segments.get(idx)
+        } else {
+            cache.segments.iter().find(|seg| c <= seg.end)
+        }?;
+
+        if c < segment.start {
+            return Some(0);
+        }
+        if segment.id_range_offset == 0 {
+            return Some(c.wrapping_add(segment.id_delta));
+        }
+        let gi_addr = off(
+            off(
+                segment.id_range_offset_pos,
+                segment.id_range_offset as usize,
+            )?,
+            2usize.checked_mul((c - segment.start) as usize)?,
+        )?;
+        let g = be_u16(&self.data, gi_addr)?;
+        Some(if g == 0 {
+            0
+        } else {
+            g.wrapping_add(segment.id_delta)
+        })
+    }
+
+    fn cmap4_uncached_lookup(&self, c: u16) -> Option<u16> {
         let d = &self.data;
         let base = self.cmap_off;
         let seg_x2 = be_u16(d, off(base, 6)?)? as usize;
@@ -933,6 +991,42 @@ fn strip_simple_glyph_instructions(data: &[u8], contour_count: usize) -> Option<
     out.extend_from_slice(&0u16.to_be_bytes());
     out.extend_from_slice(data.get(instruction_end..)?);
     Some(out)
+}
+
+fn parse_cmap4_cache(d: &[u8], base: usize) -> Option<Cmap4Cache> {
+    let seg_x2 = be_u16(d, off(base, 6)?)? as usize;
+    let seg_count = seg_x2 / 2;
+    let end_codes = off(base, 14)?;
+    let start_codes = off(off(end_codes, seg_x2)?, 2)?;
+    let id_deltas = off(start_codes, seg_x2)?;
+    let id_range_offsets = off(id_deltas, seg_x2)?;
+
+    let mut segments = Vec::with_capacity(seg_count);
+    let mut sorted_by_end = true;
+    let mut prev_end: Option<u16> = None;
+    for i in 0..seg_count {
+        let end = be_u16(d, off_mul(end_codes, i, 2)?)?;
+        let start = be_u16(d, off_mul(start_codes, i, 2)?)?;
+        let id_delta = be_u16(d, off_mul(id_deltas, i, 2)?)?;
+        let id_range_offset_pos = off_mul(id_range_offsets, i, 2)?;
+        let id_range_offset = be_u16(d, id_range_offset_pos)?;
+        if prev_end.is_some_and(|prev| end < prev) {
+            sorted_by_end = false;
+        }
+        prev_end = Some(end);
+        segments.push(Cmap4Segment {
+            start,
+            end,
+            id_delta,
+            id_range_offset,
+            id_range_offset_pos,
+        });
+    }
+
+    Some(Cmap4Cache {
+        segments,
+        sorted_by_end,
+    })
 }
 
 /// Choose the best Unicode `cmap` subtable, returning its absolute offset and

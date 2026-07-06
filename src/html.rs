@@ -608,32 +608,34 @@ fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
     let colors = &theme.colors;
     let spacing = &theme.spacing;
 
-    let dark = match theme.dark_mode {
-        DarkModePolicy::Auto => dark_mode_css(&theme.dark_colors),
-        DarkModePolicy::Disabled => String::new(),
-    };
+    let emit_dark = matches!(theme.dark_mode, DarkModePolicy::Auto);
     let token_dark = match theme.dark_mode {
         DarkModePolicy::Auto => TOKEN_DARK_CSS,
         DarkModePolicy::Disabled => "",
     };
 
-    let color_vars = color_vars(colors);
+    let color_vars_capacity = color_vars_capacity(colors);
+    let dark_capacity = if emit_dark {
+        dark_mode_css_capacity(&theme.dark_colors)
+    } else {
+        0
+    };
     let line_height = css_num(spacing.line_height);
     let pad_y = css_num(spacing.table_cell_padding_y_em);
     let pad_x = css_num(spacing.table_cell_padding_x_em);
     let mut css = String::with_capacity(
         embedded.css.len()
-            + color_vars.len()
+            + color_vars_capacity
             + body_font.len()
             + mono_font.len()
             + BASE_CSS.len()
             + TOKEN_CSS.len()
-            + dark.len()
+            + dark_capacity
             + token_dark.len()
             + 256,
     );
     css.push_str(&embedded.css);
-    css.push_str(&color_vars);
+    push_color_vars(&mut css, colors);
     css.push_str("\n:root { --fmd-base: ");
     push_u64(&mut css, u64::from(spacing.base_px));
     css.push_str("px; --fmd-measure: ");
@@ -655,51 +657,89 @@ fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
     css.push('\n');
     css.push_str(TOKEN_CSS);
     css.push('\n');
-    css.push_str(&dark);
+    if emit_dark {
+        push_dark_mode_css(&mut css, &theme.dark_colors);
+    }
     css.push_str(token_dark);
     css
 }
 
-fn color_vars(colors: &ThemeColors) -> String {
-    format!(
-        ":root {{\n  --fmd-fg: {};\n  --fmd-fg-muted: {};\n  --fmd-bg: {};\n  \
-         --fmd-bg-subtle: {};\n  --fmd-border: {};\n  --fmd-border-muted: {};\n  \
-         --fmd-code-bg: {};\n  --fmd-stripe: {};\n  --fmd-quote-fg: {};\n  \
-         --fmd-quote-bar: {};\n  --fmd-accent: {};\n}}",
-        css_token(&colors.fg),
-        css_token(&colors.fg_muted),
-        css_token(&colors.bg),
-        css_token(&colors.bg_subtle),
-        css_token(&colors.border),
-        css_token(&colors.border_muted),
-        css_token(&colors.code_bg),
-        css_token(&colors.stripe),
-        css_token(&colors.quote_fg),
-        css_token(&colors.quote_bar),
-        css_token(&colors.accent),
-    )
+fn color_vars_capacity(colors: &ThemeColors) -> usize {
+    256 + css_token_capacity(&colors.fg)
+        + css_token_capacity(&colors.fg_muted)
+        + css_token_capacity(&colors.bg)
+        + css_token_capacity(&colors.bg_subtle)
+        + css_token_capacity(&colors.border)
+        + css_token_capacity(&colors.border_muted)
+        + css_token_capacity(&colors.code_bg)
+        + css_token_capacity(&colors.stripe)
+        + css_token_capacity(&colors.quote_fg)
+        + css_token_capacity(&colors.quote_bar)
+        + css_token_capacity(&colors.accent)
 }
 
-fn dark_mode_css(colors: &ThemeColors) -> String {
-    let vars = color_vars(colors);
-    format!("\n@media (prefers-color-scheme: dark) {{\n  {vars}\n}}\n")
+fn dark_mode_css_capacity(colors: &ThemeColors) -> usize {
+    64 + color_vars_capacity(colors)
 }
 
+fn css_token_capacity(s: &str) -> usize {
+    s.len().max(CSS_TOKEN_FALLBACK.len())
+}
+
+fn push_color_vars(css: &mut String, colors: &ThemeColors) {
+    css.push_str(":root {\n");
+    push_color_var(css, "--fmd-fg", &colors.fg);
+    push_color_var(css, "--fmd-fg-muted", &colors.fg_muted);
+    push_color_var(css, "--fmd-bg", &colors.bg);
+    push_color_var(css, "--fmd-bg-subtle", &colors.bg_subtle);
+    push_color_var(css, "--fmd-border", &colors.border);
+    push_color_var(css, "--fmd-border-muted", &colors.border_muted);
+    push_color_var(css, "--fmd-code-bg", &colors.code_bg);
+    push_color_var(css, "--fmd-stripe", &colors.stripe);
+    push_color_var(css, "--fmd-quote-fg", &colors.quote_fg);
+    push_color_var(css, "--fmd-quote-bar", &colors.quote_bar);
+    push_color_var(css, "--fmd-accent", &colors.accent);
+    css.push('}');
+}
+
+fn push_color_var(css: &mut String, name: &str, value: &str) {
+    css.push_str("  ");
+    css.push_str(name);
+    css.push_str(": ");
+    push_css_token(css, value);
+    css.push_str(";\n");
+}
+
+fn push_dark_mode_css(css: &mut String, colors: &ThemeColors) {
+    css.push_str("\n@media (prefers-color-scheme: dark) {\n  ");
+    push_color_vars(css, colors);
+    css.push_str("\n}\n");
+}
+
+const CSS_TOKEN_FALLBACK: &str = "initial";
+
+#[cfg(test)]
 fn css_token(s: &str) -> String {
-    let out: String = s
-        .chars()
-        .filter(|c| {
-            c.is_ascii_alphanumeric()
-                || matches!(
-                    c,
-                    '#' | '-' | '_' | ',' | '.' | '%' | '(' | ')' | ' ' | '/' | '"'
-                )
-        })
-        .collect();
-    if out.trim().is_empty() {
-        "initial".to_string()
-    } else {
-        out
+    let mut out = String::with_capacity(css_token_capacity(s));
+    push_css_token(&mut out, s);
+    out
+}
+
+fn push_css_token(out: &mut String, s: &str) {
+    let start_len = out.len();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '#' | '-' | '_' | ',' | '.' | '%' | '(' | ')' | ' ' | '/' | '"'
+            )
+        {
+            out.push(c);
+        }
+    }
+    if out[start_len..].trim().is_empty() {
+        out.truncate(start_len);
+        out.push_str(CSS_TOKEN_FALLBACK);
     }
 }
 
@@ -1263,8 +1303,8 @@ mod tests {
     use crate::ast::{Block, Document, Inline};
 
     use super::{
-        FontCharSet, base64_encode, css_num, escape_attr, escape_text, initial_body_capacity,
-        inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
+        FontCharSet, base64_encode, css_num, css_token, escape_attr, escape_text,
+        initial_body_capacity, inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
     };
 
     #[test]
@@ -1276,6 +1316,16 @@ mod tests {
         // Finite values are unaffected.
         assert_eq!(css_num(1.5), "1.5");
         assert_eq!(css_num(0.0), "0");
+    }
+
+    #[test]
+    fn css_token_filters_to_safe_css_value_bytes() {
+        assert_eq!(css_token("#123 abc/def(50%)"), "#123 abc/def(50%)");
+        assert_eq!(
+            css_token("url(javascript:alert(1))"),
+            "url(javascriptalert(1))"
+        );
+        assert_eq!(css_token("\n\t;"), "initial");
     }
 
     #[test]

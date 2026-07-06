@@ -69,11 +69,10 @@ impl BitWriter {
         }
     }
 
-    /// Write a Huffman code of length `len` MSB-first (code is in canonical,
-    /// MSB-first numeric form; we reverse its bits and emit LSB-first).
-    fn write_huffman(&mut self, code: u32, len: u8) {
-        let rev = reverse_bits(code, len);
-        self.write_bits(rev, len as u32);
+    /// Write a pre-reversed Huffman code. DEFLATE still stores bits LSB-first;
+    /// fixed-code tables keep the reversed representation ready for emission.
+    fn write_reversed_huffman(&mut self, code: u16, len: u8) {
+        self.write_bits(u32::from(code), u32::from(len));
     }
 
     /// Pad the current partial byte with zero bits and flush. Leaves the writer
@@ -88,7 +87,7 @@ impl BitWriter {
     }
 }
 
-fn reverse_bits(code: u32, len: u8) -> u32 {
+const fn reverse_bits(code: u32, len: u8) -> u32 {
     let mut r = 0u32;
     let mut c = code;
     let mut i = 0u8;
@@ -101,24 +100,50 @@ fn reverse_bits(code: u32, len: u8) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Fixed Huffman literal/length code table (RFC 1951 section 3.2.6). Returns the
-// canonical (MSB-first) code value and its bit length for symbol `sym`.
-fn litlen_code(sym: usize) -> (u32, u8) {
+// Fixed Huffman literal/length code table (RFC 1951 section 3.2.6). The stored
+// code value is already bit-reversed for the LSB-first DEFLATE bit writer.
+const FIXED_LITLEN_CODES: [(u16, u8); 288] = build_fixed_litlen_codes();
+const FIXED_DIST_CODES: [u16; 30] = build_fixed_dist_codes();
+
+const fn build_fixed_litlen_codes() -> [(u16, u8); 288] {
+    let mut table = [(0u16, 0u8); 288];
+    let mut sym = 0usize;
+    while sym < table.len() {
+        let (code, len) = litlen_code(sym);
+        table[sym] = (reverse_bits(code as u32, len) as u16, len);
+        sym += 1;
+    }
+    table
+}
+
+const fn build_fixed_dist_codes() -> [u16; 30] {
+    let mut table = [0u16; 30];
+    let mut sym = 0usize;
+    while sym < table.len() {
+        table[sym] = reverse_bits(sym as u32, 5) as u16;
+        sym += 1;
+    }
+    table
+}
+
+// Returns the canonical (MSB-first) code value and bit length for fixed
+// literal/length symbol `sym`.
+const fn litlen_code(sym: usize) -> (u16, u8) {
     if sym <= 143 {
-        ((0x30 + sym) as u32, 8)
+        ((0x30 + sym) as u16, 8)
     } else if sym <= 255 {
-        ((0x190 + (sym - 144)) as u32, 9)
+        ((0x190 + (sym - 144)) as u16, 9)
     } else if sym <= 279 {
-        ((sym - 256) as u32, 7)
+        ((sym - 256) as u16, 7)
     } else {
         // 280..=287
-        ((0xC0 + (sym - 280)) as u32, 8)
+        ((0xC0 + (sym - 280)) as u16, 8)
     }
 }
 
 fn emit_litlen(bw: &mut BitWriter, sym: usize) {
-    let (code, len) = litlen_code(sym);
-    bw.write_huffman(code, len);
+    let (code, len) = FIXED_LITLEN_CODES[sym];
+    bw.write_reversed_huffman(code, len);
 }
 
 fn emit_literal(bw: &mut BitWriter, b: u8) {
@@ -142,7 +167,7 @@ fn emit_match(bw: &mut BitWriter, len: usize, dist: usize) {
     while di > 0 && DIST_BASE.get(di).copied().unwrap_or(0) as usize > dist {
         di -= 1;
     }
-    bw.write_huffman(di as u32, 5);
+    bw.write_reversed_huffman(FIXED_DIST_CODES[di], 5);
     let dbase = DIST_BASE.get(di).copied().unwrap_or(0) as usize;
     let dextra = DIST_EXTRA.get(di).copied().unwrap_or(0) as u32;
     bw.write_bits((dist.saturating_sub(dbase)) as u32, dextra);

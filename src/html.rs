@@ -5,7 +5,7 @@
 //! blockquotes, and code blocks ready for syntax highlighting.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
@@ -86,28 +86,41 @@ fn first_heading_text(doc: &Document) -> Option<String> {
 
 #[derive(Default)]
 struct RenderState {
-    used_heading_ids: BTreeSet<String>,
-    next_heading_suffix: BTreeMap<String, usize>,
+    /// Keys are every emitted heading id. Values are the next suffix to try
+    /// when that same id text later appears as a heading's base slug.
+    heading_id_suffixes: BTreeMap<String, usize>,
 }
 
 impl RenderState {
-    fn heading_id_from_inlines(&mut self, inlines: &[Inline]) -> String {
+    fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
         let mut base = slug_inlines(inlines);
         if base.is_empty() {
             base.push_str("section");
         }
 
-        let mut suffix = self.next_heading_suffix.get(&base).copied().unwrap_or(1);
+        let mut suffix = self
+            .heading_id_suffixes
+            .get(base.as_str())
+            .copied()
+            .unwrap_or(1);
         loop {
-            let candidate = if suffix == 1 {
-                base.clone()
-            } else {
-                format!("{base}-{suffix}")
-            };
+            if suffix == 1 {
+                suffix += 1;
+                if !self.heading_id_suffixes.contains_key(base.as_str()) {
+                    out.push_str(&base);
+                    self.heading_id_suffixes.insert(base, suffix);
+                    return;
+                }
+                continue;
+            }
+
+            let candidate = format!("{base}-{suffix}");
             suffix += 1;
-            if self.used_heading_ids.insert(candidate.clone()) {
-                self.next_heading_suffix.insert(base, suffix);
-                return candidate;
+            if let Entry::Vacant(entry) = self.heading_id_suffixes.entry(candidate) {
+                out.push_str(entry.key());
+                entry.insert(1);
+                self.heading_id_suffixes.insert(base, suffix);
+                return;
             }
         }
     }
@@ -126,11 +139,10 @@ fn initial_body_capacity(blocks: usize) -> usize {
 fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
     match block {
         Block::Heading { level, inlines } => {
-            let id = state.heading_id_from_inlines(inlines);
             out.push_str("<h");
             push_u64(out, u64::from(*level));
             out.push_str(" id=\"");
-            out.push_str(&id);
+            state.push_heading_id_from_inlines(inlines, out);
             out.push_str("\">");
             render_inlines(inlines, out, opts);
             out.push_str("</h");

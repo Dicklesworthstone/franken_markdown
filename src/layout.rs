@@ -859,20 +859,21 @@ impl Hyphenator {
             }
             has_uppercase |= byte.is_ascii_uppercase();
         }
-        if has_uppercase {
+        let normalized_word = if has_uppercase {
             lower.reserve(word.len());
             for byte in word.bytes() {
                 lower.push(byte.to_ascii_lowercase() as char);
             }
+            lower.as_str()
         } else {
-            lower.push_str(word);
-        }
+            word
+        };
 
-        let len = lower.len();
+        let len = normalized_word.len();
         if let Some(exception) = self
             .exceptions
             .iter()
-            .find(|exception| exception.word == lower.as_str())
+            .find(|exception| exception.word == normalized_word)
         {
             out.extend(
                 exception
@@ -886,7 +887,7 @@ impl Hyphenator {
 
         dotted.reserve(len + 2);
         dotted.push(b'.');
-        dotted.extend_from_slice(lower.as_bytes());
+        dotted.extend_from_slice(normalized_word.as_bytes());
         dotted.push(b'.');
 
         scores.resize(dotted.len() + 1, 0);

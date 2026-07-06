@@ -2222,10 +2222,10 @@ fn parse_inlines_chars_with_refs_profiled(
     // "process emphasis" delimiter-stack algorithm over that list to pair openers
     // with closers and build the correct nested `Emphasis`/`Strong` tree.
     let mut els: Vec<InlineEl> = Vec::new();
-    // Precompute `[`→`]` matches once (linear) so each link/image attempt below
-    // is an O(1) lookup rather than an O(n) rescan per `[` (which was quadratic
-    // on pathological bracket-heavy lines).
-    let bracket_pairs = compute_bracket_pairs(&bytes);
+    // Build `[`→`]` matches lazily. Most inline runs contain no links/images, so
+    // they should not pay for the bracket-pair vector; once a bracket candidate
+    // exists, all link/reference attempts share the same linear precompute.
+    let mut bracket_pairs: Option<Vec<Option<usize>>> = None;
     let mut buf = String::new();
     let mut i = 0;
     let flush = |buf: &mut String, els: &mut Vec<InlineEl>| {
@@ -2270,8 +2270,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
+                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(&bytes));
                 if let Some((alt, dest, title, next)) =
-                    parse_link_like(&bytes, i + 1, &bracket_pairs, refs, profiler)
+                    parse_link_like(&bytes, i + 1, pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -2281,7 +2282,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i + 1, &bracket_pairs, refs, profiler)
+                    parse_reference_link_like(&bytes, i + 1, pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -2301,8 +2302,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 // exempt — their description is flattened to alt text — so this
                 // guard applies only to the link-forming paths, not the `!` image
                 // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
+                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(&bytes));
                 if let Some((content, dest, title, next)) =
-                    parse_link_like(&bytes, i, &bracket_pairs, refs, profiler)
+                    parse_link_like(&bytes, i, pairs, refs, profiler)
                         .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);
@@ -2313,7 +2315,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i, &bracket_pairs, refs, profiler)
+                    parse_reference_link_like(&bytes, i, pairs, refs, profiler)
                         .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);

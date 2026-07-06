@@ -23,6 +23,7 @@ const MAX_LAYOUT_GLYPHS: usize = 65_536;
 
 /// Alias of the layout ceiling used specifically for Coverage-table expansion.
 const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
+const MISSING_GLYPH_REMAP: u16 = u16::MAX;
 
 #[derive(Debug, Clone)]
 struct Cmap4Segment {
@@ -657,9 +658,11 @@ impl Font {
 
         // --- 2. Renumber old -> new -----------------------------------------
         let mut new_of: std::collections::BTreeMap<u16, u16> = std::collections::BTreeMap::new();
+        let mut new_of_lookup = vec![MISSING_GLYPH_REMAP; usize::from(self.num_glyphs).max(1)];
         for (i, &g) in old_gids.iter().enumerate() {
             let new_gid = u16::try_from(i).ok()?;
             new_of.insert(g, new_gid);
+            *new_of_lookup.get_mut(usize::from(g))? = new_gid;
         }
         let n = old_gids.len();
         let n_u16 = u16::try_from(n).ok()?;
@@ -669,7 +672,7 @@ impl Font {
         let mut loca: Vec<u32> = Vec::with_capacity(n.checked_add(1)?);
         for &old in &old_gids {
             loca.push(u32::try_from(glyf_bytes.len()).ok()?);
-            let gb = self.subset_glyph_bytes(old, &new_of)?;
+            let gb = self.subset_glyph_bytes(old, &new_of_lookup)?;
             glyf_bytes.extend_from_slice(&gb);
             // Pad each glyph to a 4-byte multiple so the next glyph (and every
             // long-loca offset) is word-aligned.
@@ -708,7 +711,7 @@ impl Font {
         write_u16(&mut head, 50, 1)?; // indexToLocFormat = 1 (long)
 
         // cmap: fresh single format-4 (3,1) subtable.
-        let cmap = self.build_cmap4(cmap_chars, &new_of)?;
+        let cmap = self.build_cmap4(cmap_chars, &new_of_lookup)?;
 
         // name: minimal valid table (format 0, count 0, stringOffset 6).
         let mut name: Vec<u8> = Vec::with_capacity(6);
@@ -809,11 +812,7 @@ impl Font {
     /// instructions; composite glyphs are copied with each component `glyphIndex`
     /// (u16) rewritten from its old gid to its new gid and any trailing
     /// instructions removed. Empty glyphs yield an empty `Vec`.
-    fn subset_glyph_bytes(
-        &self,
-        old: u16,
-        new_of: &std::collections::BTreeMap<u16, u16>,
-    ) -> Option<Vec<u8>> {
+    fn subset_glyph_bytes(&self, old: u16, new_of: &[u16]) -> Option<Vec<u8>> {
         const ARG_WORDS: u16 = 0x0001;
         const WE_HAVE_SCALE: u16 = 0x0008;
         const MORE: u16 = 0x0020;
@@ -844,7 +843,7 @@ impl Font {
             // is substituted with `.notdef` (new gid 0, always present) rather
             // than failing the whole font. The composite still renders, minus
             // the one bad component.
-            let comp_new = new_of.get(&comp_old).copied().unwrap_or(0);
+            let comp_new = remapped_gid(new_of, comp_old).unwrap_or(0);
             let nb = comp_new.to_be_bytes();
             *out.get_mut(off(p, 2)?)? = nb[0];
             *out.get_mut(off(p, 3)?)? = nb[1];
@@ -880,11 +879,7 @@ impl Font {
     /// Build a complete `cmap` table holding a single format-4 `(3,1)` subtable
     /// mapping every BMP char in `keep` to its NEW gid (one 1-char segment each,
     /// plus the mandatory final `0xFFFF` segment).
-    fn build_cmap4(
-        &self,
-        keep: &[char],
-        new_of: &std::collections::BTreeMap<u16, u16>,
-    ) -> Option<Vec<u8>> {
+    fn build_cmap4(&self, keep: &[char], new_of: &[u16]) -> Option<Vec<u8>> {
         // Unique, ascending code -> new gid (0xFFFF reserved for the final seg).
         let mut codes: std::collections::BTreeMap<u16, u16> = std::collections::BTreeMap::new();
         for &ch in keep {
@@ -896,7 +891,7 @@ impl Font {
             // Skip a char whose glyph is not in the subset (a malformed source
             // cmap, or a glyph the closure could not reach) instead of failing the
             // whole font; it falls back to `.notdef` at render time.
-            let Some(&ng) = new_of.get(&old) else {
+            let Some(ng) = remapped_gid(new_of, old) else {
                 continue;
             };
             codes.insert(cp as u16, ng);
@@ -974,6 +969,13 @@ impl Font {
             }
         }
         Some(0)
+    }
+}
+
+fn remapped_gid(new_of: &[u16], old: u16) -> Option<u16> {
+    match new_of.get(usize::from(old)).copied()? {
+        MISSING_GLYPH_REMAP => None,
+        gid => Some(gid),
     }
 }
 
@@ -1852,8 +1854,7 @@ mod dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod subset_degradation_tests {
-    use super::{Font, be_i16, be_u16, strip_simple_glyph_instructions};
-    use std::collections::BTreeMap;
+    use super::{Font, MISSING_GLYPH_REMAP, be_i16, be_u16, strip_simple_glyph_instructions};
 
     fn cm_regular() -> Font {
         let bytes = std::fs::read(concat!(
@@ -1880,6 +1881,16 @@ mod subset_degradation_tests {
         .iter()
         .filter_map(|p| Font::parse(std::fs::read(format!("{base}{p}")).ok()?).ok())
         .collect()
+    }
+
+    fn test_remap(font: &Font, pairs: &[(u16, u16)]) -> Vec<u16> {
+        let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs).max(1)];
+        for &(old, new) in pairs {
+            if let Some(slot) = new_of.get_mut(usize::from(old)) {
+                *slot = new;
+            }
+        }
+        new_of
     }
 
     fn simple_instruction_len(data: &[u8]) -> Option<usize> {
@@ -1920,9 +1931,7 @@ mod subset_degradation_tests {
             return;
         };
 
-        let mut new_of = BTreeMap::new();
-        new_of.insert(0u16, 0u16);
-        new_of.insert(gid, 1u16);
+        let new_of = test_remap(&font, &[(0u16, 0u16), (gid, 1u16)]);
 
         let stripped = font
             .subset_glyph_bytes(gid, &new_of)
@@ -1985,9 +1994,7 @@ mod subset_degradation_tests {
             .expect("at least one bundled face has a composite glyph");
         // Map .notdef and the composite itself, but NONE of its components, so the
         // component lookup misses and must fall back to gid 0.
-        let mut new_of = BTreeMap::new();
-        new_of.insert(0u16, 0u16);
-        new_of.insert(comp, 1u16);
+        let new_of = test_remap(&font, &[(0u16, 0u16), (comp, 1u16)]);
         let bytes = font
             .subset_glyph_bytes(comp, &new_of)
             .expect("missing component must be substituted, not abort");

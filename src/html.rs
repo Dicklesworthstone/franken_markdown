@@ -723,11 +723,71 @@ fn css_num(value: f32) -> String {
 
 #[derive(Default)]
 struct FontUsage {
-    body_regular: BTreeSet<char>,
-    body_bold: BTreeSet<char>,
-    body_italic: BTreeSet<char>,
-    body_bold_italic: BTreeSet<char>,
-    mono: BTreeSet<char>,
+    body_regular: FontCharSet,
+    body_bold: FontCharSet,
+    body_italic: FontCharSet,
+    body_bold_italic: FontCharSet,
+    mono: FontCharSet,
+}
+
+struct FontCharSet {
+    ascii: [bool; 128],
+    has_ascii: bool,
+    non_ascii: BTreeSet<char>,
+}
+
+impl Default for FontCharSet {
+    fn default() -> Self {
+        Self {
+            ascii: [false; 128],
+            has_ascii: false,
+            non_ascii: BTreeSet::new(),
+        }
+    }
+}
+
+impl FontCharSet {
+    fn is_empty(&self) -> bool {
+        !self.has_ascii && self.non_ascii.is_empty()
+    }
+
+    fn insert(&mut self, ch: char) {
+        if ch.is_ascii() {
+            self.ascii[ch as usize] = true;
+            self.has_ascii = true;
+        } else {
+            self.non_ascii.insert(ch);
+        }
+    }
+
+    fn extend_text(&mut self, text: &str) {
+        if text.is_ascii() {
+            if !text.is_empty() {
+                self.has_ascii = true;
+            }
+            for &byte in text.as_bytes() {
+                self.ascii[usize::from(byte)] = true;
+            }
+        } else {
+            for ch in text.chars() {
+                self.insert(ch);
+            }
+        }
+    }
+
+    fn to_chars(&self) -> Vec<char> {
+        let mut chars =
+            Vec::with_capacity(self.non_ascii.len() + if self.has_ascii { 128 } else { 0 });
+        if self.has_ascii {
+            for (idx, used) in self.ascii.iter().enumerate() {
+                if *used {
+                    chars.push(char::from(idx as u8));
+                }
+            }
+        }
+        chars.extend(self.non_ascii.iter().copied());
+        chars
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -852,7 +912,7 @@ fn mono_font_bytes(font_assets: &FontAssets, style: FontStyle) -> &[u8] {
 }
 
 impl FontUsage {
-    fn body_slot(&mut self, style: InlineStyle) -> &mut BTreeSet<char> {
+    fn body_slot(&mut self, style: InlineStyle) -> &mut FontCharSet {
         match (style.bold, style.italic) {
             (false, false) => &mut self.body_regular,
             (true, false) => &mut self.body_bold,
@@ -862,11 +922,11 @@ impl FontUsage {
     }
 
     fn add_body_text(&mut self, text: &str, style: InlineStyle) {
-        self.body_slot(style).extend(text.chars());
+        self.body_slot(style).extend_text(text);
     }
 
     fn add_mono_text(&mut self, text: &str) {
-        self.mono.extend(text.chars());
+        self.mono.extend_text(text);
     }
 
     fn add_soft_break(&mut self, style: InlineStyle) {
@@ -882,11 +942,11 @@ impl FontUsage {
     }
 }
 
-fn add_seed_if_used(chars: &mut BTreeSet<char>) {
+fn add_seed_if_used(chars: &mut FontCharSet) {
     if chars.is_empty() {
         return;
     }
-    chars.extend(HTML_FONT_SEED.chars());
+    chars.extend_text(HTML_FONT_SEED);
 }
 
 fn collect_font_usage(doc: &Document) -> FontUsage {
@@ -955,13 +1015,13 @@ fn push_font_face(
     style: &str,
     weight: &str,
     font_bytes: &[u8],
-    chars: &BTreeSet<char>,
+    chars: &FontCharSet,
 ) {
     if chars.is_empty() {
         return;
     }
 
-    let keep: Vec<char> = chars.iter().copied().collect();
+    let keep = chars.to_chars();
     let subset = Font::parse(font_bytes.to_vec())
         .ok()
         .and_then(|font| font.subset(&keep))
@@ -1197,13 +1257,14 @@ strong { font-weight: 680; }
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::collections::BTreeSet;
 
     use crate::HtmlOptions;
     use crate::ast::{Block, Document, Inline};
 
     use super::{
-        base64_encode, css_num, escape_attr, escape_text, initial_body_capacity, inlines_to_plain,
-        push_u64, sanitize_custom_css, slug, slug_inlines,
+        FontCharSet, base64_encode, css_num, escape_attr, escape_text, initial_body_capacity,
+        inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
     };
 
     #[test]
@@ -1215,6 +1276,21 @@ mod tests {
         // Finite values are unaffected.
         assert_eq!(css_num(1.5), "1.5");
         assert_eq!(css_num(0.0), "0");
+    }
+
+    #[test]
+    fn font_char_set_keeps_btree_character_order() {
+        let mut fast = FontCharSet::default();
+        let mut btree = BTreeSet::new();
+        for ch in ['é', 'A', '\n', '•', 'z', '\0', ' ', '—', 'A'] {
+            fast.insert(ch);
+            btree.insert(ch);
+        }
+        fast.extend_text("ba\t");
+        btree.extend("ba\t".chars());
+
+        let expected: Vec<char> = btree.into_iter().collect();
+        assert_eq!(fast.to_chars(), expected);
     }
 
     #[test]

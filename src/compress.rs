@@ -516,6 +516,15 @@ impl<'a> BitStream<'a> {
             self.byte += 1;
         }
     }
+    fn aligned_bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.bit != 0 {
+            return None;
+        }
+        let end = self.byte.checked_add(len)?;
+        let bytes = self.data.get(self.byte..end)?;
+        self.byte = end;
+        Some(bytes)
+    }
     fn is_at_end_after_final_block(&self) -> bool {
         if self.bit == 0 {
             return self.byte == self.data.len();
@@ -542,9 +551,7 @@ fn inflate_deflate(body: &[u8], max_out: usize) -> Option<Vec<u8>> {
                 if out.len().checked_add(len)? > max_out {
                     return None;
                 }
-                for _ in 0..len {
-                    out.push(br.bits(8)? as u8);
-                }
+                out.extend_from_slice(br.aligned_bytes(len)?);
             }
             1 => {
                 let (lit, dist) = fixed_huffman();

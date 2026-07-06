@@ -1381,13 +1381,9 @@ impl MetricPrefixes {
 }
 
 fn prefix_diff(values: &[i64], start: usize, end: usize) -> i64 {
-    let start_value = values.get(start).copied().unwrap_or(0);
-    let end_value = values
-        .get(end)
-        .copied()
-        .or_else(|| values.last().copied())
-        .unwrap_or(0);
-    end_value - start_value
+    debug_assert!(start <= end);
+    debug_assert!(end < values.len());
+    values[end] - values[start]
 }
 
 #[derive(Debug, Clone, Copy)]

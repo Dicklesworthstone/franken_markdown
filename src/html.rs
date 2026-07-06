@@ -168,7 +168,7 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
                 Some(l) if crate::highlight::is_supported(l) => {
                     highlight_code(l, code, out);
                 }
-                _ => out.push_str(&escape_text(code)),
+                _ => push_escaped_text(code, out),
             }
             out.push_str("</code></pre>\n");
         }
@@ -186,7 +186,7 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
                 out.push('\n');
             } else {
                 out.push_str("<p>");
-                out.push_str(&escape_text(html));
+                push_escaped_text(html, out);
                 out.push_str("</p>\n");
             }
         }
@@ -295,13 +295,13 @@ fn align_attr(a: Align) -> &'static str {
 fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
     for inl in inlines {
         match inl {
-            Inline::Text(t) => out.push_str(&escape_text(t)),
+            Inline::Text(t) => push_escaped_text(t, out),
             Inline::Emphasis(c) => wrap(out, "em", c, opts),
             Inline::Strong(c) => wrap(out, "strong", c, opts),
             Inline::Strikethrough(c) => wrap(out, "del", c, opts),
             Inline::Code(t) => {
                 out.push_str("<code>");
-                out.push_str(&escape_text(t));
+                push_escaped_text(t, out);
                 out.push_str("</code>");
             }
             Inline::Link {
@@ -339,7 +339,7 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                     }
                     out.push('>');
                 } else {
-                    out.push_str(&escape_text(alt));
+                    push_escaped_text(alt, out);
                 }
             }
             Inline::SoftBreak => out.push('\n'),
@@ -348,7 +348,7 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                 if opts.allow_raw_html {
                     out.push_str(h);
                 } else {
-                    out.push_str(&escape_text(h));
+                    push_escaped_text(h, out);
                 }
             }
         }
@@ -458,12 +458,31 @@ fn highlight_code(lang: &str, code: &str, out: &mut String) {
                 out.push_str("<span class=\"");
                 out.push_str(cls);
                 out.push_str("\">");
-                out.push_str(&escape_text(text));
+                push_escaped_text(text, out);
                 out.push_str("</span>");
             }
-            None => out.push_str(&escape_text(text)),
+            None => push_escaped_text(text, out),
         }
     }
+}
+
+fn push_escaped_text(s: &str, out: &mut String) {
+    // Text nodes only need `&`, `<`, and `>` escaped. Writing into the caller's
+    // buffer avoids a temporary allocation for strings that contain escapes.
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = find_text_escape(&bytes[start..]) {
+        let pos = start + rel;
+        out.push_str(&s[start..pos]);
+        match bytes[pos] {
+            b'&' => out.push_str("&amp;"),
+            b'<' => out.push_str("&lt;"),
+            b'>' => out.push_str("&gt;"),
+            _ => {}
+        }
+        start = pos + 1;
+    }
+    out.push_str(&s[start..]);
 }
 
 fn escape_text(s: &str) -> Cow<'_, str> {
@@ -474,19 +493,7 @@ fn escape_text(s: &str) -> Cow<'_, str> {
         return Cow::Borrowed(s);
     }
     let mut o = String::with_capacity(s.len());
-    let mut start = 0;
-    while let Some(rel) = find_text_escape(&bytes[start..]) {
-        let pos = start + rel;
-        o.push_str(&s[start..pos]);
-        match bytes[pos] {
-            b'&' => o.push_str("&amp;"),
-            b'<' => o.push_str("&lt;"),
-            b'>' => o.push_str("&gt;"),
-            _ => {}
-        }
-        start = pos + 1;
-    }
-    o.push_str(&s[start..]);
+    push_escaped_text(s, &mut o);
     Cow::Owned(o)
 }
 

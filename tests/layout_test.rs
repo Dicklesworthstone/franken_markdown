@@ -5,12 +5,12 @@ use franken_markdown::fonts::{FontStyle, load_body};
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
     INF_PENALTY, LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, ParagraphLayoutScratch,
-    Penalty, StyledText, TextBox, TextStyle, UNITS_PER_POINT, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph, break_paragraph_into, default_interword_glue,
-    expansion_budget, hyphenated_paragraph_items_from_text,
+    Penalty, StyledRun, StyledText, TextBox, TextStyle, UNITS_PER_POINT,
+    adjustment_to_layout_units, advance_to_layout_units, break_paragraph, break_paragraph_into,
+    default_interword_glue, expansion_budget, hyphenated_paragraph_items_from_text,
     hyphenated_paragraph_items_from_text_into, measure_advances, measure_styled_text, measure_text,
-    measure_text_with_pairs, paragraph_items_from_inlines, paragraph_items_from_text,
-    protruded_fit_width, protrusion_for_text,
+    measure_text_with_pairs, paragraph_items_from_inlines, paragraph_items_from_styled_text,
+    paragraph_items_from_text, protruded_fit_width, protrusion_for_text,
 };
 use franken_markdown::text::Font;
 use franken_markdown::theme::FontFamily;
@@ -304,6 +304,60 @@ fn paragraph_items_from_inlines_keep_styles_inside_boxes() {
             + measure_text_with_pairs(&metrics, " ", size)
             + measure_text_with_pairs(&metrics, "link", size)
     );
+}
+
+#[test]
+fn paragraph_items_from_styled_text_preserve_boundary_width_rules() {
+    let metrics = StubMetrics;
+    let size = FontSize::from_points(10);
+    let styled = StyledText {
+        runs: vec![
+            StyledRun {
+                text: "A".to_string(),
+                style: TextStyle::BODY,
+            },
+            StyledRun {
+                text: "V".to_string(),
+                style: TextStyle::BODY,
+            },
+            StyledRun {
+                text: " ".to_string(),
+                style: TextStyle::BODY,
+            },
+            StyledRun {
+                text: "A".to_string(),
+                style: TextStyle::BODY,
+            },
+            StyledRun {
+                text: "V".to_string(),
+                style: TextStyle::BODY.with_bold(),
+            },
+        ],
+    };
+
+    let items = paragraph_items_from_styled_text(&metrics, &styled, size);
+
+    assert_eq!(items.len(), 4);
+    match &items[0] {
+        ParagraphItem::Box(item) => {
+            assert_eq!(item.text, "AV");
+            assert_eq!(item.runs.runs.len(), 1);
+            assert_eq!(item.runs.runs[0].text, "AV");
+            assert_eq!(item.width, LayoutUnit::from_milli_points(9_200));
+        }
+        other => panic!("expected first box, got {other:?}"),
+    }
+    assert!(matches!(items[1], ParagraphItem::Glue(_)));
+    match &items[2] {
+        ParagraphItem::Box(item) => {
+            assert_eq!(item.text, "AV");
+            assert_eq!(item.runs.runs.len(), 2);
+            assert_eq!(item.runs.runs[0].style, TextStyle::BODY);
+            assert_eq!(item.runs.runs[1].style, TextStyle::BODY.with_bold());
+            assert_eq!(item.width, LayoutUnit::from_milli_points(10_000));
+        }
+        other => panic!("expected second box, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1176,11 +1230,11 @@ fn styled_text_covers_strikethrough_image_breaks_and_empty_runs() {
 }
 
 #[test]
-fn styled_words_handle_runs_of_whitespace_and_trailing_space() {
+fn paragraph_items_handle_runs_of_whitespace_and_trailing_space() {
     let font = serif_font();
     let size = FontSize::from_points(10);
-    // Double interior spaces and a trailing space: the word splitter must not
-    // emit empty words for the extra whitespace (the "current is empty" branches).
+    // Double interior spaces and a trailing space must not emit empty boxes or
+    // dangling glue for the extra whitespace.
     let items = paragraph_items_from_text(&font, "A  B ", size);
 
     assert_eq!(items.len(), 4); // Box(A), Glue, Box(B), forced break

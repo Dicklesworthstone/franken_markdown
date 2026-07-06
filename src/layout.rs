@@ -451,18 +451,66 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
     size: FontSize,
 ) -> Vec<ParagraphItem> {
     let mut items = Vec::new();
-    let words = styled_words(text);
     let space = measure_text_with_pairs(metrics, " ", size);
-    for (idx, word) in words.iter().enumerate() {
-        let plain = word.plain_text();
-        items.push(ParagraphItem::Box(TextBox {
-            text: plain,
-            runs: word.clone(),
-            width: measure_styled_text(metrics, word, size),
-        }));
-        if idx + 1 < words.len() {
-            items.push(ParagraphItem::Glue(default_interword_glue(space)));
+    let interword = default_interword_glue(space);
+    let mut current = StyledText::default();
+    let mut current_plain = String::new();
+    let mut current_width = LayoutUnit::ZERO;
+    let mut pending_interword = false;
+
+    for run in &text.runs {
+        let mut chunk_start = None;
+        for (idx, ch) in run.text.char_indices() {
+            if is_breakable_whitespace(ch) {
+                if let Some(start) = chunk_start.take() {
+                    append_styled_word_chunk(
+                        metrics,
+                        &mut current,
+                        &mut current_plain,
+                        &mut current_width,
+                        &run.text[start..idx],
+                        run.style,
+                        size,
+                    );
+                }
+                if !current.is_empty() {
+                    push_styled_word_box(
+                        &mut items,
+                        &mut current,
+                        &mut current_plain,
+                        &mut current_width,
+                    );
+                    pending_interword = true;
+                }
+            } else {
+                if chunk_start.is_none() {
+                    if current.is_empty() && pending_interword {
+                        items.push(ParagraphItem::Glue(interword));
+                        pending_interword = false;
+                    }
+                    chunk_start = Some(idx);
+                }
+            }
         }
+        if let Some(start) = chunk_start {
+            append_styled_word_chunk(
+                metrics,
+                &mut current,
+                &mut current_plain,
+                &mut current_width,
+                &run.text[start..],
+                run.style,
+                size,
+            );
+        }
+    }
+    if !current.is_empty() {
+        push_styled_word_box(
+            &mut items,
+            &mut current,
+            &mut current_plain,
+            &mut current_width,
+        );
     }
     items.push(ParagraphItem::Penalty(Penalty {
         width: LayoutUnit::ZERO,
@@ -470,6 +518,45 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
         flagged: false,
     }));
     items
+}
+
+fn append_styled_word_chunk<M: PairMetrics>(
+    metrics: &M,
+    current: &mut StyledText,
+    current_plain: &mut String,
+    current_width: &mut LayoutUnit,
+    chunk: &str,
+    style: TextStyle,
+    size: FontSize,
+) {
+    if chunk.is_empty() {
+        return;
+    }
+    if let Some((left, right)) = current
+        .runs
+        .last()
+        .filter(|last| last.style == style)
+        .and_then(|last| last.text.chars().next_back().zip(chunk.chars().next()))
+    {
+        *current_width += adjustment_to_layout_units(metrics.kerning_1000(left, right), size);
+    }
+    *current_width += measure_text_with_pairs(metrics, chunk, size);
+    current.push_text(chunk, style);
+    current_plain.push_str(chunk);
+}
+
+fn push_styled_word_box(
+    items: &mut Vec<ParagraphItem>,
+    current: &mut StyledText,
+    current_plain: &mut String,
+    current_width: &mut LayoutUnit,
+) {
+    items.push(ParagraphItem::Box(TextBox {
+        text: std::mem::take(current_plain),
+        runs: std::mem::take(current),
+        width: *current_width,
+    }));
+    *current_width = LayoutUnit::ZERO;
 }
 
 /// Measure styled text while preserving each run boundary.
@@ -490,35 +577,6 @@ pub fn measure_styled_text<M: PairMetrics>(
         total += measure_text_with_pairs(metrics, &run.text, size);
     }
     total
-}
-
-fn styled_words(text: &StyledText) -> Vec<StyledText> {
-    let mut words = Vec::new();
-    let mut current = StyledText::default();
-    for run in &text.runs {
-        let mut chunk = String::new();
-        for ch in run.text.chars() {
-            if is_breakable_whitespace(ch) {
-                if !chunk.is_empty() {
-                    current.push_text(&chunk, run.style);
-                    chunk.clear();
-                }
-                if !current.is_empty() {
-                    words.push(current);
-                    current = StyledText::default();
-                }
-            } else {
-                chunk.push(ch);
-            }
-        }
-        if !chunk.is_empty() {
-            current.push_text(&chunk, run.style);
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
 }
 
 /// Convert plain text into paragraph items with discretionary hyphen penalties.

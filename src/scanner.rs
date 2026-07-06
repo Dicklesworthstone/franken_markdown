@@ -195,11 +195,7 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
         if previous == b']' && byte == b':' {
             has_reference_colon = true;
         }
-        if !maybe_url_prefix
-            && (bytes[idx..].starts_with(b"www.")
-                || bytes[idx..].starts_with(b"http")
-                || bytes[idx..].starts_with(b"://"))
-        {
+        if !maybe_url_prefix && maybe_url_prefix_at(bytes, idx, byte) {
             maybe_url_prefix = true;
         }
         if first_special_byte.is_none() && is_markdown_special_byte(byte) {
@@ -288,6 +284,15 @@ const fn is_pdf_escape_byte(byte: u8) -> bool {
 
 fn leading_spaces_bytes(bytes: &[u8]) -> usize {
     bytes.iter().take_while(|&&byte| byte == b' ').count()
+}
+
+fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {
+    match byte {
+        b'w' => bytes[idx..].starts_with(b"www."),
+        b'h' => bytes[idx..].starts_with(b"http"),
+        b':' => bytes[idx..].starts_with(b"://"),
+        _ => false,
+    }
 }
 
 fn starts_unordered_list_marker(bytes: &[u8]) -> bool {

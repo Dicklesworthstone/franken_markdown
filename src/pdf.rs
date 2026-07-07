@@ -12125,9 +12125,13 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             None => "•".to_string(),
         })
         .collect();
-    let marker_col = markers
+    let marker_widths: Vec<f32> = markers
         .iter()
-        .map(|marker| text_width(marker, 11.0, F_BODY, cx.faces))
+        .map(|marker| text_width_cached(marker, 11.0, F_BODY, cx.faces, &cx.width_cache))
+        .collect();
+    let marker_col = marker_widths
+        .iter()
+        .copied()
         .fold(0.0f32, f32::max)
         .max(8.0);
     let marker_left = cx.page.left + indent + 2.0;
@@ -12144,7 +12148,10 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
 
     for (i, item) in list.items.iter().enumerate() {
         let marker = markers.get(i).cloned().unwrap_or_else(|| "•".to_string());
-        let marker_width = text_width(&marker, 11.0, F_BODY, cx.faces);
+        let marker_width = marker_widths
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| text_width_cached(&marker, 11.0, F_BODY, cx.faces, &cx.width_cache));
         let marker_seg = Seg {
             x: marker_left + (marker_col - marker_width).max(0.0),
             slot: F_BODY,
@@ -22183,14 +22190,14 @@ mod png_decode_tests {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
     use super::{
-        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_MONO, Faces,
-        TABLE_COL_GUTTER, TABLE_FONT_SIZE, TABLE_MIN_COL_WIDTH, TableColumnMetrics,
-        allocate_table_column_widths, cell_tokens, fitted_code_font_size,
-        preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
-        wrap_cell_styled, wrapped_code_rows,
+        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
+        Faces, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_FONT_SIZE,
+        TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
+        fitted_code_font_size, layout_list, preserve_code_block_lines, table_cell_measure,
+        table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
-    use crate::ast::Inline;
+    use crate::ast::{Inline, List, ListItem};
 
     fn text_cell(text: &str) -> Vec<Inline> {
         vec![Inline::Text(text.to_string())]
@@ -22206,6 +22213,18 @@ mod table_wrap_tests {
 
     fn width_cache() -> std::cell::RefCell<super::WidthCache> {
         std::cell::RefCell::new(std::collections::HashMap::new())
+    }
+
+    fn test_page() -> PageGeom {
+        PageGeom {
+            width: 612.0,
+            height: 792.0,
+            left: 72.0,
+            right: 72.0,
+            top: 72.0,
+            bottom: 72.0,
+            content_w: 468.0,
+        }
     }
 
     fn push_measured_cell(
@@ -22438,6 +22457,71 @@ mod table_wrap_tests {
         assert_eq!(
             entries_after_wrap, entries_after_fit,
             "code row construction should reuse the fitter's cached line width"
+        );
+    }
+
+    #[test]
+    fn list_marker_layout_reuses_the_layout_width_cache() {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).unwrap();
+        let page = test_page();
+        let mut cx = LayoutCx {
+            opts: &opts,
+            faces: &faces,
+            page,
+            next_bg: 0,
+            next_flow: 0,
+            list_stack: Vec::new(),
+            hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            width_cache: width_cache(),
+            paragraph_scratch: ParagraphLayoutScratch::new(),
+            line_breaks: Vec::new(),
+            line_toks: Vec::new(),
+            glue_adjustments: Vec::new(),
+        };
+        let empty_item = || ListItem {
+            task: None,
+            blocks: Vec::new(),
+        };
+        let list = List {
+            ordered: false,
+            start: 1,
+            tight: true,
+            items: vec![empty_item(), empty_item(), empty_item()],
+        };
+        let mut out = Vec::new();
+
+        layout_list(&list, 0.0, &mut out, &mut cx);
+
+        assert_eq!(out.len(), 3);
+        let expected_width = text_width("•", 11.0, F_BODY, &faces);
+        let expected_x = page.left + 2.0 + (expected_width.max(8.0) - expected_width).max(0.0);
+        for line in &out {
+            assert_eq!(
+                line.segs.len(),
+                1,
+                "empty list items should only emit the marker segment"
+            );
+            let marker = &line.segs[0];
+            assert_eq!(marker.text, "•");
+            assert_eq!(marker.slot, F_BODY);
+            assert!((marker.width - expected_width).abs() <= 0.001);
+            assert!((marker.x - expected_x).abs() <= 0.001);
+        }
+
+        let key = (F_BODY, super::font_size_of(11.0).milli_points());
+        let cache = cx.width_cache.borrow();
+        let Some(slot_cache) = cache.get(&key) else {
+            panic!("list marker measurement should populate the body width cache");
+        };
+        assert_eq!(
+            slot_cache.len(),
+            1,
+            "repeated unordered markers should share one cached shaped width"
+        );
+        assert!(
+            slot_cache.contains_key("•"),
+            "the unordered marker should be present in the shared width cache"
         );
     }
 

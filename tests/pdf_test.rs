@@ -3321,6 +3321,43 @@ fn pdf_svg_masks_apply_supported_hard_mask_geometry_as_pdf_clipping() {
 }
 
 #[test]
+fn pdf_svg_object_bounding_box_clip_and_mask_units_scale_to_target_geometry() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 36">
+  <defs>
+    <clipPath id="middle-half" clipPathUnits="objectBoundingBox">
+      <rect x="0.25" y="0" width="0.5" height="1"/>
+    </clipPath>
+    <mask id="center-window" maskContentUnits="objectBoundingBox">
+      <rect x="0.2" y="0.25" width="0.6" height="0.5" fill="white"/>
+    </mask>
+  </defs>
+  <rect x="10" y="4" width="40" height="20" fill="#ff0000" clip-path="url(#middle-half)"/>
+  <rect x="60" y="4" width="30" height="20" fill="#00ff00" mask="url(#center-window)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("object-bbox-clip.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Object bbox clip](object-bbox-clip.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains(
+            "q 20 4 m 40 4 l 40 24 l 20 24 l h W n 1.000 0.000 0.000 rg 10 4 40 20 re f\nQ"
+        ),
+        "objectBoundingBox clipPath geometry should be scaled into the clipped element bbox, not emitted in 0..1 coordinates: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 66 9 m 84 9 l 84 19 l 66 19 l h W n 0.000 1.000 0.000 rg 60 4 30 20 re f\nQ"
+        ),
+        "objectBoundingBox maskContentUnits geometry should be scaled into the masked element bbox, not emitted in 0..1 coordinates: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_clip_and_mask_child_transforms_affect_clip_geometry() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70 24">

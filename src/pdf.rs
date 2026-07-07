@@ -1032,6 +1032,13 @@ struct SvgClipPath {
     id: String,
     ops: Vec<SvgPathOp>,
     fill_rule: SvgFillRule,
+    units: SvgClipPathUnits,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgClipPathUnits {
+    UserSpaceOnUse,
+    ObjectBoundingBox,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6429,6 +6436,7 @@ fn parse_svg_clip_path_body(
 ) -> Option<SvgClipPath> {
     let mut ops = Vec::new();
     let mut fill_rule = parse_svg_clip_rule(attrs).unwrap_or(SvgFillRule::NonZero);
+    let units = parse_svg_clip_path_units(attrs, "clippathunits");
     let base_transform = parse_svg_geometry_transform(attrs);
     let mut pos = 0usize;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
@@ -6471,6 +6479,7 @@ fn parse_svg_clip_path_body(
         id: id.to_string(),
         ops,
         fill_rule,
+        units,
     })
 }
 
@@ -6542,6 +6551,7 @@ fn parse_svg_mask_body(
 ) -> Option<SvgClipPath> {
     let mut ops = Vec::new();
     let mut fill_rule = SvgFillRule::NonZero;
+    let units = parse_svg_clip_path_units(attrs, "maskcontentunits");
     let base_transform = parse_svg_geometry_transform(attrs);
     let mut pos = 0usize;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
@@ -6587,7 +6597,15 @@ fn parse_svg_mask_body(
         id: id.to_string(),
         ops,
         fill_rule,
+        units,
     })
+}
+
+fn parse_svg_clip_path_units(attrs: &[(String, String)], name: &str) -> SvgClipPathUnits {
+    match svg_attr(attrs, name).map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if value == "objectboundingbox" => SvgClipPathUnits::ObjectBoundingBox,
+        _ => SvgClipPathUnits::UserSpaceOnUse,
+    }
 }
 
 fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> bool {
@@ -14716,7 +14734,12 @@ fn draw_svg_rect(
     if !svg_style_has_paint(style) {
         return;
     }
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    let transformed = append_svg_element_state_prefix(
+        body,
+        style,
+        clip_paths,
+        Some((rect.x, rect.y, rect.w, rect.h)),
+    );
     if append_svg_shadow_prefix(body, style) {
         append_svg_rect_path(body, rect);
         append_svg_shadow_operator(body, style);
@@ -14763,7 +14786,17 @@ fn draw_svg_ellipse(
     if !svg_style_has_paint(style) {
         return;
     }
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    let transformed = append_svg_element_state_prefix(
+        body,
+        style,
+        clip_paths,
+        Some((
+            ellipse.cx - ellipse.rx,
+            ellipse.cy - ellipse.ry,
+            ellipse.rx * 2.0,
+            ellipse.ry * 2.0,
+        )),
+    );
     if append_svg_shadow_prefix(body, style) {
         append_svg_ellipse_path(body, ellipse.cx, ellipse.cy, ellipse.rx, ellipse.ry);
         append_svg_shadow_operator(body, style);
@@ -14838,7 +14871,8 @@ fn draw_svg_line(
     if !svg_style_has_paint(style) {
         return;
     }
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    let line_bbox = svg_line_bbox(line, style);
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths, line_bbox);
     if append_svg_shadow_prefix(body, style) {
         append_svg_line_path(body, line);
         append_svg_shadow_operator(body, style);
@@ -14974,6 +15008,29 @@ fn append_svg_line_path(body: &mut String, line: &SvgLine) {
     ));
 }
 
+fn svg_line_bbox(line: &SvgLine, style: SvgStyle) -> Option<(f32, f32, f32, f32)> {
+    if ![line.x1, line.y1, line.x2, line.y2]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let min_x = line.x1.min(line.x2);
+    let min_y = line.y1.min(line.y2);
+    let max_x = line.x1.max(line.x2);
+    let max_y = line.y1.max(line.y2);
+    let pad = if style.stroke.is_some() && style.stroke_width.is_finite() {
+        (style.stroke_width * 0.5).max(0.0)
+    } else {
+        0.0
+    };
+    let x = min_x - pad;
+    let y = min_y - pad;
+    let w = max_x - min_x + pad * 2.0;
+    let h = max_y - min_y + pad * 2.0;
+    (w > 0.001 && h > 0.001).then_some((x, y, w, h))
+}
+
 fn append_svg_line_markers(
     body: &mut String,
     line: &SvgLine,
@@ -15027,7 +15084,8 @@ fn draw_svg_poly(
     if poly.points.is_empty() || !svg_style_has_paint(style) {
         return;
     }
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    let poly_bbox = svg_points_bbox(&poly.points);
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths, poly_bbox);
     if append_svg_shadow_prefix(body, style) {
         append_svg_poly_path(body, poly, closed);
         append_svg_shadow_operator(body, style);
@@ -15040,7 +15098,7 @@ fn draw_svg_poly(
         clip_paths,
         page_shadings,
         stroke_scale,
-        svg_points_bbox(&poly.points),
+        poly_bbox,
         |body| append_svg_poly_path(body, poly, closed),
     );
     if let Some(stroke) = style.stroke {
@@ -15170,7 +15228,8 @@ fn draw_svg_path(
     if path.ops.is_empty() || !svg_style_has_paint(style) {
         return;
     }
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    let path_bbox = svg_path_bbox(&path.ops);
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths, path_bbox);
     if append_svg_shadow_prefix(body, style) {
         append_svg_path_ops(body, &path.ops);
         append_svg_shadow_operator(body, style);
@@ -15183,7 +15242,7 @@ fn draw_svg_path(
         clip_paths,
         page_shadings,
         stroke_scale,
-        svg_path_bbox(&path.ops),
+        path_bbox,
         |body| append_svg_path_ops(body, &path.ops),
     );
     if let Some(stroke) = style.stroke {
@@ -15358,25 +15417,21 @@ fn draw_svg_embedded_image(
         .style
         .clip_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|clip_path| !clip_path.ops.is_empty())
+        .filter(|clip_path| {
+            svg_clip_path_applicable(clip_path, Some((image.x, image.y, image.w, image.h)))
+        })
     {
-        append_svg_path_ops(body, &clip_path.ops);
-        match clip_path.fill_rule {
-            SvgFillRule::NonZero => body.push_str("W n "),
-            SvgFillRule::EvenOdd => body.push_str("W* n "),
-        }
+        append_svg_clip_path(body, clip_path, Some((image.x, image.y, image.w, image.h)));
     }
     if let Some(mask_path) = image
         .style
         .mask_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|mask_path| !mask_path.ops.is_empty())
+        .filter(|mask_path| {
+            svg_clip_path_applicable(mask_path, Some((image.x, image.y, image.w, image.h)))
+        })
     {
-        append_svg_path_ops(body, &mask_path.ops);
-        match mask_path.fill_rule {
-            SvgFillRule::NonZero => body.push_str("W n "),
-            SvgFillRule::EvenOdd => body.push_str("W* n "),
-        }
+        append_svg_clip_path(body, mask_path, Some((image.x, image.y, image.w, image.h)));
     }
     let Some((draw_x, draw_y, draw_w, draw_h, viewport_clip)) = svg_embedded_image_rect(image)
     else {
@@ -15451,15 +15506,16 @@ fn append_svg_element_state_prefix(
     body: &mut String,
     style: SvgStyle,
     clip_paths: &[SvgClipPath],
+    element_bbox: Option<(f32, f32, f32, f32)>,
 ) -> bool {
     let clip_path = style
         .clip_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|clip_path| !clip_path.ops.is_empty());
+        .filter(|clip_path| svg_clip_path_applicable(clip_path, element_bbox));
     let mask_path = style
         .mask_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|mask_path| !mask_path.ops.is_empty());
+        .filter(|mask_path| svg_clip_path_applicable(mask_path, element_bbox));
     let alpha = svg_style_alpha_values(style);
     if style.transform.is_identity()
         && style.dash.is_empty()
@@ -15486,20 +15542,59 @@ fn append_svg_element_state_prefix(
         ));
     }
     if let Some(clip_path) = clip_path {
-        append_svg_path_ops(body, &clip_path.ops);
-        match clip_path.fill_rule {
-            SvgFillRule::NonZero => body.push_str("W n "),
-            SvgFillRule::EvenOdd => body.push_str("W* n "),
-        }
+        append_svg_clip_path(body, clip_path, element_bbox);
     }
     if let Some(mask_path) = mask_path {
-        append_svg_path_ops(body, &mask_path.ops);
-        match mask_path.fill_rule {
-            SvgFillRule::NonZero => body.push_str("W n "),
-            SvgFillRule::EvenOdd => body.push_str("W* n "),
-        }
+        append_svg_clip_path(body, mask_path, element_bbox);
     }
     true
+}
+
+fn svg_clip_path_applicable(
+    clip_path: &SvgClipPath,
+    element_bbox: Option<(f32, f32, f32, f32)>,
+) -> bool {
+    !clip_path.ops.is_empty()
+        && match clip_path.units {
+            SvgClipPathUnits::UserSpaceOnUse => true,
+            SvgClipPathUnits::ObjectBoundingBox => {
+                svg_object_bbox_transform(element_bbox).is_some()
+            }
+        }
+}
+
+fn append_svg_clip_path(
+    body: &mut String,
+    clip_path: &SvgClipPath,
+    element_bbox: Option<(f32, f32, f32, f32)>,
+) -> bool {
+    if !svg_clip_path_applicable(clip_path, element_bbox) {
+        return false;
+    }
+    match clip_path.units {
+        SvgClipPathUnits::UserSpaceOnUse => append_svg_path_ops(body, &clip_path.ops),
+        SvgClipPathUnits::ObjectBoundingBox => {
+            let Some(transform) = svg_object_bbox_transform(element_bbox) else {
+                return false;
+            };
+            let mut ops = clip_path.ops.clone();
+            transform_svg_path_ops(&mut ops, transform);
+            append_svg_path_ops(body, &ops);
+        }
+    }
+    match clip_path.fill_rule {
+        SvgFillRule::NonZero => body.push_str("W n "),
+        SvgFillRule::EvenOdd => body.push_str("W* n "),
+    }
+    true
+}
+
+fn svg_object_bbox_transform(bbox: Option<(f32, f32, f32, f32)>) -> Option<SvgTransform> {
+    let (x, y, w, h) = bbox?;
+    if ![x, y, w, h].iter().all(|value| value.is_finite()) || w <= 0.001 || h <= 0.001 {
+        return None;
+    }
+    Some(SvgTransform::translate(x, y).concat(SvgTransform::scale(w, h)))
 }
 
 fn append_svg_transform_suffix(body: &mut String, transformed: bool) {
@@ -16496,7 +16591,7 @@ fn append_svg_marker(
         if !svg_style_has_paint(shape_style) {
             continue;
         }
-        let transformed = append_svg_element_state_prefix(body, shape_style, &[]);
+        let transformed = append_svg_element_state_prefix(body, shape_style, &[], None);
         if append_svg_shadow_prefix(body, shape_style) {
             append_svg_path_ops(body, &shape.ops);
             append_svg_shadow_operator(body, shape_style);
@@ -16714,19 +16809,20 @@ fn draw_svg_text(
         );
         body.push('\n');
     }
+    let text_bbox = svg_text_link_bbox(text);
     if let Some(clip_path) = text
         .clip_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|clip_path| !clip_path.ops.is_empty())
+        .filter(|clip_path| svg_clip_path_applicable(clip_path, text_bbox))
     {
-        append_svg_text_clip_path(body, clip_path, text.transform, image_transform);
+        append_svg_text_clip_path(body, clip_path, text.transform, image_transform, text_bbox);
     }
     if let Some(mask_path) = text
         .mask_path
         .and_then(|index| clip_paths.get(index))
-        .filter(|mask_path| !mask_path.ops.is_empty())
+        .filter(|mask_path| svg_clip_path_applicable(mask_path, text_bbox))
     {
-        append_svg_text_clip_path(body, mask_path, text.transform, image_transform);
+        append_svg_text_clip_path(body, mask_path, text.transform, image_transform, text_bbox);
     }
     body.push_str(&format!(
         "{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\nQ\n",
@@ -16872,14 +16968,30 @@ fn append_svg_text_clip_path(
     clip_path: &SvgClipPath,
     transform: SvgTransform,
     image_transform: SvgImageTransform,
+    element_bbox: Option<(f32, f32, f32, f32)>,
 ) {
+    let transformed_ops;
+    let ops = match clip_path.units {
+        SvgClipPathUnits::UserSpaceOnUse => clip_path.ops.as_slice(),
+        SvgClipPathUnits::ObjectBoundingBox => {
+            let Some(bbox_transform) = svg_object_bbox_transform(element_bbox) else {
+                return;
+            };
+            transformed_ops = {
+                let mut ops = clip_path.ops.clone();
+                transform_svg_path_ops(&mut ops, bbox_transform);
+                ops
+            };
+            transformed_ops.as_slice()
+        }
+    };
     let map = |x: f32, y: f32| {
         let (x, y) = transform.apply_point(x, y);
         image_transform.map_point(x, y)
     };
     let mut current = (0.0f32, 0.0f32);
     let mut subpath_start = None;
-    for op in &clip_path.ops {
+    for op in ops {
         match *op {
             SvgPathOp::Move(x, y) => {
                 let (x, y) = map(x, y);

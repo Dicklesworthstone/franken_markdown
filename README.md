@@ -21,16 +21,16 @@ cargo install franken_markdown
 
 </div>
 
-> **Current status.** `0.2.0` is published on crates.io. The `v0.2.0` GitHub
+> **Current status.** `0.3.0` is published on crates.io. The `v0.3.0` GitHub
 > release ships checksum-verified `fmd` archives for Linux x86_64, macOS Intel,
 > macOS Apple Silicon, and Windows x86_64, with smoke tests in the release
-> workflow. `main` documents the current renderer: shared HTML/PDF syntax
+> workflow. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, staged native writes, optional Asupersync batch rendering,
 > browser/WASM package sources, and a long set of measured scalar optimizations.
-> The WASM package is build-checked and publish-ready, but not yet on npm. SIMD
-> and deeper pagination remain roadmap items until they have proof.
+> The WASM package is build-checked, native-parity tested, and publish-ready.
+> SIMD and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
 
@@ -385,7 +385,7 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The `v0.2.0` release includes a `fmd` archive per platform: Linux
+The `v0.3.0` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
 Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`). The
 tag-gated `.github/workflows/release.yml` builds, smoke-tests, and attaches
@@ -400,7 +400,8 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml`; it is
-publish-ready but not yet published to npm.
+build-checked and publish-ready, with publication controlled by the release
+workflow's npm token.
 
 ---
 

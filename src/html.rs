@@ -1084,7 +1084,8 @@ fn push_font_face(
 
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let encoded_len = bytes.len().div_ceil(3) * 4;
+    let mut out = Vec::with_capacity(encoded_len);
     let mut i = 0usize;
     let full_len = bytes.len() / 3 * 3;
     while i < full_len {
@@ -1092,10 +1093,12 @@ fn base64_encode(bytes: &[u8]) -> String {
         let b1 = bytes[i + 1];
         let b2 = bytes[i + 2];
 
-        out.push(TABLE[(b0 >> 2) as usize] as char);
-        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
-        out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
-        out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        out.extend_from_slice(&[
+            TABLE[(b0 >> 2) as usize],
+            TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize],
+            TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize],
+            TABLE[(b2 & 0b0011_1111) as usize],
+        ]);
 
         i += 3;
     }
@@ -1103,21 +1106,30 @@ fn base64_encode(bytes: &[u8]) -> String {
         0 => {}
         1 => {
             let b0 = bytes[full_len];
-            out.push(TABLE[(b0 >> 2) as usize] as char);
-            out.push(TABLE[((b0 & 0b0000_0011) << 4) as usize] as char);
-            out.push('=');
-            out.push('=');
+            out.extend_from_slice(&[
+                TABLE[(b0 >> 2) as usize],
+                TABLE[((b0 & 0b0000_0011) << 4) as usize],
+                b'=',
+                b'=',
+            ]);
         }
         _ => {
             let b0 = bytes[full_len];
             let b1 = bytes[full_len + 1];
-            out.push(TABLE[(b0 >> 2) as usize] as char);
-            out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
-            out.push(TABLE[((b1 & 0b0000_1111) << 2) as usize] as char);
-            out.push('=');
+            out.extend_from_slice(&[
+                TABLE[(b0 >> 2) as usize],
+                TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize],
+                TABLE[((b1 & 0b0000_1111) << 2) as usize],
+                b'=',
+            ]);
         }
     }
-    out
+    debug_assert_eq!(out.len(), encoded_len);
+    debug_assert!(out.is_ascii());
+    match String::from_utf8(out) {
+        Ok(s) => s,
+        Err(err) => String::from_utf8_lossy(&err.into_bytes()).into_owned(),
+    }
 }
 
 const HTML_FONT_SEED: &str = " \t\n0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}<>/\\'\"+-_=*#%&@|`~^•–—“”‘’";
@@ -1386,6 +1398,16 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64_encode(&[0xff]), "/w==");
+        assert_eq!(base64_encode(&[0x00, 0xff]), "AP8=");
+        assert_eq!(
+            base64_encode(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]),
+            "AAECAwQF"
+        );
+        assert_eq!(
+            base64_encode(&[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]),
+            "/+7dzLuq"
+        );
     }
 
     #[test]

@@ -28,8 +28,9 @@ LEDGER="$ART/ledger.txt"
 log() { printf '%s\n' "$*" | tee -a "$LEDGER"; }
 
 # Committed size budget for the wasm-bindgen .wasm (raw + gzip). The bundled
-# fonts dominate; bump consciously (and note why) if a real win/cost lands.
-BUDGET_RAW=3200000
+# fonts and vector-SVG/PDF drawing code dominate; bump consciously (and note why)
+# if a real win/cost lands.
+BUDGET_RAW=3300000
 BUDGET_GZIP=1600000
 
 target="wasm32-unknown-unknown"

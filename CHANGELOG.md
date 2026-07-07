@@ -11,14 +11,14 @@ commits are linked directly.
 This changelog began as reconstructed pre-release development history and now
 records shipped binary and crate releases. The GitHub release ships standalone
 `fmd` CLI archives, the `franken_markdown` library is published to crates.io
-starting with `0.2.0`, and the WASM/npm package is handled by the separate
+starting with `0.2.0`, and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-03), the
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-07), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.2.0` crates.io and hardening release.**
+- Version state: **`0.3.0` renderer capability and performance release.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -32,6 +32,65 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-06-29 | Proof gates + accessibility + batch | Real WASM proof gate with native parity, CommonMark 0.31.2 conformance harness, hierarchical accessible tagged-PDF, deterministic render-tree golden, the performance-proof track, and the native Asupersync batch contract |
 | 2026-06-30 | First binary release | `0.1.0` release prep fixes installer asset lookup, switches the optional Asupersync dependency to the published crate, and cuts GitHub release archives instead of forcing source builds |
 | 2026-07-03 | Crates.io + hardening release | `0.2.0` enables the crates.io package, trims package contents, hardens staged native writes, validates zlib/PNG payloads more strictly, and tightens public JSON escaping |
+| 2026-07-07 | SVG/PDF fidelity + speed release | `0.3.0` expands vector SVG PDF drawing, Mermaid/MMD highlighting, local PDF assets, safer staged writes, optional batch receipts, and a measured optimization wave across parser, HTML, layout, PDF, highlighting, and compression |
+
+## 0.3.0 - 2026-07-07
+
+This release turns the post-`0.2.0` renderer work into a tagged CLI/library
+ship. The headline is broader PDF fidelity without taking a browser dependency:
+frankenmermaid-generated SVG diagrams are drawn as vector PDF operators, with
+coverage for paths, shapes, text, transforms, gradients, spread modes, patterns,
+masks, clips, marker view boxes/orientation/units, marker-child `paint-order`,
+object-bounding-box clip/mask units, opacity, drop shadows, CSS
+variables/selectors, `use`/symbol reuse, embedded PNG data URIs, modern color
+tokens, text decorations, and current showcase output.
+
+Markdown authoring got more useful for technical docs. HTML and PDF now share
+Mermaid/MMD source highlighting, PDF tables use measured column allocation, code
+blocks can include muted line numbers, ASCII diagram fences keep their geometry,
+and file-input PDF renders can auto-load relative local PNG/SVG destinations
+while hosts can still pass explicit image bytes through the CLI or library API.
+Native writes are staged where applicable, `--to both` rolls back sibling output
+on later failure, and the CLI refuses to overwrite the input file.
+
+The release also carries a large behavior-preserving speed pass. Parser,
+highlighter, HTML emitter, PDF layout/writing, font subsetting, SVG drawing,
+zlib/DEFLATE compression, and optional Asupersync batch orchestration were
+profiled and tightened in small commits, with rejected trials recorded where
+they did not produce a real win. Representative commits include local PDF
+assets and safer writes
+[`91afecc`](https://github.com/Dicklesworthstone/franken_markdown/commit/91afecc),
+expanded SVG/table/typography rendering
+[`5423d18`](https://github.com/Dicklesworthstone/franken_markdown/commit/5423d18),
+Mermaid fence highlighting
+[`791a3c8`](https://github.com/Dicklesworthstone/franken_markdown/commit/791a3c8),
+SVG text decorations
+[`83d6663`](https://github.com/Dicklesworthstone/franken_markdown/commit/83d6663),
+symbol/use viewport scaling
+[`be813af`](https://github.com/Dicklesworthstone/franken_markdown/commit/be813af),
+SVG color-token parsing
+[`d469f67`](https://github.com/Dicklesworthstone/franken_markdown/commit/d469f67),
+checked-in frankenmermaid SVG rendering
+[`af97a82`](https://github.com/Dicklesworthstone/franken_markdown/commit/af97a82),
+and direct compression table indexing
+[`b6ddca1`](https://github.com/Dicklesworthstone/franken_markdown/commit/b6ddca1).
+
+WASM remains a real gate, not a source-shape claim. The `0.3.0` WASM package
+check builds the release `wasm-bindgen` artifact, loads it in headless Node, and
+asserts native/WASM byte parity over the HTML and PDF corpus. The raw `.wasm`
+budget is consciously raised from 3,200,000 to 3,300,000 bytes to account for
+the vector-SVG/PDF surface; the gzip budget stays at 1,600,000 bytes.
+
+Release verification included `cargo fmt --check`, `cargo check --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`,
+`cargo check --no-default-features --lib`, `scripts/check-policy.sh`,
+`scripts/check-wasm-core.sh`, `scripts/check-determinism.sh`,
+`scripts/parser-diff.sh`, `scripts/check-claim-discipline.sh --self-test`,
+`scripts/commonmark-conformance.sh ci`, `scripts/batch-throughput.sh
+--self-test`, `cargo test --features batch --lib batch::`, `cargo clippy
+--features batch --lib -- -D warnings`, `scripts/e2e/run-all.sh ci`, and
+`scripts/release-smoke.sh` against a local release build. The crates.io package
+also passed `cargo publish --dry-run --locked --all-features`.
 
 ## 0.2.0 - 2026-07-03
 

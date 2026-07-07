@@ -14,7 +14,7 @@
 #     path so the core stays trivially auditable).
 [package]
 name = "franken_markdown"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 default-run = "fmd"
@@ -28,8 +28,18 @@ categories = ["command-line-utilities", "text-processing"]
 authors = ["Jeffrey Emanuel"]
 exclude = [
     ".beads/**",
+    ".skill-loop-progress.md",
+    "Cargo.toml.orig",
+    "/.beads/**",
+    "/.skill-loop-progress.md",
+    "/Cargo.toml.orig",
     "franken_markdown_illustration.png",
+    "/franken_markdown_illustration.png",
+    "/tests/artifacts",
+    "/tests/artifacts/",
+    "/tests/artifacts/*",
     "tests/artifacts/**",
+    "/tests/artifacts/**",
 ]
 
 [lib]

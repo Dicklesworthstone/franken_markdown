@@ -1,7 +1,6 @@
 # CHANGELOG Research Notes
 
-Scope: full repository history through the initial governance, CLI, formatting,
-and Beads roadmap commits.
+Scope: full repository history through the current `0.3.0` release preparation.
 
 ## Evidence Sources
 
@@ -9,8 +8,6 @@ and Beads roadmap commits.
 - `git show --stat --oneline HEAD`
 - `git show --name-only --format=fuller HEAD`
 - repository files after the initial scaffold commit
-- no tags are present
-- no GitHub Releases were discovered from this checkout
 - `.beads/issues.jsonl` now contains the initial roadmap issue graph
 
 ## Version Spine
@@ -22,6 +19,28 @@ and Beads roadmap commits.
 | CLI ergonomics wave | 2026-06-26 | commit `98c7f0b` | Added agent-friendly `fmd` shortcuts, JSON/status surfaces, doctor, capabilities, and robot docs |
 | Formatting normalization | 2026-06-26 | commit `5fac07e` | Rustfmt-only cleanup of the scaffold source |
 | Roadmap bead graph | 2026-06-26 | commit `d694c86` | Seeded the project roadmap into Beads |
+| First binary release | 2026-06-30 | tag `v0.1.0` | Release archives and installer asset lookup landed |
+| Crates.io hardening release | 2026-07-03 | tag `v0.2.0` | crates.io publication, package trimming, staged writes, and stricter binary validation |
+| Renderer capability release | 2026-07-07 | tag `v0.3.0` | SVG/PDF fidelity, Mermaid/MMD highlighting, local PDF assets, safer writes, batch receipts, and measured optimization work |
+
+## 0.3.0 Research Notes
+
+The `v0.2.0..HEAD` log is dominated by two related tracks:
+
+- Renderer fidelity: local PDF asset loading and safer CLI writes (`91afecc`),
+  expanded SVG/table/typography rendering (`5423d18`), Mermaid/MMD fence
+  highlighting (`791a3c8`), SVG text decorations (`83d6663`), modern SVG color
+  tokens (`d469f67`), symbol/use viewport scaling (`be813af`), and checked-in
+  frankenmermaid SVG rendering (`af97a82`).
+- Measured speed work: parser, HTML, PDF layout/writer, highlighter, table
+  layout, font shaping/subsetting, SVG drawing, and compression all received
+  small behavior-preserving passes, with rejected trials recorded when the data
+  did not justify the change.
+
+The release gate evidence also now includes real WASM package construction and
+native/WASM byte-parity checks. Raw `.wasm` grew with the vector-SVG/PDF surface,
+so the committed raw budget moves from 3,200,000 to 3,300,000 bytes while the
+gzip budget remains 1,600,000 bytes.
 
 ## Initial Capability Wave
 

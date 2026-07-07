@@ -32,6 +32,7 @@ use crate::layout::{
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -18839,9 +18840,10 @@ struct ShapedRun {
 
 type ShapedRunCache = BTreeMap<u8, BTreeMap<String, ShapedRun>>;
 
-struct PdfStream {
-    dict: String,
-    bytes: Vec<u8>,
+struct PdfStream<'a> {
+    bytes: Cow<'a, [u8]>,
+    decoded_len: usize,
+    flate_decode: bool,
 }
 
 fn estimated_pdf_buffer_capacity(
@@ -18946,6 +18948,16 @@ fn append_pdf_object_str(out: &mut Vec<u8>, offsets: &mut [usize], object_id: us
     out.extend_from_slice(b"\nendobj\n");
 }
 
+fn append_pdf_stream_dict(out: &mut Vec<u8>, stream: &PdfStream<'_>) {
+    out.extend_from_slice(b"<< /Length ");
+    append_decimal_usize(out, stream.bytes.len());
+    if stream.flate_decode {
+        out.extend_from_slice(b" /Filter /FlateDecode /DL ");
+        append_decimal_usize(out, stream.decoded_len);
+    }
+    out.extend_from_slice(b" >>");
+}
+
 fn append_xref_in_use_row(out: &mut Vec<u8>, offset: usize) {
     append_xref_offset(out, offset);
     out.extend_from_slice(b" 00000 n \n");
@@ -19038,29 +19050,28 @@ fn append_pdf_fixed3(out: &mut String, value: f32) {
     append_pdf_fixed(out, value, 1000);
 }
 
-fn page_stream(stream: &str) -> PdfStream {
+fn page_stream(stream: &str) -> PdfStream<'_> {
     let raw = stream.as_bytes();
     if raw.len() < PAGE_STREAM_COMPRESSION_MIN {
         return PdfStream {
-            dict: format!("<< /Length {} >>", raw.len()),
-            bytes: raw.to_vec(),
+            bytes: Cow::Borrowed(raw),
+            decoded_len: raw.len(),
+            flate_decode: false,
         };
     }
 
     let compressed = crate::compress::zlib_compress(raw);
     if compressed.len() + 32 < raw.len() {
         PdfStream {
-            dict: format!(
-                "<< /Length {} /Filter /FlateDecode /DL {} >>",
-                compressed.len(),
-                raw.len()
-            ),
-            bytes: compressed,
+            bytes: Cow::Owned(compressed),
+            decoded_len: raw.len(),
+            flate_decode: true,
         }
     } else {
         PdfStream {
-            dict: format!("<< /Length {} >>", raw.len()),
-            bytes: raw.to_vec(),
+            bytes: Cow::Borrowed(raw),
+            decoded_len: raw.len(),
+            flate_decode: false,
         }
     }
 }
@@ -19452,15 +19463,10 @@ fn build_pdf(
             || page_stream(&page.stream),
             |stream| stream.bytes.len(),
         );
-        buf.extend_from_slice(
-            format!(
-                "{n} 0 obj\n{dict}\nstream\n",
-                n = content_obj(i),
-                dict = stream.dict,
-            )
-            .as_bytes(),
-        );
-        buf.extend_from_slice(&stream.bytes);
+        append_pdf_object_header(&mut buf, content_obj(i));
+        append_pdf_stream_dict(&mut buf, &stream);
+        buf.extend_from_slice(b"\nstream\n");
+        buf.extend_from_slice(stream.bytes.as_ref());
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     }
 
@@ -20381,15 +20387,16 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphPolicy, Tok, append_decimal_u64_string,
+        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, Tok, append_decimal_u64_string,
         append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_fixed2,
-        append_pdf_fixed3, append_pdf_num, append_pdf_object_str, append_pdf_string_escaped,
-        append_rgb_fill_operator, append_rgb_stroke_line_operator, append_text_segment_operator,
-        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
-        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        append_pdf_fixed3, append_pdf_num, append_pdf_object_str, append_pdf_stream_dict,
+        append_pdf_string_escaped, append_rgb_fill_operator, append_rgb_stroke_line_operator,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
         normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
         shape_run,
     };
+    use std::borrow::Cow;
 
     #[test]
     fn pdf_word_measurement_uses_gpos_kerning() -> crate::Result<()> {
@@ -20621,6 +20628,29 @@ mod pdf_writer_tests {
 
         assert_eq!(offsets[2], b"%PDF-1.7\n".len());
         assert_eq!(out, b"%PDF-1.7\n2 0 obj\n<< /Type /Example >>\nendobj\n");
+    }
+
+    #[test]
+    fn stream_dict_writer_preserves_raw_and_flate_shapes() {
+        let raw = PdfStream {
+            bytes: Cow::Borrowed(b"abc"),
+            decoded_len: 3,
+            flate_decode: false,
+        };
+        let compressed = PdfStream {
+            bytes: Cow::Borrowed(b"zzzz"),
+            decoded_len: 123,
+            flate_decode: true,
+        };
+        let mut out = Vec::new();
+        append_pdf_stream_dict(&mut out, &raw);
+        out.push(b'\n');
+        append_pdf_stream_dict(&mut out, &compressed);
+
+        assert_eq!(
+            out,
+            b"<< /Length 3 >>\n<< /Length 4 /Filter /FlateDecode /DL 123 >>"
+        );
     }
 
     #[test]

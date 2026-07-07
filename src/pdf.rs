@@ -2205,7 +2205,15 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
         Block::List(list) => layout_list(list, indent, out, cx),
         Block::Table(table) => {
             let group = cx.alloc_flow();
-            layout_table(table, indent, cx.faces, cx.page, group, out);
+            layout_table(
+                table,
+                indent,
+                cx.faces,
+                &cx.width_cache,
+                cx.page,
+                group,
+                out,
+            );
         }
         Block::ThematicBreak => {
             let group = cx.alloc_flow();
@@ -11457,7 +11465,13 @@ struct TableCellMeasureLine {
     max_content: f32,
 }
 
-fn table_cell_measure(toks: &[Tok], size: f32, faces: &Faces, header: bool) -> TableCellMeasure {
+fn table_cell_measure(
+    toks: &[Tok],
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+    header: bool,
+) -> TableCellMeasure {
     let mut cell = TableCellMeasure {
         lines: Vec::new(),
         min_content: 0.0,
@@ -11480,12 +11494,12 @@ fn table_cell_measure(toks: &[Tok], size: f32, faces: &Faces, header: bool) -> T
 
         if tok.space {
             if !line.words.is_empty() {
-                pending_space = Some(text_width(" ", size, tok.slot, faces));
+                pending_space = Some(text_width_cached(" ", size, tok.slot, faces, width_cache));
             }
             continue;
         }
 
-        let word_width = text_width(&tok.text, size, tok.slot, faces);
+        let word_width = text_width_cached(&tok.text, size, tok.slot, faces, width_cache);
         if !line.words.is_empty() {
             let space_width = pending_space.take().unwrap_or(0.0);
             line.spaces.push(space_width);
@@ -11514,6 +11528,7 @@ fn build_cell_line_owned(
     toks: impl IntoIterator<Item = Tok>,
     size: f32,
     faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
 ) -> CellWrapLine {
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
@@ -11536,14 +11551,20 @@ fn build_cell_line_owned(
     }
     let mut total = 0.0;
     for run in &mut runs {
-        run.width = text_width(&run.text, size, run.slot, faces);
+        run.width = text_width_cached(&run.text, size, run.slot, faces, width_cache);
         total += run.width;
     }
     CellWrapLine { runs, width: total }
 }
 
 /// Greedily wrap styled cell tokens to `max_width`, preserving per-run styling.
-fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> Vec<CellWrapLine> {
+fn wrap_cell_styled(
+    toks: &[Tok],
+    max_width: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> Vec<CellWrapLine> {
     let mut lines = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0;
@@ -11552,7 +11573,12 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
         if t.hard_break {
             pending = None;
             if !cur.is_empty() {
-                lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
+                lines.push(build_cell_line_owned(
+                    std::mem::take(&mut cur),
+                    size,
+                    faces,
+                    width_cache,
+                ));
                 cur_w = 0.0;
             }
             continue;
@@ -11563,14 +11589,19 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
             }
             continue;
         }
-        let ww = text_width(&t.text, size, t.slot, faces);
+        let ww = text_width_cached(&t.text, size, t.slot, faces, width_cache);
         // A single word wider than the whole column is hard-split on character
         // boundaries so it can never overflow the column (and run off the page);
         // this preserves the run's style. The leftover tail stays on the current
         // line so a following word can still pack after it.
         if ww > max_width && max_width > 0.0 {
             if !cur.is_empty() {
-                lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
+                lines.push(build_cell_line_owned(
+                    std::mem::take(&mut cur),
+                    size,
+                    faces,
+                    width_cache,
+                ));
                 cur_w = 0.0;
             }
             pending = None;
@@ -11578,7 +11609,8 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
             let mut chunk = String::new();
             let mut chunk_w = 0.0;
             for ch in t.text.chars() {
-                let cw = text_width(ch.encode_utf8(&mut buf), size, t.slot, faces);
+                let cw =
+                    text_width_cached(ch.encode_utf8(&mut buf), size, t.slot, faces, width_cache);
                 if !chunk.is_empty() && chunk_w + cw > max_width {
                     let tok = Tok {
                         text: std::mem::take(&mut chunk),
@@ -11588,7 +11620,12 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
                         link: t.link.clone(),
                         strike: t.strike,
                     };
-                    lines.push(build_cell_line_owned(std::iter::once(tok), size, faces));
+                    lines.push(build_cell_line_owned(
+                        std::iter::once(tok),
+                        size,
+                        faces,
+                        width_cache,
+                    ));
                     chunk_w = 0.0;
                 }
                 chunk.push(ch);
@@ -11607,11 +11644,16 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
             }
             continue;
         }
-        let sw = pending
-            .as_ref()
-            .map_or(0.0, |s| text_width(" ", size, s.slot, faces));
+        let sw = pending.as_ref().map_or(0.0, |s| {
+            text_width_cached(" ", size, s.slot, faces, width_cache)
+        });
         if !cur.is_empty() && cur_w + sw + ww > max_width {
-            lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
+            lines.push(build_cell_line_owned(
+                std::mem::take(&mut cur),
+                size,
+                faces,
+                width_cache,
+            ));
             cur_w = 0.0;
             pending = None;
             cur.push(t.clone());
@@ -11626,7 +11668,12 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
         }
     }
     if !cur.is_empty() {
-        lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
+        lines.push(build_cell_line_owned(
+            std::mem::take(&mut cur),
+            size,
+            faces,
+            width_cache,
+        ));
     }
     lines
 }
@@ -11878,6 +11925,7 @@ fn layout_table(
     table: &Table,
     indent: f32,
     faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
     page: PageGeom,
     group: u32,
     out: &mut Vec<Line>,
@@ -11914,13 +11962,13 @@ fn layout_table(
     let mut columns = vec![TableColumnMetrics::default(); ncol];
     for (k, toks) in head_toks.iter().enumerate() {
         if let Some(column) = columns.get_mut(k) {
-            column.push(table_cell_measure(toks, size, faces, true));
+            column.push(table_cell_measure(toks, size, faces, width_cache, true));
         }
     }
     for row in &row_toks {
         for (k, toks) in row.iter().enumerate() {
             if let Some(column) = columns.get_mut(k) {
-                column.push(table_cell_measure(toks, size, faces, false));
+                column.push(table_cell_measure(toks, size, faces, width_cache, false));
             }
         }
     }
@@ -11945,7 +11993,7 @@ fn layout_table(
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
                 let toks = cells.get(k).map(Vec::as_slice).unwrap_or(&[]);
-                wrap_cell_styled(toks, cw, size, faces)
+                wrap_cell_styled(toks, cw, size, faces, width_cache)
             })
             .collect();
         let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
@@ -20426,6 +20474,16 @@ fn text_width(s: &str, size: f32, font: u8, faces: &Faces) -> f32 {
     faces.shaped_width_points(font, s, size)
 }
 
+fn text_width_cached(
+    s: &str,
+    size: f32,
+    font: u8,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> f32 {
+    cached_shaped_width(faces, width_cache, font, s, font_size_of(size)).to_points_f32()
+}
+
 fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
     faces.advance(font, ch) * size / 1000.0
 }
@@ -21970,14 +22028,25 @@ mod table_wrap_tests {
         parts
     }
 
+    fn width_cache() -> std::cell::RefCell<super::WidthCache> {
+        std::cell::RefCell::new(std::collections::HashMap::new())
+    }
+
     fn push_measured_cell(
         column: &mut TableColumnMetrics,
         cell: &[Inline],
         header: bool,
         faces: &Faces,
+        width_cache: &std::cell::RefCell<super::WidthCache>,
     ) {
         let toks = cell_tokens(cell, header);
-        column.push(table_cell_measure(&toks, TABLE_FONT_SIZE, faces, header));
+        column.push(table_cell_measure(
+            &toks,
+            TABLE_FONT_SIZE,
+            faces,
+            width_cache,
+            header,
+        ));
     }
 
     fn measured_table_columns(
@@ -21985,21 +22054,29 @@ mod table_wrap_tests {
         rows: &[Vec<Vec<Inline>>],
         faces: &Faces,
     ) -> Vec<TableColumnMetrics> {
+        let width_cache = width_cache();
         let mut columns = vec![TableColumnMetrics::default(); headers.len()];
         for (idx, header) in headers.iter().enumerate() {
-            push_measured_cell(&mut columns[idx], &text_cell(header), true, faces);
+            push_measured_cell(
+                &mut columns[idx],
+                &text_cell(header),
+                true,
+                faces,
+                &width_cache,
+            );
         }
         for row in rows {
             for (idx, cell) in row.iter().enumerate() {
-                push_measured_cell(&mut columns[idx], cell, false, faces);
+                push_measured_cell(&mut columns[idx], cell, false, faces, &width_cache);
             }
         }
         columns
     }
 
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
+        let width_cache = width_cache();
         let toks = cell_tokens(cell, header);
-        table_cell_measure(&toks, TABLE_FONT_SIZE, faces, header).max_content
+        table_cell_measure(&toks, TABLE_FONT_SIZE, faces, &width_cache, header).max_content
     }
 
     fn total_table_badness(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
@@ -22072,11 +22149,12 @@ mod table_wrap_tests {
     #[test]
     fn over_wide_word_is_char_split_to_fit_the_column() {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
         // A single 200-character word with no break opportunities.
         let cell = vec![Inline::Text("X".repeat(200))];
         let toks = cell_tokens(&cell, false);
         let max_width = 100.0;
-        let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces);
+        let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces, &width_cache);
         assert!(
             lines.len() > 1,
             "a long unbreakable word must wrap to multiple lines, got {}",
@@ -22090,6 +22168,38 @@ mod table_wrap_tests {
                 max_width
             );
         }
+    }
+
+    #[test]
+    fn table_cell_measure_reuses_the_layout_width_cache() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let shared_width_cache = width_cache();
+        let cell = mixed_cell(vec![
+            Inline::Text("repeat ".to_string()),
+            Inline::Strong(vec![Inline::Text("repeat".to_string())]),
+            Inline::Text(" repeat".to_string()),
+        ]);
+        let toks = cell_tokens(&cell, false);
+        let uncached = table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &width_cache(), false);
+        let measured =
+            table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &shared_width_cache, false);
+
+        assert_eq!(measured.lines.len(), uncached.lines.len());
+        assert_eq!(measured.min_content, uncached.min_content);
+        assert_eq!(measured.max_content, uncached.max_content);
+
+        let cache = shared_width_cache.borrow();
+        let cached_words: usize = cache.values().map(std::collections::HashMap::len).sum();
+        assert!(
+            cached_words >= 3,
+            "table measurement should cache repeated body/bold words and spaces, got {cached_words}"
+        );
+        assert!(
+            cache
+                .values()
+                .any(|slot_cache| slot_cache.contains_key("repeat")),
+            "the repeated table body word should be present in the shared width cache"
+        );
     }
 
     #[test]

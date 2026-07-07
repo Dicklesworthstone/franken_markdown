@@ -183,6 +183,43 @@ const WINDOW: usize = 32768;
 const MAX_CHAIN: usize = 256;
 const STORED_BLOCK_MAX: usize = u16::MAX as usize;
 const NONE: usize = usize::MAX;
+const ADLER_MOD: u32 = 65521;
+const ADLER_NMAX: usize = 5552;
+
+struct Adler32 {
+    s1: u32,
+    s2: u32,
+    pending: usize,
+}
+
+impl Adler32 {
+    fn new() -> Self {
+        Self {
+            s1: 1,
+            s2: 0,
+            pending: 0,
+        }
+    }
+
+    fn update_byte(&mut self, byte: u8) {
+        self.s1 += u32::from(byte);
+        self.s2 += self.s1;
+        self.pending += 1;
+        if self.pending == ADLER_NMAX {
+            self.s1 %= ADLER_MOD;
+            self.s2 %= ADLER_MOD;
+            self.pending = 0;
+        }
+    }
+
+    fn finish(mut self) -> u32 {
+        if self.pending != 0 {
+            self.s1 %= ADLER_MOD;
+            self.s2 %= ADLER_MOD;
+        }
+        (self.s2 << 16) | self.s1
+    }
+}
 
 fn hash3(data: &[u8], i: usize) -> usize {
     debug_assert!(i + 2 < data.len());
@@ -207,10 +244,16 @@ fn match_len(data: &[u8], a: usize, b: usize, max: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+struct FixedDeflate {
+    body: Vec<u8>,
+    adler32: u32,
+}
+
 /// Produce a raw DEFLATE byte stream (single final fixed-Huffman block) using
 /// greedy LZ77 matching over a hash-chain index.
-fn deflate_fixed(data: &[u8]) -> Vec<u8> {
+fn deflate_fixed(data: &[u8]) -> FixedDeflate {
     let mut bw = BitWriter::new();
+    let mut adler = Adler32::new();
     // Block header: BFINAL = 1, BTYPE = 01 (fixed Huffman), both LSB-first.
     bw.write_bits(1, 1);
     bw.write_bits(0b01, 2);
@@ -266,6 +309,7 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
             let end = pos + best_len;
             let mut k = pos;
             while k < end {
+                adler.update_byte(data[k]);
                 insert(&mut head, &mut prev, k);
                 k += 1;
             }
@@ -273,6 +317,7 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
         } else {
             if let Some(&b) = data.get(pos) {
                 emit_literal(&mut bw, b);
+                adler.update_byte(b);
             }
             insert(&mut head, &mut prev, pos);
             pos += 1;
@@ -282,7 +327,10 @@ fn deflate_fixed(data: &[u8]) -> Vec<u8> {
     // End-of-block symbol, then pad final byte with zeros.
     emit_litlen(&mut bw, 256);
     bw.finish();
-    bw.out
+    FixedDeflate {
+        body: bw.out,
+        adler32: adler.finish(),
+    }
 }
 
 /// Append one or more raw DEFLATE stored (BTYPE=00) blocks to `out`.
@@ -330,18 +378,17 @@ fn deflate_stored_len(input_len: usize) -> usize {
 
 // ---------------------------------------------------------------------------
 fn adler32(data: &[u8]) -> u32 {
-    const MOD: u32 = 65521;
     let mut s1: u32 = 1;
     let mut s2: u32 = 0;
     // Process in bounded chunks (NMAX=5552) so the sums never overflow u32
     // before the modulo: worst-case s2 stays below 2^32.
-    for chunk in data.chunks(5552) {
+    for chunk in data.chunks(ADLER_NMAX) {
         for &b in chunk {
             s1 += b as u32;
             s2 += s1;
         }
-        s1 %= MOD;
-        s2 %= MOD;
+        s1 %= ADLER_MOD;
+        s2 %= ADLER_MOD;
     }
     (s2 << 16) | s1
 }
@@ -356,9 +403,13 @@ fn adler32(data: &[u8]) -> u32 {
 pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     let fixed = deflate_fixed(data);
     let stored_len = deflate_stored_len(data.len());
-    let use_stored = stored_len < fixed.len();
+    let use_stored = stored_len < fixed.body.len();
 
-    let body_len = if use_stored { stored_len } else { fixed.len() };
+    let body_len = if use_stored {
+        stored_len
+    } else {
+        fixed.body.len()
+    };
     let mut out = Vec::with_capacity(2 + body_len + 4);
     // zlib header: CMF = 0x78 (deflate, 32K window), FLG = 0x9C (0x789C % 31 == 0).
     out.push(0x78);
@@ -367,11 +418,11 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     if use_stored {
         append_stored_blocks(&mut out, data);
     } else {
-        out.extend_from_slice(&fixed);
+        out.extend_from_slice(&fixed.body);
     }
 
     // Adler-32 of the uncompressed data, big-endian.
-    let adler = adler32(data);
+    let adler = fixed.adler32;
     out.push((adler >> 24) as u8);
     out.push((adler >> 16) as u8);
     out.push((adler >> 8) as u8);
@@ -859,6 +910,28 @@ mod tests {
         assert_eq!(adler32(b""), 1);
         assert_eq!(adler32(b"abc"), 0x024D0127);
         assert_eq!(adler32(b"Wikipedia"), 0x11E60398);
+    }
+
+    #[test]
+    fn fixed_deflate_accumulates_the_same_adler32_as_the_reference_scan() {
+        let mut lcg = Vec::with_capacity(80_000);
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..80_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            lcg.push((state >> 33) as u8);
+        }
+
+        for data in [
+            &b""[..],
+            &b"abc"[..],
+            &b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"[..],
+            "The quick brown fox jumps over the lazy dog. "
+                .repeat(512)
+                .as_bytes(),
+            lcg.as_slice(),
+        ] {
+            assert_eq!(deflate_fixed(data).adler32, adler32(data));
+        }
     }
 
     #[test]

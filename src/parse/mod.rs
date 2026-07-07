@@ -193,7 +193,12 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         |lines| (lines.len(), src.len(), 1),
     );
     let reference_started = profiler.checkpoint();
-    let (lines, mut refs) = collect_link_references(&lines);
+    let has_reference_candidate = src.contains("]:");
+    let (lines, mut refs) = if has_reference_candidate {
+        collect_link_references(&lines)
+    } else {
+        (lines, ReferenceMap::new())
+    };
     // Also collect definitions nested inside blockquotes/list items, so a use
     // anywhere in the document (including a forward reference) can resolve a
     // definition that lives inside a container. CommonMark allows definitions
@@ -203,14 +208,19 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // definition (every ref-def has `]:` where its label closes), so a document
     // with no references — including a pathologically deep nested list — never
     // pays for the extra structural walk.
-    if lines.iter().any(|line| line.contains("]:")) {
+    if has_reference_candidate && lines.iter().any(|line| line.contains("]:")) {
         collect_nested_references(&lines, &mut refs, 0);
     }
+    let reference_allocations = if has_reference_candidate {
+        refs.len() + lines.len()
+    } else {
+        0
+    };
     profiler.record_since(
         "reference_collection",
         refs.len(),
         src.len(),
-        refs.len() + lines.len(),
+        reference_allocations,
         "collect link reference definitions and remove consumed definition lines",
         reference_started,
     );
@@ -311,11 +321,6 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
 fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
     let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
     let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
-    let table_ends = if consumed_reference_lines.iter().any(|consumed| *consumed) {
-        table_end_boundaries(&line_texts)
-    } else {
-        Vec::new()
-    };
     let lines: Vec<SourceLine<'_>> = raw_lines
         .iter()
         .copied()
@@ -326,7 +331,6 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
             } else if consumed_reference_run_separates_tables(
                 &line_texts,
                 &consumed_reference_lines,
-                &table_ends,
                 idx,
             ) {
                 Some(SourceLine { text: "", ..line })
@@ -497,27 +501,17 @@ fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[bool]) -> Vec<&'a str> {
     let mut kept = Vec::with_capacity(lines.len());
-    let table_ends = if consumed.iter().any(|consumed| *consumed) {
-        table_end_boundaries(lines)
-    } else {
-        Vec::new()
-    };
     for (idx, line) in lines.iter().enumerate() {
         if !consumed[idx] {
             kept.push(*line);
-        } else if consumed_reference_run_separates_tables(lines, consumed, &table_ends, idx) {
+        } else if consumed_reference_run_separates_tables(lines, consumed, idx) {
             kept.push("");
         }
     }
     kept
 }
 
-fn consumed_reference_run_separates_tables(
-    lines: &[&str],
-    consumed: &[bool],
-    table_ends: &[bool],
-    idx: usize,
-) -> bool {
+fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], idx: usize) -> bool {
     if idx > 0 && consumed[idx - 1] {
         return false;
     }
@@ -527,12 +521,24 @@ fn consumed_reference_run_separates_tables(
         next += 1;
     }
 
-    table_ends.get(idx).copied().unwrap_or(false) && table_body_row_starts_at(lines, next)
+    table_ends_at(lines, idx) && table_body_row_starts_at(lines, next)
 }
 
-fn table_end_boundaries(lines: &[&str]) -> Vec<bool> {
-    let mut ends = vec![false; lines.len() + 1];
-    for start in 0..lines.len() {
+fn table_ends_at(lines: &[&str], end: usize) -> bool {
+    if end < 2 || end > lines.len() {
+        return false;
+    }
+
+    let mut first_pipe_row = end;
+    while first_pipe_row > 0 {
+        let previous = lines[first_pipe_row - 1];
+        if previous.trim().is_empty() || !previous.contains('|') {
+            break;
+        }
+        first_pipe_row -= 1;
+    }
+
+    for start in first_pipe_row..end.saturating_sub(1) {
         if !lines[start].contains('|')
             || !lines
                 .get(start + 1)
@@ -540,11 +546,11 @@ fn table_end_boundaries(lines: &[&str]) -> Vec<bool> {
         {
             continue;
         }
-        if let Some(used) = table_extent(&lines[start..]) {
-            ends[start + used] = true;
+        if table_extent(&lines[start..]).is_some_and(|used| start + used == end) {
+            return true;
         }
     }
-    ends
+    false
 }
 
 fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
@@ -579,6 +585,12 @@ fn collect_link_reference_metadata_with_consumed(
         let line = lines[i];
         if line.trim().is_empty() {
             in_paragraph = false;
+            i += 1;
+            continue;
+        }
+
+        if let Some(is_paragraph_text) = reference_collector_plain_line_fast_path(line) {
+            in_paragraph = is_paragraph_text;
             i += 1;
             continue;
         }
@@ -711,6 +723,64 @@ fn collect_link_reference_metadata_with_consumed(
     refs
 }
 
+fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
+    if line.trim().is_empty() {
+        return Some(false);
+    }
+    if indented_code_start(line) {
+        return Some(false);
+    }
+    if reference_collector_needs_block_scan(line) {
+        return None;
+    }
+    Some(true)
+}
+
+fn reference_collector_needs_block_scan(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let indent = leading_spaces(line);
+    let tail = bytes.get(indent..).unwrap_or_default();
+    let Some(&first) = tail.first() else {
+        return false;
+    };
+
+    let mut has_reference_colon = false;
+    let mut previous = 0u8;
+    for &byte in bytes {
+        if matches!(byte, b'\t' | b'|') {
+            return true;
+        }
+        if previous == b']' && byte == b':' {
+            has_reference_colon = true;
+        }
+        previous = byte;
+    }
+
+    if first == b'[' && has_reference_colon {
+        return true;
+    }
+
+    match first {
+        b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => true,
+        b'0'..=b'9' => reference_collector_ordered_marker_candidate(tail),
+        _ => false,
+    }
+}
+
+fn reference_collector_ordered_marker_candidate(bytes: &[u8]) -> bool {
+    let digits = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits == 0 || digits > 9 {
+        return false;
+    }
+    let Some((&marker, rest)) = bytes.get(digits..).and_then(|tail| tail.split_first()) else {
+        return false;
+    };
+    matches!(marker, b'.' | b')') && rest.first().is_none_or(|byte| matches!(byte, b' ' | b'\t'))
+}
+
 /// If `lines` begins with a GFM pipe table (a row followed by a delimiter row of
 /// matching column count), return how many lines it spans; otherwise `None`.
 /// Mirrors `parse_table_profiled`'s extent + column-count validation exactly
@@ -814,6 +884,11 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         let line = lines[i];
         if line.trim().is_empty() {
             in_paragraph = false;
+            i += 1;
+            continue;
+        }
+        if let Some(is_paragraph_text) = reference_collector_plain_line_fast_path(line) {
+            in_paragraph = is_paragraph_text;
             i += 1;
             continue;
         }
@@ -1189,8 +1264,12 @@ fn parse_blocks_with_refs_profiled(
             // Remove reference-definition lines from the blockquote body so they
             // are not rendered as literal text; they were already collected into
             // the shared `refs` map by `collect_nested_references`.
-            let (consumed, _) = collect_link_reference_metadata(&inner_refs);
-            let inner_kept = strip_consumed_references(&inner_refs, &consumed);
+            let inner_kept = if inner_refs.iter().any(|line| line.contains("]:")) {
+                let (consumed, _) = collect_link_reference_metadata(&inner_refs);
+                strip_consumed_references(&inner_refs, &consumed)
+            } else {
+                inner_refs
+            };
             let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
@@ -1254,6 +1333,10 @@ fn parse_blocks_with_refs_profiled(
         let start = i;
         while i < lines.len() {
             let line = lines[i];
+            if no_indent_ascii_letter_line(line) {
+                i += 1;
+                continue;
+            }
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 break;
@@ -1296,6 +1379,10 @@ fn parse_blocks_with_refs_profiled(
         blocks.push(Block::Paragraph(inlines));
     }
     blocks
+}
+
+fn no_indent_ascii_letter_line(line: &str) -> bool {
+    line.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
 }
 
 fn parse_lines_as_inlines(
@@ -2204,8 +2291,58 @@ fn parse_inlines_with_refs_profiled(
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     let started = profiler.checkpoint();
+    if let Some(inlines) = plain_inline_fast_path(text, profiler, started) {
+        return inlines;
+    }
     let bytes: Vec<char> = text.chars().collect();
     parse_inlines_chars_with_refs_profiled(bytes, text.len(), refs, profiler, started)
+}
+
+fn plain_inline_fast_path(
+    text: &str,
+    profiler: &mut ParseProfiler,
+    started: Option<ParseStageStart>,
+) -> Option<Vec<Inline>> {
+    if inline_text_needs_full_parse(text) {
+        return None;
+    }
+    let inlines = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![Inline::Text(text.to_string())]
+    };
+    let char_count = if profiler.enabled {
+        text.chars().count()
+    } else {
+        0
+    };
+    profiler.record_since(
+        "inline_parse",
+        char_count,
+        text.len(),
+        inlines.len(),
+        "parse inline delimiters, links, references, autolinks, code spans, and text",
+        started,
+    );
+    Some(inlines)
+}
+
+fn inline_text_needs_full_parse(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' | b'\n' | b'\r' | b'`' | b'!' | b'[' | b'<' | b'&' | b'~' | b'*' | b'_'
+            | b'@' => return true,
+            b'h' if bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://") => {
+                return true;
+            }
+            b'w' if bytes[i..].starts_with(b"www.") => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 fn parse_inlines_chars_with_refs_profiled(
@@ -3757,7 +3894,10 @@ mod char_ref_dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
-    use super::{collect_link_references, line_is_paragraph_text, parse_document, table_extent};
+    use super::{
+        collect_link_references, line_is_paragraph_text, parse_document,
+        reference_collector_plain_line_fast_path, table_ends_at, table_extent,
+    };
     use crate::{
         HtmlOptions,
         ast::{Block, Inline},
@@ -3837,6 +3977,41 @@ mod refdef_paragraph_tests {
         assert!(!line_is_paragraph_text("> quote"));
         assert!(!line_is_paragraph_text("---"));
         assert!(!line_is_paragraph_text("```"));
+    }
+
+    #[test]
+    fn reference_collector_fast_path_ignores_inline_only_punctuation() {
+        assert_eq!(reference_collector_plain_line_fast_path(""), Some(false));
+        assert_eq!(reference_collector_plain_line_fast_path("   "), Some(false));
+        assert_eq!(
+            reference_collector_plain_line_fast_path("Version 2.0 (draft)! & contact@example.com"),
+            Some(true)
+        );
+        assert_eq!(
+            reference_collector_plain_line_fast_path("See <span> and [text]: not at boundary"),
+            Some(true)
+        );
+        assert_eq!(
+            reference_collector_plain_line_fast_path("    [code]: stays literal"),
+            Some(false)
+        );
+
+        for line in [
+            "# heading",
+            "> quote",
+            "```rust",
+            "---",
+            "1. item",
+            "| a | b |",
+            "[a]: /url",
+            "<div>",
+        ] {
+            assert_eq!(
+                reference_collector_plain_line_fast_path(line),
+                None,
+                "{line:?} must still use the full reference/block classifier"
+            );
+        }
     }
 
     #[test]
@@ -3925,6 +4100,22 @@ mod refdef_paragraph_tests {
         assert_eq!(table_extent(&["Title", "---"]), None);
         assert_eq!(table_extent(&["Title", "---", "| body |"]), None);
         assert_eq!(table_extent(&["| Title |", "| --- |"]), Some(2));
+    }
+
+    #[test]
+    fn local_table_end_detection_tolerates_prior_non_table_pipe_text() {
+        let lines = [
+            "ordinary | pipe text",
+            "| a | b |",
+            "| - | - |",
+            "| 1 | 2 |",
+            "[x]: /y",
+            "| c | d |",
+        ];
+
+        assert!(table_ends_at(&lines, 4));
+        assert!(!table_ends_at(&lines, 1));
+        assert!(!table_ends_at(&lines, 5));
     }
 
     #[test]

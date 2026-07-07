@@ -713,8 +713,8 @@ fn english_hyphenator_uses_full_tex_pattern_corpus() {
 
     assert_eq!(hyphenator.encoded_pattern_count(), 4_938);
     assert_eq!(
-        hyphenator.hyphenation_points("representation", HyphenationOptions::default()),
-        vec![3, 5, 8, 10]
+        hyphenator.hyphenation_points("characterization", HyphenationOptions::default()),
+        vec![4, 6, 9, 10, 12]
     );
 }
 
@@ -729,6 +729,24 @@ fn hyphenation_points_into_matches_allocating_api() {
 
     hyphenator.hyphenation_points_into("not-a-word", opts, &mut points);
     assert!(points.is_empty());
+}
+
+#[test]
+fn english_hyphenator_covers_common_documentation_exceptions() {
+    let hyphenator = Hyphenator::english();
+    let opts = HyphenationOptions::default();
+
+    for (word, expected) in [
+        ("implementation", &[2, 5, 10][..]),
+        ("pagination", &[3, 4, 6][..]),
+        ("representation", &[3, 5, 8, 10][..]),
+        ("serialization", &[2, 4, 6, 9][..]),
+        ("visualization", &[2, 4, 6, 9][..]),
+        ("configuration", &[3, 6, 7, 9][..]),
+        ("internationalization", &[2, 5, 7, 11, 13, 16][..]),
+    ] {
+        assert_eq!(hyphenator.hyphenation_points(word, opts), expected);
+    }
 }
 
 #[test]
@@ -773,7 +791,7 @@ fn hyphenated_paragraph_items_into_matches_wrapper_and_reuses_scratch() {
     let metrics = StubMetrics;
     let hyphenator = Hyphenator::english();
     let size = FontSize::from_points(10);
-    let text = "Documentation typography representation deterministic optimization";
+    let text = "Documentation characterization deterministic optimization";
     let expected = hyphenated_paragraph_items_from_text(&metrics, &hyphenator, text, size);
     let mut scratch = ParagraphLayoutScratch::new();
     let mut items = Vec::new();

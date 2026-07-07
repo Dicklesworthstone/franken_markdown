@@ -870,18 +870,7 @@ impl Hyphenator {
         };
 
         let len = normalized_word.len();
-        if let Some(exception) = self
-            .exceptions
-            .iter()
-            .find(|exception| exception.word == normalized_word)
-        {
-            out.extend(
-                exception
-                    .points
-                    .iter()
-                    .copied()
-                    .filter(|&p| legal_hyphen_point(p, len, opts)),
-            );
+        if self.extend_exception_points(normalized_word, len, opts, out) {
             return;
         }
 
@@ -892,14 +881,31 @@ impl Hyphenator {
 
         scores.resize(dotted.len() + 1, 0);
         english_hyphen_trie().apply(dotted, scores);
-        out.extend(scores.iter().enumerate().filter_map(|(idx, &score)| {
-            let point = idx.checked_sub(1)?;
-            if score % 2 == 1 && legal_hyphen_point(point, len, opts) {
-                Some(point)
-            } else {
-                None
-            }
-        }));
+        extend_hyphen_points_from_scores(out, scores, len, opts);
+    }
+
+    fn extend_exception_points(
+        &self,
+        normalized_word: &str,
+        len: usize,
+        opts: HyphenationOptions,
+        out: &mut Vec<usize>,
+    ) -> bool {
+        let Some(exception) = self
+            .exceptions
+            .iter()
+            .find(|exception| exception.word == normalized_word)
+        else {
+            return false;
+        };
+        out.extend(
+            exception
+                .points
+                .iter()
+                .copied()
+                .filter(|&p| legal_hyphen_point(p, len, opts)),
+        );
+        true
     }
 }
 
@@ -907,6 +913,22 @@ const EN_US_TEX_PATTERNS: &str = include_str!("../data/hyph-en-us.patterns");
 
 fn legal_hyphen_point(point: usize, len: usize, opts: HyphenationOptions) -> bool {
     point >= opts.min_left && len.saturating_sub(point) >= opts.min_right
+}
+
+fn extend_hyphen_points_from_scores(
+    out: &mut Vec<usize>,
+    scores: &[u8],
+    len: usize,
+    opts: HyphenationOptions,
+) {
+    out.extend(scores.iter().enumerate().filter_map(|(idx, &score)| {
+        let point = idx.checked_sub(1)?;
+        if score % 2 == 1 && legal_hyphen_point(point, len, opts) {
+            Some(point)
+        } else {
+            None
+        }
+    }));
 }
 
 #[derive(Debug)]
@@ -1153,6 +1175,34 @@ const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
     HyphenException {
         word: "documentation",
         points: &[3, 5, 8],
+    },
+    HyphenException {
+        word: "implementation",
+        points: &[2, 5, 10],
+    },
+    HyphenException {
+        word: "pagination",
+        points: &[3, 4, 6],
+    },
+    HyphenException {
+        word: "representation",
+        points: &[3, 5, 8, 10],
+    },
+    HyphenException {
+        word: "serialization",
+        points: &[2, 4, 6, 9],
+    },
+    HyphenException {
+        word: "visualization",
+        points: &[2, 4, 6, 9],
+    },
+    HyphenException {
+        word: "configuration",
+        points: &[3, 6, 7, 9],
+    },
+    HyphenException {
+        word: "internationalization",
+        points: &[2, 5, 7, 11, 13, 16],
     },
 ];
 

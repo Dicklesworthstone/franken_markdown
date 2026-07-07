@@ -489,6 +489,7 @@ fn lex_markdown(code: &str) -> Vec<Span> {
     let len = code.len();
     let mut pos = 0usize;
     let mut line_start = true;
+    let mut line_indent_columns = 0usize;
 
     while pos < len {
         let rest = &code[pos..];
@@ -497,6 +498,9 @@ fn lex_markdown(code: &str) -> Vec<Span> {
             let end = find_after(code, pos + 4, "-->").unwrap_or(len);
             push_span(&mut spans, Tok::Comment, pos, end);
             line_start = end > 0 && code.as_bytes().get(end - 1).is_some_and(|b| *b == b'\n');
+            if line_start {
+                line_indent_columns = 0;
+            }
             pos = end;
             continue;
         }
@@ -510,20 +514,37 @@ fn lex_markdown(code: &str) -> Vec<Span> {
             push_span(&mut spans, Tok::Plain, pos, pos + clen);
             pos += clen;
             line_start = true;
+            line_indent_columns = 0;
         } else if line_start && ch.is_whitespace() {
             let start = pos;
-            pos = consume_while(code, pos, |c| c != '\n' && c.is_whitespace());
+            let mut only_markdown_indent = true;
+            while pos < len {
+                let Some(ws) = code[pos..].chars().next() else {
+                    break;
+                };
+                if ws == '\n' || !ws.is_whitespace() {
+                    break;
+                }
+                if !matches!(ws, ' ' | '\t') {
+                    only_markdown_indent = false;
+                }
+                line_indent_columns = markdown_indent_after(line_indent_columns, ws);
+                pos += ws.len_utf8();
+            }
             push_span(&mut spans, Tok::Plain, start, pos);
-        } else if line_start && ch == '#' {
+            if !only_markdown_indent {
+                line_start = false;
+            }
+        } else if line_start && line_indent_columns <= 3 && is_markdown_heading_marker(rest) {
             let start = pos;
             pos = consume_while(code, pos, |c| c == '#');
             push_span(&mut spans, Tok::Keyword, start, pos);
             line_start = false;
-        } else if line_start && ch == '>' {
+        } else if line_start && line_indent_columns <= 3 && ch == '>' {
             push_span(&mut spans, Tok::Operator, pos, pos + clen);
             pos += clen;
             line_start = false;
-        } else if line_start && is_list_marker(rest) {
+        } else if line_start && line_indent_columns <= 3 && is_list_marker(rest) {
             let end = list_marker_end(code, pos);
             push_span(&mut spans, Tok::Operator, pos, end);
             pos = end;
@@ -731,6 +752,9 @@ fn is_list_marker(rest: &str) -> bool {
     for (idx, ch) in chars {
         if ch.is_ascii_digit() {
             digits += 1;
+            if digits > 9 {
+                return false;
+            }
             continue;
         }
         if digits > 0 && matches!(ch, '.' | ')') {
@@ -743,6 +767,25 @@ fn is_list_marker(rest: &str) -> bool {
         return false;
     }
     false
+}
+
+fn markdown_indent_after(col: usize, ch: char) -> usize {
+    match ch {
+        ' ' => col + 1,
+        '\t' => col + 4 - col % 4,
+        _ => col,
+    }
+}
+
+fn is_markdown_heading_marker(rest: &str) -> bool {
+    let hashes = rest.bytes().take_while(|&byte| byte == b'#').count();
+    if hashes == 0 || hashes > 6 {
+        return false;
+    }
+    rest[hashes..]
+        .chars()
+        .next()
+        .is_none_or(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'))
 }
 
 fn list_marker_end(code: &str, pos: usize) -> usize {
@@ -854,6 +897,15 @@ fn lexer(lang: &str) -> Option<Lexer> {
             case_insensitive: false,
             hash_directives: false,
         })),
+        "powershell" | "pwsh" | "ps1" => Some(Lexer::Generic(Rules {
+            keywords: PS_KW,
+            types: &[],
+            line_comments: &["#"],
+            block_comment: Some(("<#", "#>")),
+            strings: &['"', '\''],
+            case_insensitive: true,
+            hash_directives: false,
+        })),
         "go" | "golang" => Some(Lexer::Generic(Rules {
             keywords: GO_KW,
             types: GO_TY,
@@ -937,6 +989,49 @@ const RUST_KW: &[&str] = &[
     "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
     "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "union",
     "unsafe", "use", "where", "while",
+];
+
+const PS_KW: &[&str] = &[
+    "begin",
+    "break",
+    "catch",
+    "class",
+    "continue",
+    "data",
+    "default",
+    "do",
+    "dynamicparam",
+    "else",
+    "elseif",
+    "end",
+    "exit",
+    "filter",
+    "finally",
+    "for",
+    "foreach",
+    "from",
+    "function",
+    "hidden",
+    "if",
+    "in",
+    "param",
+    "process",
+    "return",
+    "switch",
+    "throw",
+    "trap",
+    "try",
+    "until",
+    "using",
+    "var",
+    "while",
+    "workflow",
+    // Common command aliases that appear in install snippets.
+    "curl",
+    "iex",
+    "irm",
+    "iwr",
+    "wget",
 ];
 const RUST_TY: &[&str] = &[
     "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
@@ -1178,6 +1273,29 @@ mod line_prefix_dos_tests {
             .find(|s| matches!(s.kind, Tok::Keyword))
             .expect("directive keyword");
         assert_eq!(&"  #include <stdio.h>"[kw.start..kw.end], "#include");
+    }
+
+    #[test]
+    fn powershell_install_snippet_highlights_aliases_strings_and_comments() {
+        let code = "irm \"https://example.test/install.ps1\" | iex\n# done";
+        let spans = highlight("powershell", code);
+        assert!(
+            spans
+                .iter()
+                .any(|s| matches!(s.kind, Tok::Keyword) && &code[s.start..s.end] == "irm")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| matches!(s.kind, Tok::Keyword) && &code[s.start..s.end] == "iex")
+        );
+        assert!(spans.iter().any(|s| matches!(s.kind, Tok::Str)
+            && &code[s.start..s.end] == "\"https://example.test/install.ps1\""));
+        assert!(
+            spans
+                .iter()
+                .any(|s| matches!(s.kind, Tok::Comment) && &code[s.start..s.end] == "# done")
+        );
     }
 
     #[test]

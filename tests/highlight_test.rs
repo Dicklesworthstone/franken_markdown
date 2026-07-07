@@ -270,6 +270,68 @@ fn markdown_ordered_list_marker_requires_padding() {
 }
 
 #[test]
+fn markdown_block_markers_match_parser_start_rules() {
+    for code in [
+        "    # indented code, not a heading\n",
+        "\t- indented code, not a list\n",
+        " \t> indented code, not a quote\n",
+    ] {
+        assert_spans_tile("markdown", code);
+        assert!(
+            highlight("markdown", code)
+                .iter()
+                .all(|span| span.kind == Tok::Plain),
+            "four-column Markdown code must stay plain: {code:?}"
+        );
+    }
+
+    for code in ["#notheading\n", "####### too many hashes\n"] {
+        assert_spans_tile("markdown", code);
+        assert!(
+            !highlight("markdown", code)
+                .iter()
+                .any(|span| span.kind == Tok::Keyword),
+            "invalid ATX heading marker must not be highlighted: {code:?}"
+        );
+    }
+
+    for code in ["\u{00a0}# not heading\n", "\u{2003}> not quote\n"] {
+        assert_spans_tile("markdown", code);
+        assert!(
+            highlight("markdown", code)
+                .iter()
+                .all(|span| span.kind == Tok::Plain),
+            "only spaces and tabs count as Markdown indentation: {code:?}"
+        );
+    }
+
+    let overlong_ordered = "1234567890. too many digits\n";
+    assert_spans_tile("markdown", overlong_ordered);
+    assert!(
+        !has_span("markdown", overlong_ordered, Tok::Operator, "1234567890."),
+        "ordered list markers must be capped at nine digits"
+    );
+
+    assert!(has_span("markdown", "   # valid\n", Tok::Keyword, "#"));
+    assert!(has_span("markdown", "   > valid\n", Tok::Operator, ">"));
+    assert!(has_span(
+        "markdown",
+        "   123456789. valid\n",
+        Tok::Operator,
+        "123456789."
+    ));
+
+    let after_indented_comment = "    <!-- note -->\n# valid after comment\n";
+    assert_spans_tile("markdown", after_indented_comment);
+    assert!(has_span(
+        "markdown",
+        after_indented_comment,
+        Tok::Keyword,
+        "#"
+    ));
+}
+
+#[test]
 fn unknown_language_is_a_single_plain_span() {
     let spans = highlight("nope", "anything here");
     assert_eq!(spans.len(), 1);

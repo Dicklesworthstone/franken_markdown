@@ -2,8 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::{
-    classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_pdf_escape,
-    scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
+    classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
+    find_pdf_escape, scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
 };
 
 fn naive_markdown_special(bytes: &[u8]) -> Option<usize> {
@@ -44,6 +44,12 @@ fn naive_html_escape(bytes: &[u8]) -> Option<usize> {
         .position(|byte| matches!(byte, b'&' | b'<' | b'>' | b'"'))
 }
 
+fn naive_html_text_escape(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .iter()
+        .position(|byte| matches!(byte, b'&' | b'<' | b'>'))
+}
+
 fn naive_pdf_escape(bytes: &[u8]) -> Option<usize> {
     bytes
         .iter()
@@ -52,6 +58,7 @@ fn naive_pdf_escape(bytes: &[u8]) -> Option<usize> {
 
 fn assert_byte_scanners(bytes: &[u8]) {
     assert_eq!(find_any_special_byte(bytes), naive_markdown_special(bytes));
+    assert_eq!(find_html_text_escape(bytes), naive_html_text_escape(bytes));
     assert_eq!(find_html_escape(bytes), naive_html_escape(bytes));
     assert_eq!(find_pdf_escape(bytes), naive_pdf_escape(bytes));
 
@@ -62,6 +69,14 @@ fn assert_byte_scanners(bytes: &[u8]) {
     );
     assert_eq!(combined.first_html_escape, naive_html_escape(bytes));
     assert_eq!(combined.first_pdf_escape, naive_pdf_escape(bytes));
+}
+
+#[test]
+fn html_text_scanner_ignores_quotes_before_text_escapes() {
+    let bytes = b"plain \"quoted\" then & escaped";
+
+    assert_eq!(find_html_text_escape(bytes), Some(20));
+    assert_eq!(find_html_escape(bytes), Some(6));
 }
 
 #[test]

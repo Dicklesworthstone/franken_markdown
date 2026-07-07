@@ -488,6 +488,42 @@ fn profiled_parser_counts_paragraph_handoff_allocations() {
 }
 
 #[test]
+fn profiled_parser_reference_collection_skips_work_when_no_definition_candidate_exists() {
+    let src = "# Title\n\nplain paragraph\n\n    indented code\n";
+    let profiled = parse_markdown_profiled(src);
+
+    assert_eq!(profiled.document, parse_markdown(src));
+    let reference_stage = profiled
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "reference_collection")
+        .expect("profiled parse should report reference collection");
+    assert_eq!(reference_stage.count, 0);
+    assert_eq!(reference_stage.allocations, 0);
+}
+
+#[test]
+fn profiled_parser_plain_inline_fast_path_skips_tokenizer_without_losing_autolinks() {
+    let profiled = parse_markdown_profiled("plain words only");
+    let inline_stage = profiled
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "inline_parse")
+        .expect("plain paragraph should still report inline parse");
+    assert_eq!(inline_stage.count, "plain words only".chars().count());
+    assert_eq!(inline_stage.allocations, 1);
+    assert_eq!(
+        profiled.document.blocks,
+        vec![Block::Paragraph(vec![Inline::Text(
+            "plain words only".to_string()
+        )])]
+    );
+
+    let autolinked = html("See www.example.org");
+    assert!(autolinked.contains("<a href=\"http://www.example.org\">www.example.org</a>"));
+}
+
+#[test]
 fn gfm_bare_urls_autolink_with_punctuation_outside() {
     let out = html("See https://example.com/a?b=1&c=2, then www.example.org.");
 
@@ -727,6 +763,29 @@ fn spanned_paragraph_span_stops_at_interrupting_block_starter() {
         Block::Heading { level: 1, .. }
     ));
     assert_eq!(doc.blocks[2].span.slice(src).unwrap(), "body");
+}
+
+#[test]
+fn ascii_letter_paragraph_lines_do_not_swallow_later_interrupts() {
+    let doc = parse_markdown("alpha\nbeta\n# Heading\n\nbody");
+
+    assert_eq!(doc.blocks.len(), 3);
+    match &doc.blocks[0] {
+        Block::Paragraph(inlines) => assert_eq!(
+            inlines,
+            &[
+                Inline::Text("alpha".into()),
+                Inline::SoftBreak,
+                Inline::Text("beta".into())
+            ]
+        ),
+        other => panic!("expected initial prose paragraph, got {other:?}"),
+    }
+    assert!(matches!(doc.blocks[1], Block::Heading { level: 1, .. }));
+    match &doc.blocks[2] {
+        Block::Paragraph(inlines) => assert_eq!(inlines, &[Inline::Text("body".into())]),
+        other => panic!("expected trailing body paragraph, got {other:?}"),
+    }
 }
 
 #[test]

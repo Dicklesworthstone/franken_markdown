@@ -241,17 +241,15 @@ fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut Re
 }
 
 fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions) {
-    let align_attrs: Vec<&'static str> = table.align.iter().copied().map(align_attr).collect();
-
     out.push_str(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
     );
     out.push_str("<table>\n<thead>\n<tr>");
-    render_table_cells(&table.head, &align_attrs, "<th", "</th>", out, opts);
+    render_table_cells(&table.head, &table.align, "<th", "</th>", out, opts);
     out.push_str("</tr>\n</thead>\n<tbody>\n");
     for row in &table.rows {
         out.push_str("<tr>");
-        render_table_cells(row, &align_attrs, "<td", "</td>", out, opts);
+        render_table_cells(row, &table.align, "<td", "</td>", out, opts);
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody>\n</table>\n");
@@ -260,17 +258,17 @@ fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions)
 
 fn render_table_cells(
     cells: &[Vec<Inline>],
-    align_attrs: &[&'static str],
+    align: &[Align],
     open: &str,
     close: &str,
     out: &mut String,
     opts: &HtmlOptions,
 ) {
-    let aligned_len = cells.len().min(align_attrs.len());
+    let aligned_len = cells.len().min(align.len());
     let (aligned_cells, unaligned_cells) = cells.split_at(aligned_len);
-    for (cell, align) in aligned_cells.iter().zip(&align_attrs[..aligned_len]) {
+    for (cell, align) in aligned_cells.iter().zip(&align[..aligned_len]) {
         out.push_str(open);
-        out.push_str(align);
+        out.push_str(align_attr(*align));
         out.push('>');
         render_inlines(cell, out, opts);
         out.push_str(close);
@@ -471,7 +469,7 @@ fn push_escaped_text(s: &str, out: &mut String) {
     // buffer avoids a temporary allocation for strings that contain escapes.
     let bytes = s.as_bytes();
     let mut start = 0;
-    while let Some(rel) = find_text_escape(&bytes[start..]) {
+    while let Some(rel) = crate::scanner::find_html_text_escape(&bytes[start..]) {
         let pos = start + rel;
         out.push_str(&s[start..pos]);
         match bytes[pos] {
@@ -489,7 +487,7 @@ fn escape_text(s: &str) -> Cow<'_, str> {
     // Text nodes only need `&`, `<`, and `>` escaped. Quotes stay literal in
     // text content, so quote-only strings can borrow the input unchanged.
     let bytes = s.as_bytes();
-    if find_text_escape(bytes).is_none() {
+    if crate::scanner::find_html_text_escape(bytes).is_none() {
         return Cow::Borrowed(s);
     }
     let mut o = String::with_capacity(s.len());
@@ -521,12 +519,6 @@ fn escape_attr(s: &str) -> Cow<'_, str> {
     }
     o.push_str(&s[start..]);
     Cow::Owned(o)
-}
-
-fn find_text_escape(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .iter()
-        .position(|&byte| matches!(byte, b'&' | b'<' | b'>'))
 }
 
 #[derive(Clone, Copy)]

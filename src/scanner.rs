@@ -1,6 +1,6 @@
 //! Scalar byte/line scanners: small, safe, allocation-free, and portable.
 //!
-//! [`find_html_escape`] backs the HTML emitter's `escape_text`/`escape_attr`
+//! [`find_html_text_escape`] and [`find_html_escape`] back the HTML emitter's
 //! bulk-copy escaping in production. The remaining line classifiers
 //! ([`scan_markdown_line`], [`scan_table_or_fence_candidate`]) are the
 //! behavioral reference a future, explicitly-approved SIMD acceleration island
@@ -96,10 +96,16 @@ pub fn find_any_special_byte(bytes: &[u8]) -> Option<usize> {
         .position(|&byte| is_markdown_special_byte(byte))
 }
 
-/// Find the first byte that must be escaped in HTML text/attribute output.
+/// Find the first byte that must be escaped in HTML text-node output.
+#[must_use]
+pub fn find_html_text_escape(bytes: &[u8]) -> Option<usize> {
+    find_any_of_3(bytes, b'&', b'<', b'>')
+}
+
+/// Find the first byte that must be escaped in HTML attribute output.
 #[must_use]
 pub fn find_html_escape(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&byte| is_html_escape_byte(byte))
+    find_any_of_4(bytes, b'&', b'<', b'>', b'"')
 }
 
 /// Find the first byte that must be escaped in a PDF literal string.
@@ -276,6 +282,65 @@ const fn is_markdown_special_byte(byte: u8) -> bool {
 
 const fn is_html_escape_byte(byte: u8) -> bool {
     matches!(byte, b'&' | b'<' | b'>' | b'"')
+}
+
+fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
+    find_by_word_scan(
+        bytes,
+        |word| {
+            word_contains_byte(word, a)
+                || word_contains_byte(word, b)
+                || word_contains_byte(word, c)
+        },
+        |byte| byte == a || byte == b || byte == c,
+    )
+}
+
+fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
+    find_by_word_scan(
+        bytes,
+        |word| {
+            word_contains_byte(word, a)
+                || word_contains_byte(word, b)
+                || word_contains_byte(word, c)
+                || word_contains_byte(word, d)
+        },
+        |byte| byte == a || byte == b || byte == c || byte == d,
+    )
+}
+
+fn find_by_word_scan(
+    bytes: &[u8],
+    word_matches: impl Fn(u64) -> bool,
+    byte_matches: impl Fn(u8) -> bool,
+) -> Option<usize> {
+    let mut chunks = bytes.chunks_exact(8);
+    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+        let mut lane = [0u8; 8];
+        lane.copy_from_slice(chunk);
+        if word_matches(u64::from_ne_bytes(lane)) {
+            let base = chunk_idx * 8;
+            return chunk
+                .iter()
+                .position(|&byte| byte_matches(byte))
+                .map(|rel| base + rel);
+        }
+    }
+    let base = bytes.len() - chunks.remainder().len();
+    chunks
+        .remainder()
+        .iter()
+        .position(|&byte| byte_matches(byte))
+        .map(|rel| base + rel)
+}
+
+fn word_contains_byte(word: u64, byte: u8) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+    let repeated = ONES * u64::from(byte);
+    let matches = word ^ repeated;
+    matches.wrapping_sub(ONES) & !matches & HIGHS != 0
 }
 
 const fn is_pdf_escape_byte(byte: u8) -> bool {

@@ -3975,8 +3975,11 @@ fn profiled_pdf_render_matches_normal_bytes_and_reports_required_stages() {
 #[test]
 fn pdf_external_links_emit_safe_uri_annotations() {
     let pdf = render_pdf(
-        "[site](https://example.com?q=1) [mail](mailto:hello@example.com) \
-         [bad](javascript:alert(1)) [gap](<java\tscript:alert(2)>)",
+        "[site](https://example.com?q=1) [site_upper](HTTPS://EXAMPLE.com/Path) \
+         [mail](mailto:hello@example.com) [mail_upper](MAILTO:hello@example.com) \
+         [phone_upper](TEL:+15550000000) \
+         [bad](javascript:alert(1)) [bad_case](JaVaScRiPt:alert(3)) \
+         [gap](<java\tscript:alert(2)>)",
         &PdfOptions::default(),
     )
     .unwrap();
@@ -3989,10 +3992,17 @@ fn pdf_external_links_emit_safe_uri_annotations() {
     assert!(text.contains("/Subtype /Link"));
     assert!(text.contains("/S /URI"));
     assert!(text.contains("/URI (https://example.com?q=1)"));
+    assert!(text.contains("/URI (HTTPS://EXAMPLE.com/Path)"));
     assert!(text.contains("/URI (mailto:hello@example.com)"));
+    assert!(text.contains("/URI (MAILTO:hello@example.com)"));
+    assert!(text.contains("/URI (TEL:+15550000000)"));
     assert!(
         !text.contains("javascript:alert"),
         "unsafe markdown URL schemes must never become PDF annotations"
+    );
+    assert!(
+        !text.contains("JaVaScRiPt:alert"),
+        "mixed-case unsafe markdown URL schemes must never become PDF annotations"
     );
 }
 
@@ -4003,11 +4013,17 @@ fn pdf_svg_anchor_links_emit_safe_uri_annotations() {
   <a xlink:href="https://example.com/diagram">
     <rect x="4" y="4" width="24" height="14" fill="#22c55e"/>
   </a>
+  <a href="HTTPS://EXAMPLE.com/diagram2">
+    <rect x="4" y="24" width="24" height="10" fill="#3b82f6"/>
+  </a>
   <a href="javascript:alert(1)">
     <rect x="42" y="4" width="24" height="14" fill="#ef4444"/>
   </a>
+  <a href="JaVaScRiPt:alert(2)">
+    <rect x="42" y="24" width="24" height="10" fill="#f97316"/>
+  </a>
   <a href="https://example.com/invisible">
-    <rect x="4" y="24" width="24" height="10" fill="none" stroke="#111111" stroke-width="0"/>
+    <rect x="4" y="34" width="24" height="4" fill="none" stroke="#111111" stroke-width="0"/>
   </a>
 </svg>
 "##;
@@ -4024,10 +4040,11 @@ fn pdf_svg_anchor_links_emit_safe_uri_annotations() {
     );
     assert_eq!(
         text.matches("/Subtype /Link").count(),
-        1,
-        "only the safe SVG anchor should become a PDF link annotation: {text}"
+        2,
+        "only the safe visible SVG anchors should become PDF link annotations: {text}"
     );
     assert!(text.contains("/URI (https://example.com/diagram)"));
+    assert!(text.contains("/URI (HTTPS://EXAMPLE.com/diagram2)"));
     assert!(
         !text.contains("https://example.com/invisible"),
         "safe but invisible SVG anchors should not create phantom PDF hitboxes"
@@ -4035,6 +4052,10 @@ fn pdf_svg_anchor_links_emit_safe_uri_annotations() {
     assert!(
         !text.contains("javascript:alert"),
         "unsafe SVG anchor schemes must never become PDF annotations"
+    );
+    assert!(
+        !text.contains("JaVaScRiPt:alert"),
+        "mixed-case unsafe SVG anchor schemes must never become PDF annotations"
     );
 }
 

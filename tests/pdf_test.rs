@@ -972,6 +972,54 @@ fn pdf_svg_css_and_inline_marker_properties_render_vector_markers() {
 }
 
 #[test]
+fn pdf_svg_css_important_marker_declarations_are_normalized() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 56">
+  <style>
+    .chain { fill: none; stroke: #0000ff; stroke-width: 2; marker: url(#arrow) !important; }
+    .clear { fill: none; stroke: #00aa00; stroke-width: 2; marker: none !important; }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" markerUnits="strokeWidth">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#ff00ff"/>
+    </marker>
+  </defs>
+  <path class="chain" d="M8 10 L32 22 L56 10" style="marker-start: none !important; marker-mid: url(#arrow) !important; marker-end: url(#arrow) !important"/>
+  <line class="clear" x1="8" y1="42" x2="56" y2="42" marker-end="url(#arrow)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "important-marker-props.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Important marker properties](important-marker-props.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 8 10 m 32 22 l 56 10 l S"),
+        "the marker-styled path should still render as a blue vector stroke: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.667 0.000 RG 2 w 0 J 0 j 4 M 8 42 m 56 42 l S"),
+        "marker: none !important should not suppress the underlying green stroke: {text}"
+    );
+    let marker_paints = text
+        .matches("1.000 0.000 1.000 rg 0 0 m 8 4 l 0 8 l h f")
+        .count();
+    assert_eq!(
+        marker_paints, 2,
+        "marker shorthand, marker-start none, marker-mid URL, marker-end URL, and marker none should all strip terminal !important without changing cascade order; saw {marker_paints}\n{text}"
+    );
+}
+
+#[test]
 fn pdf_svg_closed_path_marker_end_uses_close_segment_tangent() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40">
@@ -2191,6 +2239,51 @@ fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
     assert!(
         !text.contains("1.000 0.000 0.000 rg 1.000 0.000 0.000 RG"),
         "failed stylesheet paint parsing must not leave the red presentation-attribute fallback in place: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_css_important_url_style_values_are_normalized() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 28">
+  <defs>
+    <clipPath id="clip">
+      <rect x="2" y="2" width="16" height="12"/>
+    </clipPath>
+    <mask id="mask">
+      <rect x="38" y="2" width="16" height="12" fill="white"/>
+    </mask>
+    <filter id="shadow"><feDropShadow dx="3" dy="2" stdDeviation="1" flood-color="#000000" flood-opacity="0.5"/></filter>
+  </defs>
+  <style>
+    .clipped { clip-path: url(#clip) !important; fill: #ff0000; }
+    .filtered { filter: url(#shadow) !important; fill: #0000ff; }
+  </style>
+  <rect class="clipped" x="0" y="0" width="28" height="20"/>
+  <rect x="34" y="0" width="28" height="20" style="mask: url(#mask) !important; fill: #00ffff"/>
+  <rect class="filtered" x="70" y="0" width="20" height="14"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("important-url-values.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Important URL values](important-url-values.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 2 2 m 18 2 l 18 14 l 2 14 l h W n 1.000 0.000 0.000 rg 0 0 28 20 re f\nQ"),
+        "stylesheet clip-path URL declarations should strip terminal !important before clip lookup: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 38 2 m 54 2 l 54 14 l 38 14 l h W n 0.000 1.000 1.000 rg 34 0 28 20 re f\nQ"
+        ),
+        "inline mask URL declarations should strip terminal !important before mask lookup: {text}"
+    );
+    assert!(
+        text.contains("q 1 0 0 1 3 2 cm /GSa05000500 gs 0.000 0.000 0.000 rg"),
+        "stylesheet filter URL declarations should strip terminal !important before filter lookup: {text}"
     );
 }
 

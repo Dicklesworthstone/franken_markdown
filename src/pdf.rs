@@ -7445,7 +7445,7 @@ fn parse_svg_style_patch(
             continue;
         };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim();
+        let value = clean_svg_css_keyword_value(value);
         match name.as_str() {
             "color" => patch.color = parse_svg_color(value, css_vars),
             "fill" => {
@@ -7897,6 +7897,7 @@ fn apply_svg_style_declaration(
     inherited_font_size: f32,
     inherited_display_visible: bool,
 ) {
+    let value = clean_svg_css_keyword_value(value);
     match name {
         "color" => apply_svg_color_attr(style, Some(value), css_vars),
         "fill" | "stroke" => {
@@ -8054,6 +8055,7 @@ fn apply_svg_marker_declarations(
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
+        let value = clean_svg_css_keyword_value(value);
         let marker_ref = match parse_svg_marker_ref_declaration(value, markers, css_vars) {
             Some(marker_ref) => marker_ref,
             None => continue,

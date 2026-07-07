@@ -263,6 +263,9 @@ fn match_len(data: &[u8], a: usize, b: usize, max: usize) -> usize {
     let left = &data[a..a + max];
     let right = &data[b..b + max];
     let mut l = 0usize;
+    while l + 8 <= max && left[l..l + 8] == right[l..l + 8] {
+        l += 8;
+    }
     while l < max && left[l] == right[l] {
         l += 1;
     }
@@ -1031,6 +1034,18 @@ mod tests {
         assert_eq!(match_len(data, 0, 3, 258), 5);
         assert_eq!(match_len(data, 0, data.len(), 258), 0);
         assert_eq!(match_len(data, data.len(), 0, 258), 0);
+    }
+
+    #[test]
+    fn match_len_reports_exact_mismatch_offsets_across_chunk_boundaries() {
+        let inside_chunk = b"abcdXfghabcdYfgh";
+        assert_eq!(match_len(inside_chunk, 0, 8, 258), 4);
+
+        let after_two_chunks = b"abcdefghijklmnopZabcdefghijklmnopQ";
+        assert_eq!(match_len(after_two_chunks, 0, 17, 258), 16);
+
+        let scalar_tail = b"abcdeZabcdeQ";
+        assert_eq!(match_len(scalar_tail, 0, 6, 258), 5);
     }
 
     #[test]

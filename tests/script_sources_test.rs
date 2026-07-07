@@ -258,6 +258,10 @@ fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult 
             "ARTIFACT_DIR=\"tests/artifacts/perf/$RUN_ID\"",
         ),
         (
+            "scripts/verify-showcase-mermaid.sh",
+            "ART=\"tests/artifacts/svg-showcase/${RUN_ID}\"",
+        ),
+        (
             "scripts/parser-perf.sh",
             "ARTIFACT_DIR=\"tests/artifacts/perf/$RUN_ID\"",
         ),
@@ -273,6 +277,50 @@ fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult 
         assert_run_id_validation_before(script, marker, marker)?;
     }
 
+    Ok(())
+}
+
+#[test]
+fn showcase_mermaid_verifier_pins_frankenmermaid_reproduction_contract() -> TestResult {
+    let script = fs::read_to_string("scripts/verify-showcase-mermaid.sh")?;
+    for needle in [
+        "FRANKENMERMAID_BIN",
+        "examples/showcase-mermaid.mmd",
+        "examples/showcase-frankenmermaid.toml",
+        "examples/showcase-mermaid.svg",
+        "--no-embed-source-spans",
+        "cmp -s \"$EXPECTED_SVG\" \"$GENERATED_SVG\"",
+    ] {
+        assert!(
+            script.contains(needle),
+            "showcase Mermaid verifier should contain reproduction contract needle {needle:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn showcase_mermaid_verifier_rejects_unsafe_run_ids_before_tool_resolution() -> TestResult {
+    let output = Command::new("bash")
+        .args(["scripts/verify-showcase-mermaid.sh", "--run-id", "../bad"])
+        .env("FRANKENMERMAID_BIN", "/definitely/missing/fm-cli")
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(64),
+        "unsafe run ids should be rejected before invoking frankenmermaid; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("verify-showcase-mermaid: run-id must match"),
+        "unsafe run id should get the shared run-id grammar error: {stderr}",
+    );
+    assert!(
+        !stderr.contains("could not find fm-cli"),
+        "tool resolution should not run before run-id validation: {stderr}",
+    );
     Ok(())
 }
 

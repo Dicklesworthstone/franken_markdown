@@ -760,31 +760,20 @@ struct FontUsage {
     mono: FontCharSet,
 }
 
+#[derive(Default)]
 struct FontCharSet {
-    ascii: [bool; 128],
-    has_ascii: bool,
+    ascii_mask: u128,
     non_ascii: BTreeSet<char>,
-}
-
-impl Default for FontCharSet {
-    fn default() -> Self {
-        Self {
-            ascii: [false; 128],
-            has_ascii: false,
-            non_ascii: BTreeSet::new(),
-        }
-    }
 }
 
 impl FontCharSet {
     fn is_empty(&self) -> bool {
-        !self.has_ascii && self.non_ascii.is_empty()
+        self.ascii_mask == 0 && self.non_ascii.is_empty()
     }
 
     fn insert(&mut self, ch: char) {
         if ch.is_ascii() {
-            self.ascii[ch as usize] = true;
-            self.has_ascii = true;
+            self.ascii_mask |= ascii_char_mask(ch as u8);
         } else {
             self.non_ascii.insert(ch);
         }
@@ -792,12 +781,11 @@ impl FontCharSet {
 
     fn extend_text(&mut self, text: &str) {
         if text.is_ascii() {
-            if !text.is_empty() {
-                self.has_ascii = true;
-            }
+            let mut mask = 0u128;
             for &byte in text.as_bytes() {
-                self.ascii[usize::from(byte)] = true;
+                mask |= ascii_char_mask(byte);
             }
+            self.ascii_mask |= mask;
         } else {
             for ch in text.chars() {
                 self.insert(ch);
@@ -807,17 +795,21 @@ impl FontCharSet {
 
     fn to_chars(&self) -> Vec<char> {
         let mut chars =
-            Vec::with_capacity(self.non_ascii.len() + if self.has_ascii { 128 } else { 0 });
-        if self.has_ascii {
-            for (idx, used) in self.ascii.iter().enumerate() {
-                if *used {
-                    chars.push(char::from(idx as u8));
-                }
-            }
+            Vec::with_capacity(self.non_ascii.len() + self.ascii_mask.count_ones() as usize);
+        let mut mask = self.ascii_mask;
+        while mask != 0 {
+            let idx = mask.trailing_zeros() as u8;
+            chars.push(char::from(idx));
+            mask &= mask - 1;
         }
         chars.extend(self.non_ascii.iter().copied());
         chars
     }
+}
+
+fn ascii_char_mask(byte: u8) -> u128 {
+    debug_assert!(byte < 128);
+    1u128 << u32::from(byte)
 }
 
 #[derive(Clone, Copy, Default)]

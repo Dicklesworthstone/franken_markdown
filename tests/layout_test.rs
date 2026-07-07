@@ -722,11 +722,29 @@ fn english_hyphenator_uses_full_tex_pattern_corpus() {
 fn hyphenation_points_into_matches_allocating_api() {
     let hyphenator = Hyphenator::english();
     let opts = HyphenationOptions::default();
+
+    for (word, opts) in [
+        ("documentation", opts),
+        (
+            "documentation",
+            HyphenationOptions {
+                min_left: 4,
+                min_right: 4,
+            },
+        ),
+        ("DOCUMENTATION", opts),
+        ("characterization", opts),
+    ] {
+        let mut points = vec![99, 100];
+        hyphenator.hyphenation_points_into(word, opts, &mut points);
+        assert_eq!(
+            points,
+            hyphenator.hyphenation_points(word, opts),
+            "{word} {opts:?}"
+        );
+    }
+
     let mut points = vec![99, 100];
-
-    hyphenator.hyphenation_points_into("documentation", opts, &mut points);
-    assert_eq!(points, hyphenator.hyphenation_points("documentation", opts));
-
     hyphenator.hyphenation_points_into("not-a-word", opts, &mut points);
     assert!(points.is_empty());
 }

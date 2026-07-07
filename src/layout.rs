@@ -814,6 +814,29 @@ impl Hyphenator {
     /// Return legal hyphenation points as character offsets in `word`.
     #[must_use]
     pub fn hyphenation_points(&self, word: &str, opts: HyphenationOptions) -> Vec<usize> {
+        if word.len() > opts.min_left.saturating_add(opts.min_right) {
+            if let Some(points) = english_exception_points(word) {
+                #[cfg(debug_assertions)]
+                debug_assert!(english_exception_table_matches_direct_lookup(
+                    self.exceptions
+                ));
+
+                let len = word.len();
+                let legal_count = points
+                    .iter()
+                    .filter(|&&point| legal_hyphen_point(point, len, opts))
+                    .count();
+                let mut out = Vec::with_capacity(legal_count);
+                out.extend(
+                    points
+                        .iter()
+                        .copied()
+                        .filter(|&point| legal_hyphen_point(point, len, opts)),
+                );
+                return out;
+            }
+        }
+
         let mut out = Vec::new();
         self.hyphenation_points_into(word, opts, &mut out);
         out

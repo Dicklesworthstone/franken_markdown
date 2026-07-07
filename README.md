@@ -15,16 +15,17 @@ auditable core.**
 ![WASM](https://img.shields.io/badge/WASM-first--class-654ff0)
 
 ```bash
-cargo install franken_markdown
-# or: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.1 franken_markdown
 ```
 
 </div>
 
-> **Current status.** `0.3.1` is published on crates.io. The `v0.3.1` GitHub
-> release ships checksum-verified `fmd` archives for Linux x86_64, macOS Intel,
-> macOS Apple Silicon, and Windows x86_64, with smoke tests in the release
-> workflow. The current renderer ships shared HTML/PDF syntax
+> **Current status.** The `v0.3.1` GitHub release ships checksum-verified `fmd`
+> archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
+> x86_64, built and smoke-tested with DSR. Crates.io currently lists `0.2.0`;
+> install `v0.3.1` from the release archives or tagged source until the crate is
+> published. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, staged native writes, optional Asupersync batch rendering,
@@ -70,7 +71,7 @@ as a Rust library, the `fmd` binary, and browser/WASM package sources.
 
 | Need | Use |
 |---|---|
-| Install the released CLI | `cargo install franken_markdown` |
+| Install the released CLI | `curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh \| bash` |
 | Render a self-contained HTML preview | `fmd README.md --out README.html` |
 | Render a compact deterministic PDF | `SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf` |
 | Render HTML and PDF together | `fmd README.md --to both --out README.html` |
@@ -102,7 +103,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | crates.io plus checksum-verified release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through native smoke tests |
+| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; crates.io currently lists `0.2.0` |
 
 ### Mainline Highlights
 
@@ -133,7 +134,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 
 ```bash
 # Install the released CLI
-cargo install franken_markdown
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
 
 # Render a Markdown file to self-contained HTML
 fmd examples/showcase.md --out showcase.html
@@ -376,7 +377,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package
+# Or install the published crates.io package; this currently installs 0.2.0
+# until 0.3.1 is published to crates.io.
 cargo install franken_markdown
 ```
 

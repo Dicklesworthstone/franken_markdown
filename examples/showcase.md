@@ -76,7 +76,7 @@ labels.
 ![franken_markdown rendering pipeline](showcase-mermaid.svg)
 
 ```mermaid
-flowchart TD
+flowchart LR
     A[Markdown] --> B[AST]
     B --> C[Theme]
     C --> D[HTML]

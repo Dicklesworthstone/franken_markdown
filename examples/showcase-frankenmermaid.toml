@@ -1,12 +1,12 @@
 [layout]
 algorithm = "sugiyama"
-node_spacing = 42
-rank_spacing = 52
+node_spacing = 34
+rank_spacing = 44
 edge_routing = "spline"
 
 [svg]
 theme = "corporate"
-rounded_corners = 7
+rounded_corners = 6
 shadows = true
 gradients = false
 accessibility = true

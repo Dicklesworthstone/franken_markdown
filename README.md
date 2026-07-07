@@ -20,25 +20,16 @@ cargo install franken_markdown
 
 </div>
 
-> **The HTML, PDF, CLI, and WASM paths work today.** Markdown renders to
-> polished, self-contained HTML and compact deterministic PDF through one
-> clean-room Rust core. The current renderer includes clean-room syntax
-> highlighting, Knuth-Plass line breaking, real GPOS kerning, GSUB ligatures,
-> deterministic Liang/TeX hyphenation, body justification, measured-column
-> tables, nested lists, tinted blockquotes, strikethrough, heading rules,
-> syntax-highlighted code panels, selectable tagged-PDF text, link annotations,
-> outlines, local PNG/SVG image assets, and a dependency-free SVG-to-PDF renderer
-> capable enough to draw frankenmermaid diagrams as vector content. The
-> browser/WASM package builds a real wasm-bindgen module that loads in node and
-> the browser and renders HTML and PDF with byte-identical parity to the native
-> core. The package manifest, browser demo, TypeScript API, and tag-gated npm
-> release workflow are validated by `scripts/check-wasm-package.sh`.
->
-> Version `0.2.0` is published on crates.io. The `v0.2.0` GitHub release also
-> ships prebuilt `fmd` binaries for Linux, macOS Intel, macOS Apple Silicon, and
-> Windows, with checksums and per-platform smoke tests. Source builds remain
-> available under [Installation](#installation). Deeper pagination controls
-> remain active roadmap work tracked in beads.
+> **Current status:** `0.2.0` is published on crates.io and the `v0.2.0`
+> GitHub release ships smoke-tested `fmd` binaries for Linux, macOS Intel,
+> macOS Apple Silicon, and Windows. HTML, PDF, CLI, batch, and WASM paths are
+> implemented through one clean-room Rust core. The PDF renderer already embeds
+> curated font subsets, applies focused GPOS kerning and GSUB ligatures, uses
+> Knuth-Plass line breaking with deterministic Liang/TeX hyphenation, emits
+> selectable tagged-PDF text, draws local PNG/SVG diagram assets, and keeps the
+> output deterministic. The browser package builds a real wasm-bindgen module,
+> TypeScript API, and demo through `scripts/check-wasm-package.sh`. Deeper block
+> pagination and optional SIMD remain explicitly tracked roadmap work.
 
 ---
 
@@ -73,19 +64,22 @@ output.
 | Profile-driven performance | The hot paths are scalar, cache-friendly, allocation-conscious, and verified by golden output checks before each optimization lands |
 | Cross-platform releases | crates.io plus smoke-tested release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
 
-### Current Feature Map
+### Feature Map
 
 | Surface | Current state |
 |---|---|
-| PDF text quality | Curated font embedding and subsetting, real metrics, focused kerning, ligatures, Knuth-Plass line breaking, hyphenation, justification, selectable text, outlines, metadata, links, and a partial tagged-PDF structure tree |
-| Tables | HTML and PDF both use measured columns; PDF table allocation now considers content width rather than forcing narrow equal columns, which keeps dense header rows readable |
-| Code blocks | Clean-room syntax highlighting is shared by HTML and PDF. PDF fenced blocks can also include muted line numbers |
-| Diagrams | Local PNG and SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer |
-| Mermaid workflow | The showcase includes Mermaid source plus a frankenmermaid-generated SVG asset, so the same diagram can render in HTML and PDF without a JavaScript runtime |
+| Markdown parsing | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, HTML escaping, source spans, recoverable diagnostics, and a ratcheted CommonMark 0.31.2 conformance floor |
+| HTML output | Self-contained document with inlined CSS, dark-mode support, safe escaping, responsive tables, clean-room syntax highlighting, and optional full stylesheet replacement |
+| PDF typography | Curated font embedding and subsetting, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, deterministic hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and a hierarchical tagged-PDF structure tree |
+| Tables | HTML and PDF both use measured columns. The PDF allocator computes per-column min/max content widths and solves a constrained width allocation that reduces total wrapping badness, which keeps dense performance-plan headers readable instead of pinched into narrow equal columns |
+| Code blocks | Clean-room syntax highlighting is shared by HTML and PDF. PDF fenced blocks can include muted line numbers, and ASCII/Mermaid diagram fences preserve geometry by fitting rows instead of hard-wrapping them |
+| Diagrams and SVG | Local PNG/SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer. The renderer covers paths, shapes, text, transforms, gradients, patterns, masks, clips, markers, opacity, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
+| Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid, so HTML and PDF can carry the same diagram without a JavaScript runtime |
 | Library API | `parse_markdown`, `render_html_document`, and `render_pdf_document` share one AST; hosts can provide font bytes and image assets without filesystem access in the core |
 | CLI safety | Input and PDF image byte limits fail early with stable exit codes; JSON status, `doctor`, `capabilities`, and `robot-docs` expose the same contract to humans and agents |
 | Batch rendering | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, deterministic receipts, and stable output ordering |
-| Browser/WASM | The wasm-bindgen package exposes typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, and native-parity tests |
+| Browser/WASM | The wasm-bindgen package exposes typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, and native-parity tests while keeping the no-default core dependency-free |
+| Releases | Published crate plus release archives with checksums for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through native smoke tests |
 
 ---
 
@@ -127,33 +121,12 @@ fmd --robot-triage
 ```
 
 The PDF path is honest about its stage. It produces valid, deterministic PDFs
-today with embedded curated font subsets, real metrics, focused GPOS kerning,
-GSUB ligatures, selectable text, link annotations, heading outlines,
-title/author/`SOURCE_DATE_EPOCH` metadata, a hierarchical tagged-PDF structure
-tree, and compressed page streams. The writer does Knuth-Plass line breaking,
-deterministic discretionary hyphenation and glue justification for body
-paragraphs, measured-column tables with per-cell alignment and zebra striping,
-nested lists, tinted blockquotes, strikethrough, heading hairline rules,
-syntax-highlighted code panels, local PNG embedding, and vector SVG drawing for
-supported diagrams. Full widow/orphan and richer block pagination remain
-roadmap.
-
----
-
-## What Works Today
-
-| Area | Current capability |
-|---|---|
-| Markdown parsing | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, HTML escaping, source spans, and diagnostics |
-| HTML output | Self-contained document with inlined CSS, dark-mode support, safe escaping, responsive tables, clean-room syntax highlighting, and optional full stylesheet replacement |
-| PDF typography | Embedded subset fonts, real font metrics, GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, and compressed streams |
-| PDF layout | Measured tables, code panels with optional line numbers, nested lists, blockquotes, heading rules, link annotations, outlines, metadata, and partial tagged-PDF structure |
-| Images and diagrams | Host-supplied PNG/SVG assets through the library, `--pdf-image`, or native CLI auto-loading for relative local file-input destinations |
-| SVG renderer | Dependency-free SVG subset for PDF: paths, lines, polygons, text, transforms, gradients, patterns, masks, clips, markers, opacity, CSS variables/selectors, and embedded PNG data URIs |
-| Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a frankenmermaid-generated SVG asset so HTML and PDF can carry the same diagram |
-| Release artifacts | Published crate plus release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through smoke tests and checksums |
-| WASM | Browser and node package with TypeScript types, host-supplied fonts/assets, and native-parity HTML/PDF rendering over the same core |
-| Batch rendering | Optional native `batch` feature backed by Asupersync, with bounded workers, cancellation, receipts, and deterministic output order |
+today with embedded curated font subsets, real metrics, focused kerning,
+ligatures, selectable text, link annotations, heading outlines,
+title/author/`SOURCE_DATE_EPOCH` metadata, hierarchical tagged-PDF structure,
+compressed page streams, measured-column tables, syntax-highlighted code panels,
+local PNG embedding, and vector SVG drawing for supported diagrams. Full
+widow/orphan control and richer block pagination remain roadmap.
 
 ---
 
@@ -189,78 +162,67 @@ roadmap.
 
 ## Performance And CPU Strategy
 
-The current production renderer is optimized scalar Rust. That is deliberate:
-the scalar path is the correctness oracle for native, WASM, Apple Silicon, and
-Intel/AMD builds. Recent optimization work has focused on the measured hot
-paths instead of broad rewrites:
+The production renderer is optimized scalar Rust. That is deliberate: the scalar
+path is the correctness oracle for native builds, WASM, Apple Silicon, and
+Intel/AMD x86_64. Performance work starts with `release-perf` profiles, changes
+one lever at a time, and lands only when golden output and targeted tests keep
+behavior stable.
 
-| Hot path | What changed |
+### Shipped Optimizations
+
+| Hot path | What changed | CPU effect |
 |---|---|
-| Parser scanning | Byte-level candidate guards skip full block/reference checks for ordinary prose while preserving the same parser output |
-| HTML escaping | Shared scanner primitives find HTML escape bytes without per-character overhead on clean text runs |
-| PDF layout | Render-local shaped-width caches avoid recomputing pure font shaping and kerning results within one PDF render |
-| PDF stream writing | Text segment operators and `TJ` arrays stream into page buffers directly, avoiding per-segment temporary strings |
-| Compression | The hand-rolled zlib/DEFLATE path accumulates Adler-32 during fixed-Huffman emission, removing a second full input scan |
-| Tables | HTML and PDF table paths avoid avoidable temporary allocation and use measured column allocation rather than fixed-width guesses |
-| Batch rendering | Native batch mode sizes workers by interactive/throughput policy, keeps output ordering deterministic, and leaves the synchronous core untouched |
+| Parser scanning | Byte-level candidate guards skip full block/reference checks for ordinary prose while preserving the same parser output | Fewer unpredictable branches and less work per line on large README-style documents |
+| Inline and HTML escaping | Shared scanner primitives find Markdown/HTML escape bytes without per-character allocation on clean text runs | Cache-friendly byte walks that behave well on Apple M-series and modern Intel/AMD cores |
+| PDF layout | Render-local shaped-width caches avoid recomputing pure font shaping and kerning results within one PDF render | Repeated table/code/body tokens hit local caches instead of re-entering shaping loops |
+| PDF stream writing | Text segment operators and `TJ` arrays stream into page buffers directly | Avoids temporary formatted strings in the innermost PDF content loops |
+| Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman match symbols and accumulates Adler-32 during emission | Removes repeated bit-prep work and avoids a second full input scan over page/font streams |
+| Tables | PDF column allocation uses measured min/max widths plus a constrained badness solver | Improves visual output and avoids wasting layout work on columns that cannot use extra width |
+| Batch rendering | Native batch mode sizes workers by interactive/throughput policy and writes deterministic receipts | Throughput mode can saturate CPU; interactive mode deliberately leaves headroom |
 
 ### Apple Silicon And Intel/AMD Strategy
 
-The shipped optimization today is architecture-aware packaging plus carefully
-measured scalar Rust. That is intentional: the scalar path is the correctness
-oracle for native, WASM, Apple Silicon, and Intel/AMD builds. Release binaries
-do not depend on `target-cpu=native`, so the distributed artifacts stay usable
-across normal machines instead of inheriting accidental build-host assumptions.
+There are two kinds of CPU-specific work in the project today. The first is
+shipping native binaries for the right platform. The second is arranging the
+hot loops so a portable scalar binary still maps cleanly onto current CPU
+caches, branch predictors, and memory systems. Release archives do not depend on
+`target-cpu=native`, so distributed binaries stay usable across ordinary
+machines instead of inheriting accidental build-host assumptions.
 
 | Target family | What fmd does now | Why it matters |
 |---|---|---|
-| Apple Silicon | Publishes native `aarch64-apple-darwin` release archives built and smoke-tested on Apple Silicon GitHub runners | Apple Silicon machines get a native binary with no Rosetta dependency and no cross-compiled binary that was never executed on the target architecture |
-| Intel macOS | Publishes separate `x86_64-apple-darwin` archives built and smoke-tested on Intel macOS runners | Older Macs keep a first-class binary instead of relying on universal packaging assumptions |
-| Intel/AMD Linux | Publishes `x86_64-unknown-linux-gnu` archives with portable scalar code and no `target-cpu=native` requirement | The same binary can run across mixed Intel and AMD fleets without accidentally depending on the build host's CPU extensions |
+| Apple Silicon | Publishes native `aarch64-apple-darwin` release archives built and smoke-tested on Apple Silicon GitHub runners | Apple Silicon users get a real ARM64 binary with no Rosetta dependency and no unexecuted cross-build assumption |
+| Intel macOS | Publishes separate `x86_64-apple-darwin` archives built and smoke-tested on Intel macOS runners | Intel Macs keep a first-class binary instead of relying on universal-package assumptions |
+| Intel/AMD Linux | Publishes `x86_64-unknown-linux-gnu` archives with portable scalar code and no `target-cpu=native` requirement | The same binary can run across mixed Intel and AMD fleets without accidentally requiring the build host's CPU extensions |
 | Windows x86_64 | Publishes `x86_64-pc-windows-msvc` archives with a focused PowerShell smoke test | Windows gets the same CLI contract, JSON capability surface, and HTML render smoke proof as Unix builds |
 | Browser/WASM | Keeps scalar byte-identical behavior as the default; any future `simd128` path must stay feature-gated | Browser output remains deterministic and independent of system fonts, native threads, or host CPU assumptions |
 
-The important CPU-specific work is in the shape of the hot loops, not in
-unchecked intrinsics:
+The shipped hot-loop choices are deliberately friendly to both Apple Silicon and
+Intel/AMD:
 
-- Parser and HTML scanners use byte-level fast paths that skip expensive logic
-  for ordinary prose and clean text runs.
-- PDF layout keeps render-local shaped-width caches, reducing repeated font
-  shaping and kerning work on large documents.
-- PDF content generation appends directly into page buffers for hot text and
-  `TJ` operators, avoiding temporary formatted strings in the inner loop.
-- The zlib/DEFLATE path accumulates Adler-32 while emitting fixed-Huffman data,
-  avoiding a second full pass over page/font streams.
-- Table allocation computes measured content widths instead of forcing fixed
-  guesses, improving both visual quality and wasted layout work on dense tables.
-- Batch mode applies a deterministic worker budget so interactive runs leave CPU
-  headroom while throughput runs can use the machine more aggressively.
+- contiguous `Vec<u8>` and `String` buffers dominate the parser, HTML emitter,
+  PDF writer, and compressor;
+- byte scanners avoid expensive Unicode work until a line actually needs it;
+- render-local caches keep repeated font measurement close to the layout code
+  that uses it;
+- direct PDF stream appends reduce allocator pressure in the text-heavy path;
+- fixed-Huffman compression tables are precomputed once and reused;
+- batch mode uses an explicit worker budget instead of spawning unbounded work.
 
-These choices map well to Apple M-series memory systems and modern Intel/AMD
-cache hierarchies because they favor contiguous buffers, predictable branches,
-local caches, and append-style writers. They also keep the implementation
-portable and auditable.
+Those choices map well to Apple M-series unified-memory machines and modern
+Intel/AMD cache hierarchies because they favor contiguous memory, predictable
+branches, local reuse, and append-style writers. They also keep the scalar path
+auditable enough to serve as the future SIMD oracle.
 
-The architecture-specific plan is explicit:
-
-- **Apple Silicon:** native `aarch64-apple-darwin` release assets run on the
-  target architecture before publication. Future NEON work is limited to a
-  narrow scanner island, with scalar tails and same-host Apple Silicon proof
-  required before any Apple-specific speed claim.
-- **Intel/AMD x86_64:** release binaries stay portable by default. Future AVX2
-  work must use runtime CPU detection and scalar fallback; AVX-512 is excluded
-  from the default path unless separate hardware evidence shows it helps without
-  downclock or fleet-compatibility costs.
-- **WASM:** the browser build keeps the scalar core as the default. Any future
-  `simd128` acceleration must be feature-gated and proven against native/WASM
-  golden outputs.
+### Future SIMD Gate
 
 SIMD is planned but deliberately not claimed as shipped. [`docs/SIMD_ISLAND_DESIGN.md`](docs/SIMD_ISLAND_DESIGN.md)
 defines the only approved future island for AArch64 NEON, x86_64 AVX2, and
-optional WASM `simd128`. Production SIMD remains gated on same-host profile
-artifacts, scalar differential tests, golden output checks, and an unsafe-code
-safety review. AVX-512 is not a default target because it can downclock some
-machines and is unevenly available across Intel/AMD hardware.
+optional WASM `simd128`. Any accelerated path must keep scalar fallback, use
+runtime CPU detection on x86_64, preserve byte-for-byte golden outputs, and
+prove the speedup on the same host family it targets. AVX-512 is excluded from
+the default plan because it can downclock some CPUs and is unevenly available
+across Intel/AMD hardware.
 
 ---
 
@@ -272,7 +234,7 @@ Honest tradeoffs against the common ways people turn Markdown into HTML and PDF.
 |---|---|---|
 | Headless Chrome (print to PDF) | Excellent browser fidelity | Heavy runtime, nondeterministic output, large attack surface; not suited to a tiny embeddable CLI/WASM renderer |
 | Pandoc (+ LaTeX for PDF) | Extremely capable format conversion | Large external toolchain (Haskell, and usually a LaTeX install for PDF); not a small embeddable Rust/WASM library |
-| Typst | Gorgeous typesetting | Different source language and a heavier stack; PDF-first rather than Markdown-preview-shaped |
+| Typst | Excellent typesetting | Different source language and a heavier stack; PDF-first rather than Markdown-preview-shaped |
 | `comrak` / `pulldown-cmark` | Fast, conformant Markdown to HTML | HTML only, no PDF; you still bolt on a separate PDF stack and font tooling, and you cede control of layout |
 | `comrak` + a PDF crate + `syntect` | A quick way to assemble a renderer | Pulls broad dependency forests (regex/onig, font stacks, PDF libs) and hands parser/layout/font/PDF behavior to code you do not control |
 | `franken_markdown` | Focused Markdown to HTML/PDF | Clean-room, dependency-lean, deterministic, WASM-first, and tuned for one workflow end to end |

@@ -2411,6 +2411,7 @@ fn parse_inlines_chars_with_refs_profiled(
     let maybe_bare_email = bytes.contains(&'@');
     let mut buf = String::new();
     let mut i = 0;
+    let mut has_emphasis_delimiters = false;
     let flush = |buf: &mut String, els: &mut Vec<InlineEl>| {
         if !buf.is_empty() {
             els.push(InlineEl::Text(std::mem::take(buf)));
@@ -2575,6 +2576,7 @@ fn parse_inlines_chars_with_refs_profiled(
                         can_open,
                         can_close,
                     });
+                    has_emphasis_delimiters = true;
                 } else {
                     // An inert run (e.g. an intraword `_`) is literal text.
                     for _ in 0..n {
@@ -2610,12 +2612,21 @@ fn parse_inlines_chars_with_refs_profiled(
         }
     }
     flush(&mut buf, &mut els);
-    let out = resolve_emphasis(els);
+    let resolver_allocations = if has_emphasis_delimiters {
+        bytes.len()
+    } else {
+        0
+    };
+    let out = if has_emphasis_delimiters {
+        resolve_emphasis(els)
+    } else {
+        finish_inline_elements_without_delimiters(els)
+    };
     profiler.record_since(
         "inline_parse",
         bytes.len(),
         byte_len,
-        1 + bytes.len() + out.len(),
+        2 + resolver_allocations + out.len(),
         "parse inline delimiters, links, references, autolinks, code spans, and text",
         started,
     );
@@ -2718,6 +2729,14 @@ fn emit_inline_el_owned(el: InlineEl, out: &mut Vec<Inline>) {
             push_inline_text(out, &s);
         }
     }
+}
+
+fn finish_inline_elements_without_delimiters(els: Vec<InlineEl>) -> Vec<Inline> {
+    let mut out = Vec::with_capacity(els.len());
+    for el in els {
+        emit_inline_el_owned(el, &mut out);
+    }
+    out
 }
 
 /// Resolve a flat token list into a nested inline tree using the CommonMark

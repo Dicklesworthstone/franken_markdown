@@ -524,6 +524,45 @@ fn profiled_parser_plain_inline_fast_path_skips_tokenizer_without_losing_autolin
 }
 
 #[test]
+fn profiled_full_inline_parse_without_emphasis_skips_resolver_state() {
+    let src = "before `code` &amp; <https://example.test> user@example.test <!-- note --> after";
+    let profiled = parse_markdown_profiled(src);
+    let inline_stage = profiled
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "inline_parse")
+        .expect("full inline parse should report inline stage");
+
+    assert_eq!(inline_stage.count, src.chars().count());
+    assert_eq!(
+        inline_stage.allocations, 11,
+        "no-emphasis full parse should count only char/token/output state plus output nodes"
+    );
+    assert_eq!(
+        profiled.document.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("before ".to_string()),
+            Inline::Code("code".to_string()),
+            Inline::Text(" & ".to_string()),
+            Inline::Link {
+                dest: "https://example.test".to_string(),
+                title: None,
+                content: vec![Inline::Text("https://example.test".to_string())],
+            },
+            Inline::Text(" ".to_string()),
+            Inline::Link {
+                dest: "mailto:user@example.test".to_string(),
+                title: None,
+                content: vec![Inline::Text("user@example.test".to_string())],
+            },
+            Inline::Text(" ".to_string()),
+            Inline::Html("<!-- note -->".to_string()),
+            Inline::Text(" after".to_string()),
+        ])]
+    );
+}
+
+#[test]
 fn gfm_bare_urls_autolink_with_punctuation_outside() {
     let out = html("See https://example.com/a?b=1&c=2, then www.example.org.");
 

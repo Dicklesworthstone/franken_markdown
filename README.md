@@ -21,7 +21,7 @@ cargo install franken_markdown
 
 </div>
 
-> **Current status.** `0.3.0` is published on crates.io. The `v0.3.0` GitHub
+> **Current status.** `0.3.1` is published on crates.io. The `v0.3.1` GitHub
 > release ships checksum-verified `fmd` archives for Linux x86_64, macOS Intel,
 > macOS Apple Silicon, and Windows x86_64, with smoke tests in the release
 > workflow. The current renderer ships shared HTML/PDF syntax
@@ -385,13 +385,13 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The `v0.3.0` release includes a `fmd` archive per platform: Linux
+The `v0.3.1` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
-Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`). The
-tag-gated `.github/workflows/release.yml` builds, smoke-tests, and attaches
-these archives. Each archive includes a `.sha256` sidecar and the release also
-includes a combined `SHA256SUMS`. Download the archive for your platform and
-verify it before unpacking (Linux example):
+Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
+Native archives are built and smoke-tested with DSR on the release fleet before
+they are attached to the GitHub release. Each archive includes a `.sha256`
+sidecar and the release also includes a combined `SHA256SUMS`. Download the
+archive for your platform and verify it before unpacking (Linux example):
 
 ```bash
 sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256

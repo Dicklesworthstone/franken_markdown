@@ -1,6 +1,6 @@
 # CHANGELOG Research Notes
 
-Scope: full repository history through the current `0.3.0` release preparation.
+Scope: full repository history through the current `0.3.1` DSR release preparation.
 
 ## Evidence Sources
 
@@ -22,6 +22,7 @@ Scope: full repository history through the current `0.3.0` release preparation.
 | First binary release | 2026-06-30 | tag `v0.1.0` | Release archives and installer asset lookup landed |
 | Crates.io hardening release | 2026-07-03 | tag `v0.2.0` | crates.io publication, package trimming, staged writes, and stricter binary validation |
 | Renderer capability release | 2026-07-07 | tag `v0.3.0` | SVG/PDF fidelity, Mermaid/MMD highlighting, local PDF assets, safer writes, batch receipts, and measured optimization work |
+| DSR publication patch | 2026-07-07 | tag `v0.3.1` | DSR-built artifact line aligned to the release manifest after canceling the stuck Actions binary workflow; includes the late HTML base64 and PDF empty-segment drawing passes and leaves the rejected PDF decimal-string trial out of shipped source |
 
 ## 0.3.0 Research Notes
 

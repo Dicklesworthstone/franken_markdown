@@ -14187,7 +14187,8 @@ fn serialize(
                     next_mcid += 1;
                 }
             } else {
-                let marked = line_has_visible_content(line);
+                let first_visible_seg = first_visible_segment_index(line);
+                let marked = line.image.is_some() || first_visible_seg.is_some();
                 let owner = next_mcid;
                 if marked {
                     let leaf = leaf_elem(line);
@@ -14238,21 +14239,23 @@ fn serialize(
                         );
                     }
                 }
-                for seg in &line.segs {
-                    draw_seg(
-                        &mut body,
-                        &mut annots,
-                        &mut current_fill,
-                        owner,
-                        seg,
-                        line.size,
-                        y,
-                        &subsets,
-                        &subset_lookup,
-                        faces,
-                        &shaped_cache,
-                        &palette,
-                    );
+                if let Some(seg_start) = first_visible_seg {
+                    for seg in &line.segs[seg_start..] {
+                        draw_seg(
+                            &mut body,
+                            &mut annots,
+                            &mut current_fill,
+                            owner,
+                            seg,
+                            line.size,
+                            y,
+                            &subsets,
+                            &subset_lookup,
+                            faces,
+                            &shaped_cache,
+                            &palette,
+                        );
+                    }
                 }
                 if marked {
                     body.push_str("EMC\n");
@@ -14887,8 +14890,12 @@ fn image_name(index: usize) -> String {
     format!("Im{}", index + 1)
 }
 
+fn first_visible_segment_index(line: &Line) -> Option<usize> {
+    line.segs.iter().position(|seg| !seg.text.is_empty())
+}
+
 fn line_has_visible_content(line: &Line) -> bool {
-    line.image.is_some() || line.segs.iter().any(|seg| !seg.text.is_empty())
+    line.image.is_some() || first_visible_segment_index(line).is_some()
 }
 
 #[derive(Clone, Copy)]
@@ -20923,13 +20930,53 @@ mod pdf_writer_tests {
         append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
         append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
         build_segs, cached_shaped_width, collect_svg_alpha_states, decode_xml_entities,
-        estimate_page_content_capacity, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
-        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens,
-        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
+        font_size_of, kerned_tj, line_has_visible_content, measure_word, normalize_svg_text_node,
+        pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
+        svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
     use std::collections::BTreeSet;
+
+    fn test_line_with_segment_texts(texts: &[&str]) -> Line {
+        Line {
+            size: 11.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs: texts
+                .iter()
+                .map(|text| Seg {
+                    x: 0.0,
+                    slot: F_BODY,
+                    text: (*text).to_string(),
+                    link: None,
+                    fill: Fill::Black,
+                    strike: false,
+                    width: 0.0,
+                })
+                .collect(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn first_visible_segment_index_matches_line_visibility() {
+        let line = test_line_with_segment_texts(&["", "", "visible", "later"]);
+        assert_eq!(first_visible_segment_index(&line), Some(2));
+        assert!(line_has_visible_content(&line));
+
+        let empty = test_line_with_segment_texts(&["", ""]);
+        assert_eq!(first_visible_segment_index(&empty), None);
+        assert!(!line_has_visible_content(&empty));
+    }
 
     #[test]
     fn pdf_word_measurement_uses_gpos_kerning() -> crate::Result<()> {

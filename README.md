@@ -2,10 +2,10 @@
 
 # franken_markdown
 
-<img src="franken_markdown_illustration.webp" alt="franken_markdown - clean-room Rust Markdown renderer (HTML, PDF, fmd CLI, WASM)">
+<img src="franken_markdown_illustration.webp" alt="franken_markdown clean-room Rust Markdown renderer for HTML, PDF, fmd CLI, and WASM">
 
-**A clean-room, dependency-lean Rust Markdown renderer for beautiful all-in-one
-HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
+**A clean-room, dependency-lean Rust Markdown renderer for all-in-one HTML,
+compact high-quality PDF, the standalone `fmd` CLI, and first-class WASM use.**
 
 ![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)
 ![Language](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -24,8 +24,10 @@ cargo install franken_markdown
 > GitHub release ships smoke-tested `fmd` binaries for Linux, macOS Intel,
 > macOS Apple Silicon, and Windows. `main` is ahead of that tag: the same
 > clean-room Rust core now drives HTML, PDF, the CLI, opt-in batch rendering,
-> SVG/Mermaid-asset PDF rendering, and the browser/WASM package. Optional SIMD
-> and deeper block pagination remain roadmap work, not shipped claims.
+> SVG/Mermaid-asset PDF rendering, and browser/WASM package sources. The WASM
+> package is assembled and checked in CI, but is not yet published to npm.
+> Optional SIMD and deeper block pagination remain roadmap work, not shipped
+> claims.
 
 ---
 
@@ -42,8 +44,8 @@ Markdown parser, AST, theme model, HTML emitter, syntax highlighter, typography
 and layout code, font subsystem, SVG drawing code, compressor, and PDF writer.
 The engine library has **zero third-party dependencies**. The default build adds
 only `clap`, and only for the CLI. The same render core compiles as a Rust
-library, the `fmd` binary, and a browser/WASM package, with deterministic output
-as a design constraint.
+library, the `fmd` binary, and browser/WASM package sources, with deterministic
+output as a design constraint.
 
 ### Use It For
 
@@ -53,12 +55,13 @@ as a design constraint.
 | Compact deterministic PDF | `SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf` |
 | Same input to both formats | `fmd README.md --to both --out README.html` |
 | Syntax-highlighted technical docs | Fenced code blocks in Rust, Python, JS/TS, shell, SQL, TOML, YAML, HTML/XML/SVG, Markdown, and related documentation languages |
+| ASCII diagrams and flow sketches | Fenced text/diagram blocks keep their geometry in PDF by fitting rows instead of wrapping every long line |
 | Mermaid diagrams without browser JavaScript | Generate SVG with frankenmermaid, reference it from Markdown, then let HTML display it and PDF draw supported SVG vector content |
 | Agent/tool integration | `fmd capabilities --json`, `fmd doctor --json`, `fmd robot-docs guide`, and `fmd --robot-triage` |
-| Browser integration | Build the wasm-bindgen package from `wasm/` and pass Markdown, font bytes, image bytes, and options from the host |
+| Browser integration | Build the wasm-bindgen package from `wasm/` and pass Markdown, font bytes, image bytes, and options from the host. npm publication remains a release step |
 | Directory rendering | Build with `--features batch` and use `fmd batch` for bounded parallel rendering with deterministic receipts |
 
-### What Is In The Box
+### Shipped Feature Map
 
 | Area | Current capability |
 |---|---|
@@ -70,10 +73,11 @@ as a design constraint.
 | SVG and diagrams | File-input PDF renders auto-load relative local PNG/SVG image destinations. Supported SVGs are drawn as vector PDF operators, covering paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, markers, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
 | Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid, so HTML and PDF can carry the same diagram without a JavaScript runtime |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST; hosts can supply font bytes and image assets without filesystem access in the core |
-| CLI | `fmd README.md` works as the obvious first command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, and JSON render status make the contract usable by humans and agents |
+| CLI | `fmd README.md` works as the obvious first command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings make the contract usable by humans and agents |
+| Output safety | Multi-output renders are staged before commit. `--to both` does not leave stale HTML behind if PDF rendering fails, and the CLI refuses to overwrite the input file |
 | Config | Native `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults; `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
-| Browser/WASM | The wasm-bindgen package exposes typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, native-parity tests, and a no-default core that stays dependency-free |
+| Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, native-parity tests, and a no-default core that stays dependency-free |
 | Releases | crates.io plus checksum-verified release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through native smoke tests |
 
 ### Why franken_markdown?
@@ -153,7 +157,7 @@ widow/orphan control and finer block pagination remain roadmap work.
    crates; `clap` is the only default dependency and exists solely for the CLI.
    `scripts/check-policy.sh` enforces this in CI, and `unsafe` is forbidden at
    the crate level.
-4. **Determinism is a feature, not an accident.** Given fixed input, theme,
+4. **Determinism is intentional.** Given fixed input, theme,
    fonts, and options, output bytes are stable across runs and operating
    systems. `scripts/check-determinism.sh` compares repeated renders byte for
    byte, and `SOURCE_DATE_EPOCH` pins PDF dates.
@@ -191,6 +195,7 @@ behavior stable.
 | Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman match symbols and accumulates Adler-32 during emission | Removes repeated bit-prep work and avoids a second full input scan over page/font streams |
 | Tables | PDF column allocation uses measured min/max widths plus a constrained badness solver | Improves visual output and avoids wasting layout work on columns that cannot use extra width |
 | SVG rendering | Common frankenmermaid/SVG constructs are translated directly into PDF drawing operations | Avoids a headless browser or rasterization step for supported diagrams |
+| HTML font tracking | Embedded font subsetting tracks ASCII use with a compact bitset before preserving first-seen non-ASCII order | Cuts tiny per-render bookkeeping without changing deterministic font CSS output |
 | Batch rendering | Native batch mode sizes workers by interactive/throughput policy and writes deterministic receipts | Throughput mode can saturate CPU; interactive mode deliberately leaves headroom |
 
 ### Apple Silicon And Intel/AMD Strategy
@@ -321,7 +326,7 @@ cargo install franken_markdown
 `fmd` and the long alias `franken_markdown` are the same program built from one
 shared entrypoint; type whichever you like.
 
-### Prebuilt binaries and npm
+### Prebuilt binaries and browser package sources
 
 The `v0.2.0` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
@@ -336,8 +341,9 @@ sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
 tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-The browser/WASM build is packaged separately as
-`@franken-suite/franken-markdown` via `.github/workflows/release-wasm.yml`.
+The browser/WASM build is assembled separately as
+`@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml`; it is
+publish-ready but not yet published to npm.
 
 ---
 
@@ -431,6 +437,10 @@ fmd --text '<markdown>' --out out.html
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit or auto-loaded PDF image file before rendering (default `33554432`, 32 MiB) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
+
+PDF render warnings are also reported on stderr. They are intentionally
+structured and stable enough for agents to notice lossy fallbacks such as
+unsupported SVG constructs while keeping stdout reserved for document bytes.
 
 Output-path rules:
 
@@ -745,7 +755,7 @@ Honest about what the renderer does not do yet.
 
 ## FAQ
 
-**Why not just use existing crates?**
+**Why not use existing crates?**
 The point is an extremely focused renderer with a small dependency and security
 surface, fast builds, full control over output quality, deterministic bytes, and
 first-class WASM. A `comrak` + PDF-crate + `syntect` stack would pull broad

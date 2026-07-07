@@ -12913,14 +12913,16 @@ fn code_fragments(lang: Option<&str>, text: &str) -> Vec<CodeFrag> {
         return Vec::new();
     }
 
-    let Some(lang) = lang.filter(|l| highlight::is_supported(l)) else {
+    let mut frags = Vec::new();
+    let Some(lang) = lang else {
         return vec![CodeFrag {
             text: expand_code_tabs(text),
             fill: Fill::Black,
         }];
     };
 
-    let mut frags = Vec::new();
+    // The highlighter falls back to one plain span for unknown languages, so
+    // code blocks with a language only pay for one lexer lookup here.
     for span in highlight::highlight(lang, text) {
         let Some(slice) = text.get(span.start..span.end) else {
             continue;

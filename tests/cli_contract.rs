@@ -116,6 +116,15 @@ fn tiny_rgb_png() -> Vec<u8> {
     png
 }
 
+fn simple_svg(label: &str) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60">
+  <rect x="8" y="8" width="104" height="44" rx="6" fill="#ffffff" stroke="#2563eb"/>
+  <text x="60" y="35" text-anchor="middle" font-size="14" fill="#0f172a">{label}</text>
+</svg>"##
+    )
+}
+
 #[test]
 fn bare_invocation_prints_help_and_exits_successfully() {
     let out = fmd(&[]);
@@ -161,7 +170,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"source_date_epoch_pdf\":\"available\""));
     assert!(stdout.contains("\"tagged_pdf\":\"available_hierarchical_accessible\""));
     assert!(stdout.contains("\"stream_compression_pdf\":\"available\""));
-    assert!(stdout.contains("\"pdf_image_assets\":\"available_png_v0\""));
+    assert!(stdout.contains("\"pdf_image_assets\":\"available_png_svg_v0\""));
     assert!(stdout.contains("--pdf-line-numbers"));
     assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--author"));
@@ -567,6 +576,169 @@ fn pdf_render_accepts_local_image_assets() {
 }
 
 #[test]
+fn pdf_render_auto_loads_relative_svg_assets_for_file_inputs() {
+    let dir = temp_dir("auto-svg-assets");
+    let diagrams = dir.join("diagrams");
+    fs::create_dir_all(&diagrams).unwrap();
+    let input = dir.join("note.md");
+    let svg = diagrams.join("flow.svg");
+    let out_path = dir.join("note.pdf");
+    fs::write(&svg, simple_svg("Flow")).unwrap();
+    fs::write(&input, "# Diagram\n\n![Flow chart](diagrams/flow.svg)\n").unwrap();
+
+    let input_s = input.display().to_string();
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[&input_s, "--to", "pdf", "--out", &out_path_s, "--json"]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        !stderr.contains("\"event\":\"warning\""),
+        "auto-loaded local SVG should not emit unresolved-image warnings: {stderr}"
+    );
+
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("/Subtype /Image"),
+        "pure auto-loaded SVG should be drawn as vector content, not a raster XObject"
+    );
+    assert!(pdf_text.contains("/S /Figure"));
+    assert!(pdf_text.contains("/Alt (Flow chart)"));
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(svg);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir(diagrams);
+    let _ = fs::remove_dir(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn pdf_render_auto_loaded_assets_must_resolve_under_the_markdown_directory() {
+    let dir = temp_dir("auto-svg-symlink-escape");
+    let outside = temp_dir("auto-svg-outside");
+    let diagrams = dir.join("diagrams");
+    fs::create_dir_all(&diagrams).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let input = dir.join("note.md");
+    let outside_svg = outside.join("outside.svg");
+    let escaped_link = diagrams.join("escaped.svg");
+    let out_path = dir.join("note.pdf");
+    fs::write(&outside_svg, simple_svg("Outside")).unwrap();
+    std::os::unix::fs::symlink(&outside_svg, &escaped_link).unwrap();
+    fs::write(
+        &input,
+        "# Diagram\n\n![Escaped symlink](diagrams/escaped.svg)\n",
+    )
+    .unwrap();
+
+    let input_s = input.display().to_string();
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[&input_s, "--to", "pdf", "--out", &out_path_s, "--json"]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"event\":\"warning\"") && stderr.contains("add --pdf-image"),
+        "auto-loader must not follow relative image symlinks outside the Markdown directory: {stderr}"
+    );
+
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("Outside"),
+        "escaped sibling symlink should not let outside SVG text enter the PDF"
+    );
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(escaped_link);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(outside);
+}
+
+#[test]
+fn pdf_render_does_not_auto_load_assets_for_raw_text_inputs() {
+    let dir = temp_dir("raw-text-no-auto-assets");
+    fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("tiny.png");
+    let out_path = dir.join("raw.pdf");
+    fs::write(&image, tiny_rgb_png()).unwrap();
+
+    let out_path_s = out_path.display().to_string();
+    let out = fmd_in_dir(
+        &[
+            "--text",
+            "![Tiny](tiny.png)",
+            "--to",
+            "pdf",
+            "--out",
+            &out_path_s,
+            "--json",
+        ],
+        &dir,
+    );
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"event\":\"warning\"") && stderr.contains("add --pdf-image"),
+        "raw --text has no Markdown file base directory, so it should keep the explicit mapping warning: {stderr}"
+    );
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("/Subtype /Image"),
+        "raw --text must not discover current-directory image assets implicitly"
+    );
+
+    let _ = fs::remove_file(image);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn pdf_render_auto_loaded_assets_obey_the_pdf_image_byte_limit() {
+    let dir = temp_dir("auto-image-byte-limit");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("note.md");
+    let image = dir.join("tiny.png");
+    let out_path = dir.join("note.pdf");
+    fs::write(&image, tiny_rgb_png()).unwrap();
+    fs::write(&input, "# Diagram\n\n![Tiny](tiny.png)\n").unwrap();
+
+    let input_s = input.display().to_string();
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[
+        &input_s,
+        "--to",
+        "pdf",
+        "--max-pdf-image-bytes",
+        "4",
+        "--out",
+        &out_path_s,
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("\"code\":\"input_error\""));
+    assert!(stderr.contains("auto PDF image asset tiny.png"));
+    assert!(stderr.contains("exceeds --max-pdf-image-bytes 4"));
+    assert!(!out_path.exists(), "failed preflight must not write a PDF");
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(image);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
 fn pdf_image_asset_mapping_allows_equals_in_markdown_destination() {
     let image_path = temp_file("query-image", "png");
     let equals_image_path = temp_file("query-image-with-equals", "png").with_file_name(format!(
@@ -626,6 +798,52 @@ fn pdf_image_asset_mapping_allows_equals_in_markdown_destination() {
     let _ = fs::remove_file(equals_image_path);
     let _ = fs::remove_file(out_path);
     let _ = fs::remove_file(equals_out_path);
+}
+
+#[test]
+fn pdf_image_spec_uses_document_destination_when_missing_path_contains_equals() {
+    let dir = temp_dir("equals-missing-image-path");
+    fs::create_dir_all(&dir).unwrap();
+    let decoy = dir.join("decoy.png");
+    fs::write(&decoy, tiny_rgb_png()).unwrap();
+    let missing_with_equals = format!("{}={}", dir.join("missing.png").display(), decoy.display());
+    let mapping = format!("images/local.png={missing_with_equals}");
+    let out_path = dir.join("out.pdf");
+    let out_path_s = out_path.display().to_string();
+
+    let out = fmd(&[
+        "--text",
+        "![Local asset](images/local.png)",
+        "--to",
+        "pdf",
+        "--pdf-image",
+        &mapping,
+        "--out",
+        &out_path_s,
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(66));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"input_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("reading PDF image asset images/local.png"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&missing_with_equals),
+        "stderr should name the full intended path, not the decoy suffix: {stderr}"
+    );
+    assert!(
+        !out_path.exists(),
+        "failed asset preflight must not write a PDF"
+    );
+
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1619,6 +1837,138 @@ fn batch_validates_source_date_epoch_only_for_pdf() {
         "pdf batch must still validate the epoch"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Expansion failures recorded by `--continue-on-error` are part of the receipt's
+/// per-input ledger, so they must be merged into the same deterministic input
+/// order as successfully expanded files rather than appended after rendered files.
+#[cfg(feature = "batch")]
+#[test]
+fn batch_continue_on_error_receipt_merges_expansion_failures_in_input_order() {
+    let dir = temp_dir("batch-expansion-order");
+    fs::create_dir_all(&dir).unwrap();
+    let missing = dir.join("a_missing.md");
+    let good = dir.join("z_good.md");
+    fs::write(&good, "# Z\n\nBody.").unwrap();
+    let out_dir = dir.join("out");
+
+    let out = fmd(&[
+        "batch",
+        good.to_str().unwrap(),
+        missing.to_str().unwrap(),
+        "--continue-on-error",
+        "--json",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "--continue-on-error should render the valid file: stderr={}",
+        text(&out.stderr)
+    );
+    let stdout = text(&out.stdout);
+    let missing_pos = stdout
+        .find(&missing.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panic!("missing path not present in receipt: {stdout}"));
+    let good_pos = stdout
+        .find(&good.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panic!("good path not present in receipt: {stdout}"));
+    assert!(
+        missing_pos < good_pos,
+        "receipt files should be sorted by input path, not append expansion failures: {stdout}"
+    );
+    assert!(stdout.contains("\"failed\":1"));
+    assert!(stdout.contains("\"ok\":1"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "batch")]
+#[test]
+fn batch_pdf_auto_loads_relative_svg_assets_for_file_inputs() {
+    let dir = temp_dir("batch-auto-svg-assets");
+    let diagrams = dir.join("diagrams");
+    let out_dir = dir.join("out");
+    fs::create_dir_all(&diagrams).unwrap();
+    let input = dir.join("note.md");
+    let svg = diagrams.join("flow.svg");
+    fs::write(&svg, simple_svg("BatchFlow")).unwrap();
+    fs::write(&input, "# Diagram\n\n![Batch flow](diagrams/flow.svg)\n").unwrap();
+
+    let out = fmd(&[
+        "batch",
+        input.to_str().unwrap(),
+        "--to",
+        "pdf",
+        "--json",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "batch PDF render should succeed: stdout={} stderr={}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let pdf = fs::read(out_dir.join("note.pdf")).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("/Subtype /Image"),
+        "batch auto-loaded pure SVG should remain vector content, not a raster XObject"
+    );
+    assert!(pdf_text.contains("/S /Figure"));
+    assert!(pdf_text.contains("/Alt (Batch flow)"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "batch", unix))]
+#[test]
+fn batch_pdf_auto_loaded_assets_must_resolve_under_the_markdown_directory() {
+    let dir = temp_dir("batch-auto-svg-symlink-escape");
+    let outside = temp_dir("batch-auto-svg-outside");
+    let diagrams = dir.join("diagrams");
+    let out_dir = dir.join("out");
+    fs::create_dir_all(&diagrams).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let input = dir.join("note.md");
+    let outside_svg = outside.join("outside.svg");
+    let escaped_link = diagrams.join("escaped.svg");
+    fs::write(&outside_svg, simple_svg("OutsideBatch")).unwrap();
+    std::os::unix::fs::symlink(&outside_svg, &escaped_link).unwrap();
+    fs::write(
+        &input,
+        "# Diagram\n\n![Escaped batch symlink](diagrams/escaped.svg)\n",
+    )
+    .unwrap();
+
+    let out = fmd(&[
+        "batch",
+        input.to_str().unwrap(),
+        "--to",
+        "pdf",
+        "--json",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "batch should still render with a missing explicit asset: stdout={} stderr={}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let pdf = fs::read(out_dir.join("note.pdf")).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("OutsideBatch"),
+        "batch auto-loader must not follow relative image symlinks outside the Markdown directory"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&outside);
 }
 
 /// Batch strict-mode maps the FIRST per-file failure's category to the

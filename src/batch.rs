@@ -15,19 +15,25 @@
 //! input order regardless of completion order.
 #![cfg(feature = "batch")]
 
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use asupersync::prelude::*;
 use asupersync::runtime::RuntimeBuilder;
 
+use crate::ast::{Block, Inline};
 use crate::file_write::{OutputFile, write_outputs_staged};
-use crate::{HtmlOptions, PdfOptions, render_html, render_pdf};
+use crate::{
+    Document, HtmlOptions, PdfImageAsset, PdfOptions, parse_markdown, render_html_document,
+    render_pdf_document,
+};
 
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
 /// ceiling when the caller does not supply one.
 const DEFAULT_PER_JOB_RSS: u64 = 64 * 1024 * 1024;
+const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_COLLECT_DIR_DEPTH: usize = 128;
 
 // ---------------------------------------------------------------------------
@@ -592,7 +598,6 @@ fn detect_output_collisions(inputs: &[PathBuf], out_dir: Option<&Path>) -> Vec<O
 /// memory). Mirrors the single-file `--max-input-bytes` guard. Returns a
 /// human-readable error string on failure.
 fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
-    use std::io::Read;
     let file = std::fs::File::open(input).map_err(|e| format!("read failed: {e}"))?;
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
@@ -604,6 +609,165 @@ fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
         ));
     }
     String::from_utf8(bytes).map_err(|_| "read failed: input is not valid UTF-8".to_string())
+}
+
+fn append_auto_pdf_image_assets_for_input(
+    input: &Path,
+    doc: &Document,
+    assets: &mut Vec<PdfImageAsset>,
+) -> Result<(), String> {
+    let base_dir = input
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
+        return Ok(());
+    };
+
+    let mut destinations = Vec::new();
+    collect_image_destinations(&doc.blocks, &mut destinations);
+    for destination in destinations {
+        let destination = destination.trim();
+        if destination.is_empty()
+            || assets
+                .iter()
+                .any(|asset| asset.destination.trim() == destination)
+        {
+            continue;
+        }
+        let Some(path) = auto_pdf_image_path(destination, base_dir) else {
+            continue;
+        };
+        let Ok(canonical_path) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canonical_path.starts_with(&canonical_base_dir) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&canonical_path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let label = format!("auto PDF image asset {destination} from {}", path.display());
+        if meta.len() > DEFAULT_MAX_PDF_IMAGE_BYTES {
+            return Err(format!(
+                "{label} is {bytes} bytes, which exceeds the batch PDF image limit {limit}",
+                bytes = meta.len(),
+                limit = DEFAULT_MAX_PDF_IMAGE_BYTES
+            ));
+        }
+        let file =
+            std::fs::File::open(&canonical_path).map_err(|e| format!("reading {label}: {e}"))?;
+        let mut bytes = Vec::new();
+        file.take(DEFAULT_MAX_PDF_IMAGE_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("reading {label}: {e}"))?;
+        if bytes.len() as u64 > DEFAULT_MAX_PDF_IMAGE_BYTES {
+            return Err(format!(
+                "{label} exceeds the batch PDF image limit {DEFAULT_MAX_PDF_IMAGE_BYTES}"
+            ));
+        }
+        assets.push(PdfImageAsset::new(destination, bytes));
+    }
+    Ok(())
+}
+
+fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
+    for block in blocks {
+        match block {
+            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                collect_image_destinations_inlines(inlines, out);
+            }
+            Block::BlockQuote(inner) => collect_image_destinations(inner, out),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_image_destinations(&item.blocks, out);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    collect_image_destinations_inlines(cell, out);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        collect_image_destinations_inlines(cell, out);
+                    }
+                }
+            }
+            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+        }
+    }
+}
+
+fn collect_image_destinations_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&'a str>) {
+    for inline in inlines {
+        match inline {
+            Inline::Image { dest, .. } => out.push(dest),
+            Inline::Emphasis(children)
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children)
+            | Inline::Link {
+                content: children, ..
+            } => collect_image_destinations_inlines(children, out),
+            Inline::Text(_)
+            | Inline::Code(_)
+            | Inline::SoftBreak
+            | Inline::HardBreak
+            | Inline::Html(_) => {}
+        }
+    }
+}
+
+fn auto_pdf_image_path(destination: &str, base_dir: &Path) -> Option<PathBuf> {
+    let path_part = destination
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if path_part.is_empty()
+        || path_part.starts_with("//")
+        || path_part.contains('\\')
+        || has_uri_scheme(path_part)
+    {
+        return None;
+    }
+    let relative = Path::new(path_part);
+    if relative.is_absolute() || !has_supported_pdf_image_extension(relative) {
+        return None;
+    }
+    let mut has_normal_component = false;
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => has_normal_component = true,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    has_normal_component.then(|| base_dir.join(relative))
+}
+
+fn has_uri_scheme(value: &str) -> bool {
+    let first_path_part = value
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let Some((scheme, _)) = first_path_part.split_once(':') else {
+        return false;
+    };
+    let mut bytes = scheme.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn has_supported_pdf_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "svg"))
 }
 
 fn render_one(
@@ -618,6 +782,7 @@ fn render_one(
         Ok(text) => text,
         Err(e) => return failed(input, FileErrorKind::Input, e),
     };
+    let doc = parse_markdown(&md);
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
     {
@@ -630,7 +795,7 @@ fn render_one(
 
     let mut rendered = Vec::new();
     if format.wants_html() {
-        match render_html(&md, html) {
+        match render_html_document(&doc, html) {
             Ok(doc) => {
                 let path = output_path(input, out_dir, "html");
                 rendered.push(PendingOutput {
@@ -649,7 +814,13 @@ fn render_one(
         }
     }
     if format.wants_pdf() {
-        match render_pdf(&md, pdf) {
+        let mut pdf_opts = pdf.clone();
+        if let Err(e) =
+            append_auto_pdf_image_assets_for_input(input, &doc, &mut pdf_opts.image_assets)
+        {
+            return failed(input, FileErrorKind::Input, e);
+        }
+        match render_pdf_document(&doc, &pdf_opts) {
             Ok(bytes) => {
                 let path = output_path(input, out_dir, "pdf");
                 rendered.push(PendingOutput {

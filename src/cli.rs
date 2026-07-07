@@ -3,15 +3,16 @@
 //! `fmd` alias.
 
 use std::io::{Error, ErrorKind as IoErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
+use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{
     FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Theme,
-    parse_markdown, render_html, render_pdf, render_warnings,
+    parse_markdown, render_html, render_pdf_document, render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -160,12 +161,14 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
-    /// Provide a local PDF image asset as MARKDOWN_DEST=PATH. The render core
-    /// never fetches or reads files; this native CLI flag resolves bytes before
-    /// rendering. Repeat for multiple images.
+    /// Provide or override a local PDF image asset as MARKDOWN_DEST=PATH.
+    /// File-based PDF renders also auto-load relative local PNG/SVG image
+    /// destinations; the render core itself never fetches or reads files.
+    /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
-    /// Maximum bytes accepted for each `--pdf-image` file before rendering.
+    /// Maximum bytes accepted for each explicit or auto-loaded PDF image file
+    /// before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
     /// Maximum Markdown input bytes accepted before rendering.
@@ -386,14 +389,36 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
+    let pdf_doc = if want_pdf {
+        Some(parse_markdown(&src))
+    } else {
+        None
+    };
+    let mut pdf_image_destinations = Vec::new();
+    if let Some(doc) = pdf_doc.as_ref() {
+        collect_image_destinations(&doc.blocks, &mut pdf_image_destinations);
+    }
     let pdf_image_assets = if want_pdf {
-        match read_pdf_image_assets(&args.pdf_images, args.max_pdf_image_bytes) {
+        let mut assets = match read_pdf_image_assets(
+            &args.pdf_images,
+            args.max_pdf_image_bytes,
+            &pdf_image_destinations,
+        ) {
             Ok(assets) => assets,
             // A malformed `--pdf-image` spec is a usage error (64); a missing/
             // unreadable/oversized file is an input error (66).
             Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
             Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
+        };
+        if let (Some(doc), Some(base_dir)) = (
+            pdf_doc.as_ref(),
+            auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref()),
+        ) && let Err(e) =
+            append_auto_pdf_image_assets(doc, &base_dir, &mut assets, args.max_pdf_image_bytes)
+        {
+            return fail_json(66, "input_error", &e, json);
         }
+        assets
     } else {
         Vec::new()
     };
@@ -429,7 +454,15 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             image_assets: pdf_image_assets,
             font_assets: FontAssets::default(),
         };
-        match render_pdf(&src, &opts) {
+        let Some(doc) = pdf_doc.as_ref() else {
+            return fail_json(
+                70,
+                "render_error",
+                "internal PDF document state was unavailable before rendering",
+                json,
+            );
+        };
+        match render_pdf_document(doc, &opts) {
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
             Ok(bytes) => Some((opts, bytes)),
@@ -488,7 +521,15 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     if let Some((opts, bytes)) = pdf_render.as_ref()
         && let Some(path) = pdf_path.as_deref()
     {
-        report_pdf_warnings(&src, opts, json);
+        let Some(doc) = pdf_doc.as_ref() else {
+            return fail_json(
+                70,
+                "render_error",
+                "internal PDF document state was unavailable before warning reporting",
+                json,
+            );
+        };
+        report_pdf_warnings(doc, opts, json);
         report_write("pdf", path, bytes.len(), json);
     }
 
@@ -639,12 +680,15 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                     e.message.clone(),
                 ));
             }
+            receipt.files.sort_by(|a, b| a.input.cmp(&b.input));
             // stdout is data (the receipt JSON) only with --json; otherwise a
             // human summary goes to stderr and stdout stays empty. A broken pipe
             // is swallowed here so it never panics or overrides the batch result
-            // exit code computed below.
+            // exit code computed below. Any other stdout write failure is an
+            // output error and must not be hidden behind the batch status.
+            let mut stdout_status = ExitCode::SUCCESS;
             if json {
-                let _ = emit_stdout(&receipt.to_json());
+                stdout_status = emit_stdout(&receipt.to_json());
             } else {
                 eprintln!(
                     "fmd batch: {} ok, {} failed, {} skipped across {} input(s) on {} worker(s)",
@@ -654,6 +698,9 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                     receipt.files.len(),
                     receipt.workers,
                 );
+            }
+            if stdout_status != ExitCode::SUCCESS {
+                return stdout_status;
             }
             let total = receipt.files.len();
             // A cancelled run (the `--timeout` deadline fired) leaves not-yet-started
@@ -897,10 +944,12 @@ enum PdfImageError {
 fn read_pdf_image_assets(
     specs: &[String],
     max_bytes: u64,
+    destination_hints: &[&str],
 ) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
     let mut assets = Vec::with_capacity(specs.len());
     for spec in specs {
-        let (destination, path) = parse_pdf_image_spec(spec).map_err(PdfImageError::Usage)?;
+        let (destination, path) =
+            parse_pdf_image_spec(spec, destination_hints).map_err(PdfImageError::Usage)?;
         let label = format!("PDF image asset {destination} from {}", path.display());
         if let Ok(meta) = std::fs::metadata(&path)
             && meta.len() > max_bytes
@@ -918,8 +967,173 @@ fn read_pdf_image_assets(
     Ok(assets)
 }
 
-fn parse_pdf_image_spec(spec: &str) -> std::result::Result<(String, PathBuf), String> {
-    let Some((dest, path)) = split_pdf_image_spec(spec) else {
+fn auto_pdf_image_base_dir(input: Option<&str>, text: Option<&str>) -> Option<PathBuf> {
+    if text.is_some() {
+        return None;
+    }
+    let input = input?;
+    if input == "-" {
+        return None;
+    }
+    let input_path = Path::new(input);
+    Some(
+        input_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    )
+}
+
+fn append_auto_pdf_image_assets(
+    doc: &Document,
+    base_dir: &Path,
+    assets: &mut Vec<PdfImageAsset>,
+    max_bytes: u64,
+) -> std::result::Result<(), String> {
+    let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
+        return Ok(());
+    };
+    let mut destinations = Vec::new();
+    collect_image_destinations(&doc.blocks, &mut destinations);
+    for destination in destinations {
+        let destination = destination.trim();
+        if destination.is_empty()
+            || assets
+                .iter()
+                .any(|asset| asset.destination.trim() == destination)
+        {
+            continue;
+        }
+        let Some(path) = auto_pdf_image_path(destination, base_dir) else {
+            continue;
+        };
+        let Ok(canonical_path) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canonical_path.starts_with(&canonical_base_dir) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&canonical_path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let label = format!("auto PDF image asset {destination} from {}", path.display());
+        if meta.len() > max_bytes {
+            return Err(pdf_image_too_large(&label, meta.len(), max_bytes).to_string());
+        }
+        let file =
+            std::fs::File::open(&canonical_path).map_err(|e| format!("reading {label}: {e}"))?;
+        let bytes = read_limited_with_flag(file, max_bytes, &label, "--max-pdf-image-bytes")
+            .map_err(|e| format!("reading {label}: {e}"))?;
+        assets.push(PdfImageAsset::new(destination, bytes));
+    }
+    Ok(())
+}
+
+fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
+    for block in blocks {
+        match block {
+            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                collect_image_destinations_inlines(inlines, out);
+            }
+            Block::BlockQuote(inner) => collect_image_destinations(inner, out),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_image_destinations(&item.blocks, out);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    collect_image_destinations_inlines(cell, out);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        collect_image_destinations_inlines(cell, out);
+                    }
+                }
+            }
+            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+        }
+    }
+}
+
+fn collect_image_destinations_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&'a str>) {
+    for inline in inlines {
+        match inline {
+            Inline::Image { dest, .. } => out.push(dest),
+            Inline::Emphasis(children)
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children)
+            | Inline::Link {
+                content: children, ..
+            } => collect_image_destinations_inlines(children, out),
+            Inline::Text(_)
+            | Inline::Code(_)
+            | Inline::SoftBreak
+            | Inline::HardBreak
+            | Inline::Html(_) => {}
+        }
+    }
+}
+
+fn auto_pdf_image_path(destination: &str, base_dir: &Path) -> Option<PathBuf> {
+    let path_part = destination
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if path_part.is_empty()
+        || path_part.starts_with("//")
+        || path_part.contains('\\')
+        || has_uri_scheme(path_part)
+    {
+        return None;
+    }
+    let relative = Path::new(path_part);
+    if relative.is_absolute() || !has_supported_pdf_image_extension(relative) {
+        return None;
+    }
+    let mut has_normal_component = false;
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => has_normal_component = true,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    has_normal_component.then(|| base_dir.join(relative))
+}
+
+fn has_uri_scheme(value: &str) -> bool {
+    let first_path_part = value
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let Some((scheme, _)) = first_path_part.split_once(':') else {
+        return false;
+    };
+    let mut bytes = scheme.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn has_supported_pdf_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "svg"))
+}
+
+fn parse_pdf_image_spec(
+    spec: &str,
+    destination_hints: &[&str],
+) -> std::result::Result<(String, PathBuf), String> {
+    let Some((dest, path)) = split_pdf_image_spec(spec, destination_hints) else {
         return Err(format!(
             "invalid --pdf-image {spec:?}; expected MARKDOWN_DEST=PATH, for example --pdf-image images/chart.png=./chart.png"
         ));
@@ -935,18 +1149,33 @@ fn parse_pdf_image_spec(spec: &str) -> std::result::Result<(String, PathBuf), St
     Ok((dest.to_string(), PathBuf::from(path)))
 }
 
-fn split_pdf_image_spec(spec: &str) -> Option<(&str, &str)> {
+fn split_pdf_image_spec<'a>(
+    spec: &'a str,
+    destination_hints: &[&str],
+) -> Option<(&'a str, &'a str)> {
+    let mut first_nonblank = None;
+    let mut first_existing_path = None;
     for (idx, _) in spec.match_indices('=') {
         let dest = &spec[..idx];
         let path = &spec[idx + 1..];
-        if dest.trim().is_empty() || path.trim().is_empty() {
-            continue;
-        }
-        if std::fs::metadata(path.trim()).is_ok() {
+        let dest = dest.trim();
+        let path = path.trim();
+        if destination_hints.iter().any(|hint| hint.trim() == dest) {
             return Some((dest, path));
         }
+        if dest.is_empty() || path.is_empty() {
+            continue;
+        }
+        if first_nonblank.is_none() {
+            first_nonblank = Some((dest, path));
+        }
+        if first_existing_path.is_none() && std::fs::metadata(path).is_ok() {
+            first_existing_path = Some((dest, path));
+        }
     }
-    spec.rsplit_once('=')
+    first_existing_path
+        .or(first_nonblank)
+        .or_else(|| spec.rsplit_once('='))
 }
 
 fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
@@ -1095,9 +1324,8 @@ fn fail_render(err: RenderError, json: bool) -> ExitCode {
 /// Print non-fatal PDF render warnings (degraded content that would otherwise be
 /// dropped silently) so they are never invisible. In `--json` mode each warning
 /// is its own JSONL object before the `wrote` envelope; otherwise a plain line.
-fn report_pdf_warnings(src: &str, opts: &PdfOptions, json: bool) {
-    let doc = parse_markdown(src);
-    for warning in render_warnings(&doc, opts) {
+fn report_pdf_warnings(doc: &Document, opts: &PdfOptions, json: bool) {
+    for warning in render_warnings(doc, opts) {
         if json {
             eprintln!(
                 "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
@@ -1149,7 +1377,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"pdf_image_assets\":\"available_png_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"publishable_unpublished\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"publishable_unpublished\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -1164,7 +1392,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  --pdf-image maps one Markdown image destination to a local file as DEST=PATH for PDF rendering; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG image assets via --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input PDF renders auto-load relative local PNG/SVG image destinations from the Markdown file's directory. Use --pdf-image to provide or override a Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG image assets via auto file-input loading or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
     )
 }
 

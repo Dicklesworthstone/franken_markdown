@@ -272,12 +272,20 @@ fn commit_staged(staged: Vec<StagedOutput>) -> Result<(), OutputWriteError> {
 }
 
 fn commit_one(item: &StagedOutput) -> io::Result<Option<PathBuf>> {
-    let backup_path = if item.final_path.exists() {
-        let backup = vacant_temp_path_for(&item.final_path, "bak")?;
-        std::fs::rename(&item.final_path, &backup)?;
-        Some(backup)
-    } else {
-        None
+    let backup_path = match std::fs::symlink_metadata(&item.final_path) {
+        Ok(meta) => {
+            if meta.file_type().is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "destination is a directory",
+                ));
+            }
+            let backup = vacant_temp_path_for(&item.final_path, "bak")?;
+            std::fs::rename(&item.final_path, &backup)?;
+            Some(backup)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
     };
 
     if let Err(err) = std::fs::rename(&item.temp_path, &item.final_path) {
@@ -307,7 +315,7 @@ fn cleanup_staged(staged: &[StagedOutput]) {
 fn vacant_temp_path_for(path: &Path, tag: &str) -> io::Result<PathBuf> {
     for _ in 0..128 {
         let candidate = temp_path_for(path, tag)?;
-        if !candidate.exists() {
+        if !path_entry_exists(&candidate)? {
             return Ok(candidate);
         }
     }
@@ -315,6 +323,14 @@ fn vacant_temp_path_for(path: &Path, tag: &str) -> io::Result<PathBuf> {
         io::ErrorKind::AlreadyExists,
         "could not allocate a temporary backup path",
     ))
+}
+
+fn path_entry_exists(path: &Path) -> io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 fn temp_path_for(path: &Path, tag: &str) -> io::Result<PathBuf> {
@@ -532,6 +548,73 @@ mod tests {
                 .to_string_lossy()
                 .contains(".fmd-tmp")),
             "duplicate preflight failure must not stage temp files"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_restores_broken_symlink_destination() {
+        let dir = fresh_dir("rollback-broken-symlink");
+        let target = dir.join("missing-target");
+        let final_path = dir.join("doc.html");
+        let temp_path = dir.join(".doc.html.fmd-tmp-test");
+        let failing_final = dir.join("later.html");
+        let missing_temp = dir.join(".later.html.fmd-tmp-missing");
+        std::os::unix::fs::symlink(&target, &final_path).unwrap();
+        std::fs::write(&temp_path, "new html").unwrap();
+
+        let err = commit_staged(vec![
+            StagedOutput {
+                temp_path: temp_path.clone(),
+                final_path: final_path.clone(),
+            },
+            StagedOutput {
+                temp_path: missing_temp,
+                final_path: failing_final,
+            },
+        ])
+        .expect_err("missing second temp should force rollback after first commit");
+
+        assert_eq!(err.path, dir.join("later.html"));
+        let restored = std::fs::symlink_metadata(&final_path)
+            .expect("rollback must restore the original broken symlink");
+        assert!(restored.file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&final_path).unwrap(), target);
+        assert!(!temp_path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_refuses_directory_that_appears_after_staging() {
+        let dir = fresh_dir("commit-directory-race");
+        let final_path = dir.join("doc.html");
+        let temp_path = dir.join(".doc.html.fmd-tmp-test");
+        std::fs::write(&temp_path, "new html").unwrap();
+        std::fs::create_dir_all(&final_path).unwrap();
+
+        let err = commit_staged(vec![StagedOutput {
+            temp_path: temp_path.clone(),
+            final_path: final_path.clone(),
+        }])
+        .expect_err("a directory destination that appears after preflight must fail");
+
+        assert_eq!(err.path, final_path);
+        assert_eq!(err.source.kind(), io::ErrorKind::AlreadyExists);
+        assert!(final_path.is_dir(), "the directory destination must remain");
+        assert!(
+            !temp_path.exists(),
+            "failed commit must clean the staged temp file"
+        );
+        assert!(
+            std::fs::read_dir(&dir).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".fmd-bak")),
+            "failed directory commit must not leave backup artifacts"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

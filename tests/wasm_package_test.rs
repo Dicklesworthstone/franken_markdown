@@ -93,9 +93,10 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(dts.contains("export interface FmdFontAsset"));
     assert!(dts.contains("export type FmdFontAssetSlot"));
     assert!(dts.contains("bytes: Uint8Array"));
+    assert!(dts.contains("PNG and SVG assets are supported in PDF output"));
     assert!(dts.contains("fontAssets?: FmdFontAsset[]"));
     assert!(dts.contains("pdfImages?: FmdPdfImageAsset[]"));
-    assert!(dts.contains("image_assets: \"png_v0_host_supplied_bytes\""));
+    assert!(dts.contains("image_assets: \"png_svg_v0_host_supplied_bytes\""));
     assert!(dts.contains("font_assets: \"ttf_v0_host_supplied_bytes\""));
     assert!(dts.contains("mimeType: string"));
     assert!(dts.contains("sourceLength: number"));
@@ -280,6 +281,6 @@ fn wasm_bindgen_adapter_round_trips_package_api_shape() {
     let caps = capabilities();
     assert!(caps.contains("\"schema\":\"fmd-wasm-capabilities-v1\""));
     assert!(caps.contains("\"filesystem\":false"));
-    assert!(caps.contains("\"image_assets\":\"png_v0_host_supplied_bytes\""));
+    assert!(caps.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""));
     assert!(caps.contains("\"font_assets\":\"ttf_v0_host_supplied_bytes\""));
 }

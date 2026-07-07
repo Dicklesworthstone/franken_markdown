@@ -12,7 +12,7 @@ export interface FmdDiagnostic {
 export interface FmdPdfImageAsset {
   /** Markdown image destination, for example `images/chart.png` from `![Chart](images/chart.png)`. */
   destination: string;
-  /** Browser-supplied image bytes. PNG is the first supported PDF image format. */
+  /** Browser-supplied image bytes. PNG and SVG assets are supported in PDF output. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
 }
 
@@ -71,7 +71,7 @@ export interface FmdCapabilities {
   pdf: {
     mime_type: "application/pdf";
     deterministic_metadata_epoch: boolean;
-    image_assets: "png_v0_host_supplied_bytes";
+    image_assets: "png_svg_v0_host_supplied_bytes";
     font_assets: "ttf_v0_host_supplied_bytes";
   };
   diagnostics: {

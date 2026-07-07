@@ -274,7 +274,7 @@ fn wasm_capabilities_json_exposes_browser_safe_contract() {
     assert!(json.contains("\"threads\":false"));
     assert!(json.contains("\"font\":\"sans\""));
     assert!(json.contains("\"custom_css_utf8\":true"));
-    assert!(json.contains("\"image_assets\":\"png_v0_host_supplied_bytes\""));
+    assert!(json.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""));
     assert!(json.contains("\"font_assets\":\"ttf_v0_host_supplied_bytes\""));
 }
 

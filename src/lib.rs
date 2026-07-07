@@ -62,8 +62,8 @@ pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{PdfProfile, PdfStageSummary, RenderWarning, render_warnings};
 pub use scanner::{
     ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
-    classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_pdf_escape,
-    scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
+    classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
+    find_pdf_escape, scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
 };
 pub use span::{
     DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,

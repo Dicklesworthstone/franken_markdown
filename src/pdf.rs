@@ -13962,15 +13962,7 @@ fn serialize(
         // so the first run (which equals `current_fill` and would otherwise skip
         // emitting `rg`) renders in the theme `fg`, not PDF-default black.
         let mut current_fill = Fill::Black;
-        {
-            let (r, g, b) = palette.fg;
-            body.push_str(&format!(
-                "{} {} {} rg\n",
-                pdf_fixed3(r),
-                pdf_fixed3(g),
-                pdf_fixed3(b)
-            ));
-        }
+        append_rgb_fill_operator(&mut body, palette.fg);
         // Per-page logical-row tracking for table cells: a new table fragment
         // (or a new logical row within it) is detected from the table flow group
         // and the per-row wrap index resetting to 0. The header is row 0.
@@ -14005,16 +13997,14 @@ fn serialize(
                 } else {
                     palette.rule
                 };
-                body.push_str(&format!(
-                    "/Artifact BMC\n{rr} {rg} {rb} RG 0.7 w \
-                     {x} {yy} m {x2} {yy} l S\nEMC\n",
-                    rr = pdf_fixed3(rr),
-                    rg = pdf_fixed3(rg),
-                    rb = pdf_fixed3(rb),
-                    x = pdf_fixed2(line.rule_x),
-                    yy = pdf_fixed2(y + line.size * 0.5),
-                    x2 = pdf_fixed2(x2),
-                ));
+                append_artifact_rule_stroke(
+                    &mut body,
+                    (rr, rg, rb),
+                    0.7,
+                    line.rule_x,
+                    y + line.size * 0.5,
+                    x2,
+                );
             } else if !line.table_cols.is_empty() {
                 // Table content line: emit one marked-content cell per seg so the
                 // structure tree can carry true `/TH`/`/TD` semantics. Track the
@@ -14119,14 +14109,14 @@ fn serialize(
                             &shaped_cache,
                         );
                     } else if let Some(idx) = image_index.get(image.image.key.as_str()) {
-                        let name = image_name(*idx);
-                        body.push_str(&format!(
-                            "q {w} 0 0 {h} {x} {y} cm /{name} Do Q\n",
-                            w = pdf_num(image.width_pt),
-                            h = pdf_num(image.height_pt),
-                            x = pdf_num(line.rule_x),
-                            y = pdf_num(y),
-                        ));
+                        append_image_xobject_do(
+                            &mut body,
+                            *idx,
+                            image.width_pt,
+                            image.height_pt,
+                            line.rule_x,
+                            y,
+                        );
                     }
                 }
                 for seg in &line.segs {
@@ -18642,18 +18632,8 @@ fn flush_quote_bars(
     acc: &mut BTreeMap<usize, (f32, f32, f32)>,
     bar: (f32, f32, f32),
 ) {
-    let (br, bg, bb) = bar;
     for (x, top, bot) in acc.values() {
-        content.push_str(&format!(
-            "{} {} {} RG 2.50 w {} {} m {} {} l S\n",
-            pdf_fixed3(br),
-            pdf_fixed3(bg),
-            pdf_fixed3(bb),
-            pdf_fixed2(*x),
-            pdf_fixed2(*top),
-            pdf_fixed2(*x),
-            pdf_fixed2(*bot),
-        ));
+        append_rgb_stroke_segment_operator(content, bar, 2.5, *x, *top, *x, *bot);
     }
     acc.clear();
 }
@@ -20150,7 +20130,7 @@ fn append_rgb_stroke_space_operator(out: &mut String, color: (f32, f32, f32)) {
     out.push_str(" RG ");
 }
 
-fn append_rgb_stroke_line_operator(
+fn append_artifact_rule_stroke(
     out: &mut String,
     color: (f32, f32, f32),
     width: f32,
@@ -20158,9 +20138,10 @@ fn append_rgb_stroke_line_operator(
     y: f32,
     x2: f32,
 ) {
+    out.push_str("/Artifact BMC\n");
     append_rgb_components_fixed3(out, color);
     out.push_str(" RG ");
-    append_pdf_fixed2(out, width);
+    append_pdf_num(out, width);
     out.push_str(" w ");
     append_pdf_fixed2(out, x1);
     out.push(' ');
@@ -20169,7 +20150,62 @@ fn append_rgb_stroke_line_operator(
     append_pdf_fixed2(out, x2);
     out.push(' ');
     append_pdf_fixed2(out, y);
+    out.push_str(" l S\nEMC\n");
+}
+
+fn append_image_xobject_do(
+    out: &mut String,
+    image_index: usize,
+    width: f32,
+    height: f32,
+    x: f32,
+    y: f32,
+) {
+    out.push_str("q ");
+    append_pdf_num(out, width);
+    out.push_str(" 0 0 ");
+    append_pdf_num(out, height);
+    out.push(' ');
+    append_pdf_num(out, x);
+    out.push(' ');
+    append_pdf_num(out, y);
+    out.push_str(" cm /Im");
+    append_decimal_usize_string(out, image_index + 1);
+    out.push_str(" Do Q\n");
+}
+
+fn append_rgb_stroke_segment_operator(
+    out: &mut String,
+    color: (f32, f32, f32),
+    width: f32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+) {
+    append_rgb_components_fixed3(out, color);
+    out.push_str(" RG ");
+    append_pdf_fixed2(out, width);
+    out.push_str(" w ");
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y1);
+    out.push_str(" m ");
+    append_pdf_fixed2(out, x2);
+    out.push(' ');
+    append_pdf_fixed2(out, y2);
     out.push_str(" l S\n");
+}
+
+fn append_rgb_stroke_line_operator(
+    out: &mut String,
+    color: (f32, f32, f32),
+    width: f32,
+    x1: f32,
+    y: f32,
+    x2: f32,
+) {
+    append_rgb_stroke_segment_operator(out, color, width, x1, y, x2, y);
 }
 
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
@@ -20398,16 +20434,17 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, SvgDashPattern, SvgLineCap, SvgLineJoin,
-        SvgShadow, SvgStyle, Tok, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
-        append_pdf_object_str, append_pdf_stream_dict, append_pdf_string_escaped,
+        SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3,
+        append_pdf_num, append_pdf_object_str, append_pdf_stream_dict, append_pdf_string_escaped,
         append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_space_operator, append_svg_shadow_prefix, append_svg_stroke_options,
-        append_svg_style, append_text_segment_operator, append_xref_in_use_row, append_xref_offset,
-        build_paragraph, build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of,
-        kerned_tj, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
-        rounded_rect_fill, shape_run,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
+        shape_run,
     };
     use std::borrow::Cow;
 
@@ -20757,6 +20794,19 @@ mod pdf_writer_tests {
         assert_eq!(
             out,
             "0.100 0.250 1.000 RG 0.66 w 12.50 700.25 m 42.00 700.25 l S\n"
+        );
+    }
+
+    #[test]
+    fn page_content_operator_writers_preserve_legacy_format_shape() {
+        let mut out = String::new();
+        append_artifact_rule_stroke(&mut out, (0.1, 0.25, 1.0), 0.7, 12.5, 700.25, 42.0);
+        append_image_xobject_do(&mut out, 12, 80.0, 60.5, 24.25, -3.0);
+        append_rgb_stroke_segment_operator(&mut out, (1.0, 0.5, 0.0), 2.5, 11.0, 22.25, 11.0, 5.5);
+
+        assert_eq!(
+            out,
+            "/Artifact BMC\n0.100 0.250 1.000 RG 0.7 w 12.50 700.25 m 42.00 700.25 l S\nEMC\nq 80 0 0 60.5 24.25 -3 cm /Im13 Do Q\n1.000 0.500 0.000 RG 2.50 w 11.00 22.25 m 11.00 5.50 l S\n"
         );
     }
 

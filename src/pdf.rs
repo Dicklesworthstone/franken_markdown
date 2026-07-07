@@ -1955,7 +1955,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         next_flow: 0,
         list_stack: Vec::new(),
         hyphen_cache: RefCell::new(HashMap::new()),
-        width_cache: RefCell::new(HashMap::new()),
+        width_cache: RefCell::new(WidthCache::default()),
         paragraph_scratch: ParagraphLayoutScratch::new(),
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
@@ -1971,7 +1971,60 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
 /// order), while never changing the hyphenation result.
 const HYPHEN_CACHE_MAX: usize = 16_384;
 const WIDTH_CACHE_MAX: usize = 32_768;
-type WidthCache = HashMap<(u8, u32), HashMap<String, LayoutUnit>>;
+
+#[derive(Default)]
+struct WidthCache {
+    entries: HashMap<(u8, u32), HashMap<String, LayoutUnit>>,
+    len: usize,
+}
+
+impl WidthCache {
+    fn get(&self, key: (u8, u32), text: &str) -> Option<LayoutUnit> {
+        self.entries
+            .get(&key)
+            .and_then(|slot_cache| slot_cache.get(text))
+            .copied()
+    }
+
+    fn insert_if_room(&mut self, key: (u8, u32), text: &str, width: LayoutUnit) {
+        if self.len >= WIDTH_CACHE_MAX {
+            return;
+        }
+
+        let previous = self
+            .entries
+            .entry(key)
+            .or_default()
+            .insert(text.to_string(), width);
+        if previous.is_none() {
+            self.len += 1;
+        }
+    }
+
+    #[cfg(test)]
+    fn entry_count(&self) -> usize {
+        self.len
+    }
+
+    #[cfg(test)]
+    fn slot_len(&self, key: (u8, u32)) -> Option<usize> {
+        self.entries.get(&key).map(HashMap::len)
+    }
+
+    #[cfg(test)]
+    fn contains(&self, key: (u8, u32), text: &str) -> bool {
+        self.entries
+            .get(&key)
+            .is_some_and(|slot_cache| slot_cache.contains_key(text))
+    }
+
+    #[cfg(test)]
+    fn contains_text(&self, text: &str) -> bool {
+        self.entries
+            .values()
+            .any(|slot_cache| slot_cache.contains_key(text))
+    }
+}
 
 /// One open list level during layout. The stack in [`LayoutCx`] lets
 /// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
@@ -12457,20 +12510,14 @@ fn cached_shaped_width(
     let key = (slot, fs.milli_points());
     {
         let cache = width_cache.borrow();
-        if let Some(width) = cache.get(&key).and_then(|slot_cache| slot_cache.get(text)) {
-            return *width;
+        if let Some(width) = cache.get(key, text) {
+            return width;
         }
     }
 
     let width = faces.shaped_width(slot, text, fs);
     let mut cache = width_cache.borrow_mut();
-    let cache_len: usize = cache.values().map(HashMap::len).sum();
-    if cache_len < WIDTH_CACHE_MAX {
-        cache
-            .entry(key)
-            .or_default()
-            .insert(text.to_string(), width);
-    }
+    cache.insert_if_room(key, text, width);
     width
 }
 
@@ -20862,23 +20909,23 @@ mod pdf_writer_tests {
         F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LinkTarget,
         PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
         Placed, SKid, Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow,
-        SvgStyle, SvgTransform, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
-        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_ref_list_string,
-        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_page_object,
-        append_pdf_stream_dict, append_pdf_string_escaped, append_rgb_fill_operator,
-        append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        SvgStyle, SvgTransform, Tok, WidthCache, append_artifact_rule_stroke,
+        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
+        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
+        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
+        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
+        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
         append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
         append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
         append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
         append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
         append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
-        finite_pdf_scalar, font_size_of, kerned_tj, measure_word, normalize_svg_text_node,
-        pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
-        svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        build_segs, cached_shaped_width, collect_svg_alpha_states, decode_xml_entities,
+        estimate_page_content_capacity, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens,
+        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
@@ -20998,7 +21045,7 @@ mod pdf_writer_tests {
             },
         ];
         let cache = std::cell::RefCell::new(std::collections::HashMap::new());
-        let width_cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
 
         let built = build_paragraph(
             &toks,
@@ -21030,7 +21077,7 @@ mod pdf_writer_tests {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let fs = font_size_of(11.0);
         let cache = std::cell::RefCell::new(std::collections::HashMap::new());
-        let width_cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
 
         let cases: Vec<(Vec<Tok>, ParagraphPolicy)> = vec![
             (Vec::new(), ParagraphPolicy::RAGGED),
@@ -21076,6 +21123,28 @@ mod pdf_writer_tests {
                 .any(|item| matches!(item, ParagraphItem::Box(_)));
             assert_eq!(built.has_boxes, scanned, "case {case_idx}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn width_cache_tracks_entry_count_and_reuses_widths() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
+        let fs = font_size_of(11.0);
+        let key = (F_BODY, fs.milli_points());
+
+        let first = cached_shaped_width(&faces, &width_cache, F_BODY, "repeat", fs);
+        let second = cached_shaped_width(&faces, &width_cache, F_BODY, "repeat", fs);
+        assert_eq!(first, second);
+        assert_eq!(width_cache.borrow().entry_count(), 1);
+
+        let _ = cached_shaped_width(&faces, &width_cache, F_BODY, "other", fs);
+        let _ = cached_shaped_width(&faces, &width_cache, F_BOLD, "repeat", fs);
+        let cache = width_cache.borrow();
+        assert_eq!(cache.entry_count(), 3);
+        assert_eq!(cache.slot_len(key), Some(2));
+        assert!(cache.contains(key, "repeat"));
+        assert!(cache.contains(key, "other"));
         Ok(())
     }
 
@@ -22898,7 +22967,7 @@ mod table_wrap_tests {
     }
 
     fn width_cache() -> std::cell::RefCell<super::WidthCache> {
-        std::cell::RefCell::new(std::collections::HashMap::new())
+        std::cell::RefCell::new(super::WidthCache::default())
     }
 
     fn test_page() -> PageGeom {
@@ -23070,15 +23139,13 @@ mod table_wrap_tests {
         assert_eq!(measured.max_content, uncached.max_content);
 
         let cache = shared_width_cache.borrow();
-        let cached_words: usize = cache.values().map(std::collections::HashMap::len).sum();
+        let cached_words = cache.entry_count();
         assert!(
             cached_words >= 3,
             "table measurement should cache repeated body/bold words and spaces, got {cached_words}"
         );
         assert!(
-            cache
-                .values()
-                .any(|slot_cache| slot_cache.contains_key("repeat")),
+            cache.contains_text("repeat"),
             "the repeated table body word should be present in the shared width cache"
         );
     }
@@ -23104,16 +23171,9 @@ mod table_wrap_tests {
         );
         assert_eq!(size, CODE_FONT_SIZE);
 
-        let entries_after_fit: usize = width_cache
-            .borrow()
-            .values()
-            .map(std::collections::HashMap::len)
-            .sum();
+        let entries_after_fit = width_cache.borrow().entry_count();
         assert!(
-            width_cache
-                .borrow()
-                .values()
-                .any(|slot_cache| slot_cache.contains_key(line)),
+            width_cache.borrow().contains_text(line),
             "the fitted code line should be present in the shared width cache"
         );
 
@@ -23135,11 +23195,7 @@ mod table_wrap_tests {
         );
         assert_eq!(rows.len(), 1);
 
-        let entries_after_wrap: usize = width_cache
-            .borrow()
-            .values()
-            .map(std::collections::HashMap::len)
-            .sum();
+        let entries_after_wrap = width_cache.borrow().entry_count();
         assert_eq!(
             entries_after_wrap, entries_after_fit,
             "code row construction should reuse the fitter's cached line width"
@@ -23197,16 +23253,13 @@ mod table_wrap_tests {
 
         let key = (F_BODY, super::font_size_of(11.0).milli_points());
         let cache = cx.width_cache.borrow();
-        let Some(slot_cache) = cache.get(&key) else {
-            panic!("list marker measurement should populate the body width cache");
-        };
         assert_eq!(
-            slot_cache.len(),
-            1,
+            cache.slot_len(key),
+            Some(1),
             "repeated unordered markers should share one cached shaped width"
         );
         assert!(
-            slot_cache.contains_key("•"),
+            cache.contains(key, "•"),
             "the unordered marker should be present in the shared width cache"
         );
     }
@@ -23239,12 +23292,9 @@ mod table_wrap_tests {
 
         let key = (F_BODY, super::font_size_of(11.0).milli_points());
         let cache = width_cache.borrow();
-        let Some(slot_cache) = cache.get(&key) else {
-            panic!("ordered list marker measurement should populate the body width cache");
-        };
         for marker in ["8.", "9.", "10."] {
             assert!(
-                slot_cache.contains_key(marker),
+                cache.contains(key, marker),
                 "ordered marker {marker} should be present in the shared width cache"
             );
         }

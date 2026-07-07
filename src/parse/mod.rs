@@ -1483,8 +1483,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     if chars.get(close + 1) != Some(&':') {
         return None;
     }
-    let raw_label: String = chars[1..close].iter().collect();
-    let label = normalize_reference_label(&raw_label)?;
+    let label = normalize_reference_label_chars(&chars[1..close])?;
     let mut i = close + 2;
     skip_spaces(&chars, &mut i);
     if i >= chars.len() {
@@ -3295,23 +3294,29 @@ fn parse_reference_link_like(
             if label_close - label_start > MAX_REFERENCE_LABEL_LEN {
                 return None;
             }
-            let raw_label: String = chars[label_start..label_close].iter().collect();
-            (normalize_reference_label(&raw_label)?, label_close + 1)
+            (
+                normalize_reference_label_chars(&chars[label_start..label_close])?,
+                label_close + 1,
+            )
         } else {
             // [text][]: collapsed — the label is the first bracket's text.
             if text_len > MAX_REFERENCE_LABEL_LEN {
                 return None;
             }
-            let text: String = chars[i + 1..close].iter().collect();
-            (normalize_reference_label(&text)?, label_close + 1)
+            (
+                normalize_reference_label_chars(&chars[i + 1..close])?,
+                label_close + 1,
+            )
         }
     } else {
         // [text]: shortcut — the label is the first bracket's text.
         if text_len > MAX_REFERENCE_LABEL_LEN {
             return None;
         }
-        let text: String = chars[i + 1..close].iter().collect();
-        (normalize_reference_label(&text)?, close + 1)
+        (
+            normalize_reference_label_chars(&chars[i + 1..close])?,
+            close + 1,
+        )
     };
 
     let reference = refs.get(&label)?;
@@ -3706,10 +3711,19 @@ fn compute_bracket_pairs(chars: &[char]) -> Vec<Option<usize>> {
     pairs
 }
 
-fn normalize_reference_label(label: &str) -> Option<String> {
-    let mut out = String::new();
+fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
+    let mut start = 0usize;
+    while start < label.len() && label[start].is_whitespace() {
+        start += 1;
+    }
+    let mut end = label.len();
+    while end > start && label[end - 1].is_whitespace() {
+        end -= 1;
+    }
+
+    let mut out = String::with_capacity(end.saturating_sub(start));
     let mut pending_space = false;
-    for ch in label.trim().chars() {
+    for &ch in &label[start..end] {
         if ch.is_whitespace() {
             pending_space = true;
             continue;
@@ -4629,11 +4643,15 @@ mod fenced_indent_tests {
 
 #[cfg(test)]
 mod bracket_tests {
-    use super::compute_bracket_pairs;
+    use super::{compute_bracket_pairs, normalize_reference_label_chars};
     use crate::{HtmlOptions, render_html};
 
     fn pairs(s: &str) -> Vec<Option<usize>> {
         compute_bracket_pairs(&s.chars().collect::<Vec<char>>())
+    }
+
+    fn normalized_label(s: &str) -> Option<String> {
+        normalize_reference_label_chars(&s.chars().collect::<Vec<char>>())
     }
 
     #[test]
@@ -4660,6 +4678,26 @@ mod bracket_tests {
             let html = render_html(src, &opts).unwrap_or_default();
             assert!(html.contains("href=\"/u\""), "did not resolve: {src:?}");
         }
+    }
+
+    #[test]
+    fn reference_label_normalization_trims_folds_and_collapses_whitespace() {
+        assert_eq!(
+            normalized_label("  Mixed\tCASE  Label  "),
+            Some(String::from("mixed case label"))
+        );
+        assert_eq!(normalized_label(" \t "), None);
+
+        let opts = HtmlOptions::default();
+        let html = render_html(
+            "[text][ Mixed\tCASE  Label ]\n\n[mixed case label]: /u",
+            &opts,
+        )
+        .unwrap_or_default();
+        assert!(
+            html.contains("href=\"/u\""),
+            "full reference labels must keep normalized lookup semantics: {html}"
+        );
     }
 
     #[test]

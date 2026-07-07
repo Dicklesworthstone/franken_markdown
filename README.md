@@ -13,6 +13,11 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 ![Core](https://img.shields.io/badge/core-clean--room%20std--only-success)
 ![WASM](https://img.shields.io/badge/WASM-first--class-654ff0)
 
+```bash
+cargo install franken_markdown
+# or: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
+```
+
 </div>
 
 > **The HTML, PDF, CLI, and WASM paths work today.** Markdown renders to
@@ -26,15 +31,14 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 > capable enough to draw frankenmermaid diagrams as vector content. The
 > browser/WASM package builds a real wasm-bindgen module that loads in node and
 > the browser and renders HTML and PDF with byte-identical parity to the native
-> core; it is publish-ready, with a validated manifest and tag-gated npm release
-> workflow, proven by `scripts/check-wasm-package.sh`.
+> core. The package manifest, browser demo, TypeScript API, and tag-gated npm
+> release workflow are validated by `scripts/check-wasm-package.sh`.
 >
-> Version `0.2.0`. Prebuilt `fmd` binaries for Linux, macOS Intel, macOS Apple
-> Silicon, and Windows are produced by the tag-gated
-> `.github/workflows/release.yml`, with checksums and per-platform smoke tests.
-> Source builds remain available as a fallback under
-> [Installation](#installation). Deeper pagination controls remain active
-> roadmap work tracked in beads.
+> Version `0.2.0` is published on crates.io. The `v0.2.0` GitHub release also
+> ships prebuilt `fmd` binaries for Linux, macOS Intel, macOS Apple Silicon, and
+> Windows, with checksums and per-platform smoke tests. Source builds remain
+> available under [Installation](#installation). Deeper pagination controls
+> remain active roadmap work tracked in beads.
 
 ---
 
@@ -67,9 +71,9 @@ output.
 | WASM-first | The core has no filesystem, fontconfig, process, thread, or async-runtime assumptions; fonts arrive as bytes |
 | Agent-friendly CLI | `fmd README.md` just works; `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, and stable exit codes expose a machine contract |
 | Profile-driven performance | The hot paths are scalar, cache-friendly, allocation-conscious, and verified by golden output checks before each optimization lands |
-| Cross-platform | Windows, macOS, Linux, and browser/WASM are all product targets |
+| Cross-platform releases | crates.io plus smoke-tested release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
 
-### Recent Feature Snapshot
+### Current Feature Map
 
 | Surface | Current state |
 |---|---|
@@ -78,6 +82,7 @@ output.
 | Code blocks | Clean-room syntax highlighting is shared by HTML and PDF. PDF fenced blocks can also include muted line numbers |
 | Diagrams | Local PNG and SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer |
 | Mermaid workflow | The showcase includes Mermaid source plus a frankenmermaid-generated SVG asset, so the same diagram can render in HTML and PDF without a JavaScript runtime |
+| Library API | `parse_markdown`, `render_html_document`, and `render_pdf_document` share one AST; hosts can provide font bytes and image assets without filesystem access in the core |
 | CLI safety | Input and PDF image byte limits fail early with stable exit codes; JSON status, `doctor`, `capabilities`, and `robot-docs` expose the same contract to humans and agents |
 | Batch rendering | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package exposes typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, and native-parity tests |
@@ -87,38 +92,38 @@ output.
 ## Quick Example
 
 ```bash
-# Build the fmd binary from source
-cargo build --release --bin fmd
+# Install the released CLI
+cargo install franken_markdown
 
 # Render a Markdown file to self-contained HTML
-target/release/fmd examples/showcase.md --out showcase.html
+fmd examples/showcase.md --out showcase.html
 
 # Render from stdin, or from a raw string, with no temp file
-target/release/fmd - --out stdin.html < examples/showcase.md
-target/release/fmd --text '# Hello from fmd' --out hello.html
-target/release/fmd --text '# Hello from fmd' --out - > piped.html
+fmd - --out stdin.html < examples/showcase.md
+fmd --text '# Hello from fmd' --out hello.html
+fmd --text '# Hello from fmd' --out - > piped.html
 
 # Use the long-form serif theme instead of the default sans
-target/release/fmd examples/showcase.md --font serif --out showcase-serif.html
+fmd examples/showcase.md --font serif --out showcase-serif.html
 
 # Render a compact, deterministic PDF with embedded subset fonts
-target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
-target/release/fmd examples/showcase.md --to pdf --title "Showcase" --author "FMD" --out showcase.pdf
+fmd examples/showcase.md --to pdf --out showcase.pdf
+fmd examples/showcase.md --to pdf --title "Showcase" --author "FMD" --out showcase.pdf
 
 # Render HTML and PDF together (extensions derived from --out)
-target/release/fmd examples/showcase.md --to both --out showcase.html
+fmd examples/showcase.md --to both --out showcase.html
 
 # Render a document with a sibling SVG diagram; file-input PDF auto-loads it
-target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
+fmd examples/showcase.md --to pdf --out showcase.pdf
 
 # Reproducible PDF metadata dates
-SOURCE_DATE_EPOCH=1700000000 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
+SOURCE_DATE_EPOCH=1700000000 fmd examples/showcase.md --to pdf --out showcase.pdf
 
 # Discover the machine-readable contract (for humans and agents alike)
-target/release/fmd capabilities --json
-target/release/fmd doctor --json
-target/release/fmd robot-docs guide
-target/release/fmd --robot-triage
+fmd capabilities --json
+fmd doctor --json
+fmd robot-docs guide
+fmd --robot-triage
 ```
 
 The PDF path is honest about its stage. It produces valid, deterministic PDFs
@@ -146,6 +151,7 @@ roadmap.
 | Images and diagrams | Host-supplied PNG/SVG assets through the library, `--pdf-image`, or native CLI auto-loading for relative local file-input destinations |
 | SVG renderer | Dependency-free SVG subset for PDF: paths, lines, polygons, text, transforms, gradients, patterns, masks, clips, markers, opacity, CSS variables/selectors, and embedded PNG data URIs |
 | Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a frankenmermaid-generated SVG asset so HTML and PDF can carry the same diagram |
+| Release artifacts | Published crate plus release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through smoke tests and checksums |
 | WASM | Browser and node package with TypeScript types, host-supplied fonts/assets, and native-parity HTML/PDF rendering over the same core |
 | Batch rendering | Optional native `batch` feature backed by Asupersync, with bounded workers, cancellation, receipts, and deterministic output order |
 
@@ -202,7 +208,9 @@ paths instead of broad rewrites:
 
 The shipped optimization today is architecture-aware packaging plus carefully
 measured scalar Rust. That is intentional: the scalar path is the correctness
-oracle for native, WASM, Apple Silicon, and Intel/AMD builds.
+oracle for native, WASM, Apple Silicon, and Intel/AMD builds. Release binaries
+do not depend on `target-cpu=native`, so the distributed artifacts stay usable
+across normal machines instead of inheriting accidental build-host assumptions.
 
 | Target family | What fmd does now | Why it matters |
 |---|---|---|
@@ -232,6 +240,20 @@ These choices map well to Apple M-series memory systems and modern Intel/AMD
 cache hierarchies because they favor contiguous buffers, predictable branches,
 local caches, and append-style writers. They also keep the implementation
 portable and auditable.
+
+The architecture-specific plan is explicit:
+
+- **Apple Silicon:** native `aarch64-apple-darwin` release assets run on the
+  target architecture before publication. Future NEON work is limited to a
+  narrow scanner island, with scalar tails and same-host Apple Silicon proof
+  required before any Apple-specific speed claim.
+- **Intel/AMD x86_64:** release binaries stay portable by default. Future AVX2
+  work must use runtime CPU detection and scalar fallback; AVX-512 is excluded
+  from the default path unless separate hardware evidence shows it helps without
+  downclock or fleet-compatibility costs.
+- **WASM:** the browser build keeps the scalar core as the default. Any future
+  `simd128` acceleration must be feature-gated and proven against native/WASM
+  golden outputs.
 
 SIMD is planned but deliberately not claimed as shipped. [`docs/SIMD_ISLAND_DESIGN.md`](docs/SIMD_ISLAND_DESIGN.md)
 defines the only approved future island for AArch64 NEON, x86_64 AVX2, and
@@ -320,19 +342,20 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and npm
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds,
-smoke-tests, and attaches a `fmd` archive per platform: Linux
-(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`) and Apple
-Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`). Each
-archive includes a `.sha256` and a combined `SHA256SUMS`. Download the archive for your
-platform and verify it before unpacking (Linux example):
+The `v0.2.0` release includes a `fmd` archive per platform: Linux
+(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
+Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`). The
+tag-gated `.github/workflows/release.yml` builds, smoke-tests, and attaches
+these archives. Each archive includes a `.sha256` sidecar and the release also
+includes a combined `SHA256SUMS`. Download the archive for your platform and
+verify it before unpacking (Linux example):
 
 ```bash
 sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
 tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-The browser/WASM build publishes separately to npm as
+The browser/WASM build is packaged separately as
 `@franken-suite/franken-markdown` via `.github/workflows/release-wasm.yml`.
 
 ---

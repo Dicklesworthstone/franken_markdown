@@ -96,6 +96,7 @@ const F_ITALIC: u8 = 3;
 const F_MONO: u8 = 4;
 const F_BOLDITALIC: u8 = 5;
 const SLOTS: [u8; 5] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC];
+const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.
 struct Seg {
@@ -13796,7 +13797,7 @@ fn serialize(
     // Subset each used face to the characters it renders, and keep the parsed
     // subset (its cmap gives the new glyph ids we encode in the content stream).
     let mut subsets: Vec<EmbeddedFace> = Vec::with_capacity(used_slots.len());
-    let mut shaped_cache: ShapedRunCache = BTreeMap::new();
+    let mut shaped_cache: ShapedRunCache = std::array::from_fn(|_| BTreeMap::new());
     let mut shape_cache_hits = 0usize;
     let mut shape_cache_hit_bytes = 0usize;
     let mut shape_cache_misses = 0usize;
@@ -13815,11 +13816,11 @@ fn serialize(
             continue;
         };
         let slot_refs = &slot_texts[slot_idx];
+        let slot_cache = &mut shaped_cache[slot_idx];
         for seg in &slot_refs.segs {
             segment_count += 1;
             text_bytes += seg.text.len();
             chars.extend(seg.text.chars());
-            let slot_cache = shaped_cache.entry(slot).or_default();
             if let Some(shaped) = slot_cache.get(seg.text.as_str()) {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += seg.text.len();
@@ -13836,7 +13837,6 @@ fn serialize(
             segment_count += 1;
             text_bytes += text.text.len();
             chars.extend(text.text.chars());
-            let slot_cache = shaped_cache.entry(slot).or_default();
             if let Some(shaped) = slot_cache.get(text.text.as_str()) {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += text.text.len();
@@ -17976,15 +17976,15 @@ fn draw_svg_text(
         return;
     }
     let slot = text.slot;
+    let Some(slot_idx) = pdf_font_slot_index(slot) else {
+        return;
+    };
     let Some(face) = subset_lookup.get(subsets, slot) else {
         return;
     };
     let source = faces.get(slot);
     let fallback;
-    let shaped = match shaped_cache
-        .get(&slot)
-        .and_then(|slot_cache| slot_cache.get(text.text.as_str()))
-    {
+    let shaped = match shaped_cache[slot_idx].get(text.text.as_str()) {
         Some(run) => run.glyphs.as_slice(),
         None => {
             fallback = shape_run(source, &face.lig, &text.text);
@@ -18350,15 +18350,15 @@ fn draw_seg(
     if seg.text.is_empty() {
         return;
     }
+    let Some(slot_idx) = pdf_font_slot_index(seg.slot) else {
+        return;
+    };
     let Some(face) = subset_lookup.get(subsets, seg.slot) else {
         return;
     };
     let source = faces.get(seg.slot);
     let fallback;
-    let shaped = match shaped_cache
-        .get(&seg.slot)
-        .and_then(|slot_cache| slot_cache.get(seg.text.as_str()))
-    {
+    let shaped = match shaped_cache[slot_idx].get(seg.text.as_str()) {
         Some(run) => run.glyphs.as_slice(),
         None => {
             fallback = shape_run(source, &face.lig, &seg.text);
@@ -19119,7 +19119,7 @@ struct ShapedRun {
     ligatures: Vec<(u16, String)>,
 }
 
-type ShapedRunCache = BTreeMap<u8, BTreeMap<String, ShapedRun>>;
+type ShapedRunCache = [BTreeMap<String, ShapedRun>; PDF_FONT_SLOT_COUNT];
 
 struct PdfStream<'a> {
     bytes: Cow<'a, [u8]>,

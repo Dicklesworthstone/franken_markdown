@@ -13900,10 +13900,11 @@ fn serialize(
     let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len());
     let mut page_buffer_reserved_bytes = 0usize;
     for (page_idx, placed) in pages_placed.iter().enumerate() {
-        let bg_capacity = estimated_background_capacity(placed);
-        let body_capacity = estimated_body_capacity(placed);
-        let annot_capacity = estimated_link_annotation_count(placed);
-        let mark_capacity = estimated_mark_count(placed);
+        let capacity = estimate_page_content_capacity(placed);
+        let bg_capacity = capacity.background_bytes;
+        let body_capacity = capacity.body_bytes;
+        let annot_capacity = capacity.link_annotations;
+        let mark_capacity = capacity.marks;
         page_buffer_reserved_bytes = page_buffer_reserved_bytes
             .saturating_add(bg_capacity)
             .saturating_add(body_capacity)
@@ -14558,44 +14559,54 @@ mod struct_tree_tests {
     }
 }
 
-fn estimated_background_capacity(placed: &[Placed<'_>]) -> usize {
-    let quote_bars = placed
-        .iter()
-        .map(|placed| placed.line.quote_bars.len())
-        .sum::<usize>();
-    let shaded_lines = placed.iter().filter(|placed| placed.line.shade).count();
-    let panel_lines = placed.iter().filter(|placed| placed.line.bg != 0).count();
-    let mono_chips = placed
-        .iter()
-        .flat_map(|placed| placed.line.segs.iter())
-        .filter(|seg| seg.slot == F_MONO && !seg.text.trim().is_empty())
-        .count();
-
-    quote_bars
-        .saturating_mul(160)
-        .saturating_add(shaded_lines.saturating_mul(160))
-        .saturating_add(panel_lines.saturating_mul(48))
-        .saturating_add(mono_chips.saturating_mul(160))
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PageContentCapacityEstimate {
+    background_bytes: usize,
+    body_bytes: usize,
+    link_annotations: usize,
+    marks: usize,
 }
 
-fn estimated_body_capacity(placed: &[Placed<'_>]) -> usize {
+fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityEstimate {
+    let mut quote_bars = 0usize;
+    let mut shaded_lines = 0usize;
+    let mut panel_lines = 0usize;
+    let mut mono_chips = 0usize;
     let mut text_bytes = 0usize;
     let mut segments = 0usize;
     let mut struck = 0usize;
     let mut linked = 0usize;
     let mut images = 0usize;
     let mut rules = 0usize;
+    let mut link_annotations = 0usize;
+    let mut marks = 0usize;
     for placed in placed {
-        if placed.line.rule {
+        let line = placed.line;
+        quote_bars = quote_bars.saturating_add(line.quote_bars.len());
+        if line.shade {
+            shaded_lines += 1;
+        }
+        if line.bg != 0 {
+            panel_lines += 1;
+        }
+        if line.rule {
             rules += 1;
         }
-        if placed.line.image.is_some() {
+        if line.image.is_some() {
             images += 1;
         }
-        for seg in &placed.line.segs {
+        let mut visible = line.image.is_some();
+        for seg in &line.segs {
+            if seg.slot == F_MONO && !seg.text.trim().is_empty() {
+                mono_chips += 1;
+            }
+            if seg.link.is_some() && seg.width > 0.0 {
+                link_annotations += 1;
+            }
             if seg.text.is_empty() {
                 continue;
             }
+            visible = true;
             segments += 1;
             text_bytes = text_bytes.saturating_add(seg.text.len());
             if seg.strike {
@@ -14605,32 +14616,29 @@ fn estimated_body_capacity(placed: &[Placed<'_>]) -> usize {
                 linked += 1;
             }
         }
+        if visible {
+            marks += 1;
+        }
     }
 
-    placed
-        .len()
-        .saturating_mul(48)
-        .saturating_add(segments.saturating_mul(96))
-        .saturating_add(text_bytes.saturating_mul(6))
-        .saturating_add(struck.saturating_mul(96))
-        .saturating_add(linked.saturating_mul(160))
-        .saturating_add(images.saturating_mul(96))
-        .saturating_add(rules.saturating_mul(96))
-}
-
-fn estimated_link_annotation_count(placed: &[Placed<'_>]) -> usize {
-    placed
-        .iter()
-        .flat_map(|placed| placed.line.segs.iter())
-        .filter(|seg| seg.link.is_some() && seg.width > 0.0)
-        .count()
-}
-
-fn estimated_mark_count(placed: &[Placed<'_>]) -> usize {
-    placed
-        .iter()
-        .filter(|placed| line_has_visible_content(placed.line))
-        .count()
+    PageContentCapacityEstimate {
+        background_bytes: quote_bars
+            .saturating_mul(160)
+            .saturating_add(shaded_lines.saturating_mul(160))
+            .saturating_add(panel_lines.saturating_mul(48))
+            .saturating_add(mono_chips.saturating_mul(160)),
+        body_bytes: placed
+            .len()
+            .saturating_mul(48)
+            .saturating_add(segments.saturating_mul(96))
+            .saturating_add(text_bytes.saturating_mul(6))
+            .saturating_add(struck.saturating_mul(96))
+            .saturating_add(linked.saturating_mul(160))
+            .saturating_add(images.saturating_mul(96))
+            .saturating_add(rules.saturating_mul(96)),
+        link_annotations,
+        marks,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -20688,9 +20696,10 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream, SKid,
-        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle,
-        SvgTransform, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
+        F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LinkTarget,
+        PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
+        Placed, SKid, Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow,
+        SvgStyle, SvgTransform, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
         append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_ref_list_string,
@@ -20702,9 +20711,9 @@ mod pdf_writer_tests {
         append_svg_line_stroke_outline, append_svg_path_ops, append_svg_shadow_prefix,
         append_svg_stroke_options, append_svg_style, append_text_segment_operator,
         append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
-        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
-        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens,
-        rounded_rect_fill, shape_run, token_visible_text, tokenize,
+        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar, font_size_of,
+        kerned_tj, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
+        push_text_tokens, rounded_rect_fill, shape_run, token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
@@ -20902,6 +20911,99 @@ mod pdf_writer_tests {
             assert_eq!(built.has_boxes, scanned, "case {case_idx}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn page_content_capacity_estimate_combines_legacy_counts() {
+        fn seg(slot: u8, text: &str, link: Option<LinkTarget>, strike: bool, width: f32) -> Seg {
+            Seg {
+                x: 0.0,
+                slot,
+                text: text.to_string(),
+                link,
+                fill: Fill::Black,
+                strike,
+                width,
+            }
+        }
+
+        fn line(
+            quote_bars: Vec<(usize, f32)>,
+            bg: u32,
+            shade: bool,
+            rule: bool,
+            segs: Vec<Seg>,
+        ) -> Line {
+            Line {
+                size: 12.0,
+                gap_after: 0.0,
+                rule,
+                rule_x: 72.0,
+                quote_bars,
+                bg,
+                shade,
+                flow: FlowMark::default(),
+                list_path: Vec::new(),
+                table_cols: Vec::new(),
+                segs,
+                image: None,
+            }
+        }
+
+        let lines = [
+            line(
+                vec![(1, 80.0), (2, 96.0)],
+                7,
+                true,
+                true,
+                vec![
+                    seg(F_MONO, "code", None, false, 20.0),
+                    seg(
+                        F_BODY,
+                        "link",
+                        Some(LinkTarget::Uri("https://example.com".to_string())),
+                        true,
+                        15.0,
+                    ),
+                ],
+            ),
+            line(
+                Vec::new(),
+                0,
+                false,
+                false,
+                vec![
+                    seg(F_MONO, "   ", None, false, 9.0),
+                    seg(
+                        F_BODY,
+                        "",
+                        Some(LinkTarget::Uri("https://example.org".to_string())),
+                        false,
+                        5.0,
+                    ),
+                ],
+            ),
+        ];
+        let placed = [
+            Placed {
+                line: &lines[0],
+                y: 700.0,
+            },
+            Placed {
+                line: &lines[1],
+                y: 680.0,
+            },
+        ];
+
+        assert_eq!(
+            estimate_page_content_capacity(&placed),
+            PageContentCapacityEstimate {
+                background_bytes: 688,
+                body_bytes: 802,
+                link_annotations: 2,
+                marks: 2,
+            }
+        );
     }
 
     #[test]

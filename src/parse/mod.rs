@@ -865,11 +865,12 @@ fn line_is_plain_paragraph_fast_path(line: &str, scan: ParserLineScan) -> bool {
 /// Collect link reference definitions nested inside blockquotes and merge them
 /// into `refs` (existing keys win, matching CommonMark "first definition wins").
 /// The blockquote body is extracted exactly as the block parser extracts it
-/// (`strip_blockquote` + lazy continuation) so the two agree on scope, and the
-/// definition is collected paragraph-aware just like the top level. Fenced code
-/// is skipped so a `[label]: dest`-looking code line is never treated as a
-/// definition. Bounded by [`MAX_BLOCK_NESTING_DEPTH`] against adversarial
-/// nesting. (List-item bodies are a separate, deliberately-scoped follow-up.)
+/// (`strip_blockquote_marker` + lazy continuation) so the two agree on scope,
+/// and the definition is collected paragraph-aware just like the top level.
+/// Fenced code is skipped so a `[label]: dest`-looking code line is never
+/// treated as a definition. Bounded by [`MAX_BLOCK_NESTING_DEPTH`] against
+/// adversarial nesting. (List-item bodies are a separate, deliberately-scoped
+/// follow-up.)
 fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usize) {
     if depth >= MAX_BLOCK_NESTING_DEPTH {
         return;
@@ -1247,34 +1248,35 @@ fn parse_blocks_with_refs_profiled(
             let mut inner = Vec::new();
             while i < lines.len() {
                 if lines[i].trim_start().starts_with('>') {
-                    inner.push(strip_blockquote(lines[i]));
+                    inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
-                } else if blockquote_lazy_continuation(inner.last().map(String::as_str), lines[i]) {
+                } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
                     // CommonMark lazy continuation: a non-blank, non-`>` line that
                     // does not start a new block continues the blockquote's open
                     // paragraph instead of ending the quote.
-                    inner.push(lines[i].trim_start().to_string());
+                    inner.push(lines[i].trim_start());
                     i += 1;
                 } else {
                     break;
                 }
             }
-            let inner_refs: Vec<&str> = inner.iter().map(String::as_str).collect();
+            let inner_line_count = inner.len();
+            let inner_bytes = inner.iter().map(|line| line.len()).sum();
             // Remove reference-definition lines from the blockquote body so they
             // are not rendered as literal text; they were already collected into
             // the shared `refs` map by `collect_nested_references`.
-            let inner_kept = if inner_refs.iter().any(|line| line.contains("]:")) {
-                let (consumed, _) = collect_link_reference_metadata(&inner_refs);
-                strip_consumed_references(&inner_refs, &consumed)
+            let inner_kept = if inner.iter().any(|line| line.contains("]:")) {
+                let (consumed, _) = collect_link_reference_metadata(&inner);
+                strip_consumed_references(&inner, &consumed)
             } else {
-                inner_refs
+                inner
             };
             let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
-                inner.len(),
-                inner.iter().map(String::len).sum(),
-                inner.len() + inner_blocks.len(),
+                inner_line_count,
+                inner_bytes,
+                inner_line_count + inner_blocks.len(),
                 "parse one blockquote and recursively parse its inner blocks",
                 started,
             );
@@ -1700,16 +1702,11 @@ fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
 }
 
 /// The content of a `>`-quoted line with the marker and one optional following
-/// space removed, borrowed from the input (no allocation). `strip_blockquote`
-/// is the owning form used where a `String` must be retained.
+/// space removed, borrowed from the input (no allocation).
 fn strip_blockquote_marker(line: &str) -> &str {
     let t = line.trim_start();
     let rest = t.strip_prefix('>').unwrap_or(t);
     rest.strip_prefix(' ').unwrap_or(rest)
-}
-
-fn strip_blockquote(line: &str) -> String {
-    strip_blockquote_marker(line).to_string()
 }
 
 /// True when `line` lazily continues an open paragraph inside a block quote.

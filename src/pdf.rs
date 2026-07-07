@@ -13933,7 +13933,11 @@ fn serialize(
 
         // (a) Blockquote backgrounds: subtle page-local panels behind quoted
         // content, using the same extents as the gutter bars.
-        let mut quote_acc = quote_extents(placed);
+        let mut quote_acc = if capacity.quote_bars == 0 {
+            BTreeMap::new()
+        } else {
+            quote_extents(placed)
+        };
         for (bar_x, top_y, bot_y) in quote_acc.values() {
             append_rounded_rect_fill(
                 &mut bg,
@@ -14580,6 +14584,7 @@ mod struct_tree_tests {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PageContentCapacityEstimate {
+    quote_bars: usize,
     background_bytes: usize,
     body_bytes: usize,
     link_annotations: usize,
@@ -14641,6 +14646,7 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
     }
 
     PageContentCapacityEstimate {
+        quote_bars,
         background_bytes: quote_bars
             .saturating_mul(160)
             .saturating_add(shaded_lines.saturating_mul(160))
@@ -21158,11 +21164,28 @@ mod pdf_writer_tests {
         assert_eq!(
             estimate_page_content_capacity(&placed),
             PageContentCapacityEstimate {
+                quote_bars: 2,
                 background_bytes: 688,
                 body_bytes: 802,
                 link_annotations: 2,
                 marks: 2,
             }
+        );
+
+        let no_quote_lines = [line(
+            Vec::new(),
+            0,
+            false,
+            false,
+            vec![seg(F_BODY, "plain", None, false, 20.0)],
+        )];
+        let no_quote_placed = [Placed {
+            line: &no_quote_lines[0],
+            y: 700.0,
+        }];
+        assert_eq!(
+            estimate_page_content_capacity(&no_quote_placed).quote_bars,
+            0
         );
     }
 

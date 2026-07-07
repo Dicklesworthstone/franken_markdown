@@ -2408,6 +2408,7 @@ fn parse_inlines_chars_with_refs_profiled(
     // they should not pay for the bracket-pair vector; once a bracket candidate
     // exists, all link/reference attempts share the same linear precompute.
     let mut bracket_pairs: Option<Vec<Option<usize>>> = None;
+    let maybe_bare_email = bytes.contains(&'@');
     let mut buf = String::new();
     let mut i = 0;
     let flush = |buf: &mut String, els: &mut Vec<InlineEl>| {
@@ -2583,9 +2584,17 @@ fn parse_inlines_chars_with_refs_profiled(
                 i += n;
             }
             _ => {
-                if let Some((label, dest, next)) = parse_bare_url_autolink(&bytes, i)
-                    .or_else(|| parse_bare_email_autolink(&bytes, i))
+                let mut bare_autolink = None;
+                if inline_chars_maybe_bare_url_start(&bytes, i) {
+                    bare_autolink = parse_bare_url_autolink(&bytes, i);
+                }
+                if bare_autolink.is_none()
+                    && maybe_bare_email
+                    && inline_char_maybe_bare_email_start(c)
                 {
+                    bare_autolink = parse_bare_email_autolink(&bytes, i);
+                }
+                if let Some((label, dest, next)) = bare_autolink {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -2611,6 +2620,18 @@ fn parse_inlines_chars_with_refs_profiled(
         started,
     );
     out
+}
+
+fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {
+    matches!(
+        chars.get(idx),
+        Some('h') if starts_with_chars(chars, idx, "http://")
+            || starts_with_chars(chars, idx, "https://")
+    ) || matches!(chars.get(idx), Some('w') if starts_with_chars(chars, idx, "www."))
+}
+
+const fn inline_char_maybe_bare_email_start(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '+')
 }
 
 /// One element of the flat inline token list built before emphasis resolution.
@@ -3791,6 +3812,32 @@ fn strip_n(line: &str, n: usize) -> &str {
 
 fn is_ascii_punct(c: char) -> bool {
     c.is_ascii_punctuation()
+}
+
+#[cfg(test)]
+mod inline_autolink_candidate_tests {
+    use super::{inline_char_maybe_bare_email_start, inline_chars_maybe_bare_url_start};
+
+    fn maybe_bare_url_start(text: &str, idx: usize) -> bool {
+        let chars = text.chars().collect::<Vec<_>>();
+        inline_chars_maybe_bare_url_start(&chars, idx)
+    }
+
+    #[test]
+    fn bare_autolink_candidate_gate_matches_supported_bare_forms() {
+        assert!(maybe_bare_url_start("See http://example.test", 4));
+        assert!(maybe_bare_url_start("See https://example.test", 4));
+        assert!(maybe_bare_url_start("See www.example.test", 4));
+        assert!(!maybe_bare_url_start("ship shape and whole words", 1));
+        assert!(!maybe_bare_url_start("Email user@example.test", 0));
+
+        for ch in ['a', 'Z', '0', '.', '-', '_', '+'] {
+            assert!(inline_char_maybe_bare_email_start(ch));
+        }
+        for ch in ['@', '*', '`', ' '] {
+            assert!(!inline_char_maybe_bare_email_start(ch));
+        }
+    }
 }
 
 #[cfg(test)]

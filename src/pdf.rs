@@ -12133,27 +12133,34 @@ fn layout_table(
     gap(out, 8.0);
 }
 
-fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
-    let markers: Vec<String> = list
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| match item.task {
+struct ListMarkerLayout {
+    text: String,
+    width: f32,
+}
+
+fn list_marker_layouts(
+    list: &List,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> (Vec<ListMarkerLayout>, f32) {
+    let mut layouts = Vec::with_capacity(list.items.len());
+    let mut marker_col = 8.0f32;
+    for (i, item) in list.items.iter().enumerate() {
+        let text = match item.task {
             Some(true) => "[x]".to_string(),
             Some(false) => "[ ]".to_string(),
             None if list.ordered => format!("{}.", list.start + i as u64),
             None => "•".to_string(),
-        })
-        .collect();
-    let marker_widths: Vec<f32> = markers
-        .iter()
-        .map(|marker| text_width_cached(marker, 11.0, F_BODY, cx.faces, &cx.width_cache))
-        .collect();
-    let marker_col = marker_widths
-        .iter()
-        .copied()
-        .fold(0.0f32, f32::max)
-        .max(8.0);
+        };
+        let width = text_width_cached(&text, 11.0, F_BODY, faces, width_cache);
+        marker_col = marker_col.max(width);
+        layouts.push(ListMarkerLayout { text, width });
+    }
+    (layouts, marker_col)
+}
+
+fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, &cx.width_cache);
     let marker_left = cx.page.left + indent + 2.0;
     let content_indent = indent + marker_col + 11.0;
     let list_first_line = out.len();
@@ -12166,20 +12173,15 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         item: 0,
     });
 
-    for (i, item) in list.items.iter().enumerate() {
-        let marker = markers.get(i).cloned().unwrap_or_else(|| "•".to_string());
-        let marker_width = marker_widths
-            .get(i)
-            .copied()
-            .unwrap_or_else(|| text_width_cached(&marker, 11.0, F_BODY, cx.faces, &cx.width_cache));
+    for (item, marker) in list.items.iter().zip(marker_layouts) {
         let marker_seg = Seg {
-            x: marker_left + (marker_col - marker_width).max(0.0),
+            x: marker_left + (marker_col - marker.width).max(0.0),
             slot: F_BODY,
-            text: marker,
+            text: marker.text,
             link: None,
             fill: Fill::Black,
             strike: false,
-            width: marker_width,
+            width: marker.width,
         };
         // Split the item's blocks: only the FIRST block, when it is a paragraph,
         // shares the marker line; everything else — any further (loose)
@@ -22854,8 +22856,8 @@ mod table_wrap_tests {
         CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
         Faces, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_FONT_SIZE,
         TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
-        fitted_code_font_size, layout_list, preserve_code_block_lines, table_cell_measure,
-        table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
+        fitted_code_font_size, layout_list, list_marker_layouts, preserve_code_block_lines,
+        table_cell_measure, table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
     use crate::ast::{Inline, List, ListItem};
@@ -23184,6 +23186,45 @@ mod table_wrap_tests {
             slot_cache.contains_key("•"),
             "the unordered marker should be present in the shared width cache"
         );
+    }
+
+    #[test]
+    fn ordered_list_marker_layouts_pair_text_widths_and_widest_column() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
+        let empty_item = || ListItem {
+            task: None,
+            blocks: Vec::new(),
+        };
+        let list = List {
+            ordered: true,
+            start: 8,
+            tight: true,
+            items: vec![empty_item(), empty_item(), empty_item()],
+        };
+
+        let (layouts, marker_col) = list_marker_layouts(&list, &faces, &width_cache);
+
+        let texts: Vec<&str> = layouts.iter().map(|layout| layout.text.as_str()).collect();
+        assert_eq!(texts, vec!["8.", "9.", "10."]);
+        let expected_widest = text_width("10.", 11.0, F_BODY, &faces);
+        assert!((marker_col - expected_widest.max(8.0)).abs() <= 0.001);
+        for layout in &layouts {
+            let expected_width = text_width(&layout.text, 11.0, F_BODY, &faces);
+            assert!((layout.width - expected_width).abs() <= 0.001);
+        }
+
+        let key = (F_BODY, super::font_size_of(11.0).milli_points());
+        let cache = width_cache.borrow();
+        let Some(slot_cache) = cache.get(&key) else {
+            panic!("ordered list marker measurement should populate the body width cache");
+        };
+        for marker in ["8.", "9.", "10."] {
+            assert!(
+                slot_cache.contains_key(marker),
+                "ordered marker {marker} should be present in the shared width cache"
+            );
+        }
     }
 
     #[test]

@@ -194,10 +194,10 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     );
     let reference_started = profiler.checkpoint();
     let has_reference_candidate = src.contains("]:");
-    let (lines, mut refs) = if has_reference_candidate {
+    let (lines, mut refs, kept_reference_candidate) = if has_reference_candidate {
         collect_link_references(&lines)
     } else {
-        (lines, ReferenceMap::new())
+        (lines, ReferenceMap::new(), false)
     };
     // Also collect definitions nested inside blockquotes/list items, so a use
     // anywhere in the document (including a forward reference) can resolve a
@@ -208,7 +208,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // definition (every ref-def has `]:` where its label closes), so a document
     // with no references — including a pathologically deep nested list — never
     // pays for the extra structural walk.
-    if has_reference_candidate && lines.iter().any(|line| line.contains("]:")) {
+    if kept_reference_candidate {
         collect_nested_references(&lines, &mut refs, 0);
     }
     let reference_allocations = if has_reference_candidate {
@@ -493,22 +493,32 @@ fn looks_like_reference_definition(line: &str) -> bool {
     t.starts_with('[') && t.contains("]:")
 }
 
-fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap) {
+fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap, bool) {
     let (consumed, refs) = collect_link_reference_metadata(lines);
-    let kept = strip_consumed_references(lines, &consumed);
-    (kept, refs)
+    let (kept, kept_reference_candidate) =
+        strip_consumed_references_with_candidate(lines, &consumed);
+    (kept, refs, kept_reference_candidate)
 }
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[bool]) -> Vec<&'a str> {
+    strip_consumed_references_with_candidate(lines, consumed).0
+}
+
+fn strip_consumed_references_with_candidate<'a>(
+    lines: &[&'a str],
+    consumed: &[bool],
+) -> (Vec<&'a str>, bool) {
     let mut kept = Vec::with_capacity(lines.len());
+    let mut kept_reference_candidate = false;
     for (idx, line) in lines.iter().enumerate() {
         if !consumed[idx] {
+            kept_reference_candidate |= line.contains("]:");
             kept.push(*line);
         } else if consumed_reference_run_separates_tables(lines, consumed, idx) {
             kept.push("");
         }
     }
-    kept
+    (kept, kept_reference_candidate)
 }
 
 fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], idx: usize) -> bool {
@@ -4052,16 +4062,40 @@ mod refdef_paragraph_tests {
     fn collect_removes_only_boundary_definitions() {
         // Leading definition consumed; the one after paragraph text is left in
         // the stream (it is a lazy continuation, not a definition).
-        let (kept, refs) = collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
+        let (kept, refs, kept_reference_candidate) =
+            collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
         assert!(refs.contains_key("a"), "leading definition collected");
         assert!(
             !refs.contains_key("b"),
             "interrupting definition not collected"
         );
+        assert!(
+            kept_reference_candidate,
+            "the unconsumed paragraph continuation still contains a candidate"
+        );
         assert_eq!(
             kept,
             vec!["text", "[b]: /y"],
             "only the leading def line removed"
+        );
+    }
+
+    #[test]
+    fn collect_reports_no_candidate_when_all_definitions_are_removed() {
+        let (kept, refs, kept_reference_candidate) =
+            collect_link_references(&["[a]: /x", "[b]: /y", "", "text"]);
+        assert!(
+            refs.contains_key("a"),
+            "first boundary definition collected"
+        );
+        assert!(
+            refs.contains_key("b"),
+            "second boundary definition collected"
+        );
+        assert_eq!(kept, vec!["", "text"], "only non-definition lines remain");
+        assert!(
+            !kept_reference_candidate,
+            "consumed definitions must not force the nested-reference walk"
         );
     }
 

@@ -14982,13 +14982,16 @@ fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTrans
             h = pdf_num(h),
         ));
     }
-    body.push_str(&format!(
-        "{sx} 0 0 {neg_sy} {tx} {ty} cm\n",
-        sx = pdf_num(transform.sx),
-        neg_sy = pdf_num(-transform.sy),
-        tx = pdf_num(transform.tx),
-        ty = pdf_num(transform.ty),
-    ));
+    append_pdf_cm_operator(
+        body,
+        transform.sx,
+        0.0,
+        0.0,
+        -transform.sy,
+        transform.tx,
+        transform.ty,
+    );
+    body.push('\n');
 }
 
 fn append_svg_root_background(
@@ -16280,15 +16283,16 @@ fn draw_svg_embedded_image(
         body.push(' ');
     }
     if !image.style.transform.is_identity() {
-        body.push_str(&format!(
-            "{a} {b} {c} {d} {e} {f} cm ",
-            a = pdf_num(image.style.transform.a),
-            b = pdf_num(image.style.transform.b),
-            c = pdf_num(image.style.transform.c),
-            d = pdf_num(image.style.transform.d),
-            e = pdf_num(image.style.transform.e),
-            f = pdf_num(image.style.transform.f),
-        ));
+        append_pdf_cm_operator(
+            body,
+            image.style.transform.a,
+            image.style.transform.b,
+            image.style.transform.c,
+            image.style.transform.d,
+            image.style.transform.e,
+            image.style.transform.f,
+        );
+        body.push(' ');
     }
     if let Some(clip_path) = image
         .style
@@ -16325,13 +16329,10 @@ fn draw_svg_embedded_image(
         ));
     }
     let name = image_name(*idx);
-    body.push_str(&format!(
-        "{w} 0 0 {neg_h} {x} {y} cm /{name} Do Q\n",
-        w = pdf_num(draw_w),
-        neg_h = pdf_num(-draw_h),
-        x = pdf_num(draw_x),
-        y = pdf_num(draw_y + draw_h),
-    ));
+    append_pdf_cm_operator(body, draw_w, 0.0, 0.0, -draw_h, draw_x, draw_y + draw_h);
+    body.push_str(" /");
+    body.push_str(&name);
+    body.push_str(" Do Q\n");
 }
 
 fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> Option<(f32, f32, f32, f32, bool)> {
@@ -16408,15 +16409,16 @@ fn append_svg_element_state_prefix(
         body.push(' ');
     }
     if !style.transform.is_identity() {
-        body.push_str(&format!(
-            "{a} {b} {c} {d} {e} {f} cm ",
-            a = pdf_num(style.transform.a),
-            b = pdf_num(style.transform.b),
-            c = pdf_num(style.transform.c),
-            d = pdf_num(style.transform.d),
-            e = pdf_num(style.transform.e),
-            f = pdf_num(style.transform.f),
-        ));
+        append_pdf_cm_operator(
+            body,
+            style.transform.a,
+            style.transform.b,
+            style.transform.c,
+            style.transform.d,
+            style.transform.e,
+            style.transform.f,
+        );
+        body.push(' ');
     }
     if let Some(clip_path) = clip_path {
         append_svg_clip_path(body, clip_path, element_bbox);
@@ -16887,17 +16889,20 @@ where
         for tile_x in start_x..end_x {
             let tx = pattern.x + tile_x as f32 * pattern.w;
             let ty = pattern.y + tile_y as f32 * pattern.h;
-            body.push_str(&format!("q 1 0 0 1 {} {} cm ", pdf_num(tx), pdf_num(ty)));
+            body.push_str("q ");
+            append_pdf_cm_operator(body, 1.0, 0.0, 0.0, 1.0, tx, ty);
+            body.push(' ');
             if !pattern.transform.is_identity() {
-                body.push_str(&format!(
-                    "{} {} {} {} {} {} cm ",
-                    pdf_num(pattern.transform.a),
-                    pdf_num(pattern.transform.b),
-                    pdf_num(pattern.transform.c),
-                    pdf_num(pattern.transform.d),
-                    pdf_num(pattern.transform.e),
-                    pdf_num(pattern.transform.f)
-                ));
+                append_pdf_cm_operator(
+                    body,
+                    pattern.transform.a,
+                    pattern.transform.b,
+                    pattern.transform.c,
+                    pattern.transform.d,
+                    pattern.transform.e,
+                    pattern.transform.f,
+                );
+                body.push(' ');
             }
             for element in &pattern.elements {
                 draw_svg_shape(body, element, resources, page_shadings);
@@ -17614,26 +17619,24 @@ fn append_svg_marker(
     let (ref_x, ref_y) = view_box_transform
         .map(|transform| transform.map_point(marker.ref_x, marker.ref_y))
         .unwrap_or((marker.ref_x, marker.ref_y));
-    body.push_str(&format!(
-        "q {ux} {uy} {nx} {ny} {tx} {ty} cm {scale} 0 0 {scale} 0 0 cm 1 0 0 1 {rx} {ry} cm ",
-        ux = pdf_num(ux),
-        uy = pdf_num(uy),
-        nx = pdf_num(nx),
-        ny = pdf_num(ny),
-        tx = pdf_num(tip.0),
-        ty = pdf_num(tip.1),
-        scale = pdf_num(scale),
-        rx = pdf_num(-ref_x),
-        ry = pdf_num(-ref_y),
-    ));
+    body.push_str("q ");
+    append_pdf_cm_operator(body, ux, uy, nx, ny, tip.0, tip.1);
+    body.push(' ');
+    append_pdf_cm_operator(body, scale, 0.0, 0.0, scale, 0.0, 0.0);
+    body.push(' ');
+    append_pdf_cm_operator(body, 1.0, 0.0, 0.0, 1.0, -ref_x, -ref_y);
+    body.push(' ');
     if let Some(transform) = view_box_transform {
-        body.push_str(&format!(
-            "{sx} 0 0 {sy} {tx} {ty} cm ",
-            sx = pdf_num(svg_marker_matrix_component(transform.sx)),
-            sy = pdf_num(svg_marker_matrix_component(transform.sy)),
-            tx = pdf_num(svg_marker_matrix_component(transform.tx)),
-            ty = pdf_num(svg_marker_matrix_component(transform.ty)),
-        ));
+        append_pdf_cm_operator(
+            body,
+            svg_marker_matrix_component(transform.sx),
+            0.0,
+            0.0,
+            svg_marker_matrix_component(transform.sy),
+            svg_marker_matrix_component(transform.tx),
+            svg_marker_matrix_component(transform.ty),
+        );
+        body.push(' ');
     }
     for shape in &marker.shapes {
         let shape_style = svg_style_with_marker_context(shape.style, paint);
@@ -19210,6 +19213,21 @@ fn append_pdf_num(out: &mut String, value: f32) {
     }
 }
 
+fn append_pdf_cm_operator(out: &mut String, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+    append_pdf_num(out, a);
+    out.push(' ');
+    append_pdf_num(out, b);
+    out.push(' ');
+    append_pdf_num(out, c);
+    out.push(' ');
+    append_pdf_num(out, d);
+    out.push(' ');
+    append_pdf_num(out, e);
+    out.push(' ');
+    append_pdf_num(out, f);
+    out.push_str(" cm");
+}
+
 fn append_pdf_fixed(out: &mut String, value: f32, scale: u64) {
     let finite = finite_pdf_scalar(value);
     let scaled_float = f64::from(finite) * scale as f64;
@@ -20668,17 +20686,18 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SvgDashPattern,
-        SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, Tok,
+        SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, SvgTransform, Tok,
         append_artifact_rule_stroke, append_decimal_u64_string, append_decimal_usize,
         append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
-        append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
-        append_pdf_object_str, append_pdf_page_object, append_pdf_stream_dict,
+        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
+        append_pdf_num, append_pdf_object_str, append_pdf_page_object, append_pdf_stream_dict,
         append_pdf_string_escaped, append_rgb_fill_operator, append_rgb_fill_space_operator,
         append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
-        append_rgb_stroke_space_operator, append_svg_line_path, append_svg_line_stroke_outline,
-        append_svg_path_ops, append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        append_rgb_stroke_space_operator, append_svg_element_state_prefix, append_svg_line_path,
+        append_svg_line_stroke_outline, append_svg_path_ops, append_svg_shadow_prefix,
+        append_svg_stroke_options, append_svg_style, append_text_segment_operator,
+        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
+        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
         normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
         shape_run,
     };
@@ -21124,6 +21143,38 @@ mod pdf_writer_tests {
             out,
             "/Artifact BMC\n0.100 0.250 1.000 RG 0.7 w 12.50 700.25 m 42.00 700.25 l S\nEMC\nq 80 0 0 60.5 24.25 -3 cm /Im13 Do Q\n1.000 0.500 0.000 RG 2.50 w 11.00 22.25 m 11.00 5.50 l S\n"
         );
+    }
+
+    #[test]
+    fn pdf_matrix_operator_writer_preserves_legacy_format_shape() {
+        let mut out = String::new();
+        append_pdf_cm_operator(&mut out, 1.25, -0.5, 0.75, 2.0, 3.125, -0.0);
+
+        assert_eq!(out, "1.25 -0.5 0.75 2 3.13 -0 cm");
+    }
+
+    #[test]
+    fn svg_transform_state_writer_preserves_exact_pdf_operator_shape() {
+        let mut out = String::new();
+        let transformed = append_svg_element_state_prefix(
+            &mut out,
+            SvgStyle {
+                transform: SvgTransform {
+                    a: 1.25,
+                    b: -0.5,
+                    c: 0.75,
+                    d: 2.0,
+                    e: 3.125,
+                    f: -0.0,
+                },
+                ..SvgStyle::INITIAL
+            },
+            &[],
+            None,
+        );
+
+        assert!(transformed);
+        assert_eq!(out, "q 1.25 -0.5 0.75 2 3.13 -0 cm ");
     }
 
     #[test]

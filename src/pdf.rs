@@ -7070,9 +7070,21 @@ fn parse_svg_style_with_ancestors(
     apply_svg_paint_order_attr(&mut style, svg_attr(attrs, "paint-order"), &scoped_css_vars);
     apply_svg_line_cap_attr(&mut style, svg_attr(attrs, "stroke-linecap"));
     apply_svg_line_join_attr(&mut style, svg_attr(attrs, "stroke-linejoin"));
-    apply_svg_miter_limit_attr(&mut style, svg_attr(attrs, "stroke-miterlimit"));
-    apply_svg_dash_array_attr(&mut style, svg_attr(attrs, "stroke-dasharray"));
-    apply_svg_dash_offset_attr(&mut style, svg_attr(attrs, "stroke-dashoffset"));
+    apply_svg_miter_limit_attr(
+        &mut style,
+        svg_attr(attrs, "stroke-miterlimit"),
+        &scoped_css_vars,
+    );
+    apply_svg_dash_array_attr(
+        &mut style,
+        svg_attr(attrs, "stroke-dasharray"),
+        &scoped_css_vars,
+    );
+    apply_svg_dash_offset_attr(
+        &mut style,
+        svg_attr(attrs, "stroke-dashoffset"),
+        &scoped_css_vars,
+    );
     apply_svg_vector_effect_attr(&mut style, svg_attr(attrs, "vector-effect"));
     apply_svg_font_weight_attr(&mut style, svg_attr(attrs, "font-weight"), &scoped_css_vars);
     apply_svg_font_slant_attr(&mut style, svg_attr(attrs, "font-style"), &scoped_css_vars);
@@ -7104,7 +7116,9 @@ fn parse_svg_style_with_ancestors(
         svg_attr(attrs, "alignment-baseline"),
         &scoped_css_vars,
     );
-    if let Some(width) = svg_attr(attrs, "stroke-width").and_then(parse_svg_number) {
+    if let Some(width) = svg_attr(attrs, "stroke-width")
+        .and_then(|value| parse_svg_css_number(value, &scoped_css_vars))
+    {
         style.stroke_width = width.max(0.0);
     }
     apply_svg_opacity_attr(
@@ -7531,16 +7545,16 @@ fn parse_svg_style_patch(
             "fill-rule" => patch.fill_rule = parse_svg_fill_rule(value),
             "paint-order" => patch.paint_order = parse_svg_paint_order(value, css_vars),
             "stroke-width" => {
-                if let Some(width) = parse_svg_number(value) {
+                if let Some(width) = parse_svg_css_number(value, css_vars) {
                     patch.stroke_width = Some(width.max(0.0));
                 }
             }
             "vector-effect" => patch.non_scaling_stroke = parse_svg_vector_effect(value),
             "stroke-linecap" => patch.line_cap = parse_svg_line_cap(value),
             "stroke-linejoin" => patch.line_join = parse_svg_line_join(value),
-            "stroke-miterlimit" => patch.miter_limit = parse_svg_miter_limit(value),
-            "stroke-dasharray" => patch.dash = parse_svg_dash_array(value),
-            "stroke-dashoffset" => patch.dash_offset = parse_svg_number(value),
+            "stroke-miterlimit" => patch.miter_limit = parse_svg_css_miter_limit(value, css_vars),
+            "stroke-dasharray" => patch.dash = parse_svg_css_dash_array(value, css_vars),
+            "stroke-dashoffset" => patch.dash_offset = parse_svg_css_number(value, css_vars),
             "font-weight" => patch.font_weight = parse_svg_font_weight(value, css_vars),
             "font-style" => patch.font_slant = parse_svg_font_slant(value, css_vars),
             "font-family" => patch.font_family = parse_svg_font_family(value, css_vars),
@@ -7913,15 +7927,15 @@ fn apply_svg_style_declaration(
         "fill-rule" => apply_svg_fill_rule_attr(style, Some(value)),
         "paint-order" => apply_svg_paint_order_attr(style, Some(value), css_vars),
         "stroke-width" => {
-            if let Some(width) = parse_svg_number(value) {
+            if let Some(width) = parse_svg_css_number(value, css_vars) {
                 style.stroke_width = width.max(0.0);
             }
         }
         "stroke-linecap" => apply_svg_line_cap_attr(style, Some(value)),
         "stroke-linejoin" => apply_svg_line_join_attr(style, Some(value)),
-        "stroke-miterlimit" => apply_svg_miter_limit_attr(style, Some(value)),
-        "stroke-dasharray" => apply_svg_dash_array_attr(style, Some(value)),
-        "stroke-dashoffset" => apply_svg_dash_offset_attr(style, Some(value)),
+        "stroke-miterlimit" => apply_svg_miter_limit_attr(style, Some(value), css_vars),
+        "stroke-dasharray" => apply_svg_dash_array_attr(style, Some(value), css_vars),
+        "stroke-dashoffset" => apply_svg_dash_offset_attr(style, Some(value), css_vars),
         "vector-effect" => apply_svg_vector_effect_attr(style, Some(value)),
         "font-weight" => apply_svg_font_weight_attr(style, Some(value), css_vars),
         "font-style" => apply_svg_font_slant_attr(style, Some(value), css_vars),
@@ -9087,8 +9101,12 @@ fn parse_svg_line_join(value: &str) -> Option<SvgLineJoin> {
     }
 }
 
-fn apply_svg_miter_limit_attr(style: &mut SvgStyle, value: Option<&str>) {
-    if let Some(miter_limit) = value.and_then(parse_svg_miter_limit) {
+fn apply_svg_miter_limit_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(miter_limit) = value.and_then(|value| parse_svg_css_miter_limit(value, css_vars)) {
         style.miter_limit = Some(miter_limit);
     }
 }
@@ -9098,8 +9116,21 @@ fn parse_svg_miter_limit(value: &str) -> Option<f32> {
     (miter_limit.is_finite() && miter_limit >= 1.0).then_some(miter_limit)
 }
 
-fn apply_svg_dash_array_attr(style: &mut SvgStyle, value: Option<&str>) {
-    if let Some(dash) = value.and_then(parse_svg_dash_array) {
+fn parse_svg_css_miter_limit(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_css_miter_limit(&resolved, css_vars);
+    }
+    parse_svg_miter_limit(value)
+}
+
+fn apply_svg_dash_array_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(dash) = value.and_then(|value| parse_svg_css_dash_array(value, css_vars)) {
         style.dash = dash;
     }
 }
@@ -9130,8 +9161,21 @@ fn parse_svg_dash_array(value: &str) -> Option<SvgDashPattern> {
     Some(dash)
 }
 
-fn apply_svg_dash_offset_attr(style: &mut SvgStyle, value: Option<&str>) {
-    if let Some(offset) = value.and_then(parse_svg_number) {
+fn parse_svg_css_dash_array(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgDashPattern> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_css_dash_array(&resolved, css_vars);
+    }
+    parse_svg_dash_array(value)
+}
+
+fn apply_svg_dash_offset_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(offset) = value.and_then(|value| parse_svg_css_number(value, css_vars)) {
         style.dash.offset = offset;
     }
 }

@@ -2645,6 +2645,65 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
 }
 
 #[test]
+fn pdf_svg_css_variables_drive_stroke_geometry_declarations() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 36">
+  <style>
+    .rule {
+      --w: 4px;
+      --dash: 3 1;
+      --offset: 2px;
+      --miter: 6;
+      fill: none;
+      stroke: #0000ff;
+      stroke-width: var(--w);
+      stroke-linejoin: miter;
+      stroke-miterlimit: var(--miter);
+      stroke-dasharray: var(--dash);
+      stroke-dashoffset: var(--offset);
+    }
+    .attr {
+      --attr-w: 6px;
+      --attr-dash: 4 2;
+      --attr-offset: 3px;
+      --attr-miter: 8;
+    }
+  </style>
+  <path class="rule" d="M4 6 L70 6"/>
+  <path d="M4 18 L70 18" fill="none" stroke="#00ff00"
+        style="--w: 5px; --dash: 2 2; --offset: 1px; --miter: 7;
+               stroke-width: var(--w); stroke-dasharray: var(--dash);
+               stroke-dashoffset: var(--offset); stroke-linejoin: miter;
+               stroke-miterlimit: var(--miter);"/>
+  <path class="attr" d="M4 30 L70 30" fill="none" stroke="#ff0000"
+        stroke-width="var(--attr-w)" stroke-linejoin="miter"
+        stroke-miterlimit="var(--attr-miter)"
+        stroke-dasharray="var(--attr-dash)"
+        stroke-dashoffset="var(--attr-offset)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("stroke-vars.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Stroke vars](stroke-vars.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 0.000 0.000 1.000 RG 4 w 0 J 0 j 6 M [3 1] 2 d 4 6 m 70 6 l S\nQ"),
+        "stylesheet stroke geometry should resolve custom properties before PDF emission: {text}"
+    );
+    assert!(
+        text.contains("q 0.000 1.000 0.000 RG 5 w 0 J 0 j 7 M [2 2] 1 d 4 18 m 70 18 l S\nQ"),
+        "inline style stroke geometry should resolve custom properties before PDF emission: {text}"
+    );
+    assert!(
+        text.contains("q 1.000 0.000 0.000 RG 6 w 0 J 0 j 8 M [4 2] 3 d 4 30 m 70 30 l S\nQ"),
+        "presentation stroke geometry attributes should resolve selector-scoped custom properties: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_css_cascade_overrides_presentation_attrs_without_multiplying_local_opacity() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20">

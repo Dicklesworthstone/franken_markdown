@@ -19000,6 +19000,55 @@ fn append_pdf_object_str(out: &mut Vec<u8>, offsets: &mut [usize], object_id: us
     out.extend_from_slice(b"\nendobj\n");
 }
 
+struct PdfPageObjectParts<'a> {
+    object_id: usize,
+    media_w: &'a str,
+    media_h: &'a str,
+    font_res: &'a str,
+    image_res: &'a str,
+    ext_gstate_res: &'a str,
+    shading_res: &'a str,
+    content_object_id: usize,
+    annot_start_object_id: usize,
+    annot_count: usize,
+    struct_parent: Option<usize>,
+}
+
+fn append_pdf_page_object(out: &mut Vec<u8>, offsets: &mut [usize], parts: PdfPageObjectParts<'_>) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ");
+    out.extend_from_slice(parts.media_w.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(parts.media_h.as_bytes());
+    out.extend_from_slice(b"] /Resources << /Font << ");
+    out.extend_from_slice(parts.font_res.as_bytes());
+    out.extend_from_slice(b" >>");
+    out.extend_from_slice(parts.image_res.as_bytes());
+    out.extend_from_slice(parts.ext_gstate_res.as_bytes());
+    out.extend_from_slice(parts.shading_res.as_bytes());
+    out.extend_from_slice(b" >> /Contents ");
+    append_decimal_usize(out, parts.content_object_id);
+    out.extend_from_slice(b" 0 R");
+    if parts.annot_count != 0 {
+        out.extend_from_slice(b" /Annots [ ");
+        for j in 0..parts.annot_count {
+            if j != 0 {
+                out.push(b' ');
+            }
+            append_decimal_usize(out, parts.annot_start_object_id + j);
+            out.extend_from_slice(b" 0 R");
+        }
+        out.extend_from_slice(b" ]");
+    }
+    if let Some(parent) = parts.struct_parent {
+        out.extend_from_slice(b" /StructParents ");
+        append_decimal_usize(out, parent);
+        out.extend_from_slice(b" /Tabs /S");
+    }
+    out.extend_from_slice(b" >>\nendobj\n");
+}
+
 fn append_pdf_stream_dict(out: &mut Vec<u8>, stream: &PdfStream<'_>) {
     out.extend_from_slice(b"<< /Length ");
     append_decimal_usize(out, stream.bytes.len());
@@ -19502,32 +19551,28 @@ fn build_pdf(
     };
     let media_w = pdf_num(page_geom.width);
     let media_h = pdf_num(page_geom.height);
-    for i in 0..p {
-        let annots = if annot_counts.get(i).copied().unwrap_or(0) == 0 {
-            String::new()
-        } else {
-            let refs = (0..annot_counts[i])
-                .map(|j| format!("{} 0 R", annot_obj(i, j)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!(" /Annots [ {refs} ]")
-        };
-        let struct_parent = if tagged && !pages[i].marks.is_empty() {
-            format!(" /StructParents {i} /Tabs /S")
-        } else {
-            String::new()
-        };
-        let ext_gstate_res = svg_alpha_extgstate_resource(&pages[i].stream);
-        let shading_res = pdf_shading_resource(&pages[i].shadings);
-        append_pdf_object_str(
+    for (i, page) in pages.iter().enumerate() {
+        let annot_count = annot_counts.get(i).copied().unwrap_or(0);
+        let annot_start_object_id = annot_base + annot_starts.get(i).copied().unwrap_or(0);
+        let struct_parent = (tagged && !page.marks.is_empty()).then_some(i);
+        let ext_gstate_res = svg_alpha_extgstate_resource(&page.stream);
+        let shading_res = pdf_shading_resource(&page.shadings);
+        append_pdf_page_object(
             &mut buf,
             &mut offsets,
-            page_obj(i),
-            &format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
-                 /Resources << /Font << {font_res} >>{image_res}{ext_gstate_res}{shading_res} >> /Contents {c} 0 R{annots}{struct_parent} >>",
-                c = content_obj(i),
-            ),
+            PdfPageObjectParts {
+                object_id: page_obj(i),
+                media_w: &media_w,
+                media_h: &media_h,
+                font_res: &font_res,
+                image_res: &image_res,
+                ext_gstate_res: &ext_gstate_res,
+                shading_res: &shading_res,
+                content_object_id: content_obj(i),
+                annot_start_object_id,
+                annot_count,
+                struct_parent,
+            },
         );
     }
 
@@ -20540,11 +20585,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, SvgDashPattern, SvgLineCap, SvgLineJoin,
-        SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3,
-        append_pdf_num, append_pdf_object_str, append_pdf_stream_dict, append_pdf_string_escaped,
+        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SvgDashPattern,
+        SvgLineCap, SvgLineJoin, SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke,
+        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
+        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_str,
+        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
         append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
         append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
         append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
@@ -20785,6 +20831,86 @@ mod pdf_writer_tests {
 
         assert_eq!(offsets[2], b"%PDF-1.7\n".len());
         assert_eq!(out, b"%PDF-1.7\n2 0 obj\n<< /Type /Example >>\nendobj\n");
+    }
+
+    #[test]
+    fn page_object_writer_matches_legacy_format_shape() {
+        let media_w = "612";
+        let media_h = "792";
+        let font_res = "/F1 11 0 R /F2 12 0 R";
+        let image_res = " /XObject << /Im1 13 0 R >>";
+        let ext_gstate_res = " /ExtGState << /GSa10001000 << /ca 1 /CA 1 >> >>";
+        let shading_res = " /Shading << /Sh0 << /ShadingType 2 >> >>";
+        let annots = " /Annots [ 20 0 R 21 0 R ]";
+        let struct_parent = " /StructParents 5 /Tabs /S";
+
+        let mut direct = b"%PDF-1.7\n".to_vec();
+        let mut direct_offsets = [0usize; 30];
+        append_pdf_page_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfPageObjectParts {
+                object_id: 3,
+                media_w,
+                media_h,
+                font_res,
+                image_res,
+                ext_gstate_res,
+                shading_res,
+                content_object_id: 4,
+                annot_start_object_id: 20,
+                annot_count: 2,
+                struct_parent: Some(5),
+            },
+        );
+        let mut legacy = b"%PDF-1.7\n".to_vec();
+        let mut legacy_offsets = [0usize; 30];
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            3,
+            &format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
+                 /Resources << /Font << {font_res} >>{image_res}{ext_gstate_res}{shading_res} >> /Contents 4 0 R{annots}{struct_parent} >>"
+            ),
+        );
+
+        assert_eq!(direct_offsets[3], legacy_offsets[3]);
+        assert_eq!(direct, legacy);
+
+        let mut bare_direct = b"%PDF-1.7\n".to_vec();
+        let mut bare_direct_offsets = [0usize; 5];
+        append_pdf_page_object(
+            &mut bare_direct,
+            &mut bare_direct_offsets,
+            PdfPageObjectParts {
+                object_id: 3,
+                media_w,
+                media_h,
+                font_res,
+                image_res: "",
+                ext_gstate_res: "",
+                shading_res: "",
+                content_object_id: 4,
+                annot_start_object_id: 0,
+                annot_count: 0,
+                struct_parent: None,
+            },
+        );
+        let mut bare_legacy = b"%PDF-1.7\n".to_vec();
+        let mut bare_legacy_offsets = [0usize; 5];
+        append_pdf_object_str(
+            &mut bare_legacy,
+            &mut bare_legacy_offsets,
+            3,
+            &format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
+                 /Resources << /Font << {font_res} >> >> /Contents 4 0 R >>"
+            ),
+        );
+
+        assert_eq!(bare_direct_offsets[3], bare_legacy_offsets[3]);
+        assert_eq!(bare_direct, bare_legacy);
     }
 
     #[test]

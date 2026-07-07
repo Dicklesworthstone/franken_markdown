@@ -2799,6 +2799,18 @@ fn unlink_el(
 /// descent over `Inline`). Past this cap we stop wrapping and leave the surplus
 /// delimiters as literal text — mirroring [`MAX_BLOCK_NESTING_DEPTH`].
 const MAX_INLINE_NESTING_DEPTH: usize = 1000;
+const OPENERS_BOTTOM_SLOTS_PER_CHAR: usize = 6;
+const OPENERS_BOTTOM_LEN: usize = OPENERS_BOTTOM_SLOTS_PER_CHAR * 2;
+
+fn opener_bottom_index(ch: char, slot: usize) -> usize {
+    debug_assert!(matches!(ch, '*' | '_'));
+    debug_assert!(slot < OPENERS_BOTTOM_SLOTS_PER_CHAR);
+    if ch == '*' {
+        slot
+    } else {
+        OPENERS_BOTTOM_SLOTS_PER_CHAR + slot
+    }
+}
 
 /// The CommonMark "process emphasis" pass: walk closers left to right, match each
 /// to the nearest compatible opener honoring the rule of three, and wrap the
@@ -2822,7 +2834,7 @@ fn process_emphasis(
     // Per (char, slot) lower bound below which no opener can be found; `slot`
     // folds the closer's can_open flag and run length mod 3, mirroring the
     // reference implementation's `openers_bottom`.
-    let mut openers_bottom: BTreeMap<(char, usize), Option<usize>> = BTreeMap::new();
+    let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
     // Linear back-walk budget (see fn doc). 64x the token count is far above any
     // real document yet turns the adversarial quadratic case into linear time.
     let step_budget = els.len().saturating_mul(64).max(4096);
@@ -2848,7 +2860,8 @@ fn process_emphasis(
             }
         };
         let slot = (if closer_can_open { 3 } else { 0 }) + (corig % 3);
-        let bound = openers_bottom.get(&(cch, slot)).copied().flatten();
+        let bottom_idx = opener_bottom_index(cch, slot);
+        let bound = openers_bottom[bottom_idx];
 
         // Walk back to the nearest opener of the same char that is not rejected
         // by the rule of three.
@@ -2893,7 +2906,7 @@ fn process_emphasis(
         let Some(o) = found else {
             // No opener: remember the lower bound. The delimiter itself is
             // still literal source text, so leave it alive for final emission.
-            openers_bottom.insert((cch, slot), prev[c]);
+            openers_bottom[bottom_idx] = prev[c];
             ci = next[c];
             continue;
         };

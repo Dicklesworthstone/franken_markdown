@@ -1684,6 +1684,53 @@ fn pdf_svg_text_font_weight_and_style_select_embedded_font_slots() {
 }
 
 #[test]
+fn pdf_svg_nested_tspan_children_apply_their_own_style() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 32">
+  <style>
+    .outer .inner { fill: #00ff00; font-size: 20px; }
+  </style>
+  <text x="10" y="20" font-size="10" fill="#ff0000">
+    A<tspan class="outer" fill="#0000ff">B<tspan class="inner">C</tspan>D</tspan>E
+  </text>
+  <text x="10" y="30" font-size="10" fill="#ff0000">
+    <tspan visibility="hidden">Hidden<tspan visibility="visible" fill="#00ffff">Shown</tspan></tspan>
+  </text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("nested-tspan.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Nested tspan](nested-tspan.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("1.000 0.000 0.000 rg\nBT /F1"),
+        "outer SVG text should keep its red inherited fill: {text}"
+    );
+    let outer_size = first_text_font_size_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    assert!(
+        text.contains("0.000 0.000 1.000 rg\nBT /F1"),
+        "first-level tspan text should keep its blue fill: {text}"
+    );
+    let inner_marker = "0.000 1.000 0.000 rg\nBT /F1";
+    assert!(
+        text.contains(inner_marker),
+        "nested tspan selector should apply its own green fill instead of being flattened into the blue parent: {text}"
+    );
+    let inner_size = first_text_font_size_after(&text, inner_marker);
+    assert!(
+        inner_size > outer_size * 1.8,
+        "nested tspan selector should apply its own font-size after SVG viewport scaling: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 1.000 rg\nBT /F1"),
+        "visibility=visible should restore a tspan inside a hidden text/tspan tree: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 88">

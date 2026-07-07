@@ -4489,15 +4489,73 @@ fn parse_svg_text_elements(
     }
 
     let mut elements = Vec::new();
+    let mut child_ancestors = ancestors.to_vec();
+    child_ancestors.push(svg_css_ancestor("text", attrs));
+    push_svg_text_body_elements(
+        &mut elements,
+        body,
+        x,
+        y,
+        style,
+        font_size,
+        anchor,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        &mut child_ancestors,
+        0,
+    );
+    apply_svg_parent_text_length(&mut elements, text_length, length_adjust);
+    elements
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_svg_text_body_elements(
+    elements: &mut Vec<SvgElement>,
+    body: &str,
+    mut current_x: f32,
+    mut current_y: f32,
+    style: SvgStyle,
+    font_size: f32,
+    anchor: SvgTextAnchor,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &mut Vec<SvgCssAncestor>,
+    depth: usize,
+) -> (f32, f32) {
+    if depth >= 8 {
+        let text = normalize_svg_text(&strip_svg_tags(body));
+        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
+        push_svg_text_element(
+            elements,
+            text,
+            SvgTextPlacement {
+                x: current_x,
+                y: current_y,
+                font_size,
+                anchor,
+                text_length: None,
+                length_adjust: SvgLengthAdjust::Spacing,
+            },
+            style,
+        );
+        return (current_x + advance, current_y);
+    }
+
     let mut pos = 0usize;
-    let mut current_x = x;
-    let mut current_y = y;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
         let text = normalize_svg_text_node(body.get(pos..open).unwrap_or_default());
         let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
         push_svg_text_element(
-            &mut elements,
+            elements,
             text,
             SvgTextPlacement {
                 x: current_x,
@@ -4510,6 +4568,7 @@ fn parse_svg_text_elements(
             style,
         );
         current_x += advance;
+
         if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
             let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
                 break;
@@ -4542,8 +4601,6 @@ fn parse_svg_text_elements(
         };
         pos = end_open + end_close_rel + 1;
 
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(svg_css_ancestor("text", attrs));
         let child_style = parse_svg_style_with_ancestors(
             "tspan",
             &child_attrs,
@@ -4554,9 +4611,9 @@ fn parse_svg_text_elements(
             css_vars,
             clip_paths,
             filter_shadows,
-            &child_ancestors,
+            ancestors,
         );
-        if !child_style.visible {
+        if !child_style.display_visible || child_style.opacity <= 0.001 {
             continue;
         }
         let child_font_size = child_style.font_size;
@@ -4579,37 +4636,71 @@ fn parse_svg_text_elements(
         {
             child_y += dy;
         }
-        let child_text = normalize_svg_text(&strip_svg_tags(child_body));
-        let advance = child_text_length.unwrap_or_else(|| {
-            svg_text_advance(
-                &child_text,
+
+        if svg_text_body_has_tspan(child_body) {
+            let start_len = elements.len();
+            ancestors.push(svg_css_ancestor("tspan", &child_attrs));
+            let (end_x, end_y) = push_svg_text_body_elements(
+                elements,
+                child_body,
+                child_x,
+                child_y,
+                child_style,
                 child_font_size,
-                child_style.letter_spacing.to_points(child_font_size),
-            )
-        });
-        push_svg_text_element(
-            &mut elements,
-            child_text,
-            SvgTextPlacement {
-                x: child_x,
-                y: child_y,
-                font_size: child_font_size,
-                anchor: child_anchor,
-                text_length: child_text_length,
-                length_adjust: child_length_adjust,
-            },
-            child_style,
-        );
-        current_x = child_x + advance;
-        current_y = child_y;
+                child_anchor,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                ancestors,
+                depth + 1,
+            );
+            ancestors.pop();
+            apply_svg_parent_text_length(
+                &mut elements[start_len..],
+                child_text_length,
+                child_length_adjust,
+            );
+            current_x = child_text_length.map_or(end_x, |width| child_x + width);
+            current_y = end_y;
+        } else {
+            let child_text = normalize_svg_text(&strip_svg_tags(child_body));
+            let advance = child_text_length.unwrap_or_else(|| {
+                svg_text_advance(
+                    &child_text,
+                    child_font_size,
+                    child_style.letter_spacing.to_points(child_font_size),
+                )
+            });
+            push_svg_text_element(
+                elements,
+                child_text,
+                SvgTextPlacement {
+                    x: child_x,
+                    y: child_y,
+                    font_size: child_font_size,
+                    anchor: child_anchor,
+                    text_length: child_text_length,
+                    length_adjust: child_length_adjust,
+                },
+                child_style,
+            );
+            current_x = child_x + advance;
+            current_y = child_y;
+        }
+
         if elements.len() >= 256 {
             break;
         }
     }
     if pos < body.len() {
+        let text = normalize_svg_text(body.get(pos..).unwrap_or_default());
+        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
         push_svg_text_element(
-            &mut elements,
-            normalize_svg_text(body.get(pos..).unwrap_or_default()),
+            elements,
+            text,
             SvgTextPlacement {
                 x: current_x,
                 y: current_y,
@@ -4620,9 +4711,10 @@ fn parse_svg_text_elements(
             },
             style,
         );
+        current_x += advance;
     }
-    apply_svg_parent_text_length(&mut elements, text_length, length_adjust);
-    elements
+
+    (current_x, current_y)
 }
 
 fn svg_text_body_has_tspan(body: &str) -> bool {

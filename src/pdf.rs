@@ -14097,27 +14097,29 @@ fn serialize(
         }
 
         // (c) Inline-code chips: F_MONO segs on non-panel, non-rule lines.
-        for p in placed {
-            if p.line.bg != 0 || p.line.rule {
-                continue;
-            }
-            for seg in &p.line.segs {
-                if seg.slot != F_MONO || seg.text.trim().is_empty() {
+        if capacity.has_mono_chips() {
+            for p in placed {
+                if p.line.bg != 0 || p.line.rule {
                     continue;
                 }
-                let cx0 = seg.x - CHIP_PAD_X;
-                let cx1 = seg.x + seg.width + CHIP_PAD_X;
-                let cy0 = p.y - p.line.size * 0.26;
-                let cy1 = p.y + p.line.size * 0.74;
-                append_rounded_rect_fill(
-                    &mut bg,
-                    cx0,
-                    cy0,
-                    cx1,
-                    cy1,
-                    CHIP_RADIUS,
-                    palette.code_chip_bg,
-                );
+                for seg in &p.line.segs {
+                    if seg.slot != F_MONO || seg.text.trim().is_empty() {
+                        continue;
+                    }
+                    let cx0 = seg.x - CHIP_PAD_X;
+                    let cx1 = seg.x + seg.width + CHIP_PAD_X;
+                    let cy0 = p.y - p.line.size * 0.26;
+                    let cy1 = p.y + p.line.size * 0.74;
+                    append_rounded_rect_fill(
+                        &mut bg,
+                        cx0,
+                        cy0,
+                        cx1,
+                        cy1,
+                        CHIP_RADIUS,
+                        palette.code_chip_bg,
+                    );
+                }
             }
         }
 
@@ -14679,10 +14681,17 @@ mod struct_tree_tests {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PageContentCapacityEstimate {
     quote_bars: usize,
+    mono_chips: usize,
     background_bytes: usize,
     body_bytes: usize,
     link_annotations: usize,
     marks: usize,
+}
+
+impl PageContentCapacityEstimate {
+    fn has_mono_chips(self) -> bool {
+        self.mono_chips != 0
+    }
 }
 
 fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityEstimate {
@@ -14715,7 +14724,7 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
         }
         let mut visible = line.image.is_some();
         for seg in &line.segs {
-            if seg.slot == F_MONO && !seg.text.trim().is_empty() {
+            if line.bg == 0 && !line.rule && seg.slot == F_MONO && !seg.text.trim().is_empty() {
                 mono_chips += 1;
             }
             if seg.link.is_some() && seg.width > 0.0 {
@@ -14741,6 +14750,7 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
 
     PageContentCapacityEstimate {
         quote_bars,
+        mono_chips,
         background_bytes: quote_bars
             .saturating_mul(160)
             .saturating_add(shaded_lines.saturating_mul(160))
@@ -21423,6 +21433,13 @@ mod pdf_writer_tests {
                 0,
                 false,
                 false,
+                vec![seg(F_MONO, "inline", None, false, 30.0)],
+            ),
+            line(
+                Vec::new(),
+                0,
+                false,
+                false,
                 vec![
                     seg(F_MONO, "   ", None, false, 9.0),
                     seg(
@@ -21444,34 +21461,67 @@ mod pdf_writer_tests {
                 line: &lines[1],
                 y: 680.0,
             },
+            Placed {
+                line: &lines[2],
+                y: 660.0,
+            },
         ];
 
+        let estimate = estimate_page_content_capacity(&placed);
         assert_eq!(
-            estimate_page_content_capacity(&placed),
+            estimate,
             PageContentCapacityEstimate {
                 quote_bars: 2,
+                mono_chips: 1,
                 background_bytes: 688,
-                body_bytes: 802,
+                body_bytes: 982,
                 link_annotations: 2,
-                marks: 2,
+                marks: 3,
             }
         );
+        assert!(estimate.has_mono_chips());
 
-        let no_quote_lines = [line(
-            Vec::new(),
-            0,
-            false,
-            false,
-            vec![seg(F_BODY, "plain", None, false, 20.0)],
-        )];
-        let no_quote_placed = [Placed {
-            line: &no_quote_lines[0],
-            y: 700.0,
-        }];
-        assert_eq!(
-            estimate_page_content_capacity(&no_quote_placed).quote_bars,
-            0
-        );
+        let no_inline_chip_lines = [
+            line(
+                Vec::new(),
+                9,
+                false,
+                false,
+                vec![seg(F_MONO, "panel code", None, false, 40.0)],
+            ),
+            line(
+                Vec::new(),
+                0,
+                false,
+                true,
+                vec![seg(F_MONO, "rule code", None, false, 40.0)],
+            ),
+            line(
+                Vec::new(),
+                0,
+                false,
+                false,
+                vec![seg(F_BODY, "plain", None, false, 20.0)],
+            ),
+        ];
+        let no_inline_chip_placed = [
+            Placed {
+                line: &no_inline_chip_lines[0],
+                y: 700.0,
+            },
+            Placed {
+                line: &no_inline_chip_lines[1],
+                y: 680.0,
+            },
+            Placed {
+                line: &no_inline_chip_lines[2],
+                y: 660.0,
+            },
+        ];
+        let no_inline_chip_estimate = estimate_page_content_capacity(&no_inline_chip_placed);
+        assert_eq!(no_inline_chip_estimate.quote_bars, 0);
+        assert_eq!(no_inline_chip_estimate.mono_chips, 0);
+        assert!(!no_inline_chip_estimate.has_mono_chips());
     }
 
     #[test]

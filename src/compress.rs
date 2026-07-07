@@ -104,6 +104,8 @@ const fn reverse_bits(code: u32, len: u8) -> u32 {
 // code value is already bit-reversed for the LSB-first DEFLATE bit writer.
 const FIXED_LITLEN_CODES: [(u16, u8); 288] = build_fixed_litlen_codes();
 const FIXED_DIST_CODES: [u16; 30] = build_fixed_dist_codes();
+const LENGTH_SYMBOL_BY_LEN: [u8; MAX_MATCH + 1] = build_length_symbol_by_len();
+static DIST_SYMBOL_BY_DISTANCE: [u8; WINDOW + 1] = build_dist_symbol_by_distance();
 
 const fn build_fixed_litlen_codes() -> [(u16, u8); 288] {
     let mut table = [(0u16, 0u8); 288];
@@ -122,6 +124,34 @@ const fn build_fixed_dist_codes() -> [u16; 30] {
     while sym < table.len() {
         table[sym] = reverse_bits(sym as u32, 5) as u16;
         sym += 1;
+    }
+    table
+}
+
+const fn build_length_symbol_by_len() -> [u8; MAX_MATCH + 1] {
+    let mut table = [0u8; MAX_MATCH + 1];
+    let mut len = 0usize;
+    while len < table.len() {
+        let mut symbol = LENGTH_BASE.len() - 1;
+        while symbol > 0 && LENGTH_BASE[symbol] as usize > len {
+            symbol -= 1;
+        }
+        table[len] = symbol as u8;
+        len += 1;
+    }
+    table
+}
+
+const fn build_dist_symbol_by_distance() -> [u8; WINDOW + 1] {
+    let mut table = [0u8; WINDOW + 1];
+    let mut dist = 0usize;
+    while dist < table.len() {
+        let mut symbol = DIST_BASE.len() - 1;
+        while symbol > 0 && DIST_BASE[symbol] as usize > dist {
+            symbol -= 1;
+        }
+        table[dist] = symbol as u8;
+        dist += 1;
     }
     table
 }
@@ -151,22 +181,18 @@ fn emit_literal(bw: &mut BitWriter, b: u8) {
 }
 
 fn emit_match(bw: &mut BitWriter, len: usize, dist: usize) {
-    // Length symbol 257..=285 + extra bits (LSB-first). Find the highest table
-    // index whose base length is <= len (bases are strictly increasing).
-    let mut li = LENGTH_BASE.len() - 1;
-    while li > 0 && LENGTH_BASE.get(li).copied().unwrap_or(0) as usize > len {
-        li -= 1;
-    }
+    // Length symbol 257..=285 + extra bits (LSB-first). The static lookup table
+    // is the old highest-base<=value search, precomputed for every legal match.
+    debug_assert!((MIN_MATCH..=MAX_MATCH).contains(&len));
+    debug_assert!((1..=WINDOW).contains(&dist));
+    let li = LENGTH_SYMBOL_BY_LEN[len] as usize;
     emit_litlen(bw, 257 + li);
     let lbase = LENGTH_BASE.get(li).copied().unwrap_or(0) as usize;
     let lextra = LENGTH_EXTRA.get(li).copied().unwrap_or(0) as u32;
     bw.write_bits((len.saturating_sub(lbase)) as u32, lextra);
 
     // Distance symbol 0..=29 (5-bit fixed code, MSB-first) + extra bits (LSB-first).
-    let mut di = DIST_BASE.len() - 1;
-    while di > 0 && DIST_BASE.get(di).copied().unwrap_or(0) as usize > dist {
-        di -= 1;
-    }
+    let di = DIST_SYMBOL_BY_DISTANCE[dist] as usize;
     bw.write_reversed_huffman(FIXED_DIST_CODES[di], 5);
     let dbase = DIST_BASE.get(di).copied().unwrap_or(0) as usize;
     let dextra = DIST_EXTRA.get(di).copied().unwrap_or(0) as u32;
@@ -1005,6 +1031,35 @@ mod tests {
         assert_eq!(match_len(data, 0, 3, 258), 5);
         assert_eq!(match_len(data, 0, data.len(), 258), 0);
         assert_eq!(match_len(data, data.len(), 0, 258), 0);
+    }
+
+    #[test]
+    fn match_symbol_tables_preserve_search_mapping() {
+        for (len, &symbol) in LENGTH_SYMBOL_BY_LEN
+            .iter()
+            .enumerate()
+            .take(MAX_MATCH + 1)
+            .skip(MIN_MATCH)
+        {
+            let mut searched = LENGTH_BASE.len() - 1;
+            while searched > 0 && LENGTH_BASE[searched] as usize > len {
+                searched -= 1;
+            }
+            assert_eq!(usize::from(symbol), searched);
+        }
+
+        for (dist, &symbol) in DIST_SYMBOL_BY_DISTANCE
+            .iter()
+            .enumerate()
+            .take(WINDOW + 1)
+            .skip(1)
+        {
+            let mut searched = DIST_BASE.len() - 1;
+            while searched > 0 && DIST_BASE[searched] as usize > dist {
+                searched -= 1;
+            }
+            assert_eq!(usize::from(symbol), searched);
+        }
     }
 
     #[test]

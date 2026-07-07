@@ -11464,8 +11464,12 @@ fn finish_table_measure_line(cell: &mut TableCellMeasure, line: &mut TableCellMe
     cell.lines.push(std::mem::take(line));
 }
 
-/// Merge a line's tokens into runs of identical style, measuring each run.
-fn build_cell_line(toks: &[Tok], size: f32, faces: &Faces) -> CellWrapLine {
+/// Merge owned line tokens into runs of identical style, measuring each run.
+fn build_cell_line_owned(
+    toks: impl IntoIterator<Item = Tok>,
+    size: f32,
+    faces: &Faces,
+) -> CellWrapLine {
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
         let merge = runs
@@ -11478,8 +11482,8 @@ fn build_cell_line(toks: &[Tok], size: f32, faces: &Faces) -> CellWrapLine {
         } else {
             runs.push(CellRun {
                 slot: t.slot,
-                text: t.text.clone(),
-                link: t.link.clone(),
+                text: t.text,
+                link: t.link,
                 strike: t.strike,
                 width: 0.0,
             });
@@ -11503,8 +11507,7 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
         if t.hard_break {
             pending = None;
             if !cur.is_empty() {
-                lines.push(build_cell_line(&cur, size, faces));
-                cur.clear();
+                lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
                 cur_w = 0.0;
             }
             continue;
@@ -11522,8 +11525,7 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
         // line so a following word can still pack after it.
         if ww > max_width && max_width > 0.0 {
             if !cur.is_empty() {
-                lines.push(build_cell_line(&cur, size, faces));
-                cur.clear();
+                lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
                 cur_w = 0.0;
             }
             pending = None;
@@ -11541,7 +11543,7 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
                         link: t.link.clone(),
                         strike: t.strike,
                     };
-                    lines.push(build_cell_line(std::slice::from_ref(&tok), size, faces));
+                    lines.push(build_cell_line_owned(std::iter::once(tok), size, faces));
                     chunk_w = 0.0;
                 }
                 chunk.push(ch);
@@ -11564,8 +11566,7 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
             .as_ref()
             .map_or(0.0, |s| text_width(" ", size, s.slot, faces));
         if !cur.is_empty() && cur_w + sw + ww > max_width {
-            lines.push(build_cell_line(&cur, size, faces));
-            cur.clear();
+            lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
             cur_w = 0.0;
             pending = None;
             cur.push(t.clone());
@@ -11580,7 +11581,7 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
         }
     }
     if !cur.is_empty() {
-        lines.push(build_cell_line(&cur, size, faces));
+        lines.push(build_cell_line_owned(std::mem::take(&mut cur), size, faces));
     }
     lines
 }

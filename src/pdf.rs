@@ -19400,6 +19400,164 @@ fn append_pdf_object_ref_list_string(out: &mut String, refs: impl IntoIterator<I
     }
 }
 
+fn append_pdf_object_ref_bytes(out: &mut Vec<u8>, object_id: usize) {
+    append_decimal_usize(out, object_id);
+    out.extend_from_slice(b" 0 R");
+}
+
+fn append_decimal_u64(out: &mut Vec<u8>, value: u64) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[pos..]);
+}
+
+fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
+    let finite = if value.is_finite() { value } else { 0.0 };
+    let scaled = (f64::from(finite) * 100.0).round() as i64;
+    if scaled < 0 || (scaled == 0 && finite.is_sign_negative()) {
+        out.push(b'-');
+    }
+    let abs = scaled.unsigned_abs();
+    append_decimal_u64(out, abs / 100);
+    let frac = abs % 100;
+    if frac == 0 {
+        return;
+    }
+    out.push(b'.');
+    if frac < 10 {
+        out.push(b'0');
+        append_decimal_u64(out, frac);
+    } else if frac % 10 == 0 {
+        append_decimal_u64(out, frac / 10);
+    } else {
+        append_decimal_u64(out, frac);
+    }
+}
+
+fn append_pdf_text_string_bytes(out: &mut Vec<u8>, s: &str) {
+    if s.is_ascii() {
+        out.push(b'(');
+        for byte in s.bytes() {
+            match byte {
+                b'(' => out.extend_from_slice(b"\\("),
+                b')' => out.extend_from_slice(b"\\)"),
+                b'\\' => out.extend_from_slice(b"\\\\"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\n' => out.push(b' '),
+                _ => out.push(byte),
+            }
+        }
+        out.push(b')');
+    } else {
+        out.extend_from_slice(b"<FEFF");
+        for unit in s.encode_utf16() {
+            append_hex_u16_bytes(out, unit);
+        }
+        out.push(b'>');
+    }
+}
+
+fn append_hex_u16_bytes(out: &mut Vec<u8>, value: u16) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push(HEX[((value >> 12) & 0xF) as usize]);
+    out.push(HEX[((value >> 8) & 0xF) as usize]);
+    out.push(HEX[((value >> 4) & 0xF) as usize]);
+    out.push(HEX[(value & 0xF) as usize]);
+}
+
+fn append_struct_kid_list_bytes(
+    out: &mut Vec<u8>,
+    kids: &[SKid],
+    page_obj: &impl Fn(usize) -> usize,
+    annot_obj: &impl Fn(usize, usize) -> usize,
+    struct_elem_obj: &impl Fn(usize) -> usize,
+) {
+    let mut first = true;
+    for kid in kids {
+        if first {
+            first = false;
+        } else {
+            out.push(b' ');
+        }
+        match kid {
+            SKid::Node(node) => append_pdf_object_ref_bytes(out, struct_elem_obj(*node)),
+            SKid::Mcr { page, mcid } => {
+                out.extend_from_slice(b"<< /Type /MCR /Pg ");
+                append_pdf_object_ref_bytes(out, page_obj(*page));
+                out.extend_from_slice(b" /MCID ");
+                append_decimal_usize(out, *mcid);
+                out.extend_from_slice(b" >>");
+            }
+            SKid::ObjR { page, local } => {
+                out.extend_from_slice(b"<< /Type /OBJR /Pg ");
+                append_pdf_object_ref_bytes(out, page_obj(*page));
+                out.extend_from_slice(b" /Obj ");
+                append_pdf_object_ref_bytes(out, annot_obj(*page, *local));
+                out.extend_from_slice(b" >>");
+            }
+        }
+    }
+}
+
+struct PdfStructElementObjectParts<'a> {
+    object_id: usize,
+    node: &'a SNode,
+    parent_ref: usize,
+}
+
+fn append_pdf_struct_element_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfStructElementObjectParts<'_>,
+    page_obj: &impl Fn(usize) -> usize,
+    annot_obj: &impl Fn(usize, usize) -> usize,
+    struct_elem_obj: &impl Fn(usize) -> usize,
+) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Type /StructElem /S /");
+    out.extend_from_slice(parts.node.tag.as_bytes());
+    out.extend_from_slice(b" /P ");
+    append_pdf_object_ref_bytes(out, parts.parent_ref);
+    if let Some(page) = parts.node.page {
+        out.extend_from_slice(b" /Pg ");
+        append_pdf_object_ref_bytes(out, page_obj(page));
+    }
+    if !parts.node.kids.is_empty() {
+        out.extend_from_slice(b" /K [ ");
+        append_struct_kid_list_bytes(out, &parts.node.kids, page_obj, annot_obj, struct_elem_obj);
+        out.extend_from_slice(b" ]");
+    }
+    if let Some(alt) = parts.node.alt.as_ref().filter(|alt| !alt.is_empty()) {
+        out.extend_from_slice(b" /Alt ");
+        append_pdf_text_string_bytes(out, alt);
+    }
+    if parts.node.scope_column {
+        out.extend_from_slice(b" /A << /O /Table /Scope /Column >>");
+    } else if let Some(b) = parts.node.bbox {
+        out.extend_from_slice(b" /A << /O /Layout /BBox [ ");
+        append_pdf_num_bytes(out, b[0]);
+        out.push(b' ');
+        append_pdf_num_bytes(out, b[1]);
+        out.push(b' ');
+        append_pdf_num_bytes(out, b[2]);
+        out.push(b' ');
+        append_pdf_num_bytes(out, b[3]);
+        out.extend_from_slice(b" ] >>");
+    }
+    out.extend_from_slice(b" >>\nendobj\n");
+}
+
+#[cfg(test)]
 fn append_struct_kid_list_string(
     out: &mut String,
     kids: &[SKid],
@@ -20231,54 +20389,17 @@ fn build_pdf(
             } else {
                 struct_elem_obj(node.parent)
             };
-            let k_entry = if node.kids.is_empty() {
-                String::new()
-            } else {
-                let mut entry = String::with_capacity(node.kids.len().saturating_mul(32));
-                entry.push_str(" /K [ ");
-                append_struct_kid_list_string(
-                    &mut entry,
-                    &node.kids,
-                    &page_obj,
-                    &annot_obj,
-                    &struct_elem_obj,
-                );
-                entry.push_str(" ]");
-                entry
-            };
-            let pg = node
-                .page
-                .map(|page| format!(" /Pg {} 0 R", page_obj(page)))
-                .unwrap_or_default();
-            let alt = node
-                .alt
-                .as_ref()
-                .filter(|alt| !alt.is_empty())
-                .map(|alt| format!(" /Alt {}", pdf_text_string(alt)))
-                .unwrap_or_default();
-            // Table header cells advertise a column scope; figures carry a layout
-            // bounding box so assistive tech can locate the image region.
-            let attr = if node.scope_column {
-                " /A << /O /Table /Scope /Column >>".to_string()
-            } else if let Some(b) = node.bbox {
-                format!(
-                    " /A << /O /Layout /BBox [ {x0} {y0} {x1} {y1} ] >>",
-                    x0 = pdf_num(b[0]),
-                    y0 = pdf_num(b[1]),
-                    x1 = pdf_num(b[2]),
-                    y1 = pdf_num(b[3]),
-                )
-            } else {
-                String::new()
-            };
-            append_pdf_object_str(
+            append_pdf_struct_element_object(
                 &mut buf,
                 &mut offsets,
-                struct_elem_obj(i),
-                &format!(
-                    "<< /Type /StructElem /S /{tag} /P {parent_ref} 0 R{pg}{k_entry}{alt}{attr} >>",
-                    tag = node.tag,
-                ),
+                PdfStructElementObjectParts {
+                    object_id: struct_elem_obj(i),
+                    node,
+                    parent_ref,
+                },
+                &page_obj,
+                &annot_obj,
+                &struct_elem_obj,
             );
         }
     }
@@ -20959,15 +21080,18 @@ mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LineTok, LinkTarget,
         PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
-        Placed, SKid, Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow,
-        SvgStyle, SvgTransform, Tok, WidthCache, append_artifact_rule_stroke,
-        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
-        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
-        append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
-        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
-        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
-        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        PdfStructElementObjectParts, Placed, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
+        SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, SvgTransform, Tok, WidthCache,
+        append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
+        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
+        append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
+        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_page_object,
+        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
+        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
+        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
+        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
         append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
         append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
@@ -20976,7 +21100,7 @@ mod pdf_writer_tests {
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
         first_visible_segment_index, font_size_of, kerned_tj, line_has_visible_content,
-        measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
+        measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
         push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
         token_visible_text, tokenize,
     };
@@ -21586,6 +21710,27 @@ mod pdf_writer_tests {
     }
 
     #[test]
+    fn byte_decimal_writer_matches_string_decimal_writer() {
+        for value in [
+            0,
+            1,
+            9,
+            10,
+            42,
+            1_234_567_890,
+            u64::from(u32::MAX),
+            u64::MAX,
+        ] {
+            let mut bytes = Vec::new();
+            append_decimal_u64(&mut bytes, value);
+
+            let mut string = String::new();
+            append_decimal_u64_string(&mut string, value);
+            assert_eq!(bytes, string.as_bytes(), "value {value}");
+        }
+    }
+
+    #[test]
     fn xref_writer_uses_classic_ten_digit_padding() {
         let mut out = Vec::new();
         append_xref_offset(&mut out, 0);
@@ -21636,6 +21781,16 @@ mod pdf_writer_tests {
         let struct_elem_obj = |node: usize| 200 + node;
         let mut direct = String::new();
         append_struct_kid_list_string(&mut direct, &kids, &page_obj, &annot_obj, &struct_elem_obj);
+        let mut direct_bytes = Vec::new();
+        append_pdf_object_ref_bytes(&mut direct_bytes, 7);
+        direct_bytes.push(b'|');
+        append_struct_kid_list_bytes(
+            &mut direct_bytes,
+            &kids,
+            &page_obj,
+            &annot_obj,
+            &struct_elem_obj,
+        );
         let legacy = kids
             .iter()
             .map(|kid| match kid {
@@ -21655,9 +21810,129 @@ mod pdf_writer_tests {
 
         assert_eq!(direct, legacy);
         assert_eq!(
+            direct_bytes,
+            format!("7 0 R|{legacy}").as_bytes(),
+            "byte writers must match the legacy string forms"
+        );
+        assert_eq!(
             direct,
             "202 0 R << /Type /MCR /Pg 21 0 R /MCID 7 >> << /Type /OBJR /Pg 22 0 R /Obj 123 0 R >>"
         );
+    }
+
+    #[test]
+    fn struct_element_object_byte_writer_matches_legacy_format_shape() {
+        let kids = vec![
+            SKid::Node(2),
+            SKid::Mcr { page: 1, mcid: 7 },
+            SKid::ObjR { page: 2, local: 3 },
+        ];
+        let node = SNode {
+            tag: "Figure",
+            parent: 0,
+            kids,
+            alt: Some("A—B".to_string()),
+            bbox: Some([1.0, -0.0, 3.5, 4.25]),
+            scope_column: false,
+            page: Some(4),
+        };
+        let page_obj = |page: usize| 20 + page;
+        let annot_obj = |page: usize, local: usize| 100 + page * 10 + local;
+        let struct_elem_obj = |node: usize| 200 + node;
+        let parent_ref = 77;
+
+        let mut direct = b"%PDF-1.7\n".to_vec();
+        let mut direct_offsets = [0usize; 210];
+        append_pdf_struct_element_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfStructElementObjectParts {
+                object_id: 9,
+                node: &node,
+                parent_ref,
+            },
+            &page_obj,
+            &annot_obj,
+            &struct_elem_obj,
+        );
+
+        let mut k_entry = String::new();
+        k_entry.push_str(" /K [ ");
+        append_struct_kid_list_string(
+            &mut k_entry,
+            &node.kids,
+            &page_obj,
+            &annot_obj,
+            &struct_elem_obj,
+        );
+        k_entry.push_str(" ]");
+        let pg = format!(" /Pg {} 0 R", page_obj(4));
+        let alt = format!(" /Alt {}", pdf_text_string("A—B"));
+        let bbox = node.bbox.unwrap_or([0.0; 4]);
+        let attr = format!(
+            " /A << /O /Layout /BBox [ {x0} {y0} {x1} {y1} ] >>",
+            x0 = pdf_num(bbox[0]),
+            y0 = pdf_num(bbox[1]),
+            x1 = pdf_num(bbox[2]),
+            y1 = pdf_num(bbox[3]),
+        );
+        let mut legacy = b"%PDF-1.7\n".to_vec();
+        let mut legacy_offsets = [0usize; 210];
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            9,
+            &format!(
+                "<< /Type /StructElem /S /{tag} /P {parent_ref} 0 R{pg}{k_entry}{alt}{attr} >>",
+                tag = node.tag,
+            ),
+        );
+
+        assert_eq!(direct_offsets[9], legacy_offsets[9]);
+        assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn struct_element_object_byte_writer_preserves_table_scope_attribute() {
+        let node = SNode {
+            tag: "TH",
+            parent: 0,
+            kids: Vec::new(),
+            alt: None,
+            bbox: Some([1.0, 2.0, 3.0, 4.0]),
+            scope_column: true,
+            page: None,
+        };
+        let page_obj = |page: usize| 20 + page;
+        let annot_obj = |page: usize, local: usize| 100 + page * 10 + local;
+        let struct_elem_obj = |node: usize| 200 + node;
+
+        let mut direct = Vec::new();
+        let mut direct_offsets = [0usize; 210];
+        append_pdf_struct_element_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfStructElementObjectParts {
+                object_id: 9,
+                node: &node,
+                parent_ref: 77,
+            },
+            &page_obj,
+            &annot_obj,
+            &struct_elem_obj,
+        );
+
+        let mut legacy = Vec::new();
+        let mut legacy_offsets = [0usize; 210];
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            9,
+            "<< /Type /StructElem /S /TH /P 77 0 R /A << /O /Table /Scope /Column >> >>",
+        );
+
+        assert_eq!(direct_offsets[9], legacy_offsets[9]);
+        assert_eq!(direct, legacy);
     }
 
     #[test]
@@ -22096,6 +22371,36 @@ mod pdf_writer_tests {
     }
 
     #[test]
+    fn byte_pdf_number_writer_matches_string_writer() {
+        for value in [
+            f32::NEG_INFINITY,
+            -1200.0,
+            -25.5,
+            -2.345,
+            -0.25,
+            -0.004,
+            -0.0,
+            0.0,
+            0.004,
+            0.005,
+            0.25,
+            1.234,
+            1.235,
+            12.0,
+            9999.995,
+            f32::INFINITY,
+            f32::NAN,
+        ] {
+            let mut bytes = Vec::new();
+            append_pdf_num_bytes(&mut bytes, value);
+
+            let mut string = String::new();
+            append_pdf_num(&mut string, value);
+            assert_eq!(bytes, string.as_bytes(), "value {value}");
+        }
+    }
+
+    #[test]
     fn fixed_width_pdf_token_writers_preserve_finite_format_and_guard_non_finite() {
         assert_eq!(pdf_fixed2(5.0), "5.00");
         assert_eq!(pdf_fixed2(1.235), "1.24");
@@ -22189,6 +22494,25 @@ mod pdf_writer_tests {
         assert_eq!(pdf_text_string("A—B"), "<FEFF004120140042>");
         // Astral scalar (U+1F600) becomes a surrogate pair D83D DE00.
         assert_eq!(pdf_text_string("\u{1F600}"), "<FEFFD83DDE00>");
+    }
+
+    #[test]
+    fn byte_pdf_text_string_writer_matches_string_writer() {
+        for value in [
+            "",
+            "Plain Title",
+            "a(b)c\\d\re\n",
+            "é",
+            "A—B",
+            "\u{1F600}",
+            "ASCII and Unicode — together",
+        ] {
+            let mut bytes = Vec::new();
+            append_pdf_text_string_bytes(&mut bytes, value);
+
+            let string = pdf_text_string(value);
+            assert_eq!(bytes, string.as_bytes(), "value {value:?}");
+        }
     }
 }
 

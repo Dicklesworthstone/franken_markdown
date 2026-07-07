@@ -559,19 +559,16 @@ fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
 
 fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) {
     let mut consumed = vec![false; lines.len()];
-    let refs = collect_link_reference_metadata_with_consumed(lines, Some(&mut consumed));
+    let mut refs = ReferenceMap::new();
+    collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs);
     (consumed, refs)
 }
 
-fn collect_link_reference_map(lines: &[&str]) -> ReferenceMap {
-    collect_link_reference_metadata_with_consumed(lines, None)
-}
-
-fn collect_link_reference_metadata_with_consumed(
+fn collect_link_reference_metadata_into(
     lines: &[&str],
     mut consumed: Option<&mut [bool]>,
-) -> ReferenceMap {
-    let mut refs = ReferenceMap::new();
+    refs: &mut ReferenceMap,
+) {
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
     // paragraph. A link reference definition can only be *defined* at a block
@@ -719,8 +716,6 @@ fn collect_link_reference_metadata_with_consumed(
         in_paragraph = line_is_paragraph_text_with_scan(line, scan);
         i += 1;
     }
-
-    refs
 }
 
 fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
@@ -939,10 +934,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                     break;
                 }
             }
-            let bq_refs = collect_link_reference_map(&inner);
-            for (label, reference) in bq_refs {
-                refs.entry(label).or_insert(reference);
-            }
+            collect_link_reference_metadata_into(&inner, None, refs);
             collect_nested_references(&inner, refs, depth + 1);
             in_paragraph = false;
             continue;
@@ -973,10 +965,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             }
             let split = split_list_items(&lines[i..]);
             for (_, body) in &split.items {
-                let item_refs = collect_link_reference_map(body);
-                for (label, reference) in item_refs {
-                    refs.entry(label).or_insert(reference);
-                }
+                collect_link_reference_metadata_into(body, None, refs);
                 collect_nested_references(body, refs, depth + 1);
             }
             i += split.used.max(1);
@@ -4158,6 +4147,45 @@ mod refdef_paragraph_tests {
         assert!(
             !out.contains("[foo]: /url"),
             "the definition must not leak into the list item as text: {out}"
+        );
+    }
+
+    #[test]
+    fn a_top_level_definition_wins_over_nested_duplicates() {
+        let out = html("[x]: /top\n\n> [x]: /quote\n\nuse [x]");
+        assert!(
+            out.contains("href=\"/top\""),
+            "the top-level definition must resolve: {out}"
+        );
+        assert!(
+            !out.contains("href=\"/quote\""),
+            "a nested duplicate must not replace the first definition: {out}"
+        );
+    }
+
+    #[test]
+    fn the_first_sibling_nested_definition_wins() {
+        let out = html("- [x]: /first\n- [x]: /second\n\nuse [x]");
+        assert!(
+            out.contains("href=\"/first\""),
+            "the first list item definition must resolve: {out}"
+        );
+        assert!(
+            !out.contains("href=\"/second\""),
+            "a later sibling definition must not replace it: {out}"
+        );
+    }
+
+    #[test]
+    fn an_outer_nested_definition_wins_over_a_deeper_duplicate() {
+        let out = html("> [x]: /outer\n> > [x]: /inner\n\nuse [x]");
+        assert!(
+            out.contains("href=\"/outer\""),
+            "the outer container definition must resolve before recursion: {out}"
+        );
+        assert!(
+            !out.contains("href=\"/inner\""),
+            "a deeper duplicate must not replace it: {out}"
         );
     }
 

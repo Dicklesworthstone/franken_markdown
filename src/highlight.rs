@@ -331,9 +331,9 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         }
 
         // Operator vs punctuation vs other.
-        let kind = if "+-*/%=<>!&|^~?:@".contains(c) {
+        let kind = if is_generic_operator_char(c) {
             Tok::Operator
-        } else if "()[]{},;.".contains(c) {
+        } else if is_generic_punct_char(c) {
             Tok::Punct
         } else {
             Tok::Plain
@@ -476,9 +476,9 @@ fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
             };
             push_span(spans, kind, start, pos);
         } else {
-            let kind = if ":;{}(),[]".contains(ch) {
+            let kind = if is_css_punct_char(ch) {
                 Tok::Punct
-            } else if ".>+~*=|^$!".contains(ch) {
+            } else if is_css_operator_char(ch) {
                 Tok::Operator
             } else {
                 Tok::Plain
@@ -563,12 +563,12 @@ fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
             pos = consume_while(code, pos, |c| c.is_ascii_digit());
             push_span(spans, Tok::Number, start, pos);
             line_start = false;
-        } else if "*_~".contains(ch) {
+        } else if is_markdown_emphasis_marker(ch) {
             let start = pos;
             pos = consume_while(code, pos, |c| c == ch);
             push_span(spans, Tok::Operator, start, pos);
             line_start = false;
-        } else if "[]()!|:".contains(ch) {
+        } else if is_markdown_punct_char(ch) {
             push_span(spans, Tok::Punct, pos, pos + clen);
             pos += clen;
             line_start = false;
@@ -623,7 +623,7 @@ fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
         } else {
             let kind = if is_mermaid_operator_char(ch) {
                 Tok::Operator
-            } else if "()[]{}:,;|".contains(ch) {
+            } else if is_mermaid_punct_char(ch) {
                 Tok::Punct
             } else {
                 Tok::Plain
@@ -747,6 +747,31 @@ fn is_html_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.' | '!' | '?')
 }
 
+const fn is_generic_operator_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '+' | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '='
+            | '<'
+            | '>'
+            | '!'
+            | '&'
+            | '|'
+            | '^'
+            | '~'
+            | '?'
+            | ':'
+            | '@'
+    )
+}
+
+const fn is_generic_punct_char(ch: char) -> bool {
+    matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.')
+}
+
 fn is_css_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || matches!(ch, '_' | '-')
 }
@@ -757,6 +782,32 @@ fn is_css_ident_char(ch: char) -> bool {
 
 fn is_css_number_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '%' | '-')
+}
+
+const fn is_css_punct_char(ch: char) -> bool {
+    matches!(ch, ':' | ';' | '{' | '}' | '(' | ')' | ',' | '[' | ']')
+}
+
+const fn is_css_operator_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '.' | '>' | '+' | '~' | '*' | '=' | '|' | '^' | '$' | '!'
+    )
+}
+
+const fn is_markdown_emphasis_marker(ch: char) -> bool {
+    matches!(ch, '*' | '_' | '~')
+}
+
+const fn is_markdown_punct_char(ch: char) -> bool {
+    matches!(ch, '[' | ']' | '(' | ')' | '!' | '|' | ':')
+}
+
+const fn is_markdown_plain_stop_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '`' | '*' | '_' | '~' | '[' | ']' | '(' | ')' | '!' | '|' | ':'
+    )
 }
 
 fn is_mermaid_number_char(ch: char) -> bool {
@@ -775,6 +826,13 @@ fn is_mermaid_operator_char(ch: char) -> bool {
     matches!(
         ch,
         '-' | '=' | '.' | '>' | '<' | '+' | '*' | '/' | '\\' | '&' | '@' | '~' | '!'
+    )
+}
+
+const fn is_mermaid_punct_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '(' | ')' | '[' | ']' | '{' | '}' | ':' | ',' | ';' | '|'
     )
 }
 
@@ -902,7 +960,7 @@ fn consume_markdown_plain(code: &str, mut pos: usize) -> usize {
         let Some(ch) = code[pos..].chars().next() else {
             break;
         };
-        if ch == '\n' || "`*_~[]()!|:".contains(ch) {
+        if ch == '\n' || is_markdown_plain_stop_char(ch) {
             break;
         }
         pos += ch.len_utf8();
@@ -1448,5 +1506,42 @@ mod line_prefix_dos_tests {
             next = s.end;
         }
         assert_eq!(next, code.len(), "spans must cover the whole input");
+    }
+}
+
+#[cfg(test)]
+mod char_classifier_tests {
+    use super::{
+        is_css_operator_char, is_css_punct_char, is_generic_operator_char, is_generic_punct_char,
+        is_markdown_emphasis_marker, is_markdown_plain_stop_char, is_markdown_punct_char,
+        is_mermaid_operator_char, is_mermaid_punct_char,
+    };
+
+    fn assert_matches_literal_set(literal: &str, classifier: impl Fn(char) -> bool) {
+        for byte in 0u8..=127 {
+            let ch = char::from(byte);
+            assert_eq!(
+                classifier(ch),
+                literal.contains(ch),
+                "classifier mismatch for ASCII {byte:#04x} ({ch:?}) in {literal:?}"
+            );
+        }
+        assert!(
+            !classifier('λ'),
+            "ASCII literal classifier must reject non-ASCII probes"
+        );
+    }
+
+    #[test]
+    fn char_classifiers_match_their_former_literal_sets() {
+        assert_matches_literal_set("+-*/%=<>!&|^~?:@", is_generic_operator_char);
+        assert_matches_literal_set("()[]{},;.", is_generic_punct_char);
+        assert_matches_literal_set(":;{}(),[]", is_css_punct_char);
+        assert_matches_literal_set(".>+~*=|^$!", is_css_operator_char);
+        assert_matches_literal_set("*_~", is_markdown_emphasis_marker);
+        assert_matches_literal_set("[]()!|:", is_markdown_punct_char);
+        assert_matches_literal_set("`*_~[]()!|:", is_markdown_plain_stop_char);
+        assert_matches_literal_set("-.=><+*/\\&@~!", is_mermaid_operator_char);
+        assert_matches_literal_set("()[]{}:,;|", is_mermaid_punct_char);
     }
 }

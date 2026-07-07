@@ -75,6 +75,10 @@ impl BitWriter {
         self.write_bits(u32::from(code), u32::from(len));
     }
 
+    fn pending_byte_len(&self) -> usize {
+        self.out.len() + usize::from(self.bitcount > 0)
+    }
+
     /// Pad the current partial byte with zero bits and flush. Leaves the writer
     /// byte-aligned and reusable (used both for end-of-stream padding and to
     /// align before a stored block's LEN/NLEN/raw bytes).
@@ -276,16 +280,29 @@ fn match_len(data: &[u8], a: usize, b: usize, max: usize) -> usize {
 struct FixedDeflate {
     body: Vec<u8>,
     adler32: u32,
+    complete: bool,
 }
 
 /// Produce a raw DEFLATE byte stream (single final fixed-Huffman block) using
 /// greedy LZ77 matching over a hash-chain index.
+#[cfg(test)]
 fn deflate_fixed(data: &[u8]) -> FixedDeflate {
+    deflate_fixed_with_limit(data, None)
+}
+
+fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) -> FixedDeflate {
     let mut bw = BitWriter::new();
     let mut adler = Adler32::new();
     // Block header: BFINAL = 1, BTYPE = 01 (fixed Huffman), both LSB-first.
     bw.write_bits(1, 1);
     bw.write_bits(0b01, 2);
+    if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
+        return FixedDeflate {
+            body: bw.out,
+            adler32: adler32(data),
+            complete: false,
+        };
+    }
 
     let n = data.len();
     let mut head = vec![NONE; HASH_SIZE];
@@ -335,6 +352,13 @@ fn deflate_fixed(data: &[u8]) -> FixedDeflate {
 
         if best_len >= MIN_MATCH && (1..=WINDOW).contains(&best_dist) {
             emit_match(&mut bw, best_len, best_dist);
+            if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
+                return FixedDeflate {
+                    body: bw.out,
+                    adler32: adler32(data),
+                    complete: false,
+                };
+            }
             let end = pos + best_len;
             let mut k = pos;
             while k < end {
@@ -346,6 +370,13 @@ fn deflate_fixed(data: &[u8]) -> FixedDeflate {
         } else {
             if let Some(&b) = data.get(pos) {
                 emit_literal(&mut bw, b);
+                if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
+                    return FixedDeflate {
+                        body: bw.out,
+                        adler32: adler32(data),
+                        complete: false,
+                    };
+                }
                 adler.update_byte(b);
             }
             insert(&mut head, &mut prev, pos);
@@ -359,6 +390,14 @@ fn deflate_fixed(data: &[u8]) -> FixedDeflate {
     FixedDeflate {
         body: bw.out,
         adler32: adler.finish(),
+        complete: true,
+    }
+}
+
+fn fixed_body_exceeds_limit(bw: &BitWriter, abort_after_body_len: Option<usize>) -> bool {
+    match abort_after_body_len {
+        Some(limit) => bw.pending_byte_len() > limit,
+        None => false,
     }
 }
 
@@ -430,9 +469,9 @@ fn adler32(data: &[u8]) -> u32 {
 /// Whichever of the fixed-Huffman and stored encodings is smaller is used, so
 /// incompressible payloads (e.g. raw TrueType font bytes) do not expand.
 pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
-    let fixed = deflate_fixed(data);
     let stored_len = deflate_stored_len(data.len());
-    let use_stored = stored_len < fixed.body.len();
+    let fixed = deflate_fixed_with_limit(data, Some(stored_len));
+    let use_stored = !fixed.complete || stored_len < fixed.body.len();
 
     let body_len = if use_stored {
         stored_len
@@ -1017,6 +1056,51 @@ mod tests {
             comp.len() <= v.len() + 6 + 5 * 4,
             "expanded too much: {}",
             comp.len()
+        );
+    }
+
+    #[test]
+    fn fixed_deflate_limit_aborts_lcg_data_and_zlib_still_roundtrips() {
+        let mut v = Vec::with_capacity(120_000);
+        let mut state: u64 = 0x4d59_5df4_d0f3_3173;
+        for _ in 0..120_000 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            v.push((state >> 33) as u8);
+        }
+
+        let stored_len = deflate_stored_len(v.len());
+        let limited = deflate_fixed_with_limit(&v, Some(stored_len));
+        assert!(!limited.complete, "LCG data should exceed stored fallback");
+        assert_eq!(limited.adler32, adler32(&v));
+
+        let comp = zlib_compress(&v);
+        assert_eq!(comp.len(), 2 + stored_len + 4);
+        assert_eq!(
+            zlib_decompress(&comp, v.len() + 64).as_deref(),
+            Some(v.as_slice())
+        );
+    }
+
+    #[test]
+    fn fixed_deflate_limit_completes_and_matches_full_fixed_body_when_smaller() {
+        let data = "The quick brown fox jumps over the lazy dog. "
+            .repeat(2048)
+            .into_bytes();
+        let stored_len = deflate_stored_len(data.len());
+        let full = deflate_fixed(&data);
+        assert!(full.body.len() < stored_len);
+
+        let limited = deflate_fixed_with_limit(&data, Some(stored_len));
+        assert!(limited.complete);
+        assert_eq!(limited.body, full.body);
+        assert_eq!(limited.adler32, full.adler32);
+
+        let comp = zlib_compress(&data);
+        assert_eq!(
+            comp.get(2..comp.len().saturating_sub(4)),
+            Some(full.body.as_slice())
         );
     }
 

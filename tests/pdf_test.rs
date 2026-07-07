@@ -2294,7 +2294,7 @@ fn pdf_svg_stroke_defaults_match_svg_initial_values() {
 #[test]
 fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40">
   <style>
     @import url('ignored.css');
     .dash { stroke-dasharray: 6 4; stroke-linecap: square; stroke-linejoin: bevel; }
@@ -2310,7 +2310,9 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
   <path class="dash" d="M4 4 L60 4" fill="none" stroke="#0000ff" stroke-width="2"/>
   <path class="dash solid" d="M4 12 L60 12" fill="none" stroke="#ff0000" stroke-width="1"/>
   <path d="M4 20 L60 20" fill="none" stroke="#00ff00" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" stroke-dasharray="2,3" stroke-dashoffset="1"/>
+  <path d="M4 24 L60 24" fill="none" stroke="#ff00ff" stroke-width="1" stroke-dasharray="2 3 4"/>
   <path class="miter" d="M4 28 L60 28" fill="none" stroke="#123456" stroke-width="2"/>
+  <path d="M4 36 L60 36" fill="none" stroke="#00ffff" stroke-width="1" stroke-dasharray="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 -1"/>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -2333,8 +2335,22 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
         "presentation attributes should support dash offset and explicit cap/join/miter-limit values: {text}"
     );
     assert!(
+        text.contains(
+            "q 1.000 0.000 1.000 RG 1 w 0 J 0 j 4 M [2 3 4 2 3 4] 0 d 4 24 m 60 24 l S\nQ"
+        ),
+        "odd-length SVG dash arrays should repeat into an even PDF dash pattern: {text}"
+    );
+    assert!(
         text.contains("0.071 0.204 0.337 RG 2 w 0 J 0 j 2.5 M 4 28 m 60 28 l S"),
         "CSS stroke-miterlimit should emit a PDF miter-limit operator with explicit miter joins: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 1.000 RG 1 w 0 J 0 j 4 M 4 36 m 60 36 l S"),
+        "overlong invalid dash arrays should be ignored instead of silently truncated: {text}"
+    );
+    assert!(
+        !text.contains("[1 2 3 4 5 6 7 8"),
+        "overlong invalid dash arrays should not emit a partial PDF dash pattern: {text}"
     );
 }
 

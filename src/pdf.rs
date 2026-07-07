@@ -595,14 +595,14 @@ impl SvgTextSpacing {
 
 #[derive(Clone, Copy)]
 struct SvgDashPattern {
-    values: [f32; 8],
+    values: [f32; 16],
     len: u8,
     offset: f32,
 }
 
 impl SvgDashPattern {
     const NONE: Self = Self {
-        values: [0.0; 8],
+        values: [0.0; 16],
         len: 0,
         offset: 0.0,
     };
@@ -8964,25 +8964,19 @@ fn parse_svg_dash_array(value: &str) -> Option<SvgDashPattern> {
     if nums.is_empty() {
         return None;
     }
-    let mut dash = SvgDashPattern::NONE;
-    for num in nums {
-        if dash.len as usize >= dash.values.len() {
-            break;
-        }
-        if num < 0.0 {
-            return None;
-        }
-        dash.values[dash.len as usize] = num;
-        dash.len += 1;
-    }
-    if dash.len == 0 {
+    if nums.len() > SvgDashPattern::NONE.values.len() {
         return None;
     }
-    if dash.values[..dash.len as usize]
-        .iter()
-        .all(|value| *value <= 0.0)
-    {
+    if nums.iter().any(|num| *num < 0.0) {
+        return None;
+    }
+    if nums.iter().all(|num| *num <= 0.0) {
         return Some(SvgDashPattern::NONE);
+    }
+    let mut dash = SvgDashPattern::NONE;
+    for num in nums {
+        dash.values[dash.len as usize] = num;
+        dash.len += 1;
     }
     Some(dash)
 }
@@ -16165,11 +16159,15 @@ fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
     }
     if !style.dash.is_empty() {
         body.push('[');
-        for idx in 0..style.dash.len as usize {
-            if idx > 0 {
-                body.push(' ');
+        let dash_len = style.dash.len as usize;
+        let repeat_count = if dash_len % 2 == 1 { 2 } else { 1 };
+        for repeat in 0..repeat_count {
+            for idx in 0..dash_len {
+                if repeat > 0 || idx > 0 {
+                    body.push(' ');
+                }
+                body.push_str(&pdf_num(style.dash.values[idx]));
             }
-            body.push_str(&pdf_num(style.dash.values[idx]));
         }
         body.push_str(&format!("] {} d ", pdf_num(style.dash.offset)));
     }

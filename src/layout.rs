@@ -891,16 +891,21 @@ impl Hyphenator {
         opts: HyphenationOptions,
         out: &mut Vec<usize>,
     ) -> bool {
-        let Some(exception) = self
-            .exceptions
-            .iter()
-            .find(|exception| exception.word == normalized_word)
-        else {
+        #[cfg(debug_assertions)]
+        debug_assert!(english_exception_table_matches_direct_lookup(
+            self.exceptions
+        ));
+
+        let Some(points) = english_exception_points(normalized_word) else {
             return false;
         };
+        debug_assert!(
+            self.exceptions
+                .iter()
+                .any(|exception| exception.word == normalized_word && exception.points == points)
+        );
         out.extend(
-            exception
-                .points
+            points
                 .iter()
                 .copied()
                 .filter(|&p| legal_hyphen_point(p, len, opts)),
@@ -909,7 +914,83 @@ impl Hyphenator {
     }
 }
 
+#[cfg(debug_assertions)]
+fn english_exception_table_matches_direct_lookup(exceptions: &[HyphenException]) -> bool {
+    exceptions
+        .iter()
+        .all(|exception| english_exception_points(exception.word) == Some(exception.points))
+}
+
+fn english_exception_points(word: &str) -> Option<&'static [usize]> {
+    match word {
+        "configuration" => Some(&[3, 6, 7, 9]),
+        "deterministic" => Some(&[2, 5, 8]),
+        "documentation" => Some(&[3, 5, 8]),
+        "hyphenation" => Some(&[2, 6]),
+        "implementation" => Some(&[2, 5, 10]),
+        "internationalization" => Some(&[2, 5, 7, 11, 13, 16]),
+        "optimization" => Some(&[2, 4, 6, 8]),
+        "pagination" => Some(&[3, 4, 6]),
+        "representation" => Some(&[3, 5, 8, 10]),
+        "serialization" => Some(&[2, 4, 6, 9]),
+        "typography" => Some(&[2, 5, 7]),
+        "visualization" => Some(&[2, 4, 6, 9]),
+        _ => None,
+    }
+}
+
 const EN_US_TEX_PATTERNS: &str = include_str!("../data/hyph-en-us.patterns");
+
+const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
+    HyphenException {
+        word: "hyphenation",
+        points: &[2, 6],
+    },
+    HyphenException {
+        word: "typography",
+        points: &[2, 5, 7],
+    },
+    HyphenException {
+        word: "optimization",
+        points: &[2, 4, 6, 8],
+    },
+    HyphenException {
+        word: "deterministic",
+        points: &[2, 5, 8],
+    },
+    HyphenException {
+        word: "documentation",
+        points: &[3, 5, 8],
+    },
+    HyphenException {
+        word: "implementation",
+        points: &[2, 5, 10],
+    },
+    HyphenException {
+        word: "pagination",
+        points: &[3, 4, 6],
+    },
+    HyphenException {
+        word: "representation",
+        points: &[3, 5, 8, 10],
+    },
+    HyphenException {
+        word: "serialization",
+        points: &[2, 4, 6, 9],
+    },
+    HyphenException {
+        word: "visualization",
+        points: &[2, 4, 6, 9],
+    },
+    HyphenException {
+        word: "configuration",
+        points: &[3, 6, 7, 9],
+    },
+    HyphenException {
+        word: "internationalization",
+        points: &[2, 5, 7, 11, 13, 16],
+    },
+];
 
 fn legal_hyphen_point(point: usize, len: usize, opts: HyphenationOptions) -> bool {
     point >= opts.min_left && len.saturating_sub(point) >= opts.min_right
@@ -1152,57 +1233,6 @@ const ENGLISH_STARTER_PATTERNS: &[HyphenPattern] = &[
     HyphenPattern {
         letters: "able",
         values: &[0, 0, 4, 0, 0],
-    },
-];
-
-const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
-    HyphenException {
-        word: "hyphenation",
-        points: &[2, 6],
-    },
-    HyphenException {
-        word: "typography",
-        points: &[2, 5, 7],
-    },
-    HyphenException {
-        word: "optimization",
-        points: &[2, 4, 6, 8],
-    },
-    HyphenException {
-        word: "deterministic",
-        points: &[2, 5, 8],
-    },
-    HyphenException {
-        word: "documentation",
-        points: &[3, 5, 8],
-    },
-    HyphenException {
-        word: "implementation",
-        points: &[2, 5, 10],
-    },
-    HyphenException {
-        word: "pagination",
-        points: &[3, 4, 6],
-    },
-    HyphenException {
-        word: "representation",
-        points: &[3, 5, 8, 10],
-    },
-    HyphenException {
-        word: "serialization",
-        points: &[2, 4, 6, 9],
-    },
-    HyphenException {
-        word: "visualization",
-        points: &[2, 4, 6, 9],
-    },
-    HyphenException {
-        word: "configuration",
-        points: &[3, 6, 7, 9],
-    },
-    HyphenException {
-        word: "internationalization",
-        points: &[2, 5, 7, 11, 13, 16],
     },
 ];
 

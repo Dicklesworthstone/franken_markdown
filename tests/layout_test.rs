@@ -737,6 +737,11 @@ fn english_hyphenator_covers_common_documentation_exceptions() {
     let opts = HyphenationOptions::default();
 
     for (word, expected) in [
+        ("hyphenation", &[2, 6][..]),
+        ("typography", &[2, 5, 7][..]),
+        ("optimization", &[2, 4, 6, 8][..]),
+        ("deterministic", &[2, 5, 8][..]),
+        ("documentation", &[3, 5, 8][..]),
         ("implementation", &[2, 5, 10][..]),
         ("pagination", &[3, 4, 6][..]),
         ("representation", &[3, 5, 8, 10][..]),

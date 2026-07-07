@@ -25,9 +25,9 @@ use crate::error::Result;
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
-    FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit,
-    ParagraphItem, Penalty, StyledText, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph, default_interword_glue, is_breakable_whitespace,
+    FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit, LineBreak,
+    ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph_into, default_interword_glue, is_breakable_whitespace,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -52,6 +52,8 @@ const PAGE_STREAM_COMPRESSION_MIN: usize = 4096;
 
 // Fenced-code panel + inline-code chip backgrounds.
 const CODE_PAD_X: f32 = 8.0; // text inset inside a fenced-code line
+const CODE_FONT_SIZE: f32 = 9.5;
+const CODE_DIAGRAM_MIN_FONT_SIZE: f32 = 6.0;
 const CODE_HANGING_INDENT: f32 = 12.0; // continuation inset for wrapped code rows
 const CODE_LINE_NUMBER_GAP: f32 = 6.0;
 const PANEL_PAD_V: f32 = 5.0; // vertical breathing room above/below the code
@@ -62,10 +64,19 @@ const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
+const TABLE_FONT_SIZE: f32 = 10.0;
+const TABLE_COL_GUTTER: f32 = 14.0;
+const TABLE_MIN_COL_WIDTH: f32 = 18.0;
+const TABLE_ALLOC_MIN_UNIT_PT: f32 = 0.5;
+const TABLE_ALLOC_MAX_EXTRA_STATES: usize = 900;
+const TABLE_HEADER_WRAP_WEIGHT: f32 = 10.0;
+const TABLE_BODY_WRAP_WEIGHT: f32 = 1.0;
 
 const PDF_IMAGE_DPI_SCALE: f32 = 72.0 / 96.0;
 const MAX_PDF_IMAGE_COMPRESSED_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PDF_IMAGE_PIXELS: u64 = 24_000_000;
+const MAX_SVG_PATH_OPS: usize = 4096;
+const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// Ceiling on a PNG's *decoded* raw sample bytes (`pixels * channels * bytes/sample`).
 ///
 /// The pixel cap alone is blind to bit depth, so a 24-megapixel 16-bit RGBA image
@@ -179,6 +190,7 @@ struct PdfImageData {
     key: String,
     width_px: u32,
     height_px: u32,
+    vector: Option<PdfSvgImage>,
     color: PdfImageColor,
     /// FlateDecode stream of the image samples.
     data: Vec<u8>,
@@ -191,6 +203,835 @@ struct PdfImageData {
     /// Optional 8-bit grayscale soft mask (FlateDecode), one sample per pixel,
     /// carrying the source image's alpha channel as a PDF `/SMask`.
     smask: Option<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct PdfSvgImage {
+    view_box: SvgViewBox,
+    viewport: SvgViewport,
+    preserve_aspect: SvgPreserveAspectRatio,
+    root_background: Option<SvgRootBackground>,
+    accessible_text: Option<String>,
+    elements: Vec<SvgElement>,
+    gradients: Vec<SvgGradientPaint>,
+    patterns: Vec<SvgPatternPaint>,
+    clip_paths: Vec<SvgClipPath>,
+    markers: Vec<SvgMarker>,
+}
+
+#[derive(Clone, Copy)]
+struct SvgViewBox {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SvgViewport {
+    w: f32,
+    h: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SvgRootGeometry {
+    view_box: SvgViewBox,
+    viewport: SvgViewport,
+    preserve_aspect: SvgPreserveAspectRatio,
+}
+
+#[derive(Clone, Copy)]
+struct SvgPreserveAspectRatio {
+    mode: SvgAspectScaleMode,
+    align_x: f32,
+    align_y: f32,
+}
+
+impl SvgPreserveAspectRatio {
+    const DEFAULT: Self = Self {
+        mode: SvgAspectScaleMode::Meet,
+        align_x: 0.5,
+        align_y: 0.5,
+    };
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgAspectScaleMode {
+    None,
+    Meet,
+    Slice,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct SvgTransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+}
+
+impl SvgTransform {
+    const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    fn translate(tx: f32, ty: f32) -> Self {
+        Self {
+            e: tx,
+            f: ty,
+            ..Self::IDENTITY
+        }
+    }
+
+    fn scale(sx: f32, sy: f32) -> Self {
+        Self {
+            a: sx,
+            d: sy,
+            ..Self::IDENTITY
+        }
+    }
+
+    fn rotate_degrees(angle: f32) -> Self {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        Self {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    fn skew_x_degrees(angle: f32) -> Self {
+        Self {
+            c: angle.to_radians().tan(),
+            ..Self::IDENTITY
+        }
+    }
+
+    fn skew_y_degrees(angle: f32) -> Self {
+        Self {
+            b: angle.to_radians().tan(),
+            ..Self::IDENTITY
+        }
+    }
+
+    fn concat(self, next: Self) -> Self {
+        Self {
+            a: self.a * next.a + self.c * next.b,
+            b: self.b * next.a + self.d * next.b,
+            c: self.a * next.c + self.c * next.d,
+            d: self.b * next.c + self.d * next.d,
+            e: self.a * next.e + self.c * next.f + self.e,
+            f: self.b * next.e + self.d * next.f + self.f,
+        }
+    }
+
+    fn is_identity(self) -> bool {
+        const EPSILON: f32 = 0.000_01;
+        (self.a - 1.0).abs() <= EPSILON
+            && self.b.abs() <= EPSILON
+            && self.c.abs() <= EPSILON
+            && (self.d - 1.0).abs() <= EPSILON
+            && self.e.abs() <= EPSILON
+            && self.f.abs() <= EPSILON
+    }
+
+    fn apply_point(self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        )
+    }
+}
+
+#[derive(Clone)]
+enum SvgElement {
+    Rect(SvgRect),
+    Ellipse(SvgEllipse),
+    Line(SvgLine),
+    Polyline(SvgPoly),
+    Polygon(SvgPoly),
+    Path(SvgPath),
+    Image(SvgEmbeddedImage),
+    Text(SvgText),
+}
+
+#[derive(Clone)]
+struct SvgRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rx: f32,
+    style: SvgStyle,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone)]
+struct SvgEllipse {
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    style: SvgStyle,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone)]
+struct SvgLine {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    style: SvgStyle,
+    marker_end: Option<SvgMarkerRef>,
+    marker_start: Option<SvgMarkerRef>,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone)]
+struct SvgPoly {
+    points: Vec<(f32, f32)>,
+    style: SvgStyle,
+    marker_end: Option<SvgMarkerRef>,
+    marker_mid: Option<SvgMarkerRef>,
+    marker_start: Option<SvgMarkerRef>,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone)]
+struct SvgPath {
+    ops: Vec<SvgPathOp>,
+    style: SvgStyle,
+    marker_end: Option<SvgMarkerRef>,
+    marker_mid: Option<SvgMarkerRef>,
+    marker_start: Option<SvgMarkerRef>,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone)]
+struct SvgEmbeddedImage {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    preserve_aspect: SvgPreserveAspectRatio,
+    style: SvgStyle,
+    image: Box<PdfImageData>,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone, Copy)]
+enum SvgPathOp {
+    Move(f32, f32),
+    Line(f32, f32),
+    Cubic(f32, f32, f32, f32, f32, f32),
+    Quad(f32, f32, f32, f32),
+    Close,
+}
+
+#[derive(Clone)]
+struct SvgText {
+    x: f32,
+    y: f32,
+    text: String,
+    slot: u8,
+    font_size: f32,
+    letter_spacing: f32,
+    text_length: Option<f32>,
+    length_adjust: SvgLengthAdjust,
+    baseline: SvgDominantBaseline,
+    anchor: SvgTextAnchor,
+    fill: (f32, f32, f32),
+    opacity: f32,
+    clip_path: Option<usize>,
+    mask_path: Option<usize>,
+    transform: SvgTransform,
+    link: Option<LinkTarget>,
+}
+
+#[derive(Clone, Copy)]
+struct SvgTextMatrix {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    x: f32,
+    y: f32,
+    size: f32,
+}
+
+#[derive(Clone, Copy)]
+enum SvgTextAnchor {
+    Start,
+    Middle,
+    End,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgLengthAdjust {
+    Spacing,
+    SpacingAndGlyphs,
+}
+
+#[derive(Clone, Copy)]
+struct SvgTextPlacement {
+    x: f32,
+    y: f32,
+    font_size: f32,
+    anchor: SvgTextAnchor,
+    text_length: Option<f32>,
+    length_adjust: SvgLengthAdjust,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgFontWeight {
+    Normal,
+    Bold,
+}
+
+impl SvgFontWeight {
+    const fn is_bold(self) -> bool {
+        matches!(self, Self::Bold)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgFontSlant {
+    Normal,
+    Italic,
+}
+
+impl SvgFontSlant {
+    const fn is_italic(self) -> bool {
+        matches!(self, Self::Italic)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgFontFamily {
+    Body,
+    Mono,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgDominantBaseline {
+    Auto,
+    Middle,
+    Hanging,
+    TextBeforeEdge,
+    TextAfterEdge,
+}
+
+impl SvgDominantBaseline {
+    const fn y_shift_em(self) -> f32 {
+        match self {
+            Self::Auto => 0.0,
+            Self::Middle => 0.35,
+            Self::Hanging | Self::TextBeforeEdge => 0.8,
+            Self::TextAfterEdge => -0.2,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SvgTextSpacing {
+    Points(f32),
+    Em(f32),
+    Ex(f32),
+    Percent(f32),
+}
+
+impl SvgTextSpacing {
+    const ZERO: Self = Self::Points(0.0);
+
+    fn to_points(self, font_size: f32) -> f32 {
+        let value = match self {
+            Self::Points(value) => value,
+            Self::Em(value) => value * font_size,
+            Self::Ex(value) => value * font_size * 0.5,
+            Self::Percent(value) => value * font_size / 100.0,
+        };
+        if value.is_finite() { value } else { 0.0 }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SvgDashPattern {
+    values: [f32; 8],
+    len: u8,
+    offset: f32,
+}
+
+impl SvgDashPattern {
+    const NONE: Self = Self {
+        values: [0.0; 8],
+        len: 0,
+        offset: 0.0,
+    };
+
+    fn is_empty(self) -> bool {
+        self.len == 0
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SvgLineCap {
+    Butt,
+    Round,
+    Square,
+}
+
+impl SvgLineCap {
+    const fn pdf_id(self) -> u8 {
+        match self {
+            Self::Butt => 0,
+            Self::Round => 1,
+            Self::Square => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgLineJoin {
+    Miter,
+    Round,
+    Bevel,
+}
+
+impl SvgLineJoin {
+    const fn pdf_id(self) -> u8 {
+        match self {
+            Self::Miter => 0,
+            Self::Round => 1,
+            Self::Bevel => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SvgFillRule {
+    NonZero,
+    EvenOdd,
+}
+
+type SvgColor = (f32, f32, f32);
+type SvgGradientStop = (f32, SvgColor);
+
+#[derive(Clone)]
+struct SvgRootBackground {
+    color: Option<SvgRootBackgroundColor>,
+    opacity: f32,
+    layers: Vec<SvgRootBackgroundLayer>,
+}
+
+impl SvgRootBackground {
+    fn with_opacity(mut self, opacity: f32) -> Option<Self> {
+        let opacity = (self.opacity * opacity).clamp(0.0, 1.0);
+        self.opacity = opacity;
+        (self.is_visible()).then_some(self)
+    }
+
+    fn is_visible(&self) -> bool {
+        self.opacity > 0.001 && (self.color.is_some() || !self.layers.is_empty())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SvgRootBackgroundColor {
+    color: SvgColor,
+    opacity: f32,
+}
+
+#[derive(Clone)]
+enum SvgRootBackgroundLayer {
+    Linear(SvgCssLinearGradient),
+    Radial(SvgCssRadialGradient),
+}
+
+#[derive(Clone)]
+struct SvgCssLinearGradient {
+    start: (f32, f32),
+    end: (f32, f32),
+    stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Clone)]
+struct SvgCssRadialGradient {
+    center: (f32, f32),
+    stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Clone, Copy)]
+struct SvgShadow {
+    dx: f32,
+    dy: f32,
+    color: SvgColor,
+    opacity: f32,
+}
+
+impl SvgShadow {
+    const FALLBACK: Self = Self {
+        dx: 2.0,
+        dy: 2.0,
+        color: (0.890, 0.900, 0.920),
+        opacity: 1.0,
+    };
+}
+
+#[derive(Clone)]
+struct SvgFilterShadow {
+    id: String,
+    shadow: SvgShadow,
+}
+
+#[derive(Clone, Copy)]
+struct SvgStyle {
+    color: SvgColor,
+    fill: Option<(f32, f32, f32)>,
+    fill_gradient: Option<usize>,
+    fill_pattern: Option<usize>,
+    fill_current_color: bool,
+    fill_context: Option<SvgContextPaint>,
+    stroke: Option<(f32, f32, f32)>,
+    stroke_gradient: Option<usize>,
+    stroke_current_color: bool,
+    stroke_context: Option<SvgContextPaint>,
+    stroke_width: f32,
+    non_scaling_stroke: bool,
+    opacity: f32,
+    fill_opacity: f32,
+    stroke_opacity: f32,
+    visible: bool,
+    shadow: Option<SvgShadow>,
+    clip_path: Option<usize>,
+    mask_path: Option<usize>,
+    transform: SvgTransform,
+    dash: SvgDashPattern,
+    line_cap: SvgLineCap,
+    line_join: SvgLineJoin,
+    miter_limit: Option<f32>,
+    fill_rule: SvgFillRule,
+    font_weight: SvgFontWeight,
+    font_slant: SvgFontSlant,
+    font_family: SvgFontFamily,
+    dominant_baseline: SvgDominantBaseline,
+    letter_spacing: SvgTextSpacing,
+}
+
+impl SvgStyle {
+    const INITIAL: Self = Self {
+        color: (0.0, 0.0, 0.0),
+        fill: Some((0.0, 0.0, 0.0)),
+        fill_gradient: None,
+        fill_pattern: None,
+        fill_current_color: false,
+        fill_context: None,
+        stroke: None,
+        stroke_gradient: None,
+        stroke_current_color: false,
+        stroke_context: None,
+        stroke_width: 1.0,
+        non_scaling_stroke: false,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        stroke_opacity: 1.0,
+        visible: true,
+        shadow: None,
+        clip_path: None,
+        mask_path: None,
+        transform: SvgTransform::IDENTITY,
+        dash: SvgDashPattern::NONE,
+        line_cap: SvgLineCap::Butt,
+        line_join: SvgLineJoin::Miter,
+        miter_limit: Some(4.0),
+        fill_rule: SvgFillRule::NonZero,
+        font_weight: SvgFontWeight::Normal,
+        font_slant: SvgFontSlant::Normal,
+        font_family: SvgFontFamily::Body,
+        dominant_baseline: SvgDominantBaseline::Auto,
+        letter_spacing: SvgTextSpacing::ZERO,
+    };
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgContextPaint {
+    Fill,
+    Stroke,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SvgStylePatch {
+    color: Option<SvgColor>,
+    fill: Option<Option<(f32, f32, f32)>>,
+    fill_gradient: Option<Option<usize>>,
+    fill_pattern: Option<Option<usize>>,
+    fill_current_color: Option<bool>,
+    fill_context: Option<Option<SvgContextPaint>>,
+    stroke: Option<Option<(f32, f32, f32)>>,
+    stroke_gradient: Option<Option<usize>>,
+    stroke_current_color: Option<bool>,
+    stroke_context: Option<Option<SvgContextPaint>>,
+    stroke_width: Option<f32>,
+    non_scaling_stroke: Option<bool>,
+    opacity: Option<f32>,
+    fill_opacity: Option<f32>,
+    stroke_opacity: Option<f32>,
+    visible: Option<bool>,
+    shadow: Option<Option<SvgShadow>>,
+    clip_path: Option<Option<usize>>,
+    mask_path: Option<Option<usize>>,
+    transform: Option<SvgTransform>,
+    dash: Option<SvgDashPattern>,
+    dash_offset: Option<f32>,
+    line_cap: Option<SvgLineCap>,
+    line_join: Option<SvgLineJoin>,
+    miter_limit: Option<f32>,
+    fill_rule: Option<SvgFillRule>,
+    font_weight: Option<SvgFontWeight>,
+    font_slant: Option<SvgFontSlant>,
+    font_family: Option<SvgFontFamily>,
+    dominant_baseline: Option<SvgDominantBaseline>,
+    letter_spacing: Option<SvgTextSpacing>,
+}
+
+#[derive(Clone)]
+struct SvgCssRule {
+    selector: SvgCssSelector,
+    order: usize,
+    decls: String,
+}
+
+#[derive(Clone)]
+struct SvgGradientStopCssRule {
+    selector: SvgCssSelector,
+    order: usize,
+    patch: SvgGradientStopPatch,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SvgGradientStopPatch {
+    color: Option<SvgColor>,
+    opacity: Option<f32>,
+}
+
+#[derive(Clone)]
+struct SvgCssSelector {
+    parts: Vec<SvgCssSelectorPart>,
+    specificity: u16,
+}
+
+#[derive(Clone)]
+struct SvgCssSelectorPart {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+    relation: SvgCssRelation,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgCssRelation {
+    Descendant,
+    Child,
+}
+
+#[derive(Clone)]
+struct SvgCssAncestor {
+    tag: String,
+    attrs: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+struct SvgGradientPaint {
+    id: String,
+    color: (f32, f32, f32),
+    linear: Option<SvgLinearGradient>,
+    radial: Option<SvgRadialGradient>,
+}
+
+#[derive(Clone)]
+struct SvgPatternPaint {
+    id: String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    transform: SvgTransform,
+    color: SvgColor,
+    elements: Vec<SvgElement>,
+}
+
+struct SvgPatternDefinition {
+    id: String,
+    attrs: Vec<(String, String)>,
+    body: String,
+    href: Option<String>,
+}
+
+struct SvgResolvedPattern {
+    attrs: Vec<(String, String)>,
+    body: String,
+}
+
+#[derive(Clone)]
+struct SvgGradientDefinition {
+    id: String,
+    linear: bool,
+    attrs: Vec<(String, String)>,
+    stops: Vec<SvgGradientStop>,
+    href: Option<String>,
+}
+
+struct SvgResolvedGradient {
+    linear: bool,
+    attrs: Vec<(String, String)>,
+    stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Clone, PartialEq)]
+struct SvgLinearGradient {
+    units: SvgGradientUnits,
+    spread: SvgGradientSpread,
+    transform: SvgTransform,
+    x1: SvgGradientLength,
+    y1: SvgGradientLength,
+    x2: SvgGradientLength,
+    y2: SvgGradientLength,
+    stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Clone, PartialEq)]
+struct SvgRadialGradient {
+    units: SvgGradientUnits,
+    spread: SvgGradientSpread,
+    transform: SvgTransform,
+    cx: SvgGradientLength,
+    cy: SvgGradientLength,
+    r: SvgGradientLength,
+    fx: SvgGradientLength,
+    fy: SvgGradientLength,
+    fr: SvgGradientLength,
+    stops: Vec<SvgGradientStop>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgGradientUnits {
+    ObjectBoundingBox,
+    UserSpaceOnUse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgGradientSpread {
+    Pad,
+    Repeat,
+    Reflect,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct SvgGradientLength {
+    value: f32,
+    percent: bool,
+}
+
+#[derive(Clone, PartialEq)]
+struct PdfShading {
+    kind: PdfShadingKind,
+    stops: Vec<SvgGradientStop>,
+    extend_start: bool,
+    extend_end: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PdfShadingKind {
+    Axial([f32; 4]),
+    Radial([f32; 6]),
+}
+
+#[derive(Clone)]
+struct SvgCssVariable {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone)]
+struct SvgReusableDef {
+    id: String,
+    tag: String,
+    attrs: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+#[derive(Clone)]
+struct SvgMarker {
+    id: String,
+    ref_x: f32,
+    ref_y: f32,
+    orient: SvgMarkerOrient,
+    view_box: Option<SvgMarkerViewBox>,
+    units_stroke_width: bool,
+    shapes: Vec<SvgMarkerShape>,
+}
+
+#[derive(Clone, Copy)]
+struct SvgMarkerViewBox {
+    view_box: SvgViewBox,
+    viewport: SvgViewport,
+    preserve_aspect: SvgPreserveAspectRatio,
+}
+
+#[derive(Clone, Copy)]
+enum SvgMarkerOrient {
+    Angle(f32),
+    Auto,
+    AutoStartReverse,
+}
+
+#[derive(Clone, Copy)]
+enum SvgMarkerPlacement {
+    Start,
+    Mid,
+    End,
+}
+
+#[derive(Clone, Copy)]
+struct SvgMarkerPaint {
+    fill: Option<SvgColor>,
+    stroke: SvgColor,
+    stroke_width: f32,
+}
+
+#[derive(Clone)]
+struct SvgMarkerShape {
+    ops: Vec<SvgPathOp>,
+    style: SvgStyle,
+}
+
+#[derive(Clone, Copy)]
+struct SvgMarkerRef {
+    index: Option<usize>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SvgMarkerRefs {
+    start: Option<SvgMarkerRef>,
+    mid: Option<SvgMarkerRef>,
+    end: Option<SvgMarkerRef>,
+}
+
+#[derive(Clone)]
+struct SvgClipPath {
+    id: String,
+    ops: Vec<SvgPathOp>,
+    fill_rule: SvgFillRule,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -524,8 +1365,67 @@ struct LineTok {
 
 struct BuiltParagraph {
     items: Vec<ParagraphItem>,
-    item_toks: Vec<Vec<Tok>>,
+    item_toks: Vec<TokGroup>,
     break_toks: Vec<Option<Tok>>,
+}
+
+impl BuiltParagraph {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            items: Vec::with_capacity(capacity),
+            item_toks: Vec::with_capacity(capacity),
+            break_toks: Vec::with_capacity(capacity),
+        }
+    }
+}
+
+struct TokGroup {
+    first: Option<Tok>,
+    rest: Vec<Tok>,
+}
+
+impl TokGroup {
+    fn empty() -> Self {
+        Self {
+            first: None,
+            rest: Vec::new(),
+        }
+    }
+
+    fn one(tok: Tok) -> Self {
+        Self {
+            first: Some(tok),
+            rest: Vec::new(),
+        }
+    }
+
+    fn from_vec(mut toks: Vec<Tok>) -> Self {
+        match toks.len() {
+            0 => Self::empty(),
+            1 => Self {
+                first: toks.pop(),
+                rest: Vec::new(),
+            },
+            _ => {
+                let rest = toks.split_off(1);
+                Self {
+                    first: toks.pop(),
+                    rest,
+                }
+            }
+        }
+    }
+
+    fn take_from(word: &mut Vec<Tok>) -> Self {
+        if word.len() == 1 {
+            Self {
+                first: word.pop(),
+                rest: Vec::new(),
+            }
+        } else {
+            Self::from_vec(std::mem::take(word))
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -537,6 +1437,7 @@ struct PdfWordContext<'a> {
     /// Per-document hyphenation cache (bead qw1.7.1); shared via `&RefCell` so
     /// this `Copy` context can still read/insert.
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
+    width_cache: &'a RefCell<WidthCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -593,8 +1494,8 @@ pub enum RenderWarning {
     /// An image whose destination had no matching `PdfImageAsset`; rendered as
     /// alt text instead of being embedded.
     UnresolvedImage(String),
-    /// A supplied image asset could not be decoded (e.g. an unsupported PNG
-    /// variant); rendered as alt text instead of being embedded.
+    /// A supplied image asset could not be decoded (e.g. an unsupported image
+    /// format); rendered as alt text instead of being embedded.
     UnsupportedImage(String),
     /// `count` characters had no glyph in the embedded fonts and were rendered
     /// as `.notdef` boxes (and are not selectable). `sample` shows a few.
@@ -621,7 +1522,7 @@ impl RenderWarning {
                  (add --pdf-image '{dest}=PATH')"
             ),
             Self::UnsupportedImage(dest) => format!(
-                "image '{dest}' could not be decoded (unsupported PNG); rendered as alt text"
+                "image '{dest}' could not be decoded (unsupported image); rendered as alt text"
             ),
             Self::MissingGlyphs { count, sample } => format!(
                 "{count} character(s) have no glyph in the embedded fonts and were rendered \
@@ -638,6 +1539,7 @@ impl RenderWarning {
 #[must_use]
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
     let mut warnings = Vec::new();
+    let mut image_text = String::new();
 
     let mut dests = Vec::new();
     collect_image_dests(&doc.blocks, &mut dests);
@@ -652,17 +1554,19 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
             .find(|asset| asset.destination.trim() == trimmed)
         {
             None => warnings.push(RenderWarning::UnresolvedImage(dest)),
-            Some(asset) => {
-                if parse_png_image_asset(trimmed, &asset.bytes).is_none() {
+            Some(asset) => match parse_pdf_image_asset(trimmed, &asset.bytes) {
+                Some(image) => collect_svg_image_text(&image, &mut image_text),
+                None => {
                     warnings.push(RenderWarning::UnsupportedImage(dest));
                 }
-            }
+            },
         }
     }
 
     if let Ok(faces) = Faces::load(opts) {
         let mut text = String::new();
         collect_text(&doc.blocks, &mut text);
+        text.push_str(&image_text);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
@@ -691,6 +1595,17 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     }
 
     warnings
+}
+
+fn collect_svg_image_text(image: &PdfImageData, out: &mut String) {
+    let Some(svg) = image.vector.as_ref() else {
+        return;
+    };
+    for element in &svg.elements {
+        if let SvgElement::Text(text) = element {
+            out.push_str(&text.text);
+        }
+    }
 }
 
 fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
@@ -939,6 +1854,11 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         next_flow: 0,
         list_stack: Vec::new(),
         hyphen_cache: RefCell::new(HashMap::new()),
+        width_cache: RefCell::new(HashMap::new()),
+        paragraph_scratch: ParagraphLayoutScratch::new(),
+        line_breaks: Vec::new(),
+        line_toks: Vec::new(),
+        glue_adjustments: Vec::new(),
     };
     layout_blocks(blocks, 0.0, &mut out, &mut cx);
     out
@@ -949,6 +1869,8 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
 /// memory bounded and the cached set deterministic (words are seen in document
 /// order), while never changing the hyphenation result.
 const HYPHEN_CACHE_MAX: usize = 16_384;
+const WIDTH_CACHE_MAX: usize = 32_768;
+type WidthCache = HashMap<(u8, u32), HashMap<String, LayoutUnit>>;
 
 /// One open list level during layout. The stack in [`LayoutCx`] lets
 /// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
@@ -972,6 +1894,20 @@ struct LayoutCx<'a> {
     /// the `Copy` [`PdfWordContext`]. Lives for the whole `layout()` call and is
     /// dropped with it (render-call-local), and never changes the result.
     hyphen_cache: RefCell<HashMap<String, Vec<usize>>>,
+    /// Per-render shaped-width cache for PDF paragraph layout. Values are the
+    /// exact `Faces::shaped_width` result for a font slot, size, and text.
+    width_cache: RefCell<WidthCache>,
+    /// Reused workspace for the paragraph optimizer. This avoids the allocating
+    /// `break_paragraph` wrapper on every PDF paragraph while keeping all state
+    /// render-call-local and deterministic.
+    paragraph_scratch: ParagraphLayoutScratch,
+    line_breaks: Vec<LineBreak>,
+    /// Reused physical-line token workspace. Paragraph breaking returns item
+    /// ranges, then PDF layout maps those ranges back to styled tokens; this
+    /// buffer avoids allocating a new token vector for every emitted line.
+    line_toks: Vec<LineTok>,
+    /// Reused justification workspace for TeX-style glue stretch/shrink.
+    glue_adjustments: Vec<(usize, f32)>,
 }
 
 impl LayoutCx<'_> {
@@ -983,6 +1919,15 @@ impl LayoutCx<'_> {
     fn alloc_flow(&mut self) -> u32 {
         self.next_flow = self.next_flow.saturating_add(1);
         self.next_flow
+    }
+
+    fn break_paragraph(&mut self, items: &[ParagraphItem], line_width: LayoutUnit) {
+        break_paragraph_into(
+            items,
+            line_width,
+            &mut self.paragraph_scratch,
+            &mut self.line_breaks,
+        );
     }
 }
 
@@ -1065,8 +2010,23 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             let mut any = false;
             let line_count = code.lines().count().max(1);
             let digits = line_count.to_string().len().max(1);
+            let code_area_width = (cx.page.content_w - indent - CODE_PAD_X).max(12.0);
+            let preserve_lines = preserve_code_block_lines(lang.as_deref(), code);
+            let code_size = if preserve_lines {
+                fitted_code_font_size(
+                    code,
+                    code_area_width,
+                    cx.opts.code_line_numbers,
+                    digits,
+                    CODE_FONT_SIZE,
+                    CODE_DIAGRAM_MIN_FONT_SIZE,
+                    cx.faces,
+                )
+            } else {
+                CODE_FONT_SIZE
+            };
             let number_col = if cx.opts.code_line_numbers {
-                code_line_number_column_width(digits, 9.5, cx.faces)
+                code_line_number_column_width(digits, code_size, cx.faces)
             } else {
                 0.0
             };
@@ -1081,17 +2041,17 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         digits,
                         line_numbers: cx.opts.code_line_numbers,
                         x0: x,
-                        max_text_width: (cx.page.content_w - indent - CODE_PAD_X - number_col)
-                            .max(12.0),
+                        max_text_width: (code_area_width - number_col).max(12.0),
                         number_col,
-                        size: 9.5,
+                        size: code_size,
+                        preserve_lines,
                         faces: cx.faces,
                     },
                 );
                 let row_count = rows.len();
                 for (row_idx, segs) in rows.into_iter().enumerate() {
                     out.push(Line {
-                        size: 9.5,
+                        size: code_size,
                         gap_after: if row_idx + 1 == row_count { 1.5 } else { 0.5 },
                         rule: false,
                         rule_x: 0.0,
@@ -1112,7 +2072,12 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 let mut segs = Vec::new();
                 if cx.opts.code_line_numbers {
                     segs.push(code_line_number_seg(
-                        1, digits, x, number_col, 9.5, cx.faces,
+                        1,
+                        digits,
+                        x,
+                        number_col,
+                        CODE_FONT_SIZE,
+                        cx.faces,
                     ));
                 }
                 segs.push(Seg {
@@ -1125,7 +2090,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     width: 0.0,
                 });
                 out.push(Line {
-                    size: 9.5,
+                    size: CODE_FONT_SIZE,
                     gap_after: 1.5,
                     rule: false,
                     rule_x: 0.0,
@@ -1314,7 +2279,11 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
     let asset = assets
         .iter()
         .find(|asset| asset.destination.trim() == key)?;
-    parse_png_image_asset(key, &asset.bytes)
+    parse_pdf_image_asset(key, &asset.bytes)
+}
+
+fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    parse_png_image_asset(key, bytes).or_else(|| parse_svg_image_asset(key, bytes))
 }
 
 /// Raw chunks of a PNG, gathered before the format is interpreted.
@@ -1367,6 +2336,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
             key: key.to_string(),
             width_px: png.width,
             height_px: png.height,
+            vector: None,
             color,
             data: png.idat,
             png_predictor: true,
@@ -1384,11 +2354,7842 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         key: key.to_string(),
         width_px: decoded.width,
         height_px: decoded.height,
+        vector: None,
         color: decoded.color,
         data,
         png_predictor: false,
         smask,
     })
+}
+
+fn parse_svg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+        return None;
+    }
+    let src = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches('\u{feff}')
+        .trim_start();
+    if !svg_has_supported_root(src) {
+        return None;
+    }
+    let vector = parse_svg_document(src)?;
+    let w = vector.viewport.w.ceil().max(1.0);
+    let h = vector.viewport.h.ceil().max(1.0);
+    if !w.is_finite()
+        || !h.is_finite()
+        || (w as u64).saturating_mul(h as u64) > MAX_PDF_IMAGE_PIXELS
+    {
+        return None;
+    }
+    Some(PdfImageData {
+        key: key.to_string(),
+        width_px: w as u32,
+        height_px: h as u32,
+        vector: Some(vector),
+        color: PdfImageColor::Rgb,
+        data: Vec::new(),
+        png_predictor: false,
+        smask: None,
+    })
+}
+
+fn svg_has_supported_root(src: &str) -> bool {
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                return false;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            return false;
+        };
+        let raw = src[open + 1..open + close_rel].trim();
+        pos = open + close_rel + 1;
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        if raw.starts_with('/') {
+            return false;
+        }
+        let (tag, _) = svg_tag_parts(raw);
+        return svg_local_name(tag).eq_ignore_ascii_case("svg");
+    }
+    false
+}
+
+fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
+    let mut pos = 0usize;
+    let mut view_box = None;
+    let mut viewport = None;
+    let mut preserve_aspect = SvgPreserveAspectRatio::DEFAULT;
+    let mut root_background = None;
+    let mut elements = Vec::new();
+    let mut skip_depth = 0usize;
+    let mut style_stack = vec![SvgStyle::INITIAL];
+    let mut link_stack: Vec<Option<LinkTarget>> = vec![None];
+    let mut selector_stack: Vec<SvgCssAncestor> = Vec::new();
+    let css_vars = parse_svg_css_variables(src);
+    let gradients = parse_svg_gradient_paints(src, &css_vars);
+    let filter_shadows = parse_svg_filter_shadows(src, &css_vars);
+    let mut clip_paths = parse_svg_clip_paths(src);
+    clip_paths.extend(parse_svg_masks(src, &css_vars));
+    let css_rules = parse_svg_document_css_rules(src);
+    let patterns = parse_svg_pattern_paints(
+        src,
+        &gradients,
+        &css_vars,
+        &clip_paths,
+        &css_rules,
+        &filter_shadows,
+    );
+    let markers = parse_svg_markers(
+        src,
+        &gradients,
+        &patterns,
+        &css_vars,
+        &clip_paths,
+        &css_rules,
+        &filter_shadows,
+    );
+    let reusable_refs = parse_svg_use_refs(src);
+    let reusable_defs = parse_svg_reusable_defs(src, &reusable_refs);
+    let accessible_text = parse_svg_accessible_text(src);
+
+    while let Some(open_rel) = src.get(pos..)?.find('<') {
+        let open = pos + open_rel;
+        if src.get(open..)?.starts_with("<!--") {
+            let end = open + src.get(open + 4..)?.find("-->")? + 7;
+            pos = end;
+            continue;
+        }
+        let close = open + src.get(open..)?.find('>')?;
+        let raw = src.get(open + 1..close)?.trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+
+        let closing = raw.starts_with('/');
+        let raw = if closing { raw[1..].trim_start() } else { raw };
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        if tag.is_empty() {
+            continue;
+        }
+        let tag_name_lower = tag.to_ascii_lowercase();
+        let tag_lower = svg_local_name(&tag_name_lower);
+
+        if closing {
+            if skip_depth > 0 {
+                skip_depth = skip_depth.saturating_sub(1);
+            } else if matches!(tag_lower, "svg" | "g" | "a") && style_stack.len() > 1 {
+                style_stack.pop();
+                link_stack.pop();
+                selector_stack.pop();
+            }
+            continue;
+        }
+        if skip_depth > 0 {
+            if !self_closing {
+                skip_depth = skip_depth.saturating_add(1);
+            }
+            continue;
+        }
+        if matches!(
+            tag_lower,
+            "defs" | "style" | "script" | "foreignobject" | "iframe" | "object" | "embed"
+        ) {
+            if !self_closing {
+                skip_depth = 1;
+            }
+            continue;
+        }
+
+        let attrs = parse_svg_attrs(attrs_src);
+        let inherited = style_stack.last().copied().unwrap_or(SvgStyle::INITIAL);
+        let inherited_link = link_stack.last().cloned().unwrap_or(None);
+        let container_style = parse_svg_style_with_ancestors(
+            tag_lower,
+            &attrs,
+            inherited,
+            &css_rules,
+            &gradients,
+            &patterns,
+            &css_vars,
+            &clip_paths,
+            &filter_shadows,
+            &selector_stack,
+        );
+        match tag_lower {
+            "svg" => {
+                let geometry = parse_svg_root_geometry(&attrs)?;
+                if view_box.is_none() {
+                    view_box = Some(geometry.view_box);
+                    viewport = Some(geometry.viewport);
+                    preserve_aspect = geometry.preserve_aspect;
+                    root_background = if container_style.visible {
+                        parse_svg_root_background(&attrs, &css_rules, &css_vars)
+                            .and_then(|background| background.with_opacity(container_style.opacity))
+                    } else {
+                        None
+                    };
+                }
+                if !self_closing {
+                    style_stack.push(container_style);
+                    link_stack.push(inherited_link);
+                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
+                }
+            }
+            "g" => {
+                if !self_closing {
+                    style_stack.push(container_style);
+                    link_stack.push(inherited_link);
+                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
+                }
+            }
+            "a" => {
+                if !self_closing {
+                    style_stack.push(container_style);
+                    link_stack.push(parse_svg_anchor_link(&attrs).unwrap_or(inherited_link));
+                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
+                }
+            }
+            "rect" => {
+                if let Some(rect) = parse_svg_rect(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Rect(rect),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "circle" => {
+                if let Some(circle) = parse_svg_circle(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Ellipse(circle),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "ellipse" => {
+                if let Some(ellipse) = parse_svg_ellipse(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Ellipse(ellipse),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "line" => {
+                if let Some(line) = parse_svg_line(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &markers,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Line(line),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "polyline" => {
+                if let Some(poly) = parse_svg_poly(
+                    &attrs,
+                    inherited,
+                    false,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &markers,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Polyline(poly),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "polygon" => {
+                if let Some(poly) = parse_svg_poly(
+                    &attrs,
+                    inherited,
+                    true,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &markers,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Polygon(poly),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "path" => {
+                if let Some(path) = parse_svg_path(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &markers,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Path(path),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "image" => {
+                if let Some(image) = parse_svg_embedded_image(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &selector_stack,
+                ) {
+                    push_svg_element(
+                        &mut elements,
+                        SvgElement::Image(image),
+                        inherited_link.as_ref(),
+                    );
+                }
+            }
+            "use" => {
+                let mut used = parse_svg_use_elements(
+                    &attrs,
+                    inherited,
+                    &css_rules,
+                    &gradients,
+                    &patterns,
+                    &css_vars,
+                    &clip_paths,
+                    &filter_shadows,
+                    &markers,
+                    &reusable_defs,
+                    &selector_stack,
+                    0,
+                );
+                apply_svg_links(&mut used, inherited_link.as_ref());
+                elements.append(&mut used);
+            }
+            "text" if !self_closing => {
+                let needle = format!("</{tag_name_lower}");
+                if let Some(end_rel) = find_ascii_case_insensitive(src.get(pos..)?, &needle) {
+                    let text_src = src.get(pos..pos + end_rel).unwrap_or_default();
+                    let mut text_elements = parse_svg_text_elements(
+                        &attrs,
+                        text_src,
+                        inherited,
+                        &css_rules,
+                        &gradients,
+                        &patterns,
+                        &css_vars,
+                        &clip_paths,
+                        &filter_shadows,
+                        &selector_stack,
+                    );
+                    apply_svg_links(&mut text_elements, inherited_link.as_ref());
+                    elements.extend(text_elements);
+                    if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+                        pos += end_rel + tag_end + 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if elements.len() > 4096 {
+            return None;
+        }
+    }
+
+    let view_box = view_box?;
+    let viewport = viewport.unwrap_or(SvgViewport {
+        w: view_box.w,
+        h: view_box.h,
+    });
+    if view_box.w <= 0.0 || view_box.h <= 0.0 {
+        return None;
+    }
+    if elements.is_empty() && root_background.is_none() {
+        return None;
+    }
+    Some(PdfSvgImage {
+        view_box,
+        viewport,
+        preserve_aspect,
+        root_background,
+        accessible_text,
+        elements,
+        gradients,
+        patterns,
+        clip_paths,
+        markers,
+    })
+}
+
+#[derive(Default)]
+struct SvgRootBackgroundDecl {
+    color: Option<SvgRootBackgroundColor>,
+    image: Option<String>,
+}
+
+fn parse_svg_root_background(
+    attrs: &[(String, String)],
+    css_rules: &[SvgCssRule],
+    css_vars: &[SvgCssVariable],
+) -> Option<SvgRootBackground> {
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, &[], "svg", attrs);
+    let mut decl = SvgRootBackgroundDecl::default();
+
+    apply_svg_root_background_attr(&mut decl, "background", attrs, &scoped_css_vars);
+    apply_svg_root_background_attr(&mut decl, "background-color", attrs, &scoped_css_vars);
+    apply_svg_root_background_attr(&mut decl, "background-image", attrs, &scoped_css_vars);
+
+    for rule in svg_matching_css_rules("svg", attrs, css_rules, &[]) {
+        apply_svg_root_background_decls(&mut decl, &rule.decls, &scoped_css_vars);
+    }
+
+    if let Some(style_attr) = svg_attr(attrs, "style") {
+        apply_svg_root_background_decls(&mut decl, style_attr, &scoped_css_vars);
+    }
+
+    let base_color = decl.color.map_or((1.0, 1.0, 1.0), |color| color.color);
+    let layers = decl
+        .image
+        .as_deref()
+        .map(|value| parse_svg_root_background_layers(value, &scoped_css_vars, base_color))
+        .unwrap_or_default();
+    let background = SvgRootBackground {
+        color: decl.color,
+        opacity: 1.0,
+        layers,
+    };
+    background.is_visible().then_some(background)
+}
+
+fn apply_svg_root_background_attr(
+    decl: &mut SvgRootBackgroundDecl,
+    name: &str,
+    attrs: &[(String, String)],
+    css_vars: &[SvgCssVariable],
+) {
+    let Some(value) = svg_attr(attrs, name) else {
+        return;
+    };
+    apply_svg_root_background_decl(decl, name, value, css_vars);
+}
+
+fn apply_svg_root_background_decls(
+    decl: &mut SvgRootBackgroundDecl,
+    decls: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    for declaration in decls.split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        if !matches!(
+            name.as_str(),
+            "background" | "background-color" | "background-image"
+        ) {
+            continue;
+        }
+        apply_svg_root_background_decl(decl, &name, value, css_vars);
+    }
+}
+
+fn apply_svg_root_background_decl(
+    decl: &mut SvgRootBackgroundDecl,
+    name: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    let name = name.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "background" => {
+            let color = parse_svg_background_color_value(value, css_vars);
+            let image = parse_svg_root_background_image_value(value, css_vars);
+            if color.is_some() || image.is_some() {
+                decl.color = color.unwrap_or(None);
+                decl.image = Some(image.unwrap_or_else(|| "none".to_string()));
+            }
+        }
+        "background-color" => {
+            if let Some(parsed) = parse_svg_background_color_value(value, css_vars) {
+                decl.color = parsed;
+            }
+        }
+        "background-image" => {
+            decl.image = Some(clean_svg_css_keyword_value(value).to_string());
+        }
+        _ => {}
+    }
+}
+
+fn parse_svg_background_color_value(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<SvgRootBackgroundColor>> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(color) = parse_svg_background_color_token(value, css_vars) {
+        return Some(color);
+    }
+    for token in svg_background_top_level_tokens(value) {
+        if let Some(color) = parse_svg_background_color_token(token, css_vars) {
+            return Some(color);
+        }
+    }
+    None
+}
+
+fn parse_svg_background_color_token(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<SvgRootBackgroundColor>> {
+    let value = clean_svg_css_keyword_value(value.trim_matches(','));
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_background_color_token(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("transparent") || value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let opacity = if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+        if alpha <= 0.001 {
+            return Some(None);
+        }
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    parse_svg_color(value, css_vars).map(|color| Some(SvgRootBackgroundColor { color, opacity }))
+}
+
+fn svg_background_top_level_tokens(value: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut depth = 0usize;
+    let mut quote = None;
+
+    for (idx, ch) in value.char_indices() {
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+
+        let delimiter = depth == 0 && (ch == ',' || ch.is_ascii_whitespace());
+        if delimiter {
+            if let Some(token_start) = start.take() {
+                if token_start < idx {
+                    tokens.push(value[token_start..idx].trim());
+                }
+            }
+            continue;
+        }
+
+        if start.is_none() {
+            start = Some(idx);
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    if let Some(token_start) = start
+        && token_start < value.len()
+    {
+        tokens.push(value[token_start..].trim());
+    }
+    tokens
+}
+
+fn parse_svg_root_background_image_value(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<String> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_root_background_image_value(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("transparent") {
+        return Some("none".to_string());
+    }
+
+    let mut saw_image = false;
+    let mut layers = Vec::new();
+    for layer in split_svg_css_top_level_commas(value).into_iter().take(8) {
+        if let Some(gradient) = svg_background_layer_gradient_token(layer) {
+            saw_image = true;
+            layers.push(gradient);
+        } else if svg_background_layer_has_url_token(layer) {
+            saw_image = true;
+        }
+    }
+    if layers.is_empty() {
+        saw_image.then(|| "none".to_string())
+    } else {
+        Some(layers.join(", "))
+    }
+}
+
+fn svg_background_layer_gradient_token(layer: &str) -> Option<String> {
+    split_svg_top_level_whitespace(layer)
+        .into_iter()
+        .find(|token| {
+            svg_css_function_args(token, "linear-gradient").is_some()
+                || svg_css_function_args(token, "radial-gradient").is_some()
+        })
+        .map(str::to_string)
+}
+
+fn svg_background_layer_has_url_token(layer: &str) -> bool {
+    split_svg_top_level_whitespace(layer)
+        .into_iter()
+        .any(|token| svg_css_function_args(token, "url").is_some())
+}
+
+fn parse_svg_root_background_layers(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Vec<SvgRootBackgroundLayer> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    if value.starts_with("var(") {
+        if let Some(resolved) = resolve_svg_css_value(value, css_vars, 0) {
+            return parse_svg_root_background_layers(&resolved, css_vars, base_color);
+        }
+        return Vec::new();
+    }
+    split_svg_css_top_level_commas(value)
+        .into_iter()
+        .take(8)
+        .filter_map(|layer| parse_svg_root_background_layer(layer, css_vars, base_color))
+        .collect()
+}
+
+fn parse_svg_root_background_layer(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Option<SvgRootBackgroundLayer> {
+    let value = clean_svg_css_keyword_value(value);
+    if let Some(args) = svg_css_function_args(value, "linear-gradient") {
+        parse_svg_css_linear_gradient(args, css_vars, base_color)
+            .map(SvgRootBackgroundLayer::Linear)
+    } else if let Some(args) = svg_css_function_args(value, "radial-gradient") {
+        parse_svg_css_radial_gradient(args, css_vars, base_color)
+            .map(SvgRootBackgroundLayer::Radial)
+    } else {
+        None
+    }
+}
+
+fn parse_svg_css_linear_gradient(
+    args: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Option<SvgCssLinearGradient> {
+    let parts = split_svg_css_top_level_commas(args);
+    if parts.len() < 2 {
+        return None;
+    }
+    let ((start, end), stop_parts) =
+        if let Some((start, end)) = parse_svg_css_linear_gradient_direction(parts[0]) {
+            ((start, end), &parts[1..])
+        } else {
+            (svg_css_gradient_line_from_vector(0.0, -1.0)?, &parts[..])
+        };
+    let stops = parse_svg_css_gradient_stops(stop_parts, css_vars, base_color)?;
+    Some(SvgCssLinearGradient { start, end, stops })
+}
+
+fn parse_svg_css_radial_gradient(
+    args: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Option<SvgCssRadialGradient> {
+    let parts = split_svg_css_top_level_commas(args);
+    if parts.len() < 2 {
+        return None;
+    }
+    let (center, stop_parts) =
+        if let Some(center) = parse_svg_css_radial_gradient_descriptor(parts[0]) {
+            (center, &parts[1..])
+        } else {
+            ((0.5, 0.5), &parts[..])
+        };
+    let stops = parse_svg_css_gradient_stops(stop_parts, css_vars, base_color)?;
+    Some(SvgCssRadialGradient { center, stops })
+}
+
+fn parse_svg_css_linear_gradient_direction(value: &str) -> Option<((f32, f32), (f32, f32))> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("to ") {
+        let mut vx = 0.0f32;
+        let mut vy = 0.0f32;
+        for word in rest.split_ascii_whitespace() {
+            match word {
+                "left" => vx = -1.0,
+                "right" => vx = 1.0,
+                "top" => vy = 1.0,
+                "bottom" => vy = -1.0,
+                _ => return None,
+            }
+        }
+        return svg_css_gradient_line_from_vector(vx, vy);
+    }
+    let angle = lower
+        .strip_suffix("deg")
+        .and_then(|number| number.trim().parse::<f32>().ok())?;
+    if !angle.is_finite() {
+        return None;
+    }
+    let radians = angle.to_radians();
+    svg_css_gradient_line_from_vector(radians.sin(), radians.cos())
+}
+
+fn svg_css_gradient_line_from_vector(vx: f32, vy: f32) -> Option<((f32, f32), (f32, f32))> {
+    if ![vx, vy].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let len = (vx.abs() + vy.abs()) * 0.5;
+    (len > 0.001).then_some((
+        (0.5 - vx * len, 0.5 - vy * len),
+        (0.5 + vx * len, 0.5 + vy * len),
+    ))
+}
+
+fn parse_svg_css_radial_gradient_descriptor(value: &str) -> Option<(f32, f32)> {
+    let lower = value.trim().to_ascii_lowercase();
+    if let Some((_, position)) = lower.split_once(" at ") {
+        return parse_svg_css_background_position(position);
+    }
+    matches!(
+        lower.as_str(),
+        "circle"
+            | "ellipse"
+            | "closest-side"
+            | "closest-corner"
+            | "farthest-side"
+            | "farthest-corner"
+            | "circle closest-side"
+            | "circle closest-corner"
+            | "circle farthest-side"
+            | "circle farthest-corner"
+            | "ellipse closest-side"
+            | "ellipse closest-corner"
+            | "ellipse farthest-side"
+            | "ellipse farthest-corner"
+    )
+    .then_some((0.5, 0.5))
+}
+
+fn parse_svg_css_background_position(value: &str) -> Option<(f32, f32)> {
+    let words = value
+        .split_ascii_whitespace()
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    match words.as_slice() {
+        [] => None,
+        [one] => {
+            if matches_ignore_ascii_case(one, "top") || matches_ignore_ascii_case(one, "bottom") {
+                let y = parse_svg_css_position_component(one, false)?;
+                Some((0.5, 1.0 - y))
+            } else {
+                let x = parse_svg_css_position_component(one, true)?;
+                Some((x, 0.5))
+            }
+        }
+        [x, y, ..] => {
+            let x = parse_svg_css_position_component(x, true)?;
+            let y = parse_svg_css_position_component(y, false)?;
+            Some((x, 1.0 - y))
+        }
+    }
+}
+
+fn parse_svg_css_position_component(value: &str, horizontal: bool) -> Option<f32> {
+    let value = value.trim();
+    match value.to_ascii_lowercase().as_str() {
+        "left" if horizontal => Some(0.0),
+        "right" if horizontal => Some(1.0),
+        "top" if !horizontal => Some(0.0),
+        "bottom" if !horizontal => Some(1.0),
+        "center" => Some(0.5),
+        _ => parse_svg_gradient_offset(value),
+    }
+    .map(|value| value.clamp(0.0, 1.0))
+}
+
+fn matches_ignore_ascii_case(value: &str, expected: &str) -> bool {
+    value.eq_ignore_ascii_case(expected)
+}
+
+fn parse_svg_css_gradient_stops(
+    parts: &[&str],
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Option<Vec<SvgGradientStop>> {
+    let mut stops = Vec::new();
+    for part in parts.iter().take(32) {
+        stops.push(parse_svg_css_gradient_stop(part, css_vars, base_color)?);
+    }
+    normalize_svg_css_gradient_stops(stops)
+}
+
+fn parse_svg_css_gradient_stop(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+) -> Option<(Option<f32>, SvgColor)> {
+    let (color_src, rest) = split_svg_css_color_token(value)?;
+    let color = parse_svg_css_color_over_background(color_src, css_vars, base_color, 0)?;
+    let offset = rest
+        .split_ascii_whitespace()
+        .next()
+        .and_then(parse_svg_gradient_offset);
+    Some((offset, color))
+}
+
+fn normalize_svg_css_gradient_stops(
+    mut stops: Vec<(Option<f32>, SvgColor)>,
+) -> Option<Vec<SvgGradientStop>> {
+    if stops.len() < 2 {
+        return None;
+    }
+    if stops[0].0.is_none() {
+        stops[0].0 = Some(0.0);
+    }
+    let last = stops.len() - 1;
+    if stops[last].0.is_none() {
+        stops[last].0 = Some(1.0);
+    }
+
+    let mut index = 0usize;
+    while index < stops.len() {
+        if stops[index].0.is_some() {
+            index += 1;
+            continue;
+        }
+        let run_start = index;
+        while index < stops.len() && stops[index].0.is_none() {
+            index += 1;
+        }
+        let prev = stops[run_start.saturating_sub(1)].0?;
+        let next = stops.get(index).and_then(|stop| stop.0)?;
+        let span = (next - prev).max(0.0);
+        let count = index - run_start + 1;
+        for offset in 0..index - run_start {
+            let ratio = (offset + 1) as f32 / count as f32;
+            stops[run_start + offset].0 = Some((prev + span * ratio).clamp(0.0, 1.0));
+        }
+    }
+
+    let mut normalized = stops
+        .into_iter()
+        .filter_map(|(offset, color)| offset.map(|offset| (offset.clamp(0.0, 1.0), color)))
+        .collect::<Vec<_>>();
+    normalized.sort_by(|a, b| a.0.total_cmp(&b.0));
+    svg_native_gradient_stops(&normalized)
+}
+
+fn split_svg_css_color_token(value: &str) -> Option<(&str, &str)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(open) = value.find('(') {
+        let name = value[..open].trim();
+        if !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphabetic() || byte == b'-')
+        {
+            let rest = &value[open + 1..];
+            let close = find_svg_css_function_close(rest)?;
+            let end = open + 1 + close + 1;
+            return Some((&value[..end], value[end..].trim_start()));
+        }
+    }
+    let split = value
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_ascii_whitespace().then_some(idx))
+        .unwrap_or(value.len());
+    Some((&value[..split], value[split..].trim_start()))
+}
+
+fn parse_svg_css_color_over_background(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+    depth: usize,
+) -> Option<SvgColor> {
+    if depth >= 8 {
+        return None;
+    }
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_css_color_over_background(&resolved, css_vars, base_color, depth + 1);
+    }
+    if value.eq_ignore_ascii_case("transparent") || value.eq_ignore_ascii_case("none") {
+        return Some(base_color);
+    }
+    if let Some(color) = parse_svg_css_color_mix_over_background(value, css_vars, base_color, depth)
+    {
+        return Some(color);
+    }
+    let alpha = parse_svg_paint_alpha(value, css_vars).unwrap_or(1.0);
+    let color = parse_svg_color(value, css_vars)?;
+    Some(svg_composite_color_over_background(
+        color, alpha, base_color,
+    ))
+}
+
+fn parse_svg_css_color_mix_over_background(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    base_color: SvgColor,
+    depth: usize,
+) -> Option<SvgColor> {
+    let args = svg_css_function_args(value, "color-mix")?;
+    let parts = split_svg_top_level_commas(args)?;
+    if parts.len() != 3 || !svg_color_mix_space_is_srgb(parts[0]) {
+        return None;
+    }
+    let (first_color, first_alpha, first_weight) =
+        parse_svg_css_color_mix_component_over_background(parts[1], css_vars, depth + 1)?;
+    let (second_color, second_alpha, second_weight) =
+        parse_svg_css_color_mix_component_over_background(parts[2], css_vars, depth + 1)?;
+    let (first_weight, second_weight) =
+        svg_color_mix_weights(first_weight, second_weight).filter(|(a, b)| *a > 0.0 || *b > 0.0)?;
+    let mixed_alpha = first_alpha.mul_add(first_weight, second_alpha * second_weight);
+    if !mixed_alpha.is_finite() || mixed_alpha <= 0.001 {
+        return Some(base_color);
+    }
+    let premul = (
+        first_color.0.mul_add(
+            first_alpha * first_weight,
+            second_color.0 * second_alpha * second_weight,
+        ),
+        first_color.1.mul_add(
+            first_alpha * first_weight,
+            second_color.1 * second_alpha * second_weight,
+        ),
+        first_color.2.mul_add(
+            first_alpha * first_weight,
+            second_color.2 * second_alpha * second_weight,
+        ),
+    );
+    let mixed = (
+        (premul.0 / mixed_alpha).clamp(0.0, 1.0),
+        (premul.1 / mixed_alpha).clamp(0.0, 1.0),
+        (premul.2 / mixed_alpha).clamp(0.0, 1.0),
+    );
+    Some(svg_composite_color_over_background(
+        mixed,
+        mixed_alpha,
+        base_color,
+    ))
+}
+
+fn parse_svg_css_color_mix_component_over_background(
+    component: &str,
+    css_vars: &[SvgCssVariable],
+    depth: usize,
+) -> Option<(SvgColor, f32, Option<f32>)> {
+    let (color_src, weight) = split_svg_color_mix_component_weight(component)?;
+    if svg_color_source_is_transparent(color_src, css_vars) {
+        return Some(((0.0, 0.0, 0.0), 0.0, weight));
+    }
+    if color_src.trim().starts_with("var(") {
+        let resolved = resolve_svg_css_value(color_src, css_vars, 0)?;
+        return parse_svg_css_color_mix_component_over_background(&resolved, css_vars, depth + 1)
+            .map(|(color, alpha, _)| (color, alpha, weight));
+    }
+    let alpha = parse_svg_paint_alpha(color_src, css_vars).unwrap_or(1.0);
+    let color = parse_svg_color_inner(color_src, css_vars, depth + 1)?;
+    Some((color, alpha, weight))
+}
+
+fn svg_composite_color_over_background(
+    color: SvgColor,
+    alpha: f32,
+    base_color: SvgColor,
+) -> SvgColor {
+    let alpha = alpha.clamp(0.0, 1.0);
+    (
+        color
+            .0
+            .mul_add(alpha, base_color.0 * (1.0 - alpha))
+            .clamp(0.0, 1.0),
+        color
+            .1
+            .mul_add(alpha, base_color.1 * (1.0 - alpha))
+            .clamp(0.0, 1.0),
+        color
+            .2
+            .mul_add(alpha, base_color.2 * (1.0 - alpha))
+            .clamp(0.0, 1.0),
+    )
+}
+
+fn split_svg_css_top_level_commas(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut quote = None;
+    for (idx, ch) in value.char_indices() {
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let part = value[start..idx].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let part = value[start..].trim();
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    parts
+}
+
+fn parse_svg_accessible_text(src: &str) -> Option<String> {
+    let (title, desc) = parse_svg_root_accessible_texts(src);
+    match (title, desc) {
+        (Some(title), Some(desc)) if title == desc => Some(title),
+        (Some(title), Some(desc)) => truncate_svg_accessible_text(&format!("{title} - {desc}"))
+            .filter(|text| !text.is_empty()),
+        (Some(title), None) => Some(title),
+        (None, Some(desc)) => Some(desc),
+        (None, None) => None,
+    }
+}
+
+fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>) {
+    let mut pos = 0usize;
+    let mut in_root = false;
+    let mut depth = 0usize;
+    let mut title = None;
+    let mut desc = None;
+
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src[open + 1..close].trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+
+        let closing = raw.starts_with('/');
+        let raw = if closing { raw[1..].trim_start() } else { raw };
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, _) = svg_tag_parts(raw);
+        if tag.is_empty() {
+            continue;
+        }
+        let tag_name_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_name_lower);
+
+        if closing {
+            if in_root && local == "svg" && depth == 1 {
+                break;
+            }
+            if in_root {
+                depth = depth.saturating_sub(1);
+            }
+            continue;
+        }
+
+        if !in_root {
+            if local == "svg" {
+                in_root = true;
+                if self_closing {
+                    break;
+                }
+                depth = 1;
+            }
+            continue;
+        }
+
+        if matches!(local, "style" | "script")
+            && !self_closing
+            && let Some(end_open) = find_svg_matching_end_tag(src, pos, local)
+            && let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>'))
+        {
+            pos = end_open + tag_end + 1;
+            continue;
+        }
+
+        if depth == 1 && matches!(local, "title" | "desc") && !self_closing {
+            if let Some(end_open) = find_svg_matching_end_tag(src, pos, local) {
+                if let Some(text) =
+                    normalize_svg_accessible_text(src.get(pos..end_open).unwrap_or_default())
+                {
+                    if local == "title" && title.is_none() {
+                        title = Some(text);
+                    } else if local == "desc" && desc.is_none() {
+                        desc = Some(text);
+                    }
+                }
+                if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
+                    pos = end_open + tag_end + 1;
+                } else {
+                    break;
+                }
+                if title.is_some() && desc.is_some() {
+                    break;
+                }
+                continue;
+            }
+        }
+
+        if !self_closing {
+            depth = depth.saturating_add(1);
+        }
+    }
+
+    (title, desc)
+}
+
+fn normalize_svg_accessible_text(src: &str) -> Option<String> {
+    let stripped = strip_svg_tags(src);
+    let decoded = decode_xml_entities(&stripped);
+    truncate_svg_accessible_text(&decoded).filter(|text| !text.is_empty())
+}
+
+fn truncate_svg_accessible_text(src: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = 0usize;
+    for word in src.split_whitespace() {
+        let sep_chars = usize::from(!out.is_empty());
+        let word_chars = word.chars().count();
+        if chars.saturating_add(sep_chars).saturating_add(word_chars)
+            > MAX_SVG_ACCESSIBLE_TEXT_CHARS
+        {
+            break;
+        }
+        if sep_chars == 1 {
+            out.push(' ');
+            chars += 1;
+        }
+        out.push_str(word);
+        chars += word_chars;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn svg_tag_parts(raw: &str) -> (&str, &str) {
+    let raw = raw.trim_end_matches('/').trim();
+    let name_end = raw
+        .char_indices()
+        .find_map(|(idx, ch)| {
+            (!ch.is_ascii_alphanumeric() && !matches!(ch, ':' | '_' | '-')).then_some(idx)
+        })
+        .unwrap_or(raw.len());
+    (&raw[..name_end], raw[name_end..].trim())
+}
+
+fn svg_local_name(tag: &str) -> &str {
+    tag.rsplit_once(':').map_or(tag, |(_, local)| local)
+}
+
+fn parse_svg_attrs(src: &str) -> Vec<(String, String)> {
+    let mut attrs = Vec::new();
+    let mut pos = 0usize;
+    while pos < src.len() {
+        let Some((name_start, _)) = src[pos..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_ascii_whitespace() && *ch != '/')
+        else {
+            break;
+        };
+        pos += name_start;
+        let name_end = pos
+            + src[pos..]
+                .char_indices()
+                .find_map(|(idx, ch)| {
+                    (ch.is_ascii_whitespace() || ch == '=' || ch == '/').then_some(idx)
+                })
+                .unwrap_or(src.len() - pos);
+        let name = src[pos..name_end].trim().to_ascii_lowercase();
+        pos = name_end;
+        while let Some(ch) = src[pos..].chars().next() {
+            if !ch.is_ascii_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if !src[pos..].starts_with('=') {
+            if !name.is_empty() {
+                attrs.push((name, String::new()));
+            }
+            continue;
+        }
+        pos += 1;
+        while let Some(ch) = src[pos..].chars().next() {
+            if !ch.is_ascii_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        let Some(first) = src[pos..].chars().next() else {
+            break;
+        };
+        let value;
+        if first == '"' || first == '\'' {
+            pos += first.len_utf8();
+            let Some(end_rel) = src[pos..].find(first) else {
+                break;
+            };
+            value = decode_xml_entities(&src[pos..pos + end_rel]);
+            pos += end_rel + first.len_utf8();
+        } else {
+            let end_rel = src[pos..]
+                .char_indices()
+                .find_map(|(idx, ch)| (ch.is_ascii_whitespace() || ch == '/').then_some(idx))
+                .unwrap_or(src.len() - pos);
+            value = decode_xml_entities(&src[pos..pos + end_rel]);
+            pos += end_rel;
+        }
+        if !name.is_empty() {
+            attrs.push((name, value));
+        }
+    }
+    attrs
+}
+
+fn svg_attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find_map(|(k, v)| (k == name).then_some(v.as_str()))
+}
+
+fn parse_svg_anchor_link(attrs: &[(String, String)]) -> Option<Option<LinkTarget>> {
+    svg_attr(attrs, "href")
+        .or_else(|| svg_attr(attrs, "xlink:href"))
+        .map(safe_pdf_link)
+}
+
+fn push_svg_element(
+    elements: &mut Vec<SvgElement>,
+    mut element: SvgElement,
+    link: Option<&LinkTarget>,
+) {
+    apply_svg_link(&mut element, link);
+    elements.push(element);
+}
+
+fn apply_svg_links(elements: &mut [SvgElement], link: Option<&LinkTarget>) {
+    for element in elements {
+        apply_svg_link(element, link);
+    }
+}
+
+fn apply_svg_link(element: &mut SvgElement, link: Option<&LinkTarget>) {
+    let Some(link) = link else {
+        return;
+    };
+    match element {
+        SvgElement::Rect(rect) if rect.link.is_none() => rect.link = Some(link.clone()),
+        SvgElement::Ellipse(ellipse) if ellipse.link.is_none() => ellipse.link = Some(link.clone()),
+        SvgElement::Line(line) if line.link.is_none() => line.link = Some(link.clone()),
+        SvgElement::Polyline(poly) | SvgElement::Polygon(poly) if poly.link.is_none() => {
+            poly.link = Some(link.clone());
+        }
+        SvgElement::Path(path) if path.link.is_none() => path.link = Some(link.clone()),
+        SvgElement::Image(image) if image.link.is_none() => image.link = Some(link.clone()),
+        SvgElement::Text(text) if text.link.is_none() => text.link = Some(link.clone()),
+        _ => {}
+    }
+}
+
+fn parse_svg_root_geometry(attrs: &[(String, String)]) -> Option<SvgRootGeometry> {
+    let width = parse_svg_positive_attr(attrs, "width");
+    let height = parse_svg_positive_attr(attrs, "height");
+    let view_box = parse_svg_view_box(attrs).or_else(|| {
+        let (Some(w), Some(h)) = (width, height) else {
+            return None;
+        };
+        Some(SvgViewBox {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        })
+    })?;
+    let viewport = SvgViewport {
+        w: width.unwrap_or(view_box.w),
+        h: height.unwrap_or(view_box.h),
+    };
+    (viewport.w > 0.0 && viewport.h > 0.0).then_some(SvgRootGeometry {
+        view_box,
+        viewport,
+        preserve_aspect: parse_svg_preserve_aspect_ratio(svg_attr(attrs, "preserveaspectratio")),
+    })
+}
+
+fn parse_svg_positive_attr(attrs: &[(String, String)], name: &str) -> Option<f32> {
+    let value = svg_attr(attrs, name)?.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    if value[end..].trim_start().starts_with('%') {
+        return None;
+    }
+    let parsed = value[..end].parse::<f32>().ok()?;
+    (parsed.is_finite() && parsed > 0.0).then_some(parsed)
+}
+
+fn parse_svg_view_box(attrs: &[(String, String)]) -> Option<SvgViewBox> {
+    if let Some(raw) = svg_attr(attrs, "viewbox") {
+        let nums = parse_svg_number_list(raw);
+        if nums.len() >= 4 && nums[2] > 0.0 && nums[3] > 0.0 {
+            return Some(SvgViewBox {
+                x: nums[0],
+                y: nums[1],
+                w: nums[2],
+                h: nums[3],
+            });
+        }
+    }
+    None
+}
+
+fn parse_svg_preserve_aspect_ratio(value: Option<&str>) -> SvgPreserveAspectRatio {
+    let Some(value) = value else {
+        return SvgPreserveAspectRatio::DEFAULT;
+    };
+    let mut tokens = value
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == ',')
+        .filter(|part| !part.is_empty());
+    let Some(first) = tokens.next() else {
+        return SvgPreserveAspectRatio::DEFAULT;
+    };
+    let align = if first.eq_ignore_ascii_case("defer") {
+        tokens.next()
+    } else {
+        Some(first)
+    };
+    let Some(align) = align else {
+        return SvgPreserveAspectRatio::DEFAULT;
+    };
+    if align.eq_ignore_ascii_case("none") {
+        return SvgPreserveAspectRatio {
+            mode: SvgAspectScaleMode::None,
+            align_x: 0.0,
+            align_y: 0.0,
+        };
+    }
+    let Some((align_x, align_y)) = parse_svg_preserve_aspect_align(align) else {
+        return SvgPreserveAspectRatio::DEFAULT;
+    };
+    let mode = match tokens
+        .next()
+        .unwrap_or("meet")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "slice" => SvgAspectScaleMode::Slice,
+        "meet" => SvgAspectScaleMode::Meet,
+        _ => SvgAspectScaleMode::Meet,
+    };
+    SvgPreserveAspectRatio {
+        mode,
+        align_x,
+        align_y,
+    }
+}
+
+fn parse_svg_preserve_aspect_align(value: &str) -> Option<(f32, f32)> {
+    let value = value.to_ascii_lowercase();
+    if !value.starts_with('x') {
+        return None;
+    }
+    let y_pos = value.find('y')?;
+    let align_x = match &value[1..y_pos] {
+        "min" => 0.0,
+        "mid" => 0.5,
+        "max" => 1.0,
+        _ => return None,
+    };
+    let align_y = match &value[y_pos + 1..] {
+        "min" => 0.0,
+        "mid" => 0.5,
+        "max" => 1.0,
+        _ => return None,
+    };
+    Some((align_x, align_y))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_rect(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgRect> {
+    let w = svg_attr(attrs, "width").and_then(parse_svg_number)?;
+    let h = svg_attr(attrs, "height").and_then(parse_svg_number)?;
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let rx = svg_attr(attrs, "rx")
+        .or_else(|| svg_attr(attrs, "ry"))
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    Some(SvgRect {
+        x: svg_attr(attrs, "x")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        y: svg_attr(attrs, "y")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        w,
+        h,
+        rx,
+        style: parse_svg_style_with_ancestors(
+            "rect",
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_circle(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgEllipse> {
+    let r = svg_attr(attrs, "r").and_then(parse_svg_number)?;
+    (r > 0.0).then_some(SvgEllipse {
+        cx: svg_attr(attrs, "cx")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        cy: svg_attr(attrs, "cy")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        rx: r,
+        ry: r,
+        style: parse_svg_style_with_ancestors(
+            "circle",
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_ellipse(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgEllipse> {
+    let rx = svg_attr(attrs, "rx").and_then(parse_svg_number)?;
+    let ry = svg_attr(attrs, "ry").and_then(parse_svg_number)?;
+    (rx > 0.0 && ry > 0.0).then_some(SvgEllipse {
+        cx: svg_attr(attrs, "cx")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        cy: svg_attr(attrs, "cy")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        rx,
+        ry,
+        style: parse_svg_style_with_ancestors(
+            "ellipse",
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_line(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgLine> {
+    let marker_refs =
+        parse_svg_marker_refs_for_element("line", attrs, css_rules, css_vars, markers, ancestors);
+    Some(SvgLine {
+        x1: svg_attr(attrs, "x1")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        y1: svg_attr(attrs, "y1")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        x2: svg_attr(attrs, "x2")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        y2: svg_attr(attrs, "y2")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        style: parse_svg_style_with_ancestors(
+            "line",
+            attrs,
+            SvgStyle {
+                color: inherited.color,
+                fill: None,
+                fill_gradient: None,
+                fill_pattern: None,
+                fill_current_color: false,
+                fill_context: None,
+                stroke: inherited.stroke,
+                stroke_gradient: inherited.stroke_gradient,
+                stroke_current_color: inherited.stroke_current_color,
+                stroke_context: inherited.stroke_context,
+                stroke_width: inherited.stroke_width,
+                non_scaling_stroke: inherited.non_scaling_stroke,
+                opacity: inherited.opacity,
+                fill_opacity: inherited.fill_opacity,
+                stroke_opacity: inherited.stroke_opacity,
+                visible: inherited.visible,
+                shadow: inherited.shadow,
+                clip_path: inherited.clip_path,
+                mask_path: inherited.mask_path,
+                transform: inherited.transform,
+                dash: inherited.dash,
+                line_cap: inherited.line_cap,
+                line_join: inherited.line_join,
+                miter_limit: inherited.miter_limit,
+                fill_rule: inherited.fill_rule,
+                font_weight: inherited.font_weight,
+                font_slant: inherited.font_slant,
+                font_family: inherited.font_family,
+                dominant_baseline: inherited.dominant_baseline,
+                letter_spacing: inherited.letter_spacing,
+            },
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        marker_end: marker_refs.end,
+        marker_start: marker_refs.start,
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_poly(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    closed: bool,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgPoly> {
+    let points = parse_svg_points(svg_attr(attrs, "points")?);
+    if points.len() < if closed { 3 } else { 2 } {
+        return None;
+    }
+    let base = if closed {
+        inherited
+    } else {
+        SvgStyle {
+            color: inherited.color,
+            fill: None,
+            fill_gradient: None,
+            fill_pattern: None,
+            fill_current_color: false,
+            fill_context: None,
+            stroke: inherited.stroke,
+            stroke_gradient: inherited.stroke_gradient,
+            stroke_current_color: inherited.stroke_current_color,
+            stroke_context: inherited.stroke_context,
+            stroke_width: inherited.stroke_width,
+            non_scaling_stroke: inherited.non_scaling_stroke,
+            opacity: inherited.opacity,
+            fill_opacity: inherited.fill_opacity,
+            stroke_opacity: inherited.stroke_opacity,
+            visible: inherited.visible,
+            shadow: inherited.shadow,
+            clip_path: inherited.clip_path,
+            mask_path: inherited.mask_path,
+            transform: inherited.transform,
+            dash: inherited.dash,
+            line_cap: inherited.line_cap,
+            line_join: inherited.line_join,
+            miter_limit: inherited.miter_limit,
+            fill_rule: inherited.fill_rule,
+            font_weight: inherited.font_weight,
+            font_slant: inherited.font_slant,
+            font_family: inherited.font_family,
+            dominant_baseline: inherited.dominant_baseline,
+            letter_spacing: inherited.letter_spacing,
+        }
+    };
+    let marker_refs = parse_svg_marker_refs_for_element(
+        if closed { "polygon" } else { "polyline" },
+        attrs,
+        css_rules,
+        css_vars,
+        markers,
+        ancestors,
+    );
+    Some(SvgPoly {
+        points,
+        style: parse_svg_style_with_ancestors(
+            if closed { "polygon" } else { "polyline" },
+            attrs,
+            base,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        marker_end: marker_refs.end,
+        marker_mid: marker_refs.mid,
+        marker_start: marker_refs.start,
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_path(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgPath> {
+    let ops = parse_svg_path_data(svg_attr(attrs, "d")?)?;
+    if ops.is_empty() {
+        return None;
+    }
+    let marker_refs =
+        parse_svg_marker_refs_for_element("path", attrs, css_rules, css_vars, markers, ancestors);
+    Some(SvgPath {
+        ops,
+        style: parse_svg_style_with_ancestors(
+            "path",
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        ),
+        marker_end: marker_refs.end,
+        marker_mid: marker_refs.mid,
+        marker_start: marker_refs.start,
+        link: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_embedded_image(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgEmbeddedImage> {
+    let w = svg_attr(attrs, "width").and_then(parse_svg_number)?;
+    let h = svg_attr(attrs, "height").and_then(parse_svg_number)?;
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let style = parse_svg_style_with_ancestors(
+        "image",
+        attrs,
+        inherited,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        ancestors,
+    );
+    if !style.visible {
+        return None;
+    }
+    let href = svg_attr(attrs, "href").or_else(|| svg_attr(attrs, "xlink:href"))?;
+    let png = decode_svg_png_data_uri(href)?;
+    let key = svg_inline_png_key(&png);
+    let image = parse_png_image_asset(&key, &png)?;
+    Some(SvgEmbeddedImage {
+        x: svg_attr(attrs, "x")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        y: svg_attr(attrs, "y")
+            .and_then(parse_svg_number)
+            .unwrap_or(0.0),
+        w,
+        h,
+        preserve_aspect: parse_svg_preserve_aspect_ratio(svg_attr(attrs, "preserveaspectratio")),
+        style,
+        image: Box::new(image),
+        link: None,
+    })
+}
+
+fn decode_svg_png_data_uri(href: &str) -> Option<Vec<u8>> {
+    let (metadata, payload) = href.trim().split_once(',')?;
+    let metadata = metadata.trim().to_ascii_lowercase();
+    let suffix = metadata.strip_prefix("data:image/png")?;
+    if !suffix.is_empty() && !suffix.starts_with(';') {
+        return None;
+    }
+    if !suffix
+        .split(';')
+        .skip(1)
+        .any(|part| part.trim() == "base64")
+    {
+        return None;
+    }
+    decode_svg_base64_payload(payload)
+}
+
+fn decode_svg_base64_payload(payload: &str) -> Option<Vec<u8>> {
+    let encoded_len = payload
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .count();
+    if encoded_len == 0
+        || encoded_len % 4 != 0
+        || encoded_len.saturating_mul(3) / 4 > MAX_PDF_IMAGE_COMPRESSED_BYTES
+    {
+        return None;
+    }
+    let mut out = Vec::with_capacity(encoded_len.saturating_mul(3) / 4);
+    let mut quartet = [0u8; 4];
+    let mut qlen = 0usize;
+    let mut finished = false;
+    for byte in payload.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        if finished {
+            return None;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 64,
+            _ => return None,
+        };
+        quartet[qlen] = value;
+        qlen += 1;
+        if qlen != 4 {
+            continue;
+        }
+        if quartet[0] == 64 || quartet[1] == 64 || (quartet[2] == 64 && quartet[3] != 64) {
+            return None;
+        }
+        out.push((quartet[0] << 2) | (quartet[1] >> 4));
+        if quartet[2] != 64 {
+            out.push((quartet[1] << 4) | (quartet[2] >> 2));
+        }
+        if quartet[3] != 64 {
+            out.push((quartet[2] << 6) | quartet[3]);
+        }
+        finished = quartet[2] == 64 || quartet[3] == 64;
+        qlen = 0;
+    }
+    (qlen == 0).then_some(out)
+}
+
+fn svg_inline_png_key(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("svg-inline-png-{hash:016x}-{}", bytes.len())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_text_elements(
+    attrs: &[(String, String)],
+    body: &str,
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> Vec<SvgElement> {
+    let style = parse_svg_style_with_ancestors(
+        "text",
+        attrs,
+        inherited,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        ancestors,
+    );
+    if !style.visible {
+        return Vec::new();
+    }
+    let x = svg_attr(attrs, "x")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let y = svg_attr(attrs, "y")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, "text", attrs);
+    let font_size =
+        parse_svg_font_size(attrs, "text", 12.0, css_rules, &scoped_css_vars, ancestors);
+    let anchor = parse_svg_text_anchor(
+        attrs,
+        "text",
+        SvgTextAnchor::Start,
+        css_rules,
+        &scoped_css_vars,
+        ancestors,
+    );
+    let text_length = parse_svg_text_length_attr(attrs, font_size);
+    let length_adjust = parse_svg_length_adjust(attrs, SvgLengthAdjust::Spacing);
+    if !svg_text_body_has_tspan(body) {
+        return svg_text_element(
+            normalize_svg_text(&strip_svg_tags(body)),
+            SvgTextPlacement {
+                x,
+                y,
+                font_size,
+                anchor,
+                text_length,
+                length_adjust,
+            },
+            style,
+        )
+        .into_iter()
+        .collect();
+    }
+
+    let mut elements = Vec::new();
+    let mut pos = 0usize;
+    let mut current_x = x;
+    let mut current_y = y;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        let text = normalize_svg_text_node(body.get(pos..open).unwrap_or_default());
+        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
+        push_svg_text_element(
+            &mut elements,
+            text,
+            SvgTextPlacement {
+                x: current_x,
+                y: current_y,
+                font_size,
+                anchor,
+                text_length: None,
+                length_adjust: SvgLengthAdjust::Spacing,
+            },
+            style,
+        );
+        current_x += advance;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("tspan") || self_closing {
+            continue;
+        }
+        let child_attrs = parse_svg_attrs(attrs_src);
+        let Some(end_open) = find_svg_matching_end_tag(body, pos, "tspan") else {
+            break;
+        };
+        let child_body = body.get(pos..end_open).unwrap_or_default();
+        let Some(end_close_rel) = body.get(end_open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        pos = end_open + end_close_rel + 1;
+
+        let mut child_ancestors = ancestors.to_vec();
+        child_ancestors.push(svg_css_ancestor("text", attrs));
+        let child_style = parse_svg_style_with_ancestors(
+            "tspan",
+            &child_attrs,
+            style,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            &child_ancestors,
+        );
+        if !child_style.visible {
+            continue;
+        }
+        let child_scoped_css_vars =
+            svg_css_vars_for_element(css_vars, css_rules, &child_ancestors, "tspan", &child_attrs);
+        let child_font_size = parse_svg_font_size(
+            &child_attrs,
+            "tspan",
+            font_size,
+            css_rules,
+            &child_scoped_css_vars,
+            &child_ancestors,
+        );
+        let child_anchor = parse_svg_text_anchor(
+            &child_attrs,
+            "tspan",
+            anchor,
+            css_rules,
+            &child_scoped_css_vars,
+            &child_ancestors,
+        );
+        let child_text_length = parse_svg_text_length_attr(&child_attrs, child_font_size);
+        let child_length_adjust = parse_svg_length_adjust(&child_attrs, SvgLengthAdjust::Spacing);
+        let mut child_x = svg_attr(&child_attrs, "x")
+            .and_then(parse_svg_number)
+            .unwrap_or(current_x);
+        let mut child_y = svg_attr(&child_attrs, "y")
+            .and_then(parse_svg_number)
+            .unwrap_or(current_y);
+        if let Some(dx) = svg_attr(&child_attrs, "dx")
+            .and_then(|value| parse_svg_text_length(value, child_font_size))
+        {
+            child_x += dx;
+        }
+        if let Some(dy) = svg_attr(&child_attrs, "dy")
+            .and_then(|value| parse_svg_text_length(value, child_font_size))
+        {
+            child_y += dy;
+        }
+        let child_text = normalize_svg_text(&strip_svg_tags(child_body));
+        let advance = child_text_length.unwrap_or_else(|| {
+            svg_text_advance(
+                &child_text,
+                child_font_size,
+                child_style.letter_spacing.to_points(child_font_size),
+            )
+        });
+        push_svg_text_element(
+            &mut elements,
+            child_text,
+            SvgTextPlacement {
+                x: child_x,
+                y: child_y,
+                font_size: child_font_size,
+                anchor: child_anchor,
+                text_length: child_text_length,
+                length_adjust: child_length_adjust,
+            },
+            child_style,
+        );
+        current_x = child_x + advance;
+        current_y = child_y;
+        if elements.len() >= 256 {
+            break;
+        }
+    }
+    if pos < body.len() {
+        push_svg_text_element(
+            &mut elements,
+            normalize_svg_text(body.get(pos..).unwrap_or_default()),
+            SvgTextPlacement {
+                x: current_x,
+                y: current_y,
+                font_size,
+                anchor,
+                text_length: None,
+                length_adjust: SvgLengthAdjust::Spacing,
+            },
+            style,
+        );
+    }
+    apply_svg_parent_text_length(&mut elements, text_length, length_adjust);
+    elements
+}
+
+fn svg_text_body_has_tspan(body: &str) -> bool {
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, _) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if svg_local_name(&tag_lower).eq_ignore_ascii_case("tspan") {
+            return true;
+        }
+    }
+    false
+}
+
+fn push_svg_text_element(
+    out: &mut Vec<SvgElement>,
+    text: String,
+    placement: SvgTextPlacement,
+    style: SvgStyle,
+) {
+    if let Some(text) = svg_text_element(text, placement, style) {
+        out.push(text);
+    }
+}
+
+fn svg_text_element(
+    text: String,
+    placement: SvgTextPlacement,
+    style: SvgStyle,
+) -> Option<SvgElement> {
+    let fill = style.fill?;
+    let opacity = svg_effective_fill_opacity(style);
+    if opacity <= 0.001 {
+        return None;
+    }
+    (!text.is_empty()).then_some(SvgElement::Text(SvgText {
+        x: placement.x,
+        y: placement.y,
+        text,
+        slot: slot_of(
+            style.font_weight.is_bold(),
+            style.font_slant.is_italic(),
+            matches!(style.font_family, SvgFontFamily::Mono),
+        ),
+        font_size: placement.font_size,
+        letter_spacing: style.letter_spacing.to_points(placement.font_size),
+        text_length: placement.text_length,
+        length_adjust: placement.length_adjust,
+        baseline: style.dominant_baseline,
+        anchor: placement.anchor,
+        fill,
+        opacity,
+        clip_path: style.clip_path,
+        mask_path: style.mask_path,
+        transform: style.transform,
+        link: None,
+    }))
+}
+
+fn normalize_svg_text(src: &str) -> String {
+    decode_xml_entities(src)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_svg_text_node(src: &str) -> String {
+    let decoded = decode_xml_entities(src);
+    let text = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return text;
+    }
+    let leading = decoded.chars().next().is_some_and(char::is_whitespace);
+    let trailing = decoded.chars().next_back().is_some_and(char::is_whitespace);
+    let mut out = String::with_capacity(text.len() + usize::from(leading) + usize::from(trailing));
+    if leading {
+        out.push(' ');
+    }
+    out.push_str(&text);
+    if trailing {
+        out.push(' ');
+    }
+    out
+}
+
+fn svg_text_advance(text: &str, font_size: f32, letter_spacing: f32) -> f32 {
+    let mut glyph_count = 0usize;
+    let width = text
+        .chars()
+        .map(|ch| {
+            glyph_count += 1;
+            if ch.is_whitespace() {
+                0.33
+            } else if ch.is_ascii() {
+                0.56
+            } else {
+                0.9
+            }
+        })
+        .sum::<f32>()
+        * font_size;
+    width + glyph_count.saturating_sub(1) as f32 * letter_spacing
+}
+
+fn apply_svg_parent_text_length(
+    elements: &mut [SvgElement],
+    text_length: Option<f32>,
+    length_adjust: SvgLengthAdjust,
+) {
+    let Some(target) = text_length.filter(|value| value.is_finite() && *value >= 0.0) else {
+        return;
+    };
+    let mut indices = Vec::new();
+    let mut advances = Vec::new();
+    let mut natural_total = 0.0f32;
+    let mut first_transform: Option<SvgTransform> = None;
+    let mut first_y: Option<f32> = None;
+
+    for (idx, element) in elements.iter().enumerate() {
+        let SvgElement::Text(text) = element else {
+            continue;
+        };
+        if text.text_length.is_some() || !matches!(text.anchor, SvgTextAnchor::Start) {
+            return;
+        }
+        if let Some(transform) = first_transform {
+            if text.transform != transform {
+                return;
+            }
+        } else {
+            first_transform = Some(text.transform);
+        }
+        if let Some(y) = first_y {
+            if (text.y - y).abs() > 0.05 {
+                return;
+            }
+        } else {
+            first_y = Some(text.y);
+        }
+        let advance = svg_text_advance(&text.text, text.font_size, text.letter_spacing);
+        if !advance.is_finite() || advance <= 0.001 {
+            return;
+        }
+        natural_total += advance;
+        indices.push(idx);
+        advances.push(advance);
+    }
+
+    if indices.is_empty() || !natural_total.is_finite() || natural_total <= 0.001 {
+        return;
+    }
+    for pair in indices.windows(2).zip(advances.iter()) {
+        let (&[prev_idx, next_idx], &advance) = pair else {
+            continue;
+        };
+        let (SvgElement::Text(prev), SvgElement::Text(next)) =
+            (&elements[prev_idx], &elements[next_idx])
+        else {
+            return;
+        };
+        if (next.x - (prev.x + advance)).abs() > 0.1 {
+            return;
+        }
+    }
+
+    let ratio = target / natural_total;
+    if !ratio.is_finite() {
+        return;
+    }
+    let first_x = match &elements[indices[0]] {
+        SvgElement::Text(text) => text.x,
+        _ => return,
+    };
+    let mut cursor = first_x;
+    for (idx, advance) in indices.into_iter().zip(advances) {
+        let SvgElement::Text(text) = &mut elements[idx] else {
+            return;
+        };
+        let fragment_target = (advance * ratio).max(0.0);
+        text.x = cursor;
+        text.text_length = Some(fragment_target);
+        text.length_adjust = length_adjust;
+        cursor += fragment_target;
+    }
+}
+
+fn parse_svg_font_size(
+    attrs: &[(String, String)],
+    tag: &str,
+    inherited: f32,
+    css_rules: &[SvgCssRule],
+    css_vars: &[SvgCssVariable],
+    ancestors: &[SvgCssAncestor],
+) -> f32 {
+    let mut size = svg_attr(attrs, "font-size")
+        .and_then(parse_svg_number)
+        .unwrap_or(inherited);
+    for rule in svg_matching_css_rules(tag, attrs, css_rules, ancestors) {
+        apply_svg_text_presentation_decls(&mut size, None, inherited, &rule.decls, css_vars);
+    }
+    if let Some(style) = svg_attr(attrs, "style") {
+        apply_svg_text_presentation_decls(&mut size, None, inherited, style, css_vars);
+    }
+    size.clamp(1.0, 96.0)
+}
+
+fn parse_svg_text_anchor(
+    attrs: &[(String, String)],
+    tag: &str,
+    inherited: SvgTextAnchor,
+    css_rules: &[SvgCssRule],
+    css_vars: &[SvgCssVariable],
+    ancestors: &[SvgCssAncestor],
+) -> SvgTextAnchor {
+    let mut anchor = svg_attr(attrs, "text-anchor")
+        .and_then(|value| parse_svg_text_anchor_value(value, css_vars))
+        .unwrap_or(inherited);
+    let mut ignored_size = 0.0;
+    for rule in svg_matching_css_rules(tag, attrs, css_rules, ancestors) {
+        apply_svg_text_presentation_decls(
+            &mut ignored_size,
+            Some(&mut anchor),
+            0.0,
+            &rule.decls,
+            css_vars,
+        );
+    }
+    if let Some(style) = svg_attr(attrs, "style") {
+        apply_svg_text_presentation_decls(
+            &mut ignored_size,
+            Some(&mut anchor),
+            0.0,
+            style,
+            css_vars,
+        );
+    }
+    anchor
+}
+
+fn apply_svg_text_presentation_decls(
+    font_size: &mut f32,
+    mut anchor: Option<&mut SvgTextAnchor>,
+    inherited_font_size: f32,
+    decls: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "font-size" => {
+                if let Some(parsed) =
+                    parse_svg_font_size_value(value, inherited_font_size, css_vars)
+                {
+                    *font_size = parsed;
+                }
+            }
+            "text-anchor" => {
+                if let Some(anchor) = anchor.as_deref_mut()
+                    && let Some(parsed) = parse_svg_text_anchor_value(value, css_vars)
+                {
+                    *anchor = parsed;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn parse_svg_font_size_value(
+    value: &str,
+    inherited: f32,
+    css_vars: &[SvgCssVariable],
+) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_font_size_value(&resolved, inherited, css_vars);
+    }
+    parse_svg_text_length(value, inherited).filter(|value| value.is_finite())
+}
+
+fn parse_svg_text_anchor_value(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextAnchor> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_text_anchor_value(&resolved, css_vars);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "start" => Some(SvgTextAnchor::Start),
+        "middle" => Some(SvgTextAnchor::Middle),
+        "end" => Some(SvgTextAnchor::End),
+        _ => None,
+    }
+}
+
+fn parse_svg_text_length_attr(attrs: &[(String, String)], font_size: f32) -> Option<f32> {
+    svg_attr(attrs, "textlength")
+        .and_then(|value| parse_svg_text_length(value, font_size))
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn parse_svg_length_adjust(
+    attrs: &[(String, String)],
+    inherited: SvgLengthAdjust,
+) -> SvgLengthAdjust {
+    let mut adjust = svg_attr(attrs, "lengthadjust")
+        .and_then(parse_svg_length_adjust_value)
+        .unwrap_or(inherited);
+    if let Some(style) = svg_attr(attrs, "style") {
+        for decl in style.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("lengthAdjust")
+                && let Some(parsed) = parse_svg_length_adjust_value(value)
+            {
+                adjust = parsed;
+            }
+        }
+    }
+    adjust
+}
+
+fn parse_svg_length_adjust_value(value: &str) -> Option<SvgLengthAdjust> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "spacing" => Some(SvgLengthAdjust::Spacing),
+        "spacingandglyphs" => Some(SvgLengthAdjust::SpacingAndGlyphs),
+        _ => None,
+    }
+}
+
+fn parse_svg_text_length(value: &str, font_size: f32) -> Option<f32> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let number = value[..end].parse::<f32>().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start();
+    if unit.starts_with("em") {
+        Some(number * font_size)
+    } else if unit.starts_with("ex") {
+        Some(number * font_size * 0.5)
+    } else if unit.starts_with('%') {
+        Some(number * font_size / 100.0)
+    } else {
+        Some(number)
+    }
+}
+
+fn parse_svg_css_variables(src: &str) -> Vec<SvgCssVariable> {
+    let mut vars = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty()
+            || raw.starts_with('/')
+            || raw.starts_with('?')
+            || raw.starts_with('!')
+            || raw.trim_end().ends_with('/')
+        {
+            continue;
+        }
+        let (tag, _) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("style") {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        parse_svg_css_variables_from_css(
+            src.get(pos..pos + end_rel).unwrap_or_default(),
+            &mut vars,
+        );
+        if vars.len() >= 256 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    vars
+}
+
+fn parse_svg_document_css_rules(src: &str) -> Vec<SvgCssRule> {
+    let mut rules = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty()
+            || raw.starts_with('/')
+            || raw.starts_with('?')
+            || raw.starts_with('!')
+            || raw.trim_end().ends_with('/')
+        {
+            continue;
+        }
+        let (tag, _) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("style") {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        parse_svg_css_rules(src.get(pos..pos + end_rel).unwrap_or_default(), &mut rules);
+        if rules.len() >= 1024 {
+            rules.truncate(1024);
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    rules
+}
+
+fn parse_svg_css_variables_from_css(css: &str, out: &mut Vec<SvgCssVariable>) {
+    let mut pos = 0usize;
+    while let Some(open) = find_css_block_open(css, pos) {
+        let selectors = css
+            .get(pos..open)
+            .unwrap_or_default()
+            .rsplit(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let Some(close) = find_css_block_close(css, open) else {
+            break;
+        };
+
+        if svg_css_variables_are_global_selectors(selectors) {
+            parse_svg_css_variable_decls(css.get(open + 1..close).unwrap_or_default(), out);
+        }
+        if out.len() >= 256 {
+            break;
+        }
+        pos = close + 1;
+    }
+}
+
+fn parse_svg_css_variable_decls(decls: &str, out: &mut Vec<SvgCssVariable>) {
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.starts_with("--") || name.len() <= 2 {
+            continue;
+        }
+        let value = clean_svg_css_variable_value(value);
+        if value.is_empty() {
+            continue;
+        }
+        set_svg_css_variable(out, name, value);
+        if out.len() >= 256 {
+            break;
+        }
+    }
+}
+
+fn parse_svg_css_variable_decls_override(decls: &str, out: &mut Vec<SvgCssVariable>) {
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.starts_with("--") || name.len() <= 2 {
+            continue;
+        }
+        let value = clean_svg_css_variable_value(value);
+        if value.is_empty() {
+            continue;
+        }
+        set_svg_css_variable(out, name, value);
+        if out.len() >= 256 {
+            break;
+        }
+    }
+}
+
+fn set_svg_css_variable(out: &mut Vec<SvgCssVariable>, name: &str, value: &str) {
+    if let Some(existing) = out.iter_mut().find(|existing| existing.name == name) {
+        existing.value.clear();
+        existing.value.push_str(value);
+    } else if out.len() < 256 {
+        out.push(SvgCssVariable {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+    }
+}
+
+fn clean_svg_css_variable_value(value: &str) -> &str {
+    value
+        .trim()
+        .strip_suffix("!important")
+        .map(str::trim_end)
+        .unwrap_or_else(|| value.trim())
+}
+
+fn svg_css_variables_are_global_selectors(selectors: &str) -> bool {
+    let selectors = selectors.trim();
+    if selectors.is_empty() || selectors.starts_with('@') {
+        return false;
+    }
+    selectors.split(',').any(|selector| {
+        let selector = selector.trim();
+        selector == ":root"
+            || selector == "*"
+            || selector.eq_ignore_ascii_case("svg")
+            || selector.eq_ignore_ascii_case("svg:root")
+    })
+}
+
+fn parse_svg_use_refs(src: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("use") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_use_href(&attrs) else {
+            continue;
+        };
+        if !refs.iter().any(|existing| existing == id) {
+            refs.push(id.to_string());
+        }
+        if refs.len() >= 256 {
+            break;
+        }
+    }
+    refs
+}
+
+fn parse_svg_reusable_defs(src: &str, referenced_ids: &[String]) -> Vec<SvgReusableDef> {
+    if referenced_ids.is_empty() {
+        return Vec::new();
+    }
+    let mut defs = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_lower);
+        if !svg_reusable_tag(local) {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if !referenced_ids
+            .iter()
+            .any(|referenced_id| referenced_id == id)
+        {
+            continue;
+        }
+        if defs
+            .iter()
+            .any(|existing: &SvgReusableDef| existing.id == id)
+        {
+            continue;
+        }
+        let body = if !self_closing && matches!(local, "g" | "symbol" | "a" | "text") {
+            find_svg_matching_end_tag(src, pos, local).and_then(|end_open| {
+                src.get(pos..end_open)
+                    .and_then(|body| (body.len() <= 256 * 1024).then(|| body.to_string()))
+            })
+        } else {
+            None
+        };
+        defs.push(SvgReusableDef {
+            id: id.to_string(),
+            tag: local.to_string(),
+            attrs,
+            body,
+        });
+        if defs.len() >= 256 {
+            break;
+        }
+    }
+    defs
+}
+
+fn svg_reusable_tag(local: &str) -> bool {
+    matches!(
+        local,
+        "g" | "symbol"
+            | "a"
+            | "use"
+            | "text"
+            | "rect"
+            | "circle"
+            | "ellipse"
+            | "line"
+            | "polyline"
+            | "polygon"
+            | "path"
+    )
+}
+
+fn find_svg_matching_end_tag(src: &str, mut pos: usize, local_name: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let end_rel = src.get(open + 4..)?.find("-->")?;
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let close = open + src.get(open..)?.find('>')?;
+        let raw = src.get(open + 1..close)?.trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let closing = raw.starts_with('/');
+        let raw = if closing { raw[1..].trim_start() } else { raw };
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, _) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case(local_name) {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(open);
+            }
+        } else if !self_closing {
+            depth = depth.saturating_add(1);
+        }
+    }
+    None
+}
+
+fn parse_svg_gradient_paints(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgGradientPaint> {
+    let mut gradients = Vec::new();
+    let stop_css_rules = parse_svg_gradient_stop_css_rules(src, css_vars);
+    let definitions = parse_svg_gradient_definitions(src, css_vars, &stop_css_rules);
+    for index in 0..definitions.len() {
+        let definition = &definitions[index];
+        if gradients
+            .iter()
+            .any(|existing: &SvgGradientPaint| existing.id == definition.id)
+        {
+            continue;
+        }
+        let Some(resolved) = resolve_svg_gradient_definition(&definitions, index, 0) else {
+            continue;
+        };
+        if let Some(color) = svg_gradient_representative_color(&resolved.stops) {
+            gradients.push(SvgGradientPaint {
+                id: definition.id.clone(),
+                color,
+                linear: if resolved.linear {
+                    parse_svg_linear_gradient(&resolved.attrs, &resolved.stops)
+                } else {
+                    None
+                },
+                radial: if resolved.linear {
+                    None
+                } else {
+                    parse_svg_radial_gradient(&resolved.attrs, &resolved.stops)
+                },
+            });
+        }
+        if gradients.len() >= 128 {
+            break;
+        }
+    }
+    gradients
+}
+
+fn parse_svg_pattern_paints(
+    src: &str,
+    gradients: &[SvgGradientPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    css_rules: &[SvgCssRule],
+    filter_shadows: &[SvgFilterShadow],
+) -> Vec<SvgPatternPaint> {
+    let mut patterns = Vec::new();
+    let definitions = parse_svg_pattern_definitions(src);
+    for (index, definition) in definitions.iter().enumerate() {
+        if patterns.len() >= 64 {
+            break;
+        }
+        if patterns
+            .iter()
+            .any(|existing: &SvgPatternPaint| existing.id == definition.id)
+        {
+            continue;
+        }
+        let Some(resolved) = resolve_svg_pattern_definition(&definitions, index, 0) else {
+            continue;
+        };
+        let attrs = resolved.attrs;
+        if !svg_attr(&attrs, "patternunits")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("userSpaceOnUse"))
+        {
+            continue;
+        }
+        let Some(w) = svg_attr(&attrs, "width").and_then(parse_svg_number) else {
+            continue;
+        };
+        let Some(h) = svg_attr(&attrs, "height").and_then(parse_svg_number) else {
+            continue;
+        };
+        if !w.is_finite() || !h.is_finite() || w <= 0.001 || h <= 0.001 {
+            continue;
+        }
+        let mut ancestor_attrs = attrs.clone();
+        ancestor_attrs.push(("id".to_string(), definition.id.clone()));
+        let ancestors = [svg_css_ancestor("pattern", &ancestor_attrs)];
+        let elements = parse_svg_reusable_body_elements(
+            &resolved.body,
+            SvgStyle::INITIAL,
+            css_rules,
+            gradients,
+            &[],
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            &[],
+            &[],
+            &ancestors,
+            0,
+        );
+        if elements.is_empty() {
+            continue;
+        }
+        let color = svg_pattern_representative_color(&elements).unwrap_or((0.0, 0.0, 0.0));
+        patterns.push(SvgPatternPaint {
+            id: definition.id.clone(),
+            x: svg_attr(&attrs, "x")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            y: svg_attr(&attrs, "y")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            w,
+            h,
+            transform: svg_attr(&attrs, "patterntransform")
+                .and_then(parse_svg_transform)
+                .unwrap_or(SvgTransform::IDENTITY),
+            color,
+            elements,
+        });
+    }
+    patterns
+}
+
+fn parse_svg_pattern_definitions(src: &str) -> Vec<SvgPatternDefinition> {
+    let mut definitions = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("pattern") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if definitions
+            .iter()
+            .any(|existing: &SvgPatternDefinition| existing.id == id)
+        {
+            continue;
+        }
+        let body = if self_closing {
+            String::new()
+        } else {
+            let needle = format!("</{tag_lower}");
+            let Some(end_rel) = src
+                .get(pos..)
+                .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+            else {
+                continue;
+            };
+            let body = src.get(pos..pos + end_rel).unwrap_or_default().to_string();
+            if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+                pos += end_rel + tag_end + 1;
+            }
+            body
+        };
+        definitions.push(SvgPatternDefinition {
+            id: id.to_string(),
+            href: svg_use_href(&attrs).map(str::to_string),
+            attrs,
+            body,
+        });
+        if definitions.len() >= 128 {
+            break;
+        }
+    }
+    definitions
+}
+
+fn resolve_svg_pattern_definition(
+    definitions: &[SvgPatternDefinition],
+    index: usize,
+    depth: usize,
+) -> Option<SvgResolvedPattern> {
+    let definition = definitions.get(index)?;
+    let mut attrs = Vec::new();
+    let mut inherited_body = String::new();
+
+    if depth < 8
+        && let Some(href) = &definition.href
+        && href != &definition.id
+        && let Some(parent_index) = definitions
+            .iter()
+            .position(|candidate| candidate.id == *href)
+        && let Some(parent) = resolve_svg_pattern_definition(definitions, parent_index, depth + 1)
+    {
+        attrs = parent.attrs;
+        inherited_body = parent.body;
+    }
+
+    merge_svg_pattern_attrs(&mut attrs, &definition.attrs);
+    let body = if svg_pattern_body_has_renderable_content(&definition.body) {
+        definition.body.clone()
+    } else {
+        inherited_body
+    };
+    Some(SvgResolvedPattern { attrs, body })
+}
+
+fn svg_pattern_body_has_renderable_content(body: &str) -> bool {
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        let prefix = body.get(pos..open).unwrap_or_default();
+        if !prefix.trim().is_empty() {
+            return true;
+        }
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                return false;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            return false;
+        };
+        let raw = body
+            .get(open + 1..open + close_rel)
+            .unwrap_or_default()
+            .trim();
+        if !raw.is_empty()
+            && !raw.starts_with('/')
+            && !raw.starts_with('?')
+            && !raw.starts_with('!')
+        {
+            return true;
+        }
+        pos = open + close_rel + 1;
+    }
+    body.get(pos..).is_some_and(|tail| !tail.trim().is_empty())
+}
+
+fn merge_svg_pattern_attrs(into: &mut Vec<(String, String)>, attrs: &[(String, String)]) {
+    for (name, value) in attrs {
+        if matches!(name.as_str(), "id" | "href" | "xlink:href") {
+            continue;
+        }
+        if let Some((_, existing_value)) = into.iter_mut().find(|(existing, _)| existing == name) {
+            *existing_value = value.clone();
+        } else {
+            into.push((name.clone(), value.clone()));
+        }
+    }
+}
+
+fn svg_pattern_representative_color(elements: &[SvgElement]) -> Option<SvgColor> {
+    elements.iter().find_map(svg_element_representative_color)
+}
+
+fn svg_element_representative_color(element: &SvgElement) -> Option<SvgColor> {
+    let style = match element {
+        SvgElement::Rect(rect) => Some(rect.style),
+        SvgElement::Ellipse(ellipse) => Some(ellipse.style),
+        SvgElement::Line(line) => Some(line.style),
+        SvgElement::Polyline(poly) | SvgElement::Polygon(poly) => Some(poly.style),
+        SvgElement::Path(path) => Some(path.style),
+        SvgElement::Image(_) => None,
+        SvgElement::Text(text) => return Some(text.fill),
+    }?;
+    style.fill.or(style.stroke)
+}
+
+fn parse_svg_gradient_definitions(
+    src: &str,
+    css_vars: &[SvgCssVariable],
+    stop_css_rules: &[SvgGradientStopCssRule],
+) -> Vec<SvgGradientDefinition> {
+    let mut definitions = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_lower);
+        if !matches!(local, "lineargradient" | "radialgradient") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let body = if self_closing {
+            ""
+        } else {
+            let needle = format!("</{tag_lower}");
+            let Some(end_rel) = src
+                .get(pos..)
+                .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+            else {
+                continue;
+            };
+            let body = src.get(pos..pos + end_rel).unwrap_or_default();
+            if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+                pos += end_rel + tag_end + 1;
+            }
+            body
+        };
+        definitions.push(SvgGradientDefinition {
+            id: id.to_string(),
+            linear: local == "lineargradient",
+            href: svg_use_href(&attrs).map(str::to_string),
+            attrs,
+            stops: parse_svg_gradient_stops(body, css_vars, stop_css_rules),
+        });
+        if definitions.len() >= 256 {
+            break;
+        }
+    }
+    definitions
+}
+
+fn resolve_svg_gradient_definition(
+    definitions: &[SvgGradientDefinition],
+    index: usize,
+    depth: usize,
+) -> Option<SvgResolvedGradient> {
+    let definition = definitions.get(index)?;
+    let mut attrs = Vec::new();
+    let mut inherited_stops = Vec::new();
+
+    if depth < 8
+        && let Some(href) = &definition.href
+        && href != &definition.id
+        && let Some(parent_index) = definitions
+            .iter()
+            .position(|candidate| candidate.id == *href)
+        && let Some(parent) = resolve_svg_gradient_definition(definitions, parent_index, depth + 1)
+    {
+        attrs = parent.attrs;
+        inherited_stops = parent.stops;
+    }
+
+    merge_svg_gradient_attrs(&mut attrs, &definition.attrs);
+    let stops = if definition.stops.is_empty() {
+        inherited_stops
+    } else {
+        definition.stops.clone()
+    };
+    Some(SvgResolvedGradient {
+        linear: definition.linear,
+        attrs,
+        stops,
+    })
+}
+
+fn merge_svg_gradient_attrs(into: &mut Vec<(String, String)>, attrs: &[(String, String)]) {
+    for (name, value) in attrs {
+        if matches!(name.as_str(), "id" | "href" | "xlink:href") {
+            continue;
+        }
+        if let Some((_, existing_value)) = into.iter_mut().find(|(existing, _)| existing == name) {
+            *existing_value = value.clone();
+        } else {
+            into.push((name.clone(), value.clone()));
+        }
+    }
+}
+
+fn parse_svg_gradient_stop_css_rules(
+    src: &str,
+    css_vars: &[SvgCssVariable],
+) -> Vec<SvgGradientStopCssRule> {
+    let mut rules = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty()
+            || raw.starts_with('/')
+            || raw.starts_with('?')
+            || raw.starts_with('!')
+            || raw.trim_end().ends_with('/')
+        {
+            continue;
+        }
+        let (tag, _) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("style") {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        parse_svg_gradient_stop_css_rules_from_css(
+            src.get(pos..pos + end_rel).unwrap_or_default(),
+            css_vars,
+            &mut rules,
+        );
+        if rules.len() >= 256 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    rules
+}
+
+fn parse_svg_gradient_stop_css_rules_from_css(
+    css: &str,
+    css_vars: &[SvgCssVariable],
+    out: &mut Vec<SvgGradientStopCssRule>,
+) {
+    let mut pos = 0usize;
+    while let Some(open) = find_css_block_open(css, pos) {
+        let selectors = css
+            .get(pos..open)
+            .unwrap_or_default()
+            .rsplit(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let Some(close) = find_css_block_close(css, open) else {
+            break;
+        };
+
+        if !selectors.starts_with('@') {
+            let patch = parse_svg_gradient_stop_patch(
+                css.get(open + 1..close).unwrap_or_default(),
+                css_vars,
+            );
+            if patch.color.is_some() || patch.opacity.is_some() {
+                for selector in selectors.split(',') {
+                    if let Some(selector) = parse_svg_css_selector(selector) {
+                        out.push(SvgGradientStopCssRule {
+                            selector,
+                            order: out.len(),
+                            patch,
+                        });
+                    }
+                }
+            }
+        }
+        if out.len() >= 256 {
+            break;
+        }
+        pos = close + 1;
+    }
+}
+
+fn parse_svg_gradient_stop_patch(decls: &str, css_vars: &[SvgCssVariable]) -> SvgGradientStopPatch {
+    let mut patch = SvgGradientStopPatch::default();
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        apply_svg_gradient_stop_patch_declaration(
+            &mut patch,
+            name.trim().to_ascii_lowercase().as_str(),
+            value.trim(),
+            css_vars,
+        );
+    }
+    patch
+}
+
+fn apply_svg_gradient_stop_patch_declaration(
+    patch: &mut SvgGradientStopPatch,
+    name: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    match name {
+        "stop-color" => {
+            if value.eq_ignore_ascii_case("transparent") {
+                patch.opacity = Some(0.0);
+            } else if let Some(color) = parse_svg_color(value, css_vars) {
+                patch.color = Some(color);
+            }
+        }
+        "stop-opacity" => {
+            if let Some(opacity) = parse_svg_opacity(value, css_vars) {
+                patch.opacity = Some(opacity.clamp(0.0, 1.0));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_svg_gradient_stops(
+    body: &str,
+    css_vars: &[SvgCssVariable],
+    css_rules: &[SvgGradientStopCssRule],
+) -> Vec<SvgGradientStop> {
+    let mut stops = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.starts_with('/') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        if !svg_local_name(&tag.to_ascii_lowercase()).eq_ignore_ascii_case("stop") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        if let Some(stop) = parse_svg_gradient_stop(&attrs, css_vars, css_rules) {
+            stops.push(stop);
+        }
+        if stops.len() >= 64 {
+            break;
+        }
+    }
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    stops
+}
+
+fn svg_gradient_representative_color(stops: &[SvgGradientStop]) -> Option<(f32, f32, f32)> {
+    if stops.is_empty() {
+        return None;
+    }
+    if stops.len() == 1 {
+        return Some(stops[0].1);
+    }
+
+    let mut weighted = (0.0f32, 0.0f32, 0.0f32);
+    let mut covered = 0.0f32;
+    let first = stops[0];
+    if first.0 > 0.0 {
+        add_svg_weighted_color(&mut weighted, first.1, first.0);
+        covered += first.0;
+    }
+    for pair in stops.windows(2) {
+        let (a_offset, a_color) = pair[0];
+        let (b_offset, b_color) = pair[1];
+        let span = (b_offset - a_offset).max(0.0);
+        if span <= 0.0 {
+            continue;
+        }
+        let midpoint = (
+            (a_color.0 + b_color.0) * 0.5,
+            (a_color.1 + b_color.1) * 0.5,
+            (a_color.2 + b_color.2) * 0.5,
+        );
+        add_svg_weighted_color(&mut weighted, midpoint, span);
+        covered += span;
+    }
+    let last = stops[stops.len() - 1];
+    if last.0 < 1.0 {
+        let span = 1.0 - last.0;
+        add_svg_weighted_color(&mut weighted, last.1, span);
+        covered += span;
+    }
+    if covered <= f32::EPSILON {
+        return Some(last.1);
+    }
+    Some((
+        (weighted.0 / covered).clamp(0.0, 1.0),
+        (weighted.1 / covered).clamp(0.0, 1.0),
+        (weighted.2 / covered).clamp(0.0, 1.0),
+    ))
+}
+
+fn parse_svg_linear_gradient(
+    attrs: &[(String, String)],
+    stops: &[SvgGradientStop],
+) -> Option<SvgLinearGradient> {
+    let spread = parse_svg_gradient_spread(attrs)?;
+    let stops = svg_native_gradient_stops(stops)?;
+    if stops.len() < 2 {
+        return None;
+    }
+    let units = match svg_attr(attrs, "gradientunits")
+        .unwrap_or("objectBoundingBox")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "userspaceonuse" => SvgGradientUnits::UserSpaceOnUse,
+        _ => SvgGradientUnits::ObjectBoundingBox,
+    };
+    Some(SvgLinearGradient {
+        units,
+        spread,
+        transform: svg_attr(attrs, "gradienttransform")
+            .and_then(parse_svg_transform)
+            .unwrap_or(SvgTransform::IDENTITY),
+        x1: svg_attr(attrs, "x1")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(SvgGradientLength {
+                value: 0.0,
+                percent: true,
+            }),
+        y1: svg_attr(attrs, "y1")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(SvgGradientLength {
+                value: 0.0,
+                percent: true,
+            }),
+        x2: svg_attr(attrs, "x2")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(SvgGradientLength {
+                value: 100.0,
+                percent: true,
+            }),
+        y2: svg_attr(attrs, "y2")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(SvgGradientLength {
+                value: 0.0,
+                percent: true,
+            }),
+        stops,
+    })
+}
+
+fn parse_svg_radial_gradient(
+    attrs: &[(String, String)],
+    stops: &[SvgGradientStop],
+) -> Option<SvgRadialGradient> {
+    let spread = parse_svg_gradient_spread(attrs)?;
+    let stops = svg_native_gradient_stops(stops)?;
+    if stops.len() < 2 {
+        return None;
+    }
+    let units = match svg_attr(attrs, "gradientunits")
+        .unwrap_or("objectBoundingBox")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "userspaceonuse" => SvgGradientUnits::UserSpaceOnUse,
+        _ => SvgGradientUnits::ObjectBoundingBox,
+    };
+    let default_center = SvgGradientLength {
+        value: 50.0,
+        percent: true,
+    };
+    let default_radius = SvgGradientLength {
+        value: 50.0,
+        percent: true,
+    };
+    let cx = svg_attr(attrs, "cx")
+        .and_then(parse_svg_gradient_length)
+        .unwrap_or(default_center);
+    let cy = svg_attr(attrs, "cy")
+        .and_then(parse_svg_gradient_length)
+        .unwrap_or(default_center);
+    Some(SvgRadialGradient {
+        units,
+        spread,
+        transform: svg_attr(attrs, "gradienttransform")
+            .and_then(parse_svg_transform)
+            .unwrap_or(SvgTransform::IDENTITY),
+        cx,
+        cy,
+        r: svg_attr(attrs, "r")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(default_radius),
+        fx: svg_attr(attrs, "fx")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(cx),
+        fy: svg_attr(attrs, "fy")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(cy),
+        fr: svg_attr(attrs, "fr")
+            .and_then(parse_svg_gradient_length)
+            .unwrap_or(SvgGradientLength {
+                value: 0.0,
+                percent: false,
+            }),
+        stops,
+    })
+}
+
+fn parse_svg_gradient_spread(attrs: &[(String, String)]) -> Option<SvgGradientSpread> {
+    match svg_attr(attrs, "spreadmethod")
+        .unwrap_or("pad")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "pad" => Some(SvgGradientSpread::Pad),
+        "repeat" => Some(SvgGradientSpread::Repeat),
+        "reflect" => Some(SvgGradientSpread::Reflect),
+        _ => None,
+    }
+}
+
+fn svg_native_gradient_stops(stops: &[SvgGradientStop]) -> Option<Vec<SvgGradientStop>> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let mut normalized: Vec<(f32, (f32, f32, f32))> = Vec::with_capacity(stops.len() + 2);
+    for &(offset, color) in stops.iter().take(32) {
+        if !offset.is_finite() {
+            continue;
+        }
+        let offset = offset.clamp(0.0, 1.0);
+        if let Some(last) = normalized.last_mut()
+            && (last.0 - offset).abs() <= 0.000_001
+        {
+            last.1 = color;
+            continue;
+        }
+        normalized.push((offset, color));
+    }
+    if normalized.len() < 2 {
+        return None;
+    }
+    if normalized[0].0 > 0.0 {
+        normalized.insert(0, (0.0, normalized[0].1));
+    }
+    let last_index = normalized.len() - 1;
+    if normalized[last_index].0 < 1.0 {
+        normalized.push((1.0, normalized[last_index].1));
+    }
+    (normalized.len() >= 2).then_some(normalized)
+}
+
+fn parse_svg_gradient_length(value: &str) -> Option<SvgGradientLength> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    parsed.is_finite().then_some(SvgGradientLength {
+        value: parsed,
+        percent: value[end..].trim_start().starts_with('%'),
+    })
+}
+
+fn add_svg_weighted_color(accum: &mut (f32, f32, f32), color: (f32, f32, f32), weight: f32) {
+    accum.0 += color.0 * weight;
+    accum.1 += color.1 * weight;
+    accum.2 += color.2 * weight;
+}
+
+fn parse_svg_gradient_stop(
+    attrs: &[(String, String)],
+    css_vars: &[SvgCssVariable],
+    css_rules: &[SvgGradientStopCssRule],
+) -> Option<SvgGradientStop> {
+    let mut color = None;
+    let mut opacity = 1.0;
+
+    apply_svg_gradient_stop_css(&mut color, &mut opacity, attrs, css_rules);
+    if let Some(value) = svg_attr(attrs, "stop-color") {
+        apply_svg_gradient_stop_color(&mut color, &mut opacity, value, css_vars);
+    }
+    if let Some(parsed) =
+        svg_attr(attrs, "stop-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+    {
+        opacity = parsed.clamp(0.0, 1.0);
+    }
+
+    if let Some(style) = svg_attr(attrs, "style") {
+        for decl in style.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            match name.trim().to_ascii_lowercase().as_str() {
+                "stop-color" => {
+                    apply_svg_gradient_stop_color(&mut color, &mut opacity, value.trim(), css_vars);
+                }
+                "stop-opacity" => {
+                    if let Some(parsed) = parse_svg_opacity(value.trim(), css_vars) {
+                        opacity = parsed.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut color = color.unwrap_or((0.0, 0.0, 0.0));
+    if opacity <= 0.001 {
+        color = (1.0, 1.0, 1.0);
+    } else if opacity < 0.999 {
+        color = (
+            color.0 * opacity + (1.0 - opacity),
+            color.1 * opacity + (1.0 - opacity),
+            color.2 * opacity + (1.0 - opacity),
+        );
+    }
+    Some((
+        svg_attr(attrs, "offset")
+            .and_then(parse_svg_gradient_offset)
+            .unwrap_or(0.0),
+        color,
+    ))
+}
+
+fn apply_svg_gradient_stop_css(
+    color: &mut Option<SvgColor>,
+    opacity: &mut f32,
+    attrs: &[(String, String)],
+    css_rules: &[SvgGradientStopCssRule],
+) {
+    if css_rules.is_empty() {
+        return;
+    }
+    let mut matched = Vec::new();
+    for rule in css_rules {
+        if svg_css_selector_matches(&rule.selector, "stop", attrs, &[]) {
+            matched.push(rule);
+        }
+    }
+    matched.sort_by_key(|rule| (rule.selector.specificity, rule.order));
+    for rule in matched {
+        if let Some(stop_color) = rule.patch.color {
+            *color = Some(stop_color);
+        }
+        if let Some(stop_opacity) = rule.patch.opacity {
+            *opacity = stop_opacity;
+        }
+    }
+}
+
+fn apply_svg_gradient_stop_color(
+    color: &mut Option<SvgColor>,
+    opacity: &mut f32,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    if value.eq_ignore_ascii_case("transparent") {
+        *opacity = 0.0;
+    } else if let Some(parsed) = parse_svg_color(value, css_vars) {
+        *color = Some(parsed);
+    }
+}
+
+fn parse_svg_gradient_offset(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let number = parse_svg_number(value)?;
+    let offset = if value.contains('%') {
+        number / 100.0
+    } else {
+        number
+    };
+    offset.is_finite().then_some(offset.clamp(0.0, 1.0))
+}
+
+fn parse_svg_markers(
+    src: &str,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    css_rules: &[SvgCssRule],
+    filter_shadows: &[SvgFilterShadow],
+) -> Vec<SvgMarker> {
+    let mut markers = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("marker") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if self_closing {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        let body = src.get(pos..pos + end_rel).unwrap_or_default();
+        if let Some(marker) = parse_svg_marker_body(
+            id,
+            &attrs,
+            body,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            css_rules,
+            filter_shadows,
+        ) {
+            if !markers
+                .iter()
+                .any(|existing: &SvgMarker| existing.id == marker.id)
+            {
+                markers.push(marker);
+            }
+        }
+        if markers.len() >= 128 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    markers
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_marker_body(
+    id: &str,
+    attrs: &[(String, String)],
+    body: &str,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    css_rules: &[SvgCssRule],
+    filter_shadows: &[SvgFilterShadow],
+) -> Option<SvgMarker> {
+    let marker_base = parse_svg_style_with_ancestors(
+        "marker",
+        attrs,
+        SvgStyle::INITIAL,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        &[],
+    );
+    let marker_ancestors = [svg_css_ancestor("marker", attrs)];
+    let ref_x = svg_attr(attrs, "refx")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let ref_y = svg_attr(attrs, "refy")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let orient = parse_svg_marker_orient(svg_attr(attrs, "orient"));
+    let view_box = parse_svg_marker_view_box(attrs);
+    let units_stroke_width = !svg_attr(attrs, "markerunits")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("userSpaceOnUse"));
+    let mut shapes = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_lower);
+        let child_attrs = parse_svg_attrs(attrs_src);
+        let ops = match local {
+            "path" => svg_attr(&child_attrs, "d").and_then(parse_svg_path_data),
+            "line" => svg_marker_line_ops(&child_attrs),
+            "polyline" => svg_attr(&child_attrs, "points")
+                .map(parse_svg_points)
+                .filter(|points| points.len() >= 2)
+                .map(|points| svg_poly_path_ops(&points, false)),
+            "polygon" => svg_attr(&child_attrs, "points")
+                .map(parse_svg_points)
+                .filter(|points| points.len() >= 3)
+                .map(|points| svg_poly_path_ops(&points, true)),
+            "rect" => svg_clip_rect_ops(&child_attrs),
+            "circle" => svg_clip_circle_ops(&child_attrs),
+            "ellipse" => svg_clip_ellipse_ops(&child_attrs),
+            _ => None,
+        };
+        let Some(ops) = ops.filter(|ops| !ops.is_empty()) else {
+            continue;
+        };
+        let style = parse_svg_style_with_ancestors(
+            local,
+            &child_attrs,
+            marker_base,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            &marker_ancestors,
+        );
+        if svg_style_has_marker_paint(style) {
+            shapes.push(SvgMarkerShape { ops, style });
+        }
+        if shapes.len() >= 64 {
+            break;
+        }
+    }
+    (!shapes.is_empty()).then_some(SvgMarker {
+        id: id.to_string(),
+        ref_x,
+        ref_y,
+        orient,
+        view_box,
+        units_stroke_width,
+        shapes,
+    })
+}
+
+fn parse_svg_marker_view_box(attrs: &[(String, String)]) -> Option<SvgMarkerViewBox> {
+    let view_box = parse_svg_view_box(attrs)?;
+    let viewport = SvgViewport {
+        w: parse_svg_positive_attr(attrs, "markerwidth").unwrap_or(3.0),
+        h: parse_svg_positive_attr(attrs, "markerheight").unwrap_or(3.0),
+    };
+    (viewport.w > 0.0 && viewport.h > 0.0).then_some(SvgMarkerViewBox {
+        view_box,
+        viewport,
+        preserve_aspect: parse_svg_preserve_aspect_ratio(svg_attr(attrs, "preserveaspectratio")),
+    })
+}
+
+fn parse_svg_marker_orient(value: Option<&str>) -> SvgMarkerOrient {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return SvgMarkerOrient::Angle(0.0);
+    };
+    if value.eq_ignore_ascii_case("auto") {
+        return SvgMarkerOrient::Auto;
+    }
+    if value.eq_ignore_ascii_case("auto-start-reverse") {
+        return SvgMarkerOrient::AutoStartReverse;
+    }
+    parse_svg_angle_degrees(value)
+        .map(SvgMarkerOrient::Angle)
+        .unwrap_or(SvgMarkerOrient::Angle(0.0))
+}
+
+fn parse_svg_angle_degrees(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim();
+    let degrees = if unit.is_empty() || unit.eq_ignore_ascii_case("deg") {
+        parsed
+    } else if unit.eq_ignore_ascii_case("rad") {
+        parsed.to_degrees()
+    } else if unit.eq_ignore_ascii_case("grad") {
+        parsed * 0.9
+    } else if unit.eq_ignore_ascii_case("turn") {
+        parsed * 360.0
+    } else {
+        return None;
+    };
+    degrees.is_finite().then_some(degrees)
+}
+
+fn svg_marker_line_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
+    let x1 = svg_attr(attrs, "x1")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let y1 = svg_attr(attrs, "y1")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let x2 = svg_attr(attrs, "x2")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let y2 = svg_attr(attrs, "y2")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    Some(vec![SvgPathOp::Move(x1, y1), SvgPathOp::Line(x2, y2)])
+}
+
+fn parse_svg_clip_paths(src: &str) -> Vec<SvgClipPath> {
+    let mut clip_paths = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("clippath") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if self_closing {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        let body = src.get(pos..pos + end_rel).unwrap_or_default();
+        if let Some(clip_path) = parse_svg_clip_path_body(id, &attrs, body) {
+            if !clip_paths
+                .iter()
+                .any(|existing: &SvgClipPath| existing.id == clip_path.id)
+            {
+                clip_paths.push(clip_path);
+            }
+        }
+        if clip_paths.len() >= 128 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    clip_paths
+}
+
+fn parse_svg_clip_path_body(
+    id: &str,
+    attrs: &[(String, String)],
+    body: &str,
+) -> Option<SvgClipPath> {
+    let mut ops = Vec::new();
+    let mut fill_rule = parse_svg_clip_rule(attrs).unwrap_or(SvgFillRule::NonZero);
+    let base_transform = parse_svg_geometry_transform(attrs);
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_lower);
+        let child_attrs = parse_svg_attrs(attrs_src);
+        if let Some(rule) = parse_svg_clip_rule(&child_attrs) {
+            fill_rule = rule;
+        }
+        if let Some(mut child_ops) = svg_clip_shape_ops(local, &child_attrs) {
+            let transform = base_transform.concat(parse_svg_geometry_transform(&child_attrs));
+            if !transform.is_identity() {
+                transform_svg_path_ops(&mut child_ops, transform);
+            }
+            ops.extend(child_ops);
+        }
+        if ops.len() > MAX_SVG_PATH_OPS {
+            return None;
+        }
+    }
+    (!ops.is_empty()).then_some(SvgClipPath {
+        id: id.to_string(),
+        ops,
+        fill_rule,
+    })
+}
+
+fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
+    let mut masks = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("mask") {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if self_closing {
+            continue;
+        }
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        let body = src.get(pos..pos + end_rel).unwrap_or_default();
+        if let Some(mask) = parse_svg_mask_body(id, &attrs, body, css_vars) {
+            if !masks
+                .iter()
+                .any(|existing: &SvgClipPath| existing.id == mask.id)
+            {
+                masks.push(mask);
+            }
+        }
+        if masks.len() >= 128 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    masks
+}
+
+fn parse_svg_mask_body(
+    id: &str,
+    attrs: &[(String, String)],
+    body: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<SvgClipPath> {
+    let mut ops = Vec::new();
+    let mut fill_rule = SvgFillRule::NonZero;
+    let base_transform = parse_svg_geometry_transform(attrs);
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        let local = svg_local_name(&tag_lower);
+        let child_attrs = parse_svg_attrs(attrs_src);
+        if let Some(rule) = parse_svg_clip_rule(&child_attrs) {
+            fill_rule = rule;
+        }
+        if !svg_mask_shape_reveals(&child_attrs, css_vars) {
+            continue;
+        }
+        if let Some(mut child_ops) = svg_clip_shape_ops(local, &child_attrs) {
+            let transform = base_transform.concat(parse_svg_geometry_transform(&child_attrs));
+            if !transform.is_identity() {
+                transform_svg_path_ops(&mut child_ops, transform);
+            }
+            ops.extend(child_ops);
+        }
+        if ops.len() > MAX_SVG_PATH_OPS {
+            return None;
+        }
+    }
+    (!ops.is_empty()).then_some(SvgClipPath {
+        id: id.to_string(),
+        ops,
+        fill_rule,
+    })
+}
+
+fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> bool {
+    let mut fill = svg_attr(attrs, "fill").and_then(|value| parse_svg_color(value, css_vars));
+    let mut opacity = svg_attr(attrs, "opacity")
+        .and_then(|value| parse_svg_opacity(value, css_vars))
+        .unwrap_or(1.0);
+    let mut fill_opacity = svg_attr(attrs, "fill-opacity")
+        .and_then(|value| parse_svg_opacity(value, css_vars))
+        .unwrap_or(1.0);
+    if let Some(style) = svg_attr(attrs, "style") {
+        for decl in style.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("fill") {
+                if value.eq_ignore_ascii_case("none") {
+                    fill = None;
+                } else if let Some(color) = parse_svg_color(value, css_vars) {
+                    fill = Some(color);
+                }
+            } else if name.eq_ignore_ascii_case("opacity") {
+                if let Some(parsed) = parse_svg_opacity(value, css_vars) {
+                    opacity = parsed;
+                }
+            } else if name.eq_ignore_ascii_case("fill-opacity")
+                && let Some(parsed) = parse_svg_opacity(value, css_vars)
+            {
+                fill_opacity = parsed;
+            }
+        }
+    }
+    let Some((r, g, b)) = fill else {
+        return false;
+    };
+    let alpha = (opacity * fill_opacity).clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        return false;
+    }
+    let luminance = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    luminance * alpha >= 0.5
+}
+
+fn parse_svg_clip_rule(attrs: &[(String, String)]) -> Option<SvgFillRule> {
+    svg_attr(attrs, "clip-rule")
+        .or_else(|| svg_attr(attrs, "fill-rule"))
+        .and_then(parse_svg_fill_rule)
+        .or_else(|| {
+            svg_attr(attrs, "style").and_then(|style| {
+                style.split(';').find_map(|decl| {
+                    let (name, value) = decl.split_once(':')?;
+                    let name = name.trim();
+                    if name.eq_ignore_ascii_case("clip-rule")
+                        || name.eq_ignore_ascii_case("fill-rule")
+                    {
+                        parse_svg_fill_rule(value)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+}
+
+fn svg_clip_rect_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
+    let w = svg_attr(attrs, "width").and_then(parse_svg_number)?;
+    let h = svg_attr(attrs, "height").and_then(parse_svg_number)?;
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let x = svg_attr(attrs, "x")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let y = svg_attr(attrs, "y")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let r = svg_attr(attrs, "rx")
+        .or_else(|| svg_attr(attrs, "ry"))
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0)
+        .min(w * 0.5)
+        .min(h * 0.5)
+        .max(0.0);
+    Some(svg_rect_path_ops(x, y, w, h, r))
+}
+
+fn svg_clip_circle_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
+    let r = svg_attr(attrs, "r").and_then(parse_svg_number)?;
+    (r > 0.0).then(|| {
+        svg_ellipse_path_ops(
+            svg_attr(attrs, "cx")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            svg_attr(attrs, "cy")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            r,
+            r,
+        )
+    })
+}
+
+fn svg_clip_ellipse_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
+    let rx = svg_attr(attrs, "rx").and_then(parse_svg_number)?;
+    let ry = svg_attr(attrs, "ry").and_then(parse_svg_number)?;
+    (rx > 0.0 && ry > 0.0).then(|| {
+        svg_ellipse_path_ops(
+            svg_attr(attrs, "cx")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            svg_attr(attrs, "cy")
+                .and_then(parse_svg_number)
+                .unwrap_or(0.0),
+            rx,
+            ry,
+        )
+    })
+}
+
+fn svg_clip_shape_ops(local: &str, attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
+    match local {
+        "path" => svg_attr(attrs, "d").and_then(parse_svg_path_data),
+        "rect" => svg_clip_rect_ops(attrs),
+        "circle" => svg_clip_circle_ops(attrs),
+        "ellipse" => svg_clip_ellipse_ops(attrs),
+        "polygon" => svg_attr(attrs, "points")
+            .map(parse_svg_points)
+            .filter(|points| points.len() >= 3)
+            .map(|points| svg_poly_path_ops(&points, true)),
+        _ => None,
+    }
+    .filter(|ops| !ops.is_empty())
+}
+
+fn parse_svg_geometry_transform(attrs: &[(String, String)]) -> SvgTransform {
+    let mut transform = SvgTransform::IDENTITY;
+    if let Some(parsed) = svg_attr(attrs, "transform").and_then(parse_svg_transform) {
+        transform = transform.concat(parsed);
+    }
+    if let Some(style) = svg_attr(attrs, "style") {
+        for decl in style.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("transform")
+                && let Some(parsed) = parse_svg_transform(value.trim())
+            {
+                transform = transform.concat(parsed);
+            }
+        }
+    }
+    transform
+}
+
+fn transform_svg_path_ops(ops: &mut [SvgPathOp], transform: SvgTransform) {
+    for op in ops {
+        *op = match *op {
+            SvgPathOp::Move(x, y) => {
+                let (x, y) = transform.apply_point(x, y);
+                SvgPathOp::Move(x, y)
+            }
+            SvgPathOp::Line(x, y) => {
+                let (x, y) = transform.apply_point(x, y);
+                SvgPathOp::Line(x, y)
+            }
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                let (x1, y1) = transform.apply_point(x1, y1);
+                let (x2, y2) = transform.apply_point(x2, y2);
+                let (x, y) = transform.apply_point(x, y);
+                SvgPathOp::Cubic(x1, y1, x2, y2, x, y)
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                let (x1, y1) = transform.apply_point(x1, y1);
+                let (x, y) = transform.apply_point(x, y);
+                SvgPathOp::Quad(x1, y1, x, y)
+            }
+            SvgPathOp::Close => SvgPathOp::Close,
+        };
+    }
+}
+
+fn svg_rect_path_ops(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<SvgPathOp> {
+    if r <= 0.0 {
+        return vec![
+            SvgPathOp::Move(x, y),
+            SvgPathOp::Line(x + w, y),
+            SvgPathOp::Line(x + w, y + h),
+            SvgPathOp::Line(x, y + h),
+            SvgPathOp::Close,
+        ];
+    }
+    let k = r * 0.5523;
+    let x1 = x + w;
+    let y1 = y + h;
+    vec![
+        SvgPathOp::Move(x + r, y),
+        SvgPathOp::Line(x1 - r, y),
+        SvgPathOp::Cubic(x1 - r + k, y, x1, y + r - k, x1, y + r),
+        SvgPathOp::Line(x1, y1 - r),
+        SvgPathOp::Cubic(x1, y1 - r + k, x1 - r + k, y1, x1 - r, y1),
+        SvgPathOp::Line(x + r, y1),
+        SvgPathOp::Cubic(x + r - k, y1, x, y1 - r + k, x, y1 - r),
+        SvgPathOp::Line(x, y + r),
+        SvgPathOp::Cubic(x, y + r - k, x + r - k, y, x + r, y),
+        SvgPathOp::Close,
+    ]
+}
+
+fn svg_ellipse_path_ops(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<SvgPathOp> {
+    let k = 0.552_284_8;
+    vec![
+        SvgPathOp::Move(cx - rx, cy),
+        SvgPathOp::Cubic(cx - rx, cy - ry * k, cx - rx * k, cy - ry, cx, cy - ry),
+        SvgPathOp::Cubic(cx + rx * k, cy - ry, cx + rx, cy - ry * k, cx + rx, cy),
+        SvgPathOp::Cubic(cx + rx, cy + ry * k, cx + rx * k, cy + ry, cx, cy + ry),
+        SvgPathOp::Cubic(cx - rx * k, cy + ry, cx - rx, cy + ry * k, cx - rx, cy),
+        SvgPathOp::Close,
+    ]
+}
+
+fn svg_poly_path_ops(points: &[(f32, f32)], closed: bool) -> Vec<SvgPathOp> {
+    let mut ops = Vec::with_capacity(points.len() + usize::from(closed));
+    if let Some(&(x, y)) = points.first() {
+        ops.push(SvgPathOp::Move(x, y));
+        for &(x, y) in &points[1..] {
+            ops.push(SvgPathOp::Line(x, y));
+        }
+        if closed {
+            ops.push(SvgPathOp::Close);
+        }
+    }
+    ops
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_style_with_ancestors(
+    tag: &str,
+    attrs: &[(String, String)],
+    mut style: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> SvgStyle {
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, tag, attrs);
+
+    // `opacity` is not inherited as a normal property, but ancestor group
+    // opacity multiplies the final child alpha. Keep that inherited factor
+    // separate so same-element CSS/attribute declarations override each other
+    // normally before we compose with the parent.
+    let inherited_opacity = style.opacity;
+    style.opacity = 1.0;
+
+    apply_svg_color_attr(&mut style, svg_attr(attrs, "color"), &scoped_css_vars);
+    apply_svg_transform_attr(&mut style, svg_attr(attrs, "transform"));
+    apply_svg_clip_path_attr(&mut style, svg_attr(attrs, "clip-path"), clip_paths);
+    apply_svg_mask_attr(&mut style, svg_attr(attrs, "mask"), clip_paths);
+    apply_svg_paint_attr(
+        &mut style,
+        "fill",
+        svg_attr(attrs, "fill"),
+        gradients,
+        patterns,
+        &scoped_css_vars,
+    );
+    apply_svg_paint_attr(
+        &mut style,
+        "stroke",
+        svg_attr(attrs, "stroke"),
+        gradients,
+        patterns,
+        &scoped_css_vars,
+    );
+    apply_svg_visibility_attr(&mut style, "display", svg_attr(attrs, "display"));
+    apply_svg_visibility_attr(&mut style, "visibility", svg_attr(attrs, "visibility"));
+    apply_svg_filter_attr(
+        &mut style,
+        svg_attr(attrs, "filter"),
+        filter_shadows,
+        &scoped_css_vars,
+    );
+    apply_svg_fill_rule_attr(&mut style, svg_attr(attrs, "fill-rule"));
+    apply_svg_line_cap_attr(&mut style, svg_attr(attrs, "stroke-linecap"));
+    apply_svg_line_join_attr(&mut style, svg_attr(attrs, "stroke-linejoin"));
+    apply_svg_miter_limit_attr(&mut style, svg_attr(attrs, "stroke-miterlimit"));
+    apply_svg_dash_array_attr(&mut style, svg_attr(attrs, "stroke-dasharray"));
+    apply_svg_dash_offset_attr(&mut style, svg_attr(attrs, "stroke-dashoffset"));
+    apply_svg_vector_effect_attr(&mut style, svg_attr(attrs, "vector-effect"));
+    apply_svg_font_weight_attr(&mut style, svg_attr(attrs, "font-weight"), &scoped_css_vars);
+    apply_svg_font_slant_attr(&mut style, svg_attr(attrs, "font-style"), &scoped_css_vars);
+    apply_svg_font_family_attr(&mut style, svg_attr(attrs, "font-family"), &scoped_css_vars);
+    apply_svg_letter_spacing_attr(
+        &mut style,
+        svg_attr(attrs, "letter-spacing"),
+        &scoped_css_vars,
+    );
+    apply_svg_dominant_baseline_attr(
+        &mut style,
+        svg_attr(attrs, "dominant-baseline"),
+        &scoped_css_vars,
+    );
+    apply_svg_dominant_baseline_attr(
+        &mut style,
+        svg_attr(attrs, "alignment-baseline"),
+        &scoped_css_vars,
+    );
+    if let Some(width) = svg_attr(attrs, "stroke-width").and_then(parse_svg_number) {
+        style.stroke_width = width.max(0.0);
+    }
+    apply_svg_opacity_attr(
+        &mut style,
+        "opacity",
+        svg_attr(attrs, "opacity"),
+        &scoped_css_vars,
+    );
+    apply_svg_opacity_attr(
+        &mut style,
+        "fill-opacity",
+        svg_attr(attrs, "fill-opacity"),
+        &scoped_css_vars,
+    );
+    apply_svg_opacity_attr(
+        &mut style,
+        "stroke-opacity",
+        svg_attr(attrs, "stroke-opacity"),
+        &scoped_css_vars,
+    );
+
+    apply_svg_css_styles(
+        &mut style,
+        tag,
+        attrs,
+        css_rules,
+        ancestors,
+        &scoped_css_vars,
+        gradients,
+        patterns,
+        clip_paths,
+        filter_shadows,
+    );
+
+    if let Some(style_attr) = svg_attr(attrs, "style") {
+        for decl in style_attr.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim();
+            apply_svg_style_declaration(
+                &mut style,
+                name.as_str(),
+                value,
+                gradients,
+                patterns,
+                &scoped_css_vars,
+                clip_paths,
+                filter_shadows,
+            );
+        }
+    }
+    style.opacity = (inherited_opacity * style.opacity).clamp(0.0, 1.0);
+    if style.opacity <= 0.001 {
+        style.visible = false;
+    }
+    if style.stroke_width <= 0.0 {
+        style.stroke = None;
+    }
+    style
+}
+
+fn parse_svg_css_rules(css: &str, out: &mut Vec<SvgCssRule>) {
+    let mut pos = 0usize;
+    while let Some(open) = find_css_block_open(css, pos) {
+        let selectors = css
+            .get(pos..open)
+            .unwrap_or_default()
+            .rsplit(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let Some(close) = find_css_block_close(css, open) else {
+            break;
+        };
+
+        if !selectors.starts_with('@') {
+            let decls = css.get(open + 1..close).unwrap_or_default().to_string();
+            for selector in selectors.split(',') {
+                if let Some(selector) = parse_svg_css_selector(selector) {
+                    out.push(SvgCssRule {
+                        selector,
+                        order: out.len(),
+                        decls: decls.clone(),
+                    });
+                }
+            }
+        }
+        pos = close + 1;
+    }
+}
+
+fn find_css_block_open(css: &str, mut pos: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote = 0u8;
+    while pos < bytes.len() {
+        let byte = bytes[pos];
+        if quote != 0 {
+            if byte == b'\\' {
+                pos = (pos + 2).min(bytes.len());
+                continue;
+            }
+            if byte == quote {
+                quote = 0;
+            }
+            pos += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(pos + 1) == Some(&b'*') {
+            pos += 2;
+            while pos + 1 < bytes.len() && !(bytes[pos] == b'*' && bytes[pos + 1] == b'/') {
+                pos += 1;
+            }
+            pos = (pos + 2).min(bytes.len());
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = byte;
+            pos += 1;
+            continue;
+        }
+        if byte == b'{' {
+            return Some(pos);
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn find_css_block_close(css: &str, open: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut pos = open + 1;
+    let mut depth = 1usize;
+    let mut quote = 0u8;
+    while pos < bytes.len() {
+        let byte = bytes[pos];
+        if quote != 0 {
+            if byte == b'\\' {
+                pos = (pos + 2).min(bytes.len());
+                continue;
+            }
+            if byte == quote {
+                quote = 0;
+            }
+            pos += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(pos + 1) == Some(&b'*') {
+            pos += 2;
+            while pos + 1 < bytes.len() && !(bytes[pos] == b'*' && bytes[pos + 1] == b'/') {
+                pos += 1;
+            }
+            pos = (pos + 2).min(bytes.len());
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = byte;
+            pos += 1;
+            continue;
+        }
+        if byte == b'{' {
+            depth += 1;
+        } else if byte == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(pos);
+            }
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn parse_svg_css_selector(selector: &str) -> Option<SvgCssSelector> {
+    let selector = selector.trim();
+    if selector.is_empty()
+        || selector
+            .chars()
+            .any(|ch| matches!(ch, '+' | '~' | '[' | ']' | ':'))
+    {
+        return None;
+    }
+
+    let mut pos = 0usize;
+    let mut parts = Vec::new();
+    let mut pending_relation = SvgCssRelation::Descendant;
+    while pos < selector.len() {
+        let had_whitespace = skip_svg_css_selector_whitespace(selector, &mut pos);
+        if pos >= selector.len() {
+            break;
+        }
+        if selector.as_bytes()[pos] == b'>' {
+            if parts.is_empty() {
+                return None;
+            }
+            pos += 1;
+            skip_svg_css_selector_whitespace(selector, &mut pos);
+            if pos >= selector.len() || selector.as_bytes()[pos] == b'>' {
+                return None;
+            }
+            pending_relation = SvgCssRelation::Child;
+        } else if !parts.is_empty() {
+            if !had_whitespace {
+                return None;
+            }
+            pending_relation = SvgCssRelation::Descendant;
+        }
+
+        let mut part = parse_svg_css_selector_part(selector, &mut pos)?;
+        part.relation = if parts.is_empty() {
+            SvgCssRelation::Descendant
+        } else {
+            pending_relation
+        };
+        parts.push(part);
+        if parts.len() > 6 {
+            return None;
+        }
+        pending_relation = SvgCssRelation::Descendant;
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    let specificity = parts.iter().fold(0u16, |specificity, part| {
+        specificity
+            .saturating_add(u16::from(part.tag.is_some()))
+            .saturating_add((part.classes.len() as u16).saturating_mul(10))
+            .saturating_add(u16::from(part.id.is_some()).saturating_mul(100))
+    });
+    Some(SvgCssSelector { parts, specificity })
+}
+
+fn skip_svg_css_selector_whitespace(selector: &str, pos: &mut usize) -> bool {
+    let start = *pos;
+    while selector
+        .as_bytes()
+        .get(*pos)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        *pos += 1;
+    }
+    *pos != start
+}
+
+fn parse_svg_css_selector_part(selector: &str, pos: &mut usize) -> Option<SvgCssSelectorPart> {
+    if *pos >= selector.len() {
+        return None;
+    }
+    let mut tag = None;
+    let mut id = None;
+    let mut classes = Vec::new();
+    let mut universal = false;
+    if selector.as_bytes()[*pos] == b'*' {
+        universal = true;
+        *pos += 1;
+    } else if selector
+        .as_bytes()
+        .get(*pos)
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+    {
+        let start = *pos;
+        while selector
+            .as_bytes()
+            .get(*pos)
+            .is_some_and(|byte| svg_css_ident_byte(*byte))
+        {
+            *pos += 1;
+        }
+        let tag_name = selector[start..*pos].to_ascii_lowercase();
+        tag = Some(svg_local_name(&tag_name).to_string());
+    }
+
+    while *pos < selector.len() {
+        let marker = selector.as_bytes()[*pos];
+        if marker != b'.' && marker != b'#' {
+            break;
+        }
+        *pos += 1;
+        let start = *pos;
+        while selector
+            .as_bytes()
+            .get(*pos)
+            .is_some_and(|byte| svg_css_ident_byte(*byte))
+        {
+            *pos += 1;
+        }
+        if start == *pos {
+            return None;
+        }
+        let ident = selector[start..*pos].to_string();
+        if marker == b'#' {
+            if id.is_some() {
+                return None;
+            }
+            id = Some(ident);
+        } else {
+            classes.push(ident);
+            if classes.len() > 8 {
+                return None;
+            }
+        }
+    }
+
+    if tag.is_none() && id.is_none() && classes.is_empty() && !universal {
+        return None;
+    }
+    Some(SvgCssSelectorPart {
+        tag,
+        id,
+        classes,
+        relation: SvgCssRelation::Descendant,
+    })
+}
+
+fn svg_css_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+fn parse_svg_style_patch(
+    decls: &str,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+) -> SvgStylePatch {
+    let mut patch = SvgStylePatch::default();
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim();
+        match name.as_str() {
+            "color" => patch.color = parse_svg_color(value, css_vars),
+            "fill" => {
+                if parse_svg_current_color_paint(value, css_vars) {
+                    patch.fill_current_color = Some(true);
+                    patch.fill_context = Some(None);
+                    patch.fill_gradient = Some(None);
+                    patch.fill_pattern = Some(None);
+                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        patch.fill_opacity = Some(alpha);
+                    }
+                } else if let Some(context) = parse_svg_context_paint(value, css_vars) {
+                    patch.fill = Some(None);
+                    patch.fill_current_color = Some(false);
+                    patch.fill_context = Some(Some(context));
+                    patch.fill_gradient = Some(None);
+                    patch.fill_pattern = Some(None);
+                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        patch.fill_opacity = Some(alpha);
+                    }
+                } else {
+                    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+                    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+                    let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
+                        if paint.is_some() {
+                            Some(paint)
+                        } else {
+                            pattern_ref
+                                .and_then(|index| patterns.get(index))
+                                .map(|pattern| Some(pattern.color))
+                                .or(Some(None))
+                        }
+                    });
+                    if let Some(paint) = paint {
+                        patch.fill = Some(paint);
+                        patch.fill_current_color = Some(false);
+                        patch.fill_context = Some(None);
+                        patch.fill_gradient =
+                            Some(paint.is_some().then_some(gradient_ref).flatten());
+                        patch.fill_pattern = Some(paint.is_some().then_some(pattern_ref).flatten());
+                        if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                            patch.fill_opacity = Some(alpha);
+                        }
+                    }
+                }
+            }
+            "stroke" => {
+                if parse_svg_current_color_paint(value, css_vars) {
+                    patch.stroke_current_color = Some(true);
+                    patch.stroke_context = Some(None);
+                    patch.stroke_gradient = Some(None);
+                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        patch.stroke_opacity = Some(alpha);
+                    }
+                } else if let Some(context) = parse_svg_context_paint(value, css_vars) {
+                    patch.stroke = Some(None);
+                    patch.stroke_current_color = Some(false);
+                    patch.stroke_context = Some(Some(context));
+                    patch.stroke_gradient = Some(None);
+                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        patch.stroke_opacity = Some(alpha);
+                    }
+                } else {
+                    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+                    if let Some(paint) = parse_svg_paint(value, gradients, css_vars) {
+                        patch.stroke = Some(paint);
+                        patch.stroke_gradient =
+                            Some(paint.is_some().then_some(gradient_ref).flatten());
+                        patch.stroke_current_color = Some(false);
+                        patch.stroke_context = Some(None);
+                        if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                            patch.stroke_opacity = Some(alpha);
+                        }
+                    }
+                }
+            }
+            "display" | "visibility" => {
+                if svg_visibility_value_hides(name.as_str(), value) {
+                    patch.visible = Some(false);
+                }
+            }
+            "filter" => patch.shadow = parse_svg_filter_shadow(value, filter_shadows, css_vars),
+            "transform" => patch.transform = parse_svg_transform(value),
+            "clip-path" => patch.clip_path = parse_svg_clip_path_ref(value, clip_paths),
+            "mask" => patch.mask_path = parse_svg_mask_ref(value, clip_paths),
+            "fill-rule" => patch.fill_rule = parse_svg_fill_rule(value),
+            "stroke-width" => {
+                if let Some(width) = parse_svg_number(value) {
+                    patch.stroke_width = Some(width.max(0.0));
+                }
+            }
+            "vector-effect" => patch.non_scaling_stroke = parse_svg_vector_effect(value),
+            "stroke-linecap" => patch.line_cap = parse_svg_line_cap(value),
+            "stroke-linejoin" => patch.line_join = parse_svg_line_join(value),
+            "stroke-miterlimit" => patch.miter_limit = parse_svg_miter_limit(value),
+            "stroke-dasharray" => patch.dash = parse_svg_dash_array(value),
+            "stroke-dashoffset" => patch.dash_offset = parse_svg_number(value),
+            "font-weight" => patch.font_weight = parse_svg_font_weight(value, css_vars),
+            "font-style" => patch.font_slant = parse_svg_font_slant(value, css_vars),
+            "font-family" => patch.font_family = parse_svg_font_family(value, css_vars),
+            "letter-spacing" => patch.letter_spacing = parse_svg_letter_spacing(value, css_vars),
+            "dominant-baseline" | "alignment-baseline" => {
+                patch.dominant_baseline = parse_svg_dominant_baseline(value, css_vars);
+            }
+            "opacity" => patch.opacity = parse_svg_opacity(value, css_vars),
+            "fill-opacity" => patch.fill_opacity = parse_svg_opacity(value, css_vars),
+            "stroke-opacity" => patch.stroke_opacity = parse_svg_opacity(value, css_vars),
+            _ => {}
+        }
+    }
+    patch
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_svg_css_styles(
+    style: &mut SvgStyle,
+    tag: &str,
+    attrs: &[(String, String)],
+    css_rules: &[SvgCssRule],
+    ancestors: &[SvgCssAncestor],
+    css_vars: &[SvgCssVariable],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+) {
+    if css_rules.is_empty() {
+        return;
+    }
+    let matched = svg_matching_css_rules(tag, attrs, css_rules, ancestors);
+    for rule in matched {
+        let patch = parse_svg_style_patch(
+            &rule.decls,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+        );
+        apply_svg_style_patch(style, patch);
+    }
+}
+
+fn svg_css_vars_for_element(
+    css_vars: &[SvgCssVariable],
+    css_rules: &[SvgCssRule],
+    ancestors: &[SvgCssAncestor],
+    tag: &str,
+    attrs: &[(String, String)],
+) -> Vec<SvgCssVariable> {
+    let mut scoped_vars = css_vars.to_vec();
+    for index in 0..ancestors.len() {
+        let ancestor = &ancestors[index];
+        apply_svg_css_variable_rules(
+            &mut scoped_vars,
+            ancestor.tag.as_str(),
+            &ancestor.attrs,
+            css_rules,
+            &ancestors[..index],
+        );
+        apply_svg_inline_variable_decls(&mut scoped_vars, &ancestor.attrs);
+    }
+    apply_svg_css_variable_rules(&mut scoped_vars, tag, attrs, css_rules, ancestors);
+    apply_svg_inline_variable_decls(&mut scoped_vars, attrs);
+    scoped_vars
+}
+
+fn apply_svg_css_variable_rules(
+    vars: &mut Vec<SvgCssVariable>,
+    tag: &str,
+    attrs: &[(String, String)],
+    css_rules: &[SvgCssRule],
+    ancestors: &[SvgCssAncestor],
+) {
+    if css_rules.is_empty() {
+        return;
+    }
+    let matched = svg_matching_css_rules(tag, attrs, css_rules, ancestors);
+    for rule in matched {
+        parse_svg_css_variable_decls_override(&rule.decls, vars);
+    }
+}
+
+fn apply_svg_inline_variable_decls(vars: &mut Vec<SvgCssVariable>, attrs: &[(String, String)]) {
+    let Some(style) = svg_attr(attrs, "style") else {
+        return;
+    };
+    parse_svg_css_variable_decls_override(style, vars);
+}
+
+fn svg_matching_css_rules<'a>(
+    tag: &str,
+    attrs: &[(String, String)],
+    css_rules: &'a [SvgCssRule],
+    ancestors: &[SvgCssAncestor],
+) -> Vec<&'a SvgCssRule> {
+    let mut matched = Vec::new();
+    for rule in css_rules {
+        if svg_css_selector_matches(&rule.selector, tag, attrs, ancestors) {
+            matched.push(rule);
+        }
+    }
+    matched.sort_by_key(|rule| (rule.selector.specificity, rule.order));
+    matched
+}
+
+fn svg_css_selector_matches(
+    selector: &SvgCssSelector,
+    tag: &str,
+    attrs: &[(String, String)],
+    ancestors: &[SvgCssAncestor],
+) -> bool {
+    let Some(current) = selector.parts.last() else {
+        return false;
+    };
+    if !svg_css_selector_part_matches(current, tag, attrs) {
+        return false;
+    }
+    if selector.parts.len() == 1 {
+        return true;
+    }
+
+    let mut ancestor_limit = ancestors.len();
+    for part_index in (0..selector.parts.len() - 1).rev() {
+        let relation = selector.parts[part_index + 1].relation;
+        let part = &selector.parts[part_index];
+        match relation {
+            SvgCssRelation::Child => {
+                if ancestor_limit == 0 {
+                    return false;
+                }
+                ancestor_limit -= 1;
+                let ancestor = &ancestors[ancestor_limit];
+                if !svg_css_selector_part_matches(part, ancestor.tag.as_str(), &ancestor.attrs) {
+                    return false;
+                }
+            }
+            SvgCssRelation::Descendant => {
+                let Some(found) = (0..ancestor_limit).rev().find(|&index| {
+                    let ancestor = &ancestors[index];
+                    svg_css_selector_part_matches(part, ancestor.tag.as_str(), &ancestor.attrs)
+                }) else {
+                    return false;
+                };
+                ancestor_limit = found;
+            }
+        }
+    }
+    true
+}
+
+fn svg_css_selector_part_matches(
+    part: &SvgCssSelectorPart,
+    tag: &str,
+    attrs: &[(String, String)],
+) -> bool {
+    if let Some(selector_tag) = &part.tag
+        && selector_tag != tag
+    {
+        return false;
+    }
+    if let Some(selector_id) = &part.id
+        && !svg_attr(attrs, "id").is_some_and(|id| id == selector_id)
+    {
+        return false;
+    }
+    if part.classes.is_empty() {
+        return true;
+    }
+    let Some(class_attr) = svg_attr(attrs, "class") else {
+        return false;
+    };
+    part.classes.iter().all(|selector_class| {
+        class_attr
+            .split_ascii_whitespace()
+            .any(|class_name| class_name == selector_class)
+    })
+}
+
+fn svg_css_ancestor(tag: &str, attrs: &[(String, String)]) -> SvgCssAncestor {
+    SvgCssAncestor {
+        tag: tag.to_string(),
+        attrs: attrs.to_vec(),
+    }
+}
+
+fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
+    if let Some(color) = patch.color {
+        apply_svg_color(style, color);
+    }
+    if patch.fill_current_color == Some(true) {
+        style.fill = Some(style.color);
+        style.fill_gradient = None;
+        style.fill_pattern = None;
+        style.fill_current_color = true;
+        style.fill_context = None;
+    }
+    if let Some(fill) = patch.fill {
+        style.fill = fill;
+        style.fill_current_color = false;
+        style.fill_context = None;
+    }
+    if let Some(fill_context) = patch.fill_context {
+        style.fill_context = fill_context;
+        if fill_context.is_some() {
+            style.fill = None;
+            style.fill_gradient = None;
+            style.fill_pattern = None;
+            style.fill_current_color = false;
+        }
+    }
+    if let Some(fill_gradient) = patch.fill_gradient {
+        style.fill_gradient = fill_gradient;
+    }
+    if let Some(fill_pattern) = patch.fill_pattern {
+        style.fill_pattern = fill_pattern;
+        if fill_pattern.is_some() {
+            style.fill_gradient = None;
+        }
+    }
+    if patch.stroke_current_color == Some(true) {
+        style.stroke = Some(style.color);
+        style.stroke_gradient = None;
+        style.stroke_current_color = true;
+        style.stroke_context = None;
+    }
+    if let Some(stroke) = patch.stroke {
+        style.stroke = stroke;
+        if stroke.is_none() {
+            style.stroke_gradient = None;
+        }
+        style.stroke_current_color = false;
+        style.stroke_context = None;
+    }
+    if let Some(stroke_context) = patch.stroke_context {
+        style.stroke_context = stroke_context;
+        if stroke_context.is_some() {
+            style.stroke = None;
+            style.stroke_gradient = None;
+            style.stroke_current_color = false;
+        }
+    }
+    if let Some(stroke_gradient) = patch.stroke_gradient {
+        style.stroke_gradient = stroke_gradient;
+    }
+    if let Some(stroke_width) = patch.stroke_width {
+        style.stroke_width = stroke_width;
+    }
+    if let Some(non_scaling_stroke) = patch.non_scaling_stroke {
+        style.non_scaling_stroke = non_scaling_stroke;
+    }
+    if let Some(opacity) = patch.opacity {
+        style.opacity = opacity.clamp(0.0, 1.0);
+    }
+    if let Some(fill_opacity) = patch.fill_opacity {
+        style.fill_opacity = fill_opacity;
+    }
+    if let Some(stroke_opacity) = patch.stroke_opacity {
+        style.stroke_opacity = stroke_opacity;
+    }
+    if let Some(visible) = patch.visible {
+        style.visible = visible;
+    }
+    if let Some(shadow) = patch.shadow {
+        style.shadow = shadow;
+    }
+    if let Some(clip_path) = patch.clip_path {
+        style.clip_path = clip_path;
+    }
+    if let Some(mask_path) = patch.mask_path {
+        style.mask_path = mask_path;
+    }
+    if let Some(transform) = patch.transform {
+        style.transform = style.transform.concat(transform);
+    }
+    if let Some(dash) = patch.dash {
+        style.dash = dash;
+    }
+    if let Some(dash_offset) = patch.dash_offset {
+        style.dash.offset = dash_offset;
+    }
+    if let Some(line_cap) = patch.line_cap {
+        style.line_cap = line_cap;
+    }
+    if let Some(line_join) = patch.line_join {
+        style.line_join = line_join;
+    }
+    if let Some(miter_limit) = patch.miter_limit {
+        style.miter_limit = Some(miter_limit);
+    }
+    if let Some(fill_rule) = patch.fill_rule {
+        style.fill_rule = fill_rule;
+    }
+    if let Some(font_weight) = patch.font_weight {
+        style.font_weight = font_weight;
+    }
+    if let Some(font_slant) = patch.font_slant {
+        style.font_slant = font_slant;
+    }
+    if let Some(font_family) = patch.font_family {
+        style.font_family = font_family;
+    }
+    if let Some(dominant_baseline) = patch.dominant_baseline {
+        style.dominant_baseline = dominant_baseline;
+    }
+    if let Some(letter_spacing) = patch.letter_spacing {
+        style.letter_spacing = letter_spacing;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_svg_style_declaration(
+    style: &mut SvgStyle,
+    name: &str,
+    value: &str,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+) {
+    match name {
+        "color" => apply_svg_color_attr(style, Some(value), css_vars),
+        "fill" | "stroke" => {
+            apply_svg_paint_attr(style, name, Some(value), gradients, patterns, css_vars);
+        }
+        "display" | "visibility" => apply_svg_visibility_attr(style, name, Some(value)),
+        "filter" => apply_svg_filter_attr(style, Some(value), filter_shadows, css_vars),
+        "transform" => apply_svg_transform_attr(style, Some(value)),
+        "clip-path" => apply_svg_clip_path_attr(style, Some(value), clip_paths),
+        "mask" => apply_svg_mask_attr(style, Some(value), clip_paths),
+        "fill-rule" => apply_svg_fill_rule_attr(style, Some(value)),
+        "stroke-width" => {
+            if let Some(width) = parse_svg_number(value) {
+                style.stroke_width = width.max(0.0);
+            }
+        }
+        "stroke-linecap" => apply_svg_line_cap_attr(style, Some(value)),
+        "stroke-linejoin" => apply_svg_line_join_attr(style, Some(value)),
+        "stroke-miterlimit" => apply_svg_miter_limit_attr(style, Some(value)),
+        "stroke-dasharray" => apply_svg_dash_array_attr(style, Some(value)),
+        "stroke-dashoffset" => apply_svg_dash_offset_attr(style, Some(value)),
+        "vector-effect" => apply_svg_vector_effect_attr(style, Some(value)),
+        "font-weight" => apply_svg_font_weight_attr(style, Some(value), css_vars),
+        "font-style" => apply_svg_font_slant_attr(style, Some(value), css_vars),
+        "font-family" => apply_svg_font_family_attr(style, Some(value), css_vars),
+        "letter-spacing" => apply_svg_letter_spacing_attr(style, Some(value), css_vars),
+        "dominant-baseline" | "alignment-baseline" => {
+            apply_svg_dominant_baseline_attr(style, Some(value), css_vars);
+        }
+        "opacity" | "fill-opacity" | "stroke-opacity" => {
+            apply_svg_opacity_attr(style, name, Some(value), css_vars);
+        }
+        _ => {}
+    }
+}
+
+fn apply_svg_opacity_attr(
+    style: &mut SvgStyle,
+    name: &str,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    let Some(opacity) = value.and_then(|value| parse_svg_opacity(value, css_vars)) else {
+        return;
+    };
+    match name {
+        "opacity" => {
+            style.opacity = opacity;
+        }
+        "fill-opacity" => style.fill_opacity = opacity,
+        "stroke-opacity" => style.stroke_opacity = opacity,
+        _ => {}
+    }
+}
+
+fn apply_svg_transform_attr(style: &mut SvgStyle, value: Option<&str>) {
+    let Some(transform) = value.and_then(parse_svg_transform) else {
+        return;
+    };
+    style.transform = style.transform.concat(transform);
+}
+
+fn apply_svg_clip_path_attr(style: &mut SvgStyle, value: Option<&str>, clip_paths: &[SvgClipPath]) {
+    if let Some(clip_path) = value.and_then(|value| parse_svg_clip_path_ref(value, clip_paths)) {
+        style.clip_path = clip_path;
+    }
+}
+
+fn apply_svg_mask_attr(style: &mut SvgStyle, value: Option<&str>, clip_paths: &[SvgClipPath]) {
+    if let Some(mask_path) = value.and_then(|value| parse_svg_mask_ref(value, clip_paths)) {
+        style.mask_path = mask_path;
+    }
+}
+
+fn parse_svg_clip_path_ref(value: &str, clip_paths: &[SvgClipPath]) -> Option<Option<usize>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let id = parse_svg_paint_url_id(value)?;
+    Some(clip_paths.iter().position(|clip_path| clip_path.id == id))
+}
+
+fn parse_svg_mask_ref(value: &str, clip_paths: &[SvgClipPath]) -> Option<Option<usize>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let id = parse_svg_paint_url_id(value)?;
+    Some(clip_paths.iter().rposition(|clip_path| clip_path.id == id))
+}
+
+fn parse_svg_marker_ref(value: Option<&str>, markers: &[SvgMarker]) -> Option<SvgMarkerRef> {
+    parse_svg_marker_ref_declaration(value?, markers, &[]).flatten()
+}
+
+fn parse_svg_marker_ref_attr(
+    attrs: &[(String, String)],
+    attr: &str,
+    markers: &[SvgMarker],
+    fallback: Option<SvgMarkerRef>,
+) -> Option<SvgMarkerRef> {
+    if let Some(value) = svg_attr(attrs, attr) {
+        return parse_svg_marker_ref(Some(value), markers);
+    }
+    fallback
+}
+
+fn parse_svg_marker_refs_for_element(
+    tag: &str,
+    attrs: &[(String, String)],
+    css_rules: &[SvgCssRule],
+    css_vars: &[SvgCssVariable],
+    markers: &[SvgMarker],
+    ancestors: &[SvgCssAncestor],
+) -> SvgMarkerRefs {
+    let marker = parse_svg_marker_ref(svg_attr(attrs, "marker"), markers);
+    let mut refs = SvgMarkerRefs {
+        start: parse_svg_marker_ref_attr(attrs, "marker-start", markers, marker),
+        mid: parse_svg_marker_ref_attr(attrs, "marker-mid", markers, marker),
+        end: parse_svg_marker_ref_attr(attrs, "marker-end", markers, marker),
+    };
+
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, tag, attrs);
+    for rule in svg_matching_css_rules(tag, attrs, css_rules, ancestors) {
+        apply_svg_marker_declarations(&mut refs, &rule.decls, markers, &scoped_css_vars);
+    }
+    if let Some(style_attr) = svg_attr(attrs, "style") {
+        apply_svg_marker_declarations(&mut refs, style_attr, markers, &scoped_css_vars);
+    }
+    refs
+}
+
+fn apply_svg_marker_declarations(
+    refs: &mut SvgMarkerRefs,
+    decls: &str,
+    markers: &[SvgMarker],
+    css_vars: &[SvgCssVariable],
+) {
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let marker_ref = match parse_svg_marker_ref_declaration(value, markers, css_vars) {
+            Some(marker_ref) => marker_ref,
+            None => continue,
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "marker" => {
+                refs.start = marker_ref;
+                refs.mid = marker_ref;
+                refs.end = marker_ref;
+            }
+            "marker-start" => refs.start = marker_ref,
+            "marker-mid" => refs.mid = marker_ref,
+            "marker-end" => refs.end = marker_ref,
+            _ => {}
+        }
+    }
+}
+
+fn parse_svg_marker_ref_declaration(
+    value: &str,
+    markers: &[SvgMarker],
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<SvgMarkerRef>> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_marker_ref_declaration(&resolved, markers, css_vars);
+    }
+    if value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let id = parse_svg_paint_url_id(value)?;
+    Some(Some(SvgMarkerRef {
+        index: markers.iter().position(|marker| marker.id == id),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_use_elements(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    reusable_defs: &[SvgReusableDef],
+    ancestors: &[SvgCssAncestor],
+    depth: usize,
+) -> Vec<SvgElement> {
+    if depth >= 8 {
+        return Vec::new();
+    }
+    let Some(id) = svg_use_href(attrs) else {
+        return Vec::new();
+    };
+    let Some(def) = reusable_defs.iter().find(|def| def.id == id) else {
+        return Vec::new();
+    };
+    let base = parse_svg_use_base_style(
+        attrs,
+        inherited,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        ancestors,
+    );
+    match def.tag.as_str() {
+        "g" | "symbol" | "a" => def.body.as_deref().map_or_else(Vec::new, |body| {
+            let group_base = parse_svg_style_with_ancestors(
+                def.tag.as_str(),
+                &def.attrs,
+                base,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                ancestors,
+            );
+            let mut def_ancestors = ancestors.to_vec();
+            def_ancestors.push(svg_css_ancestor(def.tag.as_str(), &def.attrs));
+            let mut elements = parse_svg_reusable_body_elements(
+                body,
+                group_base,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                markers,
+                reusable_defs,
+                &def_ancestors,
+                depth + 1,
+            );
+            if def.tag == "a" {
+                apply_svg_links(
+                    &mut elements,
+                    parse_svg_anchor_link(&def.attrs).flatten().as_ref(),
+                );
+            }
+            elements
+        }),
+        "use" => parse_svg_use_elements(
+            &def.attrs,
+            base,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            reusable_defs,
+            ancestors,
+            depth + 1,
+        ),
+        "text" => def.body.as_deref().map_or_else(Vec::new, |body| {
+            parse_svg_text_elements(
+                &def.attrs,
+                body,
+                base,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                ancestors,
+            )
+        }),
+        _ => parse_svg_reusable_shape(
+            def.tag.as_str(),
+            &def.attrs,
+            base,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            ancestors,
+        )
+        .into_iter()
+        .collect(),
+    }
+}
+
+fn svg_use_href(attrs: &[(String, String)]) -> Option<&str> {
+    svg_attr(attrs, "href")
+        .or_else(|| svg_attr(attrs, "xlink:href"))
+        .and_then(parse_svg_fragment_href)
+}
+
+fn parse_svg_fragment_href(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if let Some(id) = value.strip_prefix('#') {
+        return (!id.is_empty()).then_some(id);
+    }
+    parse_svg_paint_url_id(value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_use_base_style(
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    ancestors: &[SvgCssAncestor],
+) -> SvgStyle {
+    let mut style = parse_svg_style_with_ancestors(
+        "use",
+        attrs,
+        inherited,
+        css_rules,
+        gradients,
+        patterns,
+        css_vars,
+        clip_paths,
+        filter_shadows,
+        ancestors,
+    );
+    let x = svg_attr(attrs, "x")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    let y = svg_attr(attrs, "y")
+        .and_then(parse_svg_number)
+        .unwrap_or(0.0);
+    if x != 0.0 || y != 0.0 {
+        style.transform = style.transform.concat(SvgTransform::translate(x, y));
+    }
+    style
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_reusable_body_elements(
+    body: &str,
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    reusable_defs: &[SvgReusableDef],
+    ancestors: &[SvgCssAncestor],
+    depth: usize,
+) -> Vec<SvgElement> {
+    if depth >= 8 {
+        return Vec::new();
+    }
+    let mut elements = Vec::new();
+    let mut pos = 0usize;
+    let mut skip_depth = 0usize;
+    let mut style_stack = vec![inherited];
+    let mut link_stack: Vec<Option<LinkTarget>> = vec![None];
+    let mut selector_stack = ancestors.to_vec();
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let closing = raw.starts_with('/');
+        let raw = if closing { raw[1..].trim_start() } else { raw };
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        if tag.is_empty() {
+            continue;
+        }
+        let tag_name_lower = tag.to_ascii_lowercase();
+        let tag_lower = svg_local_name(&tag_name_lower);
+        if closing {
+            if skip_depth > 0 {
+                skip_depth = skip_depth.saturating_sub(1);
+            } else if matches!(tag_lower, "g" | "symbol" | "a") && style_stack.len() > 1 {
+                style_stack.pop();
+                link_stack.pop();
+                selector_stack.pop();
+            }
+            continue;
+        }
+        if skip_depth > 0 {
+            if !self_closing {
+                skip_depth = skip_depth.saturating_add(1);
+            }
+            continue;
+        }
+        if matches!(
+            tag_lower,
+            "defs" | "style" | "script" | "foreignobject" | "iframe" | "object" | "embed"
+        ) {
+            if !self_closing {
+                skip_depth = 1;
+            }
+            continue;
+        }
+
+        let attrs = parse_svg_attrs(attrs_src);
+        let inherited = style_stack.last().copied().unwrap_or(SvgStyle::INITIAL);
+        let inherited_link = link_stack.last().cloned().unwrap_or(None);
+        match tag_lower {
+            "g" | "symbol" | "a" => {
+                let container_style = parse_svg_style_with_ancestors(
+                    tag_lower,
+                    &attrs,
+                    inherited,
+                    css_rules,
+                    gradients,
+                    patterns,
+                    css_vars,
+                    clip_paths,
+                    filter_shadows,
+                    &selector_stack,
+                );
+                if !self_closing {
+                    style_stack.push(container_style);
+                    let next_link = if tag_lower == "a" {
+                        parse_svg_anchor_link(&attrs).unwrap_or(inherited_link)
+                    } else {
+                        inherited_link
+                    };
+                    link_stack.push(next_link);
+                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
+                }
+            }
+            "use" => {
+                let mut used = parse_svg_use_elements(
+                    &attrs,
+                    inherited,
+                    css_rules,
+                    gradients,
+                    patterns,
+                    css_vars,
+                    clip_paths,
+                    filter_shadows,
+                    markers,
+                    reusable_defs,
+                    &selector_stack,
+                    depth + 1,
+                );
+                apply_svg_links(&mut used, inherited_link.as_ref());
+                elements.append(&mut used);
+            }
+            "text" if !self_closing => {
+                let needle = format!("</{tag_name_lower}");
+                if let Some(end_rel) =
+                    find_ascii_case_insensitive(body.get(pos..).unwrap_or_default(), &needle)
+                {
+                    let text_src = body.get(pos..pos + end_rel).unwrap_or_default();
+                    let mut text_elements = parse_svg_text_elements(
+                        &attrs,
+                        text_src,
+                        inherited,
+                        css_rules,
+                        gradients,
+                        patterns,
+                        css_vars,
+                        clip_paths,
+                        filter_shadows,
+                        &selector_stack,
+                    );
+                    apply_svg_links(&mut text_elements, inherited_link.as_ref());
+                    elements.extend(text_elements);
+                    if let Some(tag_end) = body.get(pos + end_rel..).and_then(|s| s.find('>')) {
+                        pos += end_rel + tag_end + 1;
+                    }
+                }
+            }
+            _ => {
+                if let Some(element) = parse_svg_reusable_shape(
+                    tag_lower,
+                    &attrs,
+                    inherited,
+                    css_rules,
+                    gradients,
+                    patterns,
+                    css_vars,
+                    clip_paths,
+                    filter_shadows,
+                    markers,
+                    &selector_stack,
+                ) {
+                    push_svg_element(&mut elements, element, inherited_link.as_ref());
+                }
+            }
+        }
+        if elements.len() > 1024 {
+            break;
+        }
+    }
+    elements
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_svg_reusable_shape(
+    tag_lower: &str,
+    attrs: &[(String, String)],
+    inherited: SvgStyle,
+    css_rules: &[SvgCssRule],
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+    clip_paths: &[SvgClipPath],
+    filter_shadows: &[SvgFilterShadow],
+    markers: &[SvgMarker],
+    ancestors: &[SvgCssAncestor],
+) -> Option<SvgElement> {
+    match tag_lower {
+        "rect" => parse_svg_rect(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        )
+        .map(SvgElement::Rect),
+        "circle" => parse_svg_circle(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        )
+        .map(SvgElement::Ellipse),
+        "ellipse" => parse_svg_ellipse(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        )
+        .map(SvgElement::Ellipse),
+        "line" => parse_svg_line(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            ancestors,
+        )
+        .map(SvgElement::Line),
+        "polyline" => parse_svg_poly(
+            attrs,
+            inherited,
+            false,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            ancestors,
+        )
+        .map(SvgElement::Polyline),
+        "polygon" => parse_svg_poly(
+            attrs,
+            inherited,
+            true,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            ancestors,
+        )
+        .map(SvgElement::Polygon),
+        "path" => parse_svg_path(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            ancestors,
+        )
+        .map(SvgElement::Path),
+        "image" => parse_svg_embedded_image(
+            attrs,
+            inherited,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            ancestors,
+        )
+        .map(SvgElement::Image),
+        _ => None,
+    }
+}
+
+fn apply_svg_visibility_attr(style: &mut SvgStyle, target: &str, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    if svg_visibility_value_hides(target, value) {
+        style.visible = false;
+    }
+}
+
+fn svg_visibility_value_hides(target: &str, value: &str) -> bool {
+    let value = value.trim();
+    (target == "display" && value.eq_ignore_ascii_case("none"))
+        || (target == "visibility"
+            && (value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse")))
+}
+
+fn parse_svg_filter_shadows(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgFilterShadow> {
+    let mut shadows = Vec::new();
+    let mut pos = 0usize;
+    while let Some(open_rel) = src.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if src.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = src.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = src.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = src.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("filter") || self_closing {
+            continue;
+        }
+        let attrs = parse_svg_attrs(attrs_src);
+        let Some(id) = svg_attr(&attrs, "id").filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let needle = format!("</{tag_lower}");
+        let Some(end_rel) = src
+            .get(pos..)
+            .and_then(|tail| find_ascii_case_insensitive(tail, &needle))
+        else {
+            continue;
+        };
+        let body = src.get(pos..pos + end_rel).unwrap_or_default();
+        if let Some(shadow) = parse_svg_filter_shadow_body(body, css_vars)
+            && !shadows
+                .iter()
+                .any(|existing: &SvgFilterShadow| existing.id == id)
+        {
+            shadows.push(SvgFilterShadow {
+                id: id.to_string(),
+                shadow,
+            });
+        }
+        if shadows.len() >= 128 {
+            break;
+        }
+        if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
+            pos += end_rel + tag_end + 1;
+        }
+    }
+    shadows
+}
+
+fn parse_svg_filter_shadow_body(body: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
+    let mut pos = 0usize;
+    while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
+        let open = pos + open_rel;
+        if body.get(open..).is_some_and(|s| s.starts_with("<!--")) {
+            let Some(end_rel) = body.get(open + 4..).and_then(|s| s.find("-->")) else {
+                break;
+            };
+            pos = open + end_rel + 7;
+            continue;
+        }
+        let Some(close_rel) = body.get(open..).and_then(|s| s.find('>')) else {
+            break;
+        };
+        let close = open + close_rel;
+        let raw = body.get(open + 1..close).unwrap_or_default().trim();
+        pos = close + 1;
+        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+            continue;
+        }
+        let (tag, attrs_src) = svg_tag_parts(raw);
+        let tag_lower = tag.to_ascii_lowercase();
+        if svg_local_name(&tag_lower).eq_ignore_ascii_case("fedropshadow") {
+            return Some(parse_svg_fe_drop_shadow(
+                &parse_svg_attrs(attrs_src),
+                css_vars,
+            ));
+        }
+    }
+    None
+}
+
+fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> SvgShadow {
+    let mut shadow = SvgShadow::FALLBACK;
+    if let Some(dx) = svg_attr(attrs, "dx").and_then(parse_svg_filter_length) {
+        shadow.dx = dx;
+    }
+    if let Some(dy) = svg_attr(attrs, "dy").and_then(parse_svg_filter_length) {
+        shadow.dy = dy;
+    }
+    if let Some(color) =
+        svg_attr(attrs, "flood-color").and_then(|value| parse_svg_color(value, css_vars))
+    {
+        shadow.color = color;
+    }
+    if let Some(opacity) =
+        svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+    {
+        shadow.opacity = opacity;
+    }
+    if let Some(style) = svg_attr(attrs, "style") {
+        apply_svg_fe_drop_shadow_style(&mut shadow, style, css_vars);
+    }
+    shadow.opacity = shadow.opacity.clamp(0.0, 1.0);
+    shadow
+}
+
+fn apply_svg_fe_drop_shadow_style(
+    shadow: &mut SvgShadow,
+    style: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    for decl in style.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "flood-color" => {
+                if let Some(color) = parse_svg_color(value, css_vars) {
+                    shadow.color = color;
+                }
+            }
+            "flood-opacity" => {
+                if let Some(opacity) = parse_svg_opacity(value, css_vars) {
+                    shadow.opacity = opacity;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn apply_svg_filter_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    filter_shadows: &[SvgFilterShadow],
+    css_vars: &[SvgCssVariable],
+) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(shadow) = parse_svg_filter_shadow(value, filter_shadows, css_vars) {
+        style.shadow = shadow;
+    }
+}
+
+fn parse_svg_filter_shadow(
+    value: &str,
+    filter_shadows: &[SvgFilterShadow],
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<SvgShadow>> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    if let Some(shadow) = parse_svg_css_drop_shadow(value, css_vars) {
+        return Some(Some(shadow));
+    }
+    if let Some(id) = parse_svg_paint_url_id(value) {
+        let shadow = filter_shadows
+            .iter()
+            .find(|filter| filter.id == id)
+            .map(|filter| filter.shadow);
+        return Some(shadow);
+    }
+    if value.to_ascii_lowercase().contains("drop-shadow") {
+        return Some(Some(SvgShadow::FALLBACK));
+    }
+    None
+}
+
+fn parse_svg_css_drop_shadow(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
+    let lower = value.to_ascii_lowercase();
+    let marker = "drop-shadow(";
+    let start = lower.find(marker)? + marker.len();
+    let rest = value.get(start..)?;
+    let close = find_svg_css_function_close(rest)?;
+    parse_svg_drop_shadow_args(rest.get(..close)?, css_vars)
+}
+
+fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
+    let mut lengths = Vec::new();
+    let mut color = None;
+    let mut opacity = None;
+    for part in split_svg_top_level_whitespace(args) {
+        if let Some(parsed) = parse_svg_color(part, css_vars) {
+            color = Some(parsed);
+            opacity = parse_svg_paint_alpha(part, css_vars).or(opacity);
+            continue;
+        }
+        if lengths.len() < 3
+            && let Some(length) = parse_svg_filter_length(part)
+        {
+            lengths.push(length);
+        }
+    }
+    (lengths.len() >= 2).then_some(SvgShadow {
+        dx: lengths[0],
+        dy: lengths[1],
+        color: color.unwrap_or((0.0, 0.0, 0.0)),
+        opacity: opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+    })
+}
+
+fn split_svg_top_level_whitespace(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = None;
+    let mut depth = 0usize;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '(' => {
+                depth += 1;
+                start.get_or_insert(idx);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                start.get_or_insert(idx);
+            }
+            _ if ch.is_ascii_whitespace() && depth == 0 => {
+                if let Some(part_start) = start.take() {
+                    if part_start < idx {
+                        parts.push(value[part_start..idx].trim());
+                    }
+                    if parts.len() >= 16 {
+                        return parts;
+                    }
+                }
+            }
+            _ => {
+                start.get_or_insert(idx);
+            }
+        }
+    }
+    if let Some(part_start) = start
+        && part_start < value.len()
+    {
+        parts.push(value[part_start..].trim());
+    }
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+fn parse_svg_filter_length(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let number = value[..end].parse::<f32>().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start();
+    if unit.starts_with("em") {
+        Some(number * 12.0)
+    } else if unit.starts_with("ex") {
+        Some(number * 6.0)
+    } else if unit.starts_with('%') {
+        Some(number / 100.0)
+    } else {
+        Some(number)
+    }
+}
+
+fn apply_svg_fill_rule_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(fill_rule) = value.and_then(parse_svg_fill_rule) {
+        style.fill_rule = fill_rule;
+    }
+}
+
+fn parse_svg_fill_rule(value: &str) -> Option<SvgFillRule> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nonzero" => Some(SvgFillRule::NonZero),
+        "evenodd" => Some(SvgFillRule::EvenOdd),
+        _ => None,
+    }
+}
+
+fn apply_svg_line_cap_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(line_cap) = value.and_then(parse_svg_line_cap) {
+        style.line_cap = line_cap;
+    }
+}
+
+fn parse_svg_line_cap(value: &str) -> Option<SvgLineCap> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "butt" => Some(SvgLineCap::Butt),
+        "round" => Some(SvgLineCap::Round),
+        "square" => Some(SvgLineCap::Square),
+        _ => None,
+    }
+}
+
+fn apply_svg_line_join_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(line_join) = value.and_then(parse_svg_line_join) {
+        style.line_join = line_join;
+    }
+}
+
+fn parse_svg_line_join(value: &str) -> Option<SvgLineJoin> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "miter" | "miter-clip" | "arcs" => Some(SvgLineJoin::Miter),
+        "round" => Some(SvgLineJoin::Round),
+        "bevel" => Some(SvgLineJoin::Bevel),
+        _ => None,
+    }
+}
+
+fn apply_svg_miter_limit_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(miter_limit) = value.and_then(parse_svg_miter_limit) {
+        style.miter_limit = Some(miter_limit);
+    }
+}
+
+fn parse_svg_miter_limit(value: &str) -> Option<f32> {
+    let miter_limit = parse_svg_number(value)?;
+    (miter_limit.is_finite() && miter_limit >= 1.0).then_some(miter_limit)
+}
+
+fn apply_svg_dash_array_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(dash) = value.and_then(parse_svg_dash_array) {
+        style.dash = dash;
+    }
+}
+
+fn parse_svg_dash_array(value: &str) -> Option<SvgDashPattern> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(SvgDashPattern::NONE);
+    }
+    let nums = parse_svg_number_list(value);
+    if nums.is_empty() {
+        return None;
+    }
+    let mut dash = SvgDashPattern::NONE;
+    for num in nums {
+        if dash.len as usize >= dash.values.len() {
+            break;
+        }
+        if num < 0.0 {
+            return None;
+        }
+        dash.values[dash.len as usize] = num;
+        dash.len += 1;
+    }
+    if dash.len == 0 {
+        return None;
+    }
+    if dash.values[..dash.len as usize]
+        .iter()
+        .all(|value| *value <= 0.0)
+    {
+        return Some(SvgDashPattern::NONE);
+    }
+    Some(dash)
+}
+
+fn apply_svg_dash_offset_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(offset) = value.and_then(parse_svg_number) {
+        style.dash.offset = offset;
+    }
+}
+
+fn apply_svg_vector_effect_attr(style: &mut SvgStyle, value: Option<&str>) {
+    if let Some(non_scaling_stroke) = value.and_then(parse_svg_vector_effect) {
+        style.non_scaling_stroke = non_scaling_stroke;
+    }
+}
+
+fn parse_svg_vector_effect(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "non-scaling-stroke" => Some(true),
+        "none" => Some(false),
+        _ => None,
+    }
+}
+
+fn apply_svg_font_weight_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(weight) = value.and_then(|value| parse_svg_font_weight(value, css_vars)) {
+        style.font_weight = weight;
+    }
+}
+
+fn parse_svg_font_weight(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgFontWeight> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_font_weight(&resolved, css_vars);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "normal" | "lighter" => Some(SvgFontWeight::Normal),
+        "bold" | "bolder" => Some(SvgFontWeight::Bold),
+        _ => parse_svg_number(value).map(|weight| {
+            if weight >= 600.0 {
+                SvgFontWeight::Bold
+            } else {
+                SvgFontWeight::Normal
+            }
+        }),
+    }
+}
+
+fn apply_svg_font_slant_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(slant) = value.and_then(|value| parse_svg_font_slant(value, css_vars)) {
+        style.font_slant = slant;
+    }
+}
+
+fn parse_svg_font_slant(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgFontSlant> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_font_slant(&resolved, css_vars);
+    }
+    let value = value.to_ascii_lowercase();
+    if value == "normal" {
+        Some(SvgFontSlant::Normal)
+    } else if value == "italic" || value.starts_with("oblique") {
+        Some(SvgFontSlant::Italic)
+    } else {
+        None
+    }
+}
+
+fn apply_svg_font_family_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(family) = value.and_then(|value| parse_svg_font_family(value, css_vars)) {
+        style.font_family = family;
+    }
+}
+
+fn parse_svg_font_family(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgFontFamily> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_font_family(&resolved, css_vars);
+    }
+    if value.is_empty() {
+        return None;
+    }
+    for family in split_svg_font_family_list(value).into_iter().take(16) {
+        if svg_font_family_is_monospace(family) {
+            return Some(SvgFontFamily::Mono);
+        }
+        if svg_font_family_is_body(family) {
+            return Some(SvgFontFamily::Body);
+        }
+    }
+    Some(SvgFontFamily::Body)
+}
+
+fn split_svg_font_family_list(value: &str) -> Vec<&str> {
+    split_svg_css_top_level_commas(value)
+        .into_iter()
+        .map(|family| family.trim().trim_matches('"').trim_matches('\'').trim())
+        .filter(|family| !family.is_empty())
+        .collect()
+}
+
+fn svg_font_family_is_monospace(family: &str) -> bool {
+    let normalized = family
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase()
+        .replace([' ', '_'], "-");
+    matches!(
+        normalized.as_str(),
+        "monospace"
+            | "ui-monospace"
+            | "sfmono-regular"
+            | "sf-mono"
+            | "menlo"
+            | "monaco"
+            | "consolas"
+            | "courier"
+            | "courier-new"
+            | "liberation-mono"
+            | "dejavu-sans-mono"
+            | "source-code-pro"
+            | "fira-code"
+            | "jetbrains-mono"
+            | "cascadia-code"
+            | "cascadia-mono"
+    )
+}
+
+fn svg_font_family_is_body(family: &str) -> bool {
+    let normalized = family
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase()
+        .replace([' ', '_'], "-");
+    matches!(
+        normalized.as_str(),
+        "sans-serif"
+            | "serif"
+            | "system-ui"
+            | "ui-sans-serif"
+            | "inter"
+            | "arial"
+            | "helvetica"
+            | "helvetica-neue"
+            | "times"
+            | "times-new-roman"
+            | "georgia"
+    )
+}
+
+fn apply_svg_letter_spacing_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(letter_spacing) = value.and_then(|value| parse_svg_letter_spacing(value, css_vars))
+    {
+        style.letter_spacing = letter_spacing;
+    }
+}
+
+fn parse_svg_letter_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_letter_spacing(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(SvgTextSpacing::ZERO);
+    }
+
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let number = value[..end].parse::<f32>().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start().to_ascii_lowercase();
+    if unit.starts_with("em") {
+        Some(SvgTextSpacing::Em(number))
+    } else if unit.starts_with("ex") {
+        Some(SvgTextSpacing::Ex(number))
+    } else if unit.starts_with('%') {
+        Some(SvgTextSpacing::Percent(number))
+    } else {
+        Some(SvgTextSpacing::Points(number))
+    }
+}
+
+fn apply_svg_dominant_baseline_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(baseline) = value.and_then(|value| parse_svg_dominant_baseline(value, css_vars)) {
+        style.dominant_baseline = baseline;
+    }
+}
+
+fn parse_svg_dominant_baseline(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<SvgDominantBaseline> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_dominant_baseline(&resolved, css_vars);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "auto" | "alphabetic" | "baseline" | "no-change" | "reset-size" | "use-script" => {
+            Some(SvgDominantBaseline::Auto)
+        }
+        "middle" | "central" | "mathematical" => Some(SvgDominantBaseline::Middle),
+        "hanging" => Some(SvgDominantBaseline::Hanging),
+        "text-before-edge" | "before-edge" => Some(SvgDominantBaseline::TextBeforeEdge),
+        "text-after-edge" | "after-edge" | "ideographic" => {
+            Some(SvgDominantBaseline::TextAfterEdge)
+        }
+        _ => None,
+    }
+}
+
+fn clean_svg_css_keyword_value(value: &str) -> &str {
+    value
+        .trim()
+        .strip_suffix("!important")
+        .map(str::trim_end)
+        .unwrap_or_else(|| value.trim())
+}
+
+fn apply_svg_color_attr(style: &mut SvgStyle, value: Option<&str>, css_vars: &[SvgCssVariable]) {
+    if let Some(color) = value.and_then(|value| parse_svg_color(value, css_vars)) {
+        apply_svg_color(style, color);
+    }
+}
+
+fn apply_svg_color(style: &mut SvgStyle, color: SvgColor) {
+    style.color = color;
+    if style.fill_current_color {
+        style.fill = Some(color);
+        style.fill_gradient = None;
+        style.fill_pattern = None;
+    }
+    if style.stroke_current_color {
+        style.stroke = Some(color);
+        style.stroke_gradient = None;
+    }
+}
+
+fn apply_svg_paint_attr(
+    style: &mut SvgStyle,
+    target: &str,
+    value: Option<&str>,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let paint_alpha = parse_svg_paint_alpha(value, css_vars);
+    if parse_svg_current_color_paint(value, css_vars) {
+        if target == "fill" {
+            style.fill = Some(style.color);
+            style.fill_gradient = None;
+            style.fill_pattern = None;
+            style.fill_current_color = true;
+            style.fill_context = None;
+            if let Some(alpha) = paint_alpha {
+                style.fill_opacity = alpha;
+            }
+        } else if target == "stroke" {
+            style.stroke = Some(style.color);
+            style.stroke_gradient = None;
+            style.stroke_current_color = true;
+            style.stroke_context = None;
+            if let Some(alpha) = paint_alpha {
+                style.stroke_opacity = alpha;
+            }
+        }
+        return;
+    }
+    if let Some(context) = parse_svg_context_paint(value, css_vars) {
+        if target == "fill" {
+            style.fill = None;
+            style.fill_gradient = None;
+            style.fill_pattern = None;
+            style.fill_current_color = false;
+            style.fill_context = Some(context);
+            if let Some(alpha) = paint_alpha {
+                style.fill_opacity = alpha;
+            }
+        } else if target == "stroke" {
+            style.stroke = None;
+            style.stroke_gradient = None;
+            style.stroke_current_color = false;
+            style.stroke_context = Some(context);
+            if let Some(alpha) = paint_alpha {
+                style.stroke_opacity = alpha;
+            }
+        }
+        return;
+    }
+    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+    let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
+        if target == "fill" && paint.is_none() {
+            pattern_ref
+                .and_then(|index| patterns.get(index))
+                .map(|pattern| Some(pattern.color))
+                .or(Some(None))
+        } else {
+            Some(paint)
+        }
+    });
+    let Some(paint) = paint else {
+        return;
+    };
+    if target == "fill" {
+        style.fill = paint;
+        style.fill_current_color = false;
+        style.fill_context = None;
+        style.fill_gradient = if style.fill.is_some() {
+            gradient_ref
+        } else {
+            None
+        };
+        style.fill_pattern = if style.fill.is_some() {
+            pattern_ref
+        } else {
+            None
+        };
+        if style.fill_pattern.is_some() {
+            style.fill_gradient = None;
+        }
+        if let Some(alpha) = paint_alpha {
+            style.fill_opacity = alpha;
+        }
+    } else if target == "stroke" {
+        style.stroke = paint;
+        style.stroke_gradient = if style.stroke.is_some() {
+            gradient_ref
+        } else {
+            None
+        };
+        style.stroke_current_color = false;
+        style.stroke_context = None;
+        if let Some(alpha) = paint_alpha {
+            style.stroke_opacity = alpha;
+        }
+    }
+}
+
+fn parse_svg_current_color_paint(value: &str, css_vars: &[SvgCssVariable]) -> bool {
+    let value = value.trim();
+    if value.starts_with("var(")
+        && let Some(resolved) = resolve_svg_css_value(value, css_vars, 0)
+    {
+        return parse_svg_current_color_paint(&resolved, css_vars);
+    }
+    value.eq_ignore_ascii_case("currentColor")
+}
+
+fn parse_svg_context_paint(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgContextPaint> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_context_paint(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("context-fill") {
+        Some(SvgContextPaint::Fill)
+    } else if value.eq_ignore_ascii_case("context-stroke") {
+        Some(SvgContextPaint::Stroke)
+    } else {
+        None
+    }
+}
+
+fn parse_svg_paint(
+    value: &str,
+    gradients: &[SvgGradientPaint],
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<(f32, f32, f32)>> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_paint(&resolved, gradients, css_vars);
+    }
+    if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("transparent") {
+        return Some(None);
+    }
+    if let Some(id) = parse_svg_paint_url_id(value) {
+        if let Some(gradient) = gradients.iter().find(|gradient| gradient.id == id) {
+            return Some(Some(gradient.color));
+        }
+        if let Some((_, fallback)) = value.split_once(')')
+            && let Some(paint) = parse_svg_paint(fallback.trim(), gradients, css_vars)
+        {
+            return Some(paint);
+        }
+        if id == "fm-node-gradient" {
+            return Some(Some((0.965, 0.965, 0.965)));
+        }
+        return Some(None);
+    }
+    if let Some(args) = value
+        .strip_prefix("rgba(")
+        .or_else(|| value.strip_prefix("RGBA("))
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let nums = parse_svg_number_list(args);
+        if nums.len() >= 4 && nums[3] <= 0.001 {
+            return Some(None);
+        }
+    }
+    parse_svg_color(value, css_vars).map(Some)
+}
+
+fn parse_svg_paint_gradient_ref(
+    value: &str,
+    gradients: &[SvgGradientPaint],
+    css_vars: &[SvgCssVariable],
+) -> Option<usize> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_paint_gradient_ref(&resolved, gradients, css_vars);
+    }
+    let id = parse_svg_paint_url_id(value)?;
+    gradients.iter().position(|gradient| {
+        gradient.id == id && (gradient.linear.is_some() || gradient.radial.is_some())
+    })
+}
+
+fn parse_svg_paint_pattern_ref(
+    value: &str,
+    patterns: &[SvgPatternPaint],
+    css_vars: &[SvgCssVariable],
+) -> Option<usize> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_paint_pattern_ref(&resolved, patterns, css_vars);
+    }
+    let id = parse_svg_paint_url_id(value)?;
+    patterns.iter().position(|pattern| pattern.id == id)
+}
+
+fn parse_svg_paint_alpha(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_paint_alpha(&resolved, css_vars);
+    }
+    let args = value
+        .strip_prefix("rgba(")
+        .or_else(|| value.strip_prefix("RGBA("))
+        .and_then(|s| s.strip_suffix(')'))?;
+    let fourth = svg_nth_number_tail(args, 3)?;
+    parse_svg_opacity(fourth, css_vars)
+}
+
+fn resolve_svg_css_value(value: &str, css_vars: &[SvgCssVariable], depth: usize) -> Option<String> {
+    if depth >= 8 {
+        return None;
+    }
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("var(") else {
+        return Some(value.to_string());
+    };
+    let close = find_svg_css_function_close(rest)?;
+    let args = rest[..close].trim();
+    let (name, fallback) = split_svg_css_var_args(args);
+    let name = name.trim();
+    if !name.starts_with("--") {
+        return fallback.and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1));
+    }
+    if let Some(var) = css_vars.iter().find(|var| var.name == name) {
+        return resolve_svg_css_value(var.value.as_str(), css_vars, depth + 1);
+    }
+    fallback.and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1))
+}
+
+fn split_svg_css_var_args(args: &str) -> (&str, Option<&str>) {
+    let mut depth = 0usize;
+    for (idx, ch) in args.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return (&args[..idx], Some(args[idx + 1..].trim())),
+            _ => {}
+        }
+    }
+    (args, None)
+}
+
+fn find_svg_css_function_close(rest: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (idx, ch) in rest.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_svg_paint_url_id(value: &str) -> Option<&str> {
+    let value = value.trim_start();
+    let rest = value.strip_prefix("url(")?;
+    let close = rest.find(')')?;
+    let mut target = rest[..close].trim();
+    if (target.starts_with('"') && target.ends_with('"'))
+        || (target.starts_with('\'') && target.ends_with('\''))
+    {
+        target = target.get(1..target.len().saturating_sub(1))?.trim();
+    }
+    target.strip_prefix('#').filter(|id| !id.is_empty())
+}
+
+fn parse_svg_color(value: &str, css_vars: &[SvgCssVariable]) -> Option<(f32, f32, f32)> {
+    parse_svg_color_inner(value, css_vars, 0)
+}
+
+fn parse_svg_color_inner(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    depth: usize,
+) -> Option<SvgColor> {
+    if depth >= 8 {
+        return None;
+    }
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_color_inner(&resolved, css_vars, depth + 1);
+    }
+    if let Some(color) = parse_svg_color_mix(value, css_vars, depth + 1) {
+        return Some(color);
+    }
+    if let Some(hex) = value.strip_prefix('#') {
+        return parse_svg_hex_color(hex);
+    }
+    if let Some(args) = value
+        .strip_prefix("rgb(")
+        .or_else(|| value.strip_prefix("rgba("))
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let nums = parse_svg_number_list(args);
+        if nums.len() >= 3 {
+            return Some((
+                (nums[0] / 255.0).clamp(0.0, 1.0),
+                (nums[1] / 255.0).clamp(0.0, 1.0),
+                (nums[2] / 255.0).clamp(0.0, 1.0),
+            ));
+        }
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "black" => Some((0.0, 0.0, 0.0)),
+        "white" => Some((1.0, 1.0, 1.0)),
+        "red" => Some((1.0, 0.0, 0.0)),
+        "green" => Some((0.0, 0.5, 0.0)),
+        "blue" => Some((0.0, 0.0, 1.0)),
+        _ => None,
+    }
+}
+
+fn parse_svg_hex_color(hex: &str) -> Option<SvgColor> {
+    let bytes = hex.as_bytes();
+    let (r, g, b) = match bytes {
+        [r, g, b] => {
+            let r = svg_hex_nibble(*r)?;
+            let g = svg_hex_nibble(*g)?;
+            let b = svg_hex_nibble(*b)?;
+            (r * 17, g * 17, b * 17)
+        }
+        [r1, r2, g1, g2, b1, b2] => (
+            svg_hex_pair(*r1, *r2)?,
+            svg_hex_pair(*g1, *g2)?,
+            svg_hex_pair(*b1, *b2)?,
+        ),
+        _ => return None,
+    };
+    Some((
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+    ))
+}
+
+fn svg_hex_pair(high: u8, low: u8) -> Option<u8> {
+    Some((svg_hex_nibble(high)? << 4) | svg_hex_nibble(low)?)
+}
+
+fn svg_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_svg_color_mix(value: &str, css_vars: &[SvgCssVariable], depth: usize) -> Option<SvgColor> {
+    if depth >= 8 {
+        return None;
+    }
+    let args = svg_css_function_args(value, "color-mix")?;
+    let parts = split_svg_top_level_commas(args)?;
+    if parts.len() != 3 || !svg_color_mix_space_is_srgb(parts[0]) {
+        return None;
+    }
+    let (first_color, first_weight) = parse_svg_color_mix_component(parts[1], css_vars, depth + 1)?;
+    let (second_color, second_weight) =
+        parse_svg_color_mix_component(parts[2], css_vars, depth + 1)?;
+    let (first_weight, second_weight) =
+        svg_color_mix_weights(first_weight, second_weight).filter(|(a, b)| *a > 0.0 || *b > 0.0)?;
+    Some((
+        (first_color.0 * first_weight + second_color.0 * second_weight).clamp(0.0, 1.0),
+        (first_color.1 * first_weight + second_color.1 * second_weight).clamp(0.0, 1.0),
+        (first_color.2 * first_weight + second_color.2 * second_weight).clamp(0.0, 1.0),
+    ))
+}
+
+fn svg_css_function_args<'a>(value: &'a str, name: &str) -> Option<&'a str> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    if !value[..open].trim().eq_ignore_ascii_case(name) {
+        return None;
+    }
+    let rest = &value[open + 1..];
+    let close = find_svg_css_function_close(rest)?;
+    rest[close + 1..]
+        .trim()
+        .is_empty()
+        .then_some(&rest[..close])
+}
+
+fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                parts.push(value[start..idx].trim());
+                start = idx + ch.len_utf8();
+                if parts.len() >= 3 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    parts.push(value[start..].trim());
+    Some(parts)
+}
+
+fn svg_color_mix_space_is_srgb(space: &str) -> bool {
+    let mut words = space.split_ascii_whitespace();
+    matches!(
+        (words.next(), words.next(), words.next()),
+        (Some(first), Some(second), None)
+            if first.eq_ignore_ascii_case("in") && second.eq_ignore_ascii_case("srgb")
+    )
+}
+
+fn parse_svg_color_mix_component(
+    component: &str,
+    css_vars: &[SvgCssVariable],
+    depth: usize,
+) -> Option<(SvgColor, Option<f32>)> {
+    let (color_src, weight) = split_svg_color_mix_component_weight(component)?;
+    if svg_color_source_is_transparent(color_src, css_vars) {
+        return None;
+    }
+    Some((
+        parse_svg_color_inner(color_src, css_vars, depth + 1)?,
+        weight,
+    ))
+}
+
+fn split_svg_color_mix_component_weight(component: &str) -> Option<(&str, Option<f32>)> {
+    let component = component.trim();
+    if component.is_empty() {
+        return None;
+    }
+    let trimmed_end = component.trim_end();
+    if !trimmed_end.ends_with('%') {
+        return Some((component, None));
+    }
+    let percent_idx = trimmed_end.len().saturating_sub(1);
+    let mut depth = 0usize;
+    let mut split = None;
+    let mut in_whitespace = false;
+    for (idx, ch) in trimmed_end[..percent_idx].char_indices() {
+        match ch {
+            '(' => {
+                depth += 1;
+                in_whitespace = false;
+            }
+            ')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                in_whitespace = false;
+            }
+            _ if depth == 0 && ch.is_ascii_whitespace() => {
+                if !in_whitespace {
+                    split = Some(idx);
+                }
+                in_whitespace = true;
+            }
+            _ => in_whitespace = false,
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let split = split?;
+    let color_src = component[..split].trim();
+    let percent = parse_svg_color_mix_percentage(&trimmed_end[split..percent_idx])?;
+    (!color_src.is_empty()).then_some((color_src, Some(percent)))
+}
+
+fn parse_svg_color_mix_percentage(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    if !value[end..].trim().is_empty() {
+        return None;
+    }
+    let percentage = value[..end].parse::<f32>().ok()?;
+    (percentage.is_finite() && percentage >= 0.0).then_some(percentage / 100.0)
+}
+
+fn svg_color_mix_weights(first: Option<f32>, second: Option<f32>) -> Option<(f32, f32)> {
+    let (first, second) = match (first, second) {
+        (Some(first), Some(second)) => {
+            let total = first + second;
+            if total <= f32::EPSILON {
+                return None;
+            }
+            (first / total, second / total)
+        }
+        (Some(first), None) if first <= 1.0 => (first, 1.0 - first),
+        (None, Some(second)) if second <= 1.0 => (1.0 - second, second),
+        (None, None) => (0.5, 0.5),
+        _ => return None,
+    };
+    (first.is_finite() && second.is_finite()).then_some((first, second))
+}
+
+fn svg_color_source_is_transparent(value: &str, css_vars: &[SvgCssVariable]) -> bool {
+    let value = value.trim();
+    if value.starts_with("var(")
+        && let Some(resolved) = resolve_svg_css_value(value, css_vars, 0)
+    {
+        return svg_color_source_is_transparent(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("transparent") {
+        return true;
+    }
+    value
+        .strip_prefix("rgba(")
+        .or_else(|| value.strip_prefix("RGBA("))
+        .and_then(|s| s.strip_suffix(')'))
+        .map(|args| {
+            let nums = parse_svg_number_list(args);
+            nums.len() >= 4 && nums[3] <= 0.001
+        })
+        .unwrap_or(false)
+}
+
+fn parse_svg_number(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    parsed.is_finite().then_some(parsed)
+}
+
+fn parse_svg_opacity(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_opacity(&resolved, css_vars);
+    }
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start();
+    let opacity = if unit.starts_with('%') {
+        parsed / 100.0
+    } else {
+        parsed
+    };
+    opacity.is_finite().then_some(opacity.clamp(0.0, 1.0))
+}
+
+fn svg_nth_number_tail(value: &str, target: usize) -> Option<&str> {
+    let mut pos = 0usize;
+    let mut idx = 0usize;
+    while pos < value.len() {
+        skip_svg_number_separators(value, &mut pos);
+        if pos >= value.len() {
+            break;
+        }
+        let start = pos;
+        if read_svg_number_token(value, &mut pos).is_none() {
+            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        if idx == target {
+            return value.get(start..);
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn parse_svg_number_list(value: &str) -> Vec<f32> {
+    let mut nums = Vec::new();
+    let mut pos = 0usize;
+    while pos < value.len() {
+        skip_svg_number_separators(value, &mut pos);
+        if pos >= value.len() {
+            break;
+        }
+        let start = pos;
+        if read_svg_number_token(value, &mut pos).is_none() {
+            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        if let Ok(num) = value[start..pos].parse::<f32>()
+            && num.is_finite()
+        {
+            nums.push(num);
+        }
+    }
+    nums
+}
+
+fn parse_svg_transform(value: &str) -> Option<SvgTransform> {
+    let mut transform = SvgTransform::IDENTITY;
+    let mut parsed_any = false;
+    let mut pos = 0usize;
+    while pos < value.len() {
+        skip_svg_transform_separators(value, &mut pos);
+        if pos >= value.len() {
+            break;
+        }
+        let name_start = pos;
+        while let Some(ch) = value[pos..].chars().next() {
+            if !(ch.is_ascii_alphabetic() || ch == '-') {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if name_start == pos {
+            return parsed_any.then_some(transform);
+        }
+        let name = value[name_start..pos].to_ascii_lowercase();
+        while let Some(ch) = value[pos..].chars().next() {
+            if !ch.is_ascii_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if !value[pos..].starts_with('(') {
+            return parsed_any.then_some(transform);
+        }
+        pos += 1;
+        let args_start = pos;
+        let Some(args_end_rel) = value[pos..].find(')') else {
+            return parsed_any.then_some(transform);
+        };
+        let args_end = pos + args_end_rel;
+        let nums = parse_svg_number_list(&value[args_start..args_end]);
+        let next = match name.as_str() {
+            "matrix" if nums.len() >= 6 => SvgTransform {
+                a: nums[0],
+                b: nums[1],
+                c: nums[2],
+                d: nums[3],
+                e: nums[4],
+                f: nums[5],
+            },
+            "translate" if !nums.is_empty() => {
+                SvgTransform::translate(nums[0], nums.get(1).copied().unwrap_or(0.0))
+            }
+            "scale" if !nums.is_empty() => {
+                SvgTransform::scale(nums[0], nums.get(1).copied().unwrap_or(nums[0]))
+            }
+            "rotate" if !nums.is_empty() => {
+                let rotation = SvgTransform::rotate_degrees(nums[0]);
+                if nums.len() >= 3 {
+                    SvgTransform::translate(nums[1], nums[2])
+                        .concat(rotation)
+                        .concat(SvgTransform::translate(-nums[1], -nums[2]))
+                } else {
+                    rotation
+                }
+            }
+            "skewx" if !nums.is_empty() => SvgTransform::skew_x_degrees(nums[0]),
+            "skewy" if !nums.is_empty() => SvgTransform::skew_y_degrees(nums[0]),
+            _ => return parsed_any.then_some(transform),
+        };
+        transform = transform.concat(next);
+        parsed_any = true;
+        pos = args_end + 1;
+    }
+    parsed_any.then_some(transform)
+}
+
+fn skip_svg_transform_separators(value: &str, pos: &mut usize) {
+    while *pos < value.len() {
+        let Some(ch) = value[*pos..].chars().next() else {
+            break;
+        };
+        if !ch.is_ascii_whitespace() && ch != ',' {
+            break;
+        }
+        *pos += ch.len_utf8();
+    }
+}
+
+fn parse_svg_points(value: &str) -> Vec<(f32, f32)> {
+    parse_svg_number_list(value)
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+fn parse_svg_path_data(data: &str) -> Option<Vec<SvgPathOp>> {
+    let mut ops = Vec::new();
+    let mut pos = 0usize;
+    let mut cmd = '\0';
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = current;
+    let mut last_cubic_control: Option<(f32, f32)> = None;
+    let mut last_quad_control: Option<(f32, f32)> = None;
+    while pos < data.len() {
+        skip_svg_number_separators(data, &mut pos);
+        if pos >= data.len() {
+            break;
+        }
+        if let Some(ch) = data[pos..].chars().next()
+            && ch.is_ascii_alphabetic()
+        {
+            cmd = ch;
+            pos += ch.len_utf8();
+        }
+        if cmd == '\0' {
+            break;
+        }
+        match cmd {
+            'M' | 'm' => {
+                let Some(mut point) = read_svg_path_pair(data, &mut pos) else {
+                    break;
+                };
+                if cmd == 'm' {
+                    point.0 += current.0;
+                    point.1 += current.1;
+                }
+                current = point;
+                subpath_start = point;
+                last_cubic_control = None;
+                last_quad_control = None;
+                push_svg_path_op(&mut ops, SvgPathOp::Move(point.0, point.1))?;
+                let line_cmd = if cmd == 'm' { 'l' } else { 'L' };
+                while let Some(mut point) = read_svg_path_pair(data, &mut pos) {
+                    if line_cmd == 'l' {
+                        point.0 += current.0;
+                        point.1 += current.1;
+                    }
+                    current = point;
+                    last_cubic_control = None;
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Line(point.0, point.1))?;
+                }
+                cmd = line_cmd;
+            }
+            'L' | 'l' => {
+                let mut read_any = false;
+                while let Some(mut point) = read_svg_path_pair(data, &mut pos) {
+                    if cmd == 'l' {
+                        point.0 += current.0;
+                        point.1 += current.1;
+                    }
+                    current = point;
+                    last_cubic_control = None;
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Line(point.0, point.1))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'H' | 'h' => {
+                let mut read_any = false;
+                while let Some(mut x) = read_svg_path_number(data, &mut pos) {
+                    if cmd == 'h' {
+                        x += current.0;
+                    }
+                    current.0 = x;
+                    last_cubic_control = None;
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Line(current.0, current.1))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'V' | 'v' => {
+                let mut read_any = false;
+                while let Some(mut y) = read_svg_path_number(data, &mut pos) {
+                    if cmd == 'v' {
+                        y += current.1;
+                    }
+                    current.1 = y;
+                    last_cubic_control = None;
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Line(current.0, current.1))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'C' | 'c' => {
+                let mut read_any = false;
+                while let Some(values) = read_svg_path_numbers::<6>(data, &mut pos) {
+                    let mut x1 = values[0];
+                    let mut y1 = values[1];
+                    let mut x2 = values[2];
+                    let mut y2 = values[3];
+                    let mut x = values[4];
+                    let mut y = values[5];
+                    if cmd == 'c' {
+                        x1 += current.0;
+                        y1 += current.1;
+                        x2 += current.0;
+                        y2 += current.1;
+                        x += current.0;
+                        y += current.1;
+                    }
+                    current = (x, y);
+                    last_cubic_control = Some((x2, y2));
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Cubic(x1, y1, x2, y2, x, y))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'S' | 's' => {
+                let mut read_any = false;
+                while let Some(values) = read_svg_path_numbers::<4>(data, &mut pos) {
+                    let (x1, y1) = last_cubic_control.map_or(current, |control| {
+                        (current.0 * 2.0 - control.0, current.1 * 2.0 - control.1)
+                    });
+                    let mut x2 = values[0];
+                    let mut y2 = values[1];
+                    let mut x = values[2];
+                    let mut y = values[3];
+                    if cmd == 's' {
+                        x2 += current.0;
+                        y2 += current.1;
+                        x += current.0;
+                        y += current.1;
+                    }
+                    current = (x, y);
+                    last_cubic_control = Some((x2, y2));
+                    last_quad_control = None;
+                    push_svg_path_op(&mut ops, SvgPathOp::Cubic(x1, y1, x2, y2, x, y))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'Q' | 'q' => {
+                let mut read_any = false;
+                while let Some(values) = read_svg_path_numbers::<4>(data, &mut pos) {
+                    let mut x1 = values[0];
+                    let mut y1 = values[1];
+                    let mut x = values[2];
+                    let mut y = values[3];
+                    if cmd == 'q' {
+                        x1 += current.0;
+                        y1 += current.1;
+                        x += current.0;
+                        y += current.1;
+                    }
+                    current = (x, y);
+                    last_cubic_control = None;
+                    last_quad_control = Some((x1, y1));
+                    push_svg_path_op(&mut ops, SvgPathOp::Quad(x1, y1, x, y))?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'T' | 't' => {
+                let mut read_any = false;
+                while let Some(mut point) = read_svg_path_pair(data, &mut pos) {
+                    if cmd == 't' {
+                        point.0 += current.0;
+                        point.1 += current.1;
+                    }
+                    let control = last_quad_control.map_or(current, |prev| {
+                        (current.0 * 2.0 - prev.0, current.1 * 2.0 - prev.1)
+                    });
+                    current = point;
+                    last_cubic_control = None;
+                    last_quad_control = Some(control);
+                    push_svg_path_op(
+                        &mut ops,
+                        SvgPathOp::Quad(control.0, control.1, point.0, point.1),
+                    )?;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'A' | 'a' => {
+                let mut read_any = false;
+                while let Some(values) = read_svg_path_numbers::<7>(data, &mut pos) {
+                    let rx = values[0];
+                    let ry = values[1];
+                    let rotation = values[2];
+                    let large_arc = values[3].abs() >= 0.5;
+                    let sweep = values[4].abs() >= 0.5;
+                    let mut x = values[5];
+                    let mut y = values[6];
+                    if cmd == 'a' {
+                        x += current.0;
+                        y += current.1;
+                    }
+                    append_svg_arc_ops(
+                        &mut ops,
+                        current,
+                        (x, y),
+                        rx,
+                        ry,
+                        rotation,
+                        large_arc,
+                        sweep,
+                    )?;
+                    current = (x, y);
+                    last_cubic_control = None;
+                    last_quad_control = None;
+                    read_any = true;
+                }
+                if !read_any {
+                    break;
+                }
+            }
+            'Z' | 'z' => {
+                push_svg_path_op(&mut ops, SvgPathOp::Close)?;
+                current = subpath_start;
+                last_cubic_control = None;
+                last_quad_control = None;
+                cmd = '\0';
+            }
+            _ => break,
+        }
+    }
+    Some(ops)
+}
+
+fn push_svg_path_op(ops: &mut Vec<SvgPathOp>, op: SvgPathOp) -> Option<()> {
+    if ops.len() >= MAX_SVG_PATH_OPS {
+        return None;
+    }
+    ops.push(op);
+    Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_arc_ops(
+    ops: &mut Vec<SvgPathOp>,
+    start: (f32, f32),
+    end: (f32, f32),
+    rx: f32,
+    ry: f32,
+    x_axis_rotation: f32,
+    large_arc: bool,
+    sweep: bool,
+) -> Option<()> {
+    if (start.0 - end.0).abs() <= f32::EPSILON && (start.1 - end.1).abs() <= f32::EPSILON {
+        return Some(());
+    }
+
+    let mut rx = rx.abs();
+    let mut ry = ry.abs();
+    if rx <= f32::EPSILON || ry <= f32::EPSILON {
+        return push_svg_path_op(ops, SvgPathOp::Line(end.0, end.1));
+    }
+
+    let phi = x_axis_rotation.to_radians();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let dx2 = (start.0 - end.0) * 0.5;
+    let dy2 = (start.1 - end.1) * 0.5;
+    let x1p = cos_phi * dx2 + sin_phi * dy2;
+    let y1p = -sin_phi * dx2 + cos_phi * dy2;
+
+    let radii_scale = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry);
+    if radii_scale > 1.0 {
+        let scale = radii_scale.sqrt();
+        rx *= scale;
+        ry *= scale;
+    }
+
+    let rx2 = rx * rx;
+    let ry2 = ry * ry;
+    let x1p2 = x1p * x1p;
+    let y1p2 = y1p * y1p;
+    let denom = rx2 * y1p2 + ry2 * x1p2;
+    if denom <= f32::EPSILON {
+        return push_svg_path_op(ops, SvgPathOp::Line(end.0, end.1));
+    }
+
+    let sign = if large_arc == sweep { -1.0 } else { 1.0 };
+    let center_factor = sign
+        * ((rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2) / denom)
+            .max(0.0)
+            .sqrt();
+    let cxp = center_factor * rx * y1p / ry;
+    let cyp = -center_factor * ry * x1p / rx;
+    let cx = cos_phi * cxp - sin_phi * cyp + (start.0 + end.0) * 0.5;
+    let cy = sin_phi * cxp + cos_phi * cyp + (start.1 + end.1) * 0.5;
+
+    let theta1 = svg_vector_angle(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+    let mut delta = svg_vector_angle(
+        (x1p - cxp) / rx,
+        (y1p - cyp) / ry,
+        (-x1p - cxp) / rx,
+        (-y1p - cyp) / ry,
+    );
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+    if delta.abs() <= f32::EPSILON {
+        return Some(());
+    }
+
+    let segments = (delta.abs() / std::f32::consts::FRAC_PI_2).ceil() as usize;
+    let step = delta / segments as f32;
+    for idx in 0..segments {
+        let a0 = theta1 + step * idx as f32;
+        let a1 = a0 + step;
+        let alpha = (4.0 / 3.0) * ((a1 - a0) * 0.25).tan();
+        let (sin0, cos0) = a0.sin_cos();
+        let (sin1, cos1) = a1.sin_cos();
+        let c1 = (cos0 - alpha * sin0, sin0 + alpha * cos0);
+        let c2 = (cos1 + alpha * sin1, sin1 - alpha * cos1);
+        let p = (cos1, sin1);
+        let c1 = svg_map_arc_point(c1, cx, cy, rx, ry, sin_phi, cos_phi);
+        let c2 = svg_map_arc_point(c2, cx, cy, rx, ry, sin_phi, cos_phi);
+        let p = if idx + 1 == segments {
+            end
+        } else {
+            svg_map_arc_point(p, cx, cy, rx, ry, sin_phi, cos_phi)
+        };
+        push_svg_path_op(ops, SvgPathOp::Cubic(c1.0, c1.1, c2.0, c2.1, p.0, p.1))?;
+    }
+    Some(())
+}
+
+fn svg_vector_angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
+    (ux * vy - uy * vx).atan2(ux * vx + uy * vy)
+}
+
+fn svg_map_arc_point(
+    point: (f32, f32),
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    sin_phi: f32,
+    cos_phi: f32,
+) -> (f32, f32) {
+    (
+        cx + rx * (cos_phi * point.0 - sin_phi * point.1),
+        cy + ry * (sin_phi * point.0 + cos_phi * point.1),
+    )
+}
+
+fn read_svg_path_pair(data: &str, pos: &mut usize) -> Option<(f32, f32)> {
+    let x = read_svg_path_number(data, pos)?;
+    let y = read_svg_path_number(data, pos)?;
+    Some((x, y))
+}
+
+fn read_svg_path_numbers<const N: usize>(data: &str, pos: &mut usize) -> Option<[f32; N]> {
+    let checkpoint = *pos;
+    let mut values = [0.0f32; N];
+    for value in &mut values {
+        let Some(parsed) = read_svg_path_number(data, pos) else {
+            *pos = checkpoint;
+            return None;
+        };
+        *value = parsed;
+    }
+    Some(values)
+}
+
+fn read_svg_path_number(data: &str, pos: &mut usize) -> Option<f32> {
+    skip_svg_number_separators(data, pos);
+    let start = *pos;
+    read_svg_number_token(data, pos)?;
+    data[start..*pos]
+        .parse::<f32>()
+        .ok()
+        .filter(|num| num.is_finite())
+}
+
+fn read_svg_number_token(data: &str, pos: &mut usize) -> Option<()> {
+    let bytes = data.as_bytes();
+    let len = bytes.len();
+    let start = *pos;
+    if *pos < len && matches!(bytes[*pos], b'+' | b'-') {
+        *pos += 1;
+    }
+    let mut digits = 0usize;
+    while *pos < len && bytes[*pos].is_ascii_digit() {
+        *pos += 1;
+        digits += 1;
+    }
+    if *pos < len && bytes[*pos] == b'.' {
+        *pos += 1;
+        while *pos < len && bytes[*pos].is_ascii_digit() {
+            *pos += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        *pos = start;
+        return None;
+    }
+    if *pos < len && matches!(bytes[*pos], b'e' | b'E') {
+        let exp_start = *pos;
+        *pos += 1;
+        if *pos < len && matches!(bytes[*pos], b'+' | b'-') {
+            *pos += 1;
+        }
+        let exp_digits_start = *pos;
+        while *pos < len && bytes[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
+        if *pos == exp_digits_start {
+            *pos = exp_start;
+        }
+    }
+    Some(())
+}
+
+fn skip_svg_number_separators(data: &str, pos: &mut usize) {
+    while *pos < data.len() {
+        let Some(ch) = data[*pos..].chars().next() else {
+            break;
+        };
+        if ch.is_ascii_whitespace() || ch == ',' {
+            *pos += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+}
+
+fn strip_svg_tags(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut in_tag = false;
+    for ch in src.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn decode_xml_entities(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(idx) = rest.find('&') {
+        out.push_str(&rest[..idx]);
+        rest = &rest[idx + 1..];
+        let Some(end) = rest.find(';') else {
+            out.push('&');
+            out.push_str(rest);
+            return out;
+        };
+        let entity = &rest[..end];
+        match entity {
+            "amp" => out.push('&'),
+            "lt" => out.push('<'),
+            "gt" => out.push('>'),
+            "quot" => out.push('"'),
+            "apos" | "#39" => out.push('\''),
+            _ if entity.starts_with('#') => match decode_xml_numeric_entity(entity) {
+                Some(ch) => out.push(ch),
+                None => {
+                    out.push('&');
+                    out.push_str(entity);
+                    out.push(';');
+                }
+            },
+            _ => {
+                out.push('&');
+                out.push_str(entity);
+                out.push(';');
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_xml_numeric_entity(entity: &str) -> Option<char> {
+    let (digits, radix) = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"))
+        .map(|digits| (digits, 16))
+        .or_else(|| entity.strip_prefix('#').map(|digits| (digits, 10)))?;
+    if digits.is_empty() {
+        return None;
+    }
+    let digits_match_radix = match radix {
+        16 => digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        10 => digits.bytes().all(|byte| byte.is_ascii_digit()),
+        _ => false,
+    };
+    if !digits_match_radix {
+        return None;
+    }
+    let code = u32::from_str_radix(digits, radix).ok();
+    Some(
+        code.and_then(char::from_u32)
+            .filter(|ch| svg_xml_char_is_valid(*ch))
+            .unwrap_or('\u{FFFD}'),
+    )
+}
+
+fn svg_xml_char_is_valid(ch: char) -> bool {
+    let code = ch as u32;
+    matches!(code, 0x09 | 0x0A | 0x0D | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn png_predictor_payload_is_valid(png: &PngChunks, components: usize) -> bool {
@@ -1411,9 +10212,9 @@ fn png_predictor_payload_is_valid(png: &PngChunks, components: usize) -> bool {
         .all(|row| matches!(row.first().copied(), Some(0..=4)))
 }
 
-/// Walk a PNG's chunk stream, collecting IHDR fields, PLTE, tRNS, and IDAT. The
-/// per-format restrictions are applied later by the fast path / full decoder, so
-/// this stays a faithful structural read with only size/sanity guards.
+/// Walk a PNG's chunk stream, collecting IHDR fields, PLTE, tRNS, and IDAT while
+/// rejecting malformed chunk ordering, invalid format combinations, and image
+/// sizes that would exceed the decoder's bounded memory budget.
 fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
     const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1A\n";
     if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES || bytes.get(..8)? != PNG_SIG {
@@ -1431,6 +10232,10 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
     let mut idat = Vec::new();
     let mut seen_ihdr = false;
     let mut seen_iend = false;
+    let mut seen_plte = false;
+    let mut seen_trns = false;
+    let mut seen_idat = false;
+    let mut idat_stream_closed = false;
 
     while pos < bytes.len() {
         let len = be_u32(bytes, pos)? as usize;
@@ -1498,22 +10303,45 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 seen_ihdr = true;
             }
             b"PLTE" => {
-                if len % 3 != 0 {
+                if seen_plte
+                    || seen_idat
+                    || len == 0
+                    || len % 3 != 0
+                    || len / 3 > 256
+                    || matches!(color_type, 0 | 4)
+                {
+                    return None;
+                }
+                let entry_count = len / 3;
+                if color_type == 3 && entry_count > (1usize << bit_depth) {
                     return None;
                 }
                 palette = data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                seen_plte = true;
             }
             b"tRNS" => {
+                if seen_trns
+                    || seen_idat
+                    || matches!(color_type, 4 | 6)
+                    || (color_type == 3 && !seen_plte)
+                {
+                    return None;
+                }
                 trns = data.to_vec();
+                seen_trns = true;
             }
             b"IDAT" => {
                 if !seen_ihdr {
+                    return None;
+                }
+                if idat_stream_closed {
                     return None;
                 }
                 if idat.len().saturating_add(data.len()) > MAX_PDF_IMAGE_COMPRESSED_BYTES {
                     return None;
                 }
                 idat.extend_from_slice(data);
+                seen_idat = true;
             }
             b"IEND" => {
                 // IEND terminates the PNG datastream and carries no data. Stop
@@ -1529,7 +10357,11 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 seen_iend = true;
                 break;
             }
-            _ => {}
+            _ => {
+                if seen_idat {
+                    idat_stream_closed = true;
+                }
+            }
         }
         pos = next;
     }
@@ -1599,6 +10431,9 @@ fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
         _ => return None,
     };
     if png.color_type == 3 && (png.palette.is_empty() || bit_depth > 8) {
+        return None;
+    }
+    if !png_trns_chunk_is_valid(png) {
         return None;
     }
     // Output is grayscale only for true grayscale source (types 0 and 4).
@@ -1800,12 +10635,12 @@ impl PngSampleCtx<'_> {
             0 => {
                 // Grayscale: scale sub-8-bit values up to the full 0..=255 range.
                 let g = scale_to_8(chan[0], self.bit_depth);
-                let a = self.gray_trns_alpha(chan[0]);
+                let a = self.gray_trns_alpha(line, c, chan[0])?;
                 Some((g, g, g, a))
             }
             2 => {
                 let (r, g, b) = (chan[0], chan[1], chan[2]);
-                let a = self.rgb_trns_alpha(r, g, b);
+                let a = self.rgb_trns_alpha(line, c, r, g, b)?;
                 Some((r, g, b, a))
             }
             3 => {
@@ -1825,32 +10660,40 @@ impl PngSampleCtx<'_> {
     }
 
     /// Alpha for a grayscale pixel given a possible single-value tRNS.
-    fn gray_trns_alpha(&self, sample: u8) -> u8 {
-        // tRNS for grayscale is one big-endian 16-bit value. The `sample` we
-        // compare is the high byte for 16-bit images and the 0..=255 value for
-        // depths <= 8 (which lives in the low byte), so pick the matching byte.
-        let idx = if self.bit_depth == 16 { 0 } else { 1 };
-        if self.trns.len() > idx && self.trns[idx] == sample {
-            0
+    fn gray_trns_alpha(&self, line: &[u8], c: usize, raw_sample: u8) -> Option<u8> {
+        let transparent = be_u16(self.trns, 0);
+        let sample = if self.bit_depth == 16 {
+            be_u16(line, c.checked_mul(2)?)?
         } else {
-            255
-        }
+            u16::from(raw_sample)
+        };
+        Some(if transparent == Some(sample) { 0 } else { 255 })
     }
 
     /// Alpha for an RGB pixel given a possible single-color tRNS.
-    fn rgb_trns_alpha(&self, r: u8, g: u8, b: u8) -> u8 {
-        // tRNS for truecolor is three big-endian 16-bit samples; compare the same
-        // byte we kept per channel (high byte at 16-bit, else the low/value byte).
-        let (ir, ig, ib) = if self.bit_depth == 16 {
-            (0, 2, 4)
+    fn rgb_trns_alpha(&self, line: &[u8], c: usize, r: u8, g: u8, b: u8) -> Option<u8> {
+        let transparent = (
+            be_u16(self.trns, 0),
+            be_u16(self.trns, 2),
+            be_u16(self.trns, 4),
+        );
+        let sample = if self.bit_depth == 16 {
+            let base = c.checked_mul(self.channels)?.checked_mul(2)?;
+            (
+                be_u16(line, base)?,
+                be_u16(line, base.checked_add(2)?)?,
+                be_u16(line, base.checked_add(4)?)?,
+            )
         } else {
-            (1, 3, 5)
+            (u16::from(r), u16::from(g), u16::from(b))
         };
-        if self.trns.len() >= 6 && self.trns[ir] == r && self.trns[ig] == g && self.trns[ib] == b {
-            0
-        } else {
-            255
-        }
+        Some(
+            if transparent == (Some(sample.0), Some(sample.1), Some(sample.2)) {
+                0
+            } else {
+                255
+            },
+        )
     }
 }
 
@@ -1870,9 +10713,57 @@ fn scale_to_8(value: u8, bit_depth: usize) -> u8 {
     }
 }
 
+fn png_trns_chunk_is_valid(png: &PngChunks) -> bool {
+    match png.color_type {
+        0 => {
+            if png.trns.is_empty() {
+                return true;
+            }
+            if png.trns.len() != 2 {
+                return false;
+            }
+            let Some(sample) = be_u16(&png.trns, 0) else {
+                return false;
+            };
+            png_trns_sample_fits_bit_depth(sample, png.bit_depth)
+        }
+        2 => {
+            if png.trns.is_empty() {
+                return true;
+            }
+            if png.trns.len() != 6 {
+                return false;
+            }
+            match png.bit_depth {
+                8 => [0, 2, 4]
+                    .into_iter()
+                    .all(|offset| be_u16(&png.trns, offset).is_some_and(|sample| sample <= 255)),
+                16 => true,
+                _ => false,
+            }
+        }
+        3 => png.trns.len() <= png.palette.len(),
+        4 | 6 => png.trns.is_empty(),
+        _ => false,
+    }
+}
+
+fn png_trns_sample_fits_bit_depth(sample: u16, bit_depth: u8) -> bool {
+    match bit_depth {
+        1 | 2 | 4 | 8 => sample < (1u16 << bit_depth),
+        16 => true,
+        _ => false,
+    }
+}
+
 fn be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let b = bytes.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+fn be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let b = bytes.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_be_bytes([b[0], b[1]]))
 }
 
 fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
@@ -1919,26 +10810,95 @@ fn cell_tokens(inlines: &[Inline], header: bool) -> Vec<Tok> {
     toks
 }
 
-/// Single-line width of a cell (word advances in each run's own slot plus one
-/// space between adjacent words). Used to size columns.
-fn cell_natural_width(toks: &[Tok], size: f32, faces: &Faces) -> f32 {
-    let mut w = 0.0;
-    let mut started = false;
-    let mut pending_space: Option<u8> = None;
-    for t in toks {
-        if t.space {
-            if started {
-                pending_space = Some(t.slot);
-            }
-        } else {
-            if let Some(slot) = pending_space.take() {
-                w += text_width(" ", size, slot, faces);
-            }
-            w += text_width(&t.text, size, t.slot, faces);
-            started = true;
-        }
+#[derive(Clone, Default)]
+struct TableColumnMetrics {
+    cells: Vec<TableCellMeasure>,
+    /// Min-content width: the widest single unbreakable token measured in this
+    /// column. Actual rendering can still hard-split longer tokens, but this is
+    /// the expensive visual outcome the allocator should avoid when possible.
+    min_content: f32,
+    /// Max-content width: the widest source line if it were kept on one visual
+    /// line. Allocating beyond this buys no wrapping improvement for the column.
+    max_content: f32,
+}
+
+impl TableColumnMetrics {
+    fn push(&mut self, cell: TableCellMeasure) {
+        self.min_content = self.min_content.max(cell.min_content);
+        self.max_content = self.max_content.max(cell.max_content);
+        self.cells.push(cell);
     }
-    w
+}
+
+#[derive(Clone)]
+struct TableCellMeasure {
+    lines: Vec<TableCellMeasureLine>,
+    min_content: f32,
+    max_content: f32,
+    weight: f32,
+}
+
+#[derive(Clone, Default)]
+struct TableCellMeasureLine {
+    /// Widths of non-space tokens. Token boundaries are the same wrap
+    /// opportunities used by `wrap_cell_styled`, including adjacent styled runs.
+    words: Vec<f32>,
+    /// Space widths before words `1..`; length is always `words.len() - 1`.
+    spaces: Vec<f32>,
+    min_content: f32,
+    max_content: f32,
+}
+
+fn table_cell_measure(toks: &[Tok], size: f32, faces: &Faces, header: bool) -> TableCellMeasure {
+    let mut cell = TableCellMeasure {
+        lines: Vec::new(),
+        min_content: 0.0,
+        max_content: 0.0,
+        weight: if header {
+            TABLE_HEADER_WRAP_WEIGHT
+        } else {
+            TABLE_BODY_WRAP_WEIGHT
+        },
+    };
+    let mut line = TableCellMeasureLine::default();
+    let mut pending_space: Option<f32> = None;
+
+    for tok in toks {
+        if tok.hard_break {
+            finish_table_measure_line(&mut cell, &mut line);
+            pending_space = None;
+            continue;
+        }
+
+        if tok.space {
+            if !line.words.is_empty() {
+                pending_space = Some(text_width(" ", size, tok.slot, faces));
+            }
+            continue;
+        }
+
+        let word_width = text_width(&tok.text, size, tok.slot, faces);
+        if !line.words.is_empty() {
+            let space_width = pending_space.take().unwrap_or(0.0);
+            line.spaces.push(space_width);
+            line.max_content += space_width;
+        }
+        line.words.push(word_width);
+        line.max_content += word_width;
+        line.min_content = line.min_content.max(word_width);
+    }
+
+    finish_table_measure_line(&mut cell, &mut line);
+    cell
+}
+
+fn finish_table_measure_line(cell: &mut TableCellMeasure, line: &mut TableCellMeasureLine) {
+    if line.words.is_empty() {
+        return;
+    }
+    cell.min_content = cell.min_content.max(line.min_content);
+    cell.max_content = cell.max_content.max(line.max_content);
+    cell.lines.push(std::mem::take(line));
 }
 
 /// Merge a line's tokens into runs of identical style, measuring each run.
@@ -2062,9 +11022,249 @@ fn wrap_cell_styled(toks: &[Tok], max_width: f32, size: f32, faces: &Faces) -> V
     lines
 }
 
+fn table_column_badness(column: &TableColumnMetrics, width: f32) -> f32 {
+    let width = width.max(1.0);
+    let mut badness = 0.0;
+
+    for cell in &column.cells {
+        badness += table_cell_wrap_badness(cell, width);
+    }
+
+    if column.min_content > width {
+        let shortage = (column.min_content - width) / column.min_content.max(1.0);
+        badness += shortage * shortage * 2_000.0;
+    }
+
+    if column.max_content > 0.0 {
+        if width > column.max_content {
+            let surplus = width - column.max_content;
+            badness += surplus * surplus * 0.01;
+        }
+    } else {
+        let surplus = (width - TABLE_MIN_COL_WIDTH).max(0.0);
+        badness += surplus + surplus * surplus * 0.01;
+    }
+
+    badness
+}
+
+fn table_cell_wrap_badness(cell: &TableCellMeasure, width: f32) -> f32 {
+    cell.lines
+        .iter()
+        .map(|line| {
+            let stats = table_measure_line_wrap_stats(line, width);
+            let extra_lines = stats.visual_lines.saturating_sub(1) as f32;
+            let wrap_penalty = extra_lines * extra_lines * 1_000.0;
+            cell.weight * (wrap_penalty + stats.split_penalty + stats.ragged_penalty)
+        })
+        .sum()
+}
+
+struct TableMeasureWrapStats {
+    visual_lines: usize,
+    split_penalty: f32,
+    ragged_penalty: f32,
+}
+
+fn table_measure_line_wrap_stats(line: &TableCellMeasureLine, width: f32) -> TableMeasureWrapStats {
+    if line.words.is_empty() {
+        return TableMeasureWrapStats {
+            visual_lines: 0,
+            split_penalty: 0.0,
+            ragged_penalty: 0.0,
+        };
+    }
+
+    let width = width.max(1.0);
+    let mut visual_lines = 1usize;
+    let mut split_penalty = 0.0;
+    let mut ragged_penalty = 0.0;
+    let mut current = 0.0;
+
+    for (idx, &word_width) in line.words.iter().enumerate() {
+        let space_width = if current > 0.0 {
+            line.spaces.get(idx.wrapping_sub(1)).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        if word_width > width {
+            if current > 0.0 {
+                ragged_penalty += table_ragged_line_penalty(current, width);
+                visual_lines += 1;
+            }
+
+            let pieces = (word_width / width).ceil().max(1.0) as usize;
+            let shortage = (word_width - width).max(0.0) / width;
+            split_penalty += shortage * shortage * pieces as f32 * 2_500.0;
+            visual_lines += pieces.saturating_sub(1);
+            current = (word_width - pieces.saturating_sub(1) as f32 * width).clamp(0.0, width);
+            continue;
+        }
+
+        if current > 0.0 && current + space_width + word_width > width {
+            ragged_penalty += table_ragged_line_penalty(current, width);
+            visual_lines += 1;
+            current = word_width;
+        } else {
+            current += if current > 0.0 {
+                space_width + word_width
+            } else {
+                word_width
+            };
+        }
+    }
+
+    if current > 0.0 {
+        ragged_penalty += table_ragged_line_penalty(current, width);
+    }
+
+    TableMeasureWrapStats {
+        visual_lines,
+        split_penalty,
+        ragged_penalty,
+    }
+}
+
+fn table_ragged_line_penalty(line_width: f32, column_width: f32) -> f32 {
+    if column_width <= 0.0 || line_width <= 0.0 {
+        return 0.0;
+    }
+    let slack = ((column_width - line_width).max(0.0) / column_width).min(1.0);
+    slack * slack
+}
+
+fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> Vec<f32> {
+    let ncol = columns.len();
+    if ncol == 0 {
+        return Vec::new();
+    }
+
+    let min_total = ncol as f32 * TABLE_MIN_COL_WIDTH;
+    let target = target.max(min_total);
+    let extra_target = (target - min_total).max(0.0);
+    let unit = if extra_target > 0.0 {
+        (extra_target / TABLE_ALLOC_MAX_EXTRA_STATES as f32).max(TABLE_ALLOC_MIN_UNIT_PT)
+    } else {
+        TABLE_ALLOC_MIN_UNIT_PT
+    };
+    let extra_units = (extra_target / unit).round().max(0.0) as usize;
+
+    if extra_units == 0 {
+        let mut widths = vec![TABLE_MIN_COL_WIDTH; ncol];
+        finish_table_allocated_widths(columns, &mut widths, target);
+        return widths;
+    }
+
+    let costs: Vec<Vec<f32>> = columns
+        .iter()
+        .map(|column| {
+            (0..=extra_units)
+                .map(|units| {
+                    table_column_badness(column, TABLE_MIN_COL_WIDTH + units as f32 * unit)
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut previous = vec![f32::INFINITY; extra_units + 1];
+    previous[0] = 0.0;
+    let mut parents = vec![vec![0usize; extra_units + 1]; ncol];
+
+    for col_idx in 0..ncol {
+        let mut next = vec![f32::INFINITY; extra_units + 1];
+        for (used, &base) in previous.iter().enumerate() {
+            if !base.is_finite() {
+                continue;
+            }
+            for (add, &cost) in costs[col_idx]
+                .iter()
+                .take(extra_units - used + 1)
+                .enumerate()
+            {
+                let total = used + add;
+                let candidate = base + cost;
+                if candidate < next[total] {
+                    next[total] = candidate;
+                    parents[col_idx][total] = add;
+                }
+            }
+        }
+        previous = next;
+    }
+
+    if !previous[extra_units].is_finite() {
+        let mut widths = vec![target / ncol as f32; ncol];
+        finish_table_allocated_widths(columns, &mut widths, target);
+        return widths;
+    }
+
+    let mut units_by_col = vec![0usize; ncol];
+    let mut remaining = extra_units;
+    for col_idx in (0..ncol).rev() {
+        let add = parents[col_idx][remaining];
+        units_by_col[col_idx] = add;
+        remaining = remaining.saturating_sub(add);
+    }
+
+    let mut widths: Vec<f32> = units_by_col
+        .iter()
+        .map(|&units| TABLE_MIN_COL_WIDTH + units as f32 * unit)
+        .collect();
+    finish_table_allocated_widths(columns, &mut widths, target);
+    widths
+}
+
+fn finish_table_allocated_widths(columns: &[TableColumnMetrics], widths: &mut [f32], target: f32) {
+    let sum: f32 = widths.iter().sum();
+    let delta = target - sum;
+    if delta.abs() <= 0.001 || widths.is_empty() {
+        return;
+    }
+
+    if delta > 0.0 {
+        let mut best = 0usize;
+        let mut best_deficit = f32::NEG_INFINITY;
+        for (idx, width) in widths.iter().enumerate() {
+            let deficit = columns
+                .get(idx)
+                .map_or(0.0, |column| column.max_content - *width);
+            if deficit > best_deficit {
+                best_deficit = deficit;
+                best = idx;
+            }
+        }
+        widths[best] += delta;
+        return;
+    }
+
+    let mut remaining = -delta;
+    loop {
+        let mut best: Option<usize> = None;
+        let mut best_room = 0.0;
+        for (idx, width) in widths.iter().enumerate() {
+            let room = (*width - TABLE_MIN_COL_WIDTH).max(0.0);
+            if room > best_room {
+                best_room = room;
+                best = Some(idx);
+            }
+        }
+
+        let Some(idx) = best else {
+            break;
+        };
+        let take = remaining.min(best_room);
+        widths[idx] -= take;
+        remaining -= take;
+        if remaining <= 0.001 {
+            break;
+        }
+    }
+}
+
 /// Lay out a GFM pipe table as a measured-column grid: a bold header row with a
-/// rule beneath it and a closing rule (booktabs-style), columns sized to their
-/// content and scaled to fill the measure, with per-cell alignment.
+/// rule beneath it and a closing rule (booktabs-style). Column widths are chosen
+/// by minimizing predicted wrapping badness under the available page measure.
 fn layout_table(
     table: &Table,
     indent: f32,
@@ -2073,7 +11273,7 @@ fn layout_table(
     group: u32,
     out: &mut Vec<Line>,
 ) {
-    let size = 10.0;
+    let size = TABLE_FONT_SIZE;
     let ncol = table
         .head
         .len()
@@ -2083,34 +11283,30 @@ fn layout_table(
     }
     let left = page.left + indent;
     let avail = (page.content_w - indent).max(72.0);
-    let pad = 14.0; // inter-column gutter (half on each side of a column)
+    let pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
 
-    // Natural (unwrapped) text width per column across the header + every row,
-    // measured from styled runs so mixed bold/italic/mono cells size correctly.
-    let mut natural = vec![0f32; ncol];
+    // Measure min-content, max-content, and wrap-cost inputs once per cell so
+    // the allocator can search candidate widths without reshaping text inside
+    // its dynamic-programming loop.
+    let mut columns = vec![TableColumnMetrics::default(); ncol];
     for (k, cell) in table.head.iter().enumerate() {
-        if let Some(w) = natural.get_mut(k) {
-            *w = w.max(cell_natural_width(&cell_tokens(cell, true), size, faces));
+        let toks = cell_tokens(cell, true);
+        if let Some(column) = columns.get_mut(k) {
+            column.push(table_cell_measure(&toks, size, faces, true));
         }
     }
     for row in &table.rows {
         for (k, cell) in row.iter().enumerate() {
-            if let Some(w) = natural.get_mut(k) {
-                *w = w.max(cell_natural_width(&cell_tokens(cell, false), size, faces));
+            let toks = cell_tokens(cell, false);
+            if let Some(column) = columns.get_mut(k) {
+                column.push(table_cell_measure(&toks, size, faces, false));
             }
         }
     }
 
-    // Scale columns so (text widths + gutters) fill the available measure.
-    let natural_sum: f32 = natural.iter().sum();
     let gutters = pad * ncol as f32;
-    let target = (avail - gutters).max(ncol as f32 * 12.0);
-    let scale = if natural_sum > 0.0 {
-        target / natural_sum
-    } else {
-        1.0
-    };
-    let colw: Vec<f32> = natural.iter().map(|&w| (w * scale).max(12.0)).collect();
+    let target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
+    let colw = allocate_table_column_widths(&columns, target);
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -2127,7 +11323,7 @@ fn layout_table(
             // to be flattened to one plain slot per cell).
             let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
                 .map(|k| {
-                    let cw = colw.get(k).copied().unwrap_or(12.0);
+                    let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
                     let toks = cells
                         .get(k)
                         .map(|c| cell_tokens(c, header))
@@ -2486,7 +11682,12 @@ fn font_size_of(size: f32) -> FontSize {
 /// ligatures and GPOS kerning, matching the content-stream text path. Cross-slot
 /// kerning is intentionally dropped because the renderer emits separate text
 /// segments for distinct faces/link/strike groups.
+#[cfg(test)]
 fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
+    if let [tok] = runs {
+        return faces.shaped_width(tok.slot, &tok.text, fs);
+    }
+
     let mut total = LayoutUnit::ZERO;
     let mut current: Option<TokMeasureRun> = None;
     for tok in runs {
@@ -2515,6 +11716,84 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
     total
 }
 
+fn measure_word_cached(
+    runs: &[Tok],
+    fs: FontSize,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> LayoutUnit {
+    if let [tok] = runs {
+        return cached_shaped_width(faces, width_cache, tok.slot, &tok.text, fs);
+    }
+
+    let mut total = LayoutUnit::ZERO;
+    let mut current: Option<TokMeasureRun> = None;
+    for tok in runs {
+        match &mut current {
+            Some(run)
+                if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
+            {
+                run.text.push_str(&tok.text);
+            }
+            _ => {
+                if let Some(run) = current.take() {
+                    total += cached_shaped_width(faces, width_cache, run.slot, &run.text, fs);
+                }
+                current = Some(TokMeasureRun {
+                    slot: tok.slot,
+                    link: tok.link.clone(),
+                    strike: tok.strike,
+                    text: tok.text.clone(),
+                });
+            }
+        }
+    }
+    if let Some(run) = current {
+        total += cached_shaped_width(faces, width_cache, run.slot, &run.text, fs);
+    }
+    total
+}
+
+fn cached_shaped_width(
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+    slot: u8,
+    text: &str,
+    fs: FontSize,
+) -> LayoutUnit {
+    let key = (slot, fs.milli_points());
+    {
+        let cache = width_cache.borrow();
+        if let Some(width) = cache.get(&key).and_then(|slot_cache| slot_cache.get(text)) {
+            return *width;
+        }
+    }
+
+    let width = faces.shaped_width(slot, text, fs);
+    let mut cache = width_cache.borrow_mut();
+    let cache_len: usize = cache.values().map(HashMap::len).sum();
+    if cache_len < WIDTH_CACHE_MAX {
+        cache
+            .entry(key)
+            .or_default()
+            .insert(text.to_string(), width);
+    }
+    width
+}
+
+fn shaped_width_points_for_layout(
+    faces: &Faces,
+    width_cache: Option<&RefCell<WidthCache>>,
+    slot: u8,
+    text: &str,
+    fs: FontSize,
+) -> f32 {
+    match width_cache {
+        Some(cache) => cached_shaped_width(faces, cache, slot, text, fs).to_points_f32(),
+        None => faces.shaped_width(slot, text, fs).to_points_f32(),
+    }
+}
+
 struct TokMeasureRun {
     slot: u8,
     link: Option<LinkTarget>,
@@ -2533,10 +11812,9 @@ fn build_paragraph<'a>(
     faces: &'a Faces,
     policy: ParagraphPolicy,
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
+    width_cache: &'a RefCell<WidthCache>,
 ) -> BuiltParagraph {
-    let mut items: Vec<ParagraphItem> = Vec::new();
-    let mut item_toks: Vec<Vec<Tok>> = Vec::new();
-    let mut break_toks: Vec<Option<Tok>> = Vec::new();
+    let mut built = BuiltParagraph::with_capacity(toks.len().saturating_add(1));
     let mut word: Vec<Tok> = Vec::new();
     let hyphenator = Hyphenator::english();
     let word_cx = PdfWordContext {
@@ -2545,6 +11823,7 @@ fn build_paragraph<'a>(
         policy,
         hyphenator: &hyphenator,
         hyphen_cache,
+        width_cache,
     };
 
     for tok in toks {
@@ -2552,77 +11831,75 @@ fn build_paragraph<'a>(
             if tok.hard_break {
                 if !word.is_empty() {
                     flush_pdf_word(
-                        &mut items,
-                        &mut item_toks,
-                        &mut break_toks,
+                        &mut built.items,
+                        &mut built.item_toks,
+                        &mut built.break_toks,
                         &mut word,
                         word_cx,
                     );
                 }
-                items.push(ParagraphItem::Penalty(Penalty {
+                built.items.push(ParagraphItem::Penalty(Penalty {
                     width: LayoutUnit::ZERO,
                     penalty: FORCED_BREAK_PENALTY,
                     flagged: false,
                 }));
-                item_toks.push(Vec::new());
-                break_toks.push(None);
+                built.item_toks.push(TokGroup::empty());
+                built.break_toks.push(None);
                 continue;
             }
             if !word.is_empty() {
                 flush_pdf_word(
-                    &mut items,
-                    &mut item_toks,
-                    &mut break_toks,
+                    &mut built.items,
+                    &mut built.item_toks,
+                    &mut built.break_toks,
                     &mut word,
                     word_cx,
                 );
             }
             // Only emit glue *between* two words (collapses runs of spaces).
-            if matches!(items.last(), Some(ParagraphItem::Box(_))) {
-                let gw = faces.shaped_width(tok.slot, " ", fs);
-                items.push(ParagraphItem::Glue(default_interword_glue(gw)));
-                item_toks.push(vec![tok.clone()]);
-                break_toks.push(None);
+            if matches!(built.items.last(), Some(ParagraphItem::Box(_))) {
+                let gw = cached_shaped_width(faces, width_cache, tok.slot, " ", fs);
+                built
+                    .items
+                    .push(ParagraphItem::Glue(default_interword_glue(gw)));
+                built.item_toks.push(TokGroup::one(tok.clone()));
+                built.break_toks.push(None);
             }
         } else {
             word.push(tok.clone());
         }
     }
     flush_pdf_word(
-        &mut items,
-        &mut item_toks,
-        &mut break_toks,
+        &mut built.items,
+        &mut built.item_toks,
+        &mut built.break_toks,
         &mut word,
         word_cx,
     );
 
     if !matches!(
-        items.last(),
+        built.items.last(),
         Some(ParagraphItem::Penalty(Penalty {
             penalty: FORCED_BREAK_PENALTY,
             ..
         }))
     ) {
-        items.push(ParagraphItem::Penalty(Penalty {
+        built.items.push(ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
             penalty: FORCED_BREAK_PENALTY,
             flagged: false,
         }));
-        item_toks.push(Vec::new());
-        break_toks.push(None);
+        built.item_toks.push(TokGroup::empty());
+        built.break_toks.push(None);
     }
-    debug_assert_eq!(items.len(), item_toks.len());
-    debug_assert_eq!(items.len(), break_toks.len());
-    BuiltParagraph {
-        items,
-        item_toks,
-        break_toks,
-    }
+    debug_assert_eq!(built.items.len(), built.item_toks.len());
+    debug_assert_eq!(built.items.len(), built.break_toks.len());
+    built
 }
 
 fn flush_pdf_word(
     items: &mut Vec<ParagraphItem>,
-    item_toks: &mut Vec<Vec<Tok>>,
+    item_toks: &mut Vec<TokGroup>,
     break_toks: &mut Vec<Option<Tok>>,
     word: &mut Vec<Tok>,
     cx: PdfWordContext<'_>,
@@ -2631,49 +11908,58 @@ fn flush_pdf_word(
         return;
     }
 
+    if !cx.policy.hyphenate || !pdf_word_is_ascii_alphabetic(word) {
+        push_pdf_word_box(
+            items,
+            item_toks,
+            break_toks,
+            word,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+        );
+        return;
+    }
+
     let plain: String = word.iter().map(|t| t.text.as_str()).collect();
-    let points = if cx.policy.hyphenate && plain.bytes().all(|byte| byte.is_ascii_alphabetic()) {
-        // Hyphenation points are case-independent and depend only on the word's
-        // letters, so the lowercase word is a sound cache key (opts are always the
-        // default here). A cache hit returns exactly what the hyphenator would
-        // compute, so output stays byte-identical. To avoid an allocation on the
-        // common all-lowercase lookup, only fold case when an uppercase letter is
-        // present.
-        let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
-            std::borrow::Cow::Owned(plain.to_ascii_lowercase())
-        } else {
-            std::borrow::Cow::Borrowed(plain.as_str())
-        };
-        let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
-        cached.unwrap_or_else(|| {
-            let pts = cx
-                .hyphenator
-                .hyphenation_points(&plain, HyphenationOptions::default());
-            // Only cache words that actually hyphenate. A non-hyphenating word
-            // gains nothing from caching, so skipping the insert (no key clone, no
-            // map entry) keeps unique / non-hyphenating corpora from paying any
-            // cache cost — they do not regress — while repeated hyphenating words
-            // still hit.
-            if !pts.is_empty() {
-                let mut cache = cx.hyphen_cache.borrow_mut();
-                if cache.len() < HYPHEN_CACHE_MAX {
-                    cache.insert(key.into_owned(), pts.clone());
-                }
-            }
-            pts
-        })
+    // Hyphenation points are case-independent and depend only on the word's
+    // letters, so the lowercase word is a sound cache key (opts are always the
+    // default here). A cache hit returns exactly what the hyphenator would
+    // compute, so output stays byte-identical. To avoid an allocation on the
+    // common all-lowercase lookup, only fold case when an uppercase letter is
+    // present.
+    let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(plain.to_ascii_lowercase())
     } else {
-        Vec::new()
+        std::borrow::Cow::Borrowed(plain.as_str())
     };
+    let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
+    let points = cached.unwrap_or_else(|| {
+        let pts = cx
+            .hyphenator
+            .hyphenation_points(&plain, HyphenationOptions::default());
+        // Only cache words that actually hyphenate. A non-hyphenating word gains
+        // nothing from caching, so skipping the insert (no key clone, no map entry)
+        // keeps unique / non-hyphenating corpora from paying any cache cost — they
+        // do not regress — while repeated hyphenating words still hit.
+        if !pts.is_empty() {
+            let mut cache = cx.hyphen_cache.borrow_mut();
+            if cache.len() < HYPHEN_CACHE_MAX {
+                cache.insert(key.into_owned(), pts.clone());
+            }
+        }
+        pts
+    });
 
     if points.is_empty() {
         push_pdf_word_box(
             items,
             item_toks,
             break_toks,
-            std::mem::take(word),
+            word,
             cx.fs,
             cx.faces,
+            cx.width_cache,
         );
         return;
     }
@@ -2691,15 +11977,23 @@ fn flush_pdf_word(
                 strike: tok.strike,
             });
             let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
-                cx.faces.shaped_width(tok.slot, "-", cx.fs)
+                cached_shaped_width(cx.faces, cx.width_cache, tok.slot, "-", cx.fs)
             });
-            push_pdf_word_box(items, item_toks, break_toks, part, cx.fs, cx.faces);
+            push_pdf_word_box_from_vec(
+                items,
+                item_toks,
+                break_toks,
+                part,
+                cx.fs,
+                cx.faces,
+                cx.width_cache,
+            );
             items.push(ParagraphItem::Penalty(Penalty {
                 width: hyphen_width,
                 penalty: 50,
                 flagged: true,
             }));
-            item_toks.push(Vec::new());
+            item_toks.push(TokGroup::empty());
             break_toks.push(hyphen_tok);
         }
         start = point;
@@ -2707,30 +12001,67 @@ fn flush_pdf_word(
 
     let tail = split_pdf_word_tokens(word, start, plain.chars().count());
     if !tail.is_empty() {
-        push_pdf_word_box(items, item_toks, break_toks, tail, cx.fs, cx.faces);
+        push_pdf_word_box_from_vec(
+            items,
+            item_toks,
+            break_toks,
+            tail,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+        );
     }
     word.clear();
 }
 
+fn pdf_word_is_ascii_alphabetic(word: &[Tok]) -> bool {
+    word.iter()
+        .all(|tok| tok.text.bytes().all(|byte| byte.is_ascii_alphabetic()))
+}
+
 fn push_pdf_word_box(
     items: &mut Vec<ParagraphItem>,
-    item_toks: &mut Vec<Vec<Tok>>,
+    item_toks: &mut Vec<TokGroup>,
     break_toks: &mut Vec<Option<Tok>>,
-    toks: Vec<Tok>,
+    toks: &mut Vec<Tok>,
     fs: FontSize,
     faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
 ) {
     if toks.is_empty() {
         return;
     }
-    let plain: String = toks.iter().map(|t| t.text.as_str()).collect();
-    let width = measure_word(&toks, fs, faces);
+    let width = measure_word_cached(toks, fs, faces, width_cache);
+    // The PDF layout path maps chosen breaks back to `item_toks` for actual
+    // rendering. `TextBox` only feeds the generic breaker, which reads `width`.
     items.push(ParagraphItem::Box(TextBox {
-        text: plain.clone(),
-        runs: StyledText::plain(&plain), // unused by breaker; width is what matters
+        text: String::new(),
+        runs: Default::default(),
         width,
     }));
-    item_toks.push(toks);
+    item_toks.push(TokGroup::take_from(toks));
+    break_toks.push(None);
+}
+
+fn push_pdf_word_box_from_vec(
+    items: &mut Vec<ParagraphItem>,
+    item_toks: &mut Vec<TokGroup>,
+    break_toks: &mut Vec<Option<Tok>>,
+    toks: Vec<Tok>,
+    fs: FontSize,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) {
+    if toks.is_empty() {
+        return;
+    }
+    let width = measure_word_cached(&toks, fs, faces, width_cache);
+    items.push(ParagraphItem::Box(TextBox {
+        text: String::new(),
+        runs: Default::default(),
+        width,
+    }));
+    item_toks.push(TokGroup::from_vec(toks));
     break_toks.push(None);
 }
 
@@ -2775,14 +12106,21 @@ fn layout_inlines(
     size: f32,
     gap_after: f32,
     out: &mut Vec<Line>,
-    cx: &LayoutCx<'_>,
+    cx: &mut LayoutCx<'_>,
     flow: FlowSpec,
 ) {
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
     let policy = ParagraphPolicy::for_flow(flow.kind);
-    let built = build_paragraph(&toks, fs, cx.faces, policy, &cx.hyphen_cache);
+    let built = build_paragraph(
+        &toks,
+        fs,
+        cx.faces,
+        policy,
+        &cx.hyphen_cache,
+        &cx.width_cache,
+    );
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
     if !built
@@ -2795,18 +12133,26 @@ fn layout_inlines(
     }
 
     let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
-    let breaks = break_paragraph(&built.items, content_w);
-    if breaks.is_empty() {
+    cx.break_paragraph(&built.items, content_w);
+    if cx.line_breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
         layout_inlines_greedy(toks, indent, size, gap_after, cx.faces, cx.page, out);
         mark_flow(out, start, flow.group, flow.kind);
         return;
     }
 
-    let n = breaks.len();
-    for (i, lb) in breaks.iter().enumerate() {
-        let line = line_tokens_for_break(&built, lb, content_w, policy.justify && i + 1 < n);
-        let segs = build_segs_adjusted(&line, left, size, cx.faces);
+    let n = cx.line_breaks.len();
+    for i in 0..n {
+        let lb = cx.line_breaks[i];
+        line_tokens_for_break_into(
+            &built,
+            &lb,
+            content_w,
+            policy.justify && i + 1 < n,
+            &mut cx.glue_adjustments,
+            &mut cx.line_toks,
+        );
+        let segs = build_segs_adjusted(&cx.line_toks, left, size, cx.faces, Some(&cx.width_cache));
         out.push(Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
@@ -2841,13 +12187,20 @@ fn layout_prefixed_inlines(
     marker: Seg,
     spec: PrefixSpec,
     out: &mut Vec<Line>,
-    cx: &LayoutCx<'_>,
+    cx: &mut LayoutCx<'_>,
 ) {
     let start = out.len();
     let left = cx.page.left + spec.content_indent;
     let fs = font_size_of(spec.size);
     let policy = ParagraphPolicy::for_flow(spec.flow.kind);
-    let built = build_paragraph(&toks, fs, cx.faces, policy, &cx.hyphen_cache);
+    let built = build_paragraph(
+        &toks,
+        fs,
+        cx.faces,
+        policy,
+        &cx.hyphen_cache,
+        &cx.width_cache,
+    );
 
     if !built
         .items
@@ -2874,8 +12227,8 @@ fn layout_prefixed_inlines(
 
     let content_w =
         lu_from_points_f32((cx.page.content_w - spec.content_indent).max(MIN_CONTENT_DIM));
-    let breaks = break_paragraph(&built.items, content_w);
-    if breaks.is_empty() {
+    cx.break_paragraph(&built.items, content_w);
+    if cx.line_breaks.is_empty() {
         let before = out.len();
         layout_inlines_greedy(
             toks,
@@ -2893,11 +12246,25 @@ fn layout_prefixed_inlines(
         return;
     }
 
-    let n = breaks.len();
+    let n = cx.line_breaks.len();
     let mut marker = Some(marker);
-    for (i, lb) in breaks.iter().enumerate() {
-        let line = line_tokens_for_break(&built, lb, content_w, policy.justify && i + 1 < n);
-        let mut segs = build_segs_adjusted(&line, left, spec.size, cx.faces);
+    for i in 0..n {
+        let lb = cx.line_breaks[i];
+        line_tokens_for_break_into(
+            &built,
+            &lb,
+            content_w,
+            policy.justify && i + 1 < n,
+            &mut cx.glue_adjustments,
+            &mut cx.line_toks,
+        );
+        let mut segs = build_segs_adjusted(
+            &cx.line_toks,
+            left,
+            spec.size,
+            cx.faces,
+            Some(&cx.width_cache),
+        );
         if i == 0 {
             if let Some(marker) = marker.take() {
                 segs.insert(0, marker);
@@ -2991,14 +12358,34 @@ fn trim_trailing_spaces(cur: &mut Vec<Tok>, cur_w: &mut f32, size: f32, faces: &
     }
 }
 
-fn line_tokens_for_break(
+fn line_tokens_for_break_into(
     built: &BuiltParagraph,
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
-) -> Vec<LineTok> {
-    let mut line = Vec::new();
-    let adjustments = glue_adjustments(&built.items, lb, line_width, justify);
+    adjustments: &mut Vec<(usize, f32)>,
+    line: &mut Vec<LineTok>,
+) {
+    line.clear();
+    glue_adjustments_into(&built.items, lb, line_width, justify, adjustments);
+    if adjustments.is_empty() {
+        for idx in lb.start..lb.end {
+            if let Some(group) = built.item_toks.get(idx) {
+                push_tok_group_line_toks(group, 0.0, line);
+            }
+        }
+        while line.last().is_some_and(|t| t.tok.space) {
+            line.pop();
+        }
+        if let Some(Some(tok)) = built.break_toks.get(lb.end) {
+            line.push(LineTok {
+                tok: tok.clone(),
+                extra_advance: 0.0,
+            });
+        }
+        return;
+    }
+
     let mut adjustment_pos = 0usize;
     for idx in lb.start..lb.end {
         while adjustment_pos < adjustments.len() && adjustments[adjustment_pos].0 < idx {
@@ -3009,12 +12396,7 @@ fn line_tokens_for_break(
             .and_then(|(item_idx, extra)| (*item_idx == idx).then_some(*extra))
             .unwrap_or(0.0);
         if let Some(group) = built.item_toks.get(idx) {
-            for tok in group {
-                line.push(LineTok {
-                    tok: tok.clone(),
-                    extra_advance: if tok.space { extra } else { 0.0 },
-                });
-            }
+            push_tok_group_line_toks(group, extra, line);
         }
     }
     while line.last().is_some_and(|t| t.tok.space) {
@@ -3026,49 +12408,73 @@ fn line_tokens_for_break(
             extra_advance: 0.0,
         });
     }
-    line
 }
 
-fn glue_adjustments(
+fn push_tok_group_line_toks(group: &TokGroup, extra: f32, line: &mut Vec<LineTok>) {
+    if let Some(tok) = &group.first {
+        line.push(LineTok {
+            tok: tok.clone(),
+            extra_advance: if tok.space { extra } else { 0.0 },
+        });
+    }
+    for tok in &group.rest {
+        line.push(LineTok {
+            tok: tok.clone(),
+            extra_advance: if tok.space { extra } else { 0.0 },
+        });
+    }
+}
+
+fn glue_adjustments_into(
     items: &[ParagraphItem],
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
-) -> Vec<(usize, f32)> {
+    out: &mut Vec<(usize, f32)>,
+) {
+    out.clear();
     if !justify || chosen_forced_break(items, lb) {
-        return Vec::new();
+        return;
     }
     let delta = line_width.milli_points() as i64 - lb.natural_width.milli_points() as i64;
     if delta == 0 {
-        return Vec::new();
+        return;
     }
-    let mut glues = Vec::new();
     let mut total = 0i64;
-    for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
+    let mut glue_count = 0usize;
+    for item in items.iter().take(lb.end).skip(lb.start) {
         if let ParagraphItem::Glue(glue) = item {
             let flex = glue_flex(*glue, delta);
             if flex > 0 {
                 total = total.saturating_add(flex);
-                glues.push((idx, flex));
+                glue_count += 1;
             }
         }
     }
-    if total <= 0 || glues.is_empty() {
-        return Vec::new();
+    if total <= 0 || glue_count == 0 {
+        return;
     }
 
-    let mut out = Vec::with_capacity(glues.len());
+    out.reserve(glue_count);
     let mut assigned = 0i64;
-    for (pos, (idx, flex)) in glues.iter().enumerate() {
-        let extra = if pos + 1 == glues.len() {
+    let mut glue_pos = 0usize;
+    for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
+        let ParagraphItem::Glue(glue) = item else {
+            continue;
+        };
+        let flex = glue_flex(*glue, delta);
+        if flex <= 0 {
+            continue;
+        }
+        glue_pos += 1;
+        let extra = if glue_pos == glue_count {
             delta.saturating_sub(assigned)
         } else {
-            delta.saturating_mul(*flex) / total
+            delta.saturating_mul(flex) / total
         };
         assigned = assigned.saturating_add(extra);
-        out.push((*idx, extra as f32 / 1000.0));
+        out.push((idx, extra as f32 / 1000.0));
     }
-    out
 }
 
 fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -> bool {
@@ -3101,28 +12507,38 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
             extra_advance: 0.0,
         })
         .collect::<Vec<_>>();
-    build_segs_adjusted(&line_toks, left, size, faces)
+    build_segs_adjusted(&line_toks, left, size, faces, None)
 }
 
-fn build_segs_adjusted(toks: &[LineTok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+fn build_segs_adjusted(
+    toks: &[LineTok],
+    left: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: Option<&RefCell<WidthCache>>,
+) -> Vec<Seg> {
     let mut segs: Vec<Seg> = Vec::new();
     let mut x = left;
     let mut cur: Option<Seg> = None;
+    let fs = font_size_of(size);
     for line_tok in toks {
         let tok = &line_tok.tok;
-        let tw = token_width(tok, size, faces);
-        let mut advance = tw + line_tok.extra_advance;
+        let advance;
         match &mut cur {
             Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
                 let old_width = s.width;
                 s.text.push_str(&tok.text);
-                s.width = faces.shaped_width_points(s.slot, &s.text, size) + line_tok.extra_advance;
+                s.width = shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs)
+                    + line_tok.extra_advance;
                 advance = s.width - old_width;
             }
             _ => {
                 if let Some(s) = cur.take() {
                     segs.push(s);
                 }
+                advance =
+                    shaped_width_points_for_layout(faces, width_cache, tok.slot, &tok.text, fs)
+                        + line_tok.extra_advance;
                 cur = Some(Seg {
                     x,
                     slot: tok.slot,
@@ -3167,11 +12583,165 @@ struct CodeWrapSpec<'a> {
     max_text_width: f32,
     number_col: f32,
     size: f32,
+    preserve_lines: bool,
     faces: &'a Faces,
+}
+
+fn preserve_code_block_lines(lang: Option<&str>, code: &str) -> bool {
+    let Some(lang) = lang else {
+        return looks_like_ascii_diagram(code);
+    };
+    let lang = code_language_key(lang);
+    if matches!(
+        lang.as_str(),
+        "mermaid" | "mmd" | "dot" | "graphviz" | "ascii" | "diagram"
+    ) {
+        return true;
+    }
+    if matches!(lang.as_str(), "text" | "txt" | "plain" | "plaintext") {
+        return looks_like_ascii_diagram(code);
+    }
+    false
+}
+
+fn code_language_key(lang: &str) -> String {
+    let lower = lang.trim().to_ascii_lowercase();
+    let without_prefix = lower.strip_prefix("language-").unwrap_or(&lower);
+    let end = without_prefix
+        .char_indices()
+        .find_map(|(idx, ch)| {
+            (!(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '#' | '-' | '_'))).then_some(idx)
+        })
+        .unwrap_or(without_prefix.len());
+    without_prefix[..end].to_string()
+}
+
+fn looks_like_ascii_diagram(code: &str) -> bool {
+    let mut structural_lines = 0usize;
+    let mut long_structural_line = false;
+
+    for line in code.lines().map(str::trim_end) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let char_count = trimmed.chars().count();
+        let structural = trimmed
+            .chars()
+            .filter(|&ch| is_ascii_diagram_char(ch))
+            .count();
+        let has_connector = trimmed.contains("--")
+            || trimmed.contains("->")
+            || trimmed.contains("<-")
+            || trimmed.contains("=>")
+            || trimmed.contains("+")
+            || trimmed.contains('|');
+
+        if structural >= 3 && has_connector && structural * 5 >= char_count {
+            structural_lines += 1;
+        }
+        if char_count >= 48 && structural >= 6 && has_connector {
+            long_structural_line = true;
+        }
+    }
+
+    structural_lines >= 2 || long_structural_line
+}
+
+const fn is_ascii_diagram_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '|' | '-'
+            | '+'
+            | '/'
+            | '\\'
+            | '_'
+            | '='
+            | ':'
+            | '<'
+            | '>'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '('
+            | ')'
+            | '*'
+    )
+}
+
+fn fitted_code_font_size(
+    code: &str,
+    code_area_width: f32,
+    line_numbers: bool,
+    digits: usize,
+    default_size: f32,
+    min_size: f32,
+    faces: &Faces,
+) -> f32 {
+    let longest = code
+        .lines()
+        .map(expand_code_tabs)
+        .map(|line| text_width(&line, default_size, F_MONO, faces))
+        .fold(0.0f32, f32::max);
+    if longest <= 0.0 {
+        return default_size;
+    }
+
+    let fits = |size: f32| {
+        let number_col = if line_numbers {
+            code_line_number_column_width(digits, size, faces)
+        } else {
+            0.0
+        };
+        let available = (code_area_width - number_col).max(8.0);
+        longest * (size / default_size) <= available
+    };
+
+    if fits(default_size) {
+        return default_size;
+    }
+
+    let mut low = min_size.min(default_size);
+    let mut high = default_size;
+    for _ in 0..18 {
+        let mid = (low + high) * 0.5;
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
 }
 
 fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
     let first_text_x = spec.x0 + spec.number_col;
+    if spec.preserve_lines {
+        let mut segs = Vec::new();
+        if spec.line_numbers {
+            segs.push(code_line_number_seg(
+                spec.line_no,
+                spec.digits,
+                spec.x0,
+                spec.number_col,
+                spec.size,
+                spec.faces,
+            ));
+        }
+        segs.extend(code_frags_to_segs(
+            &code_fragments(spec.lang, text),
+            first_text_x,
+            spec.size,
+            spec.faces,
+        ));
+        if segs.is_empty() {
+            segs.push(empty_code_seg(first_text_x));
+        }
+        return vec![segs];
+    }
+
     let continuation_indent = CODE_HANGING_INDENT.min((spec.max_text_width * 0.35).max(0.0));
     let continuation_width = (spec.max_text_width - continuation_indent).max(8.0);
     let frag_lines = wrap_code_fragments(
@@ -3486,14 +13056,11 @@ fn serialize(
 
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
+    let slot_texts = collect_font_slot_text_refs(lines);
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()
-        .filter(|&s| {
-            lines
-                .iter()
-                .flat_map(|l| l.segs.iter())
-                .any(|seg| seg.slot == s && !seg.text.is_empty())
-        })
+        .zip(slot_texts.iter())
+        .filter_map(|(slot, refs)| (!refs.is_empty()).then_some(slot))
         .collect();
     if used_slots.is_empty() {
         used_slots.push(F_BODY); // always embed at least one face
@@ -3524,11 +13091,11 @@ fn serialize(
         let mut lig_src_uni: BTreeMap<u16, String> = BTreeMap::new();
         let mut segment_count = 0usize;
         let mut text_bytes = 0usize;
-        for seg in lines
-            .iter()
-            .flat_map(|l| l.segs.iter())
-            .filter(|seg| seg.slot == slot && !seg.text.is_empty())
-        {
+        let Some(slot_idx) = pdf_font_slot_index(slot) else {
+            continue;
+        };
+        let slot_refs = &slot_texts[slot_idx];
+        for seg in &slot_refs.segs {
             segment_count += 1;
             text_bytes += seg.text.len();
             chars.extend(seg.text.chars());
@@ -3542,6 +13109,27 @@ fn serialize(
                 slot_cache.insert(seg.text.clone(), shape_run(source, lig, &seg.text));
             }
             let Some(shaped) = slot_cache.get(seg.text.as_str()) else {
+                continue;
+            };
+            shaped_glyphs.extend(shaped.glyphs.iter().copied());
+            for (g, s) in &shaped.ligatures {
+                lig_src_uni.entry(*g).or_insert_with(|| s.clone());
+            }
+        }
+        for text in &slot_refs.svg_texts {
+            segment_count += 1;
+            text_bytes += text.text.len();
+            chars.extend(text.text.chars());
+            let slot_cache = shaped_cache.entry(slot).or_default();
+            if slot_cache.contains_key(text.text.as_str()) {
+                shape_cache_hits += 1;
+                shape_cache_hit_bytes += text.text.len();
+            } else {
+                shape_cache_misses += 1;
+                shape_cache_miss_bytes += text.text.len();
+                slot_cache.insert(text.text.clone(), shape_run(source, lig, &text.text));
+            }
+            let Some(shaped) = slot_cache.get(text.text.as_str()) else {
                 continue;
             };
             shaped_glyphs.extend(shaped.glyphs.iter().copied());
@@ -3598,6 +13186,7 @@ fn serialize(
             lig_uni,
         });
     }
+    let subset_lookup = EmbeddedFaceLookup::new(&subsets);
     profiler.record_since(
         "shaped_segment_cache_hit",
         shape_cache_hits,
@@ -3666,14 +13255,15 @@ fn serialize(
             .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
         let mut bg = String::with_capacity(bg_capacity);
         let mut body = String::with_capacity(body_capacity);
+        let mut shadings = Vec::new();
         let mut annots = Vec::with_capacity(annot_capacity);
         let mut marks = Vec::with_capacity(mark_capacity);
         let mut next_mcid = 0usize;
 
         // (a) Blockquote backgrounds: subtle page-local panels behind quoted
         // content, using the same extents as the gutter bars.
-        let quote_bg = quote_extents(placed);
-        for (bar_x, top_y, bot_y) in quote_bg.values() {
+        let mut quote_acc = quote_extents(placed);
+        for (bar_x, top_y, bot_y) in quote_acc.values() {
             bg.push_str(&rounded_rect_fill(
                 bar_x - QUOTE_BG_PAD_X,
                 bot_y - QUOTE_BG_PAD_V,
@@ -3746,9 +13336,8 @@ fn serialize(
                 if seg.slot != F_MONO || seg.text.trim().is_empty() {
                     continue;
                 }
-                let w = text_width(&seg.text, p.line.size, F_MONO, faces);
                 let cx0 = seg.x - CHIP_PAD_X;
-                let cx1 = seg.x + w + CHIP_PAD_X;
+                let cx1 = seg.x + seg.width + CHIP_PAD_X;
                 let cy0 = p.y - p.line.size * 0.26;
                 let cy1 = p.y + p.line.size * 0.74;
                 bg.push_str(&rounded_rect_fill(
@@ -3867,6 +13456,7 @@ fn serialize(
                         line.size,
                         y,
                         &subsets,
+                        &subset_lookup,
                         faces,
                         &shaped_cache,
                         &palette,
@@ -3895,7 +13485,7 @@ fn serialize(
                         let x0 = line.rule_x;
                         let y1 = y + image.height_pt;
                         (
-                            Some(image.alt.clone()),
+                            Some(pdf_image_alt_text(image)),
                             Some([x0, y, x0 + image.width_pt, y1]),
                         )
                     } else {
@@ -3909,17 +13499,31 @@ fn serialize(
                     });
                     next_mcid += 1;
                 }
-                if let Some(image) = &line.image
-                    && let Some(idx) = image_index.get(image.image.key.as_str())
-                {
-                    let name = image_name(*idx);
-                    body.push_str(&format!(
-                        "q {w} 0 0 {h} {x} {y} cm /{name} Do Q\n",
-                        w = pdf_num(image.width_pt),
-                        h = pdf_num(image.height_pt),
-                        x = pdf_num(line.rule_x),
-                        y = pdf_num(y),
-                    ));
+                if let Some(image) = &line.image {
+                    if image.image.vector.is_some() {
+                        draw_svg_image(
+                            &mut body,
+                            &mut annots,
+                            image,
+                            line.rule_x,
+                            y,
+                            &image_index,
+                            &mut shadings,
+                            &subsets,
+                            &subset_lookup,
+                            faces,
+                            &shaped_cache,
+                        );
+                    } else if let Some(idx) = image_index.get(image.image.key.as_str()) {
+                        let name = image_name(*idx);
+                        body.push_str(&format!(
+                            "q {w} 0 0 {h} {x} {y} cm /{name} Do Q\n",
+                            w = pdf_num(image.width_pt),
+                            h = pdf_num(image.height_pt),
+                            x = pdf_num(line.rule_x),
+                            y = pdf_num(y),
+                        ));
+                    }
                 }
                 for seg in &line.segs {
                     draw_seg(
@@ -3931,6 +13535,7 @@ fn serialize(
                         line.size,
                         y,
                         &subsets,
+                        &subset_lookup,
                         faces,
                         &shaped_cache,
                         &palette,
@@ -3945,7 +13550,6 @@ fn serialize(
         // (e) Blockquote gutter bars: accumulate each quote's vertical extent on
         // this page (keyed by quote id), then stroke one segment per quote. The
         // bars are decorative, so they are wrapped as an /Artifact.
-        let mut quote_acc = quote_extents(placed);
         if !quote_acc.is_empty() {
             body.push_str("/Artifact BMC\n");
             flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
@@ -3967,6 +13571,7 @@ fn serialize(
 
         scratch.pages.push(PageContent {
             stream,
+            shadings,
             annots,
             marks,
         });
@@ -3981,6 +13586,7 @@ fn serialize(
     if scratch.pages.is_empty() {
         scratch.pages.push(PageContent {
             stream: String::new(),
+            shadings: Vec::new(),
             annots: Vec::new(),
             marks: Vec::new(),
         });
@@ -4023,6 +13629,7 @@ impl RenderScratch {
 
 struct PageContent {
     stream: String,
+    shadings: Vec<PdfShading>,
     annots: Vec<LinkAnnotation>,
     marks: Vec<StructMark>,
 }
@@ -4401,11 +14008,89 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
 fn collect_pdf_images(lines: &[Line]) -> Vec<PdfImageData> {
     let mut by_key: BTreeMap<String, PdfImageData> = BTreeMap::new();
     for image in lines.iter().filter_map(|line| line.image.as_ref()) {
-        by_key
-            .entry(image.image.key.clone())
-            .or_insert_with(|| image.image.clone());
+        if let Some(svg) = image.image.vector.as_ref() {
+            collect_svg_pdf_images(svg, &mut by_key);
+        } else {
+            by_key
+                .entry(image.image.key.clone())
+                .or_insert_with(|| image.image.clone());
+        }
     }
     by_key.into_values().collect()
+}
+
+fn collect_svg_pdf_images(svg: &PdfSvgImage, by_key: &mut BTreeMap<String, PdfImageData>) {
+    for element in &svg.elements {
+        if let SvgElement::Image(image) = element {
+            if let Some(nested_svg) = image.image.vector.as_ref() {
+                collect_svg_pdf_images(nested_svg, by_key);
+            } else {
+                by_key
+                    .entry(image.image.key.clone())
+                    .or_insert_with(|| (*image.image).clone());
+            }
+        }
+    }
+}
+
+struct FontSlotTextRefs<'a> {
+    segs: Vec<&'a Seg>,
+    svg_texts: Vec<&'a SvgText>,
+}
+
+impl FontSlotTextRefs<'_> {
+    fn is_empty(&self) -> bool {
+        self.segs.is_empty() && self.svg_texts.is_empty()
+    }
+}
+
+fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.len()] {
+    let mut refs: [FontSlotTextRefs<'_>; SLOTS.len()] = std::array::from_fn(|_| FontSlotTextRefs {
+        segs: Vec::new(),
+        svg_texts: Vec::new(),
+    });
+    for line in lines {
+        for seg in &line.segs {
+            if seg.text.is_empty() {
+                continue;
+            }
+            if let Some(slot_idx) = pdf_font_slot_index(seg.slot) {
+                refs[slot_idx].segs.push(seg);
+            }
+        }
+        for text in svg_texts_in_line(line) {
+            if text.text.is_empty() {
+                continue;
+            }
+            if let Some(slot_idx) = pdf_font_slot_index(text.slot) {
+                refs[slot_idx].svg_texts.push(text);
+            }
+        }
+    }
+    refs
+}
+
+fn pdf_font_slot_index(slot: u8) -> Option<usize> {
+    match slot {
+        F_BODY => Some(0),
+        F_BOLD => Some(1),
+        F_ITALIC => Some(2),
+        F_MONO => Some(3),
+        F_BOLDITALIC => Some(4),
+        _ => None,
+    }
+}
+
+fn svg_texts_in_line(line: &Line) -> impl Iterator<Item = &SvgText> {
+    line.image
+        .as_ref()
+        .and_then(|image| image.image.vector.as_ref())
+        .into_iter()
+        .flat_map(|svg| svg.elements.iter())
+        .filter_map(|element| match element {
+            SvgElement::Text(text) => Some(text),
+            _ => None,
+        })
 }
 
 fn image_name(index: usize) -> String {
@@ -4414,6 +14099,2851 @@ fn image_name(index: usize) -> String {
 
 fn line_has_visible_content(line: &Line) -> bool {
     line.image.is_some() || line.segs.iter().any(|seg| !seg.text.is_empty())
+}
+
+#[derive(Clone, Copy)]
+struct SvgPaintResources<'a> {
+    gradients: &'a [SvgGradientPaint],
+    patterns: &'a [SvgPatternPaint],
+    clip_paths: &'a [SvgClipPath],
+    markers: &'a [SvgMarker],
+    image_index: &'a BTreeMap<&'a str, usize>,
+    stroke_scale: Option<f32>,
+}
+
+#[derive(Clone, Copy)]
+struct SvgImageTransform {
+    sx: f32,
+    sy: f32,
+    tx: f32,
+    ty: f32,
+    viewport_clip: Option<(f32, f32, f32, f32)>,
+}
+
+impl SvgImageTransform {
+    fn map_point(self, x: f32, y: f32) -> (f32, f32) {
+        (self.tx + x * self.sx, self.ty - y * self.sy)
+    }
+}
+
+fn svg_image_transform(
+    svg: &PdfSvgImage,
+    image: &ImageLine,
+    x: f32,
+    y: f32,
+) -> Option<SvgImageTransform> {
+    let raw_sx = image.width_pt / svg.view_box.w.max(1.0);
+    let raw_sy = image.height_pt / svg.view_box.h.max(1.0);
+    if !raw_sx.is_finite() || !raw_sy.is_finite() || raw_sx <= 0.0 || raw_sy <= 0.0 {
+        return None;
+    }
+    match svg.preserve_aspect.mode {
+        SvgAspectScaleMode::None => {
+            let tx = x - svg.view_box.x * raw_sx;
+            let ty = y + image.height_pt + svg.view_box.y * raw_sy;
+            Some(SvgImageTransform {
+                sx: raw_sx,
+                sy: raw_sy,
+                tx,
+                ty,
+                viewport_clip: None,
+            })
+        }
+        SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
+            let scale = if svg.preserve_aspect.mode == SvgAspectScaleMode::Slice {
+                raw_sx.max(raw_sy)
+            } else {
+                raw_sx.min(raw_sy)
+            };
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let content_w = svg.view_box.w * scale;
+            let content_h = svg.view_box.h * scale;
+            let offset_x = (image.width_pt - content_w) * svg.preserve_aspect.align_x;
+            let offset_y = (image.height_pt - content_h) * svg.preserve_aspect.align_y;
+            let tx = x + offset_x - svg.view_box.x * scale;
+            let ty = y + image.height_pt - offset_y + svg.view_box.y * scale;
+            Some(SvgImageTransform {
+                sx: scale,
+                sy: scale,
+                tx,
+                ty,
+                viewport_clip: (svg.preserve_aspect.mode == SvgAspectScaleMode::Slice).then_some((
+                    x,
+                    y,
+                    image.width_pt,
+                    image.height_pt,
+                )),
+            })
+        }
+    }
+}
+
+fn svg_uniform_stroke_scale(transform: SvgImageTransform) -> Option<f32> {
+    let sx = transform.sx.abs();
+    let sy = transform.sy.abs();
+    if sx.is_finite() && sy.is_finite() && sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
+        Some((sx + sy) * 0.5)
+    } else {
+        None
+    }
+}
+
+fn svg_style_with_non_scaling_stroke(style: SvgStyle, stroke_scale: Option<f32>) -> SvgStyle {
+    let Some(scale) = stroke_scale else {
+        return style;
+    };
+    if !style.non_scaling_stroke || !svg_transform_preserves_stroke_scale(style.transform) {
+        return style;
+    }
+    SvgStyle {
+        stroke_width: style.stroke_width / scale,
+        ..style
+    }
+}
+
+fn svg_transform_preserves_stroke_scale(transform: SvgTransform) -> bool {
+    (transform.a - 1.0).abs() <= 0.0001
+        && transform.b.abs() <= 0.0001
+        && transform.c.abs() <= 0.0001
+        && (transform.d - 1.0).abs() <= 0.0001
+}
+
+fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTransform) {
+    body.push_str("q ");
+    if let Some((x, y, w, h)) = transform.viewport_clip {
+        body.push_str(&format!(
+            "{x} {y} {w} {h} re W n ",
+            x = pdf_num(x),
+            y = pdf_num(y),
+            w = pdf_num(w),
+            h = pdf_num(h),
+        ));
+    }
+    body.push_str(&format!(
+        "{sx} 0 0 {neg_sy} {tx} {ty} cm\n",
+        sx = pdf_num(transform.sx),
+        neg_sy = pdf_num(-transform.sy),
+        tx = pdf_num(transform.tx),
+        ty = pdf_num(transform.ty),
+    ));
+}
+
+fn append_svg_root_background(
+    body: &mut String,
+    background: &SvgRootBackground,
+    image: &ImageLine,
+    x: f32,
+    y: f32,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    if ![x, y, image.width_pt, image.height_pt]
+        .iter()
+        .all(|value| value.is_finite())
+        || image.width_pt <= 0.001
+        || image.height_pt <= 0.001
+    {
+        return;
+    }
+    if let Some(color) = background.color {
+        append_svg_root_background_color(body, color, background.opacity, image, x, y);
+    }
+    let bbox = (x, y, image.width_pt, image.height_pt);
+    for layer in background.layers.iter().rev() {
+        append_svg_root_background_layer(body, layer, bbox, background.opacity, page_shadings);
+    }
+}
+
+fn append_svg_root_background_color(
+    body: &mut String,
+    background: SvgRootBackgroundColor,
+    root_opacity: f32,
+    image: &ImageLine,
+    x: f32,
+    y: f32,
+) {
+    let alpha = quantize_svg_alpha(background.opacity * root_opacity);
+    if alpha == 0 {
+        return;
+    }
+    let (r, g, b) = background.color;
+    body.push_str("q ");
+    if alpha < 1000 {
+        append_svg_alpha_state(body, alpha, alpha);
+        body.push(' ');
+    }
+    body.push_str(&format!(
+        "{r} {g} {b} rg {x} {y} {w} {h} re f\nQ\n",
+        r = pdf_fixed3(r),
+        g = pdf_fixed3(g),
+        b = pdf_fixed3(b),
+        x = pdf_num(x),
+        y = pdf_num(y),
+        w = pdf_num(image.width_pt),
+        h = pdf_num(image.height_pt),
+    ));
+}
+
+fn append_svg_root_background_layer(
+    body: &mut String,
+    layer: &SvgRootBackgroundLayer,
+    bbox: (f32, f32, f32, f32),
+    opacity: f32,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    let alpha = quantize_svg_alpha(opacity);
+    if alpha == 0 {
+        return;
+    }
+    let shadings = match layer {
+        SvgRootBackgroundLayer::Linear(linear) => {
+            vec![svg_root_linear_background_shading(linear, bbox)]
+        }
+        SvgRootBackgroundLayer::Radial(radial) => {
+            vec![svg_root_radial_background_shading(radial, bbox)]
+        }
+    };
+    if !pdf_shadings_fit(page_shadings, &shadings) {
+        return;
+    }
+    let names = shadings
+        .into_iter()
+        .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return;
+    }
+    let (x, y, w, h) = bbox;
+    body.push_str("q ");
+    if alpha < 1000 {
+        append_svg_alpha_state(body, alpha, alpha);
+        body.push(' ');
+    }
+    body.push_str(&format!(
+        "{x} {y} {w} {h} re W n ",
+        x = pdf_num(x),
+        y = pdf_num(y),
+        w = pdf_num(w),
+        h = pdf_num(h),
+    ));
+    for name in names {
+        body.push_str(&format!("/{name} sh\n"));
+    }
+    body.push_str("Q\n");
+}
+
+fn svg_root_linear_background_shading(
+    gradient: &SvgCssLinearGradient,
+    bbox: (f32, f32, f32, f32),
+) -> PdfShading {
+    let (x, y, w, h) = bbox;
+    let map = |point: (f32, f32)| (x + point.0 * w, y + point.1 * h);
+    let (x1, y1) = map(gradient.start);
+    let (x2, y2) = map(gradient.end);
+    PdfShading {
+        kind: PdfShadingKind::Axial([x1, y1, x2, y2]),
+        stops: gradient.stops.clone(),
+        extend_start: true,
+        extend_end: true,
+    }
+}
+
+fn svg_root_radial_background_shading(
+    gradient: &SvgCssRadialGradient,
+    bbox: (f32, f32, f32, f32),
+) -> PdfShading {
+    let (x, y, w, h) = bbox;
+    let cx = x + gradient.center.0 * w;
+    let cy = y + gradient.center.1 * h;
+    let radius = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+        .into_iter()
+        .map(|(px, py)| svg_distance(cx, cy, px, py))
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    PdfShading {
+        kind: PdfShadingKind::Radial([cx, cy, 0.0, cx, cy, radius]),
+        stops: gradient.stops.clone(),
+        extend_start: true,
+        extend_end: true,
+    }
+}
+
+fn pdf_image_alt_text(image: &ImageLine) -> String {
+    let alt = image.alt.trim();
+    if !alt.is_empty() {
+        return image.alt.clone();
+    }
+    image
+        .image
+        .vector
+        .as_ref()
+        .and_then(|svg| svg.accessible_text.clone())
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_svg_image(
+    body: &mut String,
+    annots: &mut Vec<LinkAnnotation>,
+    image: &ImageLine,
+    x: f32,
+    y: f32,
+    image_index: &BTreeMap<&str, usize>,
+    page_shadings: &mut Vec<PdfShading>,
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    faces: &Faces,
+    shaped_cache: &ShapedRunCache,
+) {
+    let Some(svg) = image.image.vector.as_ref() else {
+        return;
+    };
+    let Some(transform) = svg_image_transform(svg, image, x, y) else {
+        return;
+    };
+
+    if let Some(background) = svg.root_background.as_ref() {
+        append_svg_root_background(body, background, image, x, y, page_shadings);
+    }
+
+    let mut in_shape_group = false;
+    let resources = SvgPaintResources {
+        gradients: &svg.gradients,
+        patterns: &svg.patterns,
+        clip_paths: &svg.clip_paths,
+        markers: &svg.markers,
+        image_index,
+        stroke_scale: svg_uniform_stroke_scale(transform),
+    };
+    for element in &svg.elements {
+        if let SvgElement::Text(text) = element {
+            if in_shape_group {
+                body.push_str("Q\n");
+                in_shape_group = false;
+            }
+            draw_svg_text(
+                body,
+                text,
+                transform,
+                &svg.clip_paths,
+                subsets,
+                subset_lookup,
+                faces,
+                shaped_cache,
+            );
+            push_svg_link_annotation(annots, element, transform);
+            continue;
+        }
+        if !in_shape_group {
+            append_svg_image_transform_prefix(body, transform);
+            in_shape_group = true;
+        }
+        draw_svg_shape(body, element, resources, page_shadings);
+        push_svg_link_annotation(annots, element, transform);
+    }
+    if in_shape_group {
+        body.push_str("Q\n");
+    }
+}
+
+fn push_svg_link_annotation(
+    annots: &mut Vec<LinkAnnotation>,
+    element: &SvgElement,
+    image_transform: SvgImageTransform,
+) {
+    let Some(target) = svg_element_link(element) else {
+        return;
+    };
+    if !svg_element_visible_for_link(element) {
+        return;
+    }
+    let Some((bbox, transform)) = svg_element_link_bbox(element) else {
+        return;
+    };
+    let Some(rect) = svg_bbox_pdf_rect(bbox, transform, image_transform) else {
+        return;
+    };
+    annots.push(LinkAnnotation {
+        rect,
+        target: target.clone(),
+        owner_mcid: None,
+    });
+}
+
+fn svg_element_link(element: &SvgElement) -> Option<&LinkTarget> {
+    match element {
+        SvgElement::Rect(rect) => rect.link.as_ref(),
+        SvgElement::Ellipse(ellipse) => ellipse.link.as_ref(),
+        SvgElement::Line(line) => line.link.as_ref(),
+        SvgElement::Polyline(poly) | SvgElement::Polygon(poly) => poly.link.as_ref(),
+        SvgElement::Path(path) => path.link.as_ref(),
+        SvgElement::Image(image) => image.link.as_ref(),
+        SvgElement::Text(text) => text.link.as_ref(),
+    }
+}
+
+fn svg_element_visible_for_link(element: &SvgElement) -> bool {
+    match element {
+        SvgElement::Rect(rect) => svg_style_has_link_paint(rect.style),
+        SvgElement::Ellipse(ellipse) => svg_style_has_link_paint(ellipse.style),
+        SvgElement::Line(line) => svg_style_has_link_paint(line.style),
+        SvgElement::Polyline(poly) | SvgElement::Polygon(poly) => {
+            svg_style_has_link_paint(poly.style)
+        }
+        SvgElement::Path(path) => svg_style_has_link_paint(path.style),
+        SvgElement::Image(image) => {
+            image.style.visible && image.style.opacity > 0.001 && image.w > 0.001 && image.h > 0.001
+        }
+        SvgElement::Text(text) => text.opacity > 0.001 && !text.text.is_empty(),
+    }
+}
+
+fn svg_style_has_link_paint(style: SvgStyle) -> bool {
+    style.visible
+        && ((style.fill.is_some() && svg_effective_fill_opacity(style) > 0.001)
+            || (style.stroke.is_some()
+                && style.stroke_width > 0.001
+                && svg_effective_stroke_opacity(style) > 0.001))
+}
+
+fn svg_element_link_bbox(element: &SvgElement) -> Option<((f32, f32, f32, f32), SvgTransform)> {
+    match element {
+        SvgElement::Rect(rect) => {
+            let bbox = (rect.x, rect.y, rect.w, rect.h);
+            Some((
+                svg_expand_bbox_for_stroke(bbox, rect.style),
+                rect.style.transform,
+            ))
+        }
+        SvgElement::Ellipse(ellipse) => {
+            let bbox = (
+                ellipse.cx - ellipse.rx,
+                ellipse.cy - ellipse.ry,
+                ellipse.rx * 2.0,
+                ellipse.ry * 2.0,
+            );
+            Some((
+                svg_expand_bbox_for_stroke(bbox, ellipse.style),
+                ellipse.style.transform,
+            ))
+        }
+        SvgElement::Line(line) => {
+            let min_x = line.x1.min(line.x2);
+            let min_y = line.y1.min(line.y2);
+            let max_x = line.x1.max(line.x2);
+            let max_y = line.y1.max(line.y2);
+            let pad = (line.style.stroke_width * 0.5).max(0.75);
+            Some((
+                (
+                    min_x - pad,
+                    min_y - pad,
+                    max_x - min_x + pad * 2.0,
+                    max_y - min_y + pad * 2.0,
+                ),
+                line.style.transform,
+            ))
+        }
+        SvgElement::Polyline(poly) | SvgElement::Polygon(poly) => svg_points_bbox(&poly.points)
+            .map(|bbox| {
+                (
+                    svg_expand_bbox_for_stroke(bbox, poly.style),
+                    poly.style.transform,
+                )
+            }),
+        SvgElement::Path(path) => svg_path_bbox(&path.ops).map(|bbox| {
+            (
+                svg_expand_bbox_for_stroke(bbox, path.style),
+                path.style.transform,
+            )
+        }),
+        SvgElement::Image(image) => {
+            Some(((image.x, image.y, image.w, image.h), image.style.transform))
+        }
+        SvgElement::Text(text) => svg_text_link_bbox(text).map(|bbox| (bbox, text.transform)),
+    }
+}
+
+fn svg_expand_bbox_for_stroke(bbox: (f32, f32, f32, f32), style: SvgStyle) -> (f32, f32, f32, f32) {
+    let pad = if style.stroke.is_some() && style.stroke_width.is_finite() {
+        (style.stroke_width * 0.5).max(0.0)
+    } else {
+        0.0
+    };
+    (
+        bbox.0 - pad,
+        bbox.1 - pad,
+        bbox.2 + pad * 2.0,
+        bbox.3 + pad * 2.0,
+    )
+}
+
+fn svg_text_link_bbox(text: &SvgText) -> Option<(f32, f32, f32, f32)> {
+    let width = text
+        .text_length
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or_else(|| svg_text_advance(&text.text, text.font_size, text.letter_spacing));
+    if !width.is_finite() || width <= 0.001 || !text.font_size.is_finite() {
+        return None;
+    }
+    let x = match text.anchor {
+        SvgTextAnchor::Start => text.x,
+        SvgTextAnchor::Middle => text.x - width * 0.5,
+        SvgTextAnchor::End => text.x - width,
+    };
+    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size;
+    let y = baseline_y - text.font_size * 0.9;
+    let h = text.font_size * 1.15;
+    Some((x, y, width, h))
+}
+
+fn svg_bbox_pdf_rect(
+    bbox: (f32, f32, f32, f32),
+    transform: SvgTransform,
+    image_transform: SvgImageTransform,
+) -> Option<Rect> {
+    let (x, y, w, h) = bbox;
+    if ![x, y, w, h].iter().all(|value| value.is_finite()) || w <= 0.001 || h <= 0.001 {
+        return None;
+    }
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (cx, cy) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+        let (sx, sy) = transform.apply_point(cx, cy);
+        let (px, py) = image_transform.map_point(sx, sy);
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        min_x = min_x.min(px);
+        max_x = max_x.max(px);
+        min_y = min_y.min(py);
+        max_y = max_y.max(py);
+    }
+    let mut rect = Rect {
+        x0: min_x,
+        y0: min_y,
+        x1: max_x,
+        y1: max_y,
+    };
+    if let Some((cx, cy, cw, ch)) = image_transform.viewport_clip {
+        rect.x0 = rect.x0.max(cx);
+        rect.y0 = rect.y0.max(cy);
+        rect.x1 = rect.x1.min(cx + cw);
+        rect.y1 = rect.y1.min(cy + ch);
+    }
+    (rect.x1 - rect.x0 > 0.5 && rect.y1 - rect.y0 > 0.5).then_some(rect)
+}
+
+fn draw_svg_shape(
+    body: &mut String,
+    element: &SvgElement,
+    resources: SvgPaintResources<'_>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    match element {
+        SvgElement::Rect(rect) => draw_svg_rect(
+            body,
+            rect,
+            resources.gradients,
+            resources.patterns,
+            resources.clip_paths,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Ellipse(ellipse) => draw_svg_ellipse(
+            body,
+            ellipse,
+            resources.gradients,
+            resources.patterns,
+            resources.clip_paths,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Line(line) => draw_svg_line(
+            body,
+            line,
+            resources.gradients,
+            resources.clip_paths,
+            resources.markers,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Polyline(poly) => draw_svg_poly(
+            body,
+            poly,
+            false,
+            resources.gradients,
+            resources.patterns,
+            resources.clip_paths,
+            resources.markers,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Polygon(poly) => draw_svg_poly(
+            body,
+            poly,
+            true,
+            resources.gradients,
+            resources.patterns,
+            resources.clip_paths,
+            resources.markers,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Path(path) => draw_svg_path(
+            body,
+            path,
+            resources.gradients,
+            resources.patterns,
+            resources.clip_paths,
+            resources.markers,
+            resources.stroke_scale,
+            page_shadings,
+        ),
+        SvgElement::Image(image) => {
+            draw_svg_embedded_image(body, image, resources.clip_paths, resources.image_index)
+        }
+        SvgElement::Text(_) => {}
+    }
+}
+
+fn draw_svg_rect(
+    body: &mut String,
+    rect: &SvgRect,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    let style = svg_style_with_non_scaling_stroke(rect.style, stroke_scale);
+    if !svg_style_has_paint(style) {
+        return;
+    }
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    if append_svg_shadow_prefix(body, style) {
+        append_svg_rect_path(body, rect);
+        append_svg_shadow_operator(body, style);
+    }
+    append_svg_painted_shape(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        Some((rect.x, rect.y, rect.w, rect.h)),
+        |body| append_svg_rect_path(body, rect),
+    );
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_rect_path(body: &mut String, rect: &SvgRect) {
+    let r = rect.rx.min(rect.w * 0.5).min(rect.h * 0.5).max(0.0);
+    if r <= 0.0 {
+        body.push_str(&format!(
+            "{x} {y} {w} {h} re ",
+            x = pdf_num(rect.x),
+            y = pdf_num(rect.y),
+            w = pdf_num(rect.w),
+            h = pdf_num(rect.h),
+        ));
+    } else {
+        append_svg_rounded_rect_path(body, rect.x, rect.y, rect.w, rect.h, r);
+    }
+}
+
+fn draw_svg_ellipse(
+    body: &mut String,
+    ellipse: &SvgEllipse,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    let style = svg_style_with_non_scaling_stroke(ellipse.style, stroke_scale);
+    if !svg_style_has_paint(style) {
+        return;
+    }
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    if append_svg_shadow_prefix(body, style) {
+        append_svg_ellipse_path(body, ellipse.cx, ellipse.cy, ellipse.rx, ellipse.ry);
+        append_svg_shadow_operator(body, style);
+    }
+    append_svg_painted_shape(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        Some((
+            ellipse.cx - ellipse.rx,
+            ellipse.cy - ellipse.ry,
+            ellipse.rx * 2.0,
+            ellipse.ry * 2.0,
+        )),
+        |body| append_svg_ellipse_path(body, ellipse.cx, ellipse.cy, ellipse.rx, ellipse.ry),
+    );
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn draw_svg_line(
+    body: &mut String,
+    line: &SvgLine,
+    gradients: &[SvgGradientPaint],
+    clip_paths: &[SvgClipPath],
+    markers: &[SvgMarker],
+    stroke_scale: Option<f32>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    if !line.style.visible {
+        return;
+    }
+    let Some(stroke) = line.style.stroke else {
+        return;
+    };
+    let style = SvgStyle {
+        color: line.style.color,
+        fill: None,
+        fill_gradient: None,
+        fill_pattern: None,
+        fill_current_color: false,
+        fill_context: None,
+        stroke: Some(stroke),
+        stroke_gradient: line.style.stroke_gradient,
+        stroke_current_color: line.style.stroke_current_color,
+        stroke_context: line.style.stroke_context,
+        stroke_width: line.style.stroke_width,
+        non_scaling_stroke: line.style.non_scaling_stroke,
+        opacity: line.style.opacity,
+        fill_opacity: line.style.fill_opacity,
+        stroke_opacity: line.style.stroke_opacity,
+        visible: line.style.visible,
+        shadow: line.style.shadow,
+        clip_path: line.style.clip_path,
+        mask_path: line.style.mask_path,
+        transform: line.style.transform,
+        dash: line.style.dash,
+        line_cap: line.style.line_cap,
+        line_join: line.style.line_join,
+        miter_limit: line.style.miter_limit,
+        fill_rule: line.style.fill_rule,
+        font_weight: line.style.font_weight,
+        font_slant: line.style.font_slant,
+        font_family: line.style.font_family,
+        dominant_baseline: line.style.dominant_baseline,
+        letter_spacing: line.style.letter_spacing,
+    };
+    let style = svg_style_with_non_scaling_stroke(style, stroke_scale);
+    if !svg_style_has_paint(style) {
+        return;
+    }
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    if append_svg_shadow_prefix(body, style) {
+        append_svg_line_path(body, line);
+        append_svg_shadow_operator(body, style);
+    }
+    if !append_svg_line_gradient_stroke(body, line, style, gradients, page_shadings) {
+        append_svg_style(body, style);
+        append_svg_line_path(body, line);
+        body.push_str("S\n");
+    }
+    if let Some(stroke) = style.stroke {
+        append_svg_line_markers(
+            body,
+            line,
+            markers,
+            stroke,
+            line.style.fill,
+            style.stroke_width,
+        );
+    }
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_line_gradient_stroke(
+    body: &mut String,
+    line: &SvgLine,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    page_shadings: &mut Vec<PdfShading>,
+) -> bool {
+    if style.dash.len > 0 || matches!(style.line_cap, SvgLineCap::Round) {
+        return false;
+    }
+    let width = style.stroke_width;
+    let dx = line.x2 - line.x1;
+    let dy = line.y2 - line.y1;
+    let len = (dx.mul_add(dx, dy * dy)).sqrt();
+    if ![line.x1, line.y1, line.x2, line.y2, width, len]
+        .iter()
+        .all(|value| value.is_finite())
+        || width <= 0.001
+        || len <= 0.001
+    {
+        return false;
+    }
+
+    let half = width * 0.5;
+    let ux = dx / len;
+    let uy = dy / len;
+    let cap = match style.line_cap {
+        SvgLineCap::Butt => 0.0,
+        SvgLineCap::Square => half,
+        SvgLineCap::Round => return false,
+    };
+    let sx = line.x1 - ux * cap;
+    let sy = line.y1 - uy * cap;
+    let ex = line.x2 + ux * cap;
+    let ey = line.y2 + uy * cap;
+    let nx = -uy * half;
+    let ny = ux * half;
+    let points = [
+        (sx + nx, sy + ny),
+        (ex + nx, ey + ny),
+        (ex - nx, ey - ny),
+        (sx - nx, sy - ny),
+    ];
+    if !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        return false;
+    }
+    let min_x = points.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let Some(shadings) = svg_stroke_shadings(
+        style,
+        gradients,
+        Some((min_x, min_y, max_x - min_x, max_y - min_y)),
+    ) else {
+        return false;
+    };
+    if !pdf_shadings_fit(page_shadings, &shadings) {
+        return false;
+    }
+    let names = shadings
+        .into_iter()
+        .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return false;
+    }
+
+    body.push_str("q ");
+    let stroke_alpha = quantize_svg_alpha(svg_effective_stroke_opacity(style));
+    if stroke_alpha < 1000 {
+        append_svg_alpha_state(body, stroke_alpha, stroke_alpha);
+        body.push(' ');
+    }
+    append_svg_line_stroke_outline(body, points);
+    body.push_str("W n ");
+    for name in names {
+        body.push_str(&format!("/{name} sh\n"));
+    }
+    body.push_str("Q\n");
+    true
+}
+
+fn append_svg_line_stroke_outline(body: &mut String, points: [(f32, f32); 4]) {
+    body.push_str(&format!(
+        "{x0} {y0} m {x1} {y1} l {x2} {y2} l {x3} {y3} l h ",
+        x0 = pdf_num(points[0].0),
+        y0 = pdf_num(points[0].1),
+        x1 = pdf_num(points[1].0),
+        y1 = pdf_num(points[1].1),
+        x2 = pdf_num(points[2].0),
+        y2 = pdf_num(points[2].1),
+        x3 = pdf_num(points[3].0),
+        y3 = pdf_num(points[3].1),
+    ));
+}
+
+fn append_svg_line_path(body: &mut String, line: &SvgLine) {
+    body.push_str(&format!(
+        "{x1} {y1} m {x2} {y2} l ",
+        x1 = pdf_num(line.x1),
+        y1 = pdf_num(line.y1),
+        x2 = pdf_num(line.x2),
+        y2 = pdf_num(line.y2),
+    ));
+}
+
+fn append_svg_line_markers(
+    body: &mut String,
+    line: &SvgLine,
+    markers: &[SvgMarker],
+    stroke: (f32, f32, f32),
+    fill: Option<(f32, f32, f32)>,
+    stroke_width: f32,
+) {
+    let paint = SvgMarkerPaint {
+        fill,
+        stroke,
+        stroke_width,
+    };
+    if let Some(marker_ref) = line.marker_start {
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::Start,
+            (line.x1, line.y1),
+            (line.x2, line.y2),
+            paint,
+        );
+    }
+    if let Some(marker_ref) = line.marker_end {
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::End,
+            (line.x2, line.y2),
+            (line.x1, line.y1),
+            paint,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_svg_poly(
+    body: &mut String,
+    poly: &SvgPoly,
+    closed: bool,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    markers: &[SvgMarker],
+    stroke_scale: Option<f32>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    let style = svg_style_with_non_scaling_stroke(poly.style, stroke_scale);
+    if poly.points.is_empty() || !svg_style_has_paint(style) {
+        return;
+    }
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    if append_svg_shadow_prefix(body, style) {
+        append_svg_poly_path(body, poly, closed);
+        append_svg_shadow_operator(body, style);
+    }
+    append_svg_painted_shape(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        svg_points_bbox(&poly.points),
+        |body| append_svg_poly_path(body, poly, closed),
+    );
+    if let Some(stroke) = style.stroke {
+        append_svg_poly_markers(body, poly, markers, stroke, style.fill, style.stroke_width);
+    }
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_poly_path(body: &mut String, poly: &SvgPoly, closed: bool) {
+    let (x0, y0) = poly.points[0];
+    body.push_str(&format!("{} {} m ", pdf_num(x0), pdf_num(y0)));
+    for &(x, y) in &poly.points[1..] {
+        body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+    }
+    if closed {
+        body.push_str("h ");
+    }
+}
+
+fn append_svg_poly_markers(
+    body: &mut String,
+    poly: &SvgPoly,
+    markers: &[SvgMarker],
+    stroke: (f32, f32, f32),
+    fill: Option<(f32, f32, f32)>,
+    stroke_width: f32,
+) {
+    if poly.points.len() < 2 {
+        return;
+    }
+    let paint = SvgMarkerPaint {
+        fill,
+        stroke,
+        stroke_width,
+    };
+    if let Some(marker_ref) = poly.marker_start {
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::Start,
+            poly.points[0],
+            poly.points[1],
+            paint,
+        );
+    }
+    if let Some(marker_ref) = poly.marker_mid {
+        for window in poly.points.windows(3) {
+            let Some(tail) = svg_marker_mid_tail(window[0], window[1], window[2]) else {
+                continue;
+            };
+            append_svg_marker_or_arrowhead(
+                body,
+                marker_ref,
+                markers,
+                SvgMarkerPlacement::Mid,
+                window[1],
+                tail,
+                paint,
+            );
+        }
+    }
+    if let Some(marker_ref) = poly.marker_end {
+        let end_index = poly.points.len() - 1;
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::End,
+            poly.points[end_index],
+            poly.points[end_index - 1],
+            paint,
+        );
+    }
+}
+
+fn svg_marker_mid_tail(
+    incoming_tail: (f32, f32),
+    curr: (f32, f32),
+    outgoing_head: (f32, f32),
+) -> Option<(f32, f32)> {
+    let incoming = svg_unit_vector(incoming_tail, curr)?;
+    let outgoing = svg_unit_vector(curr, outgoing_head)?;
+    let mut dx = incoming.0 + outgoing.0;
+    let mut dy = incoming.1 + outgoing.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len.is_finite() && len > 0.001 {
+        dx /= len;
+        dy /= len;
+    } else {
+        dx = outgoing.0;
+        dy = outgoing.1;
+    }
+    Some((curr.0 - dx, curr.1 - dy))
+}
+
+#[derive(Clone, Copy)]
+struct SvgPathSegmentTangent {
+    start: (f32, f32),
+    end: (f32, f32),
+    outgoing_head: (f32, f32),
+    incoming_tail: (f32, f32),
+}
+
+fn svg_unit_vector(from: (f32, f32), to: (f32, f32)) -> Option<(f32, f32)> {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if ![dx, dy, len].iter().all(|value| value.is_finite()) || len <= 0.001 {
+        return None;
+    }
+    Some((dx / len, dy / len))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_svg_path(
+    body: &mut String,
+    path: &SvgPath,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    markers: &[SvgMarker],
+    stroke_scale: Option<f32>,
+    page_shadings: &mut Vec<PdfShading>,
+) {
+    let style = svg_style_with_non_scaling_stroke(path.style, stroke_scale);
+    if path.ops.is_empty() || !svg_style_has_paint(style) {
+        return;
+    }
+    let transformed = append_svg_element_state_prefix(body, style, clip_paths);
+    if append_svg_shadow_prefix(body, style) {
+        append_svg_path_ops(body, &path.ops);
+        append_svg_shadow_operator(body, style);
+    }
+    append_svg_painted_shape(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        svg_path_bbox(&path.ops),
+        |body| append_svg_path_ops(body, &path.ops),
+    );
+    if let Some(stroke) = style.stroke {
+        let marker_paint = SvgMarkerPaint {
+            fill: style.fill,
+            stroke,
+            stroke_width: style.stroke_width,
+        };
+        if let Some(marker_ref) = path.marker_end
+            && let Some((tip, tail)) = svg_path_end_tangent(&path.ops)
+        {
+            append_svg_marker_or_arrowhead(
+                body,
+                marker_ref,
+                markers,
+                SvgMarkerPlacement::End,
+                tip,
+                tail,
+                marker_paint,
+            );
+        }
+        if let Some(marker_ref) = path.marker_mid {
+            append_svg_path_mid_markers(
+                body,
+                &path.ops,
+                marker_ref,
+                markers,
+                stroke,
+                style.fill,
+                style.stroke_width,
+            );
+        }
+        if let Some(marker_ref) = path.marker_start
+            && let Some((tip, tail)) = svg_path_start_tangent(&path.ops)
+        {
+            append_svg_marker_or_arrowhead(
+                body,
+                marker_ref,
+                markers,
+                SvgMarkerPlacement::Start,
+                tip,
+                tail,
+                marker_paint,
+            );
+        }
+    }
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_path_mid_markers(
+    body: &mut String,
+    ops: &[SvgPathOp],
+    marker_ref: SvgMarkerRef,
+    markers: &[SvgMarker],
+    stroke: (f32, f32, f32),
+    fill: Option<(f32, f32, f32)>,
+    stroke_width: f32,
+) {
+    let paint = SvgMarkerPaint {
+        fill,
+        stroke,
+        stroke_width,
+    };
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = None;
+    let mut prev_segment: Option<SvgPathSegmentTangent> = None;
+    for op in ops {
+        let segment = match *op {
+            SvgPathOp::Move(x, y) => {
+                current = (x, y);
+                subpath_start = Some(current);
+                prev_segment = None;
+                continue;
+            }
+            SvgPathOp::Line(x, y) => {
+                let segment = SvgPathSegmentTangent {
+                    start: current,
+                    end: (x, y),
+                    outgoing_head: (x, y),
+                    incoming_tail: current,
+                };
+                current = segment.end;
+                segment
+            }
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                let segment = SvgPathSegmentTangent {
+                    start: current,
+                    end: (x, y),
+                    outgoing_head: (x1, y1),
+                    incoming_tail: (x2, y2),
+                };
+                current = segment.end;
+                segment
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                let segment = SvgPathSegmentTangent {
+                    start: current,
+                    end: (x, y),
+                    outgoing_head: (x1, y1),
+                    incoming_tail: (x1, y1),
+                };
+                current = segment.end;
+                segment
+            }
+            SvgPathOp::Close => {
+                let Some(start) = subpath_start else {
+                    continue;
+                };
+                let segment = SvgPathSegmentTangent {
+                    start: current,
+                    end: start,
+                    outgoing_head: start,
+                    incoming_tail: current,
+                };
+                current = start;
+                segment
+            }
+        };
+        if let Some(prev) = prev_segment
+            && svg_points_coincident(prev.end, segment.start)
+            && let Some(tail) =
+                svg_marker_mid_tail(prev.incoming_tail, segment.start, segment.outgoing_head)
+        {
+            append_svg_marker_or_arrowhead(
+                body,
+                marker_ref,
+                markers,
+                SvgMarkerPlacement::Mid,
+                segment.start,
+                tail,
+                paint,
+            );
+        }
+        prev_segment = Some(segment);
+    }
+}
+
+fn svg_points_coincident(a: (f32, f32), b: (f32, f32)) -> bool {
+    (a.0 - b.0).abs() <= 0.001 && (a.1 - b.1).abs() <= 0.001
+}
+
+fn draw_svg_embedded_image(
+    body: &mut String,
+    image: &SvgEmbeddedImage,
+    clip_paths: &[SvgClipPath],
+    image_index: &BTreeMap<&str, usize>,
+) {
+    if !image.style.visible || image.w <= 0.0 || image.h <= 0.0 {
+        return;
+    }
+    let Some(idx) = image_index.get(image.image.key.as_str()) else {
+        return;
+    };
+    body.push_str("q ");
+    let alpha = quantize_svg_alpha(image.style.opacity);
+    if alpha < 1000 {
+        append_svg_alpha_state(body, alpha, alpha);
+        body.push(' ');
+    }
+    if !image.style.transform.is_identity() {
+        body.push_str(&format!(
+            "{a} {b} {c} {d} {e} {f} cm ",
+            a = pdf_num(image.style.transform.a),
+            b = pdf_num(image.style.transform.b),
+            c = pdf_num(image.style.transform.c),
+            d = pdf_num(image.style.transform.d),
+            e = pdf_num(image.style.transform.e),
+            f = pdf_num(image.style.transform.f),
+        ));
+    }
+    if let Some(clip_path) = image
+        .style
+        .clip_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|clip_path| !clip_path.ops.is_empty())
+    {
+        append_svg_path_ops(body, &clip_path.ops);
+        match clip_path.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
+        }
+    }
+    if let Some(mask_path) = image
+        .style
+        .mask_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|mask_path| !mask_path.ops.is_empty())
+    {
+        append_svg_path_ops(body, &mask_path.ops);
+        match mask_path.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
+        }
+    }
+    let Some((draw_x, draw_y, draw_w, draw_h, viewport_clip)) = svg_embedded_image_rect(image)
+    else {
+        body.push_str("Q\n");
+        return;
+    };
+    if viewport_clip {
+        body.push_str(&format!(
+            "{x} {y} {w} {h} re W n ",
+            x = pdf_num(image.x),
+            y = pdf_num(image.y),
+            w = pdf_num(image.w),
+            h = pdf_num(image.h),
+        ));
+    }
+    let name = image_name(*idx);
+    body.push_str(&format!(
+        "{w} 0 0 {neg_h} {x} {y} cm /{name} Do Q\n",
+        w = pdf_num(draw_w),
+        neg_h = pdf_num(-draw_h),
+        x = pdf_num(draw_x),
+        y = pdf_num(draw_y + draw_h),
+    ));
+}
+
+fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> Option<(f32, f32, f32, f32, bool)> {
+    let intrinsic_w = image.image.width_px as f32;
+    let intrinsic_h = image.image.height_px as f32;
+    if ![image.x, image.y, image.w, image.h, intrinsic_w, intrinsic_h]
+        .iter()
+        .all(|value| value.is_finite())
+        || image.w <= 0.0
+        || image.h <= 0.0
+        || intrinsic_w <= 0.0
+        || intrinsic_h <= 0.0
+    {
+        return None;
+    }
+
+    match image.preserve_aspect.mode {
+        SvgAspectScaleMode::None => Some((image.x, image.y, image.w, image.h, false)),
+        SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
+            let sx = image.w / intrinsic_w;
+            let sy = image.h / intrinsic_h;
+            let scale = if image.preserve_aspect.mode == SvgAspectScaleMode::Slice {
+                sx.max(sy)
+            } else {
+                sx.min(sy)
+            };
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let draw_w = intrinsic_w * scale;
+            let draw_h = intrinsic_h * scale;
+            let draw_x = image.x + (image.w - draw_w) * image.preserve_aspect.align_x;
+            let draw_y = image.y + (image.h - draw_h) * image.preserve_aspect.align_y;
+            [draw_x, draw_y, draw_w, draw_h]
+                .iter()
+                .all(|value| value.is_finite())
+                .then_some((
+                    draw_x,
+                    draw_y,
+                    draw_w,
+                    draw_h,
+                    image.preserve_aspect.mode == SvgAspectScaleMode::Slice,
+                ))
+        }
+    }
+}
+
+fn append_svg_element_state_prefix(
+    body: &mut String,
+    style: SvgStyle,
+    clip_paths: &[SvgClipPath],
+) -> bool {
+    let clip_path = style
+        .clip_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|clip_path| !clip_path.ops.is_empty());
+    let mask_path = style
+        .mask_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|mask_path| !mask_path.ops.is_empty());
+    let alpha = svg_style_alpha_values(style);
+    if style.transform.is_identity()
+        && style.dash.is_empty()
+        && clip_path.is_none()
+        && mask_path.is_none()
+        && alpha.is_none()
+    {
+        return false;
+    }
+    body.push_str("q ");
+    if let Some((fill_alpha, stroke_alpha)) = alpha {
+        append_svg_alpha_state(body, fill_alpha, stroke_alpha);
+        body.push(' ');
+    }
+    if !style.transform.is_identity() {
+        body.push_str(&format!(
+            "{a} {b} {c} {d} {e} {f} cm ",
+            a = pdf_num(style.transform.a),
+            b = pdf_num(style.transform.b),
+            c = pdf_num(style.transform.c),
+            d = pdf_num(style.transform.d),
+            e = pdf_num(style.transform.e),
+            f = pdf_num(style.transform.f),
+        ));
+    }
+    if let Some(clip_path) = clip_path {
+        append_svg_path_ops(body, &clip_path.ops);
+        match clip_path.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
+        }
+    }
+    if let Some(mask_path) = mask_path {
+        append_svg_path_ops(body, &mask_path.ops);
+        match mask_path.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
+        }
+    }
+    true
+}
+
+fn append_svg_transform_suffix(body: &mut String, transformed: bool) {
+    if transformed {
+        body.push_str("Q\n");
+    }
+}
+
+fn append_svg_shadow_prefix(body: &mut String, style: SvgStyle) -> bool {
+    let Some(shadow) = style.shadow else {
+        return false;
+    };
+    let Some(uses_fill) = svg_shadow_uses_fill(style) else {
+        return false;
+    };
+    body.push_str(&format!(
+        "q 1 0 0 1 {dx} {dy} cm ",
+        dx = pdf_num(shadow.dx),
+        dy = pdf_num(shadow.dy)
+    ));
+    let paint_alpha = if uses_fill {
+        svg_effective_fill_opacity(style)
+    } else {
+        svg_effective_stroke_opacity(style)
+    };
+    let alpha = quantize_svg_alpha((shadow.opacity * paint_alpha).clamp(0.0, 1.0));
+    if alpha < 1000 {
+        append_svg_alpha_state(body, alpha, alpha);
+        body.push(' ');
+    }
+    let (r, g, b) = shadow.color;
+    if uses_fill {
+        body.push_str(&format!(
+            "{} {} {} rg ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+    } else {
+        body.push_str(&format!(
+            "{} {} {} RG ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+        append_svg_stroke_options(body, style);
+    }
+    true
+}
+
+fn append_svg_shadow_operator(body: &mut String, style: SvgStyle) {
+    if svg_shadow_uses_fill(style).unwrap_or(false) {
+        match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("f Q\n"),
+            SvgFillRule::EvenOdd => body.push_str("f* Q\n"),
+        }
+    } else {
+        body.push_str("S Q\n");
+    }
+}
+
+fn svg_shadow_uses_fill(style: SvgStyle) -> Option<bool> {
+    if !style.visible {
+        return None;
+    }
+    if style.fill.is_some() && svg_effective_fill_opacity(style) > 0.001 {
+        return Some(true);
+    }
+    if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
+        return Some(false);
+    }
+    None
+}
+
+fn append_svg_style(body: &mut String, style: SvgStyle) {
+    if let Some((r, g, b)) = style.fill {
+        body.push_str(&format!(
+            "{} {} {} rg ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+    }
+    if let Some((r, g, b)) = style.stroke {
+        body.push_str(&format!(
+            "{} {} {} RG ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+        append_svg_stroke_options(body, style);
+    }
+}
+
+fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
+    body.push_str(&format!(
+        "{} w {} J {} j ",
+        pdf_num(style.stroke_width.max(0.1)),
+        style.line_cap.pdf_id(),
+        style.line_join.pdf_id()
+    ));
+    if style.line_join == SvgLineJoin::Miter
+        && let Some(miter_limit) = style.miter_limit
+    {
+        body.push_str(&format!("{} M ", pdf_num(miter_limit)));
+    }
+    if !style.dash.is_empty() {
+        body.push('[');
+        for idx in 0..style.dash.len as usize {
+            if idx > 0 {
+                body.push(' ');
+            }
+            body.push_str(&pdf_num(style.dash.values[idx]));
+        }
+        body.push_str(&format!("] {} d ", pdf_num(style.dash.offset)));
+    }
+}
+
+fn append_svg_paint_operator(body: &mut String, style: SvgStyle) {
+    match (style.fill, style.stroke) {
+        (Some(_), Some(_)) => match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("B\n"),
+            SvgFillRule::EvenOdd => body.push_str("B*\n"),
+        },
+        (Some(_), None) => match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("f\n"),
+            SvgFillRule::EvenOdd => body.push_str("f*\n"),
+        },
+        (None, Some(_)) => body.push_str("S\n"),
+        (None, None) => body.push_str("n\n"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_painted_shape<F>(
+    body: &mut String,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_shadings: &mut Vec<PdfShading>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    append_path: F,
+) where
+    F: Fn(&mut String),
+{
+    if append_svg_pattern_fill(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        bbox,
+        &append_path,
+    ) {
+        if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
+            append_svg_stroke_style(body, style);
+            append_path(body);
+            body.push_str("S\n");
+        }
+        return;
+    }
+
+    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox) {
+        if pdf_shadings_fit(page_shadings, &shadings) {
+            let names = shadings
+                .into_iter()
+                .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+                .collect::<Vec<_>>();
+            body.push_str("q ");
+            append_path(body);
+            match style.fill_rule {
+                SvgFillRule::NonZero => body.push_str("W n "),
+                SvgFillRule::EvenOdd => body.push_str("W* n "),
+            }
+            for name in names {
+                body.push_str(&format!("/{name} sh\n"));
+            }
+            body.push_str("Q\n");
+            if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
+                append_svg_stroke_style(body, style);
+                append_path(body);
+                body.push_str("S\n");
+            }
+            return;
+        }
+    }
+
+    append_svg_style(body, style);
+    append_path(body);
+    append_svg_paint_operator(body, style);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_pattern_fill<F>(
+    body: &mut String,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_shadings: &mut Vec<PdfShading>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    append_path: &F,
+) -> bool
+where
+    F: Fn(&mut String),
+{
+    if style.fill.is_none() || svg_effective_fill_opacity(style) <= 0.001 {
+        return false;
+    }
+    let Some(pattern) = style.fill_pattern.and_then(|index| patterns.get(index)) else {
+        return false;
+    };
+    if pattern.elements.is_empty()
+        || pattern.w <= 0.001
+        || pattern.h <= 0.001
+        || ![pattern.x, pattern.y, pattern.w, pattern.h]
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return false;
+    }
+    let Some((bx, by, bw, bh)) = bbox.filter(|(_, _, w, h)| *w > 0.001 && *h > 0.001) else {
+        return false;
+    };
+
+    let start_x = ((bx - pattern.x) / pattern.w).floor() as i32;
+    let end_x = ((bx + bw - pattern.x) / pattern.w).ceil() as i32;
+    let start_y = ((by - pattern.y) / pattern.h).floor() as i32;
+    let end_y = ((by + bh - pattern.y) / pattern.h).ceil() as i32;
+    let cols = end_x.saturating_sub(start_x);
+    let rows = end_y.saturating_sub(start_y);
+    let tiles = cols.saturating_mul(rows);
+    if !(1..=512).contains(&tiles) {
+        return false;
+    }
+
+    body.push_str("q ");
+    append_path(body);
+    match style.fill_rule {
+        SvgFillRule::NonZero => body.push_str("W n "),
+        SvgFillRule::EvenOdd => body.push_str("W* n "),
+    }
+    let empty_image_index = BTreeMap::new();
+    let resources = SvgPaintResources {
+        gradients,
+        patterns: &[],
+        clip_paths,
+        markers: &[],
+        image_index: &empty_image_index,
+        stroke_scale,
+    };
+    for tile_y in start_y..end_y {
+        for tile_x in start_x..end_x {
+            let tx = pattern.x + tile_x as f32 * pattern.w;
+            let ty = pattern.y + tile_y as f32 * pattern.h;
+            body.push_str(&format!("q 1 0 0 1 {} {} cm ", pdf_num(tx), pdf_num(ty)));
+            if !pattern.transform.is_identity() {
+                body.push_str(&format!(
+                    "{} {} {} {} {} {} cm ",
+                    pdf_num(pattern.transform.a),
+                    pdf_num(pattern.transform.b),
+                    pdf_num(pattern.transform.c),
+                    pdf_num(pattern.transform.d),
+                    pdf_num(pattern.transform.e),
+                    pdf_num(pattern.transform.f)
+                ));
+            }
+            for element in &pattern.elements {
+                draw_svg_shape(body, element, resources, page_shadings);
+            }
+            body.push_str("Q\n");
+        }
+    }
+    body.push_str("Q\n");
+    true
+}
+
+fn append_svg_stroke_style(body: &mut String, style: SvgStyle) {
+    if let Some((r, g, b)) = style.stroke {
+        body.push_str(&format!(
+            "{} {} {} RG ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+        append_svg_stroke_options(body, style);
+    }
+}
+
+fn svg_fill_shadings(
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    bbox: Option<(f32, f32, f32, f32)>,
+) -> Option<Vec<PdfShading>> {
+    if style.fill.is_none() || svg_effective_fill_opacity(style) <= 0.001 {
+        return None;
+    }
+    let bbox = bbox.filter(|(_, _, w, h)| *w > 0.001 && *h > 0.001)?;
+    let gradient = style.fill_gradient.and_then(|index| gradients.get(index))?;
+    if let Some(linear) = gradient.linear.as_ref() {
+        return resolve_svg_linear_gradient(linear, bbox);
+    }
+    gradient
+        .radial
+        .as_ref()
+        .and_then(|radial| resolve_svg_radial_gradient(radial, bbox))
+}
+
+fn svg_stroke_shadings(
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    bbox: Option<(f32, f32, f32, f32)>,
+) -> Option<Vec<PdfShading>> {
+    if style.stroke.is_none() || svg_effective_stroke_opacity(style) <= 0.001 {
+        return None;
+    }
+    let bbox = bbox.filter(|(_, _, w, h)| *w > 0.001 && *h > 0.001)?;
+    let gradient = style
+        .stroke_gradient
+        .and_then(|index| gradients.get(index))?;
+    if let Some(linear) = gradient.linear.as_ref() {
+        return resolve_svg_linear_gradient(linear, bbox);
+    }
+    gradient
+        .radial
+        .as_ref()
+        .and_then(|radial| resolve_svg_radial_gradient(radial, bbox))
+}
+
+fn resolve_svg_linear_gradient(
+    gradient: &SvgLinearGradient,
+    bbox: (f32, f32, f32, f32),
+) -> Option<Vec<PdfShading>> {
+    let (x1, y1) = resolve_svg_gradient_point(
+        gradient.x1,
+        gradient.y1,
+        gradient.units,
+        gradient.transform,
+        bbox,
+    );
+    let (x2, y2) = resolve_svg_gradient_point(
+        gradient.x2,
+        gradient.y2,
+        gradient.units,
+        gradient.transform,
+        bbox,
+    );
+    if ![x1, y1, x2, y2].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    match gradient.spread {
+        SvgGradientSpread::Pad => Some(vec![PdfShading {
+            kind: PdfShadingKind::Axial([x1, y1, x2, y2]),
+            stops: gradient.stops.clone(),
+            extend_start: true,
+            extend_end: true,
+        }]),
+        SvgGradientSpread::Repeat | SvgGradientSpread::Reflect => {
+            resolve_svg_repeated_linear_gradient(gradient, bbox, [x1, y1, x2, y2])
+        }
+    }
+}
+
+fn resolve_svg_radial_gradient(
+    gradient: &SvgRadialGradient,
+    bbox: (f32, f32, f32, f32),
+) -> Option<Vec<PdfShading>> {
+    let (cx, cy, r) = resolve_svg_radial_gradient_circle(
+        gradient.cx,
+        gradient.cy,
+        gradient.r,
+        gradient.units,
+        gradient.transform,
+        bbox,
+    )?;
+    let (fx, fy, fr) = resolve_svg_radial_gradient_circle(
+        gradient.fx,
+        gradient.fy,
+        gradient.fr,
+        gradient.units,
+        gradient.transform,
+        bbox,
+    )?;
+    let focal_distance = svg_distance(fx, fy, cx, cy);
+    if r <= 0.001
+        || fr < -0.001
+        || fr > r
+        || focal_distance + fr > r + 0.001
+        || ![fx, fy, fr, cx, cy, r]
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    match gradient.spread {
+        SvgGradientSpread::Pad => Some(vec![PdfShading {
+            kind: PdfShadingKind::Radial([fx, fy, fr.max(0.0), cx, cy, r]),
+            stops: gradient.stops.clone(),
+            extend_start: true,
+            extend_end: true,
+        }]),
+        SvgGradientSpread::Repeat | SvgGradientSpread::Reflect => {
+            resolve_svg_repeated_radial_gradient(gradient, bbox, (cx, cy, r), (fx, fy, fr))
+        }
+    }
+}
+
+fn resolve_svg_repeated_linear_gradient(
+    gradient: &SvgLinearGradient,
+    bbox: (f32, f32, f32, f32),
+    coords: [f32; 4],
+) -> Option<Vec<PdfShading>> {
+    let [x1, y1, x2, y2] = coords;
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len_sq = dx.mul_add(dx, dy * dy);
+    if len_sq <= 0.000_001 || !len_sq.is_finite() {
+        return None;
+    }
+
+    let (bx, by, bw, bh) = bbox;
+    let corners = [(bx, by), (bx + bw, by), (bx, by + bh), (bx + bw, by + bh)];
+    let mut min_t = f32::INFINITY;
+    let mut max_t = f32::NEG_INFINITY;
+    for (x, y) in corners {
+        let t = ((x - x1).mul_add(dx, (y - y1) * dy)) / len_sq;
+        min_t = min_t.min(t);
+        max_t = max_t.max(t);
+    }
+    if !min_t.is_finite() || !max_t.is_finite() {
+        return None;
+    }
+
+    let first = min_t.floor();
+    let last = max_t.ceil();
+    if first < -1024.0 || last > 1024.0 || last <= first {
+        return None;
+    }
+    let first = first as i32;
+    let last = last as i32;
+    let period_count = last.saturating_sub(first);
+    if !(1..=64).contains(&period_count) {
+        return None;
+    }
+
+    let mut shadings = Vec::with_capacity(period_count as usize);
+    for period in first..last {
+        let start_x = x1 + dx * period as f32;
+        let start_y = y1 + dy * period as f32;
+        let end_x = x1 + dx * (period + 1) as f32;
+        let end_y = y1 + dy * (period + 1) as f32;
+        if ![start_x, start_y, end_x, end_y]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return None;
+        }
+        let stops = match gradient.spread {
+            SvgGradientSpread::Repeat => gradient.stops.clone(),
+            SvgGradientSpread::Reflect if period.rem_euclid(2) == 0 => gradient.stops.clone(),
+            SvgGradientSpread::Reflect => svg_reflected_gradient_stops(&gradient.stops),
+            SvgGradientSpread::Pad => return None,
+        };
+        shadings.push(PdfShading {
+            kind: PdfShadingKind::Axial([start_x, start_y, end_x, end_y]),
+            stops,
+            extend_start: false,
+            extend_end: false,
+        });
+    }
+    (!shadings.is_empty()).then_some(shadings)
+}
+
+fn svg_reflected_gradient_stops(stops: &[SvgGradientStop]) -> Vec<SvgGradientStop> {
+    let mut reflected = stops
+        .iter()
+        .map(|&(offset, color)| ((1.0 - offset).clamp(0.0, 1.0), color))
+        .collect::<Vec<_>>();
+    reflected.sort_by(|a, b| a.0.total_cmp(&b.0));
+    reflected
+}
+
+fn resolve_svg_repeated_radial_gradient(
+    gradient: &SvgRadialGradient,
+    bbox: (f32, f32, f32, f32),
+    outer: (f32, f32, f32),
+    focal: (f32, f32, f32),
+) -> Option<Vec<PdfShading>> {
+    let (cx, cy, r) = outer;
+    let (fx, fy, fr) = focal;
+    if fr.abs() > 0.001 || svg_distance(fx, fy, cx, cy) > 0.001 || r <= 0.001 {
+        return None;
+    }
+    let (bx, by, bw, bh) = bbox;
+    let max_radius = [(bx, by), (bx + bw, by), (bx, by + bh), (bx + bw, by + bh)]
+        .into_iter()
+        .map(|(x, y)| svg_distance(cx, cy, x, y))
+        .fold(0.0f32, f32::max);
+    if !max_radius.is_finite() || max_radius <= 0.001 {
+        return None;
+    }
+    let period_count = (max_radius / r).ceil();
+    if period_count < 1.0 || period_count > 64.0 {
+        return None;
+    }
+    let period_count = period_count as i32;
+    let mut shadings = Vec::with_capacity(period_count as usize);
+    for period in 0..period_count {
+        let start_r = r * period as f32;
+        let end_r = r * (period + 1) as f32;
+        if ![start_r, end_r].iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        let stops = match gradient.spread {
+            SvgGradientSpread::Repeat => gradient.stops.clone(),
+            SvgGradientSpread::Reflect if period.rem_euclid(2) == 0 => gradient.stops.clone(),
+            SvgGradientSpread::Reflect => svg_reflected_gradient_stops(&gradient.stops),
+            SvgGradientSpread::Pad => return None,
+        };
+        shadings.push(PdfShading {
+            kind: PdfShadingKind::Radial([cx, cy, start_r, cx, cy, end_r]),
+            stops,
+            extend_start: false,
+            extend_end: false,
+        });
+    }
+    (!shadings.is_empty()).then_some(shadings)
+}
+
+fn resolve_svg_radial_gradient_circle(
+    x_len: SvgGradientLength,
+    y_len: SvgGradientLength,
+    r_len: SvgGradientLength,
+    units: SvgGradientUnits,
+    transform: SvgTransform,
+    bbox: (f32, f32, f32, f32),
+) -> Option<(f32, f32, f32)> {
+    let (x, y, w, h) = bbox;
+    let (cx, cy, rx, ry) = match units {
+        SvgGradientUnits::ObjectBoundingBox => {
+            let cx = svg_gradient_object_bbox_coord(x_len);
+            let cy = svg_gradient_object_bbox_coord(y_len);
+            let r = svg_gradient_object_bbox_coord(r_len).abs();
+            let center = transform.apply_point(cx, cy);
+            let x_edge = transform.apply_point(cx + r, cy);
+            let y_edge = transform.apply_point(cx, cy + r);
+            let map = |(gx, gy): (f32, f32)| (x + gx * w, y + gy * h);
+            let (px, py) = map(center);
+            let (xx, xy) = map(x_edge);
+            let (yx, yy) = map(y_edge);
+            (
+                px,
+                py,
+                svg_distance(px, py, xx, xy),
+                svg_distance(px, py, yx, yy),
+            )
+        }
+        SvgGradientUnits::UserSpaceOnUse => {
+            if x_len.percent || y_len.percent || r_len.percent {
+                return None;
+            }
+            let cx = svg_gradient_user_space_coord(x_len, w);
+            let cy = svg_gradient_user_space_coord(y_len, h);
+            let r = svg_gradient_user_space_radius(r_len, w, h).abs();
+            let (px, py) = transform.apply_point(cx, cy);
+            let (xx, xy) = transform.apply_point(cx + r, cy);
+            let (yx, yy) = transform.apply_point(cx, cy + r);
+            (
+                px,
+                py,
+                svg_distance(px, py, xx, xy),
+                svg_distance(px, py, yx, yy),
+            )
+        }
+    };
+    let radius = (rx + ry) * 0.5;
+    if !rx.is_finite() || !ry.is_finite() || !radius.is_finite() {
+        return None;
+    }
+    if !svg_radii_are_circular(rx, ry, radius) {
+        return None;
+    }
+    Some((cx, cy, radius))
+}
+
+fn resolve_svg_gradient_point(
+    x_len: SvgGradientLength,
+    y_len: SvgGradientLength,
+    units: SvgGradientUnits,
+    transform: SvgTransform,
+    bbox: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let (x, y, w, h) = bbox;
+    match units {
+        SvgGradientUnits::ObjectBoundingBox => {
+            let (gx, gy) = transform.apply_point(
+                svg_gradient_object_bbox_coord(x_len),
+                svg_gradient_object_bbox_coord(y_len),
+            );
+            (x + gx * w, y + gy * h)
+        }
+        SvgGradientUnits::UserSpaceOnUse => transform.apply_point(x_len.value, y_len.value),
+    }
+}
+
+fn svg_gradient_object_bbox_coord(length: SvgGradientLength) -> f32 {
+    if length.percent {
+        length.value / 100.0
+    } else {
+        length.value
+    }
+}
+
+fn svg_gradient_user_space_coord(length: SvgGradientLength, fallback_extent: f32) -> f32 {
+    if length.percent {
+        fallback_extent * length.value / 100.0
+    } else {
+        length.value
+    }
+}
+
+fn svg_gradient_user_space_radius(length: SvgGradientLength, width: f32, height: f32) -> f32 {
+    if length.percent {
+        width.min(height) * length.value / 100.0
+    } else {
+        length.value
+    }
+}
+
+fn svg_distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    ((x2 - x1).mul_add(x2 - x1, (y2 - y1) * (y2 - y1))).sqrt()
+}
+
+fn svg_radii_are_circular(rx: f32, ry: f32, radius: f32) -> bool {
+    if radius <= 0.001 {
+        return true;
+    }
+    (rx - ry).abs() <= radius.max(1.0) * 0.01
+}
+
+fn register_pdf_shading(
+    page_shadings: &mut Vec<PdfShading>,
+    shading: PdfShading,
+) -> Option<String> {
+    if let Some(index) = page_shadings
+        .iter()
+        .position(|existing| *existing == shading)
+    {
+        return Some(pdf_shading_name(index));
+    }
+    if page_shadings.len() >= 256 {
+        return None;
+    }
+    page_shadings.push(shading);
+    Some(pdf_shading_name(page_shadings.len() - 1))
+}
+
+fn pdf_shadings_fit(existing: &[PdfShading], shadings: &[PdfShading]) -> bool {
+    let mut pending = Vec::new();
+    for shading in shadings {
+        if existing.iter().any(|registered| registered == shading)
+            || pending
+                .iter()
+                .any(|registered: &&PdfShading| **registered == *shading)
+        {
+            continue;
+        }
+        pending.push(shading);
+        if existing.len().saturating_add(pending.len()) > 256 {
+            return false;
+        }
+    }
+    true
+}
+
+fn pdf_shading_name(index: usize) -> String {
+    format!("SG{}", index + 1)
+}
+
+fn svg_style_has_paint(style: SvgStyle) -> bool {
+    style.visible
+        && ((style.fill.is_some() && svg_effective_fill_opacity(style) > 0.001)
+            || (style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001))
+}
+
+fn svg_style_has_marker_paint(style: SvgStyle) -> bool {
+    svg_style_has_paint(style)
+        || (style.visible
+            && ((style.fill_context.is_some() && svg_effective_fill_opacity(style) > 0.001)
+                || (style.stroke_context.is_some() && svg_effective_stroke_opacity(style) > 0.001)))
+}
+
+fn svg_effective_fill_opacity(style: SvgStyle) -> f32 {
+    (style.opacity * style.fill_opacity).clamp(0.0, 1.0)
+}
+
+fn svg_effective_stroke_opacity(style: SvgStyle) -> f32 {
+    (style.opacity * style.stroke_opacity).clamp(0.0, 1.0)
+}
+
+fn svg_style_alpha_values(style: SvgStyle) -> Option<(u16, u16)> {
+    let fill_alpha = if style.fill.is_some() {
+        quantize_svg_alpha(svg_effective_fill_opacity(style))
+    } else {
+        1000
+    };
+    let stroke_alpha = if style.stroke.is_some() {
+        quantize_svg_alpha(svg_effective_stroke_opacity(style))
+    } else {
+        1000
+    };
+    (fill_alpha < 1000 || stroke_alpha < 1000).then_some((fill_alpha, stroke_alpha))
+}
+
+fn quantize_svg_alpha(alpha: f32) -> u16 {
+    (alpha.clamp(0.0, 1.0) * 1000.0).round() as u16
+}
+
+fn append_svg_alpha_state(body: &mut String, fill_alpha: u16, stroke_alpha: u16) {
+    body.push_str(&format!("/GSa{fill_alpha:04}{stroke_alpha:04} gs"));
+}
+
+fn append_svg_rounded_rect_path(body: &mut String, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    let k = r * 0.5523;
+    let x1 = x + w;
+    let y1 = y + h;
+    body.push_str(&format!(
+        "{mx} {y} m {lx} {y} l \
+         {c1x} {y} {x1} {c1y} {x1} {my} c \
+         {x1} {ly} l \
+         {x1} {c2y} {c2x} {y1} {lx} {y1} c \
+         {mx} {y1} l \
+         {c3x} {y1} {x} {c3y} {x} {ly} c \
+         {x} {my} l \
+         {x} {c4y} {c4x} {y} {mx} {y} c ",
+        x = pdf_num(x),
+        y = pdf_num(y),
+        x1 = pdf_num(x1),
+        y1 = pdf_num(y1),
+        mx = pdf_num(x + r),
+        lx = pdf_num(x1 - r),
+        my = pdf_num(y + r),
+        ly = pdf_num(y1 - r),
+        c1x = pdf_num(x1 - r + k),
+        c1y = pdf_num(y + r - k),
+        c2y = pdf_num(y1 - r + k),
+        c2x = pdf_num(x1 - r + k),
+        c3x = pdf_num(x + r - k),
+        c3y = pdf_num(y1 - r + k),
+        c4y = pdf_num(y + r - k),
+        c4x = pdf_num(x + r - k),
+    ));
+}
+
+fn append_svg_ellipse_path(body: &mut String, cx: f32, cy: f32, rx: f32, ry: f32) {
+    let k = 0.552_284_8;
+    body.push_str(&format!(
+        "{x0} {cy} m \
+         {x0} {c1y} {c1x} {y0} {cx} {y0} c \
+         {c2x} {y0} {x1} {c1y} {x1} {cy} c \
+         {x1} {c2y} {c2x} {y1} {cx} {y1} c \
+         {c1x} {y1} {x0} {c2y} {x0} {cy} c h ",
+        x0 = pdf_num(cx - rx),
+        x1 = pdf_num(cx + rx),
+        y0 = pdf_num(cy - ry),
+        y1 = pdf_num(cy + ry),
+        cx = pdf_num(cx),
+        cy = pdf_num(cy),
+        c1x = pdf_num(cx - rx * k),
+        c2x = pdf_num(cx + rx * k),
+        c1y = pdf_num(cy - ry * k),
+        c2y = pdf_num(cy + ry * k),
+    ));
+}
+
+fn append_svg_path_ops(body: &mut String, ops: &[SvgPathOp]) {
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = None;
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) => {
+                current = (x, y);
+                subpath_start = Some(current);
+                body.push_str(&format!("{} {} m ", pdf_num(x), pdf_num(y)));
+            }
+            SvgPathOp::Line(x, y) => {
+                current = (x, y);
+                body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+            }
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                current = (x, y);
+                body.push_str(&format!(
+                    "{} {} {} {} {} {} c ",
+                    pdf_num(x1),
+                    pdf_num(y1),
+                    pdf_num(x2),
+                    pdf_num(y2),
+                    pdf_num(x),
+                    pdf_num(y)
+                ));
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                let c1 = (
+                    current.0 + (x1 - current.0) * (2.0 / 3.0),
+                    current.1 + (y1 - current.1) * (2.0 / 3.0),
+                );
+                let c2 = (x + (x1 - x) * (2.0 / 3.0), y + (y1 - y) * (2.0 / 3.0));
+                current = (x, y);
+                body.push_str(&format!(
+                    "{} {} {} {} {} {} c ",
+                    pdf_num(c1.0),
+                    pdf_num(c1.1),
+                    pdf_num(c2.0),
+                    pdf_num(c2.1),
+                    pdf_num(x),
+                    pdf_num(y)
+                ));
+            }
+            SvgPathOp::Close => {
+                if let Some(start) = subpath_start {
+                    current = start;
+                }
+                body.push_str("h ");
+            }
+        }
+    }
+}
+
+fn svg_points_bbox(points: &[(f32, f32)]) -> Option<(f32, f32, f32, f32)> {
+    let &(first_x, first_y) = points.first()?;
+    let mut min_x = first_x;
+    let mut max_x = first_x;
+    let mut min_y = first_y;
+    let mut max_y = first_y;
+    for &(x, y) in &points[1..] {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
+fn svg_path_bbox(ops: &[SvgPathOp]) -> Option<(f32, f32, f32, f32)> {
+    let mut bounds: Option<(f32, f32, f32, f32)> = None;
+    let mut include = |x: f32, y: f32| {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        bounds = Some(match bounds {
+            Some((min_x, min_y, max_x, max_y)) => {
+                (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+            }
+            None => (x, y, x, y),
+        });
+    };
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) | SvgPathOp::Line(x, y) => include(x, y),
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                include(x1, y1);
+                include(x2, y2);
+                include(x, y);
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                include(x1, y1);
+                include(x, y);
+            }
+            SvgPathOp::Close => {}
+        }
+    }
+    bounds.map(|(min_x, min_y, max_x, max_y)| (min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
+fn svg_path_end_tangent(ops: &[SvgPathOp]) -> Option<((f32, f32), (f32, f32))> {
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = None;
+    let mut last_segment = None;
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) => {
+                current = (x, y);
+                subpath_start = Some(current);
+            }
+            SvgPathOp::Line(x, y) => {
+                last_segment = Some(((x, y), current));
+                current = (x, y);
+            }
+            SvgPathOp::Cubic(_, _, x2, y2, x, y) => {
+                last_segment = Some(((x, y), (x2, y2)));
+                current = (x, y);
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                last_segment = Some(((x, y), (x1, y1)));
+                current = (x, y);
+            }
+            SvgPathOp::Close => {
+                if let Some(start) = subpath_start {
+                    last_segment = Some((start, current));
+                    current = start;
+                }
+            }
+        }
+    }
+    last_segment
+}
+
+fn svg_path_start_tangent(ops: &[SvgPathOp]) -> Option<((f32, f32), (f32, f32))> {
+    let mut start = None;
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) => start = Some((x, y)),
+            SvgPathOp::Line(x, y) => return start.map(|tip| (tip, (x, y))),
+            SvgPathOp::Cubic(x1, y1, _, _, _, _) => return start.map(|tip| (tip, (x1, y1))),
+            SvgPathOp::Quad(x1, y1, _, _) => return start.map(|tip| (tip, (x1, y1))),
+            SvgPathOp::Close => {}
+        }
+    }
+    None
+}
+
+fn append_svg_marker_or_arrowhead(
+    body: &mut String,
+    marker_ref: SvgMarkerRef,
+    markers: &[SvgMarker],
+    placement: SvgMarkerPlacement,
+    tip: (f32, f32),
+    tail: (f32, f32),
+    paint: SvgMarkerPaint,
+) {
+    if let Some(marker) = marker_ref.index.and_then(|index| markers.get(index))
+        && append_svg_marker(body, marker, placement, tip, tail, paint)
+    {
+        return;
+    }
+    append_svg_arrowhead(body, tip, tail, paint.stroke, paint.stroke_width);
+}
+
+fn append_svg_marker(
+    body: &mut String,
+    marker: &SvgMarker,
+    placement: SvgMarkerPlacement,
+    tip: (f32, f32),
+    tail: (f32, f32),
+    paint: SvgMarkerPaint,
+) -> bool {
+    if marker.shapes.is_empty() {
+        return false;
+    }
+    let Some((ux, uy)) = svg_marker_orient_vector(marker.orient, placement, tip, tail) else {
+        return false;
+    };
+    let scale = if marker.units_stroke_width {
+        paint.stroke_width.max(0.1)
+    } else {
+        1.0
+    };
+    let ux = svg_marker_matrix_component(ux);
+    let uy = svg_marker_matrix_component(uy);
+    let nx = svg_marker_matrix_component(-uy);
+    let ny = svg_marker_matrix_component(ux);
+    let view_box_transform = svg_marker_view_box_transform(marker);
+    let (ref_x, ref_y) = view_box_transform
+        .map(|transform| transform.map_point(marker.ref_x, marker.ref_y))
+        .unwrap_or((marker.ref_x, marker.ref_y));
+    body.push_str(&format!(
+        "q {ux} {uy} {nx} {ny} {tx} {ty} cm {scale} 0 0 {scale} 0 0 cm 1 0 0 1 {rx} {ry} cm ",
+        ux = pdf_num(ux),
+        uy = pdf_num(uy),
+        nx = pdf_num(nx),
+        ny = pdf_num(ny),
+        tx = pdf_num(tip.0),
+        ty = pdf_num(tip.1),
+        scale = pdf_num(scale),
+        rx = pdf_num(-ref_x),
+        ry = pdf_num(-ref_y),
+    ));
+    if let Some(transform) = view_box_transform {
+        body.push_str(&format!(
+            "{sx} 0 0 {sy} {tx} {ty} cm ",
+            sx = pdf_num(svg_marker_matrix_component(transform.sx)),
+            sy = pdf_num(svg_marker_matrix_component(transform.sy)),
+            tx = pdf_num(svg_marker_matrix_component(transform.tx)),
+            ty = pdf_num(svg_marker_matrix_component(transform.ty)),
+        ));
+    }
+    for shape in &marker.shapes {
+        let shape_style = svg_style_with_marker_context(shape.style, paint);
+        if !svg_style_has_paint(shape_style) {
+            continue;
+        }
+        let transformed = append_svg_element_state_prefix(body, shape_style, &[]);
+        if append_svg_shadow_prefix(body, shape_style) {
+            append_svg_path_ops(body, &shape.ops);
+            append_svg_shadow_operator(body, shape_style);
+        }
+        append_svg_style(body, shape_style);
+        append_svg_path_ops(body, &shape.ops);
+        append_svg_paint_operator(body, shape_style);
+        append_svg_transform_suffix(body, transformed);
+    }
+    body.push_str("Q\n");
+    true
+}
+
+fn svg_style_with_marker_context(mut style: SvgStyle, paint: SvgMarkerPaint) -> SvgStyle {
+    if let Some(context) = style.fill_context {
+        style.fill = svg_marker_context_paint(context, paint);
+        style.fill_gradient = None;
+        style.fill_pattern = None;
+        style.fill_current_color = false;
+        style.fill_context = None;
+    }
+    if let Some(context) = style.stroke_context {
+        style.stroke = svg_marker_context_paint(context, paint);
+        style.stroke_gradient = None;
+        style.stroke_current_color = false;
+        style.stroke_context = None;
+    }
+    style
+}
+
+fn svg_marker_context_paint(context: SvgContextPaint, paint: SvgMarkerPaint) -> Option<SvgColor> {
+    match context {
+        SvgContextPaint::Fill => paint.fill,
+        SvgContextPaint::Stroke => Some(paint.stroke),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SvgMarkerViewBoxTransform {
+    sx: f32,
+    sy: f32,
+    tx: f32,
+    ty: f32,
+}
+
+impl SvgMarkerViewBoxTransform {
+    fn map_point(self, x: f32, y: f32) -> (f32, f32) {
+        (self.tx + x * self.sx, self.ty + y * self.sy)
+    }
+}
+
+fn svg_marker_view_box_transform(marker: &SvgMarker) -> Option<SvgMarkerViewBoxTransform> {
+    let marker_view_box = marker.view_box?;
+    let view_box = marker_view_box.view_box;
+    let viewport = marker_view_box.viewport;
+    let raw_sx = viewport.w / view_box.w;
+    let raw_sy = viewport.h / view_box.h;
+    if ![raw_sx, raw_sy].iter().all(|value| value.is_finite()) || raw_sx <= 0.0 || raw_sy <= 0.0 {
+        return None;
+    }
+    match marker_view_box.preserve_aspect.mode {
+        SvgAspectScaleMode::None => Some(SvgMarkerViewBoxTransform {
+            sx: raw_sx,
+            sy: raw_sy,
+            tx: -view_box.x * raw_sx,
+            ty: -view_box.y * raw_sy,
+        }),
+        SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
+            let scale = if marker_view_box.preserve_aspect.mode == SvgAspectScaleMode::Slice {
+                raw_sx.max(raw_sy)
+            } else {
+                raw_sx.min(raw_sy)
+            };
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let content_w = view_box.w * scale;
+            let content_h = view_box.h * scale;
+            let offset_x = (viewport.w - content_w) * marker_view_box.preserve_aspect.align_x;
+            let offset_y = (viewport.h - content_h) * marker_view_box.preserve_aspect.align_y;
+            Some(SvgMarkerViewBoxTransform {
+                sx: scale,
+                sy: scale,
+                tx: offset_x - view_box.x * scale,
+                ty: offset_y - view_box.y * scale,
+            })
+        }
+    }
+}
+
+fn svg_marker_orient_vector(
+    orient: SvgMarkerOrient,
+    placement: SvgMarkerPlacement,
+    tip: (f32, f32),
+    tail: (f32, f32),
+) -> Option<(f32, f32)> {
+    match orient {
+        SvgMarkerOrient::Angle(degrees) => {
+            let radians = degrees.to_radians();
+            let ux = radians.cos();
+            let uy = radians.sin();
+            ([ux, uy].iter().all(|value| value.is_finite())).then_some((ux, uy))
+        }
+        SvgMarkerOrient::Auto => match placement {
+            SvgMarkerPlacement::Start => svg_unit_vector(tip, tail),
+            SvgMarkerPlacement::Mid | SvgMarkerPlacement::End => svg_unit_vector(tail, tip),
+        },
+        SvgMarkerOrient::AutoStartReverse => svg_unit_vector(tail, tip),
+    }
+}
+
+fn svg_marker_matrix_component(value: f32) -> f32 {
+    if value.abs() <= 0.000_01 { 0.0 } else { value }
+}
+
+fn append_svg_arrowhead(
+    body: &mut String,
+    tip: (f32, f32),
+    tail: (f32, f32),
+    color: (f32, f32, f32),
+    stroke_width: f32,
+) {
+    let dx = tip.0 - tail.0;
+    let dy = tip.1 - tail.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if !len.is_finite() || len <= 0.001 {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let size = (stroke_width.max(1.0) * 4.6).max(5.0);
+    let half = size * 0.42;
+    let base = (tip.0 - ux * size, tip.1 - uy * size);
+    let perp = (-uy * half, ux * half);
+    let p1 = (base.0 + perp.0, base.1 + perp.1);
+    let p2 = (base.0 - perp.0, base.1 - perp.1);
+    body.push_str(&format!(
+        "{r} {g} {b} rg {x1} {y1} m {tx} {ty} l {x2} {y2} l h f\n",
+        r = pdf_fixed3(color.0),
+        g = pdf_fixed3(color.1),
+        b = pdf_fixed3(color.2),
+        x1 = pdf_num(p1.0),
+        y1 = pdf_num(p1.1),
+        tx = pdf_num(tip.0),
+        ty = pdf_num(tip.1),
+        x2 = pdf_num(p2.0),
+        y2 = pdf_num(p2.1),
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_svg_text(
+    body: &mut String,
+    text: &SvgText,
+    image_transform: SvgImageTransform,
+    clip_paths: &[SvgClipPath],
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    faces: &Faces,
+    shaped_cache: &ShapedRunCache,
+) {
+    if text.text.is_empty() {
+        return;
+    }
+    let slot = text.slot;
+    let Some(face) = subset_lookup.get(subsets, slot) else {
+        return;
+    };
+    let source = faces.get(slot);
+    let fallback;
+    let shaped = match shaped_cache
+        .get(&slot)
+        .and_then(|slot_cache| slot_cache.get(text.text.as_str()))
+    {
+        Some(run) => run.glyphs.as_slice(),
+        None => {
+            fallback = shape_run(source, &face.lig, &text.text);
+            fallback.glyphs.as_slice()
+        }
+    };
+    let mut matrix = svg_text_pdf_matrix(text, image_transform);
+    let (spacing, width, glyph_scale) =
+        svg_text_layout_adjustment(text, matrix, slot, faces, shaped);
+    if glyph_scale != 1.0 {
+        matrix.a *= glyph_scale;
+        matrix.b *= glyph_scale;
+    }
+    match text.anchor {
+        SvgTextAnchor::Start => {}
+        SvgTextAnchor::Middle => {
+            matrix.x -= matrix.a * width * 0.5;
+            matrix.y -= matrix.b * width * 0.5;
+        }
+        SvgTextAnchor::End => {
+            matrix.x -= matrix.a * width;
+            matrix.y -= matrix.b * width;
+        }
+    }
+    let (r, g, b) = text.fill;
+    body.push_str("q\n");
+    if let Some((x, y, w, h)) = image_transform.viewport_clip {
+        body.push_str(&format!(
+            "{x} {y} {w} {h} re W n\n",
+            x = pdf_num(x),
+            y = pdf_num(y),
+            w = pdf_num(w),
+            h = pdf_num(h),
+        ));
+    }
+    if text.opacity < 0.999 {
+        append_svg_alpha_state(
+            body,
+            quantize_svg_alpha(text.opacity),
+            quantize_svg_alpha(text.opacity),
+        );
+        body.push('\n');
+    }
+    if let Some(clip_path) = text
+        .clip_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|clip_path| !clip_path.ops.is_empty())
+    {
+        append_svg_text_clip_path(body, clip_path, text.transform, image_transform);
+    }
+    if let Some(mask_path) = text
+        .mask_path
+        .and_then(|index| clip_paths.get(index))
+        .filter(|mask_path| !mask_path.ops.is_empty())
+    {
+        append_svg_text_clip_path(body, mask_path, text.transform, image_transform);
+    }
+    body.push_str(&format!(
+        "{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\nQ\n",
+        r = pdf_fixed3(r),
+        g = pdf_fixed3(g),
+        b = pdf_fixed3(b),
+        font = slot,
+        size = pdf_fixed2(matrix.size),
+        a = pdf_num(matrix.a),
+        b_matrix = pdf_num(matrix.b),
+        c = pdf_num(matrix.c),
+        d = pdf_num(matrix.d),
+        x = pdf_fixed2(matrix.x),
+        y = pdf_fixed2(matrix.y),
+        tj = kerned_tj_with_spacing(
+            &face.map,
+            source,
+            &face.kern,
+            shaped,
+            pdf_tj_spacing_adjust(spacing, matrix.size),
+        ),
+    ));
+}
+
+fn svg_text_layout_adjustment(
+    text: &SvgText,
+    matrix: SvgTextMatrix,
+    slot: u8,
+    faces: &Faces,
+    shaped: &[u16],
+) -> (f32, f32, f32) {
+    let base_spacing = svg_letter_spacing_for_matrix(text, matrix);
+    let natural_width =
+        svg_text_width_with_spacing(&text.text, matrix.size, slot, faces, base_spacing, shaped);
+    let Some(target_width) = svg_text_target_width_for_matrix(text, matrix) else {
+        return (base_spacing, natural_width, 1.0);
+    };
+    if target_width < 0.0 || !target_width.is_finite() || natural_width <= 0.001 {
+        return (base_spacing, natural_width, 1.0);
+    }
+    match text.length_adjust {
+        SvgLengthAdjust::Spacing => {
+            let gaps = shaped.len().saturating_sub(1);
+            if gaps == 0 {
+                return (base_spacing, natural_width, 1.0);
+            }
+            let spacing = base_spacing + (target_width - natural_width) / gaps as f32;
+            if spacing.is_finite() {
+                (spacing, target_width, 1.0)
+            } else {
+                (base_spacing, natural_width, 1.0)
+            }
+        }
+        SvgLengthAdjust::SpacingAndGlyphs => {
+            let glyph_scale = (target_width / natural_width).clamp(0.001, 1000.0);
+            if glyph_scale.is_finite() {
+                (base_spacing, natural_width, glyph_scale)
+            } else {
+                (base_spacing, natural_width, 1.0)
+            }
+        }
+    }
+}
+
+fn svg_text_target_width_for_matrix(text: &SvgText, matrix: SvgTextMatrix) -> Option<f32> {
+    let target = text.text_length?;
+    let scale = matrix.size / text.font_size.max(0.001);
+    let target = target * scale;
+    (target.is_finite() && target >= 0.0).then_some(target)
+}
+
+fn svg_letter_spacing_for_matrix(text: &SvgText, matrix: SvgTextMatrix) -> f32 {
+    let scale = matrix.size / text.font_size.max(0.001);
+    let spacing = text.letter_spacing * scale;
+    if spacing.is_finite() { spacing } else { 0.0 }
+}
+
+fn svg_text_width_with_spacing(
+    text: &str,
+    size: f32,
+    slot: u8,
+    faces: &Faces,
+    spacing: f32,
+    shaped: &[u16],
+) -> f32 {
+    let width = text_width(text, size, slot, faces);
+    width + shaped.len().saturating_sub(1) as f32 * spacing
+}
+
+fn pdf_tj_spacing_adjust(spacing: f32, font_size: f32) -> i32 {
+    if !spacing.is_finite() || !font_size.is_finite() || font_size <= 0.001 {
+        return 0;
+    }
+    let adjustment = -(spacing * 1000.0 / font_size).round();
+    adjustment.clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
+fn svg_text_pdf_matrix(text: &SvgText, image_transform: SvgImageTransform) -> SvgTextMatrix {
+    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size;
+    let (svg_x, svg_y) = text.transform.apply_point(text.x, baseline_y);
+    let (x, y) = image_transform.map_point(svg_x, svg_y);
+
+    // SVG text is emitted outside the flipped shape CTM so it remains
+    // selectable. Rebuild the text matrix by converting SVG's y-down linear
+    // transform into PDF's y-up text coordinates, while keeping the average
+    // scale in the font size for byte-identical identity-transform output.
+    let raw_a = image_transform.sx * text.transform.a;
+    let raw_b = -image_transform.sy * text.transform.b;
+    let raw_c = -image_transform.sx * text.transform.c;
+    let raw_d = image_transform.sy * text.transform.d;
+    let x_axis = (raw_a * raw_a + raw_b * raw_b).sqrt();
+    let y_axis = (raw_c * raw_c + raw_d * raw_d).sqrt();
+    let fallback_scale = ((image_transform.sx + image_transform.sy) * 0.5).max(0.001);
+    let scale = (x_axis + y_axis) * 0.5;
+    let scale = if scale.is_finite() && scale > 0.001 {
+        scale
+    } else {
+        fallback_scale
+    };
+    let size = (text.font_size * scale).clamp(1.0, 96.0);
+    let normalize = |value: f32| {
+        let value = value / scale;
+        if value.is_finite() && value.abs() > 0.000_01 {
+            value
+        } else {
+            0.0
+        }
+    };
+    SvgTextMatrix {
+        a: normalize(raw_a),
+        b: normalize(raw_b),
+        c: normalize(raw_c),
+        d: normalize(raw_d),
+        x,
+        y,
+        size,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_text_clip_path(
+    body: &mut String,
+    clip_path: &SvgClipPath,
+    transform: SvgTransform,
+    image_transform: SvgImageTransform,
+) {
+    let map = |x: f32, y: f32| {
+        let (x, y) = transform.apply_point(x, y);
+        image_transform.map_point(x, y)
+    };
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = None;
+    for op in &clip_path.ops {
+        match *op {
+            SvgPathOp::Move(x, y) => {
+                let (x, y) = map(x, y);
+                current = (x, y);
+                subpath_start = Some(current);
+                body.push_str(&format!("{} {} m ", pdf_num(x), pdf_num(y)));
+            }
+            SvgPathOp::Line(x, y) => {
+                let (x, y) = map(x, y);
+                current = (x, y);
+                body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+            }
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                let (x1, y1) = map(x1, y1);
+                let (x2, y2) = map(x2, y2);
+                let (x, y) = map(x, y);
+                current = (x, y);
+                body.push_str(&format!(
+                    "{} {} {} {} {} {} c ",
+                    pdf_num(x1),
+                    pdf_num(y1),
+                    pdf_num(x2),
+                    pdf_num(y2),
+                    pdf_num(x),
+                    pdf_num(y)
+                ));
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                let (x1, y1) = map(x1, y1);
+                let (x, y) = map(x, y);
+                let c1 = (
+                    current.0 + (x1 - current.0) * (2.0 / 3.0),
+                    current.1 + (y1 - current.1) * (2.0 / 3.0),
+                );
+                let c2 = (x + (x1 - x) * (2.0 / 3.0), y + (y1 - y) * (2.0 / 3.0));
+                current = (x, y);
+                body.push_str(&format!(
+                    "{} {} {} {} {} {} c ",
+                    pdf_num(c1.0),
+                    pdf_num(c1.1),
+                    pdf_num(c2.0),
+                    pdf_num(c2.1),
+                    pdf_num(x),
+                    pdf_num(y)
+                ));
+            }
+            SvgPathOp::Close => {
+                if let Some(start) = subpath_start {
+                    current = start;
+                }
+                body.push_str("h ");
+            }
+        }
+    }
+    match clip_path.fill_rule {
+        SvgFillRule::NonZero => body.push_str("W n\n"),
+        SvgFillRule::EvenOdd => body.push_str("W* n\n"),
+    }
 }
 
 /// Draw one styled segment's text (with strikethrough, link underline, and link
@@ -4432,6 +16962,7 @@ fn draw_seg(
     size: f32,
     y: f32,
     subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
     shaped_cache: &ShapedRunCache,
     palette: &Palette,
@@ -4439,7 +16970,7 @@ fn draw_seg(
     if seg.text.is_empty() {
         return;
     }
-    let Some(face) = subsets.iter().find(|f| f.slot == seg.slot) else {
+    let Some(face) = subset_lookup.get(subsets, seg.slot) else {
         return;
     };
     let source = faces.get(seg.slot);
@@ -4464,14 +16995,9 @@ fn draw_seg(
         ));
         *current_fill = seg.fill;
     }
-    body.push_str(&format!(
-        "BT /F{f} {s} Tf 1 0 0 1 {x} {y} Tm {tj} TJ ET\n",
-        f = seg.slot,
-        s = pdf_fixed2(size),
-        x = pdf_fixed2(seg.x),
-        y = pdf_fixed2(y),
-        tj = kerned_tj(&face.map, source, &face.kern, shaped),
-    ));
+    append_text_segment_operator(
+        body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
+    );
     // Strikethrough: a thin stroke through the run's middle, in the text's own
     // color (stroke `RG`, leaving the text fill `rg` untouched).
     if seg.strike && seg.width > 0.0 {
@@ -4729,6 +17255,17 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 700_000.0;
     }
 
+    // Code fences are visually framed blocks. Splitting a short code block is
+    // especially bad for ASCII diagrams, whose geometry depends on neighboring
+    // rows staying together. If a block is too tall for a page this penalty is
+    // still paid by every internal candidate, so the page builder can split it.
+    if before.flow.group == after.flow.group
+        && before.flow.kind == FlowKind::Code
+        && after.flow.kind == FlowKind::Code
+    {
+        penalty += 750_000.0;
+    }
+
     // Avoid club/widow breaks when splitting a paragraph-like group: at least
     // two lines should remain on both sides when the paragraph has enough lines.
     if before.flow.group == after.flow.group && before.flow.kind == FlowKind::Paragraph {
@@ -4918,6 +17455,15 @@ mod keep_with_next_tests {
             line(FlowKind::TableRow, 2, 1, 3),
         ];
         assert_eq!(break_penalty(&lines, 1), 0.0);
+    }
+
+    #[test]
+    fn code_blocks_resist_internal_page_breaks() {
+        let lines = [line(FlowKind::Code, 7, 0, 3), line(FlowKind::Code, 7, 1, 3)];
+        assert!(
+            break_penalty(&lines, 1) >= 750_000.0,
+            "code and ASCII-diagram blocks should move as a unit when possible"
+        );
     }
 
     #[test]
@@ -5140,6 +17686,28 @@ struct EmbeddedFace {
     lig_uni: BTreeMap<u16, String>,
 }
 
+struct EmbeddedFaceLookup {
+    by_slot: [Option<usize>; SLOTS.len()],
+}
+
+impl EmbeddedFaceLookup {
+    fn new(faces: &[EmbeddedFace]) -> Self {
+        let mut by_slot = [None; SLOTS.len()];
+        for (index, face) in faces.iter().enumerate() {
+            if let Some(slot_index) = pdf_font_slot_index(face.slot) {
+                by_slot[slot_index] = Some(index);
+            }
+        }
+        Self { by_slot }
+    }
+
+    fn get<'a>(&self, faces: &'a [EmbeddedFace], slot: u8) -> Option<&'a EmbeddedFace> {
+        let slot_index = pdf_font_slot_index(slot)?;
+        let face_index = self.by_slot[slot_index]?;
+        faces.get(face_index)
+    }
+}
+
 /// Shaped source glyph stream for one exact segment text in one font slot.
 struct ShapedRun {
     glyphs: Vec<u16>,
@@ -5189,11 +17757,16 @@ fn estimated_pdf_buffer_capacity(
         .iter()
         .map(|image| image.data.len() + image.smask.as_ref().map_or(0, Vec::len))
         .sum::<usize>();
+    let shading_resource_bytes = pages
+        .iter()
+        .map(|page| page.shadings.len().saturating_mul(192))
+        .sum::<usize>();
 
     page_stream_bytes
         .saturating_add(font_program_bytes)
         .saturating_add(font_aux_bytes)
         .saturating_add(image_bytes)
+        .saturating_add(shading_resource_bytes)
         .saturating_add(page_mark_bytes.saturating_mul(2))
         .saturating_add(page_annot_bytes.saturating_mul(2))
         .saturating_add(total_objs.saturating_mul(192))
@@ -5327,6 +17900,155 @@ fn page_stream(stream: &str) -> PdfStream {
             bytes: raw.to_vec(),
         }
     }
+}
+
+fn svg_alpha_extgstate_resource(stream: &str) -> String {
+    let states = collect_svg_alpha_states(stream.as_bytes());
+    if states.is_empty() {
+        return String::new();
+    }
+    let entries = states
+        .into_iter()
+        .map(|(fill_alpha, stroke_alpha)| {
+            format!(
+                "/GSa{fill_alpha:04}{stroke_alpha:04} << /ca {ca} /CA {stroke_ca} >>",
+                ca = pdf_fixed3(f32::from(fill_alpha) / 1000.0),
+                stroke_ca = pdf_fixed3(f32::from(stroke_alpha) / 1000.0),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(" /ExtGState << {entries} >>")
+}
+
+fn pdf_shading_resource(shadings: &[PdfShading]) -> String {
+    if shadings.is_empty() {
+        return String::new();
+    }
+    let entries = shadings
+        .iter()
+        .take(256)
+        .enumerate()
+        .map(|(index, shading)| {
+            let function = pdf_shading_function(&shading.stops);
+            let extend_start = if shading.extend_start {
+                "true"
+            } else {
+                "false"
+            };
+            let extend_end = if shading.extend_end { "true" } else { "false" };
+            match shading.kind {
+                PdfShadingKind::Axial(coords) => format!(
+                    "/{} << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [{} {} {} {}] \
+                     /Function {function} /Extend [{extend_start} {extend_end}] >>",
+                    pdf_shading_name(index),
+                    pdf_num(coords[0]),
+                    pdf_num(coords[1]),
+                    pdf_num(coords[2]),
+                    pdf_num(coords[3]),
+                ),
+                PdfShadingKind::Radial(coords) => format!(
+                    "/{} << /ShadingType 3 /ColorSpace /DeviceRGB /Coords [{} {} {} {} {} {}] \
+                     /Function {function} /Extend [{extend_start} {extend_end}] >>",
+                    pdf_shading_name(index),
+                    pdf_num(coords[0]),
+                    pdf_num(coords[1]),
+                    pdf_num(coords[2]),
+                    pdf_num(coords[3]),
+                    pdf_num(coords[4]),
+                    pdf_num(coords[5]),
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(" /Shading << {entries} >>")
+}
+
+fn pdf_shading_function(stops: &[SvgGradientStop]) -> String {
+    if stops.len() <= 2 {
+        let start = stops.first().map(|stop| stop.1).unwrap_or((0.0, 0.0, 0.0));
+        let end = stops.last().map(|stop| stop.1).unwrap_or(start);
+        return pdf_exponential_interpolation_function(start, end);
+    }
+
+    let mut functions = String::new();
+    for pair in stops.windows(2) {
+        if !functions.is_empty() {
+            functions.push(' ');
+        }
+        functions.push_str(&pdf_exponential_interpolation_function(
+            pair[0].1, pair[1].1,
+        ));
+    }
+
+    let bounds = stops[1..stops.len() - 1]
+        .iter()
+        .map(|(offset, _)| pdf_num(*offset))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let encode = (0..stops.len() - 1)
+        .map(|_| "0 1")
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "<< /FunctionType 3 /Domain [0 1] /Functions [ {functions} ] /Bounds [ {bounds} ] /Encode [ {encode} ] >>"
+    )
+}
+
+fn pdf_exponential_interpolation_function(start: (f32, f32, f32), end: (f32, f32, f32)) -> String {
+    format!(
+        "<< /FunctionType 2 /Domain [0 1] /C0 [{} {} {}] /C1 [{} {} {}] /N 1 >>",
+        pdf_fixed3(start.0),
+        pdf_fixed3(start.1),
+        pdf_fixed3(start.2),
+        pdf_fixed3(end.0),
+        pdf_fixed3(end.1),
+        pdf_fixed3(end.2),
+    )
+}
+
+fn collect_svg_alpha_states(stream: &[u8]) -> BTreeSet<(u16, u16)> {
+    let mut states = BTreeSet::new();
+    let mut pos = 0usize;
+    while let Some(rel) = stream
+        .get(pos..)
+        .and_then(|tail| tail.windows(4).position(|window| window == b"/GSa"))
+    {
+        let start = pos + rel;
+        if let Some(state) = parse_svg_alpha_state_name(stream, start) {
+            states.insert(state);
+            if states.len() >= 256 {
+                break;
+            }
+        }
+        pos = start + 4;
+    }
+    states
+}
+
+fn parse_svg_alpha_state_name(stream: &[u8], start: usize) -> Option<(u16, u16)> {
+    let name = stream.get(start..start + 12)?;
+    if !name.starts_with(b"/GSa") || !name[4..12].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    if stream
+        .get(start + 12)
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let fill_alpha = parse_four_ascii_digits(&name[4..8])?;
+    let stroke_alpha = parse_four_ascii_digits(&name[8..12])?;
+    (fill_alpha <= 1000 && stroke_alpha <= 1000).then_some((fill_alpha, stroke_alpha))
+}
+
+fn parse_four_ascii_digits(bytes: &[u8]) -> Option<u16> {
+    (bytes.len() == 4 && bytes.iter().all(u8::is_ascii_digit)).then(|| {
+        bytes.iter().fold(0u16, |acc, byte| {
+            acc * 10 + u16::from(byte.saturating_sub(b'0'))
+        })
+    })
 }
 
 fn build_pdf(
@@ -5544,13 +18266,15 @@ fn build_pdf(
         } else {
             String::new()
         };
+        let ext_gstate_res = svg_alpha_extgstate_resource(&pages[i].stream);
+        let shading_res = pdf_shading_resource(&pages[i].shadings);
         append_pdf_object_str(
             &mut buf,
             &mut offsets,
             page_obj(i),
             &format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_w} {media_h}] \
-                 /Resources << /Font << {font_res} >>{image_res} >> /Contents {c} 0 R{annots}{struct_parent} >>",
+                 /Resources << /Font << {font_res} >>{image_res}{ext_gstate_res}{shading_res} >> /Contents {c} 0 R{annots}{struct_parent} >>",
                 c = content_obj(i),
             ),
         );
@@ -6149,25 +18873,78 @@ fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
 /// Build a `TJ` array (without the trailing `TJ`) from a pre-shaped SOURCE glyph
 /// sequence: each glyph is emitted as its subset id via `map`, with GPOS pair
 /// kerning (looked up on the original ids) inserted between glyphs.
+#[cfg(test)]
 fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
+    kerned_tj_with_spacing(map, source, kern, shaped, 0)
+}
+
+fn kerned_tj_with_spacing(
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+    spacing_adjust: i32,
+) -> String {
+    let mut out = String::with_capacity(shaped.len().saturating_mul(4).saturating_add(4));
+    append_kerned_tj_with_spacing(&mut out, map, source, kern, shaped, spacing_adjust);
+    out
+}
+
+fn append_kerned_tj_with_spacing(
+    out: &mut String,
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+    spacing_adjust: i32,
+) {
     let upm = i32::from(source.units_per_em.max(1));
-    let mut out = String::from("[<");
+    out.push_str("[<");
     for (i, &g) in shaped.iter().enumerate() {
-        append_hex_u16(&mut out, map.get(&g).copied().unwrap_or(0));
+        append_hex_u16(out, map.get(&g).copied().unwrap_or(0));
         if let Some(&next) = shaped.get(i + 1) {
             let k = kern.pair(g, next);
-            if k != 0 {
+            let kern_adjust = if k != 0 {
                 // A TJ number shifts the next glyph left by number/1000 em, so a
                 // tightening (negative) kern becomes a positive number.
-                let adj = -(i32::from(k) * 1000 / upm);
+                -(i32::from(k) * 1000 / upm)
+            } else {
+                0
+            };
+            let adj = kern_adjust.saturating_add(spacing_adjust);
+            if adj != 0 {
                 out.push('>');
-                append_i32_string(&mut out, adj);
+                append_i32_string(out, adj);
                 out.push('<');
             }
         }
     }
     out.push_str(">]");
-    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_text_segment_operator(
+    body: &mut String,
+    slot: u8,
+    size: f32,
+    x: f32,
+    y: f32,
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+) {
+    body.push_str("BT /F");
+    append_decimal_u64_string(body, u64::from(slot));
+    body.push(' ');
+    let _ = write!(body, "{:.2}", finite_pdf_scalar(size));
+    body.push_str(" Tf 1 0 0 1 ");
+    let _ = write!(body, "{:.2}", finite_pdf_scalar(x));
+    body.push(' ');
+    let _ = write!(body, "{:.2}", finite_pdf_scalar(y));
+    body.push_str(" Tm ");
+    append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0);
+    body.push_str(" TJ ET\n");
 }
 
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
@@ -6395,11 +19172,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, Tok, append_decimal_u64_string, append_decimal_usize,
-        append_hex_u16, append_i32_string, append_pdf_num, append_pdf_object_str,
-        append_pdf_string_escaped, append_xref_in_use_row, append_xref_offset, build_segs,
-        font_size_of, measure_word, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
-        shape_run,
+        F_BODY, F_BOLD, Faces, ParagraphPolicy, Tok, append_decimal_u64_string,
+        append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_num,
+        append_pdf_object_str, append_pdf_string_escaped, append_text_segment_operator,
+        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
+        decode_xml_entities, font_size_of, kerned_tj, measure_word, normalize_svg_text_node,
+        pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill, shape_run,
     };
 
     #[test]
@@ -6423,6 +19201,37 @@ mod pdf_writer_tests {
             "GPOS A/V-style pairs should tighten PDF layout measurement"
         );
         Ok(())
+    }
+
+    #[test]
+    fn svg_text_node_normalization_preserves_boundary_space_only_for_text() {
+        assert_eq!(normalize_svg_text_node("Alpha   "), "Alpha ");
+        assert_eq!(normalize_svg_text_node("  Alpha   Beta "), " Alpha Beta ");
+        assert_eq!(normalize_svg_text_node("\n  \t "), "");
+    }
+
+    #[test]
+    fn svg_xml_entity_decoder_replaces_invalid_numeric_scalars_without_dropping_text() {
+        let decoded = decode_xml_entities(
+            "ok &#65; hex &#x41; zero &#0; surrogate &#xD800; huge &#99999999; upper &#X41;",
+        );
+
+        assert_eq!(
+            decoded,
+            "ok A hex A zero \u{FFFD} surrogate \u{FFFD} huge \u{FFFD} upper A"
+        );
+        assert!(
+            !decoded.contains('\0'),
+            "invalid SVG numeric XML references must not inject raw NUL bytes"
+        );
+    }
+
+    #[test]
+    fn svg_xml_entity_decoder_preserves_malformed_and_unknown_entities() {
+        assert_eq!(
+            decode_xml_entities("&; &#; &#x; &#xyz; &#12x; &not-real;"),
+            "&; &#; &#x; &#xyz; &#12x; &not-real;"
+        );
     }
 
     #[test]
@@ -6451,6 +19260,57 @@ mod pdf_writer_tests {
             crate::layout::advance_to_layout_units(face.glyph_advance_1000(shaped.glyphs[0]), fs),
             "PDF layout measurement should use the ligature glyph's own advance"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_paragraph_builder_presizes_maps_from_token_count() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let toks = vec![
+            Tok {
+                text: "alpha".to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            Tok {
+                text: " ".to_string(),
+                slot: F_BODY,
+                space: true,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            Tok {
+                text: "beta".to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+        ];
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(std::collections::HashMap::new());
+
+        let built = build_paragraph(
+            &toks,
+            fs,
+            &faces,
+            ParagraphPolicy::RAGGED,
+            &cache,
+            &width_cache,
+        );
+        let expected = toks.len().saturating_add(1);
+
+        assert_eq!(built.items.len(), built.item_toks.len());
+        assert_eq!(built.items.len(), built.break_toks.len());
+        assert!(built.items.capacity() >= expected);
+        assert!(built.item_toks.capacity() >= expected);
+        assert!(built.break_toks.capacity() >= expected);
         Ok(())
     }
 
@@ -6578,6 +19438,43 @@ mod pdf_writer_tests {
         append_i32_string(&mut out, 456);
 
         assert_eq!(out, "0 12345678901 -120 0 456");
+    }
+
+    #[test]
+    fn streamed_text_segment_operator_matches_legacy_format_shape() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let face = faces.face(F_BODY);
+        let shaped = shape_run(&face.font, &face.lig, "AVATAR");
+        let map = shaped
+            .glyphs
+            .iter()
+            .copied()
+            .map(|glyph| (glyph, glyph))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        let mut streamed = String::new();
+        append_text_segment_operator(
+            &mut streamed,
+            F_BODY,
+            11.0,
+            12.5,
+            700.25,
+            &map,
+            &face.font,
+            &face.kern,
+            &shaped.glyphs,
+        );
+
+        let expected = format!(
+            "BT /F{f} {s} Tf 1 0 0 1 {x} {y} Tm {tj} TJ ET\n",
+            f = F_BODY,
+            s = pdf_fixed2(11.0),
+            x = pdf_fixed2(12.5),
+            y = pdf_fixed2(700.25),
+            tj = kerned_tj(&map, &face.font, &face.kern, &shaped.glyphs),
+        );
+        assert_eq!(streamed, expected);
+        Ok(())
     }
 
     #[test]
@@ -6748,6 +19645,12 @@ mod render_tree_golden_tests {
                 400.0,
             ),
             (
+                "performance-plan",
+                performance_plan_markdown(),
+                612.0,
+                792.0,
+            ),
+            (
                 "quote-code",
                 "> A quoted paragraph that is long enough to wrap inside the quote \
                  gutter at this measure.\n>\n> - quoted list item\n\n\
@@ -6767,6 +19670,34 @@ mod render_tree_golden_tests {
                 300.0,
             ),
         ]
+    }
+
+    fn performance_plan_markdown() -> String {
+        r#"# Performance Acceleration Plan
+
+| Candidate | Impact | Confidence | Effort | Score | First bead |
+|:--|--:|--:|--:|--:|:--|
+| PDF serializer/shaping fast path: buffer sizing, fast decimal/hex writers, shaped-run cache, subset-map layout | 5 | 4 | 2 | 10.0 | `fep.6` |
+| Asupersync batch renderer: file-level parallelism, deterministic receipts, queueing budgets | 5 | 5 | 3 | 8.3 | `zmd.1` |
+| Parser scanner attribution and allocation reduction | 4 | 4 | 2 | 8.0 | new child under gauntlet/parser |
+| PDF stage instrumentation: split layout/subset/ToUnicode/serialize timings | 4 | 5 | 3 | 6.7 | new child under `fep.6` |
+| Hyphen word-result cache or trie layout compaction | 2 | 4 | 2 | 4.0 | future child after profile |
+| SIMD special-byte scanner island | 4 | 3 | 4 | 3.0 | `qw1.5` |
+| Active-list/page-builder parallelism inside one document | 3 | 2 | 4 | 1.5 | defer |
+| AVX-512-specific path | 2 | 2 | 5 | 0.8 | reject until separate hardware proof |
+
+```powershell
+irm "https://example.test/install.ps1" | iex
+# installs fmd
+```
+
+```mermaid
+flowchart LR
+    Markdown[large markdown file] --> Parser[AST] --> Layout[measured table/code layout] --> PDF[compact tagged PDF]
+    Layout --> HTML[self-contained HTML]
+```
+"#
+        .to_string()
     }
 
     #[test]
@@ -6808,6 +19739,63 @@ mod render_tree_golden_tests {
         let opts = small_opts(320.0, 400.0);
         let md = cases()[0].1.clone();
         assert_eq!(render_tree_debug(&md, &opts), render_tree_debug(&md, &opts));
+    }
+
+    #[test]
+    fn performance_plan_render_tree_pins_user_visible_regressions() {
+        let tree = render_tree_debug(&performance_plan_markdown(), &small_opts(612.0, 792.0));
+
+        for (col, header) in [
+            (1, "Impact"),
+            (2, "Confidence"),
+            (3, "Effort"),
+            (4, "Score"),
+        ] {
+            let header_literal = format!("{header:?}");
+            let count = tree
+                .lines()
+                .filter(|line| line.contains(&format!("TH col={col} ")))
+                .filter(|line| line.contains(&header_literal))
+                .count();
+            assert_eq!(
+                count, 1,
+                "compact performance-plan header {header:?} should render as one table-header segment\n{tree}"
+            );
+        }
+
+        let diagram_row = "    Markdown[large markdown file] --> Parser[AST] --> Layout[measured table/code layout] --> PDF[compact tagged PDF]";
+        let diagram_literal = format!("{diagram_row:?}");
+        let diagram_count = tree
+            .lines()
+            .filter(|line| line.contains("Code "))
+            .filter(|line| line.contains(&diagram_literal))
+            .count();
+        assert_eq!(
+            diagram_count, 1,
+            "the long mermaid/ascii diagram row should stay on one rendered code row\n{tree}"
+        );
+
+        let body_fill =
+            render_tree_fill_label(Fill::Black, &Palette::from_colors(&Theme::default().colors));
+        let syntax_lines = tree
+            .lines()
+            .filter(|line| line.contains("Code "))
+            .filter(|line| !line.contains(&format!("fill={body_fill}")))
+            .collect::<Vec<_>>();
+        assert!(
+            syntax_lines.iter().any(|line| line.contains("\"irm\"")),
+            "PowerShell keyword highlighting should emit a non-body fill for irm\n{tree}"
+        );
+        assert!(
+            syntax_lines.iter().any(|line| line.contains("\"iex\"")),
+            "PowerShell keyword highlighting should emit a non-body fill for iex\n{tree}"
+        );
+        assert!(
+            syntax_lines
+                .iter()
+                .any(|line| line.contains("\"# installs fmd\"")),
+            "PowerShell comments should emit a non-body fill\n{tree}"
+        );
     }
 }
 
@@ -7076,6 +20064,138 @@ mod png_decode_tests {
     }
 
     #[test]
+    fn invalid_palette_and_trns_chunk_ordering_is_rejected() {
+        let png = |ct: u8, bd: u8, parts: Vec<(&[u8; 4], Vec<u8>)>| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&[bd, ct, 0, 0, 0]);
+            let push = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(kind);
+                out.extend_from_slice(data);
+                out.extend_from_slice(&0u32.to_be_bytes());
+            };
+            push(&mut bytes, b"IHDR", &ihdr);
+            for (kind, data) in parts {
+                push(&mut bytes, kind, &data);
+            }
+            push(&mut bytes, b"IEND", &[]);
+            bytes
+        };
+        let plte = vec![1, 2, 3];
+        let idat = vec![0];
+
+        assert!(
+            parse_png_chunks(&png(
+                3,
+                8,
+                vec![
+                    (b"PLTE", plte.clone()),
+                    (b"tRNS", vec![255]),
+                    (b"tRNS", vec![0]),
+                    (b"IDAT", idat.clone()),
+                ],
+            ))
+            .is_none(),
+            "duplicate tRNS must not overwrite the first transparency chunk"
+        );
+        assert!(
+            parse_png_chunks(&png(
+                3,
+                8,
+                vec![
+                    (b"PLTE", plte.clone()),
+                    (b"IDAT", idat.clone()),
+                    (b"tRNS", vec![0]),
+                ],
+            ))
+            .is_none(),
+            "tRNS after IDAT is malformed"
+        );
+        assert!(
+            parse_png_chunks(&png(
+                3,
+                8,
+                vec![
+                    (b"tRNS", vec![0]),
+                    (b"PLTE", plte.clone()),
+                    (b"IDAT", idat.clone()),
+                ],
+            ))
+            .is_none(),
+            "palette tRNS must follow PLTE"
+        );
+        assert!(
+            parse_png_chunks(&png(
+                3,
+                8,
+                vec![
+                    (b"PLTE", plte.clone()),
+                    (b"PLTE", plte.clone()),
+                    (b"IDAT", idat.clone()),
+                ],
+            ))
+            .is_none(),
+            "duplicate PLTE chunks are malformed"
+        );
+        assert!(
+            parse_png_chunks(&png(
+                3,
+                1,
+                vec![(b"PLTE", vec![1, 2, 3, 4, 5, 6, 7, 8, 9]), (b"IDAT", idat)]
+            ))
+            .is_none(),
+            "indexed-color PLTE must not exceed the bit-depth entry capacity"
+        );
+    }
+
+    #[test]
+    fn non_consecutive_idat_chunks_are_rejected() {
+        let png = |parts: Vec<(&[u8; 4], Vec<u8>)>| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+            let mut ihdr = Vec::new();
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&1u32.to_be_bytes());
+            ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+            let push = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(kind);
+                out.extend_from_slice(data);
+                out.extend_from_slice(&0u32.to_be_bytes());
+            };
+            push(&mut bytes, b"IHDR", &ihdr);
+            for (kind, data) in parts {
+                push(&mut bytes, kind, &data);
+            }
+            push(&mut bytes, b"IEND", &[]);
+            bytes
+        };
+
+        assert!(
+            parse_png_chunks(&png(vec![
+                (b"IDAT", vec![0]),
+                (b"IDAT", vec![1]),
+                (b"tEXt", b"note\0ok".to_vec()),
+            ]))
+            .is_some(),
+            "consecutive IDAT chunks followed by ancillary metadata are valid"
+        );
+        assert!(
+            parse_png_chunks(&png(vec![
+                (b"IDAT", vec![0]),
+                (b"tEXt", b"note\0bad".to_vec()),
+                (b"IDAT", vec![1]),
+            ]))
+            .is_none(),
+            "IDAT chunks must be consecutive; ancillary chunks cannot split the stream"
+        );
+    }
+
+    #[test]
     fn oversized_decoded_image_is_rejected_by_the_byte_cap() {
         // Build a PNG whose IHDR claims large dimensions but whose IDAT is tiny —
         // the bit-depth-aware decoded-bytes cap must refuse it in IHDR validation,
@@ -7147,6 +20267,51 @@ mod png_decode_tests {
     }
 
     #[test]
+    fn malformed_trns_chunks_are_rejected() {
+        // Grayscale tRNS must be exactly one 16-bit sample.
+        let gray_short = chunks(1, 1, 8, 0, 0, &[vec![10]], vec![], vec![10]);
+        assert!(decode_png_full(&gray_short).is_none());
+
+        // Truecolor tRNS must be exactly three 16-bit samples.
+        let rgb_long = chunks(
+            1,
+            1,
+            8,
+            2,
+            0,
+            &[vec![10, 20, 30]],
+            vec![],
+            vec![0, 10, 0, 20, 0, 30, 0, 40],
+        );
+        assert!(decode_png_full(&rgb_long).is_none());
+
+        // Color types that already carry alpha must not also carry tRNS.
+        let rgba_with_trns = chunks(1, 1, 8, 6, 0, &[vec![10, 20, 30, 255]], vec![], vec![0, 10]);
+        assert!(decode_png_full(&rgba_with_trns).is_none());
+
+        // Palette tRNS may be shorter than PLTE, but never longer.
+        let palette_too_long = chunks(1, 1, 8, 3, 0, &[vec![0]], vec![[1, 2, 3]], vec![255, 0]);
+        assert!(decode_png_full(&palette_too_long).is_none());
+
+        // Grayscale tRNS values are raw samples, not scaled 8-bit values.
+        let gray1_out_of_range = chunks(1, 1, 1, 0, 0, &[vec![0]], vec![], vec![0, 2]);
+        assert!(decode_png_full(&gray1_out_of_range).is_none());
+
+        // 8-bit truecolor tRNS channels must fit in the low byte.
+        let rgb8_out_of_range = chunks(
+            1,
+            1,
+            8,
+            2,
+            0,
+            &[vec![10, 20, 30]],
+            vec![],
+            vec![1, 10, 0, 20, 0, 30],
+        );
+        assert!(decode_png_full(&rgb8_out_of_range).is_none());
+    }
+
+    #[test]
     fn full_png_decode_rejects_extra_inflated_scanline_bytes() {
         // The full-decode path must consume exactly the image scanline payload.
         // Extra inflated bytes after the expected rows indicate a malformed PNG
@@ -7172,16 +20337,28 @@ mod png_decode_tests {
     }
 
     #[test]
-    fn rgb16_with_trns_matches_on_the_high_byte() {
-        // 16-bit RGB with a color-key tRNS (3 × 16-bit big-endian). We keep and
-        // compare the high byte of each channel; pixel 1's high bytes match the
-        // tRNS high bytes, so it is transparent.
+    fn gray16_with_trns_requires_exact_sample() {
+        // 16-bit grayscale with a tRNS key must compare the full source sample,
+        // not only the high byte that is kept for the 8-bit PDF image plane.
+        let rows = vec![vec![0x12, 0xFF, 0x12, 0x34]];
+        let png = chunks(2, 1, 16, 0, 0, &rows, vec![], vec![0x12, 0x34]);
+        let d = decode_png_full(&png).unwrap();
+        assert_eq!(d.samples, vec![0x12, 0x12]);
+        assert_eq!(d.alpha, Some(vec![255, 0]));
+    }
+
+    #[test]
+    fn rgb16_with_trns_requires_exact_color_key() {
+        // 16-bit RGB with a color-key tRNS (3 × 16-bit big-endian). Pixel 1 has
+        // matching high bytes but different low bytes, so it must remain opaque;
+        // pixel 2 matches all 16 bits and is transparent.
         let rows = vec![vec![
             0x10, 0x00, 0x20, 0x00, 0x30, 0x00, // px0 hi = 10,20,30
-            0x40, 0xFF, 0x50, 0xFF, 0x60, 0xFF, // px1 hi = 40,50,60
+            0x40, 0xFF, 0x50, 0xFF, 0x60, 0xFF, // px1 hi matches, low differs
+            0x40, 0x00, 0x50, 0x00, 0x60, 0x00, // px2 exact match
         ]];
         let png = chunks(
-            2,
+            3,
             1,
             16,
             2,
@@ -7191,7 +20368,7 @@ mod png_decode_tests {
             vec![0x40, 0x00, 0x50, 0x00, 0x60, 0x00],
         );
         let d = decode_png_full(&png).unwrap();
-        assert_eq!(d.alpha, Some(vec![255, 0]));
+        assert_eq!(d.alpha, Some(vec![255, 255, 0]));
     }
 
     #[test]
@@ -7317,9 +20494,125 @@ mod png_decode_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
-    use super::{Faces, cell_tokens, wrap_cell_styled};
+    use super::{
+        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeWrapSpec, F_MONO, Faces, TABLE_COL_GUTTER,
+        TABLE_FONT_SIZE, TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths,
+        cell_tokens, fitted_code_font_size, preserve_code_block_lines, table_cell_measure,
+        table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
+    };
     use crate::PdfOptions;
     use crate::ast::Inline;
+
+    fn text_cell(text: &str) -> Vec<Inline> {
+        vec![Inline::Text(text.to_string())]
+    }
+
+    fn code_cell(code: &str) -> Vec<Inline> {
+        vec![Inline::Code(code.to_string())]
+    }
+
+    fn mixed_cell(parts: Vec<Inline>) -> Vec<Inline> {
+        parts
+    }
+
+    fn push_measured_cell(
+        column: &mut TableColumnMetrics,
+        cell: &[Inline],
+        header: bool,
+        faces: &Faces,
+    ) {
+        let toks = cell_tokens(cell, header);
+        column.push(table_cell_measure(&toks, TABLE_FONT_SIZE, faces, header));
+    }
+
+    fn measured_table_columns(
+        headers: &[&str],
+        rows: &[Vec<Vec<Inline>>],
+        faces: &Faces,
+    ) -> Vec<TableColumnMetrics> {
+        let mut columns = vec![TableColumnMetrics::default(); headers.len()];
+        for (idx, header) in headers.iter().enumerate() {
+            push_measured_cell(&mut columns[idx], &text_cell(header), true, faces);
+        }
+        for row in rows {
+            for (idx, cell) in row.iter().enumerate() {
+                push_measured_cell(&mut columns[idx], cell, false, faces);
+            }
+        }
+        columns
+    }
+
+    fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
+        let toks = cell_tokens(cell, header);
+        table_cell_measure(&toks, TABLE_FONT_SIZE, faces, header).max_content
+    }
+
+    fn total_table_badness(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
+        columns
+            .iter()
+            .zip(widths.iter())
+            .map(|(column, &width)| table_column_badness(column, width))
+            .sum()
+    }
+
+    fn proportional_max_content_widths(columns: &[TableColumnMetrics], target: f32) -> Vec<f32> {
+        if columns.is_empty() {
+            return Vec::new();
+        }
+        let demand: Vec<f32> = columns
+            .iter()
+            .map(|column| column.max_content.max(TABLE_MIN_COL_WIDTH))
+            .collect();
+        let demand_sum: f32 = demand.iter().sum();
+        let mut widths: Vec<f32> = if demand_sum > 0.0 {
+            demand
+                .iter()
+                .map(|width| (width / demand_sum) * target)
+                .collect()
+        } else {
+            vec![target / columns.len() as f32; columns.len()]
+        };
+        for width in &mut widths {
+            *width = width.max(TABLE_MIN_COL_WIDTH);
+        }
+        normalize_test_widths(&mut widths, target);
+        widths
+    }
+
+    fn normalize_test_widths(widths: &mut [f32], target: f32) {
+        if widths.is_empty() {
+            return;
+        }
+        let mut delta = target - widths.iter().sum::<f32>();
+        if delta > 0.0 {
+            let extra = delta / widths.len() as f32;
+            for width in widths {
+                *width += extra;
+            }
+            return;
+        }
+
+        delta = -delta;
+        while delta > 0.001 {
+            let room: f32 = widths
+                .iter()
+                .map(|width| (*width - TABLE_MIN_COL_WIDTH).max(0.0))
+                .sum();
+            if room <= 0.001 {
+                break;
+            }
+            for width in widths.iter_mut() {
+                let share = (*width - TABLE_MIN_COL_WIDTH).max(0.0) / room;
+                let shrink = (delta * share).min((*width - TABLE_MIN_COL_WIDTH).max(0.0));
+                *width -= shrink;
+            }
+            delta = target - widths.iter().sum::<f32>();
+            if delta >= -0.001 {
+                break;
+            }
+            delta = -delta;
+        }
+    }
 
     #[test]
     fn over_wide_word_is_char_split_to_fit_the_column() {
@@ -7342,5 +20635,329 @@ mod table_wrap_tests {
                 max_width
             );
         }
+    }
+
+    #[test]
+    fn ascii_diagram_text_fence_preserves_rows_and_fits_by_shrinking() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let diagram = "+----------------------------+\n| parser -> layout -> pdf    |\n+----------------------------+";
+        assert!(preserve_code_block_lines(Some("text"), diagram));
+
+        let size = fitted_code_font_size(
+            diagram,
+            120.0,
+            false,
+            1,
+            CODE_FONT_SIZE,
+            CODE_DIAGRAM_MIN_FONT_SIZE,
+            &faces,
+        );
+        assert!(
+            size < CODE_FONT_SIZE,
+            "diagram font should shrink to preserve geometry"
+        );
+
+        let rows = wrapped_code_rows(
+            diagram.lines().next().unwrap(),
+            CodeWrapSpec {
+                lang: Some("text"),
+                line_no: 1,
+                digits: 1,
+                line_numbers: false,
+                x0: 0.0,
+                max_text_width: 120.0,
+                number_col: 0.0,
+                size,
+                preserve_lines: true,
+                faces: &faces,
+            },
+        );
+        assert_eq!(rows.len(), 1, "diagram source rows must not hard-wrap");
+        let row_width: f32 = rows[0]
+            .iter()
+            .filter(|seg| seg.slot == F_MONO)
+            .map(|seg| seg.width)
+            .sum();
+        assert!(
+            row_width <= 121.0,
+            "shrunk diagram row should fit the target width, got {row_width:.1}pt"
+        );
+    }
+
+    #[test]
+    fn diagram_preservation_accepts_language_metadata_suffixes() {
+        let diagram = "+------+\n| A->B |\n+------+";
+        assert!(preserve_code_block_lines(
+            Some("language-text,diagram"),
+            diagram
+        ));
+        assert!(preserve_code_block_lines(
+            Some("language-mermaid,theme=dark"),
+            "graph TD\nA-->B"
+        ));
+    }
+
+    #[test]
+    fn ascii_diagram_fitting_accounts_for_line_number_column() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let diagram = "+----------------------------+\n| parser -> layout -> pdf    |\n+----------------------------+";
+        let code_area_width = 128.0;
+        let digits = 3;
+        let size = fitted_code_font_size(
+            diagram,
+            code_area_width,
+            true,
+            digits,
+            CODE_FONT_SIZE,
+            CODE_DIAGRAM_MIN_FONT_SIZE,
+            &faces,
+        );
+        let number_col = super::code_line_number_column_width(digits, size, &faces);
+        let rows = wrapped_code_rows(
+            diagram.lines().next().unwrap(),
+            CodeWrapSpec {
+                lang: Some("text"),
+                line_no: 1,
+                digits,
+                line_numbers: true,
+                x0: 0.0,
+                max_text_width: (code_area_width - number_col).max(12.0),
+                number_col,
+                size,
+                preserve_lines: true,
+                faces: &faces,
+            },
+        );
+
+        assert_eq!(rows.len(), 1, "diagram source rows must not hard-wrap");
+        let row_end = rows[0]
+            .iter()
+            .map(|seg| seg.x + seg.width)
+            .fold(0.0f32, f32::max);
+        assert!(
+            row_end <= code_area_width + 1.0,
+            "line-numbered diagram row should fit the code area, got {row_end:.1}pt"
+        );
+    }
+
+    #[test]
+    fn ordinary_source_code_still_wraps_when_requested() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let rows = wrapped_code_rows(
+            "let unusually_long_identifier_name = compute_the_value_from_many_inputs();",
+            CodeWrapSpec {
+                lang: Some("rust"),
+                line_no: 1,
+                digits: 1,
+                line_numbers: false,
+                x0: 0.0,
+                max_text_width: 42.0,
+                number_col: 0.0,
+                size: CODE_FONT_SIZE,
+                preserve_lines: false,
+                faces: &faces,
+            },
+        );
+        assert!(
+            rows.len() > 1,
+            "source code should keep wrapping in narrow columns"
+        );
+    }
+
+    #[test]
+    fn table_allocator_preserves_compact_header_columns_under_pressure() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let headers = [
+            "Candidate",
+            "Impact",
+            "Confidence",
+            "Effort",
+            "Score",
+            "First bead",
+        ];
+        let rows = performance_plan_ev_matrix_rows();
+        let columns = measured_table_columns(&headers, &rows, &faces);
+        let target = 468.0 - TABLE_COL_GUTTER * headers.len() as f32;
+        let widths = allocate_table_column_widths(&columns, target);
+        let total: f32 = widths.iter().sum();
+
+        assert!(
+            (total - target).abs() <= 0.1,
+            "allocated widths should fill the target: {total:.1}"
+        );
+        assert!(
+            widths
+                .iter()
+                .all(|width| *width >= TABLE_MIN_COL_WIDTH - 0.01),
+            "no column should collapse below the hard minimum: {widths:?}"
+        );
+
+        let confidence_header = measured_cell_max_content(&text_cell("Confidence"), true, &faces);
+        assert!(
+            widths[2] >= confidence_header - 0.5,
+            "the Confidence header should remain on one readable line: {widths:?}"
+        );
+
+        let compact_header_widths = ["Impact", "Effort", "Score"]
+            .map(|header| measured_cell_max_content(&text_cell(header), true, &faces));
+        assert!(
+            widths[1] >= compact_header_widths[0] - 0.5
+                && widths[3] >= compact_header_widths[1] - 0.5
+                && widths[4] >= compact_header_widths[2] - 0.5,
+            "compact numeric headers should fit on one line: {widths:?}"
+        );
+
+        assert!(
+            widths[0] >= 140.0,
+            "the long Candidate column should not be starved: {widths:?}"
+        );
+        assert!(
+            widths[5] >= 70.0,
+            "the First bead column should retain enough width for code-like labels: {widths:?}"
+        );
+
+        let proportional = proportional_max_content_widths(&columns, target);
+        let optimized_badness = total_table_badness(&columns, &widths);
+        let proportional_badness = total_table_badness(&columns, &proportional);
+        assert!(
+            optimized_badness < proportional_badness * 0.60,
+            "optimized allocation should reduce measured wrapping badness; optimized {optimized_badness:.1}, proportional {proportional_badness:.1}, widths {widths:?}, proportional {proportional:?}"
+        );
+    }
+
+    #[test]
+    fn table_allocator_does_not_spend_width_on_empty_columns() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let headers = ["Left", "", "Right"];
+        let rows = vec![vec![
+            text_cell("alpha beta gamma delta epsilon"),
+            text_cell(""),
+            text_cell("one two three four five"),
+        ]];
+        let columns = measured_table_columns(&headers, &rows, &faces);
+        let widths = allocate_table_column_widths(&columns, 240.0);
+
+        assert!(
+            widths[1] <= TABLE_MIN_COL_WIDTH + 0.5,
+            "empty columns should stay at the hard minimum before widening content columns: {widths:?}"
+        );
+        assert!(
+            widths[0] > widths[1] && widths[2] > widths[1],
+            "non-empty columns should receive the usable extra width: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn table_allocator_balances_surplus_after_all_columns_fit() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let headers = ["Name", "Qty", "Price"];
+        let rows = vec![
+            vec![text_cell("alpha"), text_cell("1"), text_cell("9.99")],
+            vec![text_cell("beta"), text_cell("22"), text_cell("12.00")],
+            vec![text_cell("gamma"), text_cell("333"), text_cell("7.50")],
+        ];
+        let columns = measured_table_columns(&headers, &rows, &faces);
+        let widths = allocate_table_column_widths(&columns, 270.0);
+        let total: f32 = widths.iter().sum();
+
+        assert!(
+            (total - 270.0).abs() <= 0.1,
+            "allocated widths should fill the target: {total:.1}"
+        );
+        assert!(
+            widths[1] >= 60.0 && widths[2] >= 60.0,
+            "surplus should not be dumped into only the first column: {widths:?}"
+        );
+        assert!(
+            widths[0] <= 150.0,
+            "a fully fitting first column should not consume nearly all surplus: {widths:?}"
+        );
+    }
+
+    fn performance_plan_ev_matrix_rows() -> Vec<Vec<Vec<Inline>>> {
+        vec![
+            vec![
+                text_cell(
+                    "PDF serializer/shaping fast path: buffer sizing, fast decimal/hex writers, shaped-run cache, subset-map layout",
+                ),
+                text_cell("5"),
+                text_cell("4"),
+                text_cell("2"),
+                text_cell("10.0"),
+                code_cell("fep.6"),
+            ],
+            vec![
+                text_cell(
+                    "Asupersync batch renderer: file-level parallelism, deterministic receipts, queueing budgets",
+                ),
+                text_cell("5"),
+                text_cell("5"),
+                text_cell("3"),
+                text_cell("8.3"),
+                code_cell("zmd.1"),
+            ],
+            vec![
+                text_cell("Parser scanner attribution and allocation reduction"),
+                text_cell("4"),
+                text_cell("4"),
+                text_cell("2"),
+                text_cell("8.0"),
+                text_cell("new child under gauntlet/parser"),
+            ],
+            vec![
+                text_cell(
+                    "PDF stage instrumentation: split layout/subset/ToUnicode/serialize timings",
+                ),
+                text_cell("4"),
+                text_cell("5"),
+                text_cell("3"),
+                text_cell("6.7"),
+                mixed_cell(vec![
+                    Inline::Text("new child under ".to_string()),
+                    Inline::Code("fep.6".to_string()),
+                ]),
+            ],
+            vec![
+                text_cell("Hyphen word-result cache or trie layout compaction"),
+                text_cell("2"),
+                text_cell("4"),
+                text_cell("2"),
+                text_cell("4.0"),
+                text_cell("future child after profile"),
+            ],
+            vec![
+                text_cell("SIMD special-byte scanner island"),
+                text_cell("4"),
+                text_cell("3"),
+                text_cell("4"),
+                text_cell("3.0"),
+                code_cell("qw1.5"),
+            ],
+            vec![
+                text_cell("Active-list/page-builder parallelism inside one document"),
+                text_cell("3"),
+                text_cell("2"),
+                text_cell("4"),
+                text_cell("1.5"),
+                text_cell("defer"),
+            ],
+            vec![
+                text_cell("AVX-512-specific path"),
+                text_cell("2"),
+                text_cell("2"),
+                text_cell("5"),
+                text_cell("0.8"),
+                text_cell("reject until separate hardware proof"),
+            ],
+        ]
+    }
+
+    #[test]
+    fn measured_diagram_width_is_larger_at_default_size() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let line = "+----------------------------+";
+        let default_width = text_width(line, CODE_FONT_SIZE, F_MONO, &faces);
+        let shrunken_width = text_width(line, CODE_DIAGRAM_MIN_FONT_SIZE, F_MONO, &faces);
+        assert!(default_width > shrunken_width);
     }
 }

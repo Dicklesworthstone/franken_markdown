@@ -1,0 +1,358 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 633.4438 606" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" role="img" data-nodes="7" data-edges="6" data-type="flowchart" data-detail-tier="rich"><title>flowchart diagram</title><desc>A flowchart diagram with 7 nodes and 6 edges. flowing top to bottom. Key nodes: Markdown, AST, Theme.. Key relationships: Markdown points to AST; AST points to Theme; Theme points to HTML.. Layout spans 553 by 526 units with 7 rendered node boxes and 6 routed edge paths.</desc><style>:root {
+  --fm-bg: #f8fafc;
+  --fm-text-color: #0f172a;
+  --fm-node-fill: #ffffff;
+  --fm-node-stroke: #cbd5e1;
+  --fm-edge-color: #64748b;
+  --fm-cluster-fill: rgba(241,245,249,0.5);
+  --fm-cluster-stroke: #94a3b8;
+  --fm-accent-1: #2563eb;
+  --fm-accent-2: #0284c7;
+  --fm-accent-3: #0891b2;
+  --fm-accent-4: #4f46e5;
+  --fm-accent-5: #7c3aed;
+  --fm-accent-6: #0d9488;
+  --fm-accent-7: #059669;
+  --fm-accent-8: #4338ca;
+}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+.fm-text {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+:root {
+  --fm-edge-muted: var(--fm-cluster-stroke);
+  --fm-edge-label-bg: var(--fm-bg);
+  --fm-edge-label-border: var(--fm-cluster-stroke);
+  --fm-edge-label-text: var(--fm-text-color);
+  --fm-cluster-label-color: var(--fm-text-color);
+  --fm-cluster-c4-fill: var(--fm-cluster-fill);
+  --fm-cluster-c4-stroke: var(--fm-cluster-stroke);
+  --fm-cluster-swimlane-fill: var(--fm-cluster-fill);
+  --fm-cluster-swimlane-stroke: var(--fm-cluster-stroke);
+  --fm-surface-shadow: rgba(15, 23, 42, 0.1);
+}
+svg {
+  shape-rendering: geometricPrecision;
+  background: var(--fm-bg);
+  background-image:
+    radial-gradient(ellipse at 20% 0%, color-mix(in srgb, var(--fm-accent-1) 4%, transparent) 0%, transparent 50%),
+    linear-gradient(180deg, var(--fm-bg) 0%, color-mix(in srgb, var(--fm-bg) 96%, var(--fm-node-stroke) 4%) 100%);
+}
+.fm-node {
+  isolation: isolate;
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-hover-accent: var(--fm-edge-color);
+}
+.fm-node rect,
+.fm-node path,
+.fm-node circle,
+.fm-node ellipse,
+.fm-node polygon {
+  fill: var(--fm-node-fill);
+  stroke: var(--fm-node-accent);
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: geometricPrecision;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.10)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.06));
+  transition: fill 200ms ease, stroke 200ms ease, filter 200ms ease, transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.fm-node line {
+  stroke: var(--fm-node-accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.fm-node text {
+  fill: var(--fm-text-color);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+.fm-node:hover rect,
+.fm-node:hover path,
+.fm-node:hover circle,
+.fm-node:hover ellipse,
+.fm-node:hover polygon {
+  stroke: var(--fm-node-hover-accent);
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.14)) drop-shadow(0 3px 8px rgba(0, 0, 0, 0.08));
+  transform: translateY(-2px) scale(1.01);
+  transform-origin: center;
+}
+.fm-node-accent-1 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-1) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-1);
+}
+.fm-node-accent-2 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-2) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-2);
+}
+.fm-node-accent-3 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-3) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-3);
+}
+.fm-node-accent-4 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-4) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-4);
+}
+.fm-node-accent-5 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-5) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-5);
+}
+.fm-node-accent-6 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-6) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-6);
+}
+.fm-node-accent-7 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-7) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-7);
+}
+.fm-node-accent-8 {
+  --fm-node-accent: var(--fm-node-stroke);
+  --fm-node-accent: color-mix(in srgb, var(--fm-accent-8) 50%, var(--fm-node-stroke));
+  --fm-node-hover-accent: var(--fm-accent-8);
+}
+.fm-node.fm-node-shape-note path,
+.fm-node.fm-node-shape-note rect {
+  fill: var(--fm-node-fill);
+  fill: color-mix(in srgb, #fef3c7 40%, var(--fm-node-fill));
+}
+.fm-node.fm-node-shape-cloud path {
+  fill: var(--fm-node-fill);
+  fill: color-mix(in srgb, var(--fm-accent-2) 15%, var(--fm-node-fill));
+}
+.fm-node.fm-node-shape-cylinder path {
+  fill: var(--fm-node-fill);
+  fill: color-mix(in srgb, var(--fm-accent-1) 12%, var(--fm-node-fill));
+}
+.fm-node.fm-node-shape-star path,
+.fm-node.fm-node-shape-pentagon path {
+  stroke-width: 1.8;
+}
+.fm-edge {
+  fill: none;
+  stroke: var(--fm-edge-color);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  paint-order: stroke;
+  transition: stroke 200ms ease, opacity 200ms ease, stroke-width 200ms ease;
+  cursor: default;
+}
+.fm-edge:hover {
+  stroke: var(--fm-accent-1);
+  stroke-width: 2.5;
+  opacity: 1;
+}
+.fm-edge-solid {
+  stroke-dasharray: none;
+}
+.fm-edge-dashed {
+  stroke-dasharray: 6 6;
+}
+.fm-edge-thick {
+  stroke-width: 2.5;
+}
+.fm-edge-thick:hover {
+  stroke-width: 3.5;
+}
+.fm-edge-back {
+  stroke: var(--fm-edge-muted);
+  opacity: 0.8;
+  stroke-dasharray: 4 4;
+}
+.fm-edge-labeled > rect {
+  fill: var(--fm-edge-label-bg);
+  stroke: var(--fm-edge-label-border);
+  stroke-width: 0.75;
+  rx: 6px;
+  ry: 6px;
+}
+/* Add a backdrop filter for modern glassmorphism effect on the rect */
+@supports (backdrop-filter: blur(4px)) {
+  .fm-edge-labeled > rect {
+    fill: color-mix(in srgb, var(--fm-edge-label-bg) 85%, transparent);
+    backdrop-filter: blur(8px);
+  }
+}
+.edge-label {
+  fill: var(--fm-edge-label-text);
+  font-weight: 600;
+  font-size: 0.88em;
+  letter-spacing: -0.01em;
+  text-rendering: optimizeLegibility;
+}
+marker#arrow-end path,
+marker#arrow-filled path,
+marker#arrow-circle path,
+marker#arrow-diamond path {
+  fill: var(--fm-edge-color);
+  stroke: none;
+  transition: fill 200ms ease;
+}
+.fm-edge:hover ~ marker#arrow-end path,
+.fm-edge:hover ~ marker#arrow-filled path,
+.fm-edge:hover ~ marker#arrow-circle path,
+.fm-edge:hover ~ marker#arrow-diamond path {
+  fill: var(--fm-accent-1);
+}
+marker#arrow-open path {
+  stroke: var(--fm-edge-muted);
+  fill: none;
+  stroke-width: 1.8;
+  transition: stroke 200ms ease;
+}
+marker#arrow-cross path {
+  stroke: var(--fm-edge-color);
+  fill: none;
+  stroke-width: 1.8;
+  transition: stroke 200ms ease;
+}
+.fm-cluster {
+  fill: var(--fm-cluster-fill);
+  stroke: var(--fm-cluster-stroke);
+  stroke-width: 1;
+  stroke-dasharray: 5 3;
+  rx: 12;
+  ry: 12;
+}
+.fm-cluster-label {
+  fill: var(--fm-cluster-label-color);
+  font-weight: 700;
+  font-size: 0.85em;
+  letter-spacing: 0.01em;
+}
+.fm-cluster-c4 {
+  fill: var(--fm-cluster-c4-fill);
+  stroke: var(--fm-cluster-c4-stroke);
+  stroke-dasharray: none;
+}
+.fm-cluster-swimlane {
+  fill: var(--fm-cluster-swimlane-fill);
+  stroke: var(--fm-cluster-swimlane-stroke);
+  stroke-dasharray: none;
+}
+.fm-label {
+  fill: var(--fm-text-color);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fm-node rect,
+  .fm-node path,
+  .fm-node circle,
+  .fm-node ellipse,
+  .fm-node polygon,
+  .fm-edge {
+    transition: none;
+    transform: none;
+  }
+}
+.fm-node:focus-visible {
+  outline: 2px solid var(--fm-accent-1);
+  outline-offset: 3px;
+}
+.fm-node-inactive { opacity: 0.40; }
+.fm-node-block-beta rect,
+.fm-node-block-beta path,
+.fm-node-block-beta circle,
+.fm-node-block-beta ellipse,
+.fm-node-block-beta polygon {
+fill: #546e7a;
+stroke: #455a64;
+}
+.fm-node-block-beta text {
+fill: #f8fafc;
+}
+.fm-node-block-beta-space {
+opacity: 0;
+pointer-events: none;
+}
+.fm-node-highlighted rect,
+.fm-node-highlighted path,
+.fm-node-highlighted circle,
+.fm-node-highlighted ellipse,
+.fm-node-highlighted polygon {
+stroke-width: 2.4;
+}
+.fm-node-highlighted text { font-weight: 600; }
+.fm-node-border-dashed rect,
+.fm-node-border-dashed path,
+.fm-node-border-dashed circle,
+.fm-node-border-dashed ellipse,
+.fm-node-border-dashed polygon {
+stroke-dasharray: 6 4;
+}
+.fm-node-border-double rect,
+.fm-node-border-double path,
+.fm-node-border-double circle,
+.fm-node-border-double ellipse,
+.fm-node-border-double polygon {
+stroke-width: 2.9;
+}
+.fm-cluster { fill-opacity: 0.08; }
+
+/* High contrast mode support */
+@media (prefers-contrast: more) {
+  :root {
+    --fm-bg: #ffffff !important;
+    --fm-text-color: #000000 !important;
+    --fm-node-fill: #ffffff !important;
+    --fm-node-stroke: #000000 !important;
+    --fm-edge-color: #000000 !important;
+  }
+  .fm-node { stroke-width: 2px !important; }
+  .fm-edge { stroke-width: 2px !important; }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .fm-edge, .fm-node {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Focus indicators for keyboard navigation */
+.fm-node:focus, .fm-edge:focus {
+  outline: 3px solid #0066cc;
+  outline-offset: 2px;
+}
+
+.fm-node:focus-visible, .fm-edge:focus-visible {
+  outline: 3px solid #0066cc;
+  outline-offset: 2px;
+}
+
+/* Screen reader only content */
+.fm-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media print {
+  .fm-node text, .fm-edge-labeled text, .fm-cluster-label {
+    font-size: 8.0px !important;
+    fill: #111 !important;
+  }
+  .fm-node path, .fm-node rect, .fm-node circle, .fm-edge {
+    stroke: #111 !important;
+  }
+  .fm-cluster {
+    fill: #fff !important;
+    stroke: #666 !important;
+  }
+}</style><defs><marker id="arrow-end" markerWidth="8" markerHeight="7" refX="8" refY="3.50" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L8 3.50 L0 7 L2 3.50 Z" fill="#64748b"/></marker><marker id="arrow-filled" markerWidth="9" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L9 4 L0 8 L2.50 4 Z" fill="#64748b"/></marker><marker id="arrow-open" markerWidth="8" markerHeight="7" refX="7" refY="3.50" orient="auto" markerUnits="strokeWidth"><path d="M0 0.50 L7 3.50 L0 6.50" fill="none" stroke="#64748b" stroke-width="1.20"/></marker><marker id="arrow-half-top" markerWidth="12" markerHeight="12" refX="7.90" refY="7.25" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 0 L10 8 L0 8 Z" fill="#64748b"/></marker><marker id="arrow-half-bottom" markerWidth="12" markerHeight="12" refX="7.90" refY="0.75" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 0 L10 0 L0 8 Z" fill="#64748b"/></marker><marker id="arrow-stick-top" markerWidth="12" markerHeight="12" refX="7.50" refY="7" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 0 L7 7" fill="none" stroke="#64748b" stroke-width="1.50"/></marker><marker id="arrow-stick-bottom" markerWidth="12" markerHeight="12" refX="7.50" refY="0" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 7 L7 0" fill="none" stroke="#64748b" stroke-width="1.50"/></marker><marker id="arrow-start" markerWidth="8" markerHeight="7" refX="8" refY="3.50" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 0 L8 3.50 L0 7 L2 3.50 Z" fill="#64748b"/></marker><marker id="arrow-start-filled" markerWidth="9" markerHeight="8" refX="9" refY="4" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0 0 L9 4 L0 8 L2.50 4 Z" fill="#64748b"/></marker><marker id="arrow-circle" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M6 3 A3 3 0 0 1 0 3 A3 3 0 0 1 6 3 Z" fill="#64748b"/></marker><marker id="arrow-cross" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L6 6 M6 0 L0 6" fill="none" stroke="#64748b" stroke-width="1.20"/></marker><marker id="arrow-diamond" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M4 0 L8 4 L4 8 L0 4 Z" fill="#64748b"/></marker><filter id="drop-shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="2" dy="2" stdDeviation="6" flood-opacity="0.15" flood-color="#0f172a"/></filter><filter id="node-glow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="0" stdDeviation="6" flood-opacity="0.35" flood-color="#3b82f6"/></filter></defs><g id="fm-edge-0" class="fm-edge" data-fm-edge-id="0" data-fm-source-span="2:1-2:26@0-0" data-fm-source-start-line="2" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="2" data-fm-source-end-col="26" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M235.52 158.50 C235.52 165,240.58 178,235.52 184.50 C230.46 191,220.34 178,215.28 184.50 C210.22 191,215.28 204,215.28 210.50" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-solid" data-fm-edge-id="0" marker-end="url(#arrow-end)" data-fm-source-span="2:1-2:26@0-0" data-fm-source-start-line="2" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="2" data-fm-source-end-col="26" data-fm-source-end-byte="0"/><title>Markdown points to AST</title></g><g id="fm-edge-1" class="fm-edge" data-fm-edge-id="1" data-fm-source-span="3:1-3:18@0-0" data-fm-source-start-line="3" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="3" data-fm-source-end-col="18" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M215.28 277 C215.28 283.50,213.42 296.50,215.28 303 C217.14 309.50,220.87 296.50,222.73 303 C224.59 309.50,222.73 322.50,222.73 329" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-solid" data-fm-edge-id="1" marker-end="url(#arrow-end)" data-fm-source-span="3:1-3:18@0-0" data-fm-source-start-line="3" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="3" data-fm-source-end-col="18" data-fm-source-end-byte="0"/><title>AST points to Theme</title></g><g id="fm-edge-2" class="fm-edge" data-fm-edge-id="2" data-fm-source-span="4:1-4:17@0-0" data-fm-source-start-line="4" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="4" data-fm-source-end-col="17" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M222.73 395.50 C222.73 402,241.77 415,222.73 421.50 C203.69 428,165.60 415,146.56 421.50 C127.52 428,146.56 441,146.56 447.50" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-solid" data-fm-edge-id="2" marker-end="url(#arrow-end)" data-fm-source-span="4:1-4:17@0-0" data-fm-source-start-line="4" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="4" data-fm-source-end-col="17" data-fm-source-end-byte="0"/><title>Theme points to HTML</title></g><g id="fm-edge-3" class="fm-edge" data-fm-edge-id="3" data-fm-source-span="5:1-5:16@0-0" data-fm-source-start-line="5" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="5" data-fm-source-end-col="16" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M222.73 395.50 C222.73 402,206.27 415,222.73 421.50 C239.19 428,272.10 415,288.56 421.50 C305.02 428,288.56 441,288.56 447.50" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-solid" data-fm-edge-id="3" marker-end="url(#arrow-end)" data-fm-source-span="5:1-5:16@0-0" data-fm-source-start-line="5" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="5" data-fm-source-end-col="16" data-fm-source-end-byte="0"/><title>Theme points to PDF</title></g><g id="fm-edge-4" class="fm-edge" data-fm-edge-id="4" data-fm-source-span="6:1-6:38@0-0" data-fm-source-start-line="6" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="6" data-fm-source-end-col="38" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M453.47 158.50 C453.47 165,458.11 178,453.47 184.50 C448.83 191,439.55 178,434.91 184.50 C430.27 191,434.91 204,434.91 210.50" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-solid" data-fm-edge-id="4" marker-end="url(#arrow-end)" data-fm-source-span="6:1-6:38@0-0" data-fm-source-start-line="6" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="6" data-fm-source-end-col="38" data-fm-source-end-byte="0"/><title>frankenmermaid points to SVG asset</title></g><g id="fm-edge-5" class="fm-edge" data-fm-edge-id="5" data-fm-source-span="7:1-7:12@0-0" data-fm-source-start-line="7" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="7" data-fm-source-end-col="12" data-fm-source-end-byte="0" role="graphics-symbol" tabindex="0"><path d="M434.91 277 C434.91 298.31,471.49 340.94,434.91 362.25 C398.32 383.56,325.15 340.94,288.56 362.25 C251.98 383.56,288.56 426.19,288.56 447.50" fill="none" stroke="#64748b" stroke-width="1.80" class="fm-edge fm-edge-dashed" data-fm-edge-id="5" marker-end="url(#arrow-end)" data-fm-source-span="7:1-7:12@0-0" data-fm-source-start-line="7" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="7" data-fm-source-end-col="12" data-fm-source-end-byte="0" stroke-dasharray="5,5"/><title>SVG asset optionally points to PDF</title></g><g id="fm-node-a-0" class="fm-node fm-node-accent-5 fm-node-shape-rect" data-id="A" data-fm-node-id="A" data-fm-source-span="2:1-2:26@0-0" data-fm-source-start-line="2" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="2" data-fm-source-end-col="26" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="Markdown" tabindex="0"><rect x="165.28" y="92" width="140.48" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="235.52" y="130.25" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">Markdown</text><title>Node: Markdown, rectangle</title></g><g id="fm-node-b-1" class="fm-node fm-node-accent-6 fm-node-shape-rect" data-id="B" data-fm-node-id="B" data-fm-source-span="2:1-2:26@0-0" data-fm-source-start-line="2" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="2" data-fm-source-end-col="26" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="AST" tabindex="0"><rect x="165.28" y="210.50" width="100" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="215.28" y="248.75" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">AST</text><title>Node: AST, rectangle</title></g><g id="fm-node-c-2" class="fm-node fm-node-accent-3 fm-node-shape-rect" data-id="C" data-fm-node-id="C" data-fm-source-span="3:1-3:18@0-0" data-fm-source-start-line="3" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="3" data-fm-source-end-col="18" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="Theme" tabindex="0"><rect x="165.28" y="329" width="114.90" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="222.73" y="367.25" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">Theme</text><title>Node: Theme, rectangle</title></g><g id="fm-node-d-3" class="fm-node fm-node-accent-4 fm-node-shape-rect" data-id="D" data-fm-node-id="D" data-fm-source-span="4:1-4:17@0-0" data-fm-source-start-line="4" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="4" data-fm-source-end-col="17" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="HTML" tabindex="0"><rect x="92" y="447.50" width="109.12" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="146.56" y="485.75" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">HTML</text><title>Node: HTML, rectangle</title></g><g id="fm-node-e-4" class="fm-node fm-node-accent-1 fm-node-shape-rect" data-id="E" data-fm-node-id="E" data-fm-source-span="5:1-5:16@0-0" data-fm-source-start-line="5" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="5" data-fm-source-end-col="16" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="PDF" tabindex="0"><rect x="238.56" y="447.50" width="100" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="288.56" y="485.75" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">PDF</text><title>Node: PDF, rectangle</title></g><g id="fm-node-f-5" class="fm-node fm-node-accent-2 fm-node-shape-rect" data-id="F" data-fm-node-id="F" data-fm-source-span="6:1-6:38@0-0" data-fm-source-start-line="6" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="6" data-fm-source-end-col="38" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="frankenmermaid" tabindex="0"><rect x="365.49" y="92" width="175.95" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="453.47" y="130.25" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">frankenmermaid</text><title>Node: frankenmermaid, rectangle</title></g><g id="fm-node-g-6" class="fm-node fm-node-accent-7 fm-node-shape-rect" data-id="G" data-fm-node-id="G" data-fm-source-span="6:1-6:38@0-0" data-fm-source-start-line="6" data-fm-source-start-col="1" data-fm-source-start-byte="0" data-fm-source-end-line="6" data-fm-source-end-col="38" data-fm-source-end-byte="0" role="graphics-symbol" aria-label="SVG asset" tabindex="0"><rect x="365.49" y="210.50" width="138.82" height="66.50" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.60" rx="3.85" filter="url(#drop-shadow)"/><text x="434.91" y="248.75" text-anchor="middle" font-family="&#39;Inter&#39;, -apple-system, BlinkMacSystemFont, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="15" fill="#0f172a">SVG asset</text><title>Node: SVG asset, rectangle</title></g></svg>

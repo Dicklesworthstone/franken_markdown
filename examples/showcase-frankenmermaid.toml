@@ -1,0 +1,12 @@
+[layout]
+algorithm = "sugiyama"
+node_spacing = 42
+rank_spacing = 52
+edge_routing = "spline"
+
+[svg]
+theme = "corporate"
+rounded_corners = 7
+shadows = true
+gradients = false
+accessibility = true

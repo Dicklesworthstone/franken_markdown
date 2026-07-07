@@ -66,6 +66,25 @@ A second, denser table to stress column measuring:
 | JSON   | data      | yes         |
 | TOML   | config    | yes         |
 
+## Diagrams
+
+The same document can carry a Mermaid source block and a frankenmermaid-rendered
+SVG asset. HTML displays the SVG directly; file-input PDF renders auto-load the
+same sibling SVG file and draw the diagram as vector content with selectable
+labels.
+
+![franken_markdown rendering pipeline](showcase-mermaid.svg)
+
+```mermaid
+flowchart TD
+    A[Markdown] --> B[AST]
+    B --> C[Theme]
+    C --> D[HTML]
+    C --> E[PDF]
+    F[frankenmermaid] --> G[SVG asset]
+    G -.-> E
+```
+
 ## Blockquotes
 
 > Blockquotes get a soft accent bar and a tinted background, and they wrap

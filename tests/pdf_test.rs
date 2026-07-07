@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::{
     HtmlOptions, PageMargins, PageSize, PdfImageAsset, PdfOptions, Theme, parse_markdown,
-    render_html, render_pdf, render_pdf_document, render_pdf_document_profiled,
+    render_html, render_pdf, render_pdf_document, render_pdf_document_profiled, render_warnings,
 };
 
 fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
@@ -616,6 +616,49 @@ fn pdf_renders_supplied_svg_image_as_vector_content() {
     assert!(
         text.contains("/O /Layout /BBox ["),
         "SVG figures should carry a layout bounding box"
+    );
+}
+
+#[test]
+fn pdf_renders_checked_in_frankenmermaid_svg_as_vector_content() {
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "showcase-mermaid.svg",
+            include_bytes!("../examples/showcase-mermaid.svg").to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let md = "![franken_markdown rendering pipeline](showcase-mermaid.svg)";
+    let doc = parse_markdown(md);
+
+    let warnings = render_warnings(&doc, &opts);
+    assert!(
+        warnings.is_empty(),
+        "checked-in frankenmermaid SVG should render without fallback warnings: {warnings:?}"
+    );
+
+    let pdf = render_pdf_document(&doc, &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "checked-in frankenmermaid SVG should render as vector PDF content, not a raster XObject"
+    );
+    assert!(
+        !text.contains("/XObject << /Im"),
+        "a pure-SVG document should not allocate image XObjects"
+    );
+    assert!(
+        text.contains("/S /Figure"),
+        "tagged structure should mark the real frankenmermaid SVG as a figure"
+    );
+    assert!(
+        text.contains("/Alt (franken_markdown rendering pipeline)"),
+        "the real frankenmermaid SVG should preserve Markdown alt text"
+    );
+    assert!(
+        text.contains("/O /Layout /BBox ["),
+        "the real frankenmermaid SVG figure should carry a layout bounding box"
     );
 }
 

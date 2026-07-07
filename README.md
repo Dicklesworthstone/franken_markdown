@@ -22,12 +22,13 @@ cargo install franken_markdown
 
 > **Status snapshot.** `0.2.0` is published on crates.io, and the `v0.2.0`
 > GitHub release ships smoke-tested `fmd` binaries for Linux, macOS Intel,
-> macOS Apple Silicon, and Windows. `main` is ahead of that tag: the same
-> clean-room Rust core now drives HTML, PDF, the CLI, opt-in batch rendering,
-> SVG/Mermaid-asset PDF rendering, CSS-aware SVG paint ordering, and
-> browser/WASM package sources. The WASM package is assembled and checked in
-> CI, but is not yet published to npm. Optional SIMD and deeper block
-> pagination remain roadmap work, not shipped claims.
+> macOS Apple Silicon, and Windows. `main` is ahead of that tag and contains the
+> current renderer: HTML, PDF, the CLI, opt-in Asupersync batch rendering,
+> SVG/Mermaid-asset PDF rendering, measured table allocation, CSS-aware SVG paint
+> ordering, marker paint-order support, and browser/WASM package sources. The
+> WASM package is assembled and checked in CI, but is not yet published to npm.
+> Optional SIMD and deeper block pagination remain roadmap work, not shipped
+> claims.
 
 ---
 
@@ -61,7 +62,7 @@ output as a design constraint.
 | Browser integration | Build the wasm-bindgen package from `wasm/` and pass Markdown, font bytes, image bytes, and options from the host. npm publication remains a release step |
 | Directory rendering | Build with `--features batch` and use `fmd batch` for bounded parallel rendering with deterministic receipts |
 
-### Shipped Feature Map
+### Current Capability Map
 
 | Area | Current capability |
 |---|---|
@@ -70,7 +71,7 @@ output as a design constraint.
 | PDF typography | Curated font embedding and subsetting, true metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and a hierarchical tagged-PDF structure tree |
 | Tables | HTML and PDF use measured columns. The PDF allocator computes per-column min/max content widths, then solves a constrained badness problem so dense headers get useful width instead of equal-column wrapping |
 | Code blocks | Clean-room highlighting is shared by HTML and PDF. PDF code blocks support muted line numbers, and ASCII/Mermaid diagram fences preserve geometry by fitting rows rather than hard-wrapping them |
-| SVG and diagrams | File-input PDF renders auto-load relative local PNG/SVG image destinations. Supported SVGs are drawn as vector PDF operators, covering paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, markers, opacity, drop shadows, CSS variables/selectors, `paint-order`, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
+| SVG and diagrams | File-input PDF renders auto-load relative local PNG/SVG image destinations. Supported SVGs are drawn as vector PDF operators, covering paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, marker view boxes/orientation/units, marker-child `paint-order`, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
 | Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid, so HTML and PDF can carry the same diagram without a JavaScript runtime |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST; hosts can supply font bytes and image assets without filesystem access in the core |
 | CLI | `fmd README.md` works as the obvious first command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings make the contract usable by humans and agents |
@@ -230,14 +231,22 @@ Intel/AMD:
   reused;
 - table width allocation spends extra columns only where min/max content metrics
   say the width will reduce wrapping;
-- SVG paint ordering stays on the compact combined-paint path unless a shape
-  actually asks for a custom layer order;
+- SVG paint ordering stays on the compact combined-paint path unless a shape or
+  marker child actually asks for a custom layer order;
 - batch mode uses an explicit worker budget instead of spawning unbounded work.
 
 Those choices map well to Apple M-series unified-memory machines and modern
 Intel/AMD cache hierarchies because they favor contiguous memory, predictable
 branches, local reuse, and append-style writers. They also keep the scalar path
 auditable enough to serve as the future SIMD oracle.
+
+The split is intentional: platform-specific release jobs prove the binary runs
+on the real CPU family, while the implementation avoids CPU-extension lock-in.
+Apple Silicon gets native ARM64 archives and scalar loops that suit wide,
+low-latency cores. Intel and AMD get portable x86_64 archives whose hot paths do
+not assume AVX2, AVX-512, BMI, or build-host-only flags. Future SIMD work can
+accelerate the same scanner/compressor/layout islands, but the scalar behavior
+will remain the test oracle for every target.
 
 ### Future SIMD Gate
 
@@ -733,9 +742,10 @@ Honest about what the renderer does not do yet.
   `--pdf-image` can provide or override assets explicitly.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
-  embedded PNGs, and `paint-order` behavior needed by the current showcase and
-  frankenmermaid output. Unsupported SVG features are reported as structured
-  render warnings rather than silently pretending to match a browser.
+  embedded PNGs, marker view boxes/orientation/units, and `paint-order` behavior
+  needed by the current showcase and frankenmermaid output. Unsupported SVG
+  features are reported as structured render warnings rather than silently
+  pretending to match a browser.
 - **CommonMark coverage is partial and measured.** Against the official
   CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **379/652
   examples match** after normalizing fmd's styled HTML (64.1% of the 591 in-scope

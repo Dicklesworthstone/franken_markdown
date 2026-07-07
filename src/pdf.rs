@@ -13822,14 +13822,15 @@ fn serialize(
         // content, using the same extents as the gutter bars.
         let mut quote_acc = quote_extents(placed);
         for (bar_x, top_y, bot_y) in quote_acc.values() {
-            bg.push_str(&rounded_rect_fill(
+            append_rounded_rect_fill(
+                &mut bg,
                 bar_x - QUOTE_BG_PAD_X,
                 bot_y - QUOTE_BG_PAD_V,
                 page.right_x(),
                 top_y + QUOTE_BG_PAD_V,
                 3.0,
                 palette.quote_bg,
-            ));
+            );
         }
 
         // (a2) Table zebra stripes: one subtle full-measure tint per shaded body
@@ -13843,14 +13844,15 @@ fn serialize(
             let size = p.line.size;
             let top_y = p.y + size * 0.92;
             let bot_y = p.y - size * 0.40;
-            bg.push_str(&rounded_rect_fill(
+            append_rounded_rect_fill(
+                &mut bg,
                 p.line.rule_x,
                 bot_y,
                 page.right_x(),
                 top_y,
                 0.0,
                 palette.table_stripe,
-            ));
+            );
         }
 
         // (b) Code panels: maximal runs of equal nonzero `bg` id within the page.
@@ -13873,14 +13875,15 @@ fn serialize(
                 let x1 = page.right_x();
                 let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
                 let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
-                bg.push_str(&rounded_rect_fill(
+                append_rounded_rect_fill(
+                    &mut bg,
                     x0,
                     bot_y,
                     x1,
                     top_y,
                     PANEL_RADIUS,
                     palette.code_panel_bg,
-                ));
+                );
             }
             i = j.max(i + 1);
         }
@@ -13898,14 +13901,15 @@ fn serialize(
                 let cx1 = seg.x + seg.width + CHIP_PAD_X;
                 let cy0 = p.y - p.line.size * 0.26;
                 let cy1 = p.y + p.line.size * 0.74;
-                bg.push_str(&rounded_rect_fill(
+                append_rounded_rect_fill(
+                    &mut bg,
                     cx0,
                     cy0,
                     cx1,
                     cy1,
                     CHIP_RADIUS,
                     palette.code_chip_bg,
-                ));
+                );
             }
         }
 
@@ -18660,51 +18664,112 @@ fn flush_quote_bars(
     acc.clear();
 }
 
-/// A light-gray rounded-rectangle fill, color-isolated with `q`/`Q` so the fill
+/// Append a rounded-rectangle fill, color-isolated with `q`/`Q` so the fill
 /// color never leaks into following text. Built from 4 lines + 4 cubic Beziers
-/// (kappa = 0.5523). Returns an empty string for degenerate rectangles.
-fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f32)) -> String {
+/// (kappa = 0.5523). Degenerate rectangles append nothing.
+fn append_rounded_rect_fill(
+    out: &mut String,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    r: f32,
+    c: (f32, f32, f32),
+) {
     let x0 = finite_pdf_scalar(x0);
     let y0 = finite_pdf_scalar(y0);
     let x1 = finite_pdf_scalar(x1);
     let y1 = finite_pdf_scalar(y1);
     let r = finite_pdf_scalar(r);
     if x1 <= x0 || y1 <= y0 {
-        return String::new();
+        return;
     }
     let r = r.min((x1 - x0) * 0.5).min((y1 - y0) * 0.5).max(0.0);
     let k = r * 0.5523; // circle -> bezier magic constant
     let (rc, gc, bc) = c;
-    format!(
-        "q {rc} {gc} {bc} rg \
-         {xa} {y0} m {xb} {y0} l \
-         {br1x} {y0} {x1} {br2y} {x1} {ya} c \
-         {x1} {yb} l \
-         {x1} {tr1y} {tr2x} {y1} {xb} {y1} c \
-         {xa} {y1} l \
-         {tl1x} {y1} {x0} {tl2y} {x0} {yb} c \
-         {x0} {ya} l \
-         {x0} {bl1y} {bl2x} {y0} {xa} {y0} c f Q\n",
-        rc = pdf_fixed3(rc),
-        gc = pdf_fixed3(gc),
-        bc = pdf_fixed3(bc),
-        x0 = pdf_fixed2(x0),
-        y0 = pdf_fixed2(y0),
-        x1 = pdf_fixed2(x1),
-        y1 = pdf_fixed2(y1),
-        xa = pdf_fixed2(x0 + r),
-        xb = pdf_fixed2(x1 - r),
-        ya = pdf_fixed2(y0 + r),
-        yb = pdf_fixed2(y1 - r),
-        br1x = pdf_fixed2(x1 - r + k),
-        br2y = pdf_fixed2(y0 + r - k),
-        tr1y = pdf_fixed2(y1 - r + k),
-        tr2x = pdf_fixed2(x1 - r + k),
-        tl1x = pdf_fixed2(x0 + r - k),
-        tl2y = pdf_fixed2(y1 - r + k),
-        bl1y = pdf_fixed2(y0 + r - k),
-        bl2x = pdf_fixed2(x0 + r - k),
-    )
+
+    out.push_str("q ");
+    append_pdf_fixed3(out, rc);
+    out.push(' ');
+    append_pdf_fixed3(out, gc);
+    out.push(' ');
+    append_pdf_fixed3(out, bc);
+    out.push_str(" rg ");
+    append_pdf_fixed2(out, x0 + r);
+    out.push(' ');
+    append_pdf_fixed2(out, y0);
+    out.push_str(" m ");
+    append_pdf_fixed2(out, x1 - r);
+    out.push(' ');
+    append_pdf_fixed2(out, y0);
+    out.push_str(" l ");
+    append_pdf_fixed2(out, x1 - r + k);
+    out.push(' ');
+    append_pdf_fixed2(out, y0);
+    out.push(' ');
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y0 + r - k);
+    out.push(' ');
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y0 + r);
+    out.push_str(" c ");
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y1 - r);
+    out.push_str(" l ");
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y1 - r + k);
+    out.push(' ');
+    append_pdf_fixed2(out, x1 - r + k);
+    out.push(' ');
+    append_pdf_fixed2(out, y1);
+    out.push(' ');
+    append_pdf_fixed2(out, x1 - r);
+    out.push(' ');
+    append_pdf_fixed2(out, y1);
+    out.push_str(" c ");
+    append_pdf_fixed2(out, x0 + r);
+    out.push(' ');
+    append_pdf_fixed2(out, y1);
+    out.push_str(" l ");
+    append_pdf_fixed2(out, x0 + r - k);
+    out.push(' ');
+    append_pdf_fixed2(out, y1);
+    out.push(' ');
+    append_pdf_fixed2(out, x0);
+    out.push(' ');
+    append_pdf_fixed2(out, y1 - r + k);
+    out.push(' ');
+    append_pdf_fixed2(out, x0);
+    out.push(' ');
+    append_pdf_fixed2(out, y1 - r);
+    out.push_str(" c ");
+    append_pdf_fixed2(out, x0);
+    out.push(' ');
+    append_pdf_fixed2(out, y0 + r);
+    out.push_str(" l ");
+    append_pdf_fixed2(out, x0);
+    out.push(' ');
+    append_pdf_fixed2(out, y0 + r - k);
+    out.push(' ');
+    append_pdf_fixed2(out, x0 + r - k);
+    out.push(' ');
+    append_pdf_fixed2(out, y0);
+    out.push(' ');
+    append_pdf_fixed2(out, x0 + r);
+    out.push(' ');
+    append_pdf_fixed2(out, y0);
+    out.push_str(" c f Q\n");
+}
+
+#[cfg(test)]
+fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f32)) -> String {
+    let mut out = String::new();
+    append_rounded_rect_fill(&mut out, x0, y0, x1, y1, r, c);
+    out
 }
 
 /// A subset face ready to embed.
@@ -18951,7 +19016,6 @@ fn append_pdf_fixed2(out: &mut String, value: f32) {
     append_pdf_fixed(out, value, 100);
 }
 
-#[cfg(test)]
 fn append_pdf_fixed3(out: &mut String, value: f32) {
     append_pdf_fixed(out, value, 1000);
 }
@@ -20656,6 +20720,24 @@ mod pdf_writer_tests {
             rounded_rect_fill(0.0, 0.0, f32::NAN, 10.0, 2.0, (0.1, 0.2, 0.3)),
             "",
             "NaN x1 should coerce to 0 and produce a degenerate rectangle"
+        );
+    }
+
+    #[test]
+    fn rounded_rect_fill_preserves_pdf_operator_sequence() {
+        assert_eq!(
+            rounded_rect_fill(0.0, 0.0, 10.0, 5.0, 0.0, (0.1, 0.2, 0.3)),
+            concat!(
+                "q 0.100 0.200 0.300 rg ",
+                "0.00 0.00 m 10.00 0.00 l ",
+                "10.00 0.00 10.00 0.00 10.00 0.00 c ",
+                "10.00 5.00 l ",
+                "10.00 5.00 10.00 5.00 10.00 5.00 c ",
+                "0.00 5.00 l ",
+                "0.00 5.00 0.00 5.00 0.00 5.00 c ",
+                "0.00 0.00 l ",
+                "0.00 0.00 0.00 0.00 0.00 0.00 c f Q\n"
+            )
         );
     }
 

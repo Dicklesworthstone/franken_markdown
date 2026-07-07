@@ -2419,6 +2419,40 @@ fn pdf_svg_css_rect_rx_ry_rounds_rectangle_geometry() {
 }
 
 #[test]
+fn pdf_svg_rect_rx_ry_emit_asymmetric_elliptical_corners() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 34">
+  <defs>
+    <clipPath id="asymmetric-clip">
+      <rect x="2" y="18" width="20" height="12" rx="6" ry="2"/>
+    </clipPath>
+  </defs>
+  <rect x="2" y="2" width="20" height="12" rx="6" ry="2" fill="#000001"/>
+  <rect x="2" y="18" width="20" height="12" fill="#000002" clip-path="url(#asymmetric-clip)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("asymmetric-radii.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Asymmetric radii](asymmetric-radii.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("8 2 m 16 2 l 19.31 2 22 2.9 22 4 c 22 12 l"),
+        "rx=6 and ry=2 should keep distinct horizontal and vertical corner radii: {text}"
+    );
+    assert!(
+        !text.contains("8 2 m 16 2 l 19.31 2 22 4.69 22 8 c 22 8 l"),
+        "asymmetric SVG rect radii must not collapse to the old circular rx-only path: {text}"
+    );
+    assert!(
+        text.contains("8 18 m 16 18 l 19.31 18 22 18.9 22 20 c 22 28 l") && text.contains("W n"),
+        "clipPath rect radii should use the same asymmetric corner geometry as painted rects: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_css_compound_selectors_apply_with_specificity() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 32">

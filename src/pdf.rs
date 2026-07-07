@@ -372,6 +372,7 @@ struct SvgRect {
     w: f32,
     h: f32,
     rx: f32,
+    ry: f32,
     style: SvgStyle,
     link: Option<LinkTarget>,
 }
@@ -3906,7 +3907,7 @@ fn parse_svg_rect(
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
-    let rx = parse_svg_rect_radius(attrs, css_rules, css_vars, ancestors);
+    let (rx, ry) = parse_svg_rect_radius(attrs, css_rules, css_vars, ancestors);
     Some(SvgRect {
         x: svg_attr(attrs, "x")
             .and_then(parse_svg_number)
@@ -3917,6 +3918,7 @@ fn parse_svg_rect(
         w,
         h,
         rx,
+        ry,
         style: parse_svg_style_with_ancestors(
             "rect",
             attrs,
@@ -3939,12 +3941,20 @@ struct SvgRectRadius {
     ry: Option<f32>,
 }
 
+impl SvgRectRadius {
+    fn resolved(self) -> (f32, f32) {
+        let rx = self.rx.or(self.ry).unwrap_or(0.0);
+        let ry = self.ry.or(self.rx).unwrap_or(0.0);
+        (rx, ry)
+    }
+}
+
 fn parse_svg_rect_radius(
     attrs: &[(String, String)],
     css_rules: &[SvgCssRule],
     css_vars: &[SvgCssVariable],
     ancestors: &[SvgCssAncestor],
-) -> f32 {
+) -> (f32, f32) {
     let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, "rect", attrs);
     let mut radius = SvgRectRadius {
         rx: svg_attr(attrs, "rx").and_then(|value| parse_svg_css_number(value, &scoped_css_vars)),
@@ -3956,7 +3966,7 @@ fn parse_svg_rect_radius(
     if let Some(style_attr) = svg_attr(attrs, "style") {
         apply_svg_rect_radius_decls(&mut radius, style_attr, &scoped_css_vars);
     }
-    radius.rx.or(radius.ry).unwrap_or(0.0)
+    radius.resolved()
 }
 
 fn apply_svg_rect_radius_decls(
@@ -6793,14 +6803,12 @@ fn svg_clip_rect_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
     let y = svg_attr(attrs, "y")
         .and_then(parse_svg_number)
         .unwrap_or(0.0);
-    let r = svg_attr(attrs, "rx")
-        .or_else(|| svg_attr(attrs, "ry"))
-        .and_then(parse_svg_number)
-        .unwrap_or(0.0)
-        .min(w * 0.5)
-        .min(h * 0.5)
-        .max(0.0);
-    Some(svg_rect_path_ops(x, y, w, h, r))
+    let (rx, ry) = SvgRectRadius {
+        rx: svg_attr(attrs, "rx").and_then(parse_svg_number),
+        ry: svg_attr(attrs, "ry").and_then(parse_svg_number),
+    }
+    .resolved();
+    Some(svg_rect_path_ops(x, y, w, h, rx, ry))
 }
 
 fn svg_clip_circle_ops(attrs: &[(String, String)]) -> Option<Vec<SvgPathOp>> {
@@ -6898,8 +6906,10 @@ fn transform_svg_path_ops(ops: &mut [SvgPathOp], transform: SvgTransform) {
     }
 }
 
-fn svg_rect_path_ops(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<SvgPathOp> {
-    if r <= 0.0 {
+fn svg_rect_path_ops(x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32) -> Vec<SvgPathOp> {
+    let rx = rx.min(w * 0.5).max(0.0);
+    let ry = ry.min(h * 0.5).max(0.0);
+    if rx <= 0.0 || ry <= 0.0 {
         return vec![
             SvgPathOp::Move(x, y),
             SvgPathOp::Line(x + w, y),
@@ -6908,19 +6918,20 @@ fn svg_rect_path_ops(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<SvgPathOp> {
             SvgPathOp::Close,
         ];
     }
-    let k = r * 0.5523;
+    let kx = rx * 0.5523;
+    let ky = ry * 0.5523;
     let x1 = x + w;
     let y1 = y + h;
     vec![
-        SvgPathOp::Move(x + r, y),
-        SvgPathOp::Line(x1 - r, y),
-        SvgPathOp::Cubic(x1 - r + k, y, x1, y + r - k, x1, y + r),
-        SvgPathOp::Line(x1, y1 - r),
-        SvgPathOp::Cubic(x1, y1 - r + k, x1 - r + k, y1, x1 - r, y1),
-        SvgPathOp::Line(x + r, y1),
-        SvgPathOp::Cubic(x + r - k, y1, x, y1 - r + k, x, y1 - r),
-        SvgPathOp::Line(x, y + r),
-        SvgPathOp::Cubic(x, y + r - k, x + r - k, y, x + r, y),
+        SvgPathOp::Move(x + rx, y),
+        SvgPathOp::Line(x1 - rx, y),
+        SvgPathOp::Cubic(x1 - rx + kx, y, x1, y + ry - ky, x1, y + ry),
+        SvgPathOp::Line(x1, y1 - ry),
+        SvgPathOp::Cubic(x1, y1 - ry + ky, x1 - rx + kx, y1, x1 - rx, y1),
+        SvgPathOp::Line(x + rx, y1),
+        SvgPathOp::Cubic(x + rx - kx, y1, x, y1 - ry + ky, x, y1 - ry),
+        SvgPathOp::Line(x, y + ry),
+        SvgPathOp::Cubic(x, y + ry - ky, x + rx - kx, y, x + rx, y),
         SvgPathOp::Close,
     ]
 }
@@ -15002,8 +15013,9 @@ fn draw_svg_rect(
 }
 
 fn append_svg_rect_path(body: &mut String, rect: &SvgRect) {
-    let r = rect.rx.min(rect.w * 0.5).min(rect.h * 0.5).max(0.0);
-    if r <= 0.0 {
+    let rx = rect.rx.min(rect.w * 0.5).max(0.0);
+    let ry = rect.ry.min(rect.h * 0.5).max(0.0);
+    if rx <= 0.0 || ry <= 0.0 {
         body.push_str(&format!(
             "{x} {y} {w} {h} re ",
             x = pdf_num(rect.x),
@@ -15012,7 +15024,7 @@ fn append_svg_rect_path(body: &mut String, rect: &SvgRect) {
             h = pdf_num(rect.h),
         ));
     } else {
-        append_svg_rounded_rect_path(body, rect.x, rect.y, rect.w, rect.h, r);
+        append_svg_rounded_rect_path(body, rect.x, rect.y, rect.w, rect.h, rx, ry);
     }
 }
 
@@ -16855,8 +16867,17 @@ fn append_svg_alpha_state(body: &mut String, fill_alpha: u16, stroke_alpha: u16)
     body.push_str(&format!("/GSa{fill_alpha:04}{stroke_alpha:04} gs"));
 }
 
-fn append_svg_rounded_rect_path(body: &mut String, x: f32, y: f32, w: f32, h: f32, r: f32) {
-    let k = r * 0.5523;
+fn append_svg_rounded_rect_path(
+    body: &mut String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rx: f32,
+    ry: f32,
+) {
+    let kx = rx * 0.5523;
+    let ky = ry * 0.5523;
     let x1 = x + w;
     let y1 = y + h;
     body.push_str(&format!(
@@ -16872,18 +16893,18 @@ fn append_svg_rounded_rect_path(body: &mut String, x: f32, y: f32, w: f32, h: f3
         y = pdf_num(y),
         x1 = pdf_num(x1),
         y1 = pdf_num(y1),
-        mx = pdf_num(x + r),
-        lx = pdf_num(x1 - r),
-        my = pdf_num(y + r),
-        ly = pdf_num(y1 - r),
-        c1x = pdf_num(x1 - r + k),
-        c1y = pdf_num(y + r - k),
-        c2y = pdf_num(y1 - r + k),
-        c2x = pdf_num(x1 - r + k),
-        c3x = pdf_num(x + r - k),
-        c3y = pdf_num(y1 - r + k),
-        c4y = pdf_num(y + r - k),
-        c4x = pdf_num(x + r - k),
+        mx = pdf_num(x + rx),
+        lx = pdf_num(x1 - rx),
+        my = pdf_num(y + ry),
+        ly = pdf_num(y1 - ry),
+        c1x = pdf_num(x1 - rx + kx),
+        c1y = pdf_num(y + ry - ky),
+        c2y = pdf_num(y1 - ry + ky),
+        c2x = pdf_num(x1 - rx + kx),
+        c3x = pdf_num(x + rx - kx),
+        c3y = pdf_num(y1 - ry + ky),
+        c4y = pdf_num(y + ry - ky),
+        c4x = pdf_num(x + rx - kx),
     ));
 }
 

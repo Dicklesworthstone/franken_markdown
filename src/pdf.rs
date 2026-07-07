@@ -18031,12 +18031,7 @@ fn draw_seg(
     };
     if seg.fill != *current_fill {
         let (r, g, b) = fill_rgb(seg.fill, palette);
-        body.push_str(&format!(
-            "{} {} {} rg\n",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+        append_rgb_fill_operator(body, (r, g, b));
         *current_fill = seg.fill;
     }
     append_text_segment_operator(
@@ -18048,36 +18043,15 @@ fn draw_seg(
         let (r, g, b) = fill_rgb(seg.fill, palette);
         let sy = y + size * 0.30;
         let sw = (size * 0.06).max(0.4);
-        body.push_str(&format!(
-            "{r} {g} {b} RG {sw} w {x1} {sy} m {x2} {sy} l S\n",
-            r = pdf_fixed3(r),
-            g = pdf_fixed3(g),
-            b = pdf_fixed3(b),
-            sw = pdf_fixed2(sw),
-            x1 = pdf_fixed2(seg.x),
-            sy = pdf_fixed2(sy),
-            x2 = pdf_fixed2(seg.x + seg.width),
-        ));
+        append_rgb_stroke_line_operator(body, (r, g, b), sw, seg.x, sy, seg.x + seg.width);
     }
     if let Some(target) = &seg.link {
         let (r, g, b) = palette.link;
         let (fr, fg2, fb) = palette.fg;
         let uy = y - size * 0.12;
         let uw = (size * 0.06).max(0.4);
-        body.push_str(&format!(
-            "{r} {g} {b} RG {uw} w \
-             {x1} {uy} m {x2} {uy} l S\n{fr} {fg2} {fb} rg\n",
-            r = pdf_fixed3(r),
-            g = pdf_fixed3(g),
-            b = pdf_fixed3(b),
-            uw = pdf_fixed2(uw),
-            x1 = pdf_fixed2(seg.x),
-            uy = pdf_fixed2(uy),
-            x2 = pdf_fixed2(seg.x + seg.width),
-            fr = pdf_fixed3(fr),
-            fg2 = pdf_fixed3(fg2),
-            fb = pdf_fixed3(fb),
-        ));
+        append_rgb_stroke_line_operator(body, (r, g, b), uw, seg.x, uy, seg.x + seg.width);
+        append_rgb_fill_operator(body, (fr, fg2, fb));
         *current_fill = Fill::Black;
         if seg.width > 0.0 {
             annots.push(LinkAnnotation {
@@ -20103,6 +20077,41 @@ fn append_text_segment_operator(
     body.push_str(" TJ ET\n");
 }
 
+fn append_rgb_fill_operator(out: &mut String, color: (f32, f32, f32)) {
+    append_pdf_fixed3(out, color.0);
+    out.push(' ');
+    append_pdf_fixed3(out, color.1);
+    out.push(' ');
+    append_pdf_fixed3(out, color.2);
+    out.push_str(" rg\n");
+}
+
+fn append_rgb_stroke_line_operator(
+    out: &mut String,
+    color: (f32, f32, f32),
+    width: f32,
+    x1: f32,
+    y: f32,
+    x2: f32,
+) {
+    append_pdf_fixed3(out, color.0);
+    out.push(' ');
+    append_pdf_fixed3(out, color.1);
+    out.push(' ');
+    append_pdf_fixed3(out, color.2);
+    out.push_str(" RG ");
+    append_pdf_fixed2(out, width);
+    out.push_str(" w ");
+    append_pdf_fixed2(out, x1);
+    out.push(' ');
+    append_pdf_fixed2(out, y);
+    out.push_str(" m ");
+    append_pdf_fixed2(out, x2);
+    out.push(' ');
+    append_pdf_fixed2(out, y);
+    out.push_str(" l S\n");
+}
+
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
 /// stays selectable. Only the glyphs the document uses appear.
 fn tounicode_cmap(font: &Font, cmap_chars: &[char], lig_uni: &BTreeMap<u16, String>) -> String {
@@ -20331,8 +20340,9 @@ mod pdf_writer_tests {
         F_BODY, F_BOLD, Faces, ParagraphPolicy, Tok, append_decimal_u64_string,
         append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_fixed2,
         append_pdf_fixed3, append_pdf_num, append_pdf_object_str, append_pdf_string_escaped,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        append_rgb_fill_operator, append_rgb_stroke_line_operator, append_text_segment_operator,
+        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
+        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
         normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
         shape_run,
     };
@@ -20632,6 +20642,25 @@ mod pdf_writer_tests {
         );
         assert_eq!(streamed, expected);
         Ok(())
+    }
+
+    #[test]
+    fn streamed_rgb_fill_operator_matches_legacy_format_shape() {
+        let mut out = String::new();
+        append_rgb_fill_operator(&mut out, (0.1, 0.25, 1.0));
+
+        assert_eq!(out, "0.100 0.250 1.000 rg\n");
+    }
+
+    #[test]
+    fn streamed_rgb_stroke_line_operator_matches_legacy_format_shape() {
+        let mut out = String::new();
+        append_rgb_stroke_line_operator(&mut out, (0.1, 0.25, 1.0), 0.66, 12.5, 700.25, 42.0);
+
+        assert_eq!(
+            out,
+            "0.100 0.250 1.000 RG 0.66 w 12.50 700.25 m 42.00 700.25 l S\n"
+        );
     }
 
     #[test]

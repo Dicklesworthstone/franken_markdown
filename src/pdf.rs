@@ -15775,27 +15775,33 @@ fn append_svg_line_gradient_stroke(
 }
 
 fn append_svg_line_stroke_outline(body: &mut String, points: [(f32, f32); 4]) {
-    body.push_str(&format!(
-        "{x0} {y0} m {x1} {y1} l {x2} {y2} l {x3} {y3} l h ",
-        x0 = pdf_num(points[0].0),
-        y0 = pdf_num(points[0].1),
-        x1 = pdf_num(points[1].0),
-        y1 = pdf_num(points[1].1),
-        x2 = pdf_num(points[2].0),
-        y2 = pdf_num(points[2].1),
-        x3 = pdf_num(points[3].0),
-        y3 = pdf_num(points[3].1),
-    ));
+    append_pdf_num(body, points[0].0);
+    body.push(' ');
+    append_pdf_num(body, points[0].1);
+    body.push_str(" m ");
+    append_pdf_num(body, points[1].0);
+    body.push(' ');
+    append_pdf_num(body, points[1].1);
+    body.push_str(" l ");
+    append_pdf_num(body, points[2].0);
+    body.push(' ');
+    append_pdf_num(body, points[2].1);
+    body.push_str(" l ");
+    append_pdf_num(body, points[3].0);
+    body.push(' ');
+    append_pdf_num(body, points[3].1);
+    body.push_str(" l h ");
 }
 
 fn append_svg_line_path(body: &mut String, line: &SvgLine) {
-    body.push_str(&format!(
-        "{x1} {y1} m {x2} {y2} l ",
-        x1 = pdf_num(line.x1),
-        y1 = pdf_num(line.y1),
-        x2 = pdf_num(line.x2),
-        y2 = pdf_num(line.y2),
-    ));
+    append_pdf_num(body, line.x1);
+    body.push(' ');
+    append_pdf_num(body, line.y1);
+    body.push_str(" m ");
+    append_pdf_num(body, line.x2);
+    body.push(' ');
+    append_pdf_num(body, line.y2);
+    body.push_str(" l ");
 }
 
 fn svg_line_bbox(line: &SvgLine, style: SvgStyle) -> Option<(f32, f32, f32, f32)> {
@@ -20662,14 +20668,15 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SvgDashPattern,
-        SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke,
-        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
-        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
-        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_str,
-        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
-        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator, append_svg_path_ops,
-        append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
+        SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, Tok,
+        append_artifact_rule_stroke, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
+        append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
+        append_pdf_object_str, append_pdf_page_object, append_pdf_stream_dict,
+        append_pdf_string_escaped, append_rgb_fill_operator, append_rgb_fill_space_operator,
+        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
+        append_rgb_stroke_space_operator, append_svg_line_path, append_svg_line_stroke_outline,
+        append_svg_path_ops, append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
         append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
         build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
         normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
@@ -21195,6 +21202,30 @@ mod pdf_writer_tests {
             out,
             "1 2 m 3.5 4.25 l 5 6 7.5 8.25 9 10 c 11 14 14 18 18 22 c h "
         );
+    }
+
+    #[test]
+    fn svg_line_geometry_writers_preserve_exact_pdf_operator_shape() {
+        let line = SvgLine {
+            x1: 1.0,
+            y1: 2.25,
+            x2: -0.0,
+            y2: 4.5,
+            style: SvgStyle::INITIAL,
+            marker_end: None,
+            marker_start: None,
+            link: None,
+        };
+        let mut path = String::new();
+        append_svg_line_path(&mut path, &line);
+        assert_eq!(path, "1 2.25 m -0 4.5 l ");
+
+        let mut outline = String::new();
+        append_svg_line_stroke_outline(
+            &mut outline,
+            [(1.0, 2.25), (3.5, 4.0), (5.75, -0.0), (-2.25, 8.0)],
+        );
+        assert_eq!(outline, "1 2.25 m 3.5 4 l 5.75 -0 l -2.25 8 l h ");
     }
 
     #[test]

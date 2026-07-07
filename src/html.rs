@@ -26,12 +26,10 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
         .as_deref()
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css);
 
-    let mut body = String::with_capacity(initial_body_capacity(doc.blocks.len()));
-    let mut state = RenderState::default();
-    render_blocks(&doc.blocks, &mut body, opts, &mut state);
-
     let escaped_title = escape_text(&title);
-    let mut html = String::with_capacity(186 + escaped_title.len() + css.len() + body.len());
+    let mut html = String::with_capacity(
+        186 + escaped_title.len() + css.len() + initial_body_capacity(doc.blocks.len()),
+    );
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str("<title>");
@@ -39,7 +37,8 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</title>\n<style>\n");
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
-    html.push_str(&body);
+    let mut state = RenderState::default();
+    render_blocks(&doc.blocks, &mut html, opts, &mut state);
     html.push_str("</main>\n</body>\n</html>\n");
     html
 }
@@ -1304,7 +1303,8 @@ mod tests {
 
     use super::{
         FontCharSet, ascii_char_mask, base64_encode, css_num, css_token, escape_attr, escape_text,
-        initial_body_capacity, inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
+        initial_body_capacity, inlines_to_plain, push_u64, render, sanitize_custom_css, slug,
+        slug_inlines,
     };
 
     #[test]
@@ -1418,6 +1418,35 @@ mod tests {
         assert_eq!(initial_body_capacity(0), 0);
         assert_eq!(initial_body_capacity(8), 32_768);
         assert_eq!(initial_body_capacity(usize::MAX), 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn render_writes_body_between_document_envelope() {
+        let doc = Document {
+            blocks: vec![
+                Block::Heading {
+                    level: 1,
+                    inlines: vec![Inline::Text("Title".to_string())],
+                },
+                Block::Paragraph(vec![Inline::Text("A < B".to_string())]),
+            ],
+        };
+        let opts = HtmlOptions {
+            title: Some("Pinned".to_string()),
+            custom_css: Some("p{margin:0}".to_string()),
+            ..HtmlOptions::default()
+        };
+
+        let html = render(&doc, &opts);
+
+        assert_eq!(
+            html,
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+<title>Pinned</title>\n<style>\np{margin:0}</style>\n</head>\n<body>\n\
+<main class=\"fmd\">\n<h1 id=\"title\">Title</h1>\n<p>A &lt; B</p>\n\
+</main>\n</body>\n</html>\n"
+        );
     }
 
     #[test]

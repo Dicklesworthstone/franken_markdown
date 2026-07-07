@@ -13192,6 +13192,10 @@ fn build_segs_adjusted(
     faces: &Faces,
     width_cache: Option<&RefCell<WidthCache>>,
 ) -> Vec<Seg> {
+    if let Some(seg) = build_single_adjusted_seg(toks, left, size, faces, width_cache) {
+        return vec![seg];
+    }
+
     let mut segs: Vec<Seg> = Vec::new();
     let mut x = left;
     let mut cur: Option<Seg> = None;
@@ -13241,6 +13245,46 @@ fn build_segs_adjusted(
         segs.push(s);
     }
     segs
+}
+
+fn build_single_adjusted_seg(
+    toks: &[LineTok],
+    left: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: Option<&RefCell<WidthCache>>,
+) -> Option<Seg> {
+    let first = toks.first()?;
+    let slot = first.tok.slot;
+    let link = &first.tok.link;
+    let strike = first.tok.strike;
+    let mut text = String::new();
+    for line_tok in toks {
+        let tok = &line_tok.tok;
+        if line_tok.extra_advance != 0.0
+            || tok.slot != slot
+            || tok.link != *link
+            || tok.strike != strike
+        {
+            return None;
+        }
+        text.push_str(token_visible_text(tok));
+    }
+    let fs = font_size_of(size);
+    let width = shaped_width_points_for_layout(faces, width_cache, slot, &text, fs);
+    Some(Seg {
+        x: left,
+        slot,
+        text,
+        link: link.clone(),
+        fill: if link.is_some() {
+            Fill::Link
+        } else {
+            Fill::Black
+        },
+        strike,
+        width,
+    })
 }
 
 #[derive(Clone)]
@@ -20913,7 +20957,7 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LinkTarget,
+        F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LineTok, LinkTarget,
         PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
         Placed, SKid, Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow,
         SvgStyle, SvgTransform, Tok, WidthCache, append_artifact_rule_stroke,
@@ -20929,11 +20973,12 @@ mod pdf_writer_tests {
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
         append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
         append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, cached_shaped_width, collect_svg_alpha_states, decode_xml_entities,
-        estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
-        font_size_of, kerned_tj, line_has_visible_content, measure_word, normalize_svg_text_node,
-        pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
-        svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
+        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
+        first_visible_segment_index, font_size_of, kerned_tj, line_has_visible_content,
+        measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
+        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
+        token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
@@ -21420,6 +21465,108 @@ mod pdf_writer_tests {
         assert!(
             (segs[1].x - (10.0 + combined)).abs() < 0.01,
             "following segment should start after the shaped combined width"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn single_adjusted_segment_caches_only_final_shaped_text() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let key = (F_BODY, font_size_of(size).milli_points());
+        let cache = std::cell::RefCell::new(WidthCache::default());
+        let line_toks = vec![
+            LineTok {
+                tok: Tok {
+                    text: "f".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                extra_advance: 0.0,
+            },
+            LineTok {
+                tok: Tok {
+                    text: "i".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                extra_advance: 0.0,
+            },
+        ];
+
+        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache));
+
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "fi");
+        assert!(cache.borrow().contains(key, "fi"));
+        assert!(
+            !cache.borrow().contains(key, "f"),
+            "single-segment fast path should not shape/cache transient prefixes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adjusted_segments_flush_justified_spaces_with_final_shaped_width() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let left = 10.0;
+        let extra = 3.25;
+        let line_toks = vec![
+            LineTok {
+                tok: Tok {
+                    text: "alpha".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                extra_advance: 0.0,
+            },
+            LineTok {
+                tok: Tok {
+                    text: String::new(),
+                    slot: F_BODY,
+                    space: true,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                extra_advance: extra,
+            },
+            LineTok {
+                tok: Tok {
+                    text: "beta".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                extra_advance: 0.0,
+            },
+        ];
+
+        let segs = build_segs_adjusted(&line_toks, left, size, &faces, None);
+
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "alpha ");
+        assert_eq!(segs[1].text, "beta");
+        let first_width = faces.shaped_width_points(F_BODY, "alpha ", size) + extra;
+        assert!(
+            (segs[0].width - first_width).abs() < 0.01,
+            "justified space should extend the finalized segment width"
+        );
+        assert!(
+            (segs[1].x - (left + first_width)).abs() < 0.01,
+            "next segment should start after the finalized adjusted width"
         );
         Ok(())
     }

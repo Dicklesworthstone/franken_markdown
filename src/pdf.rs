@@ -1459,6 +1459,7 @@ struct BuiltParagraph {
     items: Vec<ParagraphItem>,
     item_toks: Vec<TokGroup>,
     break_toks: Vec<Option<Tok>>,
+    has_boxes: bool,
 }
 
 impl BuiltParagraph {
@@ -1467,6 +1468,7 @@ impl BuiltParagraph {
             items: Vec::with_capacity(capacity),
             item_toks: Vec::with_capacity(capacity),
             break_toks: Vec::with_capacity(capacity),
+            has_boxes: false,
         }
     }
 }
@@ -12512,13 +12514,7 @@ fn build_paragraph<'a>(
         if tok.space {
             if tok.hard_break {
                 if !word.is_empty() {
-                    flush_pdf_word(
-                        &mut built.items,
-                        &mut built.item_toks,
-                        &mut built.break_toks,
-                        &mut word,
-                        word_cx,
-                    );
+                    flush_pdf_word(&mut built, &mut word, word_cx);
                 }
                 built.items.push(ParagraphItem::Penalty(Penalty {
                     width: LayoutUnit::ZERO,
@@ -12530,13 +12526,7 @@ fn build_paragraph<'a>(
                 continue;
             }
             if !word.is_empty() {
-                flush_pdf_word(
-                    &mut built.items,
-                    &mut built.item_toks,
-                    &mut built.break_toks,
-                    &mut word,
-                    word_cx,
-                );
+                flush_pdf_word(&mut built, &mut word, word_cx);
             }
             // Only emit glue *between* two words (collapses runs of spaces).
             if matches!(built.items.last(), Some(ParagraphItem::Box(_))) {
@@ -12551,13 +12541,7 @@ fn build_paragraph<'a>(
             word.push(tok.clone());
         }
     }
-    flush_pdf_word(
-        &mut built.items,
-        &mut built.item_toks,
-        &mut built.break_toks,
-        &mut word,
-        word_cx,
-    );
+    flush_pdf_word(&mut built, &mut word, word_cx);
 
     if !matches!(
         built.items.last(),
@@ -12579,27 +12563,13 @@ fn build_paragraph<'a>(
     built
 }
 
-fn flush_pdf_word(
-    items: &mut Vec<ParagraphItem>,
-    item_toks: &mut Vec<TokGroup>,
-    break_toks: &mut Vec<Option<Tok>>,
-    word: &mut Vec<Tok>,
-    cx: PdfWordContext<'_>,
-) {
+fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
         return;
     }
 
     if !cx.policy.hyphenate || !pdf_word_is_ascii_alphabetic(word) {
-        push_pdf_word_box(
-            items,
-            item_toks,
-            break_toks,
-            word,
-            cx.fs,
-            cx.faces,
-            cx.width_cache,
-        );
+        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
     }
 
@@ -12634,15 +12604,7 @@ fn flush_pdf_word(
     });
 
     if points.is_empty() {
-        push_pdf_word_box(
-            items,
-            item_toks,
-            break_toks,
-            word,
-            cx.fs,
-            cx.faces,
-            cx.width_cache,
-        );
+        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
     }
 
@@ -12661,37 +12623,21 @@ fn flush_pdf_word(
             let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
                 cached_shaped_width(cx.faces, cx.width_cache, tok.slot, "-", cx.fs)
             });
-            push_pdf_word_box_from_vec(
-                items,
-                item_toks,
-                break_toks,
-                part,
-                cx.fs,
-                cx.faces,
-                cx.width_cache,
-            );
-            items.push(ParagraphItem::Penalty(Penalty {
+            push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
+            built.items.push(ParagraphItem::Penalty(Penalty {
                 width: hyphen_width,
                 penalty: 50,
                 flagged: true,
             }));
-            item_toks.push(TokGroup::empty());
-            break_toks.push(hyphen_tok);
+            built.item_toks.push(TokGroup::empty());
+            built.break_toks.push(hyphen_tok);
         }
         start = point;
     }
 
     let tail = split_pdf_word_tokens(word, start, plain.chars().count());
     if !tail.is_empty() {
-        push_pdf_word_box_from_vec(
-            items,
-            item_toks,
-            break_toks,
-            tail,
-            cx.fs,
-            cx.faces,
-            cx.width_cache,
-        );
+        push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
     }
     word.clear();
 }
@@ -12702,9 +12648,7 @@ fn pdf_word_is_ascii_alphabetic(word: &[Tok]) -> bool {
 }
 
 fn push_pdf_word_box(
-    items: &mut Vec<ParagraphItem>,
-    item_toks: &mut Vec<TokGroup>,
-    break_toks: &mut Vec<Option<Tok>>,
+    built: &mut BuiltParagraph,
     toks: &mut Vec<Tok>,
     fs: FontSize,
     faces: &Faces,
@@ -12716,19 +12660,18 @@ fn push_pdf_word_box(
     let width = measure_word_cached(toks, fs, faces, width_cache);
     // The PDF layout path maps chosen breaks back to `item_toks` for actual
     // rendering. `TextBox` only feeds the generic breaker, which reads `width`.
-    items.push(ParagraphItem::Box(TextBox {
+    built.items.push(ParagraphItem::Box(TextBox {
         text: String::new(),
         runs: Default::default(),
         width,
     }));
-    item_toks.push(TokGroup::take_from(toks));
-    break_toks.push(None);
+    built.item_toks.push(TokGroup::take_from(toks));
+    built.break_toks.push(None);
+    built.has_boxes = true;
 }
 
 fn push_pdf_word_box_from_vec(
-    items: &mut Vec<ParagraphItem>,
-    item_toks: &mut Vec<TokGroup>,
-    break_toks: &mut Vec<Option<Tok>>,
+    built: &mut BuiltParagraph,
     toks: Vec<Tok>,
     fs: FontSize,
     faces: &Faces,
@@ -12738,13 +12681,14 @@ fn push_pdf_word_box_from_vec(
         return;
     }
     let width = measure_word_cached(&toks, fs, faces, width_cache);
-    items.push(ParagraphItem::Box(TextBox {
+    built.items.push(ParagraphItem::Box(TextBox {
         text: String::new(),
         runs: Default::default(),
         width,
     }));
-    item_toks.push(TokGroup::from_vec(toks));
-    break_toks.push(None);
+    built.item_toks.push(TokGroup::from_vec(toks));
+    built.break_toks.push(None);
+    built.has_boxes = true;
 }
 
 fn split_pdf_word_tokens(word: &[Tok], start_char: usize, end_char: usize) -> Vec<Tok> {
@@ -12805,11 +12749,7 @@ fn layout_inlines(
     );
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
-    if !built
-        .items
-        .iter()
-        .any(|it| matches!(it, ParagraphItem::Box(_)))
-    {
+    if !built.has_boxes {
         gap(out, gap_after);
         return;
     }
@@ -12884,11 +12824,7 @@ fn layout_prefixed_inlines(
         &cx.width_cache,
     );
 
-    if !built
-        .items
-        .iter()
-        .any(|it| matches!(it, ParagraphItem::Box(_)))
-    {
+    if !built.has_boxes {
         out.push(Line {
             size: spec.size,
             gap_after: spec.gap_after,
@@ -20752,7 +20688,7 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SKid,
+        F_BODY, F_BOLD, Faces, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream, SKid,
         SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle,
         SvgTransform, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
@@ -20901,9 +20837,70 @@ mod pdf_writer_tests {
 
         assert_eq!(built.items.len(), built.item_toks.len());
         assert_eq!(built.items.len(), built.break_toks.len());
+        assert_eq!(
+            built.has_boxes,
+            built
+                .items
+                .iter()
+                .any(|item| matches!(item, ParagraphItem::Box(_)))
+        );
         assert!(built.items.capacity() >= expected);
         assert!(built.item_toks.capacity() >= expected);
         assert!(built.break_toks.capacity() >= expected);
+        Ok(())
+    }
+
+    #[test]
+    fn paragraph_builder_tracks_has_boxes_without_rescanning_items() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(std::collections::HashMap::new());
+
+        let cases: Vec<(Vec<Tok>, ParagraphPolicy)> = vec![
+            (Vec::new(), ParagraphPolicy::RAGGED),
+            (
+                vec![Tok {
+                    text: String::new(),
+                    slot: F_BODY,
+                    space: true,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                }],
+                ParagraphPolicy::RAGGED,
+            ),
+            (
+                vec![Tok {
+                    text: String::new(),
+                    slot: F_BODY,
+                    space: true,
+                    hard_break: true,
+                    link: None,
+                    strike: false,
+                }],
+                ParagraphPolicy::RAGGED,
+            ),
+            {
+                let mut toks = Vec::new();
+                push_text_tokens("alpha beta", F_BODY, false, None, &mut toks);
+                (toks, ParagraphPolicy::RAGGED)
+            },
+            {
+                let mut toks = Vec::new();
+                push_text_tokens("characteristically", F_BODY, false, None, &mut toks);
+                (toks, ParagraphPolicy::TEX_PARAGRAPH)
+            },
+        ];
+
+        for (case_idx, (toks, policy)) in cases.into_iter().enumerate() {
+            let built = build_paragraph(&toks, fs, &faces, policy, &cache, &width_cache);
+            let scanned = built
+                .items
+                .iter()
+                .any(|item| matches!(item, ParagraphItem::Box(_)));
+            assert_eq!(built.has_boxes, scanned, "case {case_idx}");
+        }
         Ok(())
     }
 

@@ -677,6 +677,12 @@ impl SvgPaintOrder {
 type SvgColor = (f32, f32, f32);
 type SvgGradientStop = (f32, SvgColor);
 
+#[derive(Clone, Copy)]
+struct SvgParsedColor {
+    rgb: SvgColor,
+    alpha: Option<f32>,
+}
+
 #[derive(Clone)]
 struct SvgRootBackground {
     color: Option<SvgRootBackgroundColor>,
@@ -9394,17 +9400,13 @@ fn parse_svg_paint(
         }
         return Some(None);
     }
-    if let Some(args) = value
-        .strip_prefix("rgba(")
-        .or_else(|| value.strip_prefix("RGBA("))
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let nums = parse_svg_number_list(args);
-        if nums.len() >= 4 && nums[3] <= 0.001 {
+    if let Some(parsed) = parse_svg_color_with_alpha(value, css_vars) {
+        if parsed.alpha.is_some_and(|alpha| alpha <= 0.001) {
             return Some(None);
         }
+        return Some(Some(parsed.rgb));
     }
-    parse_svg_color(value, css_vars).map(Some)
+    None
 }
 
 fn parse_svg_paint_gradient_ref(
@@ -9443,12 +9445,7 @@ fn parse_svg_paint_alpha(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_paint_alpha(&resolved, css_vars);
     }
-    let args = value
-        .strip_prefix("rgba(")
-        .or_else(|| value.strip_prefix("RGBA("))
-        .and_then(|s| s.strip_suffix(')'))?;
-    let fourth = svg_nth_number_tail(args, 3)?;
-    parse_svg_opacity(fourth, css_vars)
+    parse_svg_color_with_alpha(value, css_vars).and_then(|parsed| parsed.alpha)
 }
 
 fn resolve_svg_css_value(value: &str, css_vars: &[SvgCssVariable], depth: usize) -> Option<String> {
@@ -9516,7 +9513,11 @@ fn parse_svg_paint_url_id(value: &str) -> Option<&str> {
 }
 
 fn parse_svg_color(value: &str, css_vars: &[SvgCssVariable]) -> Option<(f32, f32, f32)> {
-    parse_svg_color_inner(value, css_vars, 0)
+    parse_svg_color_with_alpha(value, css_vars).map(|parsed| parsed.rgb)
+}
+
+fn parse_svg_color_with_alpha(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgParsedColor> {
+    parse_svg_color_inner_with_alpha(value, css_vars, 0)
 }
 
 fn parse_svg_color_inner(
@@ -9524,65 +9525,137 @@ fn parse_svg_color_inner(
     css_vars: &[SvgCssVariable],
     depth: usize,
 ) -> Option<SvgColor> {
+    parse_svg_color_inner_with_alpha(value, css_vars, depth).map(|parsed| parsed.rgb)
+}
+
+fn parse_svg_color_inner_with_alpha(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    depth: usize,
+) -> Option<SvgParsedColor> {
     if depth >= 8 {
         return None;
     }
     let value = value.trim();
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
-        return parse_svg_color_inner(&resolved, css_vars, depth + 1);
+        return parse_svg_color_inner_with_alpha(&resolved, css_vars, depth + 1);
     }
     if let Some(color) = parse_svg_color_mix(value, css_vars, depth + 1) {
-        return Some(color);
+        return Some(SvgParsedColor {
+            rgb: color,
+            alpha: None,
+        });
     }
     if let Some(hex) = value.strip_prefix('#') {
-        return parse_svg_hex_color(hex);
+        return parse_svg_hex_color_with_alpha(hex);
     }
-    if let Some(args) = value
-        .strip_prefix("rgb(")
-        .or_else(|| value.strip_prefix("rgba("))
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let nums = parse_svg_number_list(args);
-        if nums.len() >= 3 {
-            return Some((
-                (nums[0] / 255.0).clamp(0.0, 1.0),
-                (nums[1] / 255.0).clamp(0.0, 1.0),
-                (nums[2] / 255.0).clamp(0.0, 1.0),
-            ));
-        }
+    if let Some(color) = parse_svg_rgb_function(value, css_vars) {
+        return Some(color);
     }
-    match value.to_ascii_lowercase().as_str() {
-        "black" => Some((0.0, 0.0, 0.0)),
-        "white" => Some((1.0, 1.0, 1.0)),
-        "red" => Some((1.0, 0.0, 0.0)),
-        "green" => Some((0.0, 0.5, 0.0)),
-        "blue" => Some((0.0, 0.0, 1.0)),
-        _ => None,
-    }
+    let rgb = match value.to_ascii_lowercase().as_str() {
+        "black" => (0.0, 0.0, 0.0),
+        "white" => (1.0, 1.0, 1.0),
+        "red" => (1.0, 0.0, 0.0),
+        "green" => (0.0, 0.5, 0.0),
+        "blue" => (0.0, 0.0, 1.0),
+        _ => return None,
+    };
+    Some(SvgParsedColor { rgb, alpha: None })
 }
 
-fn parse_svg_hex_color(hex: &str) -> Option<SvgColor> {
+fn parse_svg_hex_color_with_alpha(hex: &str) -> Option<SvgParsedColor> {
     let bytes = hex.as_bytes();
-    let (r, g, b) = match bytes {
+    let (r, g, b, alpha) = match bytes {
         [r, g, b] => {
             let r = svg_hex_nibble(*r)?;
             let g = svg_hex_nibble(*g)?;
             let b = svg_hex_nibble(*b)?;
-            (r * 17, g * 17, b * 17)
+            (r * 17, g * 17, b * 17, None)
+        }
+        [r, g, b, a] => {
+            let r = svg_hex_nibble(*r)?;
+            let g = svg_hex_nibble(*g)?;
+            let b = svg_hex_nibble(*b)?;
+            let a = svg_hex_nibble(*a)?;
+            (r * 17, g * 17, b * 17, Some(f32::from(a) / 15.0))
         }
         [r1, r2, g1, g2, b1, b2] => (
             svg_hex_pair(*r1, *r2)?,
             svg_hex_pair(*g1, *g2)?,
             svg_hex_pair(*b1, *b2)?,
+            None,
+        ),
+        [r1, r2, g1, g2, b1, b2, a1, a2] => (
+            svg_hex_pair(*r1, *r2)?,
+            svg_hex_pair(*g1, *g2)?,
+            svg_hex_pair(*b1, *b2)?,
+            Some(f32::from(svg_hex_pair(*a1, *a2)?) / 255.0),
         ),
         _ => return None,
     };
-    Some((
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
-    ))
+    Some(SvgParsedColor {
+        rgb: (
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+        ),
+        alpha,
+    })
+}
+
+fn parse_svg_rgb_function(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgParsedColor> {
+    let args =
+        svg_css_function_args(value, "rgb").or_else(|| svg_css_function_args(value, "rgba"))?;
+    let (channel_args, slash_alpha) = split_svg_top_level_slash(args)?;
+    let comma_parts = split_svg_top_level_commas(channel_args)?;
+    let (channels, comma_alpha) = if comma_parts.len() == 3 || comma_parts.len() == 4 {
+        (comma_parts[..3].to_vec(), comma_parts.get(3).copied())
+    } else if comma_parts.len() == 1 {
+        let space_parts = split_svg_top_level_whitespace(channel_args);
+        if space_parts.len() != 3 {
+            return None;
+        }
+        (space_parts, None)
+    } else {
+        return None;
+    };
+    let r = parse_svg_rgb_channel(channels[0], css_vars)?;
+    let g = parse_svg_rgb_channel(channels[1], css_vars)?;
+    let b = parse_svg_rgb_channel(channels[2], css_vars)?;
+    let alpha = slash_alpha
+        .or(comma_alpha)
+        .map(|alpha| parse_svg_opacity(alpha, css_vars));
+    let alpha = match alpha {
+        Some(Some(alpha)) => Some(alpha),
+        Some(None) => return None,
+        None => None,
+    };
+    Some(SvgParsedColor {
+        rgb: (r, g, b),
+        alpha,
+    })
+}
+
+fn parse_svg_rgb_channel(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_rgb_channel(&resolved, css_vars);
+    }
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start();
+    let channel = if unit.starts_with('%') {
+        parsed / 100.0
+    } else {
+        parsed / 255.0
+    };
+    channel.is_finite().then_some(channel.clamp(0.0, 1.0))
 }
 
 fn svg_hex_pair(high: u8, low: u8) -> Option<u8> {
@@ -9649,9 +9722,6 @@ fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
             ',' if depth == 0 => {
                 parts.push(value[start..idx].trim());
                 start = idx + ch.len_utf8();
-                if parts.len() >= 3 {
-                    return None;
-                }
             }
             _ => {}
         }
@@ -9661,6 +9731,32 @@ fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
     }
     parts.push(value[start..].trim());
     Some(parts)
+}
+
+fn split_svg_top_level_slash(value: &str) -> Option<(&str, Option<&str>)> {
+    let mut depth = 0usize;
+    let mut slash = None;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            '/' if depth == 0 && slash.is_some() => return None,
+            '/' if depth == 0 => slash = Some(idx),
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    match slash {
+        Some(idx) => Some((value[..idx].trim(), Some(value[idx + 1..].trim()))),
+        None => Some((value.trim(), None)),
+    }
 }
 
 fn svg_color_mix_space_is_srgb(space: &str) -> bool {
@@ -9769,15 +9865,9 @@ fn svg_color_source_is_transparent(value: &str, css_vars: &[SvgCssVariable]) -> 
     if value.eq_ignore_ascii_case("transparent") {
         return true;
     }
-    value
-        .strip_prefix("rgba(")
-        .or_else(|| value.strip_prefix("RGBA("))
-        .and_then(|s| s.strip_suffix(')'))
-        .map(|args| {
-            let nums = parse_svg_number_list(args);
-            nums.len() >= 4 && nums[3] <= 0.001
-        })
-        .unwrap_or(false)
+    parse_svg_color_with_alpha(value, css_vars)
+        .and_then(|parsed| parsed.alpha)
+        .is_some_and(|alpha| alpha <= 0.001)
 }
 
 fn parse_svg_number(value: &str) -> Option<f32> {
@@ -9816,27 +9906,6 @@ fn parse_svg_opacity(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
         parsed
     };
     opacity.is_finite().then_some(opacity.clamp(0.0, 1.0))
-}
-
-fn svg_nth_number_tail(value: &str, target: usize) -> Option<&str> {
-    let mut pos = 0usize;
-    let mut idx = 0usize;
-    while pos < value.len() {
-        skip_svg_number_separators(value, &mut pos);
-        if pos >= value.len() {
-            break;
-        }
-        let start = pos;
-        if read_svg_number_token(value, &mut pos).is_none() {
-            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
-            continue;
-        }
-        if idx == target {
-            return value.get(start..);
-        }
-        idx += 1;
-    }
-    None
 }
 
 fn parse_svg_number_list(value: &str) -> Vec<f32> {

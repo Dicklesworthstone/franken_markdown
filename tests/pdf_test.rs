@@ -2077,6 +2077,9 @@ fn pdf_svg_treats_fully_transparent_rgba_paint_as_none() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">
   <rect x="0" y="0" width="40" height="20" fill="rgba(255,0,0,0)" stroke="none"/>
+  <rect x="0" y="0" width="40" height="20" fill="rgb(255 0 0 / 0%)" stroke="none"/>
+  <rect x="0" y="0" width="40" height="20" fill="#f000" stroke="none"/>
+  <rect x="0" y="0" width="40" height="20" fill="#00000000" stroke="none"/>
   <rect x="4" y="4" width="32" height="12" fill="#0000ff" stroke="none"/>
 </svg>
 "##;
@@ -2092,6 +2095,10 @@ fn pdf_svg_treats_fully_transparent_rgba_paint_as_none() {
         "fully transparent rgba fills should not paint opaque red content: {text}"
     );
     assert!(
+        !text.contains("0.000 0.000 0.000 rg"),
+        "fully transparent hex-alpha fills should not fall back to opaque default black: {text}"
+    );
+    assert!(
         text.contains("0.000 0.000 1.000 rg"),
         "the visible sibling shape should still render"
     );
@@ -2100,7 +2107,7 @@ fn pdf_svg_treats_fully_transparent_rgba_paint_as_none() {
 #[test]
 fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92 36">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 126 36">
   <style>
     .fade { opacity: 50%; stroke-opacity: 25%; }
     .rgba-fade { fill: rgba(255,0,255,0.6); }
@@ -2111,6 +2118,9 @@ fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
   <rect class="rgba-fade" x="54" y="2" width="10" height="10"/>
   <text x="2" y="28" font-size="10" fill="#000000" opacity="0.3">AlphaText</text>
   <rect x="72" y="2" width="12" height="10" fill="#123456" opacity="0"/>
+  <rect x="86" y="2" width="10" height="10" fill="#ff000080"/>
+  <rect x="98" y="2" width="10" height="10" fill="rgb(100% 0% 0% / 50%)"/>
+  <rect x="110" y="2" width="10" height="10" fill="rgb(0% 50% 100%)"/>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -2145,8 +2155,24 @@ fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
         "CSS class rgba fill alpha should be preserved in the parsed style patch: {text}"
     );
     assert!(
+        text.contains("/GSa05021000 << /ca 0.502 /CA 1.000 >>"),
+        "8-digit hex colors should preserve their alpha channel in native PDF alpha state: {text}"
+    );
+    assert!(
+        text.contains("/GSa05001000 << /ca 0.500 /CA 1.000 >>"),
+        "modern rgb slash alpha should preserve percentage opacity in native PDF alpha state: {text}"
+    );
+    assert!(
         text.contains("q /GSa05000125 gs 1.000 0.000 0.000 rg 0.000 0.000 1.000 RG 2 w"),
         "the faded stroked rect should scope its alpha before painting: {text}"
+    );
+    assert!(
+        text.contains("/GSa05001000 gs 1.000 0.000 0.000 rg"),
+        "modern percentage rgb channels should not be interpreted as 0-255 numeric values: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.500 1.000 rg"),
+        "modern percentage rgb channels without alpha should map 0%, 50%, 100% to normalized RGB: {text}"
     );
     assert!(
         text.contains("/GSa03000300 gs\n0.000 0.000 0.000 rg\nBT /F1"),

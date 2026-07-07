@@ -114,22 +114,30 @@ pub fn is_supported(lang: &str) -> bool {
 /// exactly tile `code`. Unknown languages yield a single `Plain` span.
 #[must_use]
 pub fn highlight(lang: &str, code: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    highlight_into(lang, code, &mut spans);
+    spans
+}
+
+/// Highlight `code` for language `lang`, writing classified byte spans into
+/// `spans` after clearing it. Unknown languages yield a single `Plain` span.
+pub fn highlight_into(lang: &str, code: &str, spans: &mut Vec<Span>) {
+    spans.clear();
     match lexer(lang) {
-        Some(Lexer::Generic(r)) => lex_generic(code, &r),
-        Some(Lexer::Html) => lex_html(code),
-        Some(Lexer::Css) => lex_css(code),
-        Some(Lexer::Markdown) => lex_markdown(code),
-        Some(Lexer::Mermaid) => lex_mermaid(code),
-        None => vec![Span {
+        Some(Lexer::Generic(r)) => lex_generic_into(code, &r, spans),
+        Some(Lexer::Html) => lex_html_into(code, spans),
+        Some(Lexer::Css) => lex_css_into(code, spans),
+        Some(Lexer::Markdown) => lex_markdown_into(code, spans),
+        Some(Lexer::Mermaid) => lex_mermaid_into(code, spans),
+        None => spans.push(Span {
             kind: Tok::Plain,
             start: 0,
             end: code.len(),
-        }],
+        }),
     }
 }
 
-fn lex_generic(code: &str, r: &Rules) -> Vec<Span> {
-    let mut spans = Vec::new();
+fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
     let len = code.len();
     let mut pos = 0;
     while pos < len {
@@ -335,11 +343,9 @@ fn lex_generic(code: &str, r: &Rules) -> Vec<Span> {
         });
         pos += clen;
     }
-    spans
 }
 
-fn lex_html(code: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
     let mut pos = 0usize;
 
@@ -348,23 +354,23 @@ fn lex_html(code: &str) -> Vec<Span> {
 
         if rest.starts_with("<!--") {
             let end = find_after(code, pos + 4, "-->").unwrap_or(len);
-            push_span(&mut spans, Tok::Comment, pos, end);
+            push_span(spans, Tok::Comment, pos, end);
             pos = end;
             continue;
         }
 
         if rest.starts_with('<') {
             if !looks_like_html_tag(rest) {
-                push_span(&mut spans, Tok::Operator, pos, pos + 1);
+                push_span(spans, Tok::Operator, pos, pos + 1);
                 pos += 1;
                 continue;
             }
 
-            push_span(&mut spans, Tok::Operator, pos, pos + 1);
+            push_span(spans, Tok::Operator, pos, pos + 1);
             pos += 1;
 
             if code[pos..].starts_with('/') {
-                push_span(&mut spans, Tok::Operator, pos, pos + 1);
+                push_span(spans, Tok::Operator, pos, pos + 1);
                 pos += 1;
             }
 
@@ -377,21 +383,21 @@ fn lex_html(code: &str) -> Vec<Span> {
                 if ch.is_whitespace() {
                     let start = pos;
                     pos = consume_while(code, pos, char::is_whitespace);
-                    push_span(&mut spans, Tok::Plain, start, pos);
+                    push_span(spans, Tok::Plain, start, pos);
                 } else if code[pos..].starts_with("/>") {
-                    push_span(&mut spans, Tok::Operator, pos, pos + 2);
+                    push_span(spans, Tok::Operator, pos, pos + 2);
                     pos += 2;
                     break;
                 } else if ch == '>' {
-                    push_span(&mut spans, Tok::Operator, pos, pos + clen);
+                    push_span(spans, Tok::Operator, pos, pos + clen);
                     pos += clen;
                     break;
                 } else if ch == '"' || ch == '\'' {
                     let end = consume_quoted(code, pos, ch);
-                    push_span(&mut spans, Tok::Str, pos, end);
+                    push_span(spans, Tok::Str, pos, end);
                     pos = end;
                 } else if ch == '=' {
-                    push_span(&mut spans, Tok::Operator, pos, pos + clen);
+                    push_span(spans, Tok::Operator, pos, pos + clen);
                     pos += clen;
                 } else if is_html_name_char(ch) {
                     let start = pos;
@@ -401,9 +407,9 @@ fn lex_html(code: &str) -> Vec<Span> {
                     } else {
                         Tok::Type
                     };
-                    push_span(&mut spans, kind, start, pos);
+                    push_span(spans, kind, start, pos);
                 } else {
-                    push_span(&mut spans, Tok::Punct, pos, pos + clen);
+                    push_span(spans, Tok::Punct, pos, pos + clen);
                     pos += clen;
                 }
             }
@@ -411,15 +417,12 @@ fn lex_html(code: &str) -> Vec<Span> {
         }
 
         let next_tag = rest.find('<').map_or(len, |off| pos + off);
-        push_span(&mut spans, Tok::Plain, pos, next_tag);
+        push_span(spans, Tok::Plain, pos, next_tag);
         pos = next_tag;
     }
-
-    spans
 }
 
-fn lex_css(code: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
     let mut pos = 0usize;
 
@@ -433,29 +436,29 @@ fn lex_css(code: &str) -> Vec<Span> {
         if ch.is_whitespace() {
             let start = pos;
             pos = consume_while(code, pos, char::is_whitespace);
-            push_span(&mut spans, Tok::Plain, start, pos);
+            push_span(spans, Tok::Plain, start, pos);
         } else if rest.starts_with("/*") {
             let end = find_after(code, pos + 2, "*/").unwrap_or(len);
-            push_span(&mut spans, Tok::Comment, pos, end);
+            push_span(spans, Tok::Comment, pos, end);
             pos = end;
         } else if ch == '"' || ch == '\'' {
             let end = consume_quoted(code, pos, ch);
-            push_span(&mut spans, Tok::Str, pos, end);
+            push_span(spans, Tok::Str, pos, end);
             pos = end;
         } else if ch == '@' {
             let start = pos;
             pos += clen;
             pos = consume_while(code, pos, is_css_ident_char);
-            push_span(&mut spans, Tok::Keyword, start, pos);
+            push_span(spans, Tok::Keyword, start, pos);
         } else if ch == '#' && starts_hex_color(code, pos) {
             let start = pos;
             pos += clen;
             pos = consume_while(code, pos, |c| c.is_ascii_hexdigit());
-            push_span(&mut spans, Tok::Number, start, pos);
+            push_span(spans, Tok::Number, start, pos);
         } else if ch.is_ascii_digit() {
             let start = pos;
             pos = consume_while(code, pos, is_css_number_char);
-            push_span(&mut spans, Tok::Number, start, pos);
+            push_span(spans, Tok::Number, start, pos);
         } else if is_css_ident_start(ch) {
             let start = pos;
             pos = consume_while(code, pos, is_css_ident_char);
@@ -469,7 +472,7 @@ fn lex_css(code: &str) -> Vec<Span> {
             } else {
                 Tok::Plain
             };
-            push_span(&mut spans, kind, start, pos);
+            push_span(spans, kind, start, pos);
         } else {
             let kind = if ":;{}(),[]".contains(ch) {
                 Tok::Punct
@@ -478,16 +481,13 @@ fn lex_css(code: &str) -> Vec<Span> {
             } else {
                 Tok::Plain
             };
-            push_span(&mut spans, kind, pos, pos + clen);
+            push_span(spans, kind, pos, pos + clen);
             pos += clen;
         }
     }
-
-    spans
 }
 
-fn lex_markdown(code: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
     let mut pos = 0usize;
     let mut line_start = true;
@@ -498,7 +498,7 @@ fn lex_markdown(code: &str) -> Vec<Span> {
 
         if rest.starts_with("<!--") {
             let end = find_after(code, pos + 4, "-->").unwrap_or(len);
-            push_span(&mut spans, Tok::Comment, pos, end);
+            push_span(spans, Tok::Comment, pos, end);
             line_start = end > 0 && code.as_bytes().get(end - 1).is_some_and(|b| *b == b'\n');
             if line_start {
                 line_indent_columns = 0;
@@ -513,7 +513,7 @@ fn lex_markdown(code: &str) -> Vec<Span> {
         let clen = ch.len_utf8();
 
         if ch == '\n' {
-            push_span(&mut spans, Tok::Plain, pos, pos + clen);
+            push_span(spans, Tok::Plain, pos, pos + clen);
             pos += clen;
             line_start = true;
             line_indent_columns = 0;
@@ -533,56 +533,53 @@ fn lex_markdown(code: &str) -> Vec<Span> {
                 line_indent_columns = markdown_indent_after(line_indent_columns, ws);
                 pos += ws.len_utf8();
             }
-            push_span(&mut spans, Tok::Plain, start, pos);
+            push_span(spans, Tok::Plain, start, pos);
             if !only_markdown_indent {
                 line_start = false;
             }
         } else if line_start && line_indent_columns <= 3 && is_markdown_heading_marker(rest) {
             let start = pos;
             pos = consume_while(code, pos, |c| c == '#');
-            push_span(&mut spans, Tok::Keyword, start, pos);
+            push_span(spans, Tok::Keyword, start, pos);
             line_start = false;
         } else if line_start && line_indent_columns <= 3 && ch == '>' {
-            push_span(&mut spans, Tok::Operator, pos, pos + clen);
+            push_span(spans, Tok::Operator, pos, pos + clen);
             pos += clen;
             line_start = false;
         } else if line_start && line_indent_columns <= 3 && is_list_marker(rest) {
             let end = list_marker_end(code, pos);
-            push_span(&mut spans, Tok::Operator, pos, end);
+            push_span(spans, Tok::Operator, pos, end);
             pos = end;
             line_start = false;
         } else if ch == '`' {
             let end = consume_markdown_code(code, pos);
-            push_span(&mut spans, Tok::Str, pos, end);
+            push_span(spans, Tok::Str, pos, end);
             line_start = false;
             pos = end;
         } else if ch.is_ascii_digit() {
             let start = pos;
             pos = consume_while(code, pos, |c| c.is_ascii_digit());
-            push_span(&mut spans, Tok::Number, start, pos);
+            push_span(spans, Tok::Number, start, pos);
             line_start = false;
         } else if "*_~".contains(ch) {
             let start = pos;
             pos = consume_while(code, pos, |c| c == ch);
-            push_span(&mut spans, Tok::Operator, start, pos);
+            push_span(spans, Tok::Operator, start, pos);
             line_start = false;
         } else if "[]()!|:".contains(ch) {
-            push_span(&mut spans, Tok::Punct, pos, pos + clen);
+            push_span(spans, Tok::Punct, pos, pos + clen);
             pos += clen;
             line_start = false;
         } else {
             let start = pos;
             pos = consume_markdown_plain(code, pos);
-            push_span(&mut spans, Tok::Plain, start, pos);
+            push_span(spans, Tok::Plain, start, pos);
             line_start = false;
         }
     }
-
-    spans
 }
 
-fn lex_mermaid(code: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
     let mut pos = 0usize;
 
@@ -596,19 +593,19 @@ fn lex_mermaid(code: &str) -> Vec<Span> {
         if ch.is_whitespace() {
             let start = pos;
             pos = consume_while(code, pos, char::is_whitespace);
-            push_span(&mut spans, Tok::Plain, start, pos);
+            push_span(spans, Tok::Plain, start, pos);
         } else if rest.starts_with("%%") {
             let end = rest.find('\n').map_or(len, |off| pos + off);
-            push_span(&mut spans, Tok::Comment, pos, end);
+            push_span(spans, Tok::Comment, pos, end);
             pos = end;
         } else if ch == '"' || ch == '\'' {
             let end = consume_quoted(code, pos, ch);
-            push_span(&mut spans, Tok::Str, pos, end);
+            push_span(spans, Tok::Str, pos, end);
             pos = end;
         } else if ch.is_ascii_digit() {
             let start = pos;
             pos = consume_while(code, pos, is_mermaid_number_char);
-            push_span(&mut spans, Tok::Number, start, pos);
+            push_span(spans, Tok::Number, start, pos);
         } else if is_mermaid_ident_start(ch) {
             let start = pos;
             pos = consume_while(code, pos, is_mermaid_ident_char);
@@ -620,7 +617,7 @@ fn lex_mermaid(code: &str) -> Vec<Span> {
             } else {
                 Tok::Plain
             };
-            push_span(&mut spans, kind, start, pos);
+            push_span(spans, kind, start, pos);
         } else {
             let kind = if is_mermaid_operator_char(ch) {
                 Tok::Operator
@@ -634,11 +631,9 @@ fn lex_mermaid(code: &str) -> Vec<Span> {
             if kind == Tok::Operator {
                 pos = consume_while(code, pos, is_mermaid_operator_char);
             }
-            push_span(&mut spans, kind, start, pos);
+            push_span(spans, kind, start, pos);
         }
     }
-
-    spans
 }
 
 fn push_span(spans: &mut Vec<Span>, kind: Tok, start: usize, end: usize) {

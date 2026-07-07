@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use franken_markdown::highlight::{Tok, highlight, is_supported};
+use franken_markdown::highlight::{Span, Tok, highlight, highlight_into, is_supported};
 use franken_markdown::{HtmlOptions, render_html};
 
 fn assert_spans_tile(lang: &str, code: &str) {
@@ -16,6 +16,25 @@ fn assert_spans_tile(lang: &str, code: &str) {
         pos = s.end;
     }
     assert_eq!(pos, code.len(), "{lang} spans must cover every byte");
+}
+
+fn assert_highlight_into_matches_highlight(lang: &str, code: &str) {
+    let expected = highlight(lang, code);
+    let mut actual = Vec::new();
+    highlight_into(lang, code, &mut actual);
+
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "span count drift for language {lang:?}"
+    );
+    for (idx, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+        assert_eq!(
+            (actual.kind, actual.start, actual.end),
+            (expected.kind, expected.start, expected.end),
+            "span {idx} drift for language {lang:?}"
+        );
+    }
 }
 
 fn escaped_token_text(text: &str) -> String {
@@ -338,6 +357,66 @@ fn unknown_language_is_a_single_plain_span() {
     let spans = highlight("nope", "anything here");
     assert_eq!(spans.len(), 1);
     assert_eq!(spans[0].kind, Tok::Plain);
+}
+
+#[test]
+fn highlight_into_matches_highlight_for_supported_and_unknown_languages() {
+    for (lang, code) in [
+        ("rust", "fn main() { let s = \"hi\"; }\n"),
+        ("html", "<section class=\"hero\">Hi</section>\n"),
+        ("css", ".hero { color: #0a3069; display: flex; }\n"),
+        ("markdown", "# Title\n\n- item with `code`\n"),
+        ("mermaid", "flowchart TD\nA --> B\n"),
+        ("sql", "SELECT id FROM users WHERE age > 18;\n"),
+        ("not-a-language", "plain <text> & symbols\n"),
+    ] {
+        assert_highlight_into_matches_highlight(lang, code);
+    }
+}
+
+#[test]
+fn highlight_into_clears_stale_spans() {
+    let stale = Span {
+        kind: Tok::Comment,
+        start: 99,
+        end: 123,
+    };
+    let mut spans = vec![stale; 3];
+
+    highlight_into("rust", "", &mut spans);
+    assert!(
+        spans.is_empty(),
+        "supported empty input should remove all stale spans"
+    );
+
+    spans.push(stale);
+    highlight_into("not-a-language", "plain", &mut spans);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].kind, Tok::Plain);
+    assert_eq!(spans[0].start, 0);
+    assert_eq!(spans[0].end, "plain".len());
+}
+
+#[test]
+fn highlight_into_preserves_reusable_capacity() {
+    let mut spans = Vec::with_capacity(64);
+    let capacity = spans.capacity();
+
+    highlight_into("rust", "fn main() { let s = \"hi\"; }\n", &mut spans);
+    assert!(!spans.is_empty());
+    assert_eq!(
+        spans.capacity(),
+        capacity,
+        "small supported highlight should reuse caller capacity"
+    );
+
+    highlight_into("not-a-language", "plain", &mut spans);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        spans.capacity(),
+        capacity,
+        "unknown-language fallback should reuse caller capacity"
+    );
 }
 
 #[test]

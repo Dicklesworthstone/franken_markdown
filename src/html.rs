@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
+use crate::highlight::{Span, highlight_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 use crate::{FontAssets, HtmlOptions};
@@ -88,6 +89,8 @@ struct RenderState {
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: BTreeMap<String, usize>,
+    /// Reused by code block highlighting to avoid one Vec allocation per fence.
+    highlight_spans: Vec<Span>,
 }
 
 impl RenderState {
@@ -164,7 +167,7 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
             // The highlighter itself falls back to one plain span for unknown
             // languages, so supported languages only pay for one lookup here.
             match lang.as_deref() {
-                Some(l) => highlight_code(l, code, out),
+                Some(l) => highlight_code(l, code, out, &mut state.highlight_spans),
                 None => push_escaped_text(code, out),
             }
             out.push_str("</code></pre>\n");
@@ -445,8 +448,9 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token,
 /// always HTML-escaped; plain tokens are escaped text with no wrapping span.
-fn highlight_code(lang: &str, code: &str, out: &mut String) {
-    for span in crate::highlight::highlight(lang, code) {
+fn highlight_code(lang: &str, code: &str, out: &mut String, spans: &mut Vec<Span>) {
+    highlight_into(lang, code, spans);
+    for span in spans.iter().copied() {
         let text = code.get(span.start..span.end).unwrap_or("");
         match span.kind.css_class() {
             Some(cls) => {

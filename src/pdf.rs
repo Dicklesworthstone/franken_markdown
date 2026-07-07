@@ -20329,6 +20329,11 @@ flowchart LR
         assert_eq!(render_tree_debug(&md, &opts), render_tree_debug(&md, &opts));
     }
 
+    fn render_tree_y_label(line: &str) -> Option<&str> {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix("y="))
+    }
+
     #[test]
     fn performance_plan_render_tree_pins_user_visible_regressions() {
         let tree = render_tree_debug(&performance_plan_markdown(), &small_opts(612.0, 792.0));
@@ -20351,16 +20356,22 @@ flowchart LR
             );
         }
 
-        let diagram_row = "    Markdown[large markdown file] --> Parser[AST] --> Layout[measured table/code layout] --> PDF[compact tagged PDF]";
-        let diagram_literal = format!("{diagram_row:?}");
-        let diagram_count = tree
+        let diagram_rows = tree
             .lines()
             .filter(|line| line.contains("Code "))
-            .filter(|line| line.contains(&diagram_literal))
-            .count();
+            .filter(|line| {
+                line.contains("\"    Markdown\"")
+                    || line.contains("\"large markdown file\"")
+                    || line.contains("\" Parser\"")
+                    || line.contains("\"measured table\"")
+                    || line.contains("\"compact tagged PDF\"")
+            })
+            .filter_map(render_tree_y_label)
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            diagram_count, 1,
-            "the long mermaid/ascii diagram row should stay on one rendered code row\n{tree}"
+            diagram_rows.len(),
+            1,
+            "the long Mermaid diagram row should stay on one rendered code row even when syntax highlighting splits it into token segments\n{tree}"
         );
 
         let body_fill =
@@ -20383,6 +20394,16 @@ flowchart LR
                 .iter()
                 .any(|line| line.contains("\"# installs fmd\"")),
             "PowerShell comments should emit a non-body fill\n{tree}"
+        );
+        assert!(
+            syntax_lines
+                .iter()
+                .any(|line| line.contains("\"flowchart\"")),
+            "Mermaid diagram keywords should emit a non-body fill in PDF code blocks\n{tree}"
+        );
+        assert!(
+            syntax_lines.iter().any(|line| line.contains("\"-->\"")),
+            "Mermaid edge operators should emit a non-body fill in PDF code blocks\n{tree}"
         );
     }
 }

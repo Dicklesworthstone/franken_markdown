@@ -25,12 +25,12 @@ cargo install franken_markdown
 > release ships checksum-verified `fmd` archives for Linux x86_64, macOS Intel,
 > macOS Apple Silicon, and Windows x86_64, with smoke tests in the release
 > workflow. `main` documents the current renderer: shared HTML/PDF syntax
-> highlighting, measured PDF table allocation, fitted ASCII diagrams,
-> frankenmermaid-generated SVG diagrams drawn as PDF vectors, staged native
-> writes, optional Asupersync batch rendering, browser/WASM package sources, and
-> a long set of measured scalar optimizations. The WASM package is build-checked
-> and publish-ready, but not yet on npm. SIMD and deeper pagination remain
-> roadmap items until they have proof.
+> highlighting including Mermaid/MMD source fences, measured PDF table
+> allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
+> as PDF vectors, staged native writes, optional Asupersync batch rendering,
+> browser/WASM package sources, and a long set of measured scalar optimizations.
+> The WASM package is build-checked and publish-ready, but not yet on npm. SIMD
+> and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
 
@@ -91,9 +91,9 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
-| Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, and Markdown. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
+| Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
-| Mermaid diagrams | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
+| Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input PDF renders auto-load relative local PNG/SVG destinations. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
 | Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text, transforms, gradients, spread modes, patterns, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
@@ -110,7 +110,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 |---|---|
 | Document fidelity | Tables, code blocks, blockquotes, lists, links, images, SVG diagrams, headings, and metadata all render through the same AST and theme model for HTML and PDF |
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
-| Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, and Markdown use the same clean-room highlighting model in HTML and PDF |
+| Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
 | Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, drop shadows, `paint-order`, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
@@ -234,7 +234,7 @@ builds can opt into host-specific codegen when portability is not required.
 | Parser line scanning | Byte-level candidate guards skip reference, table, URL, email, and block probes on ordinary prose | Large README-style files stay on contiguous byte walks instead of branch-heavy semantic checks |
 | Multiline paragraphs | Plain multiline paragraphs bypass the full inline parser until a line contains Markdown syntax | Prose-heavy documents avoid unnecessary state-machine work and allocation |
 | Inline and HTML escaping | Shared scanner primitives find Markdown/HTML escape bytes without per-character allocation on clean text runs | The common path fits branch predictors and cache lines on ARM64 and x86_64 |
-| Syntax highlighting | Supported language fences dispatch directly into the clean-room highlighter. Unknown fences stay on the plain escaped path, and PDF avoids duplicate lexer lookup where possible | Code-heavy documents avoid repeated language normalization and duplicate token construction |
+| Syntax highlighting | Supported language fences, including Mermaid/MMD, dispatch directly into the clean-room highlighter. Unknown fences stay on the plain escaped path, and PDF avoids duplicate lexer lookup where possible | Code-heavy documents avoid repeated language normalization and duplicate token construction |
 | Font use tracking | HTML font subsetting records ASCII glyph use with a compact bitset, then preserves first-seen order for non-ASCII glyphs | Embedded-font CSS stays deterministic while per-render bookkeeping drops |
 | PDF shaping and layout | Render-local shaped-width caches avoid recomputing font shaping, kerning, ligatures, and repeated word widths. Table-cell inline tokens are reused for measurement and final layout | Repeated table, code, and body tokens reuse nearby cache entries instead of re-entering shaping loops |
 | PDF glyph collection | Cached shaped runs are collected with a single shape-cache lookup on hits | Cuts deterministic map traffic during subset glyph collection without changing PDF bytes |
@@ -840,8 +840,8 @@ writing: Rust, Python, JavaScript/TypeScript (JSX/TSX files are tokenized as
 JavaScript; keywords, strings, comments, and numbers are highlighted, while
 embedded markup tags are not), JSON/JSONC, Bash and other shells, PowerShell,
 Go, C/C++ (including `#` preprocessor directives), TOML/INI, YAML, SQL
-(case-insensitive keywords), HTML/XML/SVG, CSS/SCSS/Sass, and Markdown. Unknown
-languages fall back to plain, escaped code.
+(case-insensitive keywords), HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and
+Mermaid/MMD diagram source. Unknown languages fall back to plain, escaped code.
 
 **Does `fmd` have a `completions` subcommand?**
 No. There is no shell-completion generator today; the command set is `render`,

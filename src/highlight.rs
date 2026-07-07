@@ -101,6 +101,7 @@ enum Lexer {
     Html,
     Css,
     Markdown,
+    Mermaid,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -118,6 +119,7 @@ pub fn highlight(lang: &str, code: &str) -> Vec<Span> {
         Some(Lexer::Html) => lex_html(code),
         Some(Lexer::Css) => lex_css(code),
         Some(Lexer::Markdown) => lex_markdown(code),
+        Some(Lexer::Mermaid) => lex_mermaid(code),
         None => vec![Span {
             kind: Tok::Plain,
             start: 0,
@@ -579,6 +581,66 @@ fn lex_markdown(code: &str) -> Vec<Span> {
     spans
 }
 
+fn lex_mermaid(code: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let len = code.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let rest = &code[pos..];
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        let clen = ch.len_utf8();
+
+        if ch.is_whitespace() {
+            let start = pos;
+            pos = consume_while(code, pos, char::is_whitespace);
+            push_span(&mut spans, Tok::Plain, start, pos);
+        } else if rest.starts_with("%%") {
+            let end = rest.find('\n').map_or(len, |off| pos + off);
+            push_span(&mut spans, Tok::Comment, pos, end);
+            pos = end;
+        } else if ch == '"' || ch == '\'' {
+            let end = consume_quoted(code, pos, ch);
+            push_span(&mut spans, Tok::Str, pos, end);
+            pos = end;
+        } else if ch.is_ascii_digit() {
+            let start = pos;
+            pos = consume_while(code, pos, is_mermaid_number_char);
+            push_span(&mut spans, Tok::Number, start, pos);
+        } else if is_mermaid_ident_start(ch) {
+            let start = pos;
+            pos = consume_while(code, pos, is_mermaid_ident_char);
+            let word = &code[start..pos];
+            let kind = if MERMAID_KW.iter().any(|kw| kw.eq_ignore_ascii_case(word)) {
+                Tok::Keyword
+            } else if MERMAID_TY.iter().any(|ty| ty.eq_ignore_ascii_case(word)) {
+                Tok::Type
+            } else {
+                Tok::Plain
+            };
+            push_span(&mut spans, kind, start, pos);
+        } else {
+            let kind = if is_mermaid_operator_char(ch) {
+                Tok::Operator
+            } else if "()[]{}:,;|".contains(ch) {
+                Tok::Punct
+            } else {
+                Tok::Plain
+            };
+            let start = pos;
+            pos += clen;
+            if kind == Tok::Operator {
+                pos = consume_while(code, pos, is_mermaid_operator_char);
+            }
+            push_span(&mut spans, kind, start, pos);
+        }
+    }
+
+    spans
+}
+
 fn push_span(spans: &mut Vec<Span>, kind: Tok, start: usize, end: usize) {
     if start >= end {
         return;
@@ -698,6 +760,25 @@ fn is_css_ident_char(ch: char) -> bool {
 
 fn is_css_number_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '%' | '-')
+}
+
+fn is_mermaid_number_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '%' | '-')
+}
+
+fn is_mermaid_ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_mermaid_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
+}
+
+fn is_mermaid_operator_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '-' | '=' | '.' | '>' | '<' | '+' | '*' | '/' | '\\' | '&' | '@' | '~' | '!'
+    )
 }
 
 fn starts_hex_color(code: &str, pos: usize) -> bool {
@@ -850,6 +931,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "html" | "htm" | "xhtml" | "xml" | "svg" => Some(Lexer::Html),
         "css" | "scss" | "sass" => Some(Lexer::Css),
         "markdown" | "md" | "mdown" | "mkd" => Some(Lexer::Markdown),
+        "mermaid" | "mmd" => Some(Lexer::Mermaid),
         "rust" | "rs" => Some(Lexer::Generic(Rules {
             keywords: RUST_KW,
             types: RUST_TY,
@@ -982,6 +1064,53 @@ const CSS_KW: &[&str] = &[
     "solid",
     "transparent",
     "unset",
+];
+
+const MERMAID_KW: &[&str] = &[
+    "accdescr",
+    "acctitle",
+    "activate",
+    "actor",
+    "alt",
+    "as",
+    "autonumber",
+    "class",
+    "classdef",
+    "classdiagram",
+    "click",
+    "critical",
+    "deactivate",
+    "direction",
+    "else",
+    "end",
+    "erdiagram",
+    "flowchart",
+    "gantt",
+    "gitgraph",
+    "graph",
+    "journey",
+    "loop",
+    "mindmap",
+    "note",
+    "opt",
+    "over",
+    "par",
+    "participant",
+    "pie",
+    "rect",
+    "section",
+    "sequencediagram",
+    "statediagram",
+    "statediagram-v2",
+    "style",
+    "subgraph",
+    "theme",
+    "timeline",
+    "title",
+];
+
+const MERMAID_TY: &[&str] = &[
+    "BT", "LR", "RL", "TB", "TD", "bottom", "left", "right", "top",
 ];
 
 const RUST_KW: &[&str] = &[

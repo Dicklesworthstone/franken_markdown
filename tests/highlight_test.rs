@@ -123,6 +123,8 @@ fn common_languages_are_supported() {
         "sass",
         "markdown",
         "md",
+        "mermaid",
+        "mmd",
     ] {
         assert!(is_supported(l), "expected a lexer for {l}");
     }
@@ -380,6 +382,21 @@ fn html_css_and_markdown_render_escaped_token_spans() {
     assert!(html.contains(
         "<span class=\"tok-kw\">#</span> Title with <span class=\"tok-st\">`code`</span>"
     ));
+}
+
+#[test]
+fn mermaid_render_uses_shared_highlighter() {
+    let html = render_html(
+        "```mermaid\nflowchart TD\n    A[Markdown] --> B[AST]\n    B -.-> C[PDF]\n```\n",
+        &HtmlOptions::default(),
+    )
+    .unwrap();
+
+    assert!(html.contains("class=\"language-mermaid\""));
+    assert!(html.contains("<span class=\"tok-kw\">flowchart</span>"));
+    assert!(html.contains("<span class=\"tok-ty\">TD</span>"));
+    assert!(html.contains("<span class=\"tok-op\">--&gt;</span>"));
+    assert!(html.contains("<span class=\"tok-op\">-.-&gt;</span>"));
 }
 
 #[test]
@@ -875,6 +892,28 @@ fn sql_tokens_classified() {
     assert_spans_tile("sql", typed);
     assert!(has_span("sql", typed, Tok::Type, "INTEGER"));
     assert!(has_span("sql", typed, Tok::Type, "VARCHAR"));
+}
+
+#[test]
+fn mermaid_tokens_classified_without_treating_labels_as_types() {
+    let code = "%% pipeline\nflowchart TD\n    A[Markdown] --> B[AST]\n    B -.-> C[PDF]\n    classDef hot fill:#fee2e2,stroke:#dc2626\n    click A \"https://example.test\"\n";
+    assert_spans_tile("mermaid", code);
+    assert_spans_tile("mmd", code);
+    assert_eq!(tok_of("mermaid", code, "flowchart"), Some(Tok::Keyword));
+    assert_eq!(tok_of("mermaid", code, "TD"), Some(Tok::Type));
+    assert_eq!(tok_of("mermaid", code, "-->"), Some(Tok::Operator));
+    assert_eq!(tok_of("mermaid", code, "-.->"), Some(Tok::Operator));
+    assert_eq!(tok_of("mermaid", code, "%% pipeline"), Some(Tok::Comment));
+    assert_eq!(
+        tok_of("mermaid", code, "\"https://example.test\""),
+        Some(Tok::Str)
+    );
+    assert_eq!(tok_of("mermaid", code, "classDef"), Some(Tok::Keyword));
+    assert_ne!(
+        tok_of("mermaid", code, "Markdown"),
+        Some(Tok::Type),
+        "Mermaid node labels must not inherit the generic lexer capitalization heuristic"
+    );
 }
 
 // ---------------------------------------------------------------------------

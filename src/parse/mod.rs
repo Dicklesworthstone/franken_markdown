@@ -926,24 +926,23 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             continue;
         }
         if scan.maybe_blockquote && line.trim_start().starts_with('>') {
-            let mut inner = Vec::new();
+            let mut inner: Vec<&str> = Vec::new();
             while i < lines.len() {
                 if lines[i].trim_start().starts_with('>') {
-                    inner.push(strip_blockquote(lines[i]));
+                    inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
-                } else if blockquote_lazy_continuation(inner.last().map(String::as_str), lines[i]) {
-                    inner.push(lines[i].trim_start().to_string());
+                } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
+                    inner.push(lines[i].trim_start());
                     i += 1;
                 } else {
                     break;
                 }
             }
-            let inner_slice: Vec<&str> = inner.iter().map(String::as_str).collect();
-            let bq_refs = collect_link_reference_map(&inner_slice);
+            let bq_refs = collect_link_reference_map(&inner);
             for (label, reference) in bq_refs {
                 refs.entry(label).or_insert(reference);
             }
-            collect_nested_references(&inner_slice, refs, depth + 1);
+            collect_nested_references(&inner, refs, depth + 1);
             in_paragraph = false;
             continue;
         }

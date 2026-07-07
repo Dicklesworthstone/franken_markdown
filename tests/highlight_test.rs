@@ -169,6 +169,47 @@ fn language_metadata_still_selects_the_supported_lexer() {
 }
 
 #[test]
+fn language_metadata_accepts_mixed_case_language_keys() {
+    assert!(is_supported("RuSt,no_run"));
+    assert!(is_supported("PyThOn linenums"));
+    assert!(is_supported("C++,17"));
+    assert!(is_supported("JSONC:metadata"));
+    assert!(!is_supported("RuSty,no_run"));
+
+    let rust = "fn main() { let answer = 42; }\n";
+    assert_eq!(
+        serialized_tokens("rust", rust),
+        serialized_tokens("RuSt,no_run", rust)
+    );
+
+    let python = "def main():\n    return True\n";
+    assert_eq!(
+        serialized_tokens("python", python),
+        serialized_tokens("PyThOn linenums", python)
+    );
+}
+
+#[test]
+fn language_metadata_accepts_mixed_case_language_prefixes() {
+    assert!(is_supported("LANGUAGE-RuSt,no_run"));
+    assert!(is_supported("LaNgUaGe-PyThOn linenums"));
+    assert!(is_supported("LANGUAGE-C++,17"));
+    assert!(!is_supported("LANGUAGE-RuSty,no_run"));
+
+    let rust = "fn main() { let answer = 42; }\n";
+    assert_eq!(
+        serialized_tokens("rust", rust),
+        serialized_tokens("LANGUAGE-RuSt,no_run", rust)
+    );
+
+    let cpp = "#include <vector>\nint main() { return 0; }\n";
+    assert_eq!(
+        serialized_tokens("c++", cpp),
+        serialized_tokens("LANGUAGE-C++,17", cpp)
+    );
+}
+
+#[test]
 fn approved_highlight_token_fixtures_match() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/highlight");
     for (name, lang) in [

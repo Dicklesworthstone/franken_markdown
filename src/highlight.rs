@@ -28,6 +28,8 @@
 //!   containing a quote can open a spurious string span. Keyword/string/comment
 //!   coloring elsewhere on the line is unaffected.
 
+use std::borrow::Cow;
+
 /// A highlight token class.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tok {
@@ -908,21 +910,29 @@ fn consume_markdown_plain(code: &str, mut pos: usize) -> usize {
     pos
 }
 
-fn language_key(lang: &str) -> String {
-    let lower = lang.trim().to_ascii_lowercase();
-    let without_prefix = lower.strip_prefix("language-").unwrap_or(&lower);
+fn language_key(lang: &str) -> Cow<'_, str> {
+    let trimmed = lang.trim();
+    let without_prefix = trimmed
+        .get(.."language-".len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case("language-"))
+        .map_or(trimmed, |_| &trimmed["language-".len()..]);
     let end = without_prefix
         .char_indices()
         .find_map(|(idx, ch)| {
             (!(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '#' | '-' | '_'))).then_some(idx)
         })
         .unwrap_or(without_prefix.len());
-    without_prefix[..end].to_string()
+    let key = &without_prefix[..end];
+    if key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(key.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(key)
+    }
 }
 
 fn lexer(lang: &str) -> Option<Lexer> {
     let l = language_key(lang);
-    match l.as_str() {
+    match l.as_ref() {
         "html" | "htm" | "xhtml" | "xml" | "svg" => Some(Lexer::Html),
         "css" | "scss" | "sass" => Some(Lexer::Css),
         "markdown" | "md" | "mdown" | "mkd" => Some(Lexer::Markdown),

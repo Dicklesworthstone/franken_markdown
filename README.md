@@ -15,23 +15,26 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 
 </div>
 
-> **The HTML and PDF paths work today.** Markdown renders to polished,
-> self-contained HTML and compact deterministic PDF. The current renderer includes
-> clean-room syntax highlighting, Knuth-Plass line breaking, real GPOS kerning,
-> GSUB ligatures, deterministic Liang/TeX hyphenation, body justification,
-> measured-column tables, nested lists, tinted blockquotes, strikethrough,
-> heading rules, syntax-highlighted code panels, selectable tagged-PDF text,
-> local PNG/SVG image assets, and a dependency-free SVG-to-PDF renderer capable
-> enough to draw frankenmermaid diagrams as vector content. The browser/WASM
-> package builds a real wasm-bindgen module that loads in node and the browser
-> and renders HTML and PDF with byte-identical parity to the native core; it is
-> publish-ready (validated manifest plus a tag-gated npm release workflow),
-> proven by `scripts/check-wasm-package.sh`. Deeper pagination controls remain
-> active roadmap work tracked in beads.
-> Version `0.2.0`. Prebuilt `fmd` binaries for Linux, macOS (Intel + Apple
-> Silicon), and Windows are produced by the tag-gated
-> `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
-> source builds remain available as a fallback under [Installation](#installation).
+> **The HTML, PDF, CLI, and WASM paths work today.** Markdown renders to
+> polished, self-contained HTML and compact deterministic PDF through one
+> clean-room Rust core. The current renderer includes clean-room syntax
+> highlighting, Knuth-Plass line breaking, real GPOS kerning, GSUB ligatures,
+> deterministic Liang/TeX hyphenation, body justification, measured-column
+> tables, nested lists, tinted blockquotes, strikethrough, heading rules,
+> syntax-highlighted code panels, selectable tagged-PDF text, link annotations,
+> outlines, local PNG/SVG image assets, and a dependency-free SVG-to-PDF renderer
+> capable enough to draw frankenmermaid diagrams as vector content. The
+> browser/WASM package builds a real wasm-bindgen module that loads in node and
+> the browser and renders HTML and PDF with byte-identical parity to the native
+> core; it is publish-ready, with a validated manifest and tag-gated npm release
+> workflow, proven by `scripts/check-wasm-package.sh`.
+>
+> Version `0.2.0`. Prebuilt `fmd` binaries for Linux, macOS Intel, macOS Apple
+> Silicon, and Windows are produced by the tag-gated
+> `.github/workflows/release.yml`, with checksums and per-platform smoke tests.
+> Source builds remain available as a fallback under
+> [Installation](#installation). Deeper pagination controls remain active
+> roadmap work tracked in beads.
 
 ---
 
@@ -65,6 +68,19 @@ output.
 | Agent-friendly CLI | `fmd README.md` just works; `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, and stable exit codes expose a machine contract |
 | Profile-driven performance | The hot paths are scalar, cache-friendly, allocation-conscious, and verified by golden output checks before each optimization lands |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are all product targets |
+
+### Recent Feature Snapshot
+
+| Surface | Current state |
+|---|---|
+| PDF text quality | Curated font embedding and subsetting, real metrics, focused kerning, ligatures, Knuth-Plass line breaking, hyphenation, justification, selectable text, outlines, metadata, links, and a partial tagged-PDF structure tree |
+| Tables | HTML and PDF both use measured columns; PDF table allocation now considers content width rather than forcing narrow equal columns, which keeps dense header rows readable |
+| Code blocks | Clean-room syntax highlighting is shared by HTML and PDF. PDF fenced blocks can also include muted line numbers |
+| Diagrams | Local PNG and SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer |
+| Mermaid workflow | The showcase includes Mermaid source plus a frankenmermaid-generated SVG asset, so the same diagram can render in HTML and PDF without a JavaScript runtime |
+| CLI safety | Input and PDF image byte limits fail early with stable exit codes; JSON status, `doctor`, `capabilities`, and `robot-docs` expose the same contract to humans and agents |
+| Batch rendering | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, deterministic receipts, and stable output ordering |
+| Browser/WASM | The wasm-bindgen package exposes typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, and native-parity tests |
 
 ---
 
@@ -182,30 +198,47 @@ paths instead of broad rewrites:
 | Tables | HTML and PDF table paths avoid avoidable temporary allocation and use measured column allocation rather than fixed-width guesses |
 | Batch rendering | Native batch mode sizes workers by interactive/throughput policy, keeps output ordering deterministic, and leaves the synchronous core untouched |
 
-For Apple Silicon and Intel/AMD CPUs, the shipped optimization today is native,
-architecture-appropriate packaging plus cache-friendly scalar code:
+### Apple Silicon And Intel/AMD Strategy
 
-- macOS builds ship separately for `aarch64-apple-darwin` and
-  `x86_64-apple-darwin`, so Apple Silicon machines do not need Rosetta and Intel
-  Macs get their own binary.
-- Linux and Windows x86_64 builds use the same deterministic scalar algorithms,
-  avoiding `target-cpu=native` so release binaries remain portable across mixed
-  Intel/AMD fleets.
-- Hot loops favor contiguous buffers, pre-sized vectors, local caches, and
-  append-style writers. Those choices matter on Apple M-series memory systems
-  and on modern Intel/AMD cache hierarchies without splitting the renderer into
-  separate semantic implementations.
-- The SIMD plan is intentionally gated. [`docs/SIMD_ISLAND_DESIGN.md`](docs/SIMD_ISLAND_DESIGN.md)
-  defines a future dependency-free island for AArch64 NEON, x86_64 AVX2, and
-  optional WASM `simd128`, but production SIMD is not enabled until same-host
-  profiling proves a scanner/escaper is top-5, golden outputs match, and scalar
-  differential tests pass.
-- AVX-512 is not a default target. It can downclock some machines and is unevenly
-  available across Intel/AMD hardware, so it requires separate proof before any
-  claim.
+The shipped optimization today is architecture-aware packaging plus carefully
+measured scalar Rust. That is intentional: the scalar path is the correctness
+oracle for native, WASM, Apple Silicon, and Intel/AMD builds.
 
-The practical result is a renderer that is fast by measurement, portable by
-default, and ready for NEON/AVX2 acceleration only where the profiles justify it.
+| Target family | What fmd does now | Why it matters |
+|---|---|---|
+| Apple Silicon | Publishes native `aarch64-apple-darwin` release archives built and smoke-tested on Apple Silicon GitHub runners | Apple Silicon machines get a native binary with no Rosetta dependency and no cross-compiled binary that was never executed on the target architecture |
+| Intel macOS | Publishes separate `x86_64-apple-darwin` archives built and smoke-tested on Intel macOS runners | Older Macs keep a first-class binary instead of relying on universal packaging assumptions |
+| Intel/AMD Linux | Publishes `x86_64-unknown-linux-gnu` archives with portable scalar code and no `target-cpu=native` requirement | The same binary can run across mixed Intel and AMD fleets without accidentally depending on the build host's CPU extensions |
+| Windows x86_64 | Publishes `x86_64-pc-windows-msvc` archives with a focused PowerShell smoke test | Windows gets the same CLI contract, JSON capability surface, and HTML render smoke proof as Unix builds |
+| Browser/WASM | Keeps scalar byte-identical behavior as the default; any future `simd128` path must stay feature-gated | Browser output remains deterministic and independent of system fonts, native threads, or host CPU assumptions |
+
+The important CPU-specific work is in the shape of the hot loops, not in
+unchecked intrinsics:
+
+- Parser and HTML scanners use byte-level fast paths that skip expensive logic
+  for ordinary prose and clean text runs.
+- PDF layout keeps render-local shaped-width caches, reducing repeated font
+  shaping and kerning work on large documents.
+- PDF content generation appends directly into page buffers for hot text and
+  `TJ` operators, avoiding temporary formatted strings in the inner loop.
+- The zlib/DEFLATE path accumulates Adler-32 while emitting fixed-Huffman data,
+  avoiding a second full pass over page/font streams.
+- Table allocation computes measured content widths instead of forcing fixed
+  guesses, improving both visual quality and wasted layout work on dense tables.
+- Batch mode applies a deterministic worker budget so interactive runs leave CPU
+  headroom while throughput runs can use the machine more aggressively.
+
+These choices map well to Apple M-series memory systems and modern Intel/AMD
+cache hierarchies because they favor contiguous buffers, predictable branches,
+local caches, and append-style writers. They also keep the implementation
+portable and auditable.
+
+SIMD is planned but deliberately not claimed as shipped. [`docs/SIMD_ISLAND_DESIGN.md`](docs/SIMD_ISLAND_DESIGN.md)
+defines the only approved future island for AArch64 NEON, x86_64 AVX2, and
+optional WASM `simd128`. Production SIMD remains gated on same-host profile
+artifacts, scalar differential tests, golden output checks, and an unsafe-code
+safety review. AVX-512 is not a default target because it can downclock some
+machines and is unevenly available across Intel/AMD hardware.
 
 ---
 

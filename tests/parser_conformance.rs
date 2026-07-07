@@ -789,6 +789,32 @@ fn ascii_letter_paragraph_lines_do_not_swallow_later_interrupts() {
 }
 
 #[test]
+fn plain_multiline_paragraph_preserves_soft_and_hard_breaks() {
+    assert_eq!(
+        paragraph_inlines("alpha \nbeta  \ngamma"),
+        vec![
+            Inline::Text("alpha".into()),
+            Inline::SoftBreak,
+            Inline::Text("beta".into()),
+            Inline::HardBreak,
+            Inline::Text("gamma".into()),
+        ]
+    );
+}
+
+#[test]
+fn multiline_paragraph_with_inline_syntax_uses_full_inline_parser() {
+    assert_eq!(
+        paragraph_inlines("alpha\n*beta*"),
+        vec![
+            Inline::Text("alpha".into()),
+            Inline::SoftBreak,
+            Inline::Emphasis(vec![Inline::Text("beta".into())]),
+        ]
+    );
+}
+
+#[test]
 fn reference_definition_with_empty_angle_destination_is_rejected() {
     // `<>` is an empty angle destination, so the line is not a valid reference
     // definition and stays as visible paragraph text; `[a]` does not resolve.

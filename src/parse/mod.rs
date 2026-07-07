@@ -1400,6 +1400,22 @@ fn parse_lines_as_inlines(
         _ => {
             let started = profiler.checkpoint();
             let len = inline_lines_byte_len(lines);
+            if let Some(inlines) = plain_multiline_inline_fast_path(lines) {
+                let char_count = if profiler.enabled {
+                    inline_lines_char_len(lines)
+                } else {
+                    0
+                };
+                profiler.record_since(
+                    "inline_parse",
+                    char_count,
+                    len,
+                    inlines.len(),
+                    "parse inline delimiters, links, references, autolinks, code spans, and text",
+                    started,
+                );
+                return (inlines, len, 0);
+            }
             let chars = collect_inline_chars_from_lines(lines, len);
             (
                 parse_inlines_chars_with_refs_profiled(chars, len, refs, profiler, started),
@@ -1412,6 +1428,35 @@ fn parse_lines_as_inlines(
 
 fn inline_lines_byte_len(lines: &[&str]) -> usize {
     lines.iter().map(|line| line.len()).sum::<usize>() + lines.len().saturating_sub(1)
+}
+
+fn inline_lines_char_len(lines: &[&str]) -> usize {
+    lines.iter().map(|line| line.chars().count()).sum::<usize>() + lines.len().saturating_sub(1)
+}
+
+fn plain_multiline_inline_fast_path(lines: &[&str]) -> Option<Vec<Inline>> {
+    if lines.len() < 2 || lines.iter().any(|line| inline_text_needs_full_parse(line)) {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(lines.len().saturating_mul(2).saturating_sub(1));
+    for (idx, line) in lines.iter().enumerate() {
+        let is_last = idx + 1 == lines.len();
+        let text = if is_last {
+            *line
+        } else {
+            line.trim_end_matches(' ')
+        };
+        push_inline_text(&mut out, text);
+        if !is_last {
+            out.push(if line.ends_with("  ") {
+                Inline::HardBreak
+            } else {
+                Inline::SoftBreak
+            });
+        }
+    }
+    Some(out)
 }
 
 fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char> {

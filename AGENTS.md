@@ -134,6 +134,29 @@ cargo test
 Before claiming PDF quality, add golden visual/output fixtures, PDF structural
 validation, file-size benchmarks, determinism checks, and browser/WASM tests.
 
+## Helper Script Artifact Safety
+
+Helper scripts that write under `tests/artifacts` must treat caller-provided
+run ids as path components, not trusted paths.
+
+- Use the shared policy in `scripts/validate-run-id.sh` for artifact run ids:
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`.
+- Source that helper and call `fmd_validate_run_id` before constructing,
+  cleaning, or recursively overwriting any artifact directory derived from a
+  run id.
+- Keep artifact roots under the repository, normally
+  `$ROOT/tests/artifacts/<suite>/$RUN_ID`. Do not accept absolute paths,
+  traversal, blank ids, dot-only ids, spaces, or shell metacharacters as run
+  ids.
+- Prefer `mktemp` for scratch work that does not need to become a durable
+  artifact. When cleanup is unavoidable, clean only validated, repo-rooted
+  paths and use option terminators for commands that accept them.
+- Add source-shape tests when the critical property is ordering, such as
+  validation before cleanup. Add behavior tests when parser/security semantics
+  matter, such as checksum matching or no-network installer behavior.
+- Do not add broad manual cleanup instructions or cleanup helpers that operate
+  on caller-supplied paths directly.
+
 ## Beads
 
 Use `br` for roadmap and implementation tracking. After editing beads:

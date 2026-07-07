@@ -15,19 +15,19 @@ HTML, tiny high-quality PDF, a standalone `fmd` CLI, and first-class WASM use.**
 
 </div>
 
-> **The HTML and PDF paths work today.** Markdown renders to
-> self-contained HTML today, including clean-room syntax highlighting for common
-> documentation languages. The PDF path produces compact, deterministic,
-> embedded-subset-font documents with Knuth-Plass line breaking, real GPOS
-> kerning and GSUB ligatures, deterministic Liang/TeX hyphenation and
-> justification for body paragraphs, measured-column tables, nested lists, tinted
-> blockquotes, strikethrough, heading rules, syntax-highlighted code panels, and
-> selectable tagged-PDF text. The browser/WASM package builds a real
-> wasm-bindgen module that loads in node and the browser and renders HTML and PDF
-> with byte-identical parity to the native core; it is publish-ready (validated
-> manifest plus a tag-gated npm release workflow), proven by
-> `scripts/check-wasm-package.sh`. Deeper pagination controls remain active
-> roadmap work tracked in beads.
+> **The HTML and PDF paths work today.** Markdown renders to polished,
+> self-contained HTML and compact deterministic PDF. The current renderer includes
+> clean-room syntax highlighting, Knuth-Plass line breaking, real GPOS kerning,
+> GSUB ligatures, deterministic Liang/TeX hyphenation, body justification,
+> measured-column tables, nested lists, tinted blockquotes, strikethrough,
+> heading rules, syntax-highlighted code panels, selectable tagged-PDF text,
+> local PNG/SVG image assets, and a dependency-free SVG-to-PDF renderer capable
+> enough to draw frankenmermaid diagrams as vector content. The browser/WASM
+> package builds a real wasm-bindgen module that loads in node and the browser
+> and renders HTML and PDF with byte-identical parity to the native core; it is
+> publish-ready (validated manifest plus a tag-gated npm release workflow),
+> proven by `scripts/check-wasm-package.sh`. Deeper pagination controls remain
+> active roadmap work tracked in beads.
 > Version `0.2.0`. Prebuilt `fmd` binaries for Linux, macOS (Intel + Apple
 > Silicon), and Windows are produced by the tag-gated
 > `.github/workflows/release.yml` (with checksums and per-platform smoke tests);
@@ -55,13 +55,15 @@ output.
 
 | Goal | What you get |
 |---|---|
-| Beautiful by default | Cursor/GitHub-style theme, readable measure, polished tables, blockquotes, and code blocks; no config required |
-| One theme, two surfaces | A single typed theme drives HTML and PDF, so colors, spacing, and code styling stay in sync |
+| Beautiful by default | Cursor/GitHub-style theme, readable measure, polished tables, blockquotes, code blocks, and diagrams; no config required |
+| One theme, two surfaces | A single typed theme drives HTML and PDF, so colors, spacing, code styling, and document rhythm stay in sync |
 | Tiny audit surface | Clean-room engine with no `comrak`, `pulldown-cmark`, `syntect`, `cosmic-text`, `krilla`, Typst, Blitz, or browser engine; `--no-default-features` builds with zero external crates |
 | Real PDF typography | Embedded subset fonts, true metrics, GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation and justification, tagged-PDF structure, and compressed streams |
+| SVG and Mermaid-ready diagrams | File-input PDF renders auto-load local PNG/SVG image destinations, and the PDF engine draws supported SVGs directly instead of rasterizing through a browser |
 | Deterministic | Fixed input plus fixed options yields identical bytes across runs and machines; `SOURCE_DATE_EPOCH` controls PDF dates |
 | WASM-first | The core has no filesystem, fontconfig, process, thread, or async-runtime assumptions; fonts arrive as bytes |
-| Agent-friendly CLI | `fmd README.md` just works; `capabilities --json`, `doctor --json`, `robot-docs guide`, and `--robot-triage` expose a stable machine contract |
+| Agent-friendly CLI | `fmd README.md` just works; `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, and stable exit codes expose a machine contract |
+| Profile-driven performance | The hot paths are scalar, cache-friendly, allocation-conscious, and verified by golden output checks before each optimization lands |
 | Cross-platform | Windows, macOS, Linux, and browser/WASM are all product targets |
 
 ---
@@ -90,6 +92,9 @@ target/release/fmd examples/showcase.md --to pdf --title "Showcase" --author "FM
 # Render HTML and PDF together (extensions derived from --out)
 target/release/fmd examples/showcase.md --to both --out showcase.html
 
+# Render a document with a sibling SVG diagram; file-input PDF auto-loads it
+target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
+
 # Reproducible PDF metadata dates
 SOURCE_DATE_EPOCH=1700000000 target/release/fmd examples/showcase.md --to pdf --out showcase.pdf
 
@@ -107,9 +112,26 @@ title/author/`SOURCE_DATE_EPOCH` metadata, a hierarchical tagged-PDF structure
 tree, and compressed page streams. The writer does Knuth-Plass line breaking,
 deterministic discretionary hyphenation and glue justification for body
 paragraphs, measured-column tables with per-cell alignment and zebra striping,
-nested lists, tinted blockquotes, strikethrough, heading hairline rules, and
-syntax-highlighted code panels. Full widow/orphan and richer block pagination
-remain roadmap.
+nested lists, tinted blockquotes, strikethrough, heading hairline rules,
+syntax-highlighted code panels, local PNG embedding, and vector SVG drawing for
+supported diagrams. Full widow/orphan and richer block pagination remain
+roadmap.
+
+---
+
+## What Works Today
+
+| Area | Current capability |
+|---|---|
+| Markdown parsing | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, HTML escaping, source spans, and diagnostics |
+| HTML output | Self-contained document with inlined CSS, dark-mode support, safe escaping, responsive tables, clean-room syntax highlighting, and optional full stylesheet replacement |
+| PDF typography | Embedded subset fonts, real font metrics, GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, and compressed streams |
+| PDF layout | Measured tables, code panels with optional line numbers, nested lists, blockquotes, heading rules, link annotations, outlines, metadata, and partial tagged-PDF structure |
+| Images and diagrams | Host-supplied PNG/SVG assets through the library, `--pdf-image`, or native CLI auto-loading for relative local file-input destinations |
+| SVG renderer | Dependency-free SVG subset for PDF: paths, lines, polygons, text, transforms, gradients, patterns, masks, clips, markers, opacity, CSS variables/selectors, and embedded PNG data URIs |
+| Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a frankenmermaid-generated SVG asset so HTML and PDF can carry the same diagram |
+| WASM | Browser and node package with TypeScript types, host-supplied fonts/assets, and native-parity HTML/PDF rendering over the same core |
+| Batch rendering | Optional native `batch` feature backed by Asupersync, with bounded workers, cancellation, receipts, and deterministic output order |
 
 ---
 
@@ -143,6 +165,50 @@ remain roadmap.
 
 ---
 
+## Performance And CPU Strategy
+
+The current production renderer is optimized scalar Rust. That is deliberate:
+the scalar path is the correctness oracle for native, WASM, Apple Silicon, and
+Intel/AMD builds. Recent optimization work has focused on the measured hot
+paths instead of broad rewrites:
+
+| Hot path | What changed |
+|---|---|
+| Parser scanning | Byte-level candidate guards skip full block/reference checks for ordinary prose while preserving the same parser output |
+| HTML escaping | Shared scanner primitives find HTML escape bytes without per-character overhead on clean text runs |
+| PDF layout | Render-local shaped-width caches avoid recomputing pure font shaping and kerning results within one PDF render |
+| PDF stream writing | Text segment operators and `TJ` arrays stream into page buffers directly, avoiding per-segment temporary strings |
+| Compression | The hand-rolled zlib/DEFLATE path accumulates Adler-32 during fixed-Huffman emission, removing a second full input scan |
+| Tables | HTML and PDF table paths avoid avoidable temporary allocation and use measured column allocation rather than fixed-width guesses |
+| Batch rendering | Native batch mode sizes workers by interactive/throughput policy, keeps output ordering deterministic, and leaves the synchronous core untouched |
+
+For Apple Silicon and Intel/AMD CPUs, the shipped optimization today is native,
+architecture-appropriate packaging plus cache-friendly scalar code:
+
+- macOS builds ship separately for `aarch64-apple-darwin` and
+  `x86_64-apple-darwin`, so Apple Silicon machines do not need Rosetta and Intel
+  Macs get their own binary.
+- Linux and Windows x86_64 builds use the same deterministic scalar algorithms,
+  avoiding `target-cpu=native` so release binaries remain portable across mixed
+  Intel/AMD fleets.
+- Hot loops favor contiguous buffers, pre-sized vectors, local caches, and
+  append-style writers. Those choices matter on Apple M-series memory systems
+  and on modern Intel/AMD cache hierarchies without splitting the renderer into
+  separate semantic implementations.
+- The SIMD plan is intentionally gated. [`docs/SIMD_ISLAND_DESIGN.md`](docs/SIMD_ISLAND_DESIGN.md)
+  defines a future dependency-free island for AArch64 NEON, x86_64 AVX2, and
+  optional WASM `simd128`, but production SIMD is not enabled until same-host
+  profiling proves a scanner/escaper is top-5, golden outputs match, and scalar
+  differential tests pass.
+- AVX-512 is not a default target. It can downclock some machines and is unevenly
+  available across Intel/AMD hardware, so it requires separate proof before any
+  claim.
+
+The practical result is a renderer that is fast by measurement, portable by
+default, and ready for NEON/AVX2 acceleration only where the profiles justify it.
+
+---
+
 ## Comparison
 
 Honest tradeoffs against the common ways people turn Markdown into HTML and PDF.
@@ -166,9 +232,10 @@ bottom.
 ## Installation
 
 > The `curl`/PowerShell installers (`install.sh` / `install.ps1`) prefer
-> prebuilt release archives and verify checksums when `SHA256SUMS` is published.
-> Use `--from-source` / `-FromSource`, or the source commands below, only when
-> you intentionally want to compile locally.
+> prebuilt release archives and verify checksums from the combined `SHA256SUMS`
+> file or per-archive `.sha256` sidecars when either is published. Use
+> `--from-source` / `-FromSource`, or the source commands below, only when you
+> intentionally want to compile locally.
 
 ### One-line install (Unix: macOS, Linux)
 
@@ -191,7 +258,7 @@ one-liner):
 | `--dest <dir>` | Install the binary to a chosen directory |
 | `--system` | Install system-wide instead of into your user bindir |
 | `--easy-mode` | Pick safe defaults and minimize prompts |
-| `--verify` | Verify checksums/signatures before installing |
+| `--verify` | Run a post-install self-test; archive checksums/signatures are attempted automatically |
 | `--from-source` | Build `fmd` from source rather than downloading a binary |
 | `--quiet` | Suppress non-essential output |
 | `--no-gum` | Skip the prettified prompts and use plain output |
@@ -221,10 +288,10 @@ shared entrypoint; type whichever you like.
 ### Prebuilt binaries and npm
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds,
-smoke-tests, and attaches a `fmd` archive per platform — Linux
+smoke-tests, and attaches a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`) and Apple
-Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`) — each
-with a `.sha256` and a combined `SHA256SUMS`. Download the archive for your
+Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`). Each
+archive includes a `.sha256` and a combined `SHA256SUMS`. Download the archive for your
 platform and verify it before unpacking (Linux example):
 
 ```bash
@@ -323,8 +390,8 @@ fmd --text '<markdown>' --out out.html
 | `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML in the source through instead of escaping it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
-| `--pdf-image DEST=PATH` | Resolve one Markdown image destination to a local file for PDF rendering; repeat for multiple images. The render core never reads files or fetches network resources itself |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per `--pdf-image` file before rendering (default `33554432`, 32 MiB) |
+| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input PDF renders also auto-load relative local PNG/SVG image destinations. The render core never reads files or fetches network resources itself |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit or auto-loaded PDF image file before rendering (default `33554432`, 32 MiB) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
 
@@ -597,7 +664,7 @@ Core modules:
 | Custom CSS removed all styling | `--css` replaces the stylesheet entirely; include every rule you want to keep |
 | `unknown config key ...` | Run `fmd capabilities --json` or see [Configuration](#configuration) for the supported key list |
 | `config set` errors with `--no-config` | They are mutually exclusive; drop `--no-config` to write config |
-| `invalid --pdf-image ...` | Use `--pdf-image MARKDOWN_DEST=PATH`, for example `--pdf-image images/chart.png=./chart.png` |
+| `invalid --pdf-image ...` | Use `--pdf-image MARKDOWN_DEST=PATH`, for example `--pdf-image images/chart.png=./chart.png`; ordinary file-input renders auto-load relative local `.png` and `.svg` destinations when the files are present |
 
 ---
 
@@ -612,7 +679,9 @@ Honest about what the renderer does not do yet.
 - **PDF vs HTML gaps.** The PDF path does not yet render inline images within
   running prose or arbitrary CSS. (Inline styling and links *inside table cells*
   now render, with bold/italic/mono faces and clickable link annotations.) PDF
-  images are host-supplied standalone PNGs via `--pdf-image`.
+  images are standalone PNG or SVG assets supplied by the host; the native CLI
+  auto-loads relative local image destinations for file-input renders, and
+  `--pdf-image` can provide or override assets explicitly.
 - **CommonMark coverage is partial and measured.** Against the official
   CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **379/652
   examples match** after normalizing fmd's styled HTML (64.1% of the 591 in-scope
@@ -656,7 +725,7 @@ pagination control is still landing.
 **Which languages get syntax highlighting?**
 The clean-room highlighter covers the languages that show up in technical
 writing: Rust, Python, JavaScript/TypeScript (JSX/TSX files are tokenized as
-JavaScript — keywords, strings, comments, and numbers are highlighted; embedded
+JavaScript; keywords, strings, comments, and numbers are highlighted, while embedded
 markup tags are not), JSON, Bash and other shells, Go, C/C++ (including `#`
 preprocessor directives), TOML/INI, YAML, SQL (case-insensitive keywords),
 HTML/XML/SVG, and Markdown. Unknown languages fall back to plain, escaped code.

@@ -10,6 +10,7 @@
 //! common 95% with zero dependencies and no `unwrap`/`panic`.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 use crate::scanner::{ParserLineScan, scan_markdown_line};
@@ -30,6 +31,7 @@ struct LinkReference {
 }
 
 type ReferenceMap = BTreeMap<String, LinkReference>;
+type ConsumedReferenceLines = Vec<Range<usize>>;
 
 /// Parsed document plus parser stage attribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,24 +323,7 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
 fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
     let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
     let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
-    let lines: Vec<SourceLine<'_>> = raw_lines
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            if !consumed_reference_lines[idx] {
-                Some(line)
-            } else if consumed_reference_run_separates_tables(
-                &line_texts,
-                &consumed_reference_lines,
-                idx,
-            ) {
-                Some(SourceLine { text: "", ..line })
-            } else {
-                None
-            }
-        })
-        .collect();
+    let lines = strip_consumed_source_lines(raw_lines, &line_texts, &consumed_reference_lines);
     let refs = ReferenceMap::new();
     let mut spans = Vec::new();
     let mut i = 0usize;
@@ -500,38 +485,69 @@ fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap
     (kept, refs, kept_reference_candidate)
 }
 
-fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[bool]) -> Vec<&'a str> {
+fn strip_consumed_source_lines<'a>(
+    raw_lines: &[SourceLine<'a>],
+    line_texts: &[&str],
+    consumed: &[Range<usize>],
+) -> Vec<SourceLine<'a>> {
+    let consumed_line_count: usize = consumed
+        .iter()
+        .map(|range| range.end.saturating_sub(range.start))
+        .sum();
+    let mut kept = Vec::with_capacity(raw_lines.len().saturating_sub(consumed_line_count));
+    let mut cursor = 0usize;
+
+    for range in consumed {
+        kept.extend(raw_lines[cursor..range.start].iter().copied());
+        if consumed_reference_run_separates_tables(line_texts, range) {
+            kept.push(SourceLine {
+                text: "",
+                ..raw_lines[range.start]
+            });
+        }
+        cursor = range.end;
+    }
+
+    kept.extend(raw_lines[cursor..].iter().copied());
+    kept
+}
+
+fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[Range<usize>]) -> Vec<&'a str> {
     strip_consumed_references_with_candidate(lines, consumed).0
 }
 
 fn strip_consumed_references_with_candidate<'a>(
     lines: &[&'a str],
-    consumed: &[bool],
+    consumed: &[Range<usize>],
 ) -> (Vec<&'a str>, bool) {
-    let mut kept = Vec::with_capacity(lines.len());
+    let consumed_line_count: usize = consumed
+        .iter()
+        .map(|range| range.end.saturating_sub(range.start))
+        .sum();
+    let mut kept = Vec::with_capacity(lines.len().saturating_sub(consumed_line_count));
     let mut kept_reference_candidate = false;
-    for (idx, line) in lines.iter().enumerate() {
-        if !consumed[idx] {
+    let mut cursor = 0usize;
+
+    for range in consumed {
+        for line in &lines[cursor..range.start] {
             kept_reference_candidate |= line.contains("]:");
             kept.push(*line);
-        } else if consumed_reference_run_separates_tables(lines, consumed, idx) {
+        }
+        if consumed_reference_run_separates_tables(lines, range) {
             kept.push("");
         }
+        cursor = range.end;
+    }
+
+    for line in &lines[cursor..] {
+        kept_reference_candidate |= line.contains("]:");
+        kept.push(*line);
     }
     (kept, kept_reference_candidate)
 }
 
-fn consumed_reference_run_separates_tables(lines: &[&str], consumed: &[bool], idx: usize) -> bool {
-    if idx > 0 && consumed[idx - 1] {
-        return false;
-    }
-
-    let mut next = idx + 1;
-    while next < consumed.len() && consumed[next] {
-        next += 1;
-    }
-
-    table_ends_at(lines, idx) && table_body_row_starts_at(lines, next)
+fn consumed_reference_run_separates_tables(lines: &[&str], range: &Range<usize>) -> bool {
+    table_ends_at(lines, range.start) && table_body_row_starts_at(lines, range.end)
 }
 
 fn table_ends_at(lines: &[&str], end: usize) -> bool {
@@ -567,8 +583,8 @@ fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
     start < lines.len() && !lines[start].trim().is_empty() && lines[start].contains('|')
 }
 
-fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) {
-    let mut consumed = vec![false; lines.len()];
+fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, ReferenceMap) {
+    let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
     collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs);
     (consumed, refs)
@@ -576,7 +592,7 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (Vec<bool>, ReferenceMap) 
 
 fn collect_link_reference_metadata_into(
     lines: &[&str],
-    mut consumed: Option<&mut [bool]>,
+    mut consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
 ) {
     let mut i = 0usize;
@@ -697,10 +713,8 @@ fn collect_link_reference_metadata_into(
             }
 
             refs.entry(label).or_insert(reference);
-            if let Some(consumed) = consumed.as_deref_mut() {
-                for consumed_line in consumed.iter_mut().skip(i).take(used) {
-                    *consumed_line = true;
-                }
+            if let Some(consumed) = consumed.as_mut() {
+                push_consumed_reference_range(consumed, i..i + used);
             }
             i += used;
             // Leading reference definitions do not themselves open a paragraph.
@@ -726,6 +740,19 @@ fn collect_link_reference_metadata_into(
         in_paragraph = line_is_paragraph_text_with_scan(line, scan);
         i += 1;
     }
+}
+
+fn push_consumed_reference_range(consumed: &mut ConsumedReferenceLines, range: Range<usize>) {
+    if range.start >= range.end {
+        return;
+    }
+    if let Some(previous) = consumed.last_mut()
+        && range.start <= previous.end
+    {
+        previous.end = previous.end.max(range.end);
+        return;
+    }
+    consumed.push(range);
 }
 
 fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
@@ -4362,6 +4389,54 @@ mod refdef_paragraph_tests {
                 .iter()
                 .any(|inline| matches!(inline, Inline::Link { dest, .. } if dest == "/y")),
             "the stripped definition should still resolve the later link: {inlines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_multiline_definition_between_adjacent_tables_preserves_the_table_boundary() {
+        let doc = parse_document(
+            "| a | b |\n\
+             | - | - |\n\
+             | 1 | 2 |\n\
+             [x]: /y\n\
+             \"Title\"\n\
+             | c | d |\n\
+             | - | - |\n\
+             | 3 | 4 |\n\
+             \n\
+             use [x]",
+        );
+
+        assert_eq!(
+            doc.blocks.len(),
+            3,
+            "expected two tables plus one paragraph: {doc:#?}"
+        );
+
+        let Block::Table(first) = &doc.blocks[0] else {
+            panic!("first block should be a table: {doc:#?}");
+        };
+        assert_eq!(
+            first.rows.len(),
+            1,
+            "the second table must not be consumed as body rows"
+        );
+
+        let Block::Table(second) = &doc.blocks[1] else {
+            panic!("second block should be a table: {doc:#?}");
+        };
+        assert_eq!(second.rows.len(), 1);
+
+        let Block::Paragraph(inlines) = &doc.blocks[2] else {
+            panic!("third block should be a paragraph: {doc:#?}");
+        };
+        assert!(
+            inlines.iter().any(|inline| matches!(
+                inline,
+                Inline::Link { dest, title, .. }
+                    if dest == "/y" && title.as_deref() == Some("Title")
+            )),
+            "the stripped multiline definition should still resolve the later link: {inlines:#?}"
         );
     }
 

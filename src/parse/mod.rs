@@ -2215,6 +2215,9 @@ fn split_table_row(line: &str) -> Vec<&str> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
+    if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
+        return t.split('|').map(str::trim).collect();
+    }
     // Split on unescaped `|` outside inline code spans.
     let bytes = t.as_bytes();
     let mut cells = Vec::new();
@@ -4672,5 +4675,32 @@ mod bracket_tests {
         assert!(h("[text](/u)").contains("<a href=\"/u\">text</a>"));
         assert!(h("[**b** t](/u)").contains("<a href=\"/u\"><strong>b</strong> t</a>"));
         assert!(h("[![img](i.png)](page)").contains("<a href=\"page\"><img"));
+    }
+}
+
+#[cfg(test)]
+mod table_row_split_tests {
+    use super::split_table_row;
+
+    #[test]
+    fn plain_table_rows_keep_trimmed_cell_shape() {
+        assert_eq!(
+            split_table_row("| alpha | beta || delta |"),
+            vec!["alpha", "beta", "", "delta"]
+        );
+        assert_eq!(split_table_row("alpha | beta"), vec!["alpha", "beta"]);
+        assert_eq!(split_table_row("||"), vec![""]);
+    }
+
+    #[test]
+    fn special_table_rows_keep_escaped_and_code_pipe_rules() {
+        assert_eq!(
+            split_table_row("alpha | `a|b` | c"),
+            vec!["alpha", "`a|b`", "c"]
+        );
+        assert_eq!(
+            split_table_row(r"alpha | a \| b | c"),
+            vec!["alpha", r"a \| b", "c"]
+        );
     }
 }

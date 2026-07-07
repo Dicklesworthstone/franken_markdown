@@ -2098,18 +2098,21 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             let code_size = if preserve_lines {
                 fitted_code_font_size(
                     code,
-                    code_area_width,
-                    cx.opts.code_line_numbers,
-                    digits,
-                    CODE_FONT_SIZE,
-                    CODE_DIAGRAM_MIN_FONT_SIZE,
-                    cx.faces,
+                    CodeFontFitSpec {
+                        code_area_width,
+                        line_numbers: cx.opts.code_line_numbers,
+                        digits,
+                        default_size: CODE_FONT_SIZE,
+                        min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
+                        faces: cx.faces,
+                        width_cache: &cx.width_cache,
+                    },
                 )
             } else {
                 CODE_FONT_SIZE
             };
             let number_col = if cx.opts.code_line_numbers {
-                code_line_number_column_width(digits, code_size, cx.faces)
+                code_line_number_column_width(digits, code_size, cx.faces, &cx.width_cache)
             } else {
                 0.0
             };
@@ -2129,6 +2132,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         size: code_size,
                         preserve_lines,
                         faces: cx.faces,
+                        width_cache: &cx.width_cache,
                     },
                 );
                 let row_count = rows.len();
@@ -2161,6 +2165,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         number_col,
                         CODE_FONT_SIZE,
                         cx.faces,
+                        &cx.width_cache,
                     ));
                 }
                 segs.push(Seg {
@@ -13242,6 +13247,17 @@ struct CodeWrapSpec<'a> {
     size: f32,
     preserve_lines: bool,
     faces: &'a Faces,
+    width_cache: &'a RefCell<WidthCache>,
+}
+
+struct CodeFontFitSpec<'a> {
+    code_area_width: f32,
+    line_numbers: bool,
+    digits: usize,
+    default_size: f32,
+    min_size: f32,
+    faces: &'a Faces,
+    width_cache: &'a RefCell<WidthCache>,
 }
 
 fn preserve_code_block_lines(lang: Option<&str>, code: &str) -> bool {
@@ -13328,40 +13344,51 @@ const fn is_ascii_diagram_char(ch: char) -> bool {
     )
 }
 
-fn fitted_code_font_size(
-    code: &str,
-    code_area_width: f32,
-    line_numbers: bool,
-    digits: usize,
-    default_size: f32,
-    min_size: f32,
-    faces: &Faces,
-) -> f32 {
+fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
     let longest = code
         .lines()
         .map(expand_code_tabs)
-        .map(|line| text_width(&line, default_size, F_MONO, faces))
+        .map(|line| {
+            text_width_cached(
+                &line,
+                spec.default_size,
+                F_MONO,
+                spec.faces,
+                spec.width_cache,
+            )
+        })
         .fold(0.0f32, f32::max);
     if longest <= 0.0 {
-        return default_size;
+        return spec.default_size;
     }
+    let default_number_text_width = if spec.line_numbers {
+        text_width_cached(
+            &"9".repeat(spec.digits),
+            spec.default_size,
+            F_MONO,
+            spec.faces,
+            spec.width_cache,
+        )
+    } else {
+        0.0
+    };
 
     let fits = |size: f32| {
-        let number_col = if line_numbers {
-            code_line_number_column_width(digits, size, faces)
+        let number_col = if spec.line_numbers {
+            default_number_text_width * (size / spec.default_size) + CODE_LINE_NUMBER_GAP
         } else {
             0.0
         };
-        let available = (code_area_width - number_col).max(8.0);
-        longest * (size / default_size) <= available
+        let available = (spec.code_area_width - number_col).max(8.0);
+        longest * (size / spec.default_size) <= available
     };
 
-    if fits(default_size) {
-        return default_size;
+    if fits(spec.default_size) {
+        return spec.default_size;
     }
 
-    let mut low = min_size.min(default_size);
-    let mut high = default_size;
+    let mut low = spec.min_size.min(spec.default_size);
+    let mut high = spec.default_size;
     for _ in 0..18 {
         let mid = (low + high) * 0.5;
         if fits(mid) {
@@ -13385,6 +13412,7 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
                 spec.number_col,
                 spec.size,
                 spec.faces,
+                spec.width_cache,
             ));
         }
         segs.extend(code_frags_to_segs(
@@ -13392,6 +13420,7 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
             first_text_x,
             spec.size,
             spec.faces,
+            spec.width_cache,
         ));
         if segs.is_empty() {
             segs.push(empty_code_seg(first_text_x));
@@ -13420,6 +13449,7 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
                 spec.number_col,
                 spec.size,
                 spec.faces,
+                spec.width_cache,
             ));
         }
         let text_x = if row_idx == 0 {
@@ -13430,7 +13460,13 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
         if row_idx > 0 {
             segs.push(empty_code_seg(spec.x0));
         }
-        segs.extend(code_frags_to_segs(&frags, text_x, spec.size, spec.faces));
+        segs.extend(code_frags_to_segs(
+            &frags,
+            text_x,
+            spec.size,
+            spec.faces,
+            spec.width_cache,
+        ));
         if segs.is_empty() {
             segs.push(empty_code_seg(text_x));
         }
@@ -13447,6 +13483,7 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
                 spec.number_col,
                 spec.size,
                 spec.faces,
+                spec.width_cache,
             ));
         }
         segs.push(empty_code_seg(first_text_x));
@@ -13533,14 +13570,20 @@ fn push_code_frag_char(frags: &mut Vec<CodeFrag>, ch: char, fill: Fill) {
     });
 }
 
-fn code_frags_to_segs(frags: &[CodeFrag], x0: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+fn code_frags_to_segs(
+    frags: &[CodeFrag],
+    x0: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> Vec<Seg> {
     let mut segs = Vec::new();
     let mut x = x0;
     for frag in frags {
         if frag.text.is_empty() {
             continue;
         }
-        let width = text_width(&frag.text, size, F_MONO, faces);
+        let width = text_width_cached(&frag.text, size, F_MONO, faces, width_cache);
         segs.push(Seg {
             x,
             slot: F_MONO,
@@ -13555,8 +13598,13 @@ fn code_frags_to_segs(frags: &[CodeFrag], x0: f32, size: f32, faces: &Faces) -> 
     segs
 }
 
-fn code_line_number_column_width(digits: usize, size: f32, faces: &Faces) -> f32 {
-    text_width(&"9".repeat(digits), size, F_MONO, faces) + CODE_LINE_NUMBER_GAP
+fn code_line_number_column_width(
+    digits: usize,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> f32 {
+    text_width_cached(&"9".repeat(digits), size, F_MONO, faces, width_cache) + CODE_LINE_NUMBER_GAP
 }
 
 fn code_line_number_seg(
@@ -13566,9 +13614,10 @@ fn code_line_number_seg(
     number_col: f32,
     size: f32,
     faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
 ) -> Seg {
     let text = format!("{line_no:>digits$}");
-    let width = text_width(&text, size, F_MONO, faces);
+    let width = text_width_cached(&text, size, F_MONO, faces, width_cache);
     Seg {
         x: x0 + (number_col - CODE_LINE_NUMBER_GAP - width).max(0.0),
         slot: F_MONO,
@@ -22008,10 +22057,11 @@ mod png_decode_tests {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
     use super::{
-        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeWrapSpec, F_MONO, Faces, TABLE_COL_GUTTER,
-        TABLE_FONT_SIZE, TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths,
-        cell_tokens, fitted_code_font_size, preserve_code_block_lines, table_cell_measure,
-        table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
+        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_MONO, Faces,
+        TABLE_COL_GUTTER, TABLE_FONT_SIZE, TABLE_MIN_COL_WIDTH, TableColumnMetrics,
+        allocate_table_column_widths, cell_tokens, fitted_code_font_size,
+        preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
+        wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
     use crate::ast::Inline;
@@ -22203,19 +22253,86 @@ mod table_wrap_tests {
     }
 
     #[test]
+    fn code_block_layout_reuses_the_layout_width_cache() {
+        let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
+        let line = "repeat repeat repeat";
+        let code = format!("{line}\n{line}");
+
+        let size = fitted_code_font_size(
+            &code,
+            CodeFontFitSpec {
+                code_area_width: 800.0,
+                line_numbers: false,
+                digits: 1,
+                default_size: CODE_FONT_SIZE,
+                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
+                faces: &faces,
+                width_cache: &width_cache,
+            },
+        );
+        assert_eq!(size, CODE_FONT_SIZE);
+
+        let entries_after_fit: usize = width_cache
+            .borrow()
+            .values()
+            .map(std::collections::HashMap::len)
+            .sum();
+        assert!(
+            width_cache
+                .borrow()
+                .values()
+                .any(|slot_cache| slot_cache.contains_key(line)),
+            "the fitted code line should be present in the shared width cache"
+        );
+
+        let rows = wrapped_code_rows(
+            line,
+            CodeWrapSpec {
+                lang: None,
+                line_no: 1,
+                digits: 1,
+                line_numbers: false,
+                x0: 0.0,
+                max_text_width: 800.0,
+                number_col: 0.0,
+                size,
+                preserve_lines: true,
+                faces: &faces,
+                width_cache: &width_cache,
+            },
+        );
+        assert_eq!(rows.len(), 1);
+
+        let entries_after_wrap: usize = width_cache
+            .borrow()
+            .values()
+            .map(std::collections::HashMap::len)
+            .sum();
+        assert_eq!(
+            entries_after_wrap, entries_after_fit,
+            "code row construction should reuse the fitter's cached line width"
+        );
+    }
+
+    #[test]
     fn ascii_diagram_text_fence_preserves_rows_and_fits_by_shrinking() {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
         let diagram = "+----------------------------+\n| parser -> layout -> pdf    |\n+----------------------------+";
         assert!(preserve_code_block_lines(Some("text"), diagram));
 
         let size = fitted_code_font_size(
             diagram,
-            120.0,
-            false,
-            1,
-            CODE_FONT_SIZE,
-            CODE_DIAGRAM_MIN_FONT_SIZE,
-            &faces,
+            CodeFontFitSpec {
+                code_area_width: 120.0,
+                line_numbers: false,
+                digits: 1,
+                default_size: CODE_FONT_SIZE,
+                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
+                faces: &faces,
+                width_cache: &width_cache,
+            },
         );
         assert!(
             size < CODE_FONT_SIZE,
@@ -22235,6 +22352,7 @@ mod table_wrap_tests {
                 size,
                 preserve_lines: true,
                 faces: &faces,
+                width_cache: &width_cache,
             },
         );
         assert_eq!(rows.len(), 1, "diagram source rows must not hard-wrap");
@@ -22265,19 +22383,23 @@ mod table_wrap_tests {
     #[test]
     fn ascii_diagram_fitting_accounts_for_line_number_column() {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
         let diagram = "+----------------------------+\n| parser -> layout -> pdf    |\n+----------------------------+";
         let code_area_width = 128.0;
         let digits = 3;
         let size = fitted_code_font_size(
             diagram,
-            code_area_width,
-            true,
-            digits,
-            CODE_FONT_SIZE,
-            CODE_DIAGRAM_MIN_FONT_SIZE,
-            &faces,
+            CodeFontFitSpec {
+                code_area_width,
+                line_numbers: true,
+                digits,
+                default_size: CODE_FONT_SIZE,
+                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
+                faces: &faces,
+                width_cache: &width_cache,
+            },
         );
-        let number_col = super::code_line_number_column_width(digits, size, &faces);
+        let number_col = super::code_line_number_column_width(digits, size, &faces, &width_cache);
         let rows = wrapped_code_rows(
             diagram.lines().next().unwrap(),
             CodeWrapSpec {
@@ -22291,6 +22413,7 @@ mod table_wrap_tests {
                 size,
                 preserve_lines: true,
                 faces: &faces,
+                width_cache: &width_cache,
             },
         );
 
@@ -22308,6 +22431,7 @@ mod table_wrap_tests {
     #[test]
     fn ordinary_source_code_still_wraps_when_requested() {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
+        let width_cache = width_cache();
         let rows = wrapped_code_rows(
             "let unusually_long_identifier_name = compute_the_value_from_many_inputs();",
             CodeWrapSpec {
@@ -22321,6 +22445,7 @@ mod table_wrap_tests {
                 size: CODE_FONT_SIZE,
                 preserve_lines: false,
                 faces: &faces,
+                width_cache: &width_cache,
             },
         );
         assert!(

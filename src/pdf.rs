@@ -17418,23 +17418,15 @@ fn append_svg_path_ops(body: &mut String, ops: &[SvgPathOp]) {
             SvgPathOp::Move(x, y) => {
                 current = (x, y);
                 subpath_start = Some(current);
-                body.push_str(&format!("{} {} m ", pdf_num(x), pdf_num(y)));
+                append_svg_path_point_op(body, x, y, 'm');
             }
             SvgPathOp::Line(x, y) => {
                 current = (x, y);
-                body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+                append_svg_path_point_op(body, x, y, 'l');
             }
             SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
                 current = (x, y);
-                body.push_str(&format!(
-                    "{} {} {} {} {} {} c ",
-                    pdf_num(x1),
-                    pdf_num(y1),
-                    pdf_num(x2),
-                    pdf_num(y2),
-                    pdf_num(x),
-                    pdf_num(y)
-                ));
+                append_svg_path_cubic_op(body, x1, y1, x2, y2, x, y);
             }
             SvgPathOp::Quad(x1, y1, x, y) => {
                 let c1 = (
@@ -17443,15 +17435,7 @@ fn append_svg_path_ops(body: &mut String, ops: &[SvgPathOp]) {
                 );
                 let c2 = (x + (x1 - x) * (2.0 / 3.0), y + (y1 - y) * (2.0 / 3.0));
                 current = (x, y);
-                body.push_str(&format!(
-                    "{} {} {} {} {} {} c ",
-                    pdf_num(c1.0),
-                    pdf_num(c1.1),
-                    pdf_num(c2.0),
-                    pdf_num(c2.1),
-                    pdf_num(x),
-                    pdf_num(y)
-                ));
+                append_svg_path_cubic_op(body, c1.0, c1.1, c2.0, c2.1, x, y);
             }
             SvgPathOp::Close => {
                 if let Some(start) = subpath_start {
@@ -17461,6 +17445,28 @@ fn append_svg_path_ops(body: &mut String, ops: &[SvgPathOp]) {
             }
         }
     }
+}
+
+fn append_svg_path_num(body: &mut String, value: f32) {
+    append_pdf_num(body, value);
+    body.push(' ');
+}
+
+fn append_svg_path_point_op(body: &mut String, x: f32, y: f32, op: char) {
+    append_svg_path_num(body, x);
+    append_svg_path_num(body, y);
+    body.push(op);
+    body.push(' ');
+}
+
+fn append_svg_path_cubic_op(body: &mut String, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+    append_svg_path_num(body, x1);
+    append_svg_path_num(body, y1);
+    append_svg_path_num(body, x2);
+    append_svg_path_num(body, y2);
+    append_svg_path_num(body, x);
+    append_svg_path_num(body, y);
+    body.push_str("c ");
 }
 
 fn svg_points_bbox(points: &[(f32, f32)]) -> Option<(f32, f32, f32, f32)> {
@@ -20656,13 +20662,13 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SvgDashPattern,
-        SvgLineCap, SvgLineJoin, SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke,
+        SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, Tok, append_artifact_rule_stroke,
         append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
         append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
         append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_str,
         append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
         append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator, append_svg_path_ops,
         append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
         append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
         build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
@@ -21171,6 +21177,24 @@ mod pdf_writer_tests {
             },
         );
         assert_eq!(stroke_options, "0.1 w 2 J 2 j ");
+    }
+
+    #[test]
+    fn svg_path_operator_writer_preserves_legacy_format_shape() {
+        let ops = [
+            SvgPathOp::Move(1.0, 2.0),
+            SvgPathOp::Line(3.5, 4.25),
+            SvgPathOp::Cubic(5.0, 6.0, 7.5, 8.25, 9.0, 10.0),
+            SvgPathOp::Quad(12.0, 16.0, 18.0, 22.0),
+            SvgPathOp::Close,
+        ];
+        let mut out = String::new();
+        append_svg_path_ops(&mut out, &ops);
+
+        assert_eq!(
+            out,
+            "1 2 m 3.5 4.25 l 5 6 7.5 8.25 9 10 c 11 14 14 18 18 22 c h "
+        );
     }
 
     #[test]

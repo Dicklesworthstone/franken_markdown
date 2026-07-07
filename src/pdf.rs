@@ -19196,6 +19196,57 @@ fn append_decimal_usize_string(out: &mut String, value: usize) {
     }
 }
 
+fn append_pdf_object_ref_string(out: &mut String, object_id: usize) {
+    append_decimal_usize_string(out, object_id);
+    out.push_str(" 0 R");
+}
+
+fn append_pdf_object_ref_list_string(out: &mut String, refs: impl IntoIterator<Item = usize>) {
+    let mut first = true;
+    for object_id in refs {
+        if first {
+            first = false;
+        } else {
+            out.push(' ');
+        }
+        append_pdf_object_ref_string(out, object_id);
+    }
+}
+
+fn append_struct_kid_list_string(
+    out: &mut String,
+    kids: &[SKid],
+    page_obj: &impl Fn(usize) -> usize,
+    annot_obj: &impl Fn(usize, usize) -> usize,
+    struct_elem_obj: &impl Fn(usize) -> usize,
+) {
+    let mut first = true;
+    for kid in kids {
+        if first {
+            first = false;
+        } else {
+            out.push(' ');
+        }
+        match kid {
+            SKid::Node(node) => append_pdf_object_ref_string(out, struct_elem_obj(*node)),
+            SKid::Mcr { page, mcid } => {
+                out.push_str("<< /Type /MCR /Pg ");
+                append_pdf_object_ref_string(out, page_obj(*page));
+                out.push_str(" /MCID ");
+                append_decimal_usize_string(out, *mcid);
+                out.push_str(" >>");
+            }
+            SKid::ObjR { page, local } => {
+                out.push_str("<< /Type /OBJR /Pg ");
+                append_pdf_object_ref_string(out, page_obj(*page));
+                out.push_str(" /Obj ");
+                append_pdf_object_ref_string(out, annot_obj(*page, *local));
+                out.push_str(" >>");
+            }
+        }
+    }
+}
+
 fn append_i32_string(out: &mut String, value: i32) {
     if value < 0 {
         out.push('-');
@@ -19633,10 +19684,8 @@ fn build_pdf(
         &format!("<< /Type /Catalog /Pages 2 0 R{outline_root_ref}{structure_root_ref} >>"),
     );
 
-    let kids = (0..p)
-        .map(|i| format!("{} 0 R", page_obj(i)))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let mut kids = String::with_capacity(p.saturating_mul(8));
+    append_pdf_object_ref_list_string(&mut kids, (0..p).map(page_obj));
     append_pdf_object_str(
         &mut buf,
         &mut offsets,
@@ -19645,21 +19694,29 @@ fn build_pdf(
     );
 
     // Shared font resource dict referencing every embedded face's Type0 object.
-    let font_res = faces
-        .iter()
-        .enumerate()
-        .map(|(k, f)| format!("/F{} {} 0 R", f.slot, type0_obj(k)))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let mut font_res = String::with_capacity(faces.len().saturating_mul(14));
+    for (k, face) in faces.iter().enumerate() {
+        if !font_res.is_empty() {
+            font_res.push(' ');
+        }
+        font_res.push_str("/F");
+        append_decimal_usize_string(&mut font_res, usize::from(face.slot));
+        font_res.push(' ');
+        append_pdf_object_ref_string(&mut font_res, type0_obj(k));
+    }
     let image_res = if images.is_empty() {
         String::new()
     } else {
-        let refs = images
-            .iter()
-            .enumerate()
-            .map(|(k, _)| format!("/{} {} 0 R", image_name(k), image_obj(k)))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let mut refs = String::with_capacity(images.len().saturating_mul(16));
+        for k in 0..images.len() {
+            if !refs.is_empty() {
+                refs.push(' ');
+            }
+            refs.push_str("/Im");
+            append_decimal_usize_string(&mut refs, k + 1);
+            refs.push(' ');
+            append_pdf_object_ref_string(&mut refs, image_obj(k));
+        }
         format!(" /XObject << {refs} >>")
     };
     let media_w = pdf_num(page_geom.width);
@@ -19941,15 +19998,19 @@ fn build_pdf(
             if leaf_for_mcid.is_empty() {
                 continue;
             }
-            let refs = leaf_for_mcid
-                .iter()
-                .map(|&node| format!("{} 0 R", struct_elem_obj(node)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            nums.push_str(&format!("{page_index} [ {refs} ] "));
+            append_decimal_usize_string(&mut nums, page_index);
+            nums.push_str(" [ ");
+            append_pdf_object_ref_list_string(
+                &mut nums,
+                leaf_for_mcid.iter().map(|&node| struct_elem_obj(node)),
+            );
+            nums.push_str(" ] ");
         }
         for (key, owner_node) in &struct_annot_nums {
-            nums.push_str(&format!("{key} {} 0 R ", struct_elem_obj(*owner_node)));
+            append_decimal_usize_string(&mut nums, *key);
+            nums.push(' ');
+            append_pdf_object_ref_string(&mut nums, struct_elem_obj(*owner_node));
+            nums.push(' ');
         }
         append_pdf_object_str(
             &mut buf,
@@ -19965,27 +20026,20 @@ fn build_pdf(
             } else {
                 struct_elem_obj(node.parent)
             };
-            let kids = node
-                .kids
-                .iter()
-                .map(|kid| match kid {
-                    SKid::Node(n) => format!("{} 0 R", struct_elem_obj(*n)),
-                    SKid::Mcr { page, mcid } => format!(
-                        "<< /Type /MCR /Pg {pg} 0 R /MCID {mcid} >>",
-                        pg = page_obj(*page),
-                    ),
-                    SKid::ObjR { page, local } => format!(
-                        "<< /Type /OBJR /Pg {pg} 0 R /Obj {obj} 0 R >>",
-                        pg = page_obj(*page),
-                        obj = annot_obj(*page, *local),
-                    ),
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
             let k_entry = if node.kids.is_empty() {
                 String::new()
             } else {
-                format!(" /K [ {kids} ]")
+                let mut entry = String::with_capacity(node.kids.len().saturating_mul(32));
+                entry.push_str(" /K [ ");
+                append_struct_kid_list_string(
+                    &mut entry,
+                    &node.kids,
+                    &page_obj,
+                    &annot_obj,
+                    &struct_elem_obj,
+                );
+                entry.push_str(" ]");
+                entry
             };
             let pg = node
                 .page
@@ -20698,15 +20752,17 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SvgDashPattern,
-        SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, SvgTransform, Tok,
-        append_artifact_rule_stroke, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
-        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
-        append_pdf_num, append_pdf_object_str, append_pdf_page_object, append_pdf_stream_dict,
-        append_pdf_string_escaped, append_rgb_fill_operator, append_rgb_fill_space_operator,
-        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
-        append_rgb_stroke_space_operator, append_svg_element_state_prefix, append_svg_line_path,
+        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfPageObjectParts, PdfStream, SKid,
+        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle,
+        SvgTransform, Tok, append_artifact_rule_stroke, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
+        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_object_ref_list_string,
+        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_page_object,
+        append_pdf_stream_dict, append_pdf_string_escaped, append_rgb_fill_operator,
+        append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_struct_kid_list_string, append_svg_element_state_prefix, append_svg_line_path,
         append_svg_line_stroke_outline, append_svg_path_ops, append_svg_shadow_prefix,
         append_svg_stroke_options, append_svg_style, append_text_segment_operator,
         append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
@@ -21014,6 +21070,49 @@ mod pdf_writer_tests {
 
         assert_eq!(offsets[2], b"%PDF-1.7\n".len());
         assert_eq!(out, b"%PDF-1.7\n2 0 obj\n<< /Type /Example >>\nendobj\n");
+    }
+
+    #[test]
+    fn object_reference_string_writers_match_joined_legacy_shapes() {
+        let mut refs = String::new();
+        append_pdf_object_ref_string(&mut refs, 7);
+        refs.push('|');
+        append_pdf_object_ref_list_string(&mut refs, [3, 4, 15]);
+
+        assert_eq!(refs, "7 0 R|3 0 R 4 0 R 15 0 R");
+
+        let kids = [
+            SKid::Node(2),
+            SKid::Mcr { page: 1, mcid: 7 },
+            SKid::ObjR { page: 2, local: 3 },
+        ];
+        let page_obj = |page: usize| 20 + page;
+        let annot_obj = |page: usize, local: usize| 100 + page * 10 + local;
+        let struct_elem_obj = |node: usize| 200 + node;
+        let mut direct = String::new();
+        append_struct_kid_list_string(&mut direct, &kids, &page_obj, &annot_obj, &struct_elem_obj);
+        let legacy = kids
+            .iter()
+            .map(|kid| match kid {
+                SKid::Node(n) => format!("{} 0 R", struct_elem_obj(*n)),
+                SKid::Mcr { page, mcid } => format!(
+                    "<< /Type /MCR /Pg {pg} 0 R /MCID {mcid} >>",
+                    pg = page_obj(*page),
+                ),
+                SKid::ObjR { page, local } => format!(
+                    "<< /Type /OBJR /Pg {pg} 0 R /Obj {obj} 0 R >>",
+                    pg = page_obj(*page),
+                    obj = annot_obj(*page, *local),
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert_eq!(direct, legacy);
+        assert_eq!(
+            direct,
+            "202 0 R << /Type /MCR /Pg 21 0 R /MCID 7 >> << /Type /OBJR /Pg 22 0 R /Obj 123 0 R >>"
+        );
     }
 
     #[test]

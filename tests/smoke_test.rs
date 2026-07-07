@@ -136,32 +136,46 @@ fn heading_plain_text_projection_preserves_raw_html_source() {
 fn unsafe_markdown_url_schemes_are_neutralized() {
     let html = render(
         "[bad](javascript:alert(1)) \
+         [bad_case](JaVaScRiPt:alert(3)) \
          [obfuscated](<java\tscript:alert(2)>) \
          ![image alt](data:image/svg+xml;base64,PHN2Zy8+) \
+         ![bad mail image](mailto:pic@example.com) \
          [web](https://example.com?q=1) \
+         [web_upper](HTTPS://EXAMPLE.com/Path) \
          [mail](mailto:hello@example.com) \
+         [mail_upper](MAILTO:hello@example.com) \
          [phone](tel:+15551234567) \
+         [phone_upper](TEL:+15550000000) \
          [anchor](#section) \
          [relative](docs/page.md) \
          [network](//example.com/image.png) \
-         ![remote](https://example.com/image.png)",
+         ![remote](https://example.com/image.png) \
+         ![remote_upper](HTTP://example.com/image.png)",
     );
 
     assert!(!html.contains("javascript:"));
+    assert!(!html.contains("JaVaScRiPt:"));
     assert!(!html.contains("java\tscript:"));
     assert!(!html.contains("data:image"));
+    assert!(!html.contains("<img src=\"mailto:"));
     assert!(!html.contains("<a href=\"javascript"));
     assert!(!html.contains("<img src=\"data:"));
     assert!(html.contains("bad"));
+    assert!(html.contains("bad_case"));
     assert!(html.contains("obfuscated"));
     assert!(html.contains("image alt"));
+    assert!(html.contains("bad mail image"));
     assert!(html.contains("<a href=\"https://example.com?q=1\">web</a>"));
+    assert!(html.contains("<a href=\"HTTPS://EXAMPLE.com/Path\">web_upper</a>"));
     assert!(html.contains("<a href=\"mailto:hello@example.com\">mail</a>"));
+    assert!(html.contains("<a href=\"MAILTO:hello@example.com\">mail_upper</a>"));
     assert!(html.contains("<a href=\"tel:+15551234567\">phone</a>"));
+    assert!(html.contains("<a href=\"TEL:+15550000000\">phone_upper</a>"));
     assert!(html.contains("<a href=\"#section\">anchor</a>"));
     assert!(html.contains("<a href=\"docs/page.md\">relative</a>"));
     assert!(html.contains("<a href=\"//example.com/image.png\">network</a>"));
     assert!(html.contains("<img src=\"https://example.com/image.png\" alt=\"remote\">"));
+    assert!(html.contains("<img src=\"HTTP://example.com/image.png\" alt=\"remote_upper\">"));
 }
 
 #[test]

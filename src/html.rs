@@ -525,9 +525,9 @@ enum UrlContext {
     Image,
 }
 
-enum UrlScheme {
+enum UrlScheme<'a> {
     None,
-    Scheme(String),
+    Scheme(&'a str),
     Suspicious,
 }
 
@@ -538,46 +538,52 @@ fn safe_url(url: &str, context: UrlContext) -> Option<&str> {
     }
     match url_scheme(trimmed) {
         UrlScheme::None => Some(trimmed),
-        UrlScheme::Scheme(scheme) if allowed_url_scheme(&scheme, context) => Some(trimmed),
+        UrlScheme::Scheme(scheme) if allowed_url_scheme(scheme, context) => Some(trimmed),
         UrlScheme::Scheme(_) | UrlScheme::Suspicious => None,
     }
 }
 
-fn url_scheme(url: &str) -> UrlScheme {
-    let mut scheme = String::new();
+fn url_scheme(url: &str) -> UrlScheme<'_> {
     let mut skipped_gap = false;
-    for ch in url.chars() {
-        if matches!(ch, '/' | '?' | '#') {
+    for (idx, byte) in url.bytes().enumerate() {
+        if matches!(byte, b'/' | b'?' | b'#') {
             return UrlScheme::None;
         }
-        if ch == ':' {
-            if skipped_gap || !valid_url_scheme(&scheme) {
+        if byte == b':' {
+            let scheme = &url[..idx];
+            if skipped_gap || !valid_url_scheme(scheme) {
                 return UrlScheme::Suspicious;
             }
-            return UrlScheme::Scheme(scheme.to_ascii_lowercase());
+            return UrlScheme::Scheme(scheme);
         }
-        if ch.is_ascii_whitespace() || ch.is_control() {
+        if byte.is_ascii_whitespace() || byte.is_ascii_control() {
             skipped_gap = true;
-            continue;
         }
-        scheme.push(ch);
     }
     UrlScheme::None
 }
 
 fn valid_url_scheme(scheme: &str) -> bool {
-    let mut chars = scheme.chars();
-    let Some(first) = chars.next() else {
+    let Some((&first, rest)) = scheme.as_bytes().split_first() else {
         return false;
     };
     first.is_ascii_alphabetic()
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && rest
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
     match context {
-        UrlContext::Link => matches!(scheme, "http" | "https" | "mailto" | "tel"),
-        UrlContext::Image => matches!(scheme, "http" | "https"),
+        UrlContext::Link => {
+            scheme.eq_ignore_ascii_case("http")
+                || scheme.eq_ignore_ascii_case("https")
+                || scheme.eq_ignore_ascii_case("mailto")
+                || scheme.eq_ignore_ascii_case("tel")
+        }
+        UrlContext::Image => {
+            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+        }
     }
 }
 

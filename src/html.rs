@@ -815,7 +815,19 @@ impl FontCharSet {
 
 fn ascii_char_mask(byte: u8) -> u128 {
     debug_assert!(byte < 128);
-    1u128 << u32::from(byte)
+    ASCII_CHAR_MASKS[byte as usize]
+}
+
+const ASCII_CHAR_MASKS: [u128; 256] = ascii_char_masks();
+
+const fn ascii_char_masks() -> [u128; 256] {
+    let mut masks = [0u128; 256];
+    let mut idx = 0usize;
+    while idx < 128 {
+        masks[idx] = 1u128 << idx;
+        idx += 1;
+    }
+    masks
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1291,7 +1303,7 @@ mod tests {
     use crate::ast::{Block, Document, Inline};
 
     use super::{
-        FontCharSet, base64_encode, css_num, css_token, escape_attr, escape_text,
+        FontCharSet, ascii_char_mask, base64_encode, css_num, css_token, escape_attr, escape_text,
         initial_body_capacity, inlines_to_plain, push_u64, sanitize_custom_css, slug, slug_inlines,
     };
 
@@ -1329,6 +1341,13 @@ mod tests {
 
         let expected: Vec<char> = btree.into_iter().collect();
         assert_eq!(fast.to_chars(), expected);
+    }
+
+    #[test]
+    fn ascii_char_mask_table_matches_shift_definition() {
+        for byte in 0u8..=127 {
+            assert_eq!(ascii_char_mask(byte), 1u128 << u32::from(byte));
+        }
     }
 
     #[test]

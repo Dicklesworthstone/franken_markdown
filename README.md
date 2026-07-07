@@ -24,10 +24,10 @@ cargo install franken_markdown
 > GitHub release ships smoke-tested `fmd` binaries for Linux, macOS Intel,
 > macOS Apple Silicon, and Windows. `main` is ahead of that tag: the same
 > clean-room Rust core now drives HTML, PDF, the CLI, opt-in batch rendering,
-> SVG/Mermaid-asset PDF rendering, and browser/WASM package sources. The WASM
-> package is assembled and checked in CI, but is not yet published to npm.
-> Optional SIMD and deeper block pagination remain roadmap work, not shipped
-> claims.
+> SVG/Mermaid-asset PDF rendering, CSS-aware SVG paint ordering, and
+> browser/WASM package sources. The WASM package is assembled and checked in
+> CI, but is not yet published to npm. Optional SIMD and deeper block
+> pagination remain roadmap work, not shipped claims.
 
 ---
 
@@ -70,7 +70,7 @@ output as a design constraint.
 | PDF typography | Curated font embedding and subsetting, true metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and a hierarchical tagged-PDF structure tree |
 | Tables | HTML and PDF use measured columns. The PDF allocator computes per-column min/max content widths, then solves a constrained badness problem so dense headers get useful width instead of equal-column wrapping |
 | Code blocks | Clean-room highlighting is shared by HTML and PDF. PDF code blocks support muted line numbers, and ASCII/Mermaid diagram fences preserve geometry by fitting rows rather than hard-wrapping them |
-| SVG and diagrams | File-input PDF renders auto-load relative local PNG/SVG image destinations. Supported SVGs are drawn as vector PDF operators, covering paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, markers, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
+| SVG and diagrams | File-input PDF renders auto-load relative local PNG/SVG image destinations. Supported SVGs are drawn as vector PDF operators, covering paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, markers, opacity, drop shadows, CSS variables/selectors, `paint-order`, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
 | Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid, so HTML and PDF can carry the same diagram without a JavaScript runtime |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST; hosts can supply font bytes and image assets without filesystem access in the core |
 | CLI | `fmd README.md` works as the obvious first command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings make the contract usable by humans and agents |
@@ -194,7 +194,7 @@ behavior stable.
 | PDF stream writing | Text segment operators and `TJ` arrays stream into page buffers directly | Avoids temporary formatted strings in the innermost PDF content loops |
 | Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman match symbols and accumulates Adler-32 during emission | Removes repeated bit-prep work and avoids a second full input scan over page/font streams |
 | Tables | PDF column allocation uses measured min/max widths plus a constrained badness solver | Improves visual output and avoids wasting layout work on columns that cannot use extra width |
-| SVG rendering | Common frankenmermaid/SVG constructs are translated directly into PDF drawing operations | Avoids a headless browser or rasterization step for supported diagrams |
+| SVG rendering | Common frankenmermaid/SVG constructs are translated directly into PDF drawing operations. Default fill+stroke still uses compact PDF paint operators, while non-default `paint-order` expands only the affected shape into ordered fill, stroke, and marker layers | Avoids a headless browser or rasterization step for supported diagrams without making the normal SVG path slower |
 | HTML font tracking | Embedded font subsetting tracks ASCII use with a compact bitset before preserving first-seen non-ASCII order | Cuts tiny per-render bookkeeping without changing deterministic font CSS output |
 | Batch rendering | Native batch mode sizes workers by interactive/throughput policy and writes deterministic receipts | Throughput mode can saturate CPU; interactive mode deliberately leaves headroom |
 
@@ -230,6 +230,8 @@ Intel/AMD:
   reused;
 - table width allocation spends extra columns only where min/max content metrics
   say the width will reduce wrapping;
+- SVG paint ordering stays on the compact combined-paint path unless a shape
+  actually asks for a custom layer order;
 - batch mode uses an explicit worker budget instead of spawning unbounded work.
 
 Those choices map well to Apple M-series unified-memory machines and modern
@@ -729,6 +731,11 @@ Honest about what the renderer does not do yet.
   images are standalone PNG or SVG assets supplied by the host; the native CLI
   auto-loads relative local image destinations for file-input renders, and
   `--pdf-image` can provide or override assets explicitly.
+- **SVG support is practical, not browser-complete.** The PDF renderer covers
+  the shapes, gradients, masks, clips, markers, CSS variables/selectors,
+  embedded PNGs, and `paint-order` behavior needed by the current showcase and
+  frankenmermaid output. Unsupported SVG features are reported as structured
+  render warnings rather than silently pretending to match a browser.
 - **CommonMark coverage is partial and measured.** Against the official
   CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **379/652
   examples match** after normalizing fmd's styled HTML (64.1% of the 591 in-scope

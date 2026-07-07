@@ -772,6 +772,8 @@ struct SvgStyle {
     miter_limit: Option<f32>,
     fill_rule: SvgFillRule,
     paint_order: SvgPaintOrder,
+    font_size: f32,
+    text_anchor: SvgTextAnchor,
     font_weight: SvgFontWeight,
     font_slant: SvgFontSlant,
     font_family: SvgFontFamily,
@@ -808,6 +810,8 @@ impl SvgStyle {
         miter_limit: Some(4.0),
         fill_rule: SvgFillRule::NonZero,
         paint_order: SvgPaintOrder::NORMAL,
+        font_size: 12.0,
+        text_anchor: SvgTextAnchor::Start,
         font_weight: SvgFontWeight::Normal,
         font_slant: SvgFontSlant::Normal,
         font_family: SvgFontFamily::Body,
@@ -852,6 +856,8 @@ struct SvgStylePatch {
     miter_limit: Option<f32>,
     fill_rule: Option<SvgFillRule>,
     paint_order: Option<SvgPaintOrder>,
+    font_size: Option<f32>,
+    text_anchor: Option<SvgTextAnchor>,
     font_weight: Option<SvgFontWeight>,
     font_slant: Option<SvgFontSlant>,
     font_family: Option<SvgFontFamily>,
@@ -4132,6 +4138,8 @@ fn parse_svg_line(
                 miter_limit: inherited.miter_limit,
                 fill_rule: inherited.fill_rule,
                 paint_order: inherited.paint_order,
+                font_size: inherited.font_size,
+                text_anchor: inherited.text_anchor,
                 font_weight: inherited.font_weight,
                 font_slant: inherited.font_slant,
                 font_family: inherited.font_family,
@@ -4201,6 +4209,8 @@ fn parse_svg_poly(
             miter_limit: inherited.miter_limit,
             fill_rule: inherited.fill_rule,
             paint_order: inherited.paint_order,
+            font_size: inherited.font_size,
+            text_anchor: inherited.text_anchor,
             font_weight: inherited.font_weight,
             font_slant: inherited.font_slant,
             font_family: inherited.font_family,
@@ -4442,17 +4452,8 @@ fn parse_svg_text_elements(
     let y = svg_attr(attrs, "y")
         .and_then(parse_svg_number)
         .unwrap_or(0.0);
-    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, "text", attrs);
-    let font_size =
-        parse_svg_font_size(attrs, "text", 12.0, css_rules, &scoped_css_vars, ancestors);
-    let anchor = parse_svg_text_anchor(
-        attrs,
-        "text",
-        SvgTextAnchor::Start,
-        css_rules,
-        &scoped_css_vars,
-        ancestors,
-    );
+    let font_size = style.font_size;
+    let anchor = style.text_anchor;
     let text_length = parse_svg_text_length_attr(attrs, font_size);
     let length_adjust = parse_svg_length_adjust(attrs, SvgLengthAdjust::Spacing);
     if !svg_text_body_has_tspan(body) {
@@ -4543,24 +4544,8 @@ fn parse_svg_text_elements(
         if !child_style.visible {
             continue;
         }
-        let child_scoped_css_vars =
-            svg_css_vars_for_element(css_vars, css_rules, &child_ancestors, "tspan", &child_attrs);
-        let child_font_size = parse_svg_font_size(
-            &child_attrs,
-            "tspan",
-            font_size,
-            css_rules,
-            &child_scoped_css_vars,
-            &child_ancestors,
-        );
-        let child_anchor = parse_svg_text_anchor(
-            &child_attrs,
-            "tspan",
-            anchor,
-            css_rules,
-            &child_scoped_css_vars,
-            &child_ancestors,
-        );
+        let child_font_size = child_style.font_size;
+        let child_anchor = child_style.text_anchor;
         let child_text_length = parse_svg_text_length_attr(&child_attrs, child_font_size);
         let child_length_adjust = parse_svg_length_adjust(&child_attrs, SvgLengthAdjust::Spacing);
         let mut child_x = svg_attr(&child_attrs, "x")
@@ -4827,87 +4812,26 @@ fn apply_svg_parent_text_length(
     }
 }
 
-fn parse_svg_font_size(
-    attrs: &[(String, String)],
-    tag: &str,
-    inherited: f32,
-    css_rules: &[SvgCssRule],
-    css_vars: &[SvgCssVariable],
-    ancestors: &[SvgCssAncestor],
-) -> f32 {
-    let mut size = svg_attr(attrs, "font-size")
-        .and_then(parse_svg_number)
-        .unwrap_or(inherited);
-    for rule in svg_matching_css_rules(tag, attrs, css_rules, ancestors) {
-        apply_svg_text_presentation_decls(&mut size, None, inherited, &rule.decls, css_vars);
-    }
-    if let Some(style) = svg_attr(attrs, "style") {
-        apply_svg_text_presentation_decls(&mut size, None, inherited, style, css_vars);
-    }
-    size.clamp(1.0, 96.0)
-}
-
-fn parse_svg_text_anchor(
-    attrs: &[(String, String)],
-    tag: &str,
-    inherited: SvgTextAnchor,
-    css_rules: &[SvgCssRule],
-    css_vars: &[SvgCssVariable],
-    ancestors: &[SvgCssAncestor],
-) -> SvgTextAnchor {
-    let mut anchor = svg_attr(attrs, "text-anchor")
-        .and_then(|value| parse_svg_text_anchor_value(value, css_vars))
-        .unwrap_or(inherited);
-    let mut ignored_size = 0.0;
-    for rule in svg_matching_css_rules(tag, attrs, css_rules, ancestors) {
-        apply_svg_text_presentation_decls(
-            &mut ignored_size,
-            Some(&mut anchor),
-            0.0,
-            &rule.decls,
-            css_vars,
-        );
-    }
-    if let Some(style) = svg_attr(attrs, "style") {
-        apply_svg_text_presentation_decls(
-            &mut ignored_size,
-            Some(&mut anchor),
-            0.0,
-            style,
-            css_vars,
-        );
-    }
-    anchor
-}
-
-fn apply_svg_text_presentation_decls(
-    font_size: &mut f32,
-    mut anchor: Option<&mut SvgTextAnchor>,
-    inherited_font_size: f32,
-    decls: &str,
+fn apply_svg_font_size_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
     css_vars: &[SvgCssVariable],
 ) {
-    for decl in decls.split(';') {
-        let Some((name, value)) = decl.split_once(':') else {
-            continue;
-        };
-        match name.trim().to_ascii_lowercase().as_str() {
-            "font-size" => {
-                if let Some(parsed) =
-                    parse_svg_font_size_value(value, inherited_font_size, css_vars)
-                {
-                    *font_size = parsed;
-                }
-            }
-            "text-anchor" => {
-                if let Some(anchor) = anchor.as_deref_mut()
-                    && let Some(parsed) = parse_svg_text_anchor_value(value, css_vars)
-                {
-                    *anchor = parsed;
-                }
-            }
-            _ => {}
-        }
+    if let Some(size) = value
+        .and_then(|value| parse_svg_css_number(value, css_vars))
+        .map(|size| size.clamp(1.0, 96.0))
+    {
+        style.font_size = size;
+    }
+}
+
+fn apply_svg_text_anchor_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(anchor) = value.and_then(|value| parse_svg_text_anchor_value(value, css_vars)) {
+        style.text_anchor = anchor;
     }
 }
 
@@ -6995,6 +6919,7 @@ fn parse_svg_style_with_ancestors(
     // normally before we compose with the parent.
     let inherited_opacity = style.opacity;
     style.opacity = 1.0;
+    let inherited_font_size = style.font_size;
 
     apply_svg_color_attr(&mut style, svg_attr(attrs, "color"), &scoped_css_vars);
     apply_svg_transform_attr(&mut style, svg_attr(attrs, "transform"));
@@ -7035,6 +6960,8 @@ fn parse_svg_style_with_ancestors(
     apply_svg_font_weight_attr(&mut style, svg_attr(attrs, "font-weight"), &scoped_css_vars);
     apply_svg_font_slant_attr(&mut style, svg_attr(attrs, "font-style"), &scoped_css_vars);
     apply_svg_font_family_attr(&mut style, svg_attr(attrs, "font-family"), &scoped_css_vars);
+    apply_svg_font_size_attr(&mut style, svg_attr(attrs, "font-size"), &scoped_css_vars);
+    apply_svg_text_anchor_attr(&mut style, svg_attr(attrs, "text-anchor"), &scoped_css_vars);
     apply_svg_letter_spacing_attr(
         &mut style,
         svg_attr(attrs, "letter-spacing"),
@@ -7093,6 +7020,7 @@ fn parse_svg_style_with_ancestors(
         patterns,
         clip_paths,
         filter_shadows,
+        inherited_font_size,
     );
 
     if let Some(style_attr) = svg_attr(attrs, "style") {
@@ -7111,6 +7039,7 @@ fn parse_svg_style_with_ancestors(
                 &scoped_css_vars,
                 clip_paths,
                 filter_shadows,
+                inherited_font_size,
             );
         }
     }
@@ -7391,6 +7320,7 @@ fn parse_svg_style_patch(
     css_vars: &[SvgCssVariable],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    inherited_font_size: f32,
 ) -> SvgStylePatch {
     let mut patch = SvgStylePatch::default();
     for decl in decls.split(';') {
@@ -7498,6 +7428,11 @@ fn parse_svg_style_patch(
             "font-weight" => patch.font_weight = parse_svg_font_weight(value, css_vars),
             "font-style" => patch.font_slant = parse_svg_font_slant(value, css_vars),
             "font-family" => patch.font_family = parse_svg_font_family(value, css_vars),
+            "font-size" => {
+                patch.font_size = parse_svg_font_size_value(value, inherited_font_size, css_vars)
+                    .map(|size| size.clamp(1.0, 96.0));
+            }
+            "text-anchor" => patch.text_anchor = parse_svg_text_anchor_value(value, css_vars),
             "letter-spacing" => patch.letter_spacing = parse_svg_letter_spacing(value, css_vars),
             "text-decoration" | "text-decoration-line" => {
                 patch.text_decoration = parse_svg_text_decoration(value, css_vars);
@@ -7526,6 +7461,7 @@ fn apply_svg_css_styles(
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    inherited_font_size: f32,
 ) {
     if css_rules.is_empty() {
         return;
@@ -7539,6 +7475,7 @@ fn apply_svg_css_styles(
             css_vars,
             clip_paths,
             filter_shadows,
+            inherited_font_size,
         );
         apply_svg_style_patch(style, patch);
     }
@@ -7797,6 +7734,12 @@ fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
     if let Some(paint_order) = patch.paint_order {
         style.paint_order = paint_order;
     }
+    if let Some(font_size) = patch.font_size {
+        style.font_size = font_size;
+    }
+    if let Some(text_anchor) = patch.text_anchor {
+        style.text_anchor = text_anchor;
+    }
     if let Some(font_weight) = patch.font_weight {
         style.font_weight = font_weight;
     }
@@ -7827,6 +7770,7 @@ fn apply_svg_style_declaration(
     css_vars: &[SvgCssVariable],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    inherited_font_size: f32,
 ) {
     match name {
         "color" => apply_svg_color_attr(style, Some(value), css_vars),
@@ -7854,6 +7798,14 @@ fn apply_svg_style_declaration(
         "font-weight" => apply_svg_font_weight_attr(style, Some(value), css_vars),
         "font-style" => apply_svg_font_slant_attr(style, Some(value), css_vars),
         "font-family" => apply_svg_font_family_attr(style, Some(value), css_vars),
+        "font-size" => {
+            if let Some(size) = parse_svg_font_size_value(value, inherited_font_size, css_vars)
+                .map(|size| size.clamp(1.0, 96.0))
+            {
+                style.font_size = size;
+            }
+        }
+        "text-anchor" => apply_svg_text_anchor_attr(style, Some(value), css_vars),
         "letter-spacing" => apply_svg_letter_spacing_attr(style, Some(value), css_vars),
         "text-decoration" | "text-decoration-line" => {
             apply_svg_text_decoration_attr(style, Some(value), css_vars);
@@ -15188,6 +15140,8 @@ fn draw_svg_line(
         miter_limit: line.style.miter_limit,
         fill_rule: line.style.fill_rule,
         paint_order: line.style.paint_order,
+        font_size: line.style.font_size,
+        text_anchor: line.style.text_anchor,
         font_weight: line.style.font_weight,
         font_slant: line.style.font_slant,
         font_family: line.style.font_family,

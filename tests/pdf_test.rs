@@ -1841,16 +1841,23 @@ fn pdf_svg_letter_spacing_adjusts_selectable_text_and_anchor_width() {
 #[test]
 fn pdf_svg_text_stylesheet_font_size_and_anchor_affect_selectable_text() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 88">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 128">
   <style>
     :root { --label-size: 20px; --middle-anchor: middle; --half-size: 0.5em; }
     .css-label { font-size: var(--label-size); text-anchor: var(--middle-anchor); }
     .child-small { font-size: var(--half-size); text-anchor: end; }
+    .group-label { font-size: var(--label-size); text-anchor: var(--middle-anchor); }
   </style>
   <text x="80" y="16" font-size="10" fill="#ff0000">Attr</text>
   <text x="80" y="36" font-size="10" text-anchor="start" class="css-label" fill="#0000ff">CSS</text>
   <text x="80" y="56" font-size="20" fill="#00ff00"><tspan class="child-small">Half</tspan></text>
   <text x="80" y="76" class="css-label" style="font-size: 12px; text-anchor: end" fill="#123456">Inline</text>
+  <g class="group-label" fill="#ff00ff">
+    <text x="80" y="96">Group</text>
+  </g>
+  <g font-size="20" text-anchor="middle" fill="#00ffff">
+    <text x="80" y="116">AttrGroup</text>
+  </g>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -1864,12 +1871,18 @@ fn pdf_svg_text_stylesheet_font_size_and_anchor_affect_selectable_text() {
     let css_marker = "0.000 0.000 1.000 rg\nBT /F1";
     let child_marker = "0.000 1.000 0.000 rg\nBT /F1";
     let inline_marker = "0.071 0.204 0.337 rg\nBT /F1";
+    let group_marker = "1.000 0.000 1.000 rg\nBT /F1";
+    let attr_group_marker = "0.000 1.000 1.000 rg\nBT /F1";
     let attr_size = first_text_font_size_after(&text, attr_marker);
     let css_size = first_text_font_size_after(&text, css_marker);
     let child_size = first_text_font_size_after(&text, child_marker);
     let inline_size = first_text_font_size_after(&text, inline_marker);
+    let group_size = first_text_font_size_after(&text, group_marker);
+    let attr_group_size = first_text_font_size_after(&text, attr_group_marker);
     let (attr_x, _) = first_text_matrix_xy_after(&text, attr_marker);
     let (css_x, _) = first_text_matrix_xy_after(&text, css_marker);
+    let (group_x, _) = first_text_matrix_xy_after(&text, group_marker);
+    let (attr_group_x, _) = first_text_matrix_xy_after(&text, attr_group_marker);
 
     assert!(
         css_size > attr_size * 1.5,
@@ -1886,6 +1899,22 @@ fn pdf_svg_text_stylesheet_font_size_and_anchor_affect_selectable_text() {
     assert!(
         css_x < attr_x,
         "stylesheet text-anchor=middle should shift the emitted text matrix left of start-anchored text: {text}"
+    );
+    assert!(
+        (group_size - css_size).abs() < 0.1,
+        "group-inherited font-size should affect child text: {text}"
+    );
+    assert!(
+        group_x < attr_x,
+        "group-inherited text-anchor=middle should shift child text left of start-anchored text: {text}"
+    );
+    assert!(
+        (attr_group_size - css_size).abs() < 0.1,
+        "presentation-attribute group font-size should affect child text: {text}"
+    );
+    assert!(
+        attr_group_x < attr_x,
+        "presentation-attribute group text-anchor=middle should shift child text left of start-anchored text: {text}"
     );
 }
 

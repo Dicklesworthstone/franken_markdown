@@ -2695,33 +2695,20 @@ fn push_inline_text(out: &mut Vec<Inline>, s: &str) {
     }
 }
 
-/// Emit one `InlineEl` into a finalized inline vector. Unmatched delimiter runs
-/// degrade to their literal characters.
-fn emit_inline_el(el: &InlineEl, out: &mut Vec<Inline>) {
-    match el {
-        InlineEl::Text(s) => push_inline_text(out, s),
-        InlineEl::Node(inl) => out.push(inl.clone()),
-        InlineEl::Delim { ch, count, .. } => {
-            let mut s = String::with_capacity(*count);
-            for _ in 0..*count {
-                s.push(*ch);
-            }
-            push_inline_text(out, &s);
-        }
-    }
-}
-
-/// Move an element's content into `out` without cloning.
-///
-/// Used when consuming the nodes enclosed by a matched delimiter pair: those
-/// nodes are marked dead and spliced out of the list, so they are never read
-/// again and their (possibly deeply nested) subtree can be moved rather than
-/// cloned. Cloning here made repeated wrapping — e.g. `***…***x***…***`, which
-/// nests one `Strong`/`Emphasis` per delimiter pair — quadratic, because each
-/// pair re-cloned the whole growing subtree.
+/// Move an element's content into `out` without cloning. Unmatched delimiter
+/// runs degrade to their literal characters.
 fn emit_inline_el_owned(el: InlineEl, out: &mut Vec<Inline>) {
     match el {
-        InlineEl::Text(s) => push_inline_text(out, &s),
+        InlineEl::Text(s) => {
+            if s.is_empty() {
+                return;
+            }
+            if let Some(Inline::Text(t)) = out.last_mut() {
+                t.push_str(&s);
+            } else {
+                out.push(Inline::Text(s));
+            }
+        }
         InlineEl::Node(inl) => out.push(inl),
         InlineEl::Delim { ch, count, .. } => {
             let mut s = String::with_capacity(count);
@@ -2760,10 +2747,12 @@ fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut idx = head;
     while let Some(k) = idx {
+        let next_idx = next[k];
         if alive[k] {
-            emit_inline_el(&els[k], &mut out);
+            let taken = std::mem::replace(&mut els[k], InlineEl::Text(String::new()));
+            emit_inline_el_owned(taken, &mut out);
         }
-        idx = next[k];
+        idx = next_idx;
     }
     out
 }

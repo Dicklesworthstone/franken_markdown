@@ -190,16 +190,18 @@ fn emit_match(bw: &mut BitWriter, len: usize, dist: usize) {
     debug_assert!((MIN_MATCH..=MAX_MATCH).contains(&len));
     debug_assert!((1..=WINDOW).contains(&dist));
     let li = LENGTH_SYMBOL_BY_LEN[len] as usize;
+    debug_assert!(li < LENGTH_BASE.len());
     emit_litlen(bw, 257 + li);
-    let lbase = LENGTH_BASE.get(li).copied().unwrap_or(0) as usize;
-    let lextra = LENGTH_EXTRA.get(li).copied().unwrap_or(0) as u32;
+    let lbase = LENGTH_BASE[li] as usize;
+    let lextra = LENGTH_EXTRA[li] as u32;
     bw.write_bits((len.saturating_sub(lbase)) as u32, lextra);
 
     // Distance symbol 0..=29 (5-bit fixed code, MSB-first) + extra bits (LSB-first).
     let di = DIST_SYMBOL_BY_DISTANCE[dist] as usize;
+    debug_assert!(di < DIST_BASE.len());
     bw.write_reversed_huffman(FIXED_DIST_CODES[di], 5);
-    let dbase = DIST_BASE.get(di).copied().unwrap_or(0) as usize;
-    let dextra = DIST_EXTRA.get(di).copied().unwrap_or(0) as u32;
+    let dbase = DIST_BASE[di] as usize;
+    let dextra = DIST_EXTRA[di] as u32;
     bw.write_bits((dist.saturating_sub(dbase)) as u32, dextra);
 }
 

@@ -14457,10 +14457,17 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         // rather than spawn a duplicate one (which would tear reading order).
         let mut child_by_key: BTreeMap<(usize, SKey), usize> = BTreeMap::new();
 
-        let mut marks: Vec<&StructMark> = page.marks.iter().collect();
-        marks.sort_by_key(|m| m.mcid);
+        // `PageContent` is private renderer state: page generation pushes each
+        // mark as its BDC is emitted, then increments `next_mcid` exactly once.
+        debug_assert!(
+            page.marks
+                .iter()
+                .enumerate()
+                .all(|(expected_mcid, mark)| mark.mcid == expected_mcid),
+            "PageContent marks must stay in render order with dense MCIDs"
+        );
 
-        for mark in marks {
+        for mark in &page.marks {
             // Reuse the longest shared prefix with the currently open path, then
             // open the remaining elements.
             let mut common = 0;
@@ -14543,6 +14550,62 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         nodes,
         parent_tree,
         annot_owner,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing)]
+mod struct_tree_tests {
+    use super::*;
+
+    fn paragraph_mark(mcid: usize, group: u32) -> StructMark {
+        StructMark {
+            mcid,
+            path: vec![SElem {
+                key: SKey::Paragraph(group),
+                tag: "P",
+            }],
+            alt: None,
+            bbox: None,
+        }
+    }
+
+    #[test]
+    fn struct_tree_uses_render_order_dense_marks_directly() {
+        let pages = [PageContent {
+            stream: String::new(),
+            shadings: Vec::new(),
+            annots: Vec::new(),
+            marks: vec![paragraph_mark(0, 7), paragraph_mark(1, 7)],
+        }];
+
+        let tree = build_struct_tree(&pages, &BTreeSet::new());
+
+        assert_eq!(tree.parent_tree, vec![vec![1, 1]]);
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.nodes[1].tag, "P");
+        assert!(matches!(tree.nodes[0].kids.as_slice(), [SKid::Node(1)]));
+        assert!(matches!(
+            tree.nodes[1].kids.as_slice(),
+            [
+                SKid::Mcr { page: 0, mcid: 0 },
+                SKid::Mcr { page: 0, mcid: 1 }
+            ]
+        ));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "PageContent marks must stay in render order with dense MCIDs")]
+    fn struct_tree_debug_checks_render_order_dense_mcid_invariant() {
+        let pages = [PageContent {
+            stream: String::new(),
+            shadings: Vec::new(),
+            annots: Vec::new(),
+            marks: vec![paragraph_mark(1, 7), paragraph_mark(0, 7)],
+        }];
+
+        let _ = build_struct_tree(&pages, &BTreeSet::new());
     }
 }
 

@@ -1079,6 +1079,13 @@ enum SvgMarkerPlacement {
 }
 
 #[derive(Clone, Copy)]
+struct SvgPlacedMarker {
+    placement: SvgMarkerPlacement,
+    tip: (f32, f32),
+    tail: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
 struct SvgMarkerPaint {
     fill: Option<SvgColor>,
     stroke: Option<SvgColor>,
@@ -13913,6 +13920,11 @@ fn serialize(
         let mut bg = String::with_capacity(bg_capacity);
         let mut body = String::with_capacity(body_capacity);
         let mut shadings = Vec::new();
+        let mut alpha_states = BTreeSet::new();
+        let mut page_resources = SvgPageResources {
+            shadings: &mut shadings,
+            alpha_states: &mut alpha_states,
+        };
         let mut annots = Vec::with_capacity(annot_capacity);
         let mut marks = Vec::with_capacity(mark_capacity);
         let mut next_mcid = 0usize;
@@ -14156,7 +14168,7 @@ fn serialize(
                             line.rule_x,
                             y,
                             &image_index,
-                            &mut shadings,
+                            &mut page_resources,
                             &subsets,
                             &subset_lookup,
                             faces,
@@ -14220,6 +14232,7 @@ fn serialize(
         scratch.pages.push(PageContent {
             stream,
             shadings,
+            alpha_states,
             annots,
             marks,
         });
@@ -14235,6 +14248,7 @@ fn serialize(
         scratch.pages.push(PageContent {
             stream: String::new(),
             shadings: Vec::new(),
+            alpha_states: BTreeSet::new(),
             annots: Vec::new(),
             marks: Vec::new(),
         });
@@ -14278,6 +14292,7 @@ impl RenderScratch {
 struct PageContent {
     stream: String,
     shadings: Vec<PdfShading>,
+    alpha_states: BTreeSet<(u16, u16)>,
     annots: Vec<LinkAnnotation>,
     marks: Vec<StructMark>,
 }
@@ -14525,6 +14540,7 @@ mod struct_tree_tests {
         let pages = [PageContent {
             stream: String::new(),
             shadings: Vec::new(),
+            alpha_states: BTreeSet::new(),
             annots: Vec::new(),
             marks: vec![paragraph_mark(0, 7), paragraph_mark(1, 7)],
         }];
@@ -14551,6 +14567,7 @@ mod struct_tree_tests {
         let pages = [PageContent {
             stream: String::new(),
             shadings: Vec::new(),
+            alpha_states: BTreeSet::new(),
             annots: Vec::new(),
             marks: vec![paragraph_mark(1, 7), paragraph_mark(0, 7)],
         }];
@@ -14829,6 +14846,11 @@ struct SvgPaintResources<'a> {
     stroke_scale: Option<f32>,
 }
 
+struct SvgPageResources<'a> {
+    shadings: &'a mut Vec<PdfShading>,
+    alpha_states: &'a mut BTreeSet<(u16, u16)>,
+}
+
 #[derive(Clone, Copy)]
 struct SvgImageTransform {
     sx: f32,
@@ -14957,7 +14979,7 @@ fn append_svg_root_background(
     image: &ImageLine,
     x: f32,
     y: f32,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     if ![x, y, image.width_pt, image.height_pt]
         .iter()
@@ -14968,11 +14990,19 @@ fn append_svg_root_background(
         return;
     }
     if let Some(color) = background.color {
-        append_svg_root_background_color(body, color, background.opacity, image, x, y);
+        append_svg_root_background_color(
+            body,
+            color,
+            background.opacity,
+            image,
+            x,
+            y,
+            page_resources.alpha_states,
+        );
     }
     let bbox = (x, y, image.width_pt, image.height_pt);
     for layer in background.layers.iter().rev() {
-        append_svg_root_background_layer(body, layer, bbox, background.opacity, page_shadings);
+        append_svg_root_background_layer(body, layer, bbox, background.opacity, page_resources);
     }
 }
 
@@ -14983,6 +15013,7 @@ fn append_svg_root_background_color(
     image: &ImageLine,
     x: f32,
     y: f32,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     let alpha = quantize_svg_alpha(background.opacity * root_opacity);
     if alpha == 0 {
@@ -14991,7 +15022,7 @@ fn append_svg_root_background_color(
     let (r, g, b) = background.color;
     body.push_str("q ");
     if alpha < 1000 {
-        append_svg_alpha_state(body, alpha, alpha);
+        append_svg_alpha_state_recorded(body, alpha_states, alpha, alpha);
         body.push(' ');
     }
     body.push_str(&format!(
@@ -15011,7 +15042,7 @@ fn append_svg_root_background_layer(
     layer: &SvgRootBackgroundLayer,
     bbox: (f32, f32, f32, f32),
     opacity: f32,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     let alpha = quantize_svg_alpha(opacity);
     if alpha == 0 {
@@ -15025,12 +15056,12 @@ fn append_svg_root_background_layer(
             vec![svg_root_radial_background_shading(radial, bbox)]
         }
     };
-    if !pdf_shadings_fit(page_shadings, &shadings) {
+    if !pdf_shadings_fit(page_resources.shadings, &shadings) {
         return;
     }
     let names = shadings
         .into_iter()
-        .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+        .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
         .collect::<Vec<_>>();
     if names.is_empty() {
         return;
@@ -15038,7 +15069,7 @@ fn append_svg_root_background_layer(
     let (x, y, w, h) = bbox;
     body.push_str("q ");
     if alpha < 1000 {
-        append_svg_alpha_state(body, alpha, alpha);
+        append_svg_alpha_state_recorded(body, page_resources.alpha_states, alpha, alpha);
         body.push(' ');
     }
     body.push_str(&format!(
@@ -15111,7 +15142,7 @@ fn draw_svg_image(
     x: f32,
     y: f32,
     image_index: &BTreeMap<&str, usize>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     subsets: &[EmbeddedFace],
     subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
@@ -15125,7 +15156,7 @@ fn draw_svg_image(
     };
 
     if let Some(background) = svg.root_background.as_ref() {
-        append_svg_root_background(body, background, image, x, y, page_shadings);
+        append_svg_root_background(body, background, image, x, y, page_resources);
     }
 
     let mut in_shape_group = false;
@@ -15152,6 +15183,7 @@ fn draw_svg_image(
                 subset_lookup,
                 faces,
                 shaped_cache,
+                page_resources.alpha_states,
             );
             push_svg_link_annotation(annots, element, transform);
             continue;
@@ -15160,7 +15192,7 @@ fn draw_svg_image(
             append_svg_image_transform_prefix(body, transform);
             in_shape_group = true;
         }
-        draw_svg_shape(body, element, resources, page_shadings);
+        draw_svg_shape(body, element, resources, page_resources);
         push_svg_link_annotation(annots, element, transform);
     }
     if in_shape_group {
@@ -15361,7 +15393,7 @@ fn draw_svg_shape(
     body: &mut String,
     element: &SvgElement,
     resources: SvgPaintResources<'_>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     match element {
         SvgElement::Rect(rect) => draw_svg_rect(
@@ -15371,7 +15403,7 @@ fn draw_svg_shape(
             resources.patterns,
             resources.clip_paths,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
         SvgElement::Ellipse(ellipse) => draw_svg_ellipse(
             body,
@@ -15380,7 +15412,7 @@ fn draw_svg_shape(
             resources.patterns,
             resources.clip_paths,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
         SvgElement::Line(line) => draw_svg_line(
             body,
@@ -15389,7 +15421,7 @@ fn draw_svg_shape(
             resources.clip_paths,
             resources.markers,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
         SvgElement::Polyline(poly) => draw_svg_poly(
             body,
@@ -15400,7 +15432,7 @@ fn draw_svg_shape(
             resources.clip_paths,
             resources.markers,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
         SvgElement::Polygon(poly) => draw_svg_poly(
             body,
@@ -15411,7 +15443,7 @@ fn draw_svg_shape(
             resources.clip_paths,
             resources.markers,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
         SvgElement::Path(path) => draw_svg_path(
             body,
@@ -15421,11 +15453,15 @@ fn draw_svg_shape(
             resources.clip_paths,
             resources.markers,
             resources.stroke_scale,
-            page_shadings,
+            page_resources,
         ),
-        SvgElement::Image(image) => {
-            draw_svg_embedded_image(body, image, resources.clip_paths, resources.image_index)
-        }
+        SvgElement::Image(image) => draw_svg_embedded_image(
+            body,
+            image,
+            resources.clip_paths,
+            resources.image_index,
+            page_resources.alpha_states,
+        ),
         SvgElement::Text(_) => {}
     }
 }
@@ -15437,7 +15473,7 @@ fn draw_svg_rect(
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
     stroke_scale: Option<f32>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     let style = svg_style_with_non_scaling_stroke(rect.style, stroke_scale);
     if !svg_style_has_paint(style) {
@@ -15448,8 +15484,9 @@ fn draw_svg_rect(
         style,
         clip_paths,
         Some((rect.x, rect.y, rect.w, rect.h)),
+        page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style) {
+    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
         append_svg_rect_path(body, rect);
         append_svg_shadow_operator(body, style);
     }
@@ -15459,7 +15496,7 @@ fn draw_svg_rect(
         gradients,
         patterns,
         clip_paths,
-        page_shadings,
+        page_resources,
         stroke_scale,
         Some((rect.x, rect.y, rect.w, rect.h)),
         |body| append_svg_rect_path(body, rect),
@@ -15490,7 +15527,7 @@ fn draw_svg_ellipse(
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
     stroke_scale: Option<f32>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     let style = svg_style_with_non_scaling_stroke(ellipse.style, stroke_scale);
     if !svg_style_has_paint(style) {
@@ -15506,8 +15543,9 @@ fn draw_svg_ellipse(
             ellipse.rx * 2.0,
             ellipse.ry * 2.0,
         )),
+        page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style) {
+    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
         append_svg_ellipse_path(body, ellipse.cx, ellipse.cy, ellipse.rx, ellipse.ry);
         append_svg_shadow_operator(body, style);
     }
@@ -15517,7 +15555,7 @@ fn draw_svg_ellipse(
         gradients,
         patterns,
         clip_paths,
-        page_shadings,
+        page_resources,
         stroke_scale,
         Some((
             ellipse.cx - ellipse.rx,
@@ -15537,7 +15575,7 @@ fn draw_svg_line(
     clip_paths: &[SvgClipPath],
     markers: &[SvgMarker],
     stroke_scale: Option<f32>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     if !line.style.visible {
         return;
@@ -15586,8 +15624,14 @@ fn draw_svg_line(
         return;
     }
     let line_bbox = svg_line_bbox(line, style);
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths, line_bbox);
-    if append_svg_shadow_prefix(body, style) {
+    let transformed = append_svg_element_state_prefix(
+        body,
+        style,
+        clip_paths,
+        line_bbox,
+        page_resources.alpha_states,
+    );
+    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
         append_svg_line_path(body, line);
         append_svg_shadow_operator(body, style);
     }
@@ -15597,7 +15641,7 @@ fn draw_svg_line(
                 SvgPaintLayer::Fill => {}
                 SvgPaintLayer::Stroke => {
                     if style.stroke.is_some() {
-                        append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
+                        append_svg_line_stroke_layer(body, line, style, gradients, page_resources);
                     }
                 }
                 SvgPaintLayer::Markers => {
@@ -15608,13 +15652,14 @@ fn draw_svg_line(
                         style.stroke,
                         line.style.fill,
                         style.stroke_width,
+                        page_resources.alpha_states,
                     );
                 }
             }
         }
     } else {
         if style.stroke.is_some() {
-            append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
+            append_svg_line_stroke_layer(body, line, style, gradients, page_resources);
         }
         if has_markers {
             append_svg_line_markers(
@@ -15624,6 +15669,7 @@ fn draw_svg_line(
                 style.stroke,
                 line.style.fill,
                 style.stroke_width,
+                page_resources.alpha_states,
             );
         }
     }
@@ -15635,9 +15681,9 @@ fn append_svg_line_stroke_layer(
     line: &SvgLine,
     style: SvgStyle,
     gradients: &[SvgGradientPaint],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) -> bool {
-    if !append_svg_line_gradient_stroke(body, line, style, gradients, page_shadings) {
+    if !append_svg_line_gradient_stroke(body, line, style, gradients, page_resources) {
         append_svg_style(body, style);
         append_svg_line_path(body, line);
         body.push_str("S\n");
@@ -15650,7 +15696,7 @@ fn append_svg_line_gradient_stroke(
     line: &SvgLine,
     style: SvgStyle,
     gradients: &[SvgGradientPaint],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) -> bool {
     if style.dash.len > 0 || matches!(style.line_cap, SvgLineCap::Round) {
         return false;
@@ -15708,12 +15754,12 @@ fn append_svg_line_gradient_stroke(
     ) else {
         return false;
     };
-    if !pdf_shadings_fit(page_shadings, &shadings) {
+    if !pdf_shadings_fit(page_resources.shadings, &shadings) {
         return false;
     }
     let names = shadings
         .into_iter()
-        .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+        .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
         .collect::<Vec<_>>();
     if names.is_empty() {
         return false;
@@ -15722,7 +15768,12 @@ fn append_svg_line_gradient_stroke(
     body.push_str("q ");
     let stroke_alpha = quantize_svg_alpha(svg_effective_stroke_opacity(style));
     if stroke_alpha < 1000 {
-        append_svg_alpha_state(body, stroke_alpha, stroke_alpha);
+        append_svg_alpha_state_recorded(
+            body,
+            page_resources.alpha_states,
+            stroke_alpha,
+            stroke_alpha,
+        );
         body.push(' ');
     }
     append_svg_line_stroke_outline(body, points);
@@ -15794,6 +15845,7 @@ fn append_svg_line_markers(
     stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     let paint = SvgMarkerPaint {
         fill,
@@ -15805,10 +15857,13 @@ fn append_svg_line_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::Start,
-            (line.x1, line.y1),
-            (line.x2, line.y2),
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::Start,
+                tip: (line.x1, line.y1),
+                tail: (line.x2, line.y2),
+            },
             paint,
+            alpha_states,
         );
     }
     if let Some(marker_ref) = line.marker_end {
@@ -15816,10 +15871,13 @@ fn append_svg_line_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::End,
-            (line.x2, line.y2),
-            (line.x1, line.y1),
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::End,
+                tip: (line.x2, line.y2),
+                tail: (line.x1, line.y1),
+            },
             paint,
+            alpha_states,
         );
     }
 }
@@ -15834,7 +15892,7 @@ fn draw_svg_poly(
     clip_paths: &[SvgClipPath],
     markers: &[SvgMarker],
     stroke_scale: Option<f32>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     let style = svg_style_with_non_scaling_stroke(poly.style, stroke_scale);
     let has_markers =
@@ -15843,8 +15901,14 @@ fn draw_svg_poly(
         return;
     }
     let poly_bbox = svg_points_bbox(&poly.points);
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths, poly_bbox);
-    if append_svg_shadow_prefix(body, style) {
+    let transformed = append_svg_element_state_prefix(
+        body,
+        style,
+        clip_paths,
+        poly_bbox,
+        page_resources.alpha_states,
+    );
+    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
         append_svg_poly_path(body, poly, closed);
         append_svg_shadow_operator(body, style);
     }
@@ -15855,11 +15919,11 @@ fn draw_svg_poly(
             gradients,
             patterns,
             clip_paths,
-            page_shadings,
+            page_resources,
             stroke_scale,
             poly_bbox,
             &|body| append_svg_poly_path(body, poly, closed),
-            |body| {
+            |body, alpha_states| {
                 append_svg_poly_markers(
                     body,
                     poly,
@@ -15867,6 +15931,7 @@ fn draw_svg_poly(
                     style.stroke,
                     style.fill,
                     style.stroke_width,
+                    alpha_states,
                 );
             },
         );
@@ -15878,7 +15943,7 @@ fn draw_svg_poly(
                 gradients,
                 patterns,
                 clip_paths,
-                page_shadings,
+                page_resources,
                 stroke_scale,
                 poly_bbox,
                 |body| append_svg_poly_path(body, poly, closed),
@@ -15892,6 +15957,7 @@ fn draw_svg_poly(
                 style.stroke,
                 style.fill,
                 style.stroke_width,
+                page_resources.alpha_states,
             );
         }
     }
@@ -15916,6 +15982,7 @@ fn append_svg_poly_markers(
     stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     if poly.points.len() < 2 {
         return;
@@ -15930,10 +15997,13 @@ fn append_svg_poly_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::Start,
-            poly.points[0],
-            poly.points[1],
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::Start,
+                tip: poly.points[0],
+                tail: poly.points[1],
+            },
             paint,
+            alpha_states,
         );
     }
     if let Some(marker_ref) = poly.marker_mid {
@@ -15945,10 +16015,13 @@ fn append_svg_poly_markers(
                 body,
                 marker_ref,
                 markers,
-                SvgMarkerPlacement::Mid,
-                window[1],
-                tail,
+                SvgPlacedMarker {
+                    placement: SvgMarkerPlacement::Mid,
+                    tip: window[1],
+                    tail,
+                },
                 paint,
+                alpha_states,
             );
         }
     }
@@ -15958,10 +16031,13 @@ fn append_svg_poly_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::End,
-            poly.points[end_index],
-            poly.points[end_index - 1],
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::End,
+                tip: poly.points[end_index],
+                tail: poly.points[end_index - 1],
+            },
             paint,
+            alpha_states,
         );
     }
 }
@@ -16013,7 +16089,7 @@ fn draw_svg_path(
     clip_paths: &[SvgClipPath],
     markers: &[SvgMarker],
     stroke_scale: Option<f32>,
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
 ) {
     let style = svg_style_with_non_scaling_stroke(path.style, stroke_scale);
     let has_markers =
@@ -16022,8 +16098,14 @@ fn draw_svg_path(
         return;
     }
     let path_bbox = svg_path_bbox(&path.ops);
-    let transformed = append_svg_element_state_prefix(body, style, clip_paths, path_bbox);
-    if append_svg_shadow_prefix(body, style) {
+    let transformed = append_svg_element_state_prefix(
+        body,
+        style,
+        clip_paths,
+        path_bbox,
+        page_resources.alpha_states,
+    );
+    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
         append_svg_path_ops(body, &path.ops);
         append_svg_shadow_operator(body, style);
     }
@@ -16034,11 +16116,11 @@ fn draw_svg_path(
             gradients,
             patterns,
             clip_paths,
-            page_shadings,
+            page_resources,
             stroke_scale,
             path_bbox,
             &|body| append_svg_path_ops(body, &path.ops),
-            |body| {
+            |body, alpha_states| {
                 append_svg_path_markers(
                     body,
                     path,
@@ -16046,6 +16128,7 @@ fn draw_svg_path(
                     style.stroke,
                     style.fill,
                     style.stroke_width,
+                    alpha_states,
                 );
             },
         );
@@ -16057,7 +16140,7 @@ fn draw_svg_path(
                 gradients,
                 patterns,
                 clip_paths,
-                page_shadings,
+                page_resources,
                 stroke_scale,
                 path_bbox,
                 |body| append_svg_path_ops(body, &path.ops),
@@ -16071,6 +16154,7 @@ fn draw_svg_path(
                 style.stroke,
                 style.fill,
                 style.stroke_width,
+                page_resources.alpha_states,
             );
         }
     }
@@ -16084,6 +16168,7 @@ fn append_svg_path_markers(
     stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     let marker_paint = SvgMarkerPaint {
         fill,
@@ -16097,10 +16182,13 @@ fn append_svg_path_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::End,
-            tip,
-            tail,
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::End,
+                tip,
+                tail,
+            },
             marker_paint,
+            alpha_states,
         );
     }
     if let Some(marker_ref) = path.marker_mid {
@@ -16109,9 +16197,8 @@ fn append_svg_path_markers(
             &path.ops,
             marker_ref,
             markers,
-            stroke,
-            fill,
-            stroke_width,
+            marker_paint,
+            alpha_states,
         );
     }
     if let Some(marker_ref) = path.marker_start
@@ -16121,10 +16208,13 @@ fn append_svg_path_markers(
             body,
             marker_ref,
             markers,
-            SvgMarkerPlacement::Start,
-            tip,
-            tail,
+            SvgPlacedMarker {
+                placement: SvgMarkerPlacement::Start,
+                tip,
+                tail,
+            },
             marker_paint,
+            alpha_states,
         );
     }
 }
@@ -16134,15 +16224,9 @@ fn append_svg_path_mid_markers(
     ops: &[SvgPathOp],
     marker_ref: SvgMarkerRef,
     markers: &[SvgMarker],
-    stroke: Option<(f32, f32, f32)>,
-    fill: Option<(f32, f32, f32)>,
-    stroke_width: f32,
+    paint: SvgMarkerPaint,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
-    let paint = SvgMarkerPaint {
-        fill,
-        stroke,
-        stroke_width,
-    };
     let mut current = (0.0f32, 0.0f32);
     let mut subpath_start = None;
     let mut prev_segment: Option<SvgPathSegmentTangent> = None;
@@ -16207,10 +16291,13 @@ fn append_svg_path_mid_markers(
                 body,
                 marker_ref,
                 markers,
-                SvgMarkerPlacement::Mid,
-                segment.start,
-                tail,
+                SvgPlacedMarker {
+                    placement: SvgMarkerPlacement::Mid,
+                    tip: segment.start,
+                    tail,
+                },
                 paint,
+                alpha_states,
             );
         }
         prev_segment = Some(segment);
@@ -16226,6 +16313,7 @@ fn draw_svg_embedded_image(
     image: &SvgEmbeddedImage,
     clip_paths: &[SvgClipPath],
     image_index: &BTreeMap<&str, usize>,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     if !image.style.visible || image.w <= 0.0 || image.h <= 0.0 {
         return;
@@ -16236,7 +16324,7 @@ fn draw_svg_embedded_image(
     body.push_str("q ");
     let alpha = quantize_svg_alpha(image.style.opacity);
     if alpha < 1000 {
-        append_svg_alpha_state(body, alpha, alpha);
+        append_svg_alpha_state_recorded(body, alpha_states, alpha, alpha);
         body.push(' ');
     }
     if !image.style.transform.is_identity() {
@@ -16342,6 +16430,7 @@ fn append_svg_element_state_prefix(
     style: SvgStyle,
     clip_paths: &[SvgClipPath],
     element_bbox: Option<(f32, f32, f32, f32)>,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) -> bool {
     let clip_path = style
         .clip_path
@@ -16362,7 +16451,7 @@ fn append_svg_element_state_prefix(
     }
     body.push_str("q ");
     if let Some((fill_alpha, stroke_alpha)) = alpha {
-        append_svg_alpha_state(body, fill_alpha, stroke_alpha);
+        append_svg_alpha_state_recorded(body, alpha_states, fill_alpha, stroke_alpha);
         body.push(' ');
     }
     if !style.transform.is_identity() {
@@ -16439,7 +16528,11 @@ fn append_svg_transform_suffix(body: &mut String, transformed: bool) {
     }
 }
 
-fn append_svg_shadow_prefix(body: &mut String, style: SvgStyle) -> bool {
+fn append_svg_shadow_prefix(
+    body: &mut String,
+    style: SvgStyle,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
+) -> bool {
     let Some(shadow) = style.shadow else {
         return false;
     };
@@ -16458,7 +16551,7 @@ fn append_svg_shadow_prefix(body: &mut String, style: SvgStyle) -> bool {
     };
     let alpha = quantize_svg_alpha((shadow.opacity * paint_alpha).clamp(0.0, 1.0));
     if alpha < 1000 {
-        append_svg_alpha_state(body, alpha, alpha);
+        append_svg_alpha_state_recorded(body, alpha_states, alpha, alpha);
         body.push(' ');
     }
     let (r, g, b) = shadow.color;
@@ -16571,7 +16664,7 @@ fn append_svg_painted_shape<F>(
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
     bbox: Option<(f32, f32, f32, f32)>,
     append_path: F,
@@ -16586,7 +16679,7 @@ fn append_svg_painted_shape<F>(
             gradients,
             patterns,
             clip_paths,
-            page_shadings,
+            page_resources,
             stroke_scale,
             bbox,
             &append_path,
@@ -16600,7 +16693,7 @@ fn append_svg_painted_shape<F>(
         gradients,
         patterns,
         clip_paths,
-        page_shadings,
+        page_resources,
         stroke_scale,
         bbox,
         &append_path,
@@ -16614,10 +16707,10 @@ fn append_svg_painted_shape<F>(
     }
 
     if let Some(shadings) = svg_fill_shadings(style, gradients, bbox) {
-        if pdf_shadings_fit(page_shadings, &shadings) {
+        if pdf_shadings_fit(page_resources.shadings, &shadings) {
             let names = shadings
                 .into_iter()
-                .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+                .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
                 .collect::<Vec<_>>();
             body.push_str("q ");
             append_path(body);
@@ -16650,7 +16743,7 @@ fn append_svg_ordered_painted_shape<F>(
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
     bbox: Option<(f32, f32, f32, f32)>,
     append_path: &F,
@@ -16663,11 +16756,11 @@ fn append_svg_ordered_painted_shape<F>(
         gradients,
         patterns,
         clip_paths,
-        page_shadings,
+        page_resources,
         stroke_scale,
         bbox,
         append_path,
-        |_| {},
+        |_, _| {},
     );
 }
 
@@ -16678,14 +16771,14 @@ fn append_svg_ordered_painted_shape_with_markers<F, M>(
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
     bbox: Option<(f32, f32, f32, f32)>,
     append_path: &F,
-    append_markers: M,
+    mut append_markers: M,
 ) where
     F: Fn(&mut String),
-    M: Fn(&mut String),
+    M: FnMut(&mut String, &mut BTreeSet<(u16, u16)>),
 {
     for layer in style.paint_order.layers {
         match layer {
@@ -16696,7 +16789,7 @@ fn append_svg_ordered_painted_shape_with_markers<F, M>(
                     gradients,
                     patterns,
                     clip_paths,
-                    page_shadings,
+                    page_resources,
                     stroke_scale,
                     bbox,
                     append_path,
@@ -16705,7 +16798,7 @@ fn append_svg_ordered_painted_shape_with_markers<F, M>(
             SvgPaintLayer::Stroke => {
                 append_svg_stroke_layer(body, style, append_path);
             }
-            SvgPaintLayer::Markers => append_markers(body),
+            SvgPaintLayer::Markers => append_markers(body, page_resources.alpha_states),
         }
     }
 }
@@ -16717,7 +16810,7 @@ fn append_svg_fill_layer<F>(
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
     bbox: Option<(f32, f32, f32, f32)>,
     append_path: &F,
@@ -16734,7 +16827,7 @@ where
         gradients,
         patterns,
         clip_paths,
-        page_shadings,
+        page_resources,
         stroke_scale,
         bbox,
         append_path,
@@ -16742,11 +16835,11 @@ where
         return true;
     }
     if let Some(shadings) = svg_fill_shadings(style, gradients, bbox)
-        && pdf_shadings_fit(page_shadings, &shadings)
+        && pdf_shadings_fit(page_resources.shadings, &shadings)
     {
         let names = shadings
             .into_iter()
-            .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+            .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
             .collect::<Vec<_>>();
         body.push_str("q ");
         append_path(body);
@@ -16789,7 +16882,7 @@ fn append_svg_pattern_fill<F>(
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
-    page_shadings: &mut Vec<PdfShading>,
+    page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
     bbox: Option<(f32, f32, f32, f32)>,
     append_path: &F,
@@ -16862,7 +16955,7 @@ where
                 body.push(' ');
             }
             for element in &pattern.elements {
-                draw_svg_shape(body, element, resources, page_shadings);
+                draw_svg_shape(body, element, resources, page_resources);
             }
             body.push_str("Q\n");
         }
@@ -17313,7 +17406,35 @@ fn quantize_svg_alpha(alpha: f32) -> u16 {
 }
 
 fn append_svg_alpha_state(body: &mut String, fill_alpha: u16, stroke_alpha: u16) {
-    body.push_str(&format!("/GSa{fill_alpha:04}{stroke_alpha:04} gs"));
+    append_svg_alpha_state_name(body, fill_alpha, stroke_alpha);
+    body.push_str(" gs");
+}
+
+fn append_svg_alpha_state_recorded(
+    body: &mut String,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
+    fill_alpha: u16,
+    stroke_alpha: u16,
+) {
+    alpha_states.insert((fill_alpha, stroke_alpha));
+    append_svg_alpha_state(body, fill_alpha, stroke_alpha);
+}
+
+fn append_svg_alpha_state_name(body: &mut String, fill_alpha: u16, stroke_alpha: u16) {
+    body.push_str("/GSa");
+    append_four_digit_u16(body, fill_alpha);
+    append_four_digit_u16(body, stroke_alpha);
+}
+
+fn append_four_digit_u16(body: &mut String, value: u16) {
+    if value > 9999 {
+        append_decimal_u64_string(body, u64::from(value));
+        return;
+    }
+    body.push((b'0' + (value / 1000) as u8) as char);
+    body.push((b'0' + ((value / 100) % 10) as u8) as char);
+    body.push((b'0' + ((value / 10) % 10) as u8) as char);
+    body.push((b'0' + (value % 10) as u8) as char);
 }
 
 fn append_svg_rounded_rect_path(
@@ -17534,18 +17655,25 @@ fn append_svg_marker_or_arrowhead(
     body: &mut String,
     marker_ref: SvgMarkerRef,
     markers: &[SvgMarker],
-    placement: SvgMarkerPlacement,
-    tip: (f32, f32),
-    tail: (f32, f32),
+    placed: SvgPlacedMarker,
     paint: SvgMarkerPaint,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     if let Some(marker) = marker_ref.index.and_then(|index| markers.get(index))
-        && append_svg_marker(body, marker, placement, tip, tail, paint)
+        && append_svg_marker(
+            body,
+            marker,
+            placed.placement,
+            placed.tip,
+            placed.tail,
+            paint,
+            alpha_states,
+        )
     {
         return;
     }
     if let Some(stroke) = paint.stroke {
-        append_svg_arrowhead(body, tip, tail, stroke, paint.stroke_width);
+        append_svg_arrowhead(body, placed.tip, placed.tail, stroke, paint.stroke_width);
     }
 }
 
@@ -17556,6 +17684,7 @@ fn append_svg_marker(
     tip: (f32, f32),
     tail: (f32, f32),
     paint: SvgMarkerPaint,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) -> bool {
     if marker.shapes.is_empty() {
         return false;
@@ -17600,8 +17729,9 @@ fn append_svg_marker(
         if !svg_style_has_paint(shape_style) {
             continue;
         }
-        let transformed = append_svg_element_state_prefix(body, shape_style, &[], None);
-        if append_svg_shadow_prefix(body, shape_style) {
+        let transformed =
+            append_svg_element_state_prefix(body, shape_style, &[], None, alpha_states);
+        if append_svg_shadow_prefix(body, shape_style, alpha_states) {
             append_svg_path_ops(body, &shape.ops);
             append_svg_shadow_operator(body, shape_style);
         }
@@ -17785,6 +17915,7 @@ fn draw_svg_text(
     subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
     shaped_cache: &ShapedRunCache,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     if text.text.is_empty() {
         return;
@@ -17835,8 +17966,9 @@ fn draw_svg_text(
         ));
     }
     if text.opacity < 0.999 {
-        append_svg_alpha_state(
+        append_svg_alpha_state_recorded(
             body,
+            alpha_states,
             quantize_svg_alpha(text.opacity),
             quantize_svg_alpha(text.opacity),
         );
@@ -18980,12 +19112,17 @@ fn estimated_pdf_buffer_capacity(
         .iter()
         .map(|page| page.shadings.len().saturating_mul(192))
         .sum::<usize>();
+    let alpha_resource_bytes = pages
+        .iter()
+        .map(|page| page.alpha_states.len().saturating_mul(48))
+        .sum::<usize>();
 
     page_stream_bytes
         .saturating_add(font_program_bytes)
         .saturating_add(font_aux_bytes)
         .saturating_add(image_bytes)
         .saturating_add(shading_resource_bytes)
+        .saturating_add(alpha_resource_bytes)
         .saturating_add(page_mark_bytes.saturating_mul(2))
         .saturating_add(page_annot_bytes.saturating_mul(2))
         .saturating_add(total_objs.saturating_mul(192))
@@ -19310,23 +19447,29 @@ fn page_stream(stream: &str) -> PdfStream<'_> {
     }
 }
 
-fn svg_alpha_extgstate_resource(stream: &str) -> String {
-    let states = collect_svg_alpha_states(stream.as_bytes());
+fn svg_alpha_extgstate_resource(states: &BTreeSet<(u16, u16)>) -> String {
     if states.is_empty() {
         return String::new();
     }
-    let entries = states
-        .into_iter()
-        .map(|(fill_alpha, stroke_alpha)| {
-            format!(
-                "/GSa{fill_alpha:04}{stroke_alpha:04} << /ca {ca} /CA {stroke_ca} >>",
-                ca = pdf_fixed3(f32::from(fill_alpha) / 1000.0),
-                stroke_ca = pdf_fixed3(f32::from(stroke_alpha) / 1000.0),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(" /ExtGState << {entries} >>")
+    let mut out = String::with_capacity(16 + states.len().saturating_mul(48));
+    out.push_str(" /ExtGState << ");
+    for (index, &(fill_alpha, stroke_alpha)) in states.iter().enumerate() {
+        if index != 0 {
+            out.push(' ');
+        }
+        append_svg_alpha_state_resource_entry(&mut out, fill_alpha, stroke_alpha);
+    }
+    out.push_str(" >>");
+    out
+}
+
+fn append_svg_alpha_state_resource_entry(out: &mut String, fill_alpha: u16, stroke_alpha: u16) {
+    append_svg_alpha_state_name(out, fill_alpha, stroke_alpha);
+    out.push_str(" << /ca ");
+    append_pdf_fixed3(out, f32::from(fill_alpha) / 1000.0);
+    out.push_str(" /CA ");
+    append_pdf_fixed3(out, f32::from(stroke_alpha) / 1000.0);
+    out.push_str(" >>");
 }
 
 fn pdf_shading_resource(shadings: &[PdfShading]) -> String {
@@ -19416,14 +19559,11 @@ fn pdf_exponential_interpolation_function(start: (f32, f32, f32), end: (f32, f32
     )
 }
 
+#[cfg(test)]
 fn collect_svg_alpha_states(stream: &[u8]) -> BTreeSet<(u16, u16)> {
     let mut states = BTreeSet::new();
     let mut pos = 0usize;
-    while let Some(rel) = stream
-        .get(pos..)
-        .and_then(|tail| tail.windows(4).position(|window| window == b"/GSa"))
-    {
-        let start = pos + rel;
+    while let Some(start) = find_next_svg_alpha_state_name(stream, pos) {
         if let Some(state) = parse_svg_alpha_state_name(stream, start) {
             states.insert(state);
             if states.len() >= 256 {
@@ -19435,6 +19575,20 @@ fn collect_svg_alpha_states(stream: &[u8]) -> BTreeSet<(u16, u16)> {
     states
 }
 
+#[cfg(test)]
+fn find_next_svg_alpha_state_name(stream: &[u8], mut pos: usize) -> Option<usize> {
+    while pos + 4 <= stream.len() {
+        let rel = stream.get(pos..)?.iter().position(|&byte| byte == b'/')?;
+        let start = pos + rel;
+        if stream.get(start + 1..start + 4) == Some(b"GSa") {
+            return Some(start);
+        }
+        pos = start + 1;
+    }
+    None
+}
+
+#[cfg(test)]
 fn parse_svg_alpha_state_name(stream: &[u8], start: usize) -> Option<(u16, u16)> {
     let name = stream.get(start..start + 12)?;
     if !name.starts_with(b"/GSa") || !name[4..12].iter().all(u8::is_ascii_digit) {
@@ -19451,6 +19605,7 @@ fn parse_svg_alpha_state_name(stream: &[u8], start: usize) -> Option<(u16, u16)>
     (fill_alpha <= 1000 && stroke_alpha <= 1000).then_some((fill_alpha, stroke_alpha))
 }
 
+#[cfg(test)]
 fn parse_four_ascii_digits(bytes: &[u8]) -> Option<u16> {
     (bytes.len() == 4 && bytes.iter().all(u8::is_ascii_digit)).then(|| {
         bytes.iter().fold(0u16, |acc, byte| {
@@ -19669,7 +19824,7 @@ fn build_pdf(
         let annot_count = annot_counts.get(i).copied().unwrap_or(0);
         let annot_start_object_id = annot_base + annot_starts.get(i).copied().unwrap_or(0);
         let struct_parent = (tagged && !page.marks.is_empty()).then_some(i);
-        let ext_gstate_res = svg_alpha_extgstate_resource(&page.stream);
+        let ext_gstate_res = svg_alpha_extgstate_resource(&page.alpha_states);
         let shading_res = pdf_shading_resource(&page.shadings);
         append_pdf_page_object(
             &mut buf,
@@ -20707,16 +20862,19 @@ mod pdf_writer_tests {
         append_pdf_stream_dict, append_pdf_string_escaped, append_rgb_fill_operator,
         append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
         append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
-        append_struct_kid_list_string, append_svg_element_state_prefix, append_svg_line_path,
-        append_svg_line_stroke_outline, append_svg_path_ops, append_svg_shadow_prefix,
-        append_svg_stroke_options, append_svg_style, append_text_segment_operator,
-        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
-        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar, font_size_of,
-        kerned_tj, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
-        push_text_tokens, rounded_rect_fill, shape_run, token_visible_text, tokenize,
+        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
+        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
+        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
+        append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
+        finite_pdf_scalar, font_size_of, kerned_tj, measure_word, normalize_svg_text_node,
+        pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
+        svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
+    use std::collections::BTreeSet;
 
     #[test]
     fn pdf_word_measurement_uses_gpos_kerning() -> crate::Result<()> {
@@ -21435,6 +21593,7 @@ mod pdf_writer_tests {
     #[test]
     fn svg_transform_state_writer_preserves_exact_pdf_operator_shape() {
         let mut out = String::new();
+        let mut alpha_states = BTreeSet::new();
         let transformed = append_svg_element_state_prefix(
             &mut out,
             SvgStyle {
@@ -21450,10 +21609,58 @@ mod pdf_writer_tests {
             },
             &[],
             None,
+            &mut alpha_states,
         );
 
         assert!(transformed);
         assert_eq!(out, "q 1.25 -0.5 0.75 2 3.13 -0 cm ");
+        assert!(alpha_states.is_empty());
+    }
+
+    #[test]
+    fn svg_alpha_state_writers_preserve_legacy_format_shape() {
+        for (fill_alpha, stroke_alpha) in [(0, 7), (42, 999), (1000, 1000), (10_000, 12_345)] {
+            let mut name = String::new();
+            append_svg_alpha_state_name(&mut name, fill_alpha, stroke_alpha);
+            assert_eq!(name, format!("/GSa{fill_alpha:04}{stroke_alpha:04}"));
+        }
+
+        let mut operator = String::new();
+        append_svg_alpha_state(&mut operator, 7, 42);
+        assert_eq!(operator, "/GSa00070042 gs");
+
+        let mut resource = String::new();
+        append_svg_alpha_state_resource_entry(&mut resource, 125, 875);
+        assert_eq!(
+            resource,
+            format!(
+                "/GSa01250875 << /ca {} /CA {} >>",
+                pdf_fixed3(0.125),
+                pdf_fixed3(0.875)
+            )
+        );
+    }
+
+    #[test]
+    fn svg_alpha_state_scanner_preserves_name_boundaries() {
+        let states = collect_svg_alpha_states(
+            b"/P BDC /GSa01250875 gs /GSa10001000 gs /GSa10011000 gs /GSa000700420 gs /Artifact",
+        );
+
+        assert_eq!(
+            states,
+            std::collections::BTreeSet::from([(125, 875), (1000, 1000)])
+        );
+        assert_eq!(
+            svg_alpha_extgstate_resource(&states),
+            format!(
+                " /ExtGState << /GSa01250875 << /ca {} /CA {} >> /GSa10001000 << /ca {} /CA {} >> >>",
+                pdf_fixed3(0.125),
+                pdf_fixed3(0.875),
+                pdf_fixed3(1.0),
+                pdf_fixed3(1.0),
+            )
+        );
     }
 
     #[test]
@@ -21495,11 +21702,17 @@ mod pdf_writer_tests {
         });
         style.fill = None;
         let mut shadow = String::new();
-        assert!(append_svg_shadow_prefix(&mut shadow, style));
+        let mut alpha_states = BTreeSet::new();
+        assert!(append_svg_shadow_prefix(
+            &mut shadow,
+            style,
+            &mut alpha_states
+        ));
         assert_eq!(
             shadow,
             "q 1 0 0 1 2 -1.25 cm 0.100 0.200 0.300 RG 2.5 w 1 J 0 j 3.25 M [3 1.5 2 3 1.5 2] 0.75 d "
         );
+        assert!(alpha_states.is_empty());
 
         let mut stroke_options = String::new();
         append_svg_stroke_options(

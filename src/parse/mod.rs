@@ -807,7 +807,7 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
         return None;
     }
     let cols = split_table_row(header).len();
-    if cols == 0 || split_table_row(delimiter).len() != cols {
+    if cols == 0 || table_delimiter_cell_count(delimiter) != cols {
         return None;
     }
     let mut i = 2;
@@ -2265,6 +2265,33 @@ fn split_table_row(line: &str) -> Vec<&str> {
     cells
 }
 
+fn table_delimiter_row_inner(line: &str) -> &str {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    t.strip_suffix('|').unwrap_or(t)
+}
+
+fn table_delimiter_cell_count(line: &str) -> usize {
+    table_delimiter_row_inner(line).split('|').count()
+}
+
+fn split_table_delimiter_alignments(line: &str) -> Vec<Align> {
+    table_delimiter_row_inner(line)
+        .split('|')
+        .map(|cell| {
+            let cell = cell.trim();
+            let left = cell.starts_with(':');
+            let right = cell.ends_with(':');
+            match (left, right) {
+                (true, true) => Align::Center,
+                (true, false) => Align::Left,
+                (false, true) => Align::Right,
+                (false, false) => Align::None,
+            }
+        })
+        .collect()
+}
+
 fn ascii_run_len(bytes: &[u8], i: usize, byte: u8) -> usize {
     bytes[i..]
         .iter()
@@ -2278,24 +2305,11 @@ fn parse_table_profiled(
     profiler: &mut ParseProfiler,
 ) -> Option<(Table, usize)> {
     let header = split_table_row(lines[0]);
-    let align_cells = split_table_row(lines[1]);
+    let align = split_table_delimiter_alignments(lines[1]);
     let cols = header.len();
-    if cols == 0 || align_cells.len() != cols {
+    if cols == 0 || align.len() != cols {
         return None;
     }
-    let align: Vec<Align> = align_cells
-        .iter()
-        .map(|c| {
-            let left = c.starts_with(':');
-            let right = c.ends_with(':');
-            match (left, right) {
-                (true, true) => Align::Center,
-                (true, false) => Align::Left,
-                (false, true) => Align::Right,
-                (false, false) => Align::None,
-            }
-        })
-        .collect();
     let head: Vec<Vec<Inline>> = header
         .iter()
         .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
@@ -4714,7 +4728,8 @@ mod bracket_tests {
 
 #[cfg(test)]
 mod table_row_split_tests {
-    use super::split_table_row;
+    use super::{split_table_delimiter_alignments, split_table_row, table_delimiter_cell_count};
+    use crate::ast::Align;
 
     #[test]
     fn plain_table_rows_keep_trimmed_cell_shape() {
@@ -4736,5 +4751,39 @@ mod table_row_split_tests {
             split_table_row(r"alpha | a \| b | c"),
             vec!["alpha", r"a \| b", "c"]
         );
+    }
+
+    #[test]
+    fn delimiter_alignment_helper_preserves_splitter_shape() {
+        fn align_from_splitter(line: &str) -> Vec<Align> {
+            split_table_row(line)
+                .iter()
+                .map(|cell| {
+                    let left = cell.starts_with(':');
+                    let right = cell.ends_with(':');
+                    match (left, right) {
+                        (true, true) => Align::Center,
+                        (true, false) => Align::Left,
+                        (false, true) => Align::Right,
+                        (false, false) => Align::None,
+                    }
+                })
+                .collect()
+        }
+
+        for line in [
+            "| --- | :--- | ---: | :---: |",
+            "---|:---:|---:",
+            "|---||---|",
+        ] {
+            assert_eq!(
+                table_delimiter_cell_count(line),
+                split_table_row(line).len()
+            );
+            assert_eq!(
+                split_table_delimiter_alignments(line),
+                align_from_splitter(line)
+            );
+        }
     }
 }

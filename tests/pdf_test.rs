@@ -3558,6 +3558,45 @@ fn pdf_svg_use_alias_definitions_expand_recursively() {
 }
 
 #[test]
+fn pdf_svg_use_symbol_viewbox_scales_to_use_viewport() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 24">
+  <defs>
+    <symbol id="stretch" viewBox="0 0 10 10" preserveAspectRatio="none">
+      <rect x="0" y="0" width="10" height="10" fill="#00ff00"/>
+    </symbol>
+    <symbol id="meet" viewBox="0 0 20 10">
+      <path d="M0 0 H20 V10 H0 Z" fill="#ff0000"/>
+    </symbol>
+  </defs>
+  <use href="#stretch" x="5" y="2" width="20" height="10"/>
+  <use href="#meet" x="5" y="16" width="20" height="4"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("symbol-use.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Symbol use](symbol-use.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 2 0 0 1 5 2 cm 0.000 1.000 0.000 rg 0 0 10 10 re f\nQ"),
+        "preserveAspectRatio=none symbols should stretch their viewBox into the use width/height viewport: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 0.4 0 0 0.4 11 16 cm 1.000 0.000 0.000 rg 0 0 m 20 0 l 20 10 l 0 10 l h f\nQ"
+        ),
+        "default symbol preserveAspectRatio should meet-scale and center within the use viewport: {text}"
+    );
+    assert!(
+        !text.contains("q 1 0 0 1 5 2 cm 0.000 1.000 0.000 rg 0 0 10 10 re f"),
+        "symbol viewBox contents must not render at unscaled group size when the use element supplies a viewport: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_clip_paths_apply_native_pdf_clipping() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 36">

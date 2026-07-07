@@ -1024,6 +1024,8 @@ struct SvgReusableDef {
     tag: String,
     attrs: Vec<(String, String)>,
     body: Option<String>,
+    view_box: Option<SvgViewBox>,
+    preserve_aspect: SvgPreserveAspectRatio,
 }
 
 #[derive(Clone)]
@@ -5287,11 +5289,21 @@ fn parse_svg_reusable_defs(src: &str, referenced_ids: &[String]) -> Vec<SvgReusa
         } else {
             None
         };
+        let (view_box, preserve_aspect) = if local == "symbol" {
+            (
+                parse_svg_view_box(&attrs),
+                parse_svg_preserve_aspect_ratio(svg_attr(&attrs, "preserveaspectratio")),
+            )
+        } else {
+            (None, SvgPreserveAspectRatio::DEFAULT)
+        };
         defs.push(SvgReusableDef {
             id: id.to_string(),
             tag: local.to_string(),
             attrs,
             body,
+            view_box,
+            preserve_aspect,
         });
         if defs.len() >= 256 {
             break;
@@ -8037,10 +8049,15 @@ fn parse_svg_use_elements(
     );
     match def.tag.as_str() {
         "g" | "symbol" | "a" => def.body.as_deref().map_or_else(Vec::new, |body| {
+            let inherited = if def.tag == "symbol" {
+                parse_svg_symbol_use_base_style(attrs, base, def)
+            } else {
+                base
+            };
             let group_base = parse_svg_style_with_ancestors(
                 def.tag.as_str(),
                 &def.attrs,
-                base,
+                inherited,
                 css_rules,
                 gradients,
                 patterns,
@@ -8131,6 +8148,68 @@ fn parse_svg_fragment_href(value: &str) -> Option<&str> {
         return (!id.is_empty()).then_some(id);
     }
     parse_svg_paint_url_id(value)
+}
+
+fn parse_svg_symbol_use_base_style(
+    attrs: &[(String, String)],
+    mut style: SvgStyle,
+    def: &SvgReusableDef,
+) -> SvgStyle {
+    let Some(view_box) = def.view_box else {
+        return style;
+    };
+    let viewport = SvgViewport {
+        w: parse_svg_positive_attr(attrs, "width").unwrap_or(view_box.w),
+        h: parse_svg_positive_attr(attrs, "height").unwrap_or(view_box.h),
+    };
+    if let Some(transform) =
+        svg_view_box_to_viewport_transform(view_box, viewport, def.preserve_aspect)
+    {
+        style.transform = style.transform.concat(transform);
+    }
+    style
+}
+
+fn svg_view_box_to_viewport_transform(
+    view_box: SvgViewBox,
+    viewport: SvgViewport,
+    preserve_aspect: SvgPreserveAspectRatio,
+) -> Option<SvgTransform> {
+    let raw_sx = viewport.w / view_box.w;
+    let raw_sy = viewport.h / view_box.h;
+    if ![raw_sx, raw_sy].iter().all(|value| value.is_finite()) || raw_sx <= 0.0 || raw_sy <= 0.0 {
+        return None;
+    }
+    match preserve_aspect.mode {
+        SvgAspectScaleMode::None => Some(SvgTransform {
+            a: raw_sx,
+            d: raw_sy,
+            e: -view_box.x * raw_sx,
+            f: -view_box.y * raw_sy,
+            ..SvgTransform::IDENTITY
+        }),
+        SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
+            let scale = if preserve_aspect.mode == SvgAspectScaleMode::Slice {
+                raw_sx.max(raw_sy)
+            } else {
+                raw_sx.min(raw_sy)
+            };
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let content_w = view_box.w * scale;
+            let content_h = view_box.h * scale;
+            let offset_x = (viewport.w - content_w) * preserve_aspect.align_x;
+            let offset_y = (viewport.h - content_h) * preserve_aspect.align_y;
+            Some(SvgTransform {
+                a: scale,
+                d: scale,
+                e: offset_x - view_box.x * scale,
+                f: offset_y - view_box.y * scale,
+                ..SvgTransform::IDENTITY
+            })
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -20,16 +20,18 @@ cargo install franken_markdown
 
 </div>
 
-> **Current status:** `0.2.0` is published on crates.io and the `v0.2.0`
+> **Current status:** `0.2.0` is published on crates.io, and the `v0.2.0`
 > GitHub release ships smoke-tested `fmd` binaries for Linux, macOS Intel,
-> macOS Apple Silicon, and Windows. HTML, PDF, CLI, batch, and WASM paths are
-> implemented through one clean-room Rust core. The PDF renderer already embeds
-> curated font subsets, applies focused GPOS kerning and GSUB ligatures, uses
-> Knuth-Plass line breaking with deterministic Liang/TeX hyphenation, emits
-> selectable tagged-PDF text, draws local PNG/SVG diagram assets, and keeps the
-> output deterministic. The browser package builds a real wasm-bindgen module,
-> TypeScript API, and demo through `scripts/check-wasm-package.sh`. Deeper block
-> pagination and optional SIMD remain explicitly tracked roadmap work.
+> macOS Apple Silicon, and Windows. `main` has continued to move quickly since
+> that tag: HTML, PDF, CLI, batch, SVG, Mermaid-asset, and WASM paths all run
+> through one clean-room Rust core. The PDF renderer embeds curated font subsets,
+> applies focused GPOS kerning and GSUB ligatures, uses Knuth-Plass line
+> breaking with deterministic Liang/TeX hyphenation, emits selectable tagged-PDF
+> text, lays out measured tables, draws local PNG/SVG diagram assets as PDF
+> content, and keeps output deterministic. The browser package builds a real
+> wasm-bindgen module, TypeScript API, and demo through
+> `scripts/check-wasm-package.sh`. Deeper block pagination and optional SIMD
+> remain tracked roadmap work, not shipped claims.
 
 ---
 
@@ -48,6 +50,18 @@ library has **zero third-party dependencies**; the only default dependency is
 `clap`, and only for the CLI. The same render core compiles to native Rust, the
 `fmd` binary, and browser/WASM, and it produces deterministic, byte-stable
 output.
+
+### What Works Today
+
+| Need | Use |
+|---|---|
+| One-file HTML preview | `fmd README.md --out README.html` |
+| Compact deterministic PDF | `SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf` |
+| Same input to both formats | `fmd README.md --to both --out README.html` |
+| Real code highlighting | Fenced code blocks in Rust, Python, JS/TS, shell, SQL, TOML, YAML, HTML/XML/SVG, Markdown, and related documentation languages |
+| Mermaid diagrams without browser JavaScript | Generate the SVG with frankenmermaid, reference it from Markdown, and let HTML display it while PDF draws the supported SVG vector content |
+| Agent/tool integration | `fmd capabilities --json`, `fmd doctor --json`, `fmd robot-docs guide`, and `fmd --robot-triage` |
+| Browser integration | Build the wasm-bindgen package from `wasm/` and pass Markdown, font bytes, image bytes, and options from the host |
 
 ### Why franken_markdown?
 
@@ -69,11 +83,11 @@ output.
 | Surface | Current state |
 |---|---|
 | Markdown parsing | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, HTML escaping, source spans, recoverable diagnostics, and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained document with inlined CSS, dark-mode support, safe escaping, responsive tables, clean-room syntax highlighting, and optional full stylesheet replacement |
+| HTML output | Self-contained document with inlined CSS, deterministic embedded TTF font subsets, dark-mode support, safe escaping, responsive tables, clean-room syntax highlighting, and optional full stylesheet replacement |
 | PDF typography | Curated font embedding and subsetting, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, deterministic hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and a hierarchical tagged-PDF structure tree |
 | Tables | HTML and PDF both use measured columns. The PDF allocator computes per-column min/max content widths and solves a constrained width allocation that reduces total wrapping badness, which keeps dense performance-plan headers readable instead of pinched into narrow equal columns |
 | Code blocks | Clean-room syntax highlighting is shared by HTML and PDF. PDF fenced blocks can include muted line numbers, and ASCII/Mermaid diagram fences preserve geometry by fitting rows instead of hard-wrapping them |
-| Diagrams and SVG | Local PNG/SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer. The renderer covers paths, shapes, text, transforms, gradients, patterns, masks, clips, markers, opacity, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
+| Diagrams and SVG | Local PNG/SVG image destinations are auto-loaded by file-input PDF renders; supported SVGs are drawn as vector PDF operators rather than routed through a browser or rasterizer. The renderer covers paths, shapes, text, transforms, gradients, gradient spread modes, patterns, masks, clips, object-bounding-box clip/mask units, markers, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and frankenmermaid's current output |
 | Mermaid workflow | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid, so HTML and PDF can carry the same diagram without a JavaScript runtime |
 | Library API | `parse_markdown`, `render_html_document`, and `render_pdf_document` share one AST; hosts can provide font bytes and image assets without filesystem access in the core |
 | CLI safety | Input and PDF image byte limits fail early with stable exit codes; JSON status, `doctor`, `capabilities`, and `robot-docs` expose the same contract to humans and agents |
@@ -174,6 +188,7 @@ behavior stable.
 |---|---|
 | Parser scanning | Byte-level candidate guards skip full block/reference checks for ordinary prose while preserving the same parser output | Fewer unpredictable branches and less work per line on large README-style documents |
 | Inline and HTML escaping | Shared scanner primitives find Markdown/HTML escape bytes without per-character allocation on clean text runs | Cache-friendly byte walks that behave well on Apple M-series and modern Intel/AMD cores |
+| HTML code highlighting | Language fences dispatch directly into the highlighter, whose unknown-language fallback already renders plain escaped code | Supported fences avoid duplicate language normalization and lexer lookup |
 | PDF layout | Render-local shaped-width caches avoid recomputing pure font shaping and kerning results within one PDF render | Repeated table/code/body tokens hit local caches instead of re-entering shaping loops |
 | PDF stream writing | Text segment operators and `TJ` arrays stream into page buffers directly | Avoids temporary formatted strings in the innermost PDF content loops |
 | Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman match symbols and accumulates Adler-32 during emission | Removes repeated bit-prep work and avoids a second full input scan over page/font streams |
@@ -203,10 +218,14 @@ Intel/AMD:
 - contiguous `Vec<u8>` and `String` buffers dominate the parser, HTML emitter,
   PDF writer, and compressor;
 - byte scanners avoid expensive Unicode work until a line actually needs it;
+- clean text, ordinary prose, and unsupported code fences stay on plain escaped
+  paths instead of forcing heavyweight syntax work;
 - render-local caches keep repeated font measurement close to the layout code
   that uses it;
 - direct PDF stream appends reduce allocator pressure in the text-heavy path;
 - fixed-Huffman compression tables are precomputed once and reused;
+- table width allocation spends extra columns only where min/max content metrics
+  say it will reduce wrapping;
 - batch mode uses an explicit worker budget instead of spawning unbounded work.
 
 Those choices map well to Apple M-series unified-memory machines and modern
@@ -712,10 +731,12 @@ Honest about what the renderer does not do yet.
   but it is one tag push from npm. Browser visual/golden fixtures are still early.
 - **`batch` is opt-in and native-only.** It is not in the default build; enable
   it with `--features batch`, which pulls in Asupersync.
-- **Tagged-PDF accessibility is partial.** Headings H1-H3, lists, tables (with
-  header column scope), blockquotes, figures, and links are tagged; H4-H6 levels,
-  cell-to-header id linkage, sub-line inline-link tagging, and page-spanning
-  logical elements remain roadmap. See [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
+- **Tagged-PDF accessibility is partial.** H1-H3 headings keep exact heading
+  tags, H4-H6 headings collapse to generic `/H`, and lists, tables (with header
+  column scope), blockquotes, figures, task-list markers, strikethrough runs,
+  and links are tagged. Cell-to-header id linkage, sub-line inline-link tagging,
+  full PDF/UA validation, and page-spanning logical elements remain roadmap. See
+  [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
 - **Release binaries are tag-driven.** The installers prefer the GitHub release
   assets and fall back to local compilation only when explicitly requested or
   when no matching asset exists for the current platform.

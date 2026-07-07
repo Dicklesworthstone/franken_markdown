@@ -3906,10 +3906,7 @@ fn parse_svg_rect(
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
-    let rx = svg_attr(attrs, "rx")
-        .or_else(|| svg_attr(attrs, "ry"))
-        .and_then(parse_svg_number)
-        .unwrap_or(0.0);
+    let rx = parse_svg_rect_radius(attrs, css_rules, css_vars, ancestors);
     Some(SvgRect {
         x: svg_attr(attrs, "x")
             .and_then(parse_svg_number)
@@ -3934,6 +3931,58 @@ fn parse_svg_rect(
         ),
         link: None,
     })
+}
+
+#[derive(Default)]
+struct SvgRectRadius {
+    rx: Option<f32>,
+    ry: Option<f32>,
+}
+
+fn parse_svg_rect_radius(
+    attrs: &[(String, String)],
+    css_rules: &[SvgCssRule],
+    css_vars: &[SvgCssVariable],
+    ancestors: &[SvgCssAncestor],
+) -> f32 {
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, ancestors, "rect", attrs);
+    let mut radius = SvgRectRadius {
+        rx: svg_attr(attrs, "rx").and_then(|value| parse_svg_css_number(value, &scoped_css_vars)),
+        ry: svg_attr(attrs, "ry").and_then(|value| parse_svg_css_number(value, &scoped_css_vars)),
+    };
+    for rule in svg_matching_css_rules("rect", attrs, css_rules, ancestors) {
+        apply_svg_rect_radius_decls(&mut radius, &rule.decls, &scoped_css_vars);
+    }
+    if let Some(style_attr) = svg_attr(attrs, "style") {
+        apply_svg_rect_radius_decls(&mut radius, style_attr, &scoped_css_vars);
+    }
+    radius.rx.or(radius.ry).unwrap_or(0.0)
+}
+
+fn apply_svg_rect_radius_decls(
+    radius: &mut SvgRectRadius,
+    decls: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    for decl in decls.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "rx" => {
+                if let Some(rx) = parse_svg_css_number(value, css_vars) {
+                    radius.rx = Some(rx);
+                }
+            }
+            "ry" => {
+                if let Some(ry) = parse_svg_css_number(value, css_vars) {
+                    radius.ry = Some(ry);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9701,6 +9750,15 @@ fn parse_svg_number(value: &str) -> Option<f32> {
     read_svg_number_token(value, &mut end)?;
     let parsed = value[..end].parse::<f32>().ok()?;
     parsed.is_finite().then_some(parsed)
+}
+
+fn parse_svg_css_number(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_css_number(&resolved, css_vars);
+    }
+    parse_svg_number(value)
 }
 
 fn parse_svg_opacity(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {

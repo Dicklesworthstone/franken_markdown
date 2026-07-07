@@ -2377,6 +2377,48 @@ fn pdf_svg_css_cascade_overrides_presentation_attrs_without_multiplying_local_op
 }
 
 #[test]
+fn pdf_svg_css_rect_rx_ry_rounds_rectangle_geometry() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 20">
+  <style>
+    :root { --corner: 4px; }
+    .css-rx { rx: 5px; }
+    .css-ry { ry: var(--corner); }
+    .inline { rx: 0; }
+    .invalid { rx: var(--missing); }
+  </style>
+  <rect class="css-rx" x="2" y="2" width="12" height="10" rx="0" fill="#000001"/>
+  <rect class="css-ry" x="20" y="2" width="12" height="10" fill="#000002"/>
+  <rect class="inline" x="38" y="2" width="12" height="10" style="rx: 4px; fill: #000003"/>
+  <rect class="invalid" x="56" y="2" width="12" height="10" rx="3" fill="#000004"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("css-rect-radii.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![CSS rect radii](css-rect-radii.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    for sharp_rect in [
+        "2 2 12 10 re f",
+        "20 2 12 10 re f",
+        "38 2 12 10 re f",
+        "56 2 12 10 re f",
+    ] {
+        assert!(
+            !text.contains(sharp_rect),
+            "CSS/attribute rect radii should emit rounded paths, not sharp re rectangles: {text}"
+        );
+    }
+    let cubic_segments = text.matches(" c").count();
+    assert!(
+        cubic_segments >= 16,
+        "four rounded rectangles should emit at least sixteen cubic corner segments; found {cubic_segments}: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_css_compound_selectors_apply_with_specificity() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 32">

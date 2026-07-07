@@ -162,13 +162,11 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
                 out.push('"');
             }
             out.push('>');
-            // Clean-room syntax highlighting when we have a lexer for the
-            // language; otherwise the code is rendered as escaped plain text.
+            // The highlighter itself falls back to one plain span for unknown
+            // languages, so supported languages only pay for one lookup here.
             match lang.as_deref() {
-                Some(l) if crate::highlight::is_supported(l) => {
-                    highlight_code(l, code, out);
-                }
-                _ => push_escaped_text(code, out),
+                Some(l) => highlight_code(l, code, out),
+                None => push_escaped_text(code, out),
             }
             out.push_str("</code></pre>\n");
         }

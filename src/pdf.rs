@@ -11394,21 +11394,33 @@ fn layout_table(
     let avail = (page.content_w - indent).max(72.0);
     let pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
 
+    // Tokenize each cell once. Measurement and wrapping use the same styled
+    // token stream, so table layout avoids repeating inline/style work while
+    // keeping header bolding, links, and strikethrough behavior identical.
+    let head_toks: Vec<Vec<Tok>> = table
+        .head
+        .iter()
+        .map(|cell| cell_tokens(cell, true))
+        .collect();
+    let row_toks: Vec<Vec<Vec<Tok>>> = table
+        .rows
+        .iter()
+        .map(|row| row.iter().map(|cell| cell_tokens(cell, false)).collect())
+        .collect();
+
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
     // the allocator can search candidate widths without reshaping text inside
     // its dynamic-programming loop.
     let mut columns = vec![TableColumnMetrics::default(); ncol];
-    for (k, cell) in table.head.iter().enumerate() {
-        let toks = cell_tokens(cell, true);
+    for (k, toks) in head_toks.iter().enumerate() {
         if let Some(column) = columns.get_mut(k) {
-            column.push(table_cell_measure(&toks, size, faces, true));
+            column.push(table_cell_measure(toks, size, faces, true));
         }
     }
-    for row in &table.rows {
-        for (k, cell) in row.iter().enumerate() {
-            let toks = cell_tokens(cell, false);
+    for row in &row_toks {
+        for (k, toks) in row.iter().enumerate() {
             if let Some(column) = columns.get_mut(k) {
-                column.push(table_cell_measure(&toks, size, faces, false));
+                column.push(table_cell_measure(toks, size, faces, false));
             }
         }
     }
@@ -11425,95 +11437,90 @@ fn layout_table(
         cx += w + pad;
     }
 
-    let row_lines =
-        |cells: &[Vec<Inline>], header: bool, gap_after: f32, kind: FlowKind, shade: bool| {
-            // Wrap each cell's STYLED tokens to its column width so bold/italic/
-            // code faces, strikethrough, and clickable links survive (they used
-            // to be flattened to one plain slot per cell).
-            let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
-                .map(|k| {
-                    let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
-                    let toks = cells
-                        .get(k)
-                        .map(|c| cell_tokens(c, header))
-                        .unwrap_or_default();
-                    wrap_cell_styled(&toks, cw, size, faces)
-                })
-                .collect();
-            let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
-            let mut lines = Vec::with_capacity(depth);
+    let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
+        // Wrap each cell's STYLED tokens to its column width so bold/italic/
+        // code faces, strikethrough, and clickable links survive (they used
+        // to be flattened to one plain slot per cell).
+        let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
+            .map(|k| {
+                let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
+                let toks = cells.get(k).map(Vec::as_slice).unwrap_or(&[]);
+                wrap_cell_styled(toks, cw, size, faces)
+            })
+            .collect();
+        let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        let mut lines = Vec::with_capacity(depth);
 
-            for row_idx in 0..depth {
-                let mut segs = Vec::new();
-                // Source grid column of each emitted seg, kept parallel to `segs`
-                // so the structure tree can tag per-cell `/TH`/`/TD`. Multiple
-                // styled runs of one cell share that cell's column key, so they
-                // collapse into a single `/TH`/`/TD` with several marked-content
-                // runs. An empty cell emits no seg (and no column), so it is
-                // simply omitted from its row's structure — a known limitation
-                // (no empty-`/TD` backfill); see docs/PDF_ACCESSIBILITY.md.
-                let mut cols = Vec::new();
-                for k in 0..ncol {
-                    let Some(cell_line) = wrapped.get(k).and_then(|parts| parts.get(row_idx))
-                    else {
-                        continue;
-                    };
-                    if cell_line.runs.is_empty() {
-                        continue;
-                    }
-                    let cw = colw.get(k).copied().unwrap_or(0.0);
-                    let base = tx.get(k).copied().unwrap_or(left);
-                    let offset = match table.align.get(k) {
-                        Some(Align::Right) => (cw - cell_line.width).max(0.0),
-                        Some(Align::Center) => ((cw - cell_line.width) / 2.0).max(0.0),
-                        _ => 0.0,
-                    };
-                    let mut x = base + offset;
-                    for run in &cell_line.runs {
-                        let fill = if run.link.is_some() {
-                            Fill::Link
-                        } else {
-                            Fill::Black
-                        };
-                        segs.push(Seg {
-                            x,
-                            slot: run.slot,
-                            text: run.text.clone(),
-                            link: run.link.clone(),
-                            fill,
-                            strike: run.strike,
-                            width: run.width,
-                        });
-                        cols.push(k as u32);
-                        x += run.width;
-                    }
+        for row_idx in 0..depth {
+            let mut segs = Vec::new();
+            // Source grid column of each emitted seg, kept parallel to `segs`
+            // so the structure tree can tag per-cell `/TH`/`/TD`. Multiple
+            // styled runs of one cell share that cell's column key, so they
+            // collapse into a single `/TH`/`/TD` with several marked-content
+            // runs. An empty cell emits no seg (and no column), so it is
+            // simply omitted from its row's structure — a known limitation
+            // (no empty-`/TD` backfill); see docs/PDF_ACCESSIBILITY.md.
+            let mut cols = Vec::new();
+            for k in 0..ncol {
+                let Some(cell_line) = wrapped.get(k).and_then(|parts| parts.get(row_idx)) else {
+                    continue;
+                };
+                if cell_line.runs.is_empty() {
+                    continue;
                 }
-                lines.push(Line {
-                    size,
-                    gap_after: if row_idx + 1 == depth { gap_after } else { 1.0 },
-                    rule: false,
-                    // Reuse `rule_x` (unused on non-rule lines) to carry the stripe's
-                    // left edge so PASS 2 can draw a full-measure tint to the right.
-                    rule_x: if shade { left } else { 0.0 },
-                    quote_bars: Vec::new(),
-                    bg: 0,
-                    shade,
-                    flow: FlowMark {
-                        group,
-                        index: row_idx,
-                        count: depth,
-                        kind,
-                        list_start: false,
-                    },
-                    list_path: Vec::new(),
-                    table_cols: cols,
-                    segs,
-                    image: None,
-                });
+                let cw = colw.get(k).copied().unwrap_or(0.0);
+                let base = tx.get(k).copied().unwrap_or(left);
+                let offset = match table.align.get(k) {
+                    Some(Align::Right) => (cw - cell_line.width).max(0.0),
+                    Some(Align::Center) => ((cw - cell_line.width) / 2.0).max(0.0),
+                    _ => 0.0,
+                };
+                let mut x = base + offset;
+                for run in &cell_line.runs {
+                    let fill = if run.link.is_some() {
+                        Fill::Link
+                    } else {
+                        Fill::Black
+                    };
+                    segs.push(Seg {
+                        x,
+                        slot: run.slot,
+                        text: run.text.clone(),
+                        link: run.link.clone(),
+                        fill,
+                        strike: run.strike,
+                        width: run.width,
+                    });
+                    cols.push(k as u32);
+                    x += run.width;
+                }
             }
+            lines.push(Line {
+                size,
+                gap_after: if row_idx + 1 == depth { gap_after } else { 1.0 },
+                rule: false,
+                // Reuse `rule_x` (unused on non-rule lines) to carry the stripe's
+                // left edge so PASS 2 can draw a full-measure tint to the right.
+                rule_x: if shade { left } else { 0.0 },
+                quote_bars: Vec::new(),
+                bg: 0,
+                shade,
+                flow: FlowMark {
+                    group,
+                    index: row_idx,
+                    count: depth,
+                    kind,
+                    list_start: false,
+                },
+                list_path: Vec::new(),
+                table_cols: cols,
+                segs,
+                image: None,
+            });
+        }
 
-            lines
-        };
+        lines
+    };
 
     let rule = |gap_after: f32| Line {
         size: 4.0,
@@ -11536,21 +11543,14 @@ fn layout_table(
         image: None,
     };
 
-    out.extend(row_lines(
-        &table.head,
-        true,
-        3.0,
-        FlowKind::TableHeader,
-        false,
-    ));
+    out.extend(row_lines(&head_toks, 3.0, FlowKind::TableHeader, false));
     out.push(rule(3.0));
-    let nrows = table.rows.len();
-    for (i, row) in table.rows.iter().enumerate() {
+    let nrows = row_toks.len();
+    for (i, row) in row_toks.iter().enumerate() {
         // Zebra striping: tint every other body row (0-based even rows) for a
         // modern look. Deterministic from the logical row index.
         out.extend(row_lines(
             row,
-            false,
             if i + 1 == nrows { 3.0 } else { 2.5 },
             FlowKind::TableRow,
             i % 2 == 0,

@@ -5207,11 +5207,7 @@ fn set_svg_css_variable(out: &mut Vec<SvgCssVariable>, name: &str, value: &str) 
 }
 
 fn clean_svg_css_variable_value(value: &str) -> &str {
-    value
-        .trim()
-        .strip_suffix("!important")
-        .map(str::trim_end)
-        .unwrap_or_else(|| value.trim())
+    clean_svg_css_keyword_value(value)
 }
 
 fn svg_css_variables_are_global_selectors(selectors: &str) -> bool {
@@ -9411,11 +9407,17 @@ fn parse_svg_dominant_baseline(
 }
 
 fn clean_svg_css_keyword_value(value: &str) -> &str {
+    const IMPORTANT: &[u8] = b"!important";
+
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    if bytes.len() >= IMPORTANT.len() {
+        let suffix_start = bytes.len() - IMPORTANT.len();
+        if bytes[suffix_start..].eq_ignore_ascii_case(IMPORTANT) {
+            return value[..suffix_start].trim_end();
+        }
+    }
     value
-        .trim()
-        .strip_suffix("!important")
-        .map(str::trim_end)
-        .unwrap_or_else(|| value.trim())
 }
 
 fn apply_svg_color_attr(style: &mut SvgStyle, value: Option<&str>, css_vars: &[SvgCssVariable]) {
@@ -9542,7 +9544,7 @@ fn apply_svg_paint_attr(
 }
 
 fn parse_svg_current_color_paint(value: &str, css_vars: &[SvgCssVariable]) -> bool {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(")
         && let Some(resolved) = resolve_svg_css_value(value, css_vars, 0)
     {
@@ -9552,7 +9554,7 @@ fn parse_svg_current_color_paint(value: &str, css_vars: &[SvgCssVariable]) -> bo
 }
 
 fn parse_svg_context_paint(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgContextPaint> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_context_paint(&resolved, css_vars);
@@ -9571,7 +9573,7 @@ fn parse_svg_paint(
     gradients: &[SvgGradientPaint],
     css_vars: &[SvgCssVariable],
 ) -> Option<Option<(f32, f32, f32)>> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_paint(&resolved, gradients, css_vars);
@@ -9607,7 +9609,7 @@ fn parse_svg_paint_gradient_ref(
     gradients: &[SvgGradientPaint],
     css_vars: &[SvgCssVariable],
 ) -> Option<usize> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_paint_gradient_ref(&resolved, gradients, css_vars);
@@ -9623,7 +9625,7 @@ fn parse_svg_paint_pattern_ref(
     patterns: &[SvgPatternPaint],
     css_vars: &[SvgCssVariable],
 ) -> Option<usize> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_paint_pattern_ref(&resolved, patterns, css_vars);
@@ -9633,7 +9635,7 @@ fn parse_svg_paint_pattern_ref(
 }
 
 fn parse_svg_paint_alpha(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_paint_alpha(&resolved, css_vars);
@@ -9729,7 +9731,7 @@ fn parse_svg_color_inner_with_alpha(
     if depth >= 8 {
         return None;
     }
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_color_inner_with_alpha(&resolved, css_vars, depth + 1);

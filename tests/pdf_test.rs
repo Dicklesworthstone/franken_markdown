@@ -2152,6 +2152,49 @@ fn pdf_svg_treats_fully_transparent_rgba_paint_as_none() {
 }
 
 #[test]
+fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 58">
+  <style>
+    .sheet-paint { fill: #00ff00 !important; stroke: #0000ff !important; stroke-width: 2; }
+    .sheet-color { color: rgb(0 128 255 / 50%) !important; fill: currentColor !important; }
+  </style>
+  <rect class="sheet-paint" x="2" y="2" width="24" height="12" fill="#ff0000" stroke="#ff0000"/>
+  <rect x="32" y="2" width="24" height="12" style="fill: #ff00ff !IMPORTANT; stroke: #00ffff !important; stroke-width: 2"/>
+  <text class="sheet-color" x="2" y="32" font-size="10">Sheet</text>
+  <text x="2" y="48" font-size="10" style="fill: rgb(0 128 255 / 50%) !important">Inline</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("important-paint.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Important paint](important-paint.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.000 1.000 0.000 rg 0.000 0.000 1.000 RG 2 w"),
+        "stylesheet fill/stroke declarations should strip terminal !important before paint parsing: {text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 1.000 rg 0.000 1.000 1.000 RG 2 w"),
+        "inline style fill/stroke declarations should strip terminal !important before paint parsing: {text}"
+    );
+    assert!(
+        text.matches("0.000 0.502 1.000 rg\nBT /F1").count() >= 2,
+        "stylesheet color/currentColor and inline rgb() fill values should strip terminal !important before color parsing: {text}"
+    );
+    assert!(
+        text.contains("/GSa05000500 gs\n0.000 0.502 1.000 rg"),
+        "inline rgb() alpha should survive terminal !important cleanup and emit a native PDF alpha state: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg 1.000 0.000 0.000 RG"),
+        "failed stylesheet paint parsing must not leave the red presentation-attribute fallback in place: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 126 36">

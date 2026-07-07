@@ -624,6 +624,28 @@ enum SvgFillRule {
     EvenOdd,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgPaintLayer {
+    Fill,
+    Stroke,
+    Markers,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SvgPaintOrder {
+    layers: [SvgPaintLayer; 3],
+}
+
+impl SvgPaintOrder {
+    const NORMAL: Self = Self {
+        layers: [
+            SvgPaintLayer::Fill,
+            SvgPaintLayer::Stroke,
+            SvgPaintLayer::Markers,
+        ],
+    };
+}
+
 type SvgColor = (f32, f32, f32);
 type SvgGradientStop = (f32, SvgColor);
 
@@ -721,6 +743,7 @@ struct SvgStyle {
     line_join: SvgLineJoin,
     miter_limit: Option<f32>,
     fill_rule: SvgFillRule,
+    paint_order: SvgPaintOrder,
     font_weight: SvgFontWeight,
     font_slant: SvgFontSlant,
     font_family: SvgFontFamily,
@@ -755,6 +778,7 @@ impl SvgStyle {
         line_join: SvgLineJoin::Miter,
         miter_limit: Some(4.0),
         fill_rule: SvgFillRule::NonZero,
+        paint_order: SvgPaintOrder::NORMAL,
         font_weight: SvgFontWeight::Normal,
         font_slant: SvgFontSlant::Normal,
         font_family: SvgFontFamily::Body,
@@ -797,6 +821,7 @@ struct SvgStylePatch {
     line_join: Option<SvgLineJoin>,
     miter_limit: Option<f32>,
     fill_rule: Option<SvgFillRule>,
+    paint_order: Option<SvgPaintOrder>,
     font_weight: Option<SvgFontWeight>,
     font_slant: Option<SvgFontSlant>,
     font_family: Option<SvgFontFamily>,
@@ -4015,6 +4040,7 @@ fn parse_svg_line(
                 line_join: inherited.line_join,
                 miter_limit: inherited.miter_limit,
                 fill_rule: inherited.fill_rule,
+                paint_order: inherited.paint_order,
                 font_weight: inherited.font_weight,
                 font_slant: inherited.font_slant,
                 font_family: inherited.font_family,
@@ -4082,6 +4108,7 @@ fn parse_svg_poly(
             line_join: inherited.line_join,
             miter_limit: inherited.miter_limit,
             fill_rule: inherited.fill_rule,
+            paint_order: inherited.paint_order,
             font_weight: inherited.font_weight,
             font_slant: inherited.font_slant,
             font_family: inherited.font_family,
@@ -6893,6 +6920,7 @@ fn parse_svg_style_with_ancestors(
         &scoped_css_vars,
     );
     apply_svg_fill_rule_attr(&mut style, svg_attr(attrs, "fill-rule"));
+    apply_svg_paint_order_attr(&mut style, svg_attr(attrs, "paint-order"), &scoped_css_vars);
     apply_svg_line_cap_attr(&mut style, svg_attr(attrs, "stroke-linecap"));
     apply_svg_line_join_attr(&mut style, svg_attr(attrs, "stroke-linejoin"));
     apply_svg_miter_limit_attr(&mut style, svg_attr(attrs, "stroke-miterlimit"));
@@ -7340,6 +7368,7 @@ fn parse_svg_style_patch(
             "clip-path" => patch.clip_path = parse_svg_clip_path_ref(value, clip_paths),
             "mask" => patch.mask_path = parse_svg_mask_ref(value, clip_paths),
             "fill-rule" => patch.fill_rule = parse_svg_fill_rule(value),
+            "paint-order" => patch.paint_order = parse_svg_paint_order(value, css_vars),
             "stroke-width" => {
                 if let Some(width) = parse_svg_number(value) {
                     patch.stroke_width = Some(width.max(0.0));
@@ -7647,6 +7676,9 @@ fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
     if let Some(fill_rule) = patch.fill_rule {
         style.fill_rule = fill_rule;
     }
+    if let Some(paint_order) = patch.paint_order {
+        style.paint_order = paint_order;
+    }
     if let Some(font_weight) = patch.font_weight {
         style.font_weight = font_weight;
     }
@@ -7686,6 +7718,7 @@ fn apply_svg_style_declaration(
         "clip-path" => apply_svg_clip_path_attr(style, Some(value), clip_paths),
         "mask" => apply_svg_mask_attr(style, Some(value), clip_paths),
         "fill-rule" => apply_svg_fill_rule_attr(style, Some(value)),
+        "paint-order" => apply_svg_paint_order_attr(style, Some(value), css_vars),
         "stroke-width" => {
             if let Some(width) = parse_svg_number(value) {
                 style.stroke_width = width.max(0.0);
@@ -8618,6 +8651,70 @@ fn parse_svg_fill_rule(value: &str) -> Option<SvgFillRule> {
         "evenodd" => Some(SvgFillRule::EvenOdd),
         _ => None,
     }
+}
+
+fn apply_svg_paint_order_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(paint_order) = value.and_then(|value| parse_svg_paint_order(value, css_vars)) {
+        style.paint_order = paint_order;
+    }
+}
+
+fn parse_svg_paint_order(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgPaintOrder> {
+    let value = value.trim();
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_paint_order(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(SvgPaintOrder::NORMAL);
+    }
+
+    let mut layers = [SvgPaintLayer::Fill; 3];
+    let mut len = 0usize;
+    let mut seen_fill = false;
+    let mut seen_stroke = false;
+    let mut seen_markers = false;
+    for token in value.split_ascii_whitespace() {
+        let layer = match token.to_ascii_lowercase().as_str() {
+            "fill" if !seen_fill => {
+                seen_fill = true;
+                SvgPaintLayer::Fill
+            }
+            "stroke" if !seen_stroke => {
+                seen_stroke = true;
+                SvgPaintLayer::Stroke
+            }
+            "markers" if !seen_markers => {
+                seen_markers = true;
+                SvgPaintLayer::Markers
+            }
+            _ => return None,
+        };
+        if len >= layers.len() {
+            return None;
+        }
+        layers[len] = layer;
+        len += 1;
+    }
+    if len == 0 {
+        return None;
+    }
+    for layer in SvgPaintOrder::NORMAL.layers {
+        let already_seen = match layer {
+            SvgPaintLayer::Fill => seen_fill,
+            SvgPaintLayer::Stroke => seen_stroke,
+            SvgPaintLayer::Markers => seen_markers,
+        };
+        if !already_seen {
+            layers[len] = layer;
+            len += 1;
+        }
+    }
+    Some(SvgPaintOrder { layers })
 }
 
 fn apply_svg_line_cap_attr(style: &mut SvgStyle, value: Option<&str>) {
@@ -14861,6 +14958,7 @@ fn draw_svg_line(
         line_join: line.style.line_join,
         miter_limit: line.style.miter_limit,
         fill_rule: line.style.fill_rule,
+        paint_order: line.style.paint_order,
         font_weight: line.style.font_weight,
         font_slant: line.style.font_slant,
         font_family: line.style.font_family,
@@ -14877,22 +14975,56 @@ fn draw_svg_line(
         append_svg_line_path(body, line);
         append_svg_shadow_operator(body, style);
     }
+    if let Some(stroke) = style.stroke {
+        if style.paint_order != SvgPaintOrder::NORMAL
+            && (line.marker_start.is_some() || line.marker_end.is_some())
+        {
+            for layer in style.paint_order.layers {
+                match layer {
+                    SvgPaintLayer::Fill => {}
+                    SvgPaintLayer::Stroke => {
+                        append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
+                    }
+                    SvgPaintLayer::Markers => {
+                        append_svg_line_markers(
+                            body,
+                            line,
+                            markers,
+                            stroke,
+                            line.style.fill,
+                            style.stroke_width,
+                        );
+                    }
+                }
+            }
+        } else {
+            append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
+            append_svg_line_markers(
+                body,
+                line,
+                markers,
+                stroke,
+                line.style.fill,
+                style.stroke_width,
+            );
+        }
+    }
+    append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_line_stroke_layer(
+    body: &mut String,
+    line: &SvgLine,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    page_shadings: &mut Vec<PdfShading>,
+) -> bool {
     if !append_svg_line_gradient_stroke(body, line, style, gradients, page_shadings) {
         append_svg_style(body, style);
         append_svg_line_path(body, line);
         body.push_str("S\n");
     }
-    if let Some(stroke) = style.stroke {
-        append_svg_line_markers(
-            body,
-            line,
-            markers,
-            stroke,
-            line.style.fill,
-            style.stroke_width,
-        );
-    }
-    append_svg_transform_suffix(body, transformed);
+    true
 }
 
 fn append_svg_line_gradient_stroke(
@@ -15090,19 +15222,57 @@ fn draw_svg_poly(
         append_svg_poly_path(body, poly, closed);
         append_svg_shadow_operator(body, style);
     }
-    append_svg_painted_shape(
-        body,
-        style,
-        gradients,
-        patterns,
-        clip_paths,
-        page_shadings,
-        stroke_scale,
-        poly_bbox,
-        |body| append_svg_poly_path(body, poly, closed),
-    );
     if let Some(stroke) = style.stroke {
-        append_svg_poly_markers(body, poly, markers, stroke, style.fill, style.stroke_width);
+        let has_markers =
+            poly.marker_start.is_some() || poly.marker_mid.is_some() || poly.marker_end.is_some();
+        if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
+            append_svg_ordered_painted_shape_with_markers(
+                body,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_shadings,
+                stroke_scale,
+                poly_bbox,
+                &|body| append_svg_poly_path(body, poly, closed),
+                |body| {
+                    append_svg_poly_markers(
+                        body,
+                        poly,
+                        markers,
+                        stroke,
+                        style.fill,
+                        style.stroke_width,
+                    );
+                },
+            );
+        } else {
+            append_svg_painted_shape(
+                body,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_shadings,
+                stroke_scale,
+                poly_bbox,
+                |body| append_svg_poly_path(body, poly, closed),
+            );
+            append_svg_poly_markers(body, poly, markers, stroke, style.fill, style.stroke_width);
+        }
+    } else {
+        append_svg_painted_shape(
+            body,
+            style,
+            gradients,
+            patterns,
+            clip_paths,
+            page_shadings,
+            stroke_scale,
+            poly_bbox,
+            |body| append_svg_poly_path(body, poly, closed),
+        );
     }
     append_svg_transform_suffix(body, transformed);
 }
@@ -15234,62 +15404,111 @@ fn draw_svg_path(
         append_svg_path_ops(body, &path.ops);
         append_svg_shadow_operator(body, style);
     }
-    append_svg_painted_shape(
-        body,
-        style,
-        gradients,
-        patterns,
-        clip_paths,
-        page_shadings,
-        stroke_scale,
-        path_bbox,
-        |body| append_svg_path_ops(body, &path.ops),
-    );
     if let Some(stroke) = style.stroke {
-        let marker_paint = SvgMarkerPaint {
-            fill: style.fill,
-            stroke,
-            stroke_width: style.stroke_width,
-        };
-        if let Some(marker_ref) = path.marker_end
-            && let Some((tip, tail)) = svg_path_end_tangent(&path.ops)
-        {
-            append_svg_marker_or_arrowhead(
+        let has_markers =
+            path.marker_start.is_some() || path.marker_mid.is_some() || path.marker_end.is_some();
+        if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
+            append_svg_ordered_painted_shape_with_markers(
                 body,
-                marker_ref,
-                markers,
-                SvgMarkerPlacement::End,
-                tip,
-                tail,
-                marker_paint,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_shadings,
+                stroke_scale,
+                path_bbox,
+                &|body| append_svg_path_ops(body, &path.ops),
+                |body| {
+                    append_svg_path_markers(
+                        body,
+                        path,
+                        markers,
+                        stroke,
+                        style.fill,
+                        style.stroke_width,
+                    );
+                },
             );
-        }
-        if let Some(marker_ref) = path.marker_mid {
-            append_svg_path_mid_markers(
+        } else {
+            append_svg_painted_shape(
                 body,
-                &path.ops,
-                marker_ref,
-                markers,
-                stroke,
-                style.fill,
-                style.stroke_width,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_shadings,
+                stroke_scale,
+                path_bbox,
+                |body| append_svg_path_ops(body, &path.ops),
             );
+            append_svg_path_markers(body, path, markers, stroke, style.fill, style.stroke_width);
         }
-        if let Some(marker_ref) = path.marker_start
-            && let Some((tip, tail)) = svg_path_start_tangent(&path.ops)
-        {
-            append_svg_marker_or_arrowhead(
-                body,
-                marker_ref,
-                markers,
-                SvgMarkerPlacement::Start,
-                tip,
-                tail,
-                marker_paint,
-            );
-        }
+    } else {
+        append_svg_painted_shape(
+            body,
+            style,
+            gradients,
+            patterns,
+            clip_paths,
+            page_shadings,
+            stroke_scale,
+            path_bbox,
+            |body| append_svg_path_ops(body, &path.ops),
+        );
     }
     append_svg_transform_suffix(body, transformed);
+}
+
+fn append_svg_path_markers(
+    body: &mut String,
+    path: &SvgPath,
+    markers: &[SvgMarker],
+    stroke: (f32, f32, f32),
+    fill: Option<(f32, f32, f32)>,
+    stroke_width: f32,
+) {
+    let marker_paint = SvgMarkerPaint {
+        fill,
+        stroke,
+        stroke_width,
+    };
+    if let Some(marker_ref) = path.marker_end
+        && let Some((tip, tail)) = svg_path_end_tangent(&path.ops)
+    {
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::End,
+            tip,
+            tail,
+            marker_paint,
+        );
+    }
+    if let Some(marker_ref) = path.marker_mid {
+        append_svg_path_mid_markers(
+            body,
+            &path.ops,
+            marker_ref,
+            markers,
+            stroke,
+            fill,
+            stroke_width,
+        );
+    }
+    if let Some(marker_ref) = path.marker_start
+        && let Some((tip, tail)) = svg_path_start_tangent(&path.ops)
+    {
+        append_svg_marker_or_arrowhead(
+            body,
+            marker_ref,
+            markers,
+            SvgMarkerPlacement::Start,
+            tip,
+            tail,
+            marker_paint,
+        );
+    }
 }
 
 fn append_svg_path_mid_markers(
@@ -15689,6 +15908,17 @@ fn append_svg_style(body: &mut String, style: SvgStyle) {
     }
 }
 
+fn append_svg_fill_style(body: &mut String, style: SvgStyle) {
+    if let Some((r, g, b)) = style.fill {
+        body.push_str(&format!(
+            "{} {} {} rg ",
+            pdf_fixed3(r),
+            pdf_fixed3(g),
+            pdf_fixed3(b)
+        ));
+    }
+}
+
 fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
     body.push_str(&format!(
         "{} w {} J {} j ",
@@ -15710,6 +15940,13 @@ fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
             body.push_str(&pdf_num(style.dash.values[idx]));
         }
         body.push_str(&format!("] {} d ", pdf_num(style.dash.offset)));
+    }
+}
+
+fn append_svg_fill_operator(body: &mut String, style: SvgStyle) {
+    match style.fill_rule {
+        SvgFillRule::NonZero => body.push_str("f\n"),
+        SvgFillRule::EvenOdd => body.push_str("f*\n"),
     }
 }
 
@@ -15742,6 +15979,22 @@ fn append_svg_painted_shape<F>(
 ) where
     F: Fn(&mut String),
 {
+    if style.paint_order != SvgPaintOrder::NORMAL && style.fill.is_some() && style.stroke.is_some()
+    {
+        append_svg_ordered_painted_shape(
+            body,
+            style,
+            gradients,
+            patterns,
+            clip_paths,
+            page_shadings,
+            stroke_scale,
+            bbox,
+            &append_path,
+        );
+        return;
+    }
+
     if append_svg_pattern_fill(
         body,
         style,
@@ -15789,6 +16042,145 @@ fn append_svg_painted_shape<F>(
     append_svg_style(body, style);
     append_path(body);
     append_svg_paint_operator(body, style);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_ordered_painted_shape<F>(
+    body: &mut String,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_shadings: &mut Vec<PdfShading>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    append_path: &F,
+) where
+    F: Fn(&mut String),
+{
+    append_svg_ordered_painted_shape_with_markers(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        bbox,
+        append_path,
+        |_| {},
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_ordered_painted_shape_with_markers<F, M>(
+    body: &mut String,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_shadings: &mut Vec<PdfShading>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    append_path: &F,
+    append_markers: M,
+) where
+    F: Fn(&mut String),
+    M: Fn(&mut String),
+{
+    for layer in style.paint_order.layers {
+        match layer {
+            SvgPaintLayer::Fill => {
+                append_svg_fill_layer(
+                    body,
+                    style,
+                    gradients,
+                    patterns,
+                    clip_paths,
+                    page_shadings,
+                    stroke_scale,
+                    bbox,
+                    append_path,
+                );
+            }
+            SvgPaintLayer::Stroke => {
+                append_svg_stroke_layer(body, style, append_path);
+            }
+            SvgPaintLayer::Markers => append_markers(body),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_fill_layer<F>(
+    body: &mut String,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_shadings: &mut Vec<PdfShading>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    append_path: &F,
+) -> bool
+where
+    F: Fn(&mut String),
+{
+    if style.fill.is_none() || svg_effective_fill_opacity(style) <= 0.001 {
+        return false;
+    }
+    if append_svg_pattern_fill(
+        body,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        page_shadings,
+        stroke_scale,
+        bbox,
+        append_path,
+    ) {
+        return true;
+    }
+    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox)
+        && pdf_shadings_fit(page_shadings, &shadings)
+    {
+        let names = shadings
+            .into_iter()
+            .filter_map(|shading| register_pdf_shading(page_shadings, shading))
+            .collect::<Vec<_>>();
+        body.push_str("q ");
+        append_path(body);
+        match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
+        }
+        for name in names {
+            body.push_str(&format!("/{name} sh\n"));
+        }
+        body.push_str("Q\n");
+        return true;
+    }
+    append_svg_fill_style(body, style);
+    append_path(body);
+    append_svg_fill_operator(body, style);
+    true
+}
+
+fn append_svg_stroke_layer<F>(body: &mut String, style: SvgStyle, append_path: &F) -> bool
+where
+    F: Fn(&mut String),
+{
+    if style.stroke.is_none()
+        || style.stroke_width <= 0.001
+        || svg_effective_stroke_opacity(style) <= 0.001
+    {
+        return false;
+    }
+    append_svg_stroke_style(body, style);
+    append_path(body);
+    body.push_str("S\n");
+    true
 }
 
 #[allow(clippy::too_many_arguments)]

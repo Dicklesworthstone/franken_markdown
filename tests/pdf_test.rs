@@ -2480,6 +2480,92 @@ fn pdf_svg_evenodd_fill_rule_uses_pdf_even_odd_paint_operators() {
 }
 
 #[test]
+fn pdf_svg_paint_order_reorders_fill_and_stroke_layers() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 44">
+  <style>
+    :root { --edge-first: stroke fill; }
+    .css { paint-order: stroke fill markers; }
+    .var { paint-order: var(--edge-first); }
+  </style>
+  <path class="css" d="M2 2 H28 V18 H2 Z" fill="#0000ff" stroke="#ff0000" stroke-width="3"/>
+  <path d="M32 2 H58 V18 H32 Z" fill="#00ff00" stroke="#000000" stroke-width="2" paint-order="stroke"/>
+  <path class="var" d="M62 2 H88 V18 H62 Z" fill="#ff00ff" stroke="#123456" stroke-width="1"/>
+  <path d="M2 24 H28 V40 H2 Z" fill="#00ffff" stroke="#000000" stroke-width="2" paint-order="normal"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("paint-order.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint order](paint-order.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("1.000 0.000 0.000 RG 3 w 0 J 0 j 4 M 2 2 m 28 2 l 28 18 l 2 18 l h S\n0.000 0.000 1.000 rg 2 2 m 28 2 l 28 18 l 2 18 l h f\n"),
+        "CSS paint-order: stroke fill should stroke before filling the same vector path: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 32 2 m 58 2 l 58 18 l 32 18 l h S\n0.000 1.000 0.000 rg 32 2 m 58 2 l 58 18 l 32 18 l h f\n"),
+        "presentation paint-order=stroke should append omitted fill/markers after the explicit stroke layer: {text}"
+    );
+    assert!(
+        text.contains("0.071 0.204 0.337 RG 1 w 0 J 0 j 4 M 62 2 m 88 2 l 88 18 l 62 18 l h S\n1.000 0.000 1.000 rg 62 2 m 88 2 l 88 18 l 62 18 l h f\n"),
+        "paint-order should resolve CSS variables before applying the ordered paint layers: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 1.000 rg 0.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 24 m 28 24 l 28 40 l 2 40 l h B\n"),
+        "paint-order=normal should keep the compact combined fill+stroke operator: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_paint_order_reorders_marker_layers() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">
+  <defs>
+    <marker id="green-tip" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L6 3 L0 6 Z" fill="#00ff00"/>
+    </marker>
+    <marker id="magenta-tip" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L6 3 L0 6 Z" fill="#ff00ff"/>
+    </marker>
+  </defs>
+  <line x1="4" y1="6" x2="36" y2="6" stroke="#ff0000" stroke-width="2" marker-end="url(#green-tip)" paint-order="markers stroke"/>
+  <line x1="4" y1="18" x2="36" y2="18" stroke="#0000ff" stroke-width="2" marker-end="url(#magenta-tip)" paint-order="stroke markers"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("paint-marker-order.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint marker order](paint-marker-order.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let green_marker = text
+        .find("0.000 1.000 0.000 rg")
+        .unwrap_or_else(|| panic!("green marker fill not found: {text}"));
+    let red_stroke = text
+        .find("1.000 0.000 0.000 RG 2 w")
+        .unwrap_or_else(|| panic!("red line stroke not found: {text}"));
+    assert!(
+        green_marker < red_stroke,
+        "paint-order=markers stroke should paint the marker before the line stroke: {text}"
+    );
+
+    let blue_stroke = text
+        .find("0.000 0.000 1.000 RG 2 w")
+        .unwrap_or_else(|| panic!("blue line stroke not found: {text}"));
+    let magenta_marker = text
+        .find("1.000 0.000 1.000 rg")
+        .unwrap_or_else(|| panic!("magenta marker fill not found: {text}"));
+    assert!(
+        blue_stroke < magenta_marker,
+        "paint-order=stroke markers should paint the marker after the line stroke: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_gradient_paints_use_native_linear_shading_and_fallback_colors() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">

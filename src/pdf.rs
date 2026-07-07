@@ -13211,20 +13211,16 @@ fn serialize(
             text_bytes += seg.text.len();
             chars.extend(seg.text.chars());
             let slot_cache = shaped_cache.entry(slot).or_default();
-            if slot_cache.contains_key(seg.text.as_str()) {
+            if let Some(shaped) = slot_cache.get(seg.text.as_str()) {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += seg.text.len();
+                collect_shaped_run_glyphs(shaped, &mut shaped_glyphs, &mut lig_src_uni);
             } else {
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += seg.text.len();
-                slot_cache.insert(seg.text.clone(), shape_run(source, lig, &seg.text));
-            }
-            let Some(shaped) = slot_cache.get(seg.text.as_str()) else {
-                continue;
-            };
-            shaped_glyphs.extend(shaped.glyphs.iter().copied());
-            for (g, s) in &shaped.ligatures {
-                lig_src_uni.entry(*g).or_insert_with(|| s.clone());
+                let shaped = shape_run(source, lig, &seg.text);
+                collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
+                slot_cache.insert(seg.text.clone(), shaped);
             }
         }
         for text in &slot_refs.svg_texts {
@@ -13232,20 +13228,16 @@ fn serialize(
             text_bytes += text.text.len();
             chars.extend(text.text.chars());
             let slot_cache = shaped_cache.entry(slot).or_default();
-            if slot_cache.contains_key(text.text.as_str()) {
+            if let Some(shaped) = slot_cache.get(text.text.as_str()) {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += text.text.len();
+                collect_shaped_run_glyphs(shaped, &mut shaped_glyphs, &mut lig_src_uni);
             } else {
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += text.text.len();
-                slot_cache.insert(text.text.clone(), shape_run(source, lig, &text.text));
-            }
-            let Some(shaped) = slot_cache.get(text.text.as_str()) else {
-                continue;
-            };
-            shaped_glyphs.extend(shaped.glyphs.iter().copied());
-            for (g, s) in &shaped.ligatures {
-                lig_src_uni.entry(*g).or_insert_with(|| s.clone());
+                let shaped = shape_run(source, lig, &text.text);
+                collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
+                slot_cache.insert(text.text.clone(), shaped);
             }
         }
         profiler.record_since(
@@ -19428,6 +19420,17 @@ fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
     ShapedRun {
         glyphs: shaped,
         ligatures: lig_uni,
+    }
+}
+
+fn collect_shaped_run_glyphs(
+    shaped: &ShapedRun,
+    shaped_glyphs: &mut BTreeSet<u16>,
+    lig_src_uni: &mut BTreeMap<u16, String>,
+) {
+    shaped_glyphs.extend(shaped.glyphs.iter().copied());
+    for (g, s) in &shaped.ligatures {
+        lig_src_uni.entry(*g).or_insert_with(|| s.clone());
     }
 }
 

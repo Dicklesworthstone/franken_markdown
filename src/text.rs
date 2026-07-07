@@ -601,7 +601,10 @@ impl Font {
     #[must_use]
     pub fn subset(&self, keep: &[char]) -> Option<Vec<u8>> {
         let seed: Vec<u16> = keep.iter().map(|&c| self.glyph_index(c)).collect();
-        self.subset_core(&seed, keep).map(|(bytes, _)| bytes)
+        // Web-embedding path: include `OS/2` (see `subset_core`) so browser
+        // OpenType sanitizers (Chromium's OTS) accept the font instead of
+        // silently falling back to system fonts.
+        self.subset_core(&seed, keep, true).map(|(bytes, _)| bytes)
     }
 
     /// Subset to an explicit glyph set (the closure still pulls in composite
@@ -617,13 +620,16 @@ impl Font {
         glyphs: &[u16],
         cmap_chars: &[char],
     ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
-        self.subset_core(glyphs, cmap_chars)
+        // PDF font programs do not require `OS/2`; leaving it out keeps the
+        // embedded font streams (and existing golden PDF bytes) unchanged.
+        self.subset_core(glyphs, cmap_chars, false)
     }
 
     fn subset_core(
         &self,
         seed_glyphs: &[u16],
         cmap_chars: &[char],
+        include_os2: bool,
     ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
         // --- 1. Glyph closure ------------------------------------------------
         // Require TrueType outlines; CFF/`OTTO` fonts cannot be subset here.
@@ -731,6 +737,20 @@ impl Font {
         post.extend_from_slice(&0u32.to_be_bytes()); // minMemType1
         post.extend_from_slice(&0u32.to_be_bytes()); // maxMemType1
 
+        // OS/2: copied verbatim from the source face when requested and
+        // present. Browsers' OpenType sanitizer (Chromium's OTS) rejects web
+        // fonts without an `OS/2` table ("OS/2: missing required table"), so
+        // the HTML embedding path opts in. The aggregate fields (average
+        // width, Unicode ranges, win metrics) remain those of the full face,
+        // which is valid if conservative for a subset. A source face without
+        // `OS/2` subsets as before and is rejected by OTS either way.
+        let os2: Option<Vec<u8>> = if include_os2 {
+            find_table_full(&self.data, b"OS/2")
+                .and_then(|(o, l)| Some(self.data.get(o..off(o, l)?)?.to_vec()))
+        } else {
+            None
+        };
+
         // --- 5. Assemble the sfnt -------------------------------------------
         let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
             (b"head", head),
@@ -743,6 +763,9 @@ impl Font {
             (b"name", name),
             (b"post", post),
         ];
+        if let Some(os2) = os2 {
+            tables.push((b"OS/2", os2));
+        }
         tables.sort_by(|a, b| a.0.cmp(b.0)); // ascending by tag
 
         let num_tables = tables.len();
@@ -1854,7 +1877,9 @@ mod dos_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod subset_degradation_tests {
-    use super::{Font, MISSING_GLYPH_REMAP, be_i16, be_u16, strip_simple_glyph_instructions};
+    use super::{
+        Font, MISSING_GLYPH_REMAP, be_i16, be_u16, find_table_full, strip_simple_glyph_instructions,
+    };
 
     fn cm_regular() -> Font {
         let bytes = std::fs::read(concat!(
@@ -1963,6 +1988,39 @@ mod subset_degradation_tests {
         let subset = Font::parse(bytes).expect("subset re-parses");
         let new_gid = remap[&old_gid];
         assert_eq!(subset.left_side_bearing(new_gid), old_lsb);
+    }
+
+    #[test]
+    fn html_subset_carries_verbatim_os2_while_pdf_subset_stays_lean() {
+        // Chromium's OpenType sanitizer (OTS) rejects web fonts without an
+        // `OS/2` table ("OS/2: missing required table"), silently downgrading
+        // HTML previews to system fonts. The HTML path (`subset`) must carry
+        // the source table verbatim; the PDF path (`subset_glyphs`) must keep
+        // omitting it so embedded font streams and golden PDFs stay identical.
+        for font in all_faces() {
+            let (src_off, src_len) = find_table_full(&font.data, b"OS/2")
+                .expect("every bundled face carries an OS/2 table");
+            let src_os2 = font.data[src_off..src_off + src_len].to_vec();
+
+            let html_bytes = font.subset(&['A', 'b']).expect("html subset");
+            let html_font = Font::parse(html_bytes).expect("html subset re-parses");
+            let (o, l) = find_table_full(&html_font.data, b"OS/2")
+                .expect("html subset must keep OS/2 for browser sanitizers");
+            assert_eq!(
+                &html_font.data[o..o + l],
+                &src_os2[..],
+                "OS/2 must be copied verbatim"
+            );
+
+            let gid = font.glyph_index('A');
+            assert_ne!(gid, 0, "bundled faces must map 'A'");
+            let (pdf_bytes, _) = font.subset_glyphs(&[gid], &['A']).expect("pdf subset");
+            assert!(
+                find_table_full(&pdf_bytes, b"OS/2").is_none(),
+                "pdf subset must not grow an OS/2 table (golden bytes)"
+            );
+            assert!(Font::parse(pdf_bytes).is_ok());
+        }
     }
 
     #[test]

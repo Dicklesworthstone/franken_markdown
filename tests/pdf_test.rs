@@ -2566,6 +2566,54 @@ fn pdf_svg_paint_order_reorders_marker_layers() {
 }
 
 #[test]
+fn pdf_svg_paint_order_applies_inside_marker_child_shapes() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16">
+  <defs>
+    <marker id="ordered" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#ff0000" stroke="#0000ff" stroke-width="1.5" paint-order="stroke fill"/>
+    </marker>
+    <marker id="normal" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#00ff00" stroke="#000000" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <line x1="4" y1="5" x2="24" y2="5" stroke="#64748b" stroke-width="1" marker-end="url(#ordered)"/>
+  <line x1="4" y1="12" x2="24" y2="12" stroke="#64748b" stroke-width="1" marker-end="url(#normal)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "marker-child-paint-order.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Marker child paint order](marker-child-paint-order.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    let marker_stroke = text
+        .find("0.000 0.000 1.000 RG 1.5 w 0 J 0 j 4 M 0 0 m 8 4 l 0 8 l h S\n")
+        .unwrap_or_else(|| panic!("ordered marker child stroke layer not found: {text}"));
+    let marker_fill = text
+        .find("1.000 0.000 0.000 rg 0 0 m 8 4 l 0 8 l h f\n")
+        .unwrap_or_else(|| panic!("ordered marker child fill layer not found: {text}"));
+    assert!(
+        marker_stroke < marker_fill,
+        "marker child paint-order=stroke fill should stroke before filling the marker path: {text}"
+    );
+    assert!(
+        text.contains(
+            "0.000 1.000 0.000 rg 0.000 0.000 0.000 RG 1.5 w 0 J 0 j 4 M 0 0 m 8 4 l 0 8 l h B\n"
+        ),
+        "marker children without custom paint-order should keep the compact fill+stroke operator: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_gradient_paints_use_native_linear_shading_and_fallback_colors() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">

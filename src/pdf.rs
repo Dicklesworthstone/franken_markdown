@@ -16988,13 +16988,37 @@ fn append_svg_marker(
             append_svg_path_ops(body, &shape.ops);
             append_svg_shadow_operator(body, shape_style);
         }
-        append_svg_style(body, shape_style);
-        append_svg_path_ops(body, &shape.ops);
-        append_svg_paint_operator(body, shape_style);
+        append_svg_marker_shape_paint(body, shape_style, &shape.ops);
         append_svg_transform_suffix(body, transformed);
     }
     body.push_str("Q\n");
     true
+}
+
+fn append_svg_marker_shape_paint(body: &mut String, style: SvgStyle, ops: &[SvgPathOp]) {
+    if style.paint_order != SvgPaintOrder::NORMAL && style.fill.is_some() && style.stroke.is_some()
+    {
+        for layer in style.paint_order.layers {
+            match layer {
+                SvgPaintLayer::Fill => {
+                    if style.fill.is_some() && svg_effective_fill_opacity(style) > 0.001 {
+                        append_svg_fill_style(body, style);
+                        append_svg_path_ops(body, ops);
+                        append_svg_fill_operator(body, style);
+                    }
+                }
+                SvgPaintLayer::Stroke => {
+                    append_svg_stroke_layer(body, style, &|body| append_svg_path_ops(body, ops));
+                }
+                SvgPaintLayer::Markers => {}
+            }
+        }
+        return;
+    }
+
+    append_svg_style(body, style);
+    append_svg_path_ops(body, ops);
+    append_svg_paint_operator(body, style);
 }
 
 fn svg_style_with_marker_context(mut style: SvgStyle, paint: SvgMarkerPaint) -> SvgStyle {

@@ -25,12 +25,12 @@ cargo install franken_markdown
 > release ships checksum-verified `fmd` archives for Linux x86_64, macOS Intel,
 > macOS Apple Silicon, and Windows x86_64, with smoke tests in the release
 > workflow. `main` documents the current renderer: shared HTML/PDF syntax
-> highlighting, measured PDF table allocation, fitted ASCII and Mermaid diagrams,
-> dependency-free vector SVG/frankenmermaid drawing in PDF, staged native writes,
-> optional Asupersync batch rendering, browser/WASM package sources, and a long
-> set of measured scalar optimizations. The WASM package is build-checked and
-> publish-ready, but not yet on npm. SIMD and deeper pagination remain roadmap
-> items until they have proof.
+> highlighting, measured PDF table allocation, fitted ASCII diagrams,
+> frankenmermaid-generated SVG diagrams drawn as PDF vectors, staged native
+> writes, optional Asupersync batch rendering, browser/WASM package sources, and
+> a long set of measured scalar optimizations. The WASM package is build-checked
+> and publish-ready, but not yet on npm. SIMD and deeper pagination remain
+> roadmap items until they have proof.
 
 ## Contents
 
@@ -91,7 +91,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
-| Code blocks | HTML and PDF share the clean-room highlighter. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
+| Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, and Markdown. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input PDF renders auto-load relative local PNG/SVG destinations. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
@@ -218,12 +218,14 @@ Performance work starts with `release-perf` profiles, changes one lever at a
 time, and lands only when golden output plus targeted tests keep behavior
 stable.
 
-CPU-specific optimization in this project starts with layout, memory traffic,
-and branch behavior rather than intrinsics. M-series, Intel, and AMD cores all
-benefit when the renderer keeps hot data compact, scans bytes linearly, writes
-PDF buffers append-only, and avoids allocator churn. Published archives stay
-portable. Local source builds can opt into host-specific codegen when portability
-is not required.
+CPU-specific optimization in this project starts with target-native builds,
+layout, memory traffic, and branch behavior rather than intrinsics. M-series,
+Intel, and AMD cores all benefit when the renderer keeps hot data compact, scans
+bytes linearly, writes PDF buffers append-only, and avoids allocator churn.
+Published archives are specialized by target family (`aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
+`x86_64-pc-windows-msvc`) while staying portable within that family. Local source
+builds can opt into host-specific codegen when portability is not required.
 
 ### Optimizations Already In The Renderer
 
@@ -246,22 +248,23 @@ is not required.
 
 | Choice | What it means |
 |---|---|
-| Native ARM64 release archive | The `aarch64-apple-darwin` archive is built and smoke-tested on macOS Apple Silicon, so M-series Macs run `fmd` natively without Rosetta |
+| Native ARM64 release archive | The `aarch64-apple-darwin` archive is built and smoke-tested on macOS Apple Silicon, so M-series Macs run `fmd` natively without Rosetta or a translated x86_64 path |
 | Cache-friendly scalar loops | Parser gates, highlighter dispatch, font bitsets, shape caches, compression tables, and SVG/PDF appenders keep work in compact arrays and small buffers |
 | Append-style PDF writing | Page streams, object records, text operators, and repeated tokens write into reusable byte buffers instead of allocating many short strings |
 | Laptop-aware batch mode | `fmd batch --batch-mode interactive` keeps CPU headroom available for foreground work; `throughput` can use all available workers when that is what you want |
 | Portable public flags | Release archives do not require `RUSTFLAGS="-C target-cpu=native"`, so one Apple Silicon binary remains portable across ordinary Apple Silicon Macs |
 | Future NEON boundary | AArch64 NEON is reserved for the documented byte-scanner island after same-host Apple Silicon proof shows p95 improvement with byte-identical output |
 
-The current Apple Silicon gains come from fewer allocations, smaller hot loops,
-linear byte scanners, fixed-size tables, and worker policies that avoid taking
-over the whole laptop. NEON is not claimed as shipped.
+The current Apple Silicon gains come from native ARM64 codegen, fewer
+allocations, smaller hot loops, linear byte scanners, fixed-size tables, and
+worker policies that avoid taking over the whole laptop. NEON is not claimed as
+shipped.
 
 ### Intel And AMD
 
 | Choice | What it means |
 |---|---|
-| Separate x86_64 release archives | The release workflow targets `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc`, each with a native smoke path |
+| Separate x86_64 release archives | The release workflow targets `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc`, each with a native smoke path instead of reusing the Apple Silicon artifact |
 | Portable scalar default | Shipped binaries do not assume AVX2, AVX-512, BMI, or build-host-only instructions, so they work across a broad Intel/AMD fleet |
 | Branch-light scans | Parser gates, direct highlighter dispatch, render-local caches, append-style PDF writing, and precomputed compression tables reduce mispredicts and allocator churn |
 | Local native builds | Personal builds can use `RUSTFLAGS="-C target-cpu=native"` when the target machine is known and portability does not matter |
@@ -269,8 +272,9 @@ over the whole laptop. NEON is not claimed as shipped.
 | Runtime-gated SIMD only after proof | A future AVX2 path must use `std::is_x86_feature_detected!`, keep scalar fallback, and prove byte-for-byte parity plus same-host speedup |
 
 The Intel/AMD path is tuned for the broad x86_64 fleet first. It avoids assuming
-AVX2 or AVX-512 while still benefiting from branch-light scans, direct dispatch
-tables, append-style serializers, and cache-local compression state.
+AVX2 or AVX-512 while still benefiting from native x86_64 codegen,
+branch-light scans, direct dispatch tables, append-style serializers, and
+cache-local compression state.
 
 ### Build Profiles And Local CPU Tuning
 

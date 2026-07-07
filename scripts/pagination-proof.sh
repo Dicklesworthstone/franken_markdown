@@ -9,7 +9,10 @@
 # Usage: scripts/pagination-proof.sh [run-id]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 RUN_ID="${1:-local}"
+fmd_validate_run_id "pagination-proof" "$RUN_ID"
 ART="tests/artifacts/pagination/${RUN_ID}"
 mkdir -p "$ART"
 MAP="${ART}/page-map.txt"

@@ -33,8 +33,7 @@ e2e_expect_file_contains "${WORK}/f.html" "<main"
 e2e_expect_file_contains "${WORK}/f.html" "Heading"
 e2e_expect_file_bytes_ge "${WORK}/f.html" 2000
 
-E2E_STDIN="$DOC"
-e2e_run "stdin x html x sans x omitted (stdout)" -- "$E2E_BIN" - --to html
+E2E_STDIN="$DOC" e2e_run "stdin x html x sans x omitted (stdout)" -- "$E2E_BIN" - --to html
 e2e_expect_exit 0
 e2e_expect_stdout_contains "<main"
 e2e_expect_stdout_contains "Heading"
@@ -68,8 +67,7 @@ e2e_expect_file_bytes_ge "${WORK}/f.pdf" 1000
 e2e_run "pdf magic + trailer" -- sh -c "head -c5 '${WORK}/f.pdf' | grep -q '%PDF-' && tail -c 8 '${WORK}/f.pdf' | grep -q '%%EOF'"
 e2e_expect_exit 0
 
-E2E_STDIN="$DOC"
-e2e_run "stdin x pdf x sans x --out" -- env SOURCE_DATE_EPOCH="$EPOCH" "$E2E_BIN" - --to pdf --out "${WORK}/stdin.pdf"
+E2E_STDIN="$DOC" e2e_run "stdin x pdf x sans x --out" -- env SOURCE_DATE_EPOCH="$EPOCH" "$E2E_BIN" - --to pdf --out "${WORK}/stdin.pdf"
 e2e_expect_exit 0
 e2e_run "stdin pdf magic" -- sh -c "head -c5 '${WORK}/stdin.pdf' | grep -q '%PDF-'"
 e2e_expect_exit 0
@@ -92,11 +90,9 @@ e2e_run "both --out - is refused" -- "$E2E_BIN" "$DOC" --to both --out -
 e2e_expect_exit 64
 
 # Omitted --out for pdf derives the path from the input stem (doc.md -> doc.pdf).
-E2E_RUN_CWD="$WORK"
-e2e_run "pdf omitted --out derives doc.pdf" -- env SOURCE_DATE_EPOCH="$EPOCH" "$E2E_BIN" doc.md --to pdf
+E2E_RUN_CWD="$WORK" e2e_run "pdf omitted --out derives doc.pdf" -- env SOURCE_DATE_EPOCH="$EPOCH" "$E2E_BIN" doc.md --to pdf
 e2e_expect_exit 0
 e2e_expect_file "${WORK}/doc.pdf"
-E2E_RUN_CWD="$E2E_REPO_ROOT"
 
 # --- determinism: identical inputs yield byte-identical outputs -------------
 e2e_run "html determinism render A" -- "$E2E_BIN" "$DOC" --to html --out "${WORK}/det-a.html"

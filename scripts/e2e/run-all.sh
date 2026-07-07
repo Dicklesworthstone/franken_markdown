@@ -10,12 +10,27 @@
 # Usage: scripts/e2e/run-all.sh [run-id]
 # Exit:  0 all suites ok · 66 env/build · 70 one or more suites failed.
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit
 REPO_ROOT="$PWD"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 RUN_ID="${1:-run-all}"
+
+# Discover suites before build/cleanup so every derived artifact id can be
+# validated before any directory is removed or expensive work starts.
+SUITES=(cli-surface render-matrix error-paths)
+[ -f scripts/e2e/parity.sh ] && [ "${E2E_RUN_PARITY:-0}" = "1" ] && SUITES+=(parity)
+[ -f scripts/e2e/installer.sh ] && [ "${E2E_RUN_INSTALLER:-0}" = "1" ] && SUITES+=(installer)
+
+fmd_validate_run_id "e2e run-all" "$RUN_ID" "base run-id"
+fmd_validate_run_id "e2e run-all" "${RUN_ID}-all" "aggregate run-id"
+for s in "${SUITES[@]}"; do
+  fmd_validate_run_id "e2e run-all" "${RUN_ID}-$s" "suite run-id"
+done
+
 ART="tests/artifacts/e2e/${RUN_ID}-all"
-rm -rf "$ART"; mkdir -p "$ART"
+rm -rf -- "$ART"; mkdir -p "$ART"
 LOG="$ART/run.log"; : >"$LOG"
 log() { printf '%s\n' "$*" | tee -a "$LOG"; }
 
@@ -28,13 +43,6 @@ if ! ( CARGO_TARGET_DIR="$FMD_TARGET_DIR" cargo build --release --quiet --bin fm
 fi
 export FMD_BIN="$FMD_TARGET_DIR/release/fmd"
 [ -x "$FMD_BIN" ] || { log "run-all: fmd binary missing at $FMD_BIN"; exit 66; }
-
-# Discover suites. The parity/installer suites are heavy (wasm build / from-source
-# build), so they are opt-in: set E2E_RUN_PARITY=1 / E2E_RUN_INSTALLER=1 to fold
-# them in. Run them directly any time (scripts/e2e/installer.sh).
-SUITES=(cli-surface render-matrix error-paths)
-[ -f scripts/e2e/parity.sh ] && [ "${E2E_RUN_PARITY:-0}" = "1" ] && SUITES+=(parity)
-[ -f scripts/e2e/installer.sh ] && [ "${E2E_RUN_INSTALLER:-0}" = "1" ] && SUITES+=(installer)
 
 fail=0
 SUMMARIES=()

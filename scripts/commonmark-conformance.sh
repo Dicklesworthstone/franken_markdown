@@ -22,8 +22,10 @@
 #   scripts/commonmark-conformance.sh [run-id]        # run + enforce floor
 #   scripts/commonmark-conformance.sh --update-floor  # set floor to current pass count
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 UPDATE_FLOOR=0
 RUN_ID="local"
@@ -32,6 +34,7 @@ case "${1:-}" in
   "") ;;
   *) RUN_ID="$1" ;;
 esac
+fmd_validate_run_id "commonmark-conformance" "$RUN_ID"
 
 SPEC="tests/fixtures/commonmark/spec.json"
 FLOOR_FILE="tests/fixtures/commonmark/conformance-floor.txt"

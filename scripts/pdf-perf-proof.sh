@@ -54,14 +54,6 @@ json_escape() {
   printf '%s' "$s"
 }
 
-validate_run_id() {
-  case "$1" in
-    ''|'.'|'..'|[!A-Za-z0-9]*|*[^A-Za-z0-9._-]*)
-      fail "--run-id must start with an ASCII letter/digit and contain only ASCII letters, digits, dot, underscore, or dash"
-      ;;
-  esac
-}
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --iters)
@@ -99,11 +91,13 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 if [ -z "$RUN_ID" ]; then
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-pdf-proof-$(git rev-parse --short HEAD)"
 fi
-validate_run_id "$RUN_ID"
+fmd_validate_run_id "pdf-perf-proof" "$RUN_ID"
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"
@@ -313,7 +307,7 @@ EOF
 
   : > "$INPUT_DIR/table-list-code-heavy.md"
   for i in $(seq 1 120); do
-    cat >> "$INPUT_DIR/table-list-code-heavy.md" <<EOF
+    cat >> "$INPUT_DIR/table-list-code-heavy.md" <<TABLE_LIST_CODE_MD
 
 ### Workstream $i
 
@@ -331,7 +325,7 @@ EOF
 alpha beta gamma delta epsilon $i
 EOF marker stays literal in code
 \`\`\`
-EOF
+TABLE_LIST_CODE_MD
   done
 
   cat > "$INPUT_DIR/custom-options.md" <<'EOF'
@@ -371,7 +365,7 @@ sum_values() {
 }
 
 pdf_object_count() {
-  LC_ALL=C grep -aE '^[0-9]+ 0 obj$' "$1" | wc -l | tr -d ' '
+  LC_ALL=C grep -aEc '^[0-9]+ 0 obj$' "$1"
 }
 
 pdf_font_subset_bytes() {
@@ -527,6 +521,7 @@ append_jsonl "{\"type\":\"hypothesis_evaluated\",\"hypothesis\":\"pdf_e2e_proof_
 {
   echo "| Scenario | p50 | p95 | p99 | max | output bytes | objects | font subset bytes | peak RSS KB |"
   echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+  # shellcheck disable=SC2016 # sed backreferences are intentionally literal here.
   LC_ALL=C grep '"type":"perf_sample"' "$ARTIFACT_DIR/inprocess.jsonl" |
     sed -E 's/.*"scenario":"([^"]+)".*"output_bytes":([0-9]+).*"p50_ns":([0-9]+).*"p95_ns":([0-9]+).*"p99_ns":([0-9]+).*"max_ns":([0-9]+).*"peak_rss_kb":([0-9]+).*"pdf_object_count":([0-9]+).*"font_subset_bytes":([0-9]+).*/| `\1` | \3 ns | \4 ns | \5 ns | \6 ns | \2 | \8 | \9 | \7 |/'
 } > "$ARTIFACT_DIR/BASELINE.md"

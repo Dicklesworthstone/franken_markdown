@@ -16,7 +16,9 @@
 #   scripts/check-claim-discipline.sh [--readme PATH] [run-id]
 #   scripts/check-claim-discipline.sh --self-test
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 README="README.md"
 RUN_ID="local"
@@ -28,6 +30,7 @@ while [ $# -gt 0 ]; do
     *) RUN_ID="$1"; shift ;;
   esac
 done
+fmd_validate_run_id "check-claim-discipline" "$RUN_ID"
 
 REGISTRY="scripts/claims.tsv"
 ART="tests/artifacts/claims/${RUN_ID}"
@@ -111,6 +114,7 @@ if [ "$SELF_TEST" -eq 1 ]; then
   echo "-- (2) overclaimed README must FAIL --"
   FAKE="${ART}/overclaimed-README.md"
   cat README.md >"$FAKE"
+  # shellcheck disable=SC2016 # The Markdown code fence is intentional literal fixture text.
   printf '\n## Install\n\n```\nnpm install @franken-suite/franken-markdown\n```\n' >>"$FAKE"
   if run_gate "$FAKE" "${ART}/self-fake.txt"; then
     echo "  overclaimed README: UNEXPECTEDLY PASSED — gate has no teeth"; exit 1

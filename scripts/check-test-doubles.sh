@@ -19,7 +19,7 @@
 #
 # Exit codes: 0 ok · 1 a non-allowlisted double was found · 2 usage/env error.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 # Allowlist of sanctioned doubles (by type name). Keep this SHORT and justified.
 #   <TypeName>    one-line justification

@@ -21,8 +21,10 @@
 # Exit: 0 ok or skipped · 2 missing prerequisite (cargo) · 70 veraPDF could not
 #       parse the PDF / no structure tree (a real regression).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 RUN_ID="local"
 case "${1:-}" in
@@ -31,8 +33,7 @@ case "${1:-}" in
   "")          ;;
   *)           RUN_ID="$1" ;;
 esac
-SELF_TEST=0
-[ "${1:-}" = "--self-test" ] && SELF_TEST=1
+fmd_validate_run_id "check-pdf-ua" "$RUN_ID"
 
 ART="tests/artifacts/pdf-ua/${RUN_ID}"
 mkdir -p "$ART"

@@ -14,11 +14,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$repo_root/target/fmd-checks}"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 RUN_ID="${1:-local}"
-ART="tests/artifacts/wasm/${RUN_ID}"
+fmd_validate_run_id "fmd wasm-package" "$RUN_ID"
+ART_BASE="$repo_root/tests/artifacts/wasm"
+ART="${ART_BASE}/${RUN_ID}"
 WORK="$ART/work"
-rm -rf "$WORK"; mkdir -p "$WORK"
+rm -rf -- "$WORK"; mkdir -p -- "$WORK"
 LEDGER="$ART/ledger.txt"
 : >"$LEDGER"
 log() { printf '%s\n' "$*" | tee -a "$LEDGER"; }
@@ -116,6 +120,7 @@ fmd="$CARGO_TARGET_DIR/debug/fmd"
 EPOCH=1700000000
 corpus=()
 cp examples/showcase.md "$WORK/showcase.md"; corpus+=("$WORK/showcase.md")
+# shellcheck disable=SC2016 # The Markdown code fence is intentional literal fixture text.
 printf '# Probe\n\n> quote\n>\n> more\n\nBody with a [link](https://example.com) and `code`.\n\n| A | B |\n|---|--:|\n| 1 | 2 |\n| 3 | 4 |\n\n```rust\nfn x() {}\n```\n\n---\n' >"$WORK/probe.md"
 corpus+=("$WORK/probe.md")
 

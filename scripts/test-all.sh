@@ -15,7 +15,7 @@
 #
 # Exit: 0 all gates passed · 70 one or more gates failed · 2 usage error.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
 
 FAST=0
@@ -48,6 +48,34 @@ run_gate() {
   fi
 }
 
+discover_helper_shell_scripts() {
+  printf '%s\n' install.sh
+  find scripts -type f -name '*.sh' | LC_ALL=C sort
+}
+
+check_helper_shell_syntax() {
+  local script missing=0
+  while IFS= read -r script; do
+    if [ ! -f "$script" ]; then
+      printf 'helper-shell-syntax: missing %s\n' "$script" >&2
+      missing=1
+      continue
+    fi
+    bash -n "$script" || return "$?"
+  done < <(discover_helper_shell_scripts)
+  return "$missing"
+}
+
+check_helper_shellcheck() {
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    echo "helper-shellcheck: shellcheck not installed; skipping warning-and-above shell lint" >&2
+    return 0
+  fi
+  local -a scripts
+  mapfile -t scripts < <(discover_helper_shell_scripts)
+  shellcheck --severity=warning "${scripts[@]}"
+}
+
 echo "test-all: running the verification gauntlet ($([ "$FAST" = 1 ] && echo "fast" || echo "full"))"
 
 # --- static + unit gates (always) -------------------------------------------
@@ -55,6 +83,11 @@ run_gate "fmt"                cargo fmt --check
 run_gate "check-all-targets"  cargo check --all-targets
 run_gate "check-no-default"   cargo check --no-default-features --lib
 run_gate "clippy"             cargo clippy --all-targets -- -D warnings
+run_gate "helper shell syntax" check_helper_shell_syntax
+run_gate "helper shellcheck (optional)" check_helper_shellcheck
+run_gate "helper source-shape tests" cargo test --test script_sources_test
+run_gate "installer source-shape tests" cargo test --test installer_sources_test
+run_gate "installer behavior tests" cargo test --test installer_behavior_test
 run_gate "unit+integration (cargo test)" cargo test
 run_gate "batch feature"      cargo test --features batch --lib batch::
 run_gate "clippy (batch)"     cargo clippy --features batch --lib -- -D warnings

@@ -25,8 +25,7 @@ e2e_expect_exit 0
 e2e_expect_stdout_contains "<main"
 e2e_expect_stdout_contains "Title One"
 
-E2E_STDIN="$DOC"
-e2e_run "render '-' (stdin) -> stdout html" -- "$E2E_BIN" - --to html
+E2E_STDIN="$DOC" e2e_run "render '-' (stdin) -> stdout html" -- "$E2E_BIN" - --to html
 e2e_expect_exit 0
 e2e_expect_stdout_contains "Title One"
 

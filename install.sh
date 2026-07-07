@@ -364,7 +364,7 @@ acquire_lock() {
     local old_pid; old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
     if [ -n "$old_pid" ] && ! kill -0 "$old_pid" 2>/dev/null; then
       warn "Removing stale install lock (pid $old_pid is gone)"
-      rm -rf "$LOCK_DIR"
+      rm -rf -- "$LOCK_DIR"
       if mkdir "$LOCK_DIR" 2>/dev/null; then
         LOCKED=1; echo $$ > "$LOCK_DIR/pid"; return 0
       fi
@@ -380,8 +380,10 @@ acquire_lock
 # ─────────────────────────────────────────────────────────────────────────────
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/${BINARY_NAME}-install.XXXXXX")
 cleanup() {
-  rm -rf "$TMP" 2>/dev/null || true
-  [ "$LOCKED" -eq 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null || true
+  rm -rf -- "$TMP" 2>/dev/null || true
+  if [ "$LOCKED" -eq 1 ]; then
+    rm -rf -- "$LOCK_DIR" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -498,7 +500,7 @@ build_from_source() {
       if ! git clone --depth 1 --branch "$VERSION" \
             "https://github.com/${OWNER}/${REPO}.git" "$src" 2>/dev/null; then
         warn "Could not clone tag '$VERSION'; cloning the default branch instead"
-        rm -rf "$src"
+        rm -rf -- "$src"
         git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$src"
       fi
     else
@@ -528,7 +530,10 @@ build_from_source() {
   if [ ! -x "$built" ]; then
     built=$(find "$src/target" -maxdepth 4 -type f -name "$BINARY_NAME" -perm -111 2>/dev/null | head -n1)
   fi
-  [ -n "$built" ] && [ -x "$built" ] || { err "Build finished but $BINARY_NAME was not found under target/"; exit 1; }
+  if [ -z "$built" ] || [ ! -x "$built" ]; then
+    err "Build finished but $BINARY_NAME was not found under target/"
+    exit 1
+  fi
 
   install_binary "$built"
   BUILT_FROM_SOURCE=1
@@ -548,6 +553,227 @@ download_one() {
     xcurl -fL --progress-bar --connect-timeout 30 --max-time 1800 "$url" -o "$out"
   fi
 }
+
+checksum_from_sums_file() {
+  local sums_file="$1" wanted_name="$2"
+  awk -v wanted="$wanted_name" '
+    length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ {
+      name = $2
+      sub(/^\*/, "", name)
+      n = split(name, parts, "/")
+      if (parts[n] == wanted) {
+        print $1
+        exit
+      }
+    }
+  ' "$sums_file"
+}
+
+checksum_from_sidecar_file() {
+  awk '
+    length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ {
+      print $1
+      exit
+    }
+  ' "$1"
+}
+
+checksum_is_skip() {
+  case "$1" in
+    [sS][kK][iI][pP]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+default_checksum_url() {
+  if [ -n "$VERSION" ]; then
+    printf 'https://github.com/%s/%s/releases/download/%s/SHA256SUMS\n' "$OWNER" "$REPO" "$VERSION"
+  else
+    printf 'https://github.com/%s/%s/releases/latest/download/SHA256SUMS\n' "$OWNER" "$REPO"
+  fi
+}
+
+archive_member_path_is_safe() {
+  local member="$1" normalized part
+  local -a parts
+  [ -n "$member" ] || return 1
+  case "$member" in
+    "."|"./"|/*|*\\*|[A-Za-z]:*) return 1 ;;
+  esac
+  normalized="$member"
+  while [ "${normalized#./}" != "$normalized" ]; do
+    normalized="${normalized#./}"
+  done
+  [ -n "$normalized" ] || return 1
+  IFS='/' read -r -a parts <<< "$normalized"
+  for part in "${parts[@]}"; do
+    [ "$part" = ".." ] && return 1
+  done
+  return 0
+}
+
+list_archive_members() {
+  local archive="$1" archive_name="$2"
+  case "$archive_name" in
+    *.tar.gz|*.tgz) tar -tzf "$archive" ;;
+    *.tar.xz)       tar -tJf "$archive" ;;
+    *.zip)          unzip -Z1 "$archive" ;;
+    *)              return 2 ;;
+  esac
+}
+
+list_tar_member_modes() {
+  local archive="$1" archive_name="$2"
+  case "$archive_name" in
+    *.tar.gz|*.tgz) tar -tzvf "$archive" | awk '{print $1}' ;;
+    *.tar.xz)       tar -tJvf "$archive" | awk '{print $1}' ;;
+    *)              return 0 ;;
+  esac
+}
+
+validate_archive_members() {
+  local archive="$1" archive_name="$2" member mode
+  local members_file="$TMP/archive-members.txt"
+  local modes_file="$TMP/archive-members.modes"
+  local zip_meta_file="$TMP/archive-members.zipmeta"
+
+  info "Validating archive member paths"
+  if ! list_archive_members "$archive" "$archive_name" > "$members_file"; then
+    err "Failed to inspect archive members for ${archive_name}"
+    exit 1
+  fi
+
+  case "$archive_name" in
+    *.tar.gz|*.tgz|*.tar.xz)
+      if ! list_tar_member_modes "$archive" "$archive_name" > "$modes_file"; then
+        err "Failed to inspect tar entry types for ${archive_name}"
+        exit 1
+      fi
+      while IFS= read -r mode; do
+        case "$mode" in
+          l*|h*)
+            err "Archive contains link entry; refusing to extract ${archive_name}"
+            exit 1
+            ;;
+        esac
+      done < "$modes_file"
+      ;;
+    *.zip)
+      if ! unzip -Z -v "$archive" > "$zip_meta_file"; then
+        err "Failed to inspect zip entry types for ${archive_name}"
+        exit 1
+      fi
+      if awk '/Unix file attributes/ { if ($NF ~ /^l/) found = 1 } END { exit found ? 0 : 1 }' "$zip_meta_file"; then
+        err "Archive contains zip symlink entry; refusing to extract ${archive_name}"
+        exit 1
+      fi
+      ;;
+  esac
+
+  while IFS= read -r member; do
+    if ! archive_member_path_is_safe "$member"; then
+      err "Archive contains unsafe member path: $member"
+      exit 1
+    fi
+  done < "$members_file"
+}
+
+installer_checksum_self_test() {
+  local good="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  local other="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  local side="fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+  local sums="$TMP/selftest-SHA256SUMS"
+  local sidecar="$TMP/selftest.sha256"
+
+  selftest_fail() {
+    printf '%s\n' "installer checksum self-test: FAILED: $*" >&2
+    exit 1
+  }
+  selftest_eq() {
+    local got="$1" want="$2" label="$3"
+    [ "$got" = "$want" ] || selftest_fail "$label: got '$got', want '$want'"
+  }
+  selftest_empty() {
+    local got="$1" label="$2"
+    [ -z "$got" ] || selftest_fail "$label: got unexpected '$got'"
+  }
+
+  cat >"$sums" <<EOF
+$other  other-fmd-x.tar.gz
+$good  fmd-x.tar.gz
+$side *nested/fmd-y.tar.gz
+not-a-checksum  fmd-z.tar.gz
+EOF
+
+  selftest_eq "$(checksum_from_sums_file "$sums" "fmd-x.tar.gz")" "$good" "exact archive basename"
+  selftest_eq "$(checksum_from_sums_file "$sums" "other-fmd-x.tar.gz")" "$other" "neighbor archive basename"
+  selftest_empty "$(checksum_from_sums_file "$sums" "x.tar.gz")" "substring archive name must not match"
+  selftest_eq "$(checksum_from_sums_file "$sums" "fmd-y.tar.gz")" "$side" "path-qualified checksum basename"
+
+  cat >"$sidecar" <<EOF
+ignore me
+  $side  fmd-x.tar.gz
+EOF
+  selftest_eq "$(checksum_from_sidecar_file "$sidecar")" "$side" "sidecar leading sha256 token"
+
+  checksum_is_skip "SKIP" || selftest_fail "CHECKSUM=SKIP should skip"
+  checksum_is_skip "skip" || selftest_fail "CHECKSUM=skip should skip"
+  checksum_is_skip "sKiP" || selftest_fail "CHECKSUM=sKiP should skip"
+  if checksum_is_skip "SKIPPING"; then
+    selftest_fail "CHECKSUM=SKIPPING must not skip"
+  fi
+  warn "Checksum verification explicitly skipped by CHECKSUM=SKIP"
+
+  archive_member_path_is_safe "fmd" || selftest_fail "plain archive member path should be safe"
+  archive_member_path_is_safe "bin/fmd" || selftest_fail "nested archive member path should be safe"
+  archive_member_path_is_safe "./bin/fmd" || selftest_fail "leading ./ archive member path should be safe"
+  local unsafe_member
+  for unsafe_member in "" "." "./" "../fmd" "bin/../../fmd" "/tmp/fmd" "C:/tmp/fmd" 'C:\tmp\fmd' 'bin\fmd'; do
+    if archive_member_path_is_safe "$unsafe_member"; then
+      selftest_fail "unsafe archive member path was accepted: '$unsafe_member'"
+    fi
+  done
+  if command -v tar >/dev/null 2>&1; then
+    local archive_root="$TMP/selftest-archive"
+    mkdir -p "$archive_root/bin"
+    printf '%s\n' "#!/usr/bin/env sh" "exit 0" > "$archive_root/bin/fmd"
+    chmod 0755 "$archive_root/bin/fmd"
+    tar -czf "$TMP/selftest-safe.tar.gz" -C "$archive_root" bin/fmd
+    validate_archive_members "$TMP/selftest-safe.tar.gz" "selftest-safe.tar.gz"
+
+    ln -s /tmp "$archive_root/link-out"
+    tar -czf "$TMP/selftest-link.tar.gz" -C "$archive_root" link-out
+    if ( validate_archive_members "$TMP/selftest-link.tar.gz" "selftest-link.tar.gz" ) >/dev/null 2>&1; then
+      selftest_fail "tar archive with a symlink entry should be rejected"
+    fi
+  fi
+  if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+    local zip_root="$TMP/selftest-zip"
+    mkdir -p "$zip_root"
+    ln -s /tmp "$zip_root/link-out"
+    # Store the link itself; recursive zip without -y may follow /tmp instead
+    # of creating the symlink entry this self-test is meant to validate.
+    ( cd "$zip_root" && zip -qy "$TMP/selftest-link.zip" link-out )
+    if ( validate_archive_members "$TMP/selftest-link.zip" "selftest-link.zip" ) >/dev/null 2>&1; then
+      selftest_fail "zip archive with a symlink entry should be rejected"
+    fi
+  fi
+  printf '%s\n' "installer archive path self-test: ok"
+
+  local old_version="$VERSION"
+  VERSION=""
+  selftest_eq "$(default_checksum_url)" "https://github.com/${OWNER}/${REPO}/releases/latest/download/SHA256SUMS" "latest checksum URL"
+  VERSION="v1.2.3"
+  selftest_eq "$(default_checksum_url)" "https://github.com/${OWNER}/${REPO}/releases/download/v1.2.3/SHA256SUMS" "tagged checksum URL"
+  VERSION="$old_version"
+
+  printf '%s\n' "installer checksum self-test: ok"
+}
+
+if [ "${FMD_INSTALLER_CHECKSUM_SELF_TEST:-0}" = "1" ]; then
+  installer_checksum_self_test
+  exit 0
+fi
 
 DOWNLOADED_TAR=""
 DOWNLOADED_URL=""
@@ -598,17 +824,18 @@ if [ "$BUILT_FROM_SOURCE" -eq 0 ]; then
   # Checksum verification (SHA256, dual tool)
   # ───────────────────────────────────────────────────────────────────────────
   TAR_BASENAME="$(basename "$DOWNLOADED_TAR")"
-  if [ -z "$CHECKSUM" ]; then
-    [ -n "$CHECKSUM_URL" ] || CHECKSUM_URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/SHA256SUMS"
+  if checksum_is_skip "$CHECKSUM"; then
+    warn "Checksum verification explicitly skipped by CHECKSUM=SKIP"
+  elif [ -z "$CHECKSUM" ]; then
+    [ -n "$CHECKSUM_URL" ] || CHECKSUM_URL="$(default_checksum_url)"
     info "Fetching checksums from ${CHECKSUM_URL}"
     if xcurl -fsSL --connect-timeout 30 --max-time 60 "$CHECKSUM_URL" -o "$TMP/SHA256SUMS" 2>/dev/null; then
-      CHECKSUM=$(grep "  ${TAR_BASENAME}\$" "$TMP/SHA256SUMS" 2>/dev/null | awk '{print $1}')
-      [ -n "$CHECKSUM" ] || CHECKSUM=$(grep " ${TAR_BASENAME}\$" "$TMP/SHA256SUMS" 2>/dev/null | awk '{print $1}')
+      CHECKSUM=$(checksum_from_sums_file "$TMP/SHA256SUMS" "$TAR_BASENAME")
     fi
     if [ -z "$CHECKSUM" ]; then
       # Sidecar fallback: <artifact>.sha256
       if xcurl -fsSL --connect-timeout 30 --max-time 60 "${DOWNLOADED_URL}.sha256" -o "$TMP/sidecar.sha256" 2>/dev/null; then
-        CHECKSUM=$(awk 'NF>=1 && $1 ~ /^[0-9a-fA-F]{64}$/ {print $1; exit}' "$TMP/sidecar.sha256")
+        CHECKSUM=$(checksum_from_sidecar_file "$TMP/sidecar.sha256")
       fi
     fi
     if [ -z "$CHECKSUM" ]; then
@@ -617,13 +844,21 @@ if [ "$BUILT_FROM_SOURCE" -eq 0 ]; then
     fi
   fi
 
-  if [ "$CHECKSUM" != "SKIP" ]; then
+  if ! checksum_is_skip "$CHECKSUM"; then
     if command -v sha256sum >/dev/null 2>&1; then
-      echo "$CHECKSUM  $DOWNLOADED_TAR" | sha256sum -c - >/dev/null 2>&1 \
-        && ok "Checksum verified (sha256sum)" || { err "Checksum mismatch for ${TAR_BASENAME}"; exit 1; }
+      if echo "$CHECKSUM  $DOWNLOADED_TAR" | sha256sum -c - >/dev/null 2>&1; then
+        ok "Checksum verified (sha256sum)"
+      else
+        err "Checksum mismatch for ${TAR_BASENAME}"
+        exit 1
+      fi
     elif command -v shasum >/dev/null 2>&1; then
-      echo "$CHECKSUM  $DOWNLOADED_TAR" | shasum -a 256 -c - >/dev/null 2>&1 \
-        && ok "Checksum verified (shasum)" || { err "Checksum mismatch for ${TAR_BASENAME}"; exit 1; }
+      if echo "$CHECKSUM  $DOWNLOADED_TAR" | shasum -a 256 -c - >/dev/null 2>&1; then
+        ok "Checksum verified (shasum)"
+      else
+        err "Checksum mismatch for ${TAR_BASENAME}"
+        exit 1
+      fi
     else
       warn "Neither sha256sum nor shasum found; skipping checksum verification"
     fi
@@ -655,6 +890,7 @@ if [ "$BUILT_FROM_SOURCE" -eq 0 ]; then
   # ───────────────────────────────────────────────────────────────────────────
   # Extract + install
   # ───────────────────────────────────────────────────────────────────────────
+  validate_archive_members "$DOWNLOADED_TAR" "$TAR_BASENAME"
   info "Extracting"
   case "$TAR_BASENAME" in
     *.tar.gz|*.tgz) tar -xzf "$DOWNLOADED_TAR" -C "$TMP" ;;
@@ -664,10 +900,13 @@ if [ "$BUILT_FROM_SOURCE" -eq 0 ]; then
   esac
 
   BIN="$TMP/$BINARY_NAME"
-  if [ ! -x "$BIN" ]; then
+  if [ -L "$BIN" ] || [ ! -f "$BIN" ] || [ ! -x "$BIN" ]; then
     BIN=$(find "$TMP" -maxdepth 3 -type f -name "$BINARY_NAME" -perm -111 2>/dev/null | head -n1)
   fi
-  [ -n "$BIN" ] && [ -x "$BIN" ] || { err "Binary '$BINARY_NAME' not found inside the archive"; exit 1; }
+  if [ -z "$BIN" ] || [ -L "$BIN" ] || [ ! -f "$BIN" ] || [ ! -x "$BIN" ]; then
+    err "Binary '$BINARY_NAME' not found inside the archive"
+    exit 1
+  fi
 
   install_binary "$BIN"
   ok "Installed to $DEST/$BINARY_NAME"

@@ -51,14 +51,6 @@ json_escape() {
   printf '%s' "$s"
 }
 
-validate_run_id() {
-  case "$1" in
-    ''|'.'|'..'|[!A-Za-z0-9]*|*[^A-Za-z0-9._-]*)
-      fail "--run-id must start with an ASCII letter/digit and contain only ASCII letters, digits, dot, underscore, or dash"
-      ;;
-  esac
-}
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --iters)
@@ -96,11 +88,13 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 if [ -z "$RUN_ID" ]; then
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-layout-$(git rev-parse --short HEAD)"
 fi
-validate_run_id "$RUN_ID"
+fmd_validate_run_id "layout-perf-proof" "$RUN_ID"
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"

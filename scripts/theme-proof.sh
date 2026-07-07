@@ -12,7 +12,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 RUN_ID="${1:-local}"
+fmd_validate_run_id "theme-proof" "$RUN_ID"
 ART="tests/artifacts/theme/${RUN_ID}"
 mkdir -p "$ART"
 LEDGER="${ART}/ledger.txt"
@@ -30,6 +33,7 @@ log "binary: $BIN"
 
 # Small probe doc: link + blockquote + inline/fenced code + table + thematic break.
 PROBE="${ART}/probe.md"
+# shellcheck disable=SC2016 # The inline-code backticks are intentional literal fixture text.
 printf '# Heading One\n\n> quoted text\n>\n> more quote\n\nBody with a [link](https://example.com) and `inline code`.\n\n| A | B |\n|---|--:|\n| 1 | 2 |\n| 3 | 4 |\n\n---\n' >"$PROBE"
 
 # token hex -> "r.rrr g.ggg b.bbb" exactly as the PDF writer formats it.

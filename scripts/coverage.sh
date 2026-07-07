@@ -45,8 +45,10 @@
 #   4  report generation or post-processing failed
 #   5  coverage regressed below the committed floor (--check)
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 REPO_ROOT="$PWD"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 # ---- argument parsing ------------------------------------------------------
 RUN_MODE="full"          # full | quick | self-test | check | update-floor
@@ -68,6 +70,7 @@ case "${1:-}" in
     ;;
   *) RUN_ID="$1" ;;
 esac
+fmd_validate_run_id "coverage" "$RUN_ID"
 
 # Instrumented builds must not clobber the normal/check target dir; cargo-llvm-cov
 # isolates its own artifacts under target/llvm-cov-target by default, so we leave

@@ -34,15 +34,6 @@ SCHEMA_DOC="docs/PERFORMANCE_ARTIFACT_SCHEMA.md"
 BEAD_ID="br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-qw1.6.5"
 ORIGINAL_ARGS="$*"
 
-validate_run_id() {
-  case "$1" in
-    ''|'.'|'..'|[!A-Za-z0-9]*|*[^A-Za-z0-9._-]*)
-      echo "parser-perf: --run-id must start with an ASCII letter/digit and contain only ASCII letters, digits, dot, underscore, or dash" >&2
-      exit 64
-      ;;
-  esac
-}
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --iters)
@@ -83,11 +74,13 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 if [ -z "$RUN_ID" ]; then
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-parser-$(git rev-parse --short HEAD)"
 fi
-validate_run_id "$RUN_ID"
+fmd_validate_run_id "parser-perf" "$RUN_ID"
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"

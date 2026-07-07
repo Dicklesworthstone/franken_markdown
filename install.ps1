@@ -155,6 +155,107 @@ function Invoke-Download {
     Invoke-WebRequest @reqArgs
 }
 
+function Test-ArchiveMemberPathSafe {
+    param([string]$MemberPath)
+    if ([string]::IsNullOrEmpty($MemberPath)) { return $false }
+    if (($MemberPath -eq '.') -or ($MemberPath -eq './')) { return $false }
+    if ($MemberPath -match '^[A-Za-z]:') { return $false }
+    if ([IO.Path]::IsPathRooted($MemberPath)) { return $false }
+    if ($MemberPath.Contains('\')) { return $false }
+    foreach ($part in ($MemberPath -split '/')) {
+        if ($part -eq '..') { return $false }
+    }
+    return $true
+}
+
+function Normalize-DirectoryBoundary {
+    param([string]$Path)
+    $root = [IO.Path]::GetPathRoot($Path)
+    while (($Path.Length -gt $root.Length) -and ($Path.EndsWith('\') -or $Path.EndsWith('/'))) {
+        $Path = $Path.Substring(0, $Path.Length - 1)
+    }
+    return $Path
+}
+
+function Test-PathInsideDirectory {
+    param([string]$Path, [string]$Directory)
+    $resolvedDirectory = Normalize-DirectoryBoundary ((Resolve-Path -LiteralPath $Directory).ProviderPath)
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $prefixes = if ($resolvedDirectory.EndsWith('\') -or $resolvedDirectory.EndsWith('/')) {
+        @($resolvedDirectory)
+    } else {
+        @("$resolvedDirectory\", "$resolvedDirectory/")
+    }
+    foreach ($prefix in $prefixes) {
+        if ($resolvedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-ZipArchiveEntries {
+    param([string]$Archive, [string]$ArchiveName)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $unixModeType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
+            if ($unixModeType -eq 0xA000) {
+                Write-ErrMsg "Archive contains zip symlink entry; refusing to extract $ArchiveName"
+                exit 1
+            }
+            $entry.FullName
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Get-TarArchiveEntries {
+    param([string]$Archive)
+    $entries = & tar -tf $Archive
+    if ($LASTEXITCODE -ne 0) { throw "Failed to inspect archive entries: $Archive" }
+    return $entries
+}
+
+function Test-TarArchiveHasLinkEntries {
+    param([string]$Archive)
+    $listing = & tar -tvf $Archive
+    if ($LASTEXITCODE -ne 0) { throw "Failed to inspect tar entry types: $Archive" }
+    foreach ($line in $listing) {
+        if ($line.Length -gt 0) {
+            $kind = $line.Substring(0, 1)
+            if (($kind -eq 'l') -or ($kind -eq 'h')) { return $true }
+        }
+    }
+    return $false
+}
+
+function Assert-ArchiveSafeToExtract {
+    param([string]$Archive, [string]$ArchiveName)
+    Write-Info "Validating archive member paths"
+    if ($ArchiveName -match '\.zip$') {
+        $entries = Get-ZipArchiveEntries -Archive $Archive -ArchiveName $ArchiveName
+    } elseif ($ArchiveName -match '\.(tar\.gz|tgz|tar\.xz)$') {
+        if (Test-TarArchiveHasLinkEntries -Archive $Archive) {
+            Write-ErrMsg "Archive contains hardlink or symlink entries; refusing to extract $ArchiveName"
+            exit 1
+        }
+        $entries = Get-TarArchiveEntries -Archive $Archive
+    } else {
+        Write-ErrMsg "Unknown archive format: $ArchiveName"
+        exit 1
+    }
+
+    foreach ($entry in $entries) {
+        if (-not (Test-ArchiveMemberPathSafe -MemberPath $entry)) {
+            Write-ErrMsg "Archive contains unsafe member path: $entry"
+            exit 1
+        }
+    }
+}
+
 # -----------------------------------------------------------------------------
 # Banner
 # -----------------------------------------------------------------------------
@@ -376,6 +477,13 @@ function Get-Binary {
     Build-FromSource
 }
 
+function Get-DefaultChecksumUrl {
+    if ($Version) {
+        return "https://github.com/$Owner/$Repo/releases/download/$Version/SHA256SUMS"
+    }
+    return "https://github.com/$Owner/$Repo/releases/latest/download/SHA256SUMS"
+}
+
 try {
     Get-Binary
 
@@ -385,17 +493,39 @@ try {
 
         # -- Checksum verification (SHA256) --
         $checksum = $env:CHECKSUM
+        $checksumPattern = '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$'
         if (-not $checksum) {
-            $sumsUrl = if ($env:CHECKSUM_URL) { $env:CHECKSUM_URL } else { "https://github.com/$Owner/$Repo/releases/download/$Version/SHA256SUMS" }
+            $sumsUrl = if ($env:CHECKSUM_URL) { $env:CHECKSUM_URL } else { Get-DefaultChecksumUrl }
             $sumsFile = Join-Path $Tmp 'SHA256SUMS'
             try {
                 Write-Info "Fetching checksums from $sumsUrl"
                 Invoke-Download -Url $sumsUrl -OutFile $sumsFile
-                $line = Select-String -LiteralPath $sumsFile -Pattern ([Regex]::Escape($archiveName)) | Select-Object -First 1
-                if ($line) { $checksum = ($line.Line -split '\s+')[0] }
+                foreach ($rawLine in Get-Content -LiteralPath $sumsFile) {
+                    if ($rawLine -match $checksumPattern) {
+                        $listedName = [IO.Path]::GetFileName($Matches[2].Trim())
+                        if ($listedName -eq $archiveName) {
+                            $checksum = $Matches[1]
+                            break
+                        }
+                    }
+                }
             } catch { }
         }
-        if ($checksum) {
+        if (-not $checksum) {
+            $sidecarUrl = "$($script:DownloadedUrl).sha256"
+            $sidecarFile = Join-Path $Tmp 'sidecar.sha256'
+            try {
+                Write-Info "Fetching sidecar checksum from $sidecarUrl"
+                Invoke-Download -Url $sidecarUrl -OutFile $sidecarFile
+                foreach ($rawLine in Get-Content -LiteralPath $sidecarFile) {
+                    if ($rawLine -match '^\s*([0-9a-fA-F]{64})\b') {
+                        $checksum = $Matches[1]
+                        break
+                    }
+                }
+            } catch { }
+        }
+        if ($checksum -and ($checksum -ine 'SKIP')) {
             $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLower()
             if ($actual -eq $checksum.ToLower()) {
                 Write-Ok "Checksum verified (SHA256)"
@@ -405,6 +535,8 @@ try {
                 Write-ErrMsg "  actual:   $actual"
                 exit 1
             }
+        } elseif ($checksum -ieq 'SKIP') {
+            Write-WarnMsg "Checksum verification explicitly skipped by CHECKSUM=SKIP"
         } else {
             Write-WarnMsg "Checksum for $archiveName not found; skipping checksum verification"
         }
@@ -428,6 +560,7 @@ try {
         }
 
         # -- Extract + install --
+        Assert-ArchiveSafeToExtract -Archive $archive -ArchiveName $archiveName
         Write-Info "Extracting"
         $extractDir = Join-Path $Tmp 'extract'
         New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
@@ -442,6 +575,14 @@ try {
 
         $found = Get-ChildItem -Path $extractDir -Recurse -Filter $BinaryExe -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $found) { Write-ErrMsg "Binary '$BinaryExe' not found inside the archive"; exit 1 }
+        if (($found.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-ErrMsg "Archive binary '$BinaryExe' is a reparse point; refusing to install it"
+            exit 1
+        }
+        if (-not (Test-PathInsideDirectory -Path $found.FullName -Directory $extractDir)) {
+            Write-ErrMsg "Archive binary '$BinaryExe' resolves outside the extraction directory"
+            exit 1
+        }
         Install-BinaryFile -SrcBin $found.FullName
         Write-Ok "Installed to $(Join-Path $Dest $BinaryExe)"
     }

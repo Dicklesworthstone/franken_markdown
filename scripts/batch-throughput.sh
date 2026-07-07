@@ -48,11 +48,19 @@ done
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 fail_env() { echo "batch-throughput: $*" >&2; exit 66; }
 fail_scn() { echo "batch-throughput: SCENARIO FAILURE: $*" >&2; exit 70; }
 
 command -v python3 >/dev/null 2>&1 || fail_env "python3 is required"
+
+# ---- run id ---------------------------------------------------------------
+if [ -z "$RUN_ID" ]; then
+  RUN_ID="batch-throughput-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+fmd_validate_run_id "batch-throughput" "$RUN_ID"
 
 # ---- build the batch-enabled binary ----------------------------------------
 echo "batch-throughput: building fmd --features batch (release)..."
@@ -66,9 +74,6 @@ FMD="$(target_dir)/release/fmd"
 [ -x "$FMD" ] || fail_env "fmd binary not found at $FMD"
 
 # ---- run dir + fingerprint --------------------------------------------------
-if [ -z "$RUN_ID" ]; then
-  RUN_ID="batch-throughput-$(date -u +%Y%m%dT%H%M%SZ)"
-fi
 OUT_DIR="tests/artifacts/perf/$RUN_ID"
 WORK="$OUT_DIR/work"
 mkdir -p "$WORK"

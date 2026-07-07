@@ -42,6 +42,8 @@
 # suites can source it from anywhere.
 _E2E_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_REPO_ROOT="$(cd "${_E2E_LIB_DIR}/../.." && pwd)"
+# shellcheck source=scripts/validate-run-id.sh
+source "${E2E_REPO_ROOT}/scripts/validate-run-id.sh"
 
 # --- color / tty gating (kept off to match repo convention, but correct) ----
 _e2e_color_enabled() {
@@ -78,9 +80,10 @@ _e2e_digest() {
 # ---------------------------------------------------------------------------
 e2e_init() {
   E2E_RUN_ID="${1:-local}"
+  fmd_validate_run_id "e2e" "$E2E_RUN_ID"
   E2E_ART="${E2E_REPO_ROOT}/tests/artifacts/e2e/${E2E_RUN_ID}"
   E2E_STEPS_DIR="${E2E_ART}/steps"
-  rm -rf "$E2E_ART"
+  rm -rf -- "$E2E_ART"
   mkdir -p "$E2E_STEPS_DIR"
   E2E_LEDGER="${E2E_ART}/ledger.txt"; : >"$E2E_LEDGER"
   E2E_MANIFEST="${E2E_ART}/manifest.tsv"; : >"$E2E_MANIFEST"
@@ -365,7 +368,7 @@ PY
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   set -uo pipefail
-  cd "$E2E_REPO_ROOT"
+  cd "$E2E_REPO_ROOT" || exit
   case "${1:-}" in
     --self-test) _e2e_self_test; exit $? ;;
     --help|-h)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;

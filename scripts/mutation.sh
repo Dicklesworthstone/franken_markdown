@@ -21,8 +21,10 @@
 # Exit: 0 ok · 2 missing prerequisite/usage · 3 cargo-mutants run failed ·
 #       5 survivors exceeded the committed ceiling.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
+# shellcheck source=scripts/validate-run-id.sh
+source scripts/validate-run-id.sh
 
 # Curated scope: small, logic-bearing, thoroughly-tested utility modules where a
 # survivor ceiling of 0 is achievable and the full run is fast. The large engine
@@ -46,6 +48,7 @@ case "${1:-}" in
   --*)              echo "mutation: unknown flag '$1' (try --help)" >&2; exit 2 ;;
   *)                RUN_ID="$1" ;;
 esac
+fmd_validate_run_id "mutation" "$RUN_ID"
 
 # Parse a cargo-mutants outcomes.json: print "<missed> <caught> <unviable> <timeout>"
 # then the survivor "file:line  desc" lines. Shared by run + self-test.

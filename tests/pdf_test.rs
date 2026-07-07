@@ -2233,6 +2233,58 @@ fn pdf_svg_hidden_or_fully_transparent_elements_do_not_paint() {
 }
 
 #[test]
+fn pdf_svg_visibility_visible_descendants_render_inside_hidden_groups() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">
+  <style>
+    .css-hidden { visibility: hidden; }
+    .css-visible { visibility: visible; }
+    .display-hidden { display: none; }
+    .display-visible { display: inline; }
+  </style>
+  <g visibility="hidden">
+    <rect x="2" y="2" width="10" height="10" fill="#ff0000" stroke="none"/>
+    <rect x="16" y="2" width="10" height="10" visibility="visible" fill="#00ff00" stroke="none"/>
+  </g>
+  <g class="css-hidden">
+    <rect x="30" y="2" width="10" height="10" class="css-visible" fill="#0000ff" stroke="none"/>
+  </g>
+  <g class="display-hidden">
+    <rect x="44" y="2" width="10" height="10" class="display-visible" fill="#ff00ff" stroke="none"/>
+  </g>
+  <text x="58" y="12" visibility="hidden" fill="#ff0000" font-size="10">Hidden<tspan visibility="visible" fill="#00ffff">Shown</tspan></text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("visibility.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Diagram](visibility.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg"),
+        "inherited visibility:hidden content should not paint red: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 0.000 rg"),
+        "visibility=visible should restore a child inside a visibility:hidden group: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 rg"),
+        "CSS visibility:visible should restore a child inside a hidden CSS group: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 1.000 rg"),
+        "display:inline on a child must not revive a display:none ancestor: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 1.000 rg\nBT /F1"),
+        "visibility=visible should restore a tspan inside a hidden text element: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_inherits_group_paint_for_child_shapes() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40">

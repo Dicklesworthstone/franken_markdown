@@ -767,6 +767,8 @@ struct SvgStyle {
     opacity: f32,
     fill_opacity: f32,
     stroke_opacity: f32,
+    display_visible: bool,
+    visibility_visible: bool,
     visible: bool,
     shadow: Option<SvgShadow>,
     clip_path: Option<usize>,
@@ -805,6 +807,8 @@ impl SvgStyle {
         opacity: 1.0,
         fill_opacity: 1.0,
         stroke_opacity: 1.0,
+        display_visible: true,
+        visibility_visible: true,
         visible: true,
         shadow: None,
         clip_path: None,
@@ -850,7 +854,8 @@ struct SvgStylePatch {
     opacity: Option<f32>,
     fill_opacity: Option<f32>,
     stroke_opacity: Option<f32>,
-    visible: Option<bool>,
+    display_visible: Option<bool>,
+    visibility_visible: Option<bool>,
     shadow: Option<Option<SvgShadow>>,
     clip_path: Option<Option<usize>>,
     mask_path: Option<Option<usize>>,
@@ -4133,6 +4138,8 @@ fn parse_svg_line(
                 opacity: inherited.opacity,
                 fill_opacity: inherited.fill_opacity,
                 stroke_opacity: inherited.stroke_opacity,
+                display_visible: inherited.display_visible,
+                visibility_visible: inherited.visibility_visible,
                 visible: inherited.visible,
                 shadow: inherited.shadow,
                 clip_path: inherited.clip_path,
@@ -4204,6 +4211,8 @@ fn parse_svg_poly(
             opacity: inherited.opacity,
             fill_opacity: inherited.fill_opacity,
             stroke_opacity: inherited.stroke_opacity,
+            display_visible: inherited.display_visible,
+            visibility_visible: inherited.visibility_visible,
             visible: inherited.visible,
             shadow: inherited.shadow,
             clip_path: inherited.clip_path,
@@ -4449,7 +4458,7 @@ fn parse_svg_text_elements(
         filter_shadows,
         ancestors,
     );
-    if !style.visible {
+    if !style.display_visible || style.opacity <= 0.001 {
         return Vec::new();
     }
     let x = svg_attr(attrs, "x")
@@ -4661,6 +4670,9 @@ fn svg_text_element(
     placement: SvgTextPlacement,
     style: SvgStyle,
 ) -> Option<SvgElement> {
+    if !style.visible {
+        return None;
+    }
     let fill = style.fill?;
     let opacity = svg_effective_fill_opacity(style);
     if opacity <= 0.001 {
@@ -6926,6 +6938,7 @@ fn parse_svg_style_with_ancestors(
     let inherited_opacity = style.opacity;
     style.opacity = 1.0;
     let inherited_font_size = style.font_size;
+    let inherited_display_visible = style.display_visible;
 
     apply_svg_color_attr(&mut style, svg_attr(attrs, "color"), &scoped_css_vars);
     apply_svg_transform_attr(&mut style, svg_attr(attrs, "transform"));
@@ -6947,8 +6960,18 @@ fn parse_svg_style_with_ancestors(
         patterns,
         &scoped_css_vars,
     );
-    apply_svg_visibility_attr(&mut style, "display", svg_attr(attrs, "display"));
-    apply_svg_visibility_attr(&mut style, "visibility", svg_attr(attrs, "visibility"));
+    apply_svg_visibility_attr(
+        &mut style,
+        "display",
+        svg_attr(attrs, "display"),
+        inherited_display_visible,
+    );
+    apply_svg_visibility_attr(
+        &mut style,
+        "visibility",
+        svg_attr(attrs, "visibility"),
+        inherited_display_visible,
+    );
     apply_svg_filter_attr(
         &mut style,
         svg_attr(attrs, "filter"),
@@ -7027,6 +7050,7 @@ fn parse_svg_style_with_ancestors(
         clip_paths,
         filter_shadows,
         inherited_font_size,
+        inherited_display_visible,
     );
 
     if let Some(style_attr) = svg_attr(attrs, "style") {
@@ -7046,13 +7070,12 @@ fn parse_svg_style_with_ancestors(
                 clip_paths,
                 filter_shadows,
                 inherited_font_size,
+                inherited_display_visible,
             );
         }
     }
     style.opacity = (inherited_opacity * style.opacity).clamp(0.0, 1.0);
-    if style.opacity <= 0.001 {
-        style.visible = false;
-    }
+    refresh_svg_effective_visibility(&mut style);
     if style.stroke_width <= 0.0 {
         style.stroke = None;
     }
@@ -7411,9 +7434,8 @@ fn parse_svg_style_patch(
                     }
                 }
             }
-            "display" | "visibility" if svg_visibility_value_hides(name.as_str(), value) => {
-                patch.visible = Some(false);
-            }
+            "display" => patch.display_visible = parse_svg_display_visible(value),
+            "visibility" => patch.visibility_visible = parse_svg_visibility_visible(value),
             "filter" => patch.shadow = parse_svg_filter_shadow(value, filter_shadows, css_vars),
             "transform" => patch.transform = parse_svg_transform(value),
             "clip-path" => patch.clip_path = parse_svg_clip_path_ref(value, clip_paths),
@@ -7468,6 +7490,7 @@ fn apply_svg_css_styles(
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
     inherited_font_size: f32,
+    inherited_display_visible: bool,
 ) {
     if css_rules.is_empty() {
         return;
@@ -7483,7 +7506,7 @@ fn apply_svg_css_styles(
             filter_shadows,
             inherited_font_size,
         );
-        apply_svg_style_patch(style, patch);
+        apply_svg_style_patch(style, patch, inherited_display_visible);
     }
 }
 
@@ -7630,7 +7653,11 @@ fn svg_css_ancestor(tag: &str, attrs: &[(String, String)]) -> SvgCssAncestor {
     }
 }
 
-fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
+fn apply_svg_style_patch(
+    style: &mut SvgStyle,
+    patch: SvgStylePatch,
+    inherited_display_visible: bool,
+) {
     if let Some(color) = patch.color {
         apply_svg_color(style, color);
     }
@@ -7704,8 +7731,11 @@ fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
     if let Some(stroke_opacity) = patch.stroke_opacity {
         style.stroke_opacity = stroke_opacity;
     }
-    if let Some(visible) = patch.visible {
-        style.visible = visible;
+    if let Some(display_visible) = patch.display_visible {
+        style.display_visible = inherited_display_visible && display_visible;
+    }
+    if let Some(visibility_visible) = patch.visibility_visible {
+        style.visibility_visible = visibility_visible;
     }
     if let Some(shadow) = patch.shadow {
         style.shadow = shadow;
@@ -7777,13 +7807,16 @@ fn apply_svg_style_declaration(
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
     inherited_font_size: f32,
+    inherited_display_visible: bool,
 ) {
     match name {
         "color" => apply_svg_color_attr(style, Some(value), css_vars),
         "fill" | "stroke" => {
             apply_svg_paint_attr(style, name, Some(value), gradients, patterns, css_vars);
         }
-        "display" | "visibility" => apply_svg_visibility_attr(style, name, Some(value)),
+        "display" | "visibility" => {
+            apply_svg_visibility_attr(style, name, Some(value), inherited_display_visible)
+        }
         "filter" => apply_svg_filter_attr(style, Some(value), filter_shadows, css_vars),
         "transform" => apply_svg_transform_attr(style, Some(value)),
         "clip-path" => apply_svg_clip_path_attr(style, Some(value), clip_paths),
@@ -8500,20 +8533,88 @@ fn parse_svg_reusable_shape(
     }
 }
 
-fn apply_svg_visibility_attr(style: &mut SvgStyle, target: &str, value: Option<&str>) {
+fn apply_svg_visibility_attr(
+    style: &mut SvgStyle,
+    target: &str,
+    value: Option<&str>,
+    inherited_display_visible: bool,
+) {
     let Some(value) = value else {
         return;
     };
-    if svg_visibility_value_hides(target, value) {
-        style.visible = false;
+    match target {
+        "display" => {
+            if let Some(display_visible) = parse_svg_display_visible(value) {
+                style.display_visible = inherited_display_visible && display_visible;
+            }
+        }
+        "visibility" => {
+            if let Some(visibility_visible) = parse_svg_visibility_visible(value) {
+                style.visibility_visible = visibility_visible;
+            }
+        }
+        _ => {}
     }
 }
 
-fn svg_visibility_value_hides(target: &str, value: &str) -> bool {
+fn parse_svg_display_visible(value: &str) -> Option<bool> {
     let value = value.trim();
-    (target == "display" && value.eq_ignore_ascii_case("none"))
-        || (target == "visibility"
-            && (value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse")))
+    if value.eq_ignore_ascii_case("none") {
+        return Some(false);
+    }
+    if SVG_VISIBLE_DISPLAY_VALUES
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
+    {
+        return Some(true);
+    }
+    None
+}
+
+const SVG_VISIBLE_DISPLAY_VALUES: &[&str] = &[
+    "block",
+    "compact",
+    "contents",
+    "flex",
+    "flow-root",
+    "grid",
+    "inherit",
+    "initial",
+    "inline",
+    "inline-block",
+    "inline-flex",
+    "inline-grid",
+    "inline-table",
+    "list-item",
+    "marker",
+    "revert",
+    "revert-layer",
+    "run-in",
+    "table",
+    "table-caption",
+    "table-cell",
+    "table-column",
+    "table-column-group",
+    "table-footer-group",
+    "table-header-group",
+    "table-row",
+    "table-row-group",
+    "unset",
+];
+
+fn parse_svg_visibility_visible(value: &str) -> Option<bool> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("visible") || value.eq_ignore_ascii_case("initial") {
+        return Some(true);
+    }
+    if value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse") {
+        return Some(false);
+    }
+    None
+}
+
+fn refresh_svg_effective_visibility(style: &mut SvgStyle) {
+    style.visible = style.display_visible && style.visibility_visible && style.opacity > 0.001;
 }
 
 fn parse_svg_filter_shadows(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgFilterShadow> {
@@ -15198,6 +15299,8 @@ fn draw_svg_line(
         opacity: line.style.opacity,
         fill_opacity: line.style.fill_opacity,
         stroke_opacity: line.style.stroke_opacity,
+        display_visible: line.style.display_visible,
+        visibility_visible: line.style.visibility_visible,
         visible: line.style.visible,
         shadow: line.style.shadow,
         clip_path: line.style.clip_path,

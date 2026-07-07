@@ -16324,11 +16324,11 @@ fn append_svg_shadow_prefix(body: &mut String, style: SvgStyle) -> bool {
     let Some(uses_fill) = svg_shadow_uses_fill(style) else {
         return false;
     };
-    body.push_str(&format!(
-        "q 1 0 0 1 {dx} {dy} cm ",
-        dx = pdf_num(shadow.dx),
-        dy = pdf_num(shadow.dy)
-    ));
+    body.push_str("q 1 0 0 1 ");
+    append_pdf_num(body, shadow.dx);
+    body.push(' ');
+    append_pdf_num(body, shadow.dy);
+    body.push_str(" cm ");
     let paint_alpha = if uses_fill {
         svg_effective_fill_opacity(style)
     } else {
@@ -16341,19 +16341,9 @@ fn append_svg_shadow_prefix(body: &mut String, style: SvgStyle) -> bool {
     }
     let (r, g, b) = shadow.color;
     if uses_fill {
-        body.push_str(&format!(
-            "{} {} {} rg ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+        append_rgb_fill_space_operator(body, (r, g, b));
     } else {
-        body.push_str(&format!(
-            "{} {} {} RG ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+        append_rgb_stroke_space_operator(body, (r, g, b));
         append_svg_stroke_options(body, style);
     }
     true
@@ -16384,47 +16374,33 @@ fn svg_shadow_uses_fill(style: SvgStyle) -> Option<bool> {
 }
 
 fn append_svg_style(body: &mut String, style: SvgStyle) {
-    if let Some((r, g, b)) = style.fill {
-        body.push_str(&format!(
-            "{} {} {} rg ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+    if let Some(color) = style.fill {
+        append_rgb_fill_space_operator(body, color);
     }
-    if let Some((r, g, b)) = style.stroke {
-        body.push_str(&format!(
-            "{} {} {} RG ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+    if let Some(color) = style.stroke {
+        append_rgb_stroke_space_operator(body, color);
         append_svg_stroke_options(body, style);
     }
 }
 
 fn append_svg_fill_style(body: &mut String, style: SvgStyle) {
-    if let Some((r, g, b)) = style.fill {
-        body.push_str(&format!(
-            "{} {} {} rg ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+    if let Some(color) = style.fill {
+        append_rgb_fill_space_operator(body, color);
     }
 }
 
 fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
-    body.push_str(&format!(
-        "{} w {} J {} j ",
-        pdf_num(style.stroke_width.max(0.1)),
-        style.line_cap.pdf_id(),
-        style.line_join.pdf_id()
-    ));
+    append_pdf_num(body, style.stroke_width.max(0.1));
+    body.push_str(" w ");
+    body.push((b'0' + style.line_cap.pdf_id()) as char);
+    body.push_str(" J ");
+    body.push((b'0' + style.line_join.pdf_id()) as char);
+    body.push_str(" j ");
     if style.line_join == SvgLineJoin::Miter
         && let Some(miter_limit) = style.miter_limit
     {
-        body.push_str(&format!("{} M ", pdf_num(miter_limit)));
+        append_pdf_num(body, miter_limit);
+        body.push_str(" M ");
     }
     if !style.dash.is_empty() {
         body.push('[');
@@ -16435,10 +16411,12 @@ fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
                 if repeat > 0 || idx > 0 {
                     body.push(' ');
                 }
-                body.push_str(&pdf_num(style.dash.values[idx]));
+                append_pdf_num(body, style.dash.values[idx]);
             }
         }
-        body.push_str(&format!("] {} d ", pdf_num(style.dash.offset)));
+        body.push_str("] ");
+        append_pdf_num(body, style.dash.offset);
+        body.push_str(" d ");
     }
 }
 
@@ -20149,13 +20127,27 @@ fn append_text_segment_operator(
     body.push_str(" TJ ET\n");
 }
 
-fn append_rgb_fill_operator(out: &mut String, color: (f32, f32, f32)) {
+fn append_rgb_components_fixed3(out: &mut String, color: (f32, f32, f32)) {
     append_pdf_fixed3(out, color.0);
     out.push(' ');
     append_pdf_fixed3(out, color.1);
     out.push(' ');
     append_pdf_fixed3(out, color.2);
+}
+
+fn append_rgb_fill_operator(out: &mut String, color: (f32, f32, f32)) {
+    append_rgb_components_fixed3(out, color);
     out.push_str(" rg\n");
+}
+
+fn append_rgb_fill_space_operator(out: &mut String, color: (f32, f32, f32)) {
+    append_rgb_components_fixed3(out, color);
+    out.push_str(" rg ");
+}
+
+fn append_rgb_stroke_space_operator(out: &mut String, color: (f32, f32, f32)) {
+    append_rgb_components_fixed3(out, color);
+    out.push_str(" RG ");
 }
 
 fn append_rgb_stroke_line_operator(
@@ -20166,11 +20158,7 @@ fn append_rgb_stroke_line_operator(
     y: f32,
     x2: f32,
 ) {
-    append_pdf_fixed3(out, color.0);
-    out.push(' ');
-    append_pdf_fixed3(out, color.1);
-    out.push(' ');
-    append_pdf_fixed3(out, color.2);
+    append_rgb_components_fixed3(out, color);
     out.push_str(" RG ");
     append_pdf_fixed2(out, width);
     out.push_str(" w ");
@@ -20409,15 +20397,17 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, Tok, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, SvgDashPattern, SvgLineCap, SvgLineJoin,
+        SvgShadow, SvgStyle, Tok, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
         append_pdf_object_str, append_pdf_stream_dict, append_pdf_string_escaped,
-        append_rgb_fill_operator, append_rgb_stroke_line_operator, append_text_segment_operator,
-        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
-        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
-        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
-        shape_run,
+        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        append_rgb_stroke_space_operator, append_svg_shadow_prefix, append_svg_stroke_options,
+        append_svg_style, append_text_segment_operator, append_xref_in_use_row, append_xref_offset,
+        build_paragraph, build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of,
+        kerned_tj, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string,
+        rounded_rect_fill, shape_run,
     };
     use std::borrow::Cow;
 
@@ -20768,6 +20758,66 @@ mod pdf_writer_tests {
             out,
             "0.100 0.250 1.000 RG 0.66 w 12.50 700.25 m 42.00 700.25 l S\n"
         );
+    }
+
+    #[test]
+    fn svg_style_operator_writers_preserve_legacy_format_shape() {
+        let mut style = SvgStyle {
+            fill: Some((1.0, 0.5, 0.0)),
+            stroke: Some((0.25, 0.75, 0.5)),
+            stroke_width: 2.5,
+            line_cap: SvgLineCap::Round,
+            line_join: SvgLineJoin::Miter,
+            miter_limit: Some(3.25),
+            dash: SvgDashPattern {
+                values: [
+                    3.0, 1.5, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                len: 3,
+                offset: 0.75,
+            },
+            ..SvgStyle::INITIAL
+        };
+
+        let mut out = String::new();
+        append_svg_style(&mut out, style);
+        assert_eq!(
+            out,
+            "1.000 0.500 0.000 rg 0.250 0.750 0.500 RG 2.5 w 1 J 0 j 3.25 M [3 1.5 2 3 1.5 2] 0.75 d "
+        );
+
+        let mut colors = String::new();
+        append_rgb_fill_space_operator(&mut colors, (0.1, 0.2, 0.3));
+        append_rgb_stroke_space_operator(&mut colors, (0.4, 0.5, 0.6));
+        assert_eq!(colors, "0.100 0.200 0.300 rg 0.400 0.500 0.600 RG ");
+
+        style.shadow = Some(SvgShadow {
+            dx: 2.0,
+            dy: -1.25,
+            color: (0.1, 0.2, 0.3),
+            opacity: 1.0,
+        });
+        style.fill = None;
+        let mut shadow = String::new();
+        assert!(append_svg_shadow_prefix(&mut shadow, style));
+        assert_eq!(
+            shadow,
+            "q 1 0 0 1 2 -1.25 cm 0.100 0.200 0.300 RG 2.5 w 1 J 0 j 3.25 M [3 1.5 2 3 1.5 2] 0.75 d "
+        );
+
+        let mut stroke_options = String::new();
+        append_svg_stroke_options(
+            &mut stroke_options,
+            SvgStyle {
+                stroke_width: 0.01,
+                line_cap: SvgLineCap::Square,
+                line_join: SvgLineJoin::Bevel,
+                miter_limit: Some(9.0),
+                dash: SvgDashPattern::NONE,
+                ..SvgStyle::INITIAL
+            },
+        );
+        assert_eq!(stroke_options, "0.1 w 2 J 2 j ");
     }
 
     #[test]

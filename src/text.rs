@@ -368,7 +368,7 @@ impl Font {
         let Some((s, e)) = self.glyph_range(gid) else {
             return out;
         };
-        if e <= s || !be_i16(&self.data, s).is_some_and(|n| n < 0) {
+        if e <= s || be_i16(&self.data, s).is_none_or(|n| n >= 0) {
             return out;
         }
         let Some(mut p) = off(s, 10) else {

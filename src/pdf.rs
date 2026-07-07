@@ -2546,19 +2546,15 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                     selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
                 }
             }
-            "g" => {
-                if !self_closing {
-                    style_stack.push(container_style);
-                    link_stack.push(inherited_link);
-                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
-                }
+            "g" if !self_closing => {
+                style_stack.push(container_style);
+                link_stack.push(inherited_link);
+                selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
             }
-            "a" => {
-                if !self_closing {
-                    style_stack.push(container_style);
-                    link_stack.push(parse_svg_anchor_link(&attrs).unwrap_or(inherited_link));
-                    selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
-                }
+            "a" if !self_closing => {
+                style_stack.push(container_style);
+                link_stack.push(parse_svg_anchor_link(&attrs).unwrap_or(inherited_link));
+                selector_stack.push(svg_css_ancestor(tag_lower, &attrs));
             }
             "rect" => {
                 if let Some(rect) = parse_svg_rect(
@@ -7318,10 +7314,8 @@ fn parse_svg_style_patch(
                     }
                 }
             }
-            "display" | "visibility" => {
-                if svg_visibility_value_hides(name.as_str(), value) {
-                    patch.visible = Some(false);
-                }
+            "display" | "visibility" if svg_visibility_value_hides(name.as_str(), value) => {
+                patch.visible = Some(false);
             }
             "filter" => patch.shadow = parse_svg_filter_shadow(value, filter_shadows, css_vars),
             "transform" => patch.transform = parse_svg_transform(value),
@@ -7504,7 +7498,7 @@ fn svg_css_selector_part_matches(
         return false;
     }
     if let Some(selector_id) = &part.id
-        && !svg_attr(attrs, "id").is_some_and(|id| id == selector_id)
+        && svg_attr(attrs, "id").is_none_or(|id| id != selector_id)
     {
         return false;
     }
@@ -16013,7 +16007,7 @@ fn resolve_svg_repeated_radial_gradient(
         return None;
     }
     let period_count = (max_radius / r).ceil();
-    if period_count < 1.0 || period_count > 64.0 {
+    if !(1.0..=64.0).contains(&period_count) {
         return None;
     }
     let period_count = period_count as i32;
@@ -17875,6 +17869,47 @@ fn append_pdf_num(out: &mut String, value: f32) {
     }
 }
 
+fn append_pdf_fixed(out: &mut String, value: f32, scale: u64) {
+    let finite = finite_pdf_scalar(value);
+    let scaled_float = f64::from(finite) * scale as f64;
+    let frac = scaled_float.abs().fract();
+    if (frac - 0.5).abs() <= f64::EPSILON * 4096.0 {
+        match scale {
+            100 => {
+                let _ = write!(out, "{finite:.2}");
+                return;
+            }
+            1000 => {
+                let _ = write!(out, "{finite:.3}");
+                return;
+            }
+            _ => {}
+        }
+    }
+    let scaled = scaled_float.round() as i64;
+    if scaled < 0 || (scaled == 0 && finite.is_sign_negative()) {
+        out.push('-');
+    }
+    let abs = scaled.unsigned_abs();
+    append_decimal_u64_string(out, abs / scale);
+    out.push('.');
+    let frac = abs % scale;
+    let mut divisor = scale / 10;
+    while divisor > 0 {
+        out.push((b'0' + ((frac / divisor) % 10) as u8) as char);
+        divisor /= 10;
+    }
+}
+
+fn append_pdf_fixed2(out: &mut String, value: f32) {
+    append_pdf_fixed(out, value, 100);
+}
+
+#[cfg(test)]
+fn append_pdf_fixed3(out: &mut String, value: f32) {
+    append_pdf_fixed(out, value, 1000);
+}
+
 fn page_stream(stream: &str) -> PdfStream {
     let raw = stream.as_bytes();
     if raw.len() < PAGE_STREAM_COMPRESSION_MIN {
@@ -18937,11 +18972,11 @@ fn append_text_segment_operator(
     body.push_str("BT /F");
     append_decimal_u64_string(body, u64::from(slot));
     body.push(' ');
-    let _ = write!(body, "{:.2}", finite_pdf_scalar(size));
+    append_pdf_fixed2(body, size);
     body.push_str(" Tf 1 0 0 1 ");
-    let _ = write!(body, "{:.2}", finite_pdf_scalar(x));
+    append_pdf_fixed2(body, x);
     body.push(' ');
-    let _ = write!(body, "{:.2}", finite_pdf_scalar(y));
+    append_pdf_fixed2(body, y);
     body.push_str(" Tm ");
     append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0);
     body.push_str(" TJ ET\n");
@@ -19173,11 +19208,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, Tok, append_decimal_u64_string,
-        append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_num,
-        append_pdf_object_str, append_pdf_string_escaped, append_text_segment_operator,
-        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
-        decode_xml_entities, font_size_of, kerned_tj, measure_word, normalize_svg_text_node,
-        pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill, shape_run,
+        append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_fixed2,
+        append_pdf_fixed3, append_pdf_num, append_pdf_object_str, append_pdf_string_escaped,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
+        shape_run,
     };
 
     #[test]
@@ -19527,6 +19563,29 @@ mod pdf_writer_tests {
         assert_eq!(pdf_fixed3(f32::NAN), "0.000");
         assert_eq!(pdf_fixed3(f32::INFINITY), "0.000");
         assert_eq!(pdf_fixed3(f32::NEG_INFINITY), "0.000");
+
+        let mut fixed = String::new();
+        append_pdf_fixed2(&mut fixed, 1.2);
+        fixed.push(' ');
+        append_pdf_fixed2(&mut fixed, -0.0);
+        fixed.push(' ');
+        append_pdf_fixed3(&mut fixed, 1.2345);
+        fixed.push(' ');
+        append_pdf_fixed3(&mut fixed, f32::NAN);
+        assert_eq!(fixed, "1.20 -0.00 1.235 0.000");
+
+        for base in -1000..=1000 {
+            for offset in [-0.005f32, -0.0049, 0.0, 0.0049, 0.005, 0.0051] {
+                let value = base as f32 * 0.5 + offset;
+                let mut fixed2 = String::new();
+                append_pdf_fixed2(&mut fixed2, value);
+                assert_eq!(fixed2, format!("{:.2}", finite_pdf_scalar(value)));
+
+                let mut fixed3 = String::new();
+                append_pdf_fixed3(&mut fixed3, value);
+                assert_eq!(fixed3, format!("{:.3}", finite_pdf_scalar(value)));
+            }
+        }
     }
 
     #[test]

@@ -1030,7 +1030,7 @@ enum SvgMarkerPlacement {
 #[derive(Clone, Copy)]
 struct SvgMarkerPaint {
     fill: Option<SvgColor>,
-    stroke: SvgColor,
+    stroke: Option<SvgColor>,
     stroke_width: f32,
 }
 
@@ -14929,9 +14929,7 @@ fn draw_svg_line(
     if !line.style.visible {
         return;
     }
-    let Some(stroke) = line.style.stroke else {
-        return;
-    };
+    let has_markers = line.marker_start.is_some() || line.marker_end.is_some();
     let style = SvgStyle {
         color: line.style.color,
         fill: None,
@@ -14939,7 +14937,7 @@ fn draw_svg_line(
         fill_pattern: None,
         fill_current_color: false,
         fill_context: None,
-        stroke: Some(stroke),
+        stroke: line.style.stroke,
         stroke_gradient: line.style.stroke_gradient,
         stroke_current_color: line.style.stroke_current_color,
         stroke_context: line.style.stroke_context,
@@ -14966,7 +14964,7 @@ fn draw_svg_line(
         letter_spacing: line.style.letter_spacing,
     };
     let style = svg_style_with_non_scaling_stroke(style, stroke_scale);
-    if !svg_style_has_paint(style) {
+    if !svg_style_has_paint(style) && !has_markers {
         return;
     }
     let line_bbox = svg_line_bbox(line, style);
@@ -14975,35 +14973,37 @@ fn draw_svg_line(
         append_svg_line_path(body, line);
         append_svg_shadow_operator(body, style);
     }
-    if let Some(stroke) = style.stroke {
-        if style.paint_order != SvgPaintOrder::NORMAL
-            && (line.marker_start.is_some() || line.marker_end.is_some())
-        {
-            for layer in style.paint_order.layers {
-                match layer {
-                    SvgPaintLayer::Fill => {}
-                    SvgPaintLayer::Stroke => {
+    if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
+        for layer in style.paint_order.layers {
+            match layer {
+                SvgPaintLayer::Fill => {}
+                SvgPaintLayer::Stroke => {
+                    if style.stroke.is_some() {
                         append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
                     }
-                    SvgPaintLayer::Markers => {
-                        append_svg_line_markers(
-                            body,
-                            line,
-                            markers,
-                            stroke,
-                            line.style.fill,
-                            style.stroke_width,
-                        );
-                    }
+                }
+                SvgPaintLayer::Markers => {
+                    append_svg_line_markers(
+                        body,
+                        line,
+                        markers,
+                        style.stroke,
+                        line.style.fill,
+                        style.stroke_width,
+                    );
                 }
             }
-        } else {
+        }
+    } else {
+        if style.stroke.is_some() {
             append_svg_line_stroke_layer(body, line, style, gradients, page_shadings);
+        }
+        if has_markers {
             append_svg_line_markers(
                 body,
                 line,
                 markers,
-                stroke,
+                style.stroke,
                 line.style.fill,
                 style.stroke_width,
             );
@@ -15167,7 +15167,7 @@ fn append_svg_line_markers(
     body: &mut String,
     line: &SvgLine,
     markers: &[SvgMarker],
-    stroke: (f32, f32, f32),
+    stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
 ) {
@@ -15213,7 +15213,9 @@ fn draw_svg_poly(
     page_shadings: &mut Vec<PdfShading>,
 ) {
     let style = svg_style_with_non_scaling_stroke(poly.style, stroke_scale);
-    if poly.points.is_empty() || !svg_style_has_paint(style) {
+    let has_markers =
+        poly.marker_start.is_some() || poly.marker_mid.is_some() || poly.marker_end.is_some();
+    if poly.points.is_empty() || (!svg_style_has_paint(style) && !has_markers) {
         return;
     }
     let poly_bbox = svg_points_bbox(&poly.points);
@@ -15222,32 +15224,30 @@ fn draw_svg_poly(
         append_svg_poly_path(body, poly, closed);
         append_svg_shadow_operator(body, style);
     }
-    if let Some(stroke) = style.stroke {
-        let has_markers =
-            poly.marker_start.is_some() || poly.marker_mid.is_some() || poly.marker_end.is_some();
-        if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
-            append_svg_ordered_painted_shape_with_markers(
-                body,
-                style,
-                gradients,
-                patterns,
-                clip_paths,
-                page_shadings,
-                stroke_scale,
-                poly_bbox,
-                &|body| append_svg_poly_path(body, poly, closed),
-                |body| {
-                    append_svg_poly_markers(
-                        body,
-                        poly,
-                        markers,
-                        stroke,
-                        style.fill,
-                        style.stroke_width,
-                    );
-                },
-            );
-        } else {
+    if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
+        append_svg_ordered_painted_shape_with_markers(
+            body,
+            style,
+            gradients,
+            patterns,
+            clip_paths,
+            page_shadings,
+            stroke_scale,
+            poly_bbox,
+            &|body| append_svg_poly_path(body, poly, closed),
+            |body| {
+                append_svg_poly_markers(
+                    body,
+                    poly,
+                    markers,
+                    style.stroke,
+                    style.fill,
+                    style.stroke_width,
+                );
+            },
+        );
+    } else {
+        if svg_style_has_paint(style) {
             append_svg_painted_shape(
                 body,
                 style,
@@ -15259,20 +15259,17 @@ fn draw_svg_poly(
                 poly_bbox,
                 |body| append_svg_poly_path(body, poly, closed),
             );
-            append_svg_poly_markers(body, poly, markers, stroke, style.fill, style.stroke_width);
         }
-    } else {
-        append_svg_painted_shape(
-            body,
-            style,
-            gradients,
-            patterns,
-            clip_paths,
-            page_shadings,
-            stroke_scale,
-            poly_bbox,
-            |body| append_svg_poly_path(body, poly, closed),
-        );
+        if has_markers {
+            append_svg_poly_markers(
+                body,
+                poly,
+                markers,
+                style.stroke,
+                style.fill,
+                style.stroke_width,
+            );
+        }
     }
     append_svg_transform_suffix(body, transformed);
 }
@@ -15292,7 +15289,7 @@ fn append_svg_poly_markers(
     body: &mut String,
     poly: &SvgPoly,
     markers: &[SvgMarker],
-    stroke: (f32, f32, f32),
+    stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
 ) {
@@ -15395,7 +15392,9 @@ fn draw_svg_path(
     page_shadings: &mut Vec<PdfShading>,
 ) {
     let style = svg_style_with_non_scaling_stroke(path.style, stroke_scale);
-    if path.ops.is_empty() || !svg_style_has_paint(style) {
+    let has_markers =
+        path.marker_start.is_some() || path.marker_mid.is_some() || path.marker_end.is_some();
+    if path.ops.is_empty() || (!svg_style_has_paint(style) && !has_markers) {
         return;
     }
     let path_bbox = svg_path_bbox(&path.ops);
@@ -15404,32 +15403,30 @@ fn draw_svg_path(
         append_svg_path_ops(body, &path.ops);
         append_svg_shadow_operator(body, style);
     }
-    if let Some(stroke) = style.stroke {
-        let has_markers =
-            path.marker_start.is_some() || path.marker_mid.is_some() || path.marker_end.is_some();
-        if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
-            append_svg_ordered_painted_shape_with_markers(
-                body,
-                style,
-                gradients,
-                patterns,
-                clip_paths,
-                page_shadings,
-                stroke_scale,
-                path_bbox,
-                &|body| append_svg_path_ops(body, &path.ops),
-                |body| {
-                    append_svg_path_markers(
-                        body,
-                        path,
-                        markers,
-                        stroke,
-                        style.fill,
-                        style.stroke_width,
-                    );
-                },
-            );
-        } else {
+    if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
+        append_svg_ordered_painted_shape_with_markers(
+            body,
+            style,
+            gradients,
+            patterns,
+            clip_paths,
+            page_shadings,
+            stroke_scale,
+            path_bbox,
+            &|body| append_svg_path_ops(body, &path.ops),
+            |body| {
+                append_svg_path_markers(
+                    body,
+                    path,
+                    markers,
+                    style.stroke,
+                    style.fill,
+                    style.stroke_width,
+                );
+            },
+        );
+    } else {
+        if svg_style_has_paint(style) {
             append_svg_painted_shape(
                 body,
                 style,
@@ -15441,20 +15438,17 @@ fn draw_svg_path(
                 path_bbox,
                 |body| append_svg_path_ops(body, &path.ops),
             );
-            append_svg_path_markers(body, path, markers, stroke, style.fill, style.stroke_width);
         }
-    } else {
-        append_svg_painted_shape(
-            body,
-            style,
-            gradients,
-            patterns,
-            clip_paths,
-            page_shadings,
-            stroke_scale,
-            path_bbox,
-            |body| append_svg_path_ops(body, &path.ops),
-        );
+        if has_markers {
+            append_svg_path_markers(
+                body,
+                path,
+                markers,
+                style.stroke,
+                style.fill,
+                style.stroke_width,
+            );
+        }
     }
     append_svg_transform_suffix(body, transformed);
 }
@@ -15463,7 +15457,7 @@ fn append_svg_path_markers(
     body: &mut String,
     path: &SvgPath,
     markers: &[SvgMarker],
-    stroke: (f32, f32, f32),
+    stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
 ) {
@@ -15516,7 +15510,7 @@ fn append_svg_path_mid_markers(
     ops: &[SvgPathOp],
     marker_ref: SvgMarkerRef,
     markers: &[SvgMarker],
-    stroke: (f32, f32, f32),
+    stroke: Option<(f32, f32, f32)>,
     fill: Option<(f32, f32, f32)>,
     stroke_width: f32,
 ) {
@@ -16927,7 +16921,9 @@ fn append_svg_marker_or_arrowhead(
     {
         return;
     }
-    append_svg_arrowhead(body, tip, tail, paint.stroke, paint.stroke_width);
+    if let Some(stroke) = paint.stroke {
+        append_svg_arrowhead(body, tip, tail, stroke, paint.stroke_width);
+    }
 }
 
 fn append_svg_marker(
@@ -17041,7 +17037,7 @@ fn svg_style_with_marker_context(mut style: SvgStyle, paint: SvgMarkerPaint) -> 
 fn svg_marker_context_paint(context: SvgContextPaint, paint: SvgMarkerPaint) -> Option<SvgColor> {
     match context {
         SvgContextPaint::Fill => paint.fill,
-        SvgContextPaint::Stroke => Some(paint.stroke),
+        SvgContextPaint::Stroke => paint.stroke,
     }
 }
 

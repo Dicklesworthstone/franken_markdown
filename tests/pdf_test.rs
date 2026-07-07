@@ -817,6 +817,52 @@ fn pdf_svg_marker_context_paint_inherits_referencing_shape_fill_and_stroke() {
 }
 
 #[test]
+fn pdf_svg_markers_render_on_unstroked_referencing_shapes_when_marker_has_own_paint() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 42">
+  <defs>
+    <marker id="own" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L6 3 L0 6 Z" fill="#00ff00"/>
+    </marker>
+    <marker id="ctx-fill" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L6 3 L0 6 Z" fill="context-fill"/>
+    </marker>
+    <marker id="ctx-stroke" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L6 3 L0 6 Z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <line x1="4" y1="6" x2="24" y2="6" stroke="none" marker-end="url(#own)"/>
+  <path d="M4 16 L24 16" fill="none" stroke="none" marker-end="url(#own)"/>
+  <polyline points="4,30 14,36 24,30" fill="none" stroke="none" marker-mid="url(#own)" marker-end="url(#own)"/>
+  <polygon points="34,4 58,14 34,24" fill="#ff00ff" stroke="none" marker-end="url(#ctx-fill)"/>
+  <line x1="34" y1="34" x2="58" y2="34" stroke="none" marker-end="url(#ctx-stroke)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("unstroked-marker.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Unstroked markers](unstroked-marker.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let explicit_green_markers = text
+        .matches("0.000 1.000 0.000 rg 0 0 m 6 3 l 0 6 l h f")
+        .count();
+    assert_eq!(
+        explicit_green_markers, 4,
+        "unstroked line/path/polyline references should still place explicitly painted marker shapes; saw {explicit_green_markers}\n{text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 1.000 rg 0 0 m 6 3 l 0 6 l h f"),
+        "fill-only referencing shapes should provide context-fill to marker children: {text}"
+    );
+    assert!(
+        !text.contains("0.000 0.000 0.000 rg 0 0 m 6 3 l 0 6 l h f"),
+        "context-stroke on an unstroked referencing shape must not invent a black marker fill: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_context_paint_without_marker_context_does_not_paint() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 12">

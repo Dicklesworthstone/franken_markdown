@@ -162,6 +162,17 @@ fn first_text_object_after(pdf_text: &str, marker: &str) -> String {
     tail[..end].to_string()
 }
 
+fn first_graphics_state_after<'a>(pdf_text: &'a str, marker: &str) -> &'a str {
+    let tail = pdf_text
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("marker not found in PDF text: {marker}\n{pdf_text}"));
+    let end = tail
+        .find("\nQ\n")
+        .unwrap_or_else(|| panic!("graphics state end not found after marker {marker}: {tail}"));
+    &tail[..end]
+}
+
 fn text_streams(bytes: &[u8]) -> Vec<String> {
     let text = as_text(bytes);
     let mut streams = Vec::new();
@@ -1950,6 +1961,65 @@ fn pdf_svg_parent_text_length_adjusts_contiguous_tspan_runs() {
     assert!(
         first_stretched_object.contains(">-"),
         "parent textLength should be allocated to child tspans as selectable PDF spacing: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_text_decoration_draws_vector_lines_without_flattening_text() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 84">
+  <style>
+    :root { --decor: underline; }
+    .under { text-decoration: var(--decor); }
+    .combo { text-decoration-line: overline line-through; }
+  </style>
+  <text x="10" y="16" font-size="10" class="under" fill="#0000ff">Under</text>
+  <text x="10" y="36" font-size="10" class="combo" fill="#ff0000">Combo</text>
+  <text x="10" y="56" font-size="10" text-decoration="underline" fill="#00ff00">A<tspan text-decoration="none" fill="#123456">B</tspan><tspan style="text-decoration: line-through" fill="#ff00ff">C</tspan></text>
+  <text x="10" y="76" font-size="10" text-decoration="wavy" text-decoration-line="underline" fill="#00ffff">LineAttr</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("decor.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Decor](decor.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let under = first_graphics_state_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    let combo = first_graphics_state_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let inherited = first_graphics_state_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    let reset = first_graphics_state_after(&text, "0.071 0.204 0.337 rg\nBT /F1");
+    let tspan = first_graphics_state_after(&text, "1.000 0.000 1.000 rg\nBT /F1");
+    let line_attr = first_graphics_state_after(&text, "0.000 1.000 1.000 rg\nBT /F1");
+
+    assert!(
+        under.contains("0.000 0.000 1.000 RG") && under.matches(" l S").count() == 1,
+        "CSS var text-decoration underline should paint one blue vector line while text remains selectable: {text}"
+    );
+    assert!(
+        combo.contains("1.000 0.000 0.000 RG") && combo.matches(" l S").count() == 2,
+        "text-decoration-line should paint overline and line-through for the same text run: {text}"
+    );
+    assert!(
+        inherited.contains("0.000 1.000 0.000 RG") && inherited.matches(" l S").count() == 1,
+        "presentation-attribute underline should apply to the parent text node: {text}"
+    );
+    assert!(
+        reset.matches(" l S").count() == 0 && !reset.contains("0.071 0.204 0.337 RG"),
+        "text-decoration=none on a tspan should reset the inherited parent underline: {text}"
+    );
+    assert!(
+        tspan.contains("1.000 0.000 1.000 RG") && tspan.matches(" l S").count() == 1,
+        "inline tspan style should be able to re-enable line-through independently: {text}"
+    );
+    assert!(
+        line_attr.contains("0.000 1.000 1.000 RG") && line_attr.matches(" l S").count() == 1,
+        "text-decoration-line should still apply when an unsupported text-decoration shorthand is present: {text}"
+    );
+    assert!(
+        text.contains("<0041>") && text.contains("<0042>") && text.contains("<0043>"),
+        "decorated SVG labels must remain real selectable PDF text: {text}"
     );
 }
 

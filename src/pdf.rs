@@ -451,6 +451,7 @@ struct SvgText {
     length_adjust: SvgLengthAdjust,
     baseline: SvgDominantBaseline,
     anchor: SvgTextAnchor,
+    decoration: SvgTextDecoration,
     fill: (f32, f32, f32),
     opacity: f32,
     clip_path: Option<usize>,
@@ -481,6 +482,32 @@ enum SvgTextAnchor {
 enum SvgLengthAdjust {
     Spacing,
     SpacingAndGlyphs,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SvgTextDecoration {
+    bits: u8,
+}
+
+impl SvgTextDecoration {
+    const NONE: Self = Self { bits: 0 };
+    const UNDERLINE: u8 = 1 << 0;
+    const OVERLINE: u8 = 1 << 1;
+    const LINE_THROUGH: u8 = 1 << 2;
+
+    const fn with(self, bit: u8) -> Self {
+        Self {
+            bits: self.bits | bit,
+        }
+    }
+
+    const fn contains(self, bit: u8) -> bool {
+        self.bits & bit != 0
+    }
+
+    const fn is_empty(self) -> bool {
+        self.bits == 0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -749,6 +776,7 @@ struct SvgStyle {
     font_family: SvgFontFamily,
     dominant_baseline: SvgDominantBaseline,
     letter_spacing: SvgTextSpacing,
+    text_decoration: SvgTextDecoration,
 }
 
 impl SvgStyle {
@@ -784,6 +812,7 @@ impl SvgStyle {
         font_family: SvgFontFamily::Body,
         dominant_baseline: SvgDominantBaseline::Auto,
         letter_spacing: SvgTextSpacing::ZERO,
+        text_decoration: SvgTextDecoration::NONE,
     };
 }
 
@@ -827,6 +856,7 @@ struct SvgStylePatch {
     font_family: Option<SvgFontFamily>,
     dominant_baseline: Option<SvgDominantBaseline>,
     letter_spacing: Option<SvgTextSpacing>,
+    text_decoration: Option<SvgTextDecoration>,
 }
 
 #[derive(Clone)]
@@ -4046,6 +4076,7 @@ fn parse_svg_line(
                 font_family: inherited.font_family,
                 dominant_baseline: inherited.dominant_baseline,
                 letter_spacing: inherited.letter_spacing,
+                text_decoration: inherited.text_decoration,
             },
             css_rules,
             gradients,
@@ -4114,6 +4145,7 @@ fn parse_svg_poly(
             font_family: inherited.font_family,
             dominant_baseline: inherited.dominant_baseline,
             letter_spacing: inherited.letter_spacing,
+            text_decoration: inherited.text_decoration,
         }
     };
     let marker_refs = parse_svg_marker_refs_for_element(
@@ -4597,6 +4629,7 @@ fn svg_text_element(
         length_adjust: placement.length_adjust,
         baseline: style.dominant_baseline,
         anchor: placement.anchor,
+        decoration: style.text_decoration,
         fill,
         opacity,
         clip_path: style.clip_path,
@@ -6935,6 +6968,16 @@ fn parse_svg_style_with_ancestors(
         svg_attr(attrs, "letter-spacing"),
         &scoped_css_vars,
     );
+    apply_svg_text_decoration_attr(
+        &mut style,
+        svg_attr(attrs, "text-decoration"),
+        &scoped_css_vars,
+    );
+    apply_svg_text_decoration_attr(
+        &mut style,
+        svg_attr(attrs, "text-decoration-line"),
+        &scoped_css_vars,
+    );
     apply_svg_dominant_baseline_attr(
         &mut style,
         svg_attr(attrs, "dominant-baseline"),
@@ -7384,6 +7427,9 @@ fn parse_svg_style_patch(
             "font-style" => patch.font_slant = parse_svg_font_slant(value, css_vars),
             "font-family" => patch.font_family = parse_svg_font_family(value, css_vars),
             "letter-spacing" => patch.letter_spacing = parse_svg_letter_spacing(value, css_vars),
+            "text-decoration" | "text-decoration-line" => {
+                patch.text_decoration = parse_svg_text_decoration(value, css_vars);
+            }
             "dominant-baseline" | "alignment-baseline" => {
                 patch.dominant_baseline = parse_svg_dominant_baseline(value, css_vars);
             }
@@ -7694,6 +7740,9 @@ fn apply_svg_style_patch(style: &mut SvgStyle, patch: SvgStylePatch) {
     if let Some(letter_spacing) = patch.letter_spacing {
         style.letter_spacing = letter_spacing;
     }
+    if let Some(text_decoration) = patch.text_decoration {
+        style.text_decoration = text_decoration;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7734,6 +7783,9 @@ fn apply_svg_style_declaration(
         "font-style" => apply_svg_font_slant_attr(style, Some(value), css_vars),
         "font-family" => apply_svg_font_family_attr(style, Some(value), css_vars),
         "letter-spacing" => apply_svg_letter_spacing_attr(style, Some(value), css_vars),
+        "text-decoration" | "text-decoration-line" => {
+            apply_svg_text_decoration_attr(style, Some(value), css_vars);
+        }
         "dominant-baseline" | "alignment-baseline" => {
             apply_svg_dominant_baseline_attr(style, Some(value), css_vars);
         }
@@ -8997,6 +9049,48 @@ fn parse_svg_letter_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<
     } else {
         Some(SvgTextSpacing::Points(number))
     }
+}
+
+fn apply_svg_text_decoration_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(decoration) = value.and_then(|value| parse_svg_text_decoration(value, css_vars)) {
+        style.text_decoration = decoration;
+    }
+}
+
+fn parse_svg_text_decoration(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<SvgTextDecoration> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_text_decoration(&resolved, css_vars);
+    }
+    let mut decoration = SvgTextDecoration::NONE;
+    let mut saw_known = false;
+    for token in value.split_ascii_whitespace() {
+        match token.trim_matches(',').to_ascii_lowercase().as_str() {
+            "none" => return Some(SvgTextDecoration::NONE),
+            "underline" => {
+                decoration = decoration.with(SvgTextDecoration::UNDERLINE);
+                saw_known = true;
+            }
+            "overline" => {
+                decoration = decoration.with(SvgTextDecoration::OVERLINE);
+                saw_known = true;
+            }
+            "line-through" => {
+                decoration = decoration.with(SvgTextDecoration::LINE_THROUGH);
+                saw_known = true;
+            }
+            _ => {}
+        }
+    }
+    saw_known.then_some(decoration)
 }
 
 fn apply_svg_dominant_baseline_attr(
@@ -14956,6 +15050,7 @@ fn draw_svg_line(
         font_family: line.style.font_family,
         dominant_baseline: line.style.dominant_baseline,
         letter_spacing: line.style.letter_spacing,
+        text_decoration: line.style.text_decoration,
     };
     let style = svg_style_with_non_scaling_stroke(style, stroke_scale);
     if !svg_style_has_paint(style) && !has_markers {
@@ -17231,7 +17326,7 @@ fn draw_svg_text(
         append_svg_text_clip_path(body, mask_path, text.transform, image_transform, text_bbox);
     }
     body.push_str(&format!(
-        "{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\nQ\n",
+        "{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\n",
         r = pdf_fixed3(r),
         g = pdf_fixed3(g),
         b = pdf_fixed3(b),
@@ -17250,6 +17345,60 @@ fn draw_svg_text(
             shaped,
             pdf_tj_spacing_adjust(spacing, matrix.size),
         ),
+    ));
+    append_svg_text_decoration(body, text.decoration, matrix, width, text.fill);
+    body.push_str("Q\n");
+}
+
+fn append_svg_text_decoration(
+    body: &mut String,
+    decoration: SvgTextDecoration,
+    matrix: SvgTextMatrix,
+    width: f32,
+    color: SvgColor,
+) {
+    if decoration.is_empty() || width <= 0.001 || !width.is_finite() || !matrix.size.is_finite() {
+        return;
+    }
+    let stroke_width = (matrix.size * 0.055).clamp(0.35, 3.0);
+    let (r, g, b) = color;
+    body.push_str(&format!(
+        "{r} {g} {b} RG {w} w 0 J [] 0 d\n",
+        r = pdf_fixed3(r),
+        g = pdf_fixed3(g),
+        b = pdf_fixed3(b),
+        w = pdf_num(stroke_width),
+    ));
+    if decoration.contains(SvgTextDecoration::UNDERLINE) {
+        append_svg_text_decoration_line(body, matrix, width, -0.12 * matrix.size);
+    }
+    if decoration.contains(SvgTextDecoration::OVERLINE) {
+        append_svg_text_decoration_line(body, matrix, width, 0.72 * matrix.size);
+    }
+    if decoration.contains(SvgTextDecoration::LINE_THROUGH) {
+        append_svg_text_decoration_line(body, matrix, width, 0.30 * matrix.size);
+    }
+}
+
+fn append_svg_text_decoration_line(
+    body: &mut String,
+    matrix: SvgTextMatrix,
+    width: f32,
+    y_offset: f32,
+) {
+    let x1 = matrix.x + matrix.c * y_offset;
+    let y1 = matrix.y + matrix.d * y_offset;
+    let x2 = x1 + matrix.a * width;
+    let y2 = y1 + matrix.b * width;
+    if ![x1, y1, x2, y2].iter().all(|value| value.is_finite()) {
+        return;
+    }
+    body.push_str(&format!(
+        "{x1} {y1} m {x2} {y2} l S\n",
+        x1 = pdf_num(x1),
+        y1 = pdf_num(y1),
+        x2 = pdf_num(x2),
+        y2 = pdf_num(y2),
     ));
 }
 

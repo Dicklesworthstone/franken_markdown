@@ -21,16 +21,32 @@ cargo install franken_markdown
 
 </div>
 
-> **Status snapshot.** `0.2.0` is published on crates.io. The `v0.2.0` GitHub
-> release ships smoke-tested `fmd` archives for Linux x86_64, macOS Intel, macOS
-> Apple Silicon, and Windows x86_64. `main` is ahead of that release with the
-> current renderer: shared HTML/PDF syntax highlighting, measured PDF table
-> allocation, ASCII and Mermaid diagram fitting, vector SVG/frankenmermaid asset
-> drawing in PDF, staged native output writes, opt-in Asupersync batch rendering,
-> profiling-backed hot-path work, and checked-in browser/WASM package sources.
-> The WASM package is built and checked in CI, but is not yet published to npm.
-> Optional SIMD and deeper pagination polish remain roadmap work, not shipped
-> claims.
+> **Current status.** `0.2.0` is published on crates.io, and the `v0.2.0`
+> GitHub release ships smoke-tested `fmd` archives for Linux x86_64, macOS
+> Intel, macOS Apple Silicon, and Windows x86_64. `main` is ahead of that
+> release with the current renderer: shared HTML/PDF syntax highlighting,
+> measured PDF table allocation, ASCII and Mermaid diagram fitting, vector
+> SVG/frankenmermaid asset drawing in PDF, staged native output writes, opt-in
+> Asupersync batch rendering, browser/WASM package sources, and multiple rounds
+> of measured scalar hot-path work. The WASM package is built and checked in CI,
+> but is not yet published to npm. Optional SIMD and deeper pagination polish
+> remain roadmap work, not shipped claims.
+
+## Contents
+
+- [TL;DR](#tldr)
+- [Quick Example](#quick-example)
+- [Performance And CPU Strategy](#performance-and-cpu-strategy)
+- [Comparison](#comparison)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Command Reference](#command-reference)
+- [Library Use](#library-use)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Troubleshooting](#troubleshooting)
+- [Limitations](#limitations)
+- [FAQ](#faq)
 
 ---
 
@@ -61,9 +77,13 @@ compiles as a Rust library, the `fmd` binary, and browser/WASM package sources.
 | Directory rendering | `cargo build --release --bin fmd --features batch`, then `fmd batch docs examples --to both --json` |
 | Browser integration | Build the wasm-bindgen package from `wasm/`, then pass Markdown, font bytes, image bytes, and options from the host. npm publication remains a release step |
 
-### Feature Overview
+### What Works Today
 
-| Surface | What works now |
+The core value is that HTML, PDF, CLI, and WASM all share one parsed AST and one
+theme model. There is no second PDF-only parser and no browser-only rendering
+path.
+
+| Rendering surface | What works now |
 |---|---|
 | Parser | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
 | HTML | Self-contained document with inlined CSS, deterministic embedded TTF font subsets, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, clean-room syntax highlighting, and optional full stylesheet replacement |
@@ -83,7 +103,7 @@ compiles as a Rust library, the `fmd` binary, and browser/WASM package sources.
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a browser demo, native-parity tests, and a no-default core that stays dependency-free |
 | Releases | crates.io plus checksum-verified release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each wired through native smoke tests |
 
-### Newer Work On `main`
+### Recent Highlights On `main`
 
 | Area | What changed |
 |---|---|
@@ -93,7 +113,7 @@ compiles as a Rust library, the `fmd` binary, and browser/WASM package sources.
 | SVG and frankenmermaid assets | The PDF path draws the current frankenmermaid showcase output as vector content, including marker view boxes/orientation/units, marker-child `paint-order`, CSS variables, masks, clips, gradients, drop shadows, and embedded PNG data URIs |
 | Safer native writes | HTML, PDF, config, and batch outputs are staged where applicable. Multi-output renders roll back siblings on later failure, and input-overwrite cases are refused before destructive writes happen |
 | Browser/WASM package | The checked-in package wrapper exposes typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, and native-parity checks. It is publish-ready but intentionally not documented as installable from npm yet |
-| Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
+| Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks. Recent compressor work keeps fixed-Huffman setup hot, folds Adler-32 into emission, and compares long LZ77 match prefixes in 8-byte chunks before the scalar tail |
 
 ### Why franken_markdown?
 
@@ -197,10 +217,12 @@ Intel/AMD x86_64. Performance work starts with `release-perf` profiles, changes
 one lever at a time, and lands only when golden output and targeted tests keep
 behavior stable.
 
-The current CPU strategy specializes data layout and control flow before adding
-hardware-specific intrinsics: ordinary M-series, Intel, and AMD cores should
-spend most of their time in predictable linear scans, local caches, and
-append-only writers.
+Specialized, in this project, mostly means CPU-aware data layout and control
+flow before hardware-specific intrinsics. Ordinary M-series, Intel, and AMD
+cores should spend most of their time in predictable linear scans, compact
+working sets, hot local caches, and append-only writers. The shipped release
+binaries stay portable; local source builds can opt into host-specific codegen
+when that tradeoff makes sense.
 
 ### Shipped Hot-Path Work
 
@@ -214,9 +236,18 @@ append-only writers.
 | PDF shaping and layout | Render-local shaped-width caches avoid recomputing pure font shaping, kerning, and repeated word widths within one PDF render | Repeated table/code/body tokens reuse nearby cache entries instead of re-entering shaping loops |
 | PDF content streams | Text segment operators, `TJ` arrays, decimal tokens, and object references stream directly into page buffers | Cuts temporary string traffic in text-heavy PDF pages and reduces allocator pressure |
 | Table allocation | PDF columns use measured min/max widths and a constrained wrapping-badness solver | Width goes to columns that can actually reduce wrapping, so dense tables look better and avoid wasted layout passes |
-| Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman codes and match symbols, and accumulates Adler-32 during emission | Removes repeated bit-prep work and avoids a second full scan over page/font streams |
+| Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman codes and match symbols, accumulates Adler-32 during emission, and compares equal LZ77 match prefixes in 8-byte chunks before the exact scalar tail | Removes repeated bit-prep work, avoids a second full scan over page/font streams, and reduces byte-by-byte compare work on long repeated runs |
 | SVG rendering | Common frankenmermaid/SVG constructs become native PDF drawing operators. Default fill+stroke stays compact; custom `paint-order` expands only affected shapes or marker children | Keeps supported diagrams vector and local without a browser/rasterizer, while preserving the fast path for normal SVG shapes |
 | Batch rendering | Native batch mode sizes workers by interactive/throughput policy and writes deterministic receipts | Throughput mode can use all cores; interactive mode leaves CPU headroom for the machine running the job |
+
+### Build Profiles And Local CPU Tuning
+
+| Build | Intended use | CPU behavior |
+|---|---|---|
+| `cargo build --release --bin fmd` | Normal local binary | Portable optimized Rust codegen for the target triple |
+| `cargo build --profile release-perf --example fmd_perf_harness` | Performance lab runs and hotspot proof | Keeps profiling output stable enough for before/after comparisons |
+| `RUSTFLAGS="-C target-cpu=native" cargo build --release --bin fmd` | Local-only benchmarking or personal builds | Allows LLVM to use the exact CPU in the current machine. Do not treat the resulting binary as a portable release artifact |
+| Published release archives | Public installs | Built without hidden `target-cpu=native` assumptions so the same archive runs across ordinary machines in that target family |
 
 ### Apple Silicon
 
@@ -228,6 +259,11 @@ append-only writers.
 | No hidden native CPU flags | Release binaries do not require `target-cpu=native`, so an archive built on one Apple Silicon runner remains portable across ordinary Apple Silicon Macs |
 | Future SIMD boundary | AArch64 NEON is planned only inside the documented byte-scanner island after same-family proof shows it improves end-to-end p95 without changing output bytes |
 
+The most important Apple Silicon optimizations today are not NEON intrinsics.
+They are the practical choices M-series cores reward: fewer allocations, smaller
+hot loops, linear byte scanners, fixed-size tables, and bounded worker counts
+that avoid taking over the whole laptop during batch renders.
+
 ### Intel And AMD
 
 | Choice | Effect |
@@ -237,6 +273,11 @@ append-only writers.
 | Branch and allocation reduction | Parser gates, direct highlighter dispatch, render-local caches, append-style PDF writing, and precomputed compression tables help both Intel and AMD cores by reducing mispredicts and allocator churn |
 | AVX-512 excluded from the default plan | Some CPUs downclock under AVX-512 and availability is uneven, so it is not part of the default performance story |
 | Runtime-gated SIMD only if proven | A future AVX2 path must use `std::is_x86_feature_detected!`, keep scalar fallback, and prove byte-for-byte parity plus same-host speedup |
+
+The Intel/AMD path is tuned for the broad x86_64 fleet first. It avoids
+assuming AVX2 or AVX-512, but still benefits from the same branch-light scans,
+direct dispatch tables, append-style serializers, and cache-local compression
+state used on Apple Silicon.
 
 ### Platform Release Matrix
 

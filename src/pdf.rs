@@ -1446,6 +1446,15 @@ struct LineTok {
     extra_advance: f32,
 }
 
+#[inline]
+fn token_visible_text(tok: &Tok) -> &str {
+    if tok.space {
+        if tok.hard_break { "" } else { " " }
+    } else {
+        tok.text.as_str()
+    }
+}
+
 struct BuiltParagraph {
     items: Vec<ParagraphItem>,
     item_toks: Vec<TokGroup>,
@@ -11537,17 +11546,19 @@ fn build_cell_line_owned(
 ) -> CellWrapLine {
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
+        let text = token_visible_text(&t);
         let merge = runs
             .last()
             .is_some_and(|r| r.slot == t.slot && r.link == t.link && r.strike == t.strike);
         if merge {
             if let Some(last) = runs.last_mut() {
-                last.text.push_str(&t.text);
+                last.text.push_str(text);
             }
         } else {
+            let text = if t.space { text.to_string() } else { t.text };
             runs.push(CellRun {
                 slot: t.slot,
-                text: t.text,
+                text,
                 link: t.link,
                 strike: t.strike,
                 width: 0.0,
@@ -12270,7 +12281,7 @@ fn tokenize(
                 push_text_tokens(alt, slot_of(bold, italic, false), strike, link, out);
             }
             Inline::SoftBreak => out.push(Tok {
-                text: " ".to_string(),
+                text: String::new(),
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: false,
@@ -12278,7 +12289,7 @@ fn tokenize(
                 strike,
             }),
             Inline::HardBreak => out.push(Tok {
-                text: "\n".to_string(),
+                text: String::new(),
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: true,
@@ -12312,7 +12323,7 @@ fn push_text_tokens(
                 });
             }
             out.push(Tok {
-                text: " ".to_string(),
+                text: String::new(),
                 slot,
                 space: true,
                 hard_break: false,
@@ -12354,17 +12365,18 @@ fn font_size_of(size: f32) -> FontSize {
 #[cfg(test)]
 fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
     if let [tok] = runs {
-        return faces.shaped_width(tok.slot, &tok.text, fs);
+        return faces.shaped_width(tok.slot, token_visible_text(tok), fs);
     }
 
     let mut total = LayoutUnit::ZERO;
     let mut current: Option<TokMeasureRun> = None;
     for tok in runs {
+        let text = token_visible_text(tok);
         match &mut current {
             Some(run)
                 if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
             {
-                run.text.push_str(&tok.text);
+                run.text.push_str(text);
             }
             _ => {
                 if let Some(run) = current.take() {
@@ -12374,7 +12386,7 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
                     slot: tok.slot,
                     link: tok.link.clone(),
                     strike: tok.strike,
-                    text: tok.text.clone(),
+                    text: text.to_string(),
                 });
             }
         }
@@ -12392,17 +12404,18 @@ fn measure_word_cached(
     width_cache: &RefCell<WidthCache>,
 ) -> LayoutUnit {
     if let [tok] = runs {
-        return cached_shaped_width(faces, width_cache, tok.slot, &tok.text, fs);
+        return cached_shaped_width(faces, width_cache, tok.slot, token_visible_text(tok), fs);
     }
 
     let mut total = LayoutUnit::ZERO;
     let mut current: Option<TokMeasureRun> = None;
     for tok in runs {
+        let text = token_visible_text(tok);
         match &mut current {
             Some(run)
                 if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
             {
-                run.text.push_str(&tok.text);
+                run.text.push_str(text);
             }
             _ => {
                 if let Some(run) = current.take() {
@@ -12412,7 +12425,7 @@ fn measure_word_cached(
                     slot: tok.slot,
                     link: tok.link.clone(),
                     strike: tok.strike,
-                    text: tok.text.clone(),
+                    text: text.to_string(),
                 });
             }
         }
@@ -13192,11 +13205,12 @@ fn build_segs_adjusted(
     let fs = font_size_of(size);
     for line_tok in toks {
         let tok = &line_tok.tok;
+        let text = token_visible_text(tok);
         let advance;
         match &mut cur {
             Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
                 let old_width = s.width;
-                s.text.push_str(&tok.text);
+                s.text.push_str(text);
                 s.width = shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs)
                     + line_tok.extra_advance;
                 advance = s.width - old_width;
@@ -13205,13 +13219,12 @@ fn build_segs_adjusted(
                 if let Some(s) = cur.take() {
                     segs.push(s);
                 }
-                advance =
-                    shaped_width_points_for_layout(faces, width_cache, tok.slot, &tok.text, fs)
-                        + line_tok.extra_advance;
+                advance = shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs)
+                    + line_tok.extra_advance;
                 cur = Some(Seg {
                     x,
                     slot: tok.slot,
-                    text: tok.text.clone(),
+                    text: text.to_string(),
                     link: tok.link.clone(),
                     fill: if tok.link.is_some() {
                         Fill::Link
@@ -13747,7 +13760,7 @@ fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
 }
 
 fn token_width(tok: &Tok, size: f32, faces: &Faces) -> f32 {
-    faces.shaped_width_points(tok.slot, &tok.text, size)
+    faces.shaped_width_points(tok.slot, token_visible_text(tok), size)
 }
 
 fn gap(out: &mut [Line], amount: f32) {
@@ -20698,9 +20711,10 @@ mod pdf_writer_tests {
         append_svg_stroke_options, append_svg_style, append_text_segment_operator,
         append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
         decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
-        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
-        shape_run,
+        normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, push_text_tokens,
+        rounded_rect_fill, shape_run, token_visible_text, tokenize,
     };
+    use crate::ast::Inline;
     use std::borrow::Cow;
 
     #[test]
@@ -20800,7 +20814,7 @@ mod pdf_writer_tests {
                 strike: false,
             },
             Tok {
-                text: " ".to_string(),
+                text: String::new(),
                 slot: F_BODY,
                 space: true,
                 hard_break: false,
@@ -20834,6 +20848,73 @@ mod pdf_writer_tests {
         assert!(built.items.capacity() >= expected);
         assert!(built.item_toks.capacity() >= expected);
         assert!(built.break_toks.capacity() >= expected);
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_space_tokens_store_empty_payloads_but_segments_render_spaces() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let mut toks = Vec::new();
+        push_text_tokens("alpha  beta", F_BODY, false, None, &mut toks);
+
+        let spaces: Vec<&Tok> = toks.iter().filter(|tok| tok.space).collect();
+        assert_eq!(spaces.len(), 2);
+        assert!(
+            spaces
+                .iter()
+                .all(|tok| tok.text.is_empty() && token_visible_text(tok) == " "),
+            "breakable whitespace tokens should not own a space payload"
+        );
+
+        let segs = build_segs(&toks, 10.0, 11.0, &faces);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "alpha  beta");
+        assert!(
+            (segs[0].width - faces.shaped_width_points(F_BODY, "alpha  beta", 11.0)).abs() < 0.01,
+            "segment width should still measure the visible spaces"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_soft_break_tokens_render_one_space_but_hard_breaks_do_not() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let inlines = vec![
+            Inline::Text("alpha".to_string()),
+            Inline::SoftBreak,
+            Inline::Text("beta".to_string()),
+            Inline::HardBreak,
+            Inline::Text("gamma".to_string()),
+        ];
+        let mut toks = Vec::new();
+        tokenize(&inlines, false, false, false, None, &mut toks);
+
+        let soft_tokens = toks
+            .iter()
+            .filter(|tok| tok.space && !tok.hard_break)
+            .collect::<Vec<_>>();
+        assert_eq!(soft_tokens.len(), 1);
+        let soft = soft_tokens[0];
+        assert!(soft.text.is_empty());
+        assert_eq!(token_visible_text(soft), " ");
+
+        let hard_tokens = toks
+            .iter()
+            .filter(|tok| tok.space && tok.hard_break)
+            .collect::<Vec<_>>();
+        assert_eq!(hard_tokens.len(), 1);
+        let hard = hard_tokens[0];
+        assert!(hard.text.is_empty());
+        assert_eq!(token_visible_text(hard), "");
+
+        let before_hard: Vec<Tok> = toks
+            .iter()
+            .take_while(|tok| !tok.hard_break)
+            .cloned()
+            .collect();
+        let segs = build_segs(&before_hard, 10.0, 11.0, &faces);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "alpha beta");
         Ok(())
     }
 

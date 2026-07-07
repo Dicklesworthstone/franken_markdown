@@ -14053,7 +14053,7 @@ fn serialize(
                         key: SKey::TableCell(line.flow.group, tbl_row, col),
                         tag: cell_tag,
                     });
-                    body.push_str(&format!("/{cell_tag} <</MCID {next_mcid}>> BDC\n"));
+                    append_marked_content_begin(&mut body, cell_tag, next_mcid);
                     draw_seg(
                         &mut body,
                         &mut annots,
@@ -14082,10 +14082,7 @@ fn serialize(
                 let owner = next_mcid;
                 if marked {
                     let leaf = leaf_elem(line);
-                    body.push_str(&format!(
-                        "/{tag} <</MCID {next_mcid}>> BDC\n",
-                        tag = leaf.tag
-                    ));
+                    append_marked_content_begin(&mut body, leaf.tag, next_mcid);
                     let mut path = container_prefix(line);
                     path.push(leaf);
                     let (alt, bbox) = if let Some(image) = &line.image {
@@ -18980,6 +18977,23 @@ fn append_decimal_u64_string(out: &mut String, value: u64) {
     }
 }
 
+fn append_decimal_usize_string(out: &mut String, value: usize) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    for &byte in &buf[pos..] {
+        out.push(byte as char);
+    }
+}
+
 fn append_i32_string(out: &mut String, value: i32) {
     if value < 0 {
         out.push('-');
@@ -19048,6 +19062,14 @@ fn append_pdf_fixed2(out: &mut String, value: f32) {
 
 fn append_pdf_fixed3(out: &mut String, value: f32) {
     append_pdf_fixed(out, value, 1000);
+}
+
+fn append_marked_content_begin(out: &mut String, tag: &str, mcid: usize) {
+    out.push('/');
+    out.push_str(tag);
+    out.push_str(" <</MCID ");
+    append_decimal_usize_string(out, mcid);
+    out.push_str(">> BDC\n");
 }
 
 fn page_stream(stream: &str) -> PdfStream<'_> {
@@ -20388,11 +20410,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         F_BODY, F_BOLD, Faces, ParagraphPolicy, PdfStream, Tok, append_decimal_u64_string,
-        append_decimal_usize, append_hex_u16, append_i32_string, append_pdf_fixed2,
-        append_pdf_fixed3, append_pdf_num, append_pdf_object_str, append_pdf_stream_dict,
-        append_pdf_string_escaped, append_rgb_fill_operator, append_rgb_stroke_line_operator,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        append_marked_content_begin, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
+        append_pdf_object_str, append_pdf_stream_dict, append_pdf_string_escaped,
+        append_rgb_fill_operator, append_rgb_stroke_line_operator, append_text_segment_operator,
+        append_xref_in_use_row, append_xref_offset, build_paragraph, build_segs,
+        decode_xml_entities, finite_pdf_scalar, font_size_of, kerned_tj, measure_word,
         normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_text_string, rounded_rect_fill,
         shape_run,
     };
@@ -20679,6 +20702,16 @@ mod pdf_writer_tests {
         append_i32_string(&mut out, 456);
 
         assert_eq!(out, "0 12345678901 -120 0 456");
+    }
+
+    #[test]
+    fn marked_content_begin_writer_preserves_bdc_shape() {
+        let mut out = String::new();
+        append_marked_content_begin(&mut out, "TH", 0);
+        append_marked_content_begin(&mut out, "Figure", 12345);
+        append_decimal_usize_string(&mut out, 987);
+
+        assert_eq!(out, "/TH <</MCID 0>> BDC\n/Figure <</MCID 12345>> BDC\n987");
     }
 
     #[test]

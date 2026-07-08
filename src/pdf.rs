@@ -14483,6 +14483,17 @@ fn serialize(
                 lig_uni.insert(new, s);
             }
         }
+        for shaped in slot_cache.values_mut() {
+            append_kerned_tj_with_spacing(
+                &mut shaped.pdf_tj,
+                &map,
+                source,
+                face.kern.as_ref(),
+                &shaped.glyphs,
+                0,
+                0,
+            );
+        }
         profiler.record_since(
             "font_subsetting",
             seed.len(),
@@ -19189,17 +19200,17 @@ fn draw_seg(
     };
     let source = faces.get(seg.slot);
     let fallback;
-    let shaped = match shaped_cache[slot_idx].get(seg.text.as_str()) {
-        Some(run) => run.glyphs.as_slice(),
+    let (shaped, cached_tj) = match shaped_cache[slot_idx].get(seg.text.as_str()) {
+        Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
         None => {
             fallback = shape_run(source, &face.lig, &seg.text);
-            fallback.glyphs.as_slice()
+            (fallback.glyphs.as_slice(), None)
         }
     };
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
         append_invisible_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
+            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped, cached_tj,
         );
     } else {
         if seg.fill != *current_fill {
@@ -19208,7 +19219,7 @@ fn draw_seg(
             *current_fill = seg.fill;
         }
         append_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
+            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped, cached_tj,
         );
     }
     // Strikethrough: a thin stroke through the run's middle, in the text's own
@@ -20060,6 +20071,7 @@ impl EmbeddedFaceLookup {
 struct ShapedRun {
     glyphs: Vec<u16>,
     ligatures: Vec<(u16, String)>,
+    pdf_tj: String,
 }
 
 type ShapedRunCache = [HashMap<String, ShapedRun>; PDF_FONT_SLOT_COUNT];
@@ -21616,6 +21628,7 @@ fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
     ShapedRun {
         glyphs: shaped,
         ligatures: lig_uni,
+        pdf_tj: String::new(),
     }
 }
 
@@ -21725,9 +21738,10 @@ fn append_text_segment_operator(
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
+    cached_tj: Option<&str>,
 ) {
     append_text_segment_operator_with_render_mode(
-        body, slot, size, x, y, map, source, kern, shaped, None,
+        body, slot, size, x, y, map, source, kern, shaped, cached_tj, None,
     );
 }
 
@@ -21742,6 +21756,7 @@ fn append_invisible_text_segment_operator(
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
+    cached_tj: Option<&str>,
 ) {
     append_text_segment_operator_with_render_mode(
         body,
@@ -21753,6 +21768,7 @@ fn append_invisible_text_segment_operator(
         source,
         kern,
         shaped,
+        cached_tj,
         Some(3),
     );
 }
@@ -21768,6 +21784,7 @@ fn append_text_segment_operator_with_render_mode(
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
+    cached_tj: Option<&str>,
     render_mode: Option<u8>,
 ) {
     body.push_str("BT /F");
@@ -21784,7 +21801,11 @@ fn append_text_segment_operator_with_render_mode(
     body.push(' ');
     append_pdf_fixed2(body, y);
     body.push_str(" Tm ");
-    append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0, 0);
+    if let Some(tj) = cached_tj {
+        body.push_str(tj);
+    } else {
+        append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0, 0);
+    }
     body.push_str(" TJ");
     if render_mode.is_some() {
         body.push_str(" 0 Tr");
@@ -23573,6 +23594,7 @@ mod pdf_writer_tests {
             &face.font,
             &face.kern,
             &shaped.glyphs,
+            None,
         );
 
         let expected = format!(
@@ -23584,6 +23606,22 @@ mod pdf_writer_tests {
             tj = kerned_tj(&map, &face.font, &face.kern, &shaped.glyphs),
         );
         assert_eq!(streamed, expected);
+
+        let cached_tj = kerned_tj(&map, &face.font, &face.kern, &shaped.glyphs);
+        let mut cached = String::new();
+        append_text_segment_operator(
+            &mut cached,
+            F_BODY,
+            11.0,
+            12.5,
+            700.25,
+            &map,
+            &face.font,
+            &face.kern,
+            &shaped.glyphs,
+            Some(&cached_tj),
+        );
+        assert_eq!(cached, expected);
         Ok(())
     }
 

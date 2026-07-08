@@ -16039,7 +16039,7 @@ fn serialize(
             quote_extents(placed)
         };
         for (bar_x, top_y, bot_y) in quote_acc.values() {
-            append_rounded_rect_fill(
+            append_page_background_rounded_rect_fill(
                 &mut bg,
                 bar_x - QUOTE_BG_PAD_X,
                 bot_y - QUOTE_BG_PAD_V,
@@ -16061,7 +16061,7 @@ fn serialize(
             let size = p.line.size;
             let top_y = p.y + size * 0.92;
             let bot_y = p.y - size * 0.40;
-            append_rounded_rect_fill(
+            append_page_background_rounded_rect_fill(
                 &mut bg,
                 p.line.rule_x,
                 bot_y,
@@ -16092,7 +16092,7 @@ fn serialize(
                 let x1 = page.right_x();
                 let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
                 let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
-                append_rounded_rect_fill(
+                append_page_background_rounded_rect_fill(
                     &mut bg,
                     x0,
                     bot_y,
@@ -16119,7 +16119,7 @@ fn serialize(
                     let cx1 = seg.x + seg.width + CHIP_PAD_X;
                     let cy0 = p.y - p.line.size * 0.26;
                     let cy1 = p.y + p.line.size * 0.74;
-                    append_rounded_rect_fill(
+                    append_page_background_rounded_rect_fill(
                         &mut bg,
                         cx0,
                         cy0,
@@ -16331,17 +16331,7 @@ fn serialize(
         // wrap the whole prelude as one /Artifact so it stays out of the tagged
         // reading order. (Per-rule and per-quote-bar artifacts are wrapped at
         // their draw sites above and below.)
-        let stream = if bg.is_empty() {
-            body
-        } else {
-            let mut stream =
-                String::with_capacity(bg.len().saturating_add(body.len()).saturating_add(24));
-            stream.push_str("/Artifact BMC\n");
-            stream.push_str(&bg);
-            stream.push_str("EMC\n");
-            stream.push_str(&body);
-            stream
-        };
+        let stream = finish_page_content_stream(bg, body);
 
         scratch.pages.push(PageContent {
             stream,
@@ -21751,6 +21741,42 @@ fn append_rounded_rect_fill(
     out.push_str(" c f Q\n");
 }
 
+fn rounded_rect_fill_is_visible(x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+    let x0 = finite_pdf_scalar(x0);
+    let y0 = finite_pdf_scalar(y0);
+    let x1 = finite_pdf_scalar(x1);
+    let y1 = finite_pdf_scalar(y1);
+    x1 > x0 && y1 > y0
+}
+
+fn append_page_background_rounded_rect_fill(
+    out: &mut String,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    r: f32,
+    c: (f32, f32, f32),
+) {
+    if !rounded_rect_fill_is_visible(x0, y0, x1, y1) {
+        return;
+    }
+    if out.is_empty() {
+        out.push_str("/Artifact BMC\n");
+    }
+    append_rounded_rect_fill(out, x0, y0, x1, y1, r, c);
+}
+
+fn finish_page_content_stream(mut bg: String, body: String) -> String {
+    if bg.is_empty() {
+        return body;
+    }
+    bg.reserve(body.len().saturating_add(4));
+    bg.push_str("EMC\n");
+    bg.push_str(&body);
+    bg
+}
+
 #[cfg(test)]
 fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f32)) -> String {
     let mut out = String::new();
@@ -23893,30 +23919,31 @@ mod pdf_writer_tests {
         TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
-        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
-        append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
-        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_outline_item_object,
-        append_pdf_page_object, append_pdf_parent_tree_object, append_pdf_stream_dict,
-        append_pdf_string_escaped, append_pdf_struct_element_object, append_pdf_text_string_bytes,
-        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
-        append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
-        append_svg_alpha_state_name, append_svg_alpha_state_resource_entry,
-        append_svg_element_state_prefix, append_svg_line_path, append_svg_line_stroke_outline,
-        append_svg_path_ops, append_svg_poly_path, append_svg_shadow_prefix,
-        append_svg_stroke_options, append_svg_style, append_svg_text_decoration,
-        append_svg_text_operator, append_svg_text_viewport_clip,
-        append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
-        append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
-        collect_svg_alpha_states, container_prefix_with_extra, decode_xml_entities,
-        estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
-        font_size_of, kerned_tj, kerned_tj_with_spacing, layout_inlines,
-        layout_simple_text_paragraph, layout_table, layout_table_uncached,
-        line_has_visible_content, measure_word, normalize_svg_text_node,
-        pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
-        pdf_word_break_points, pdf_word_plain_text, pdf_word_stats, push_text_tokens,
-        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        append_image_xobject_do, append_marked_content_begin,
+        append_page_background_rounded_rect_fill, append_pdf_cm_operator, append_pdf_fixed2,
+        append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
+        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
+        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_parent_tree_object,
+        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
+        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
+        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
+        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
+        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
+        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
+        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
+        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
+        append_svg_style, append_svg_text_decoration, append_svg_text_operator,
+        append_svg_text_viewport_clip, append_task_checkbox_marker_operator,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
+        container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
+        finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, font_size_of,
+        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_simple_text_paragraph,
+        layout_table, layout_table_uncached, line_has_visible_content, measure_word,
+        normalize_svg_text_node, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
+        pdf_num, pdf_text_string, pdf_word_break_points, pdf_word_plain_text, pdf_word_stats,
+        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
+        token_visible_text, tokenize,
     };
     use crate::ast::{Align, Inline, Table};
     use crate::{PdfOptions, ThemeColors};
@@ -23932,6 +23959,36 @@ mod pdf_writer_tests {
         assert_eq!(state.heading_id("Alpha"), "alpha-3");
         assert_eq!(state.heading_id(""), "section");
         assert_eq!(state.heading_id("!"), "section-2");
+    }
+
+    #[test]
+    fn page_background_stream_finish_preserves_artifact_shape_and_noop_rects() {
+        let mut bg = String::new();
+        append_page_background_rounded_rect_fill(&mut bg, 1.0, 2.0, 5.0, 6.0, 0.5, (0.1, 0.2, 0.3));
+
+        let mut expected = String::from("/Artifact BMC\n");
+        expected.push_str(&rounded_rect_fill(1.0, 2.0, 5.0, 6.0, 0.5, (0.1, 0.2, 0.3)));
+        expected.push_str("EMC\nBT\n");
+        assert_eq!(
+            finish_page_content_stream(bg, String::from("BT\n")),
+            expected
+        );
+
+        let mut degenerate = String::new();
+        append_page_background_rounded_rect_fill(
+            &mut degenerate,
+            5.0,
+            2.0,
+            1.0,
+            6.0,
+            0.5,
+            (0.1, 0.2, 0.3),
+        );
+        assert!(degenerate.is_empty());
+        assert_eq!(
+            finish_page_content_stream(String::new(), String::from("BT\n")),
+            "BT\n"
+        );
     }
 
     fn test_line_with_segment_texts(texts: &[&str]) -> Line {

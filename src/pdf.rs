@@ -2997,9 +2997,8 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                 elements.append(&mut used);
             }
             "text" if !self_closing => {
-                let needle = format!("</{tag_name_lower}");
-                if let Some(end_rel) = find_ascii_case_insensitive(src.get(pos..)?, &needle) {
-                    let text_src = src.get(pos..pos + end_rel).unwrap_or_default();
+                if let Some(end_open) = find_svg_matching_end_tag(src, pos, tag_lower) {
+                    let text_src = src.get(pos..end_open).unwrap_or_default();
                     let mut text_elements = parse_svg_text_elements(
                         &attrs,
                         text_src,
@@ -3010,12 +3009,13 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                         &css_vars,
                         &clip_paths,
                         &filter_shadows,
+                        &reusable_defs,
                         &selector_stack,
                     );
                     apply_svg_links(&mut text_elements, inherited_link.as_ref());
                     elements.extend(text_elements);
-                    if let Some(tag_end) = src.get(pos + end_rel..).and_then(|s| s.find('>')) {
-                        pos += end_rel + tag_end + 1;
+                    if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
+                        pos = end_open + tag_end + 1;
                     }
                 }
             }
@@ -4640,6 +4640,7 @@ fn parse_svg_text_elements(
     css_vars: &[SvgCssVariable],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    reusable_defs: &[SvgReusableDef],
     ancestors: &[SvgCssAncestor],
 ) -> Vec<SvgElement> {
     let style = parse_svg_style_with_ancestors(
@@ -4667,7 +4668,7 @@ fn parse_svg_text_elements(
     let anchor = style.text_anchor;
     let text_length = parse_svg_text_length_attr(attrs, font_size);
     let length_adjust = parse_svg_length_adjust(attrs, SvgLengthAdjust::Spacing);
-    if !svg_text_body_has_tspan(body) {
+    if !svg_text_body_has_positioned_child(body) {
         return svg_text_element(
             normalize_svg_text_for_style(&strip_svg_tags(body), style.white_space),
             SvgTextPlacement {
@@ -4701,6 +4702,7 @@ fn parse_svg_text_elements(
         css_vars,
         clip_paths,
         filter_shadows,
+        reusable_defs,
         &mut child_ancestors,
         0,
     );
@@ -4723,6 +4725,7 @@ fn push_svg_text_body_elements(
     css_vars: &[SvgCssVariable],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    reusable_defs: &[SvgReusableDef],
     ancestors: &mut Vec<SvgCssAncestor>,
     depth: usize,
 ) -> (f32, f32) {
@@ -4797,11 +4800,12 @@ fn push_svg_text_body_elements(
         let self_closing = raw.trim_end().ends_with('/');
         let (tag, attrs_src) = svg_tag_parts(raw);
         let tag_lower = tag.to_ascii_lowercase();
-        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("tspan") || self_closing {
+        let local = svg_local_name(&tag_lower);
+        if self_closing {
             continue;
         }
         let child_attrs = parse_svg_attrs(attrs_src);
-        let Some(end_open) = find_svg_matching_end_tag(body, pos, "tspan") else {
+        let Some(end_open) = find_svg_matching_end_tag(body, pos, local) else {
             break;
         };
         let child_body = body.get(pos..end_open).unwrap_or_default();
@@ -4809,6 +4813,81 @@ fn push_svg_text_body_elements(
             break;
         };
         pos = end_open + end_close_rel + 1;
+
+        if local.eq_ignore_ascii_case("textpath") {
+            let child_style = parse_svg_style_with_ancestors(
+                "textpath",
+                &child_attrs,
+                style,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                ancestors,
+            );
+            if !child_style.display_visible || child_style.opacity <= 0.001 {
+                continue;
+            }
+            let child_font_size = child_style.font_size;
+            let child_text =
+                normalize_svg_text_for_style(&strip_svg_tags(child_body), child_style.white_space);
+            let advance =
+                svg_text_path_advance(&child_text, child_font_size, child_style, &child_attrs);
+            if let Some(path_text) = svg_text_path_placement(
+                child_style,
+                &child_attrs,
+                child_font_size,
+                advance,
+                reusable_defs,
+            ) {
+                push_svg_text_element(
+                    elements,
+                    child_text,
+                    SvgTextPlacement {
+                        x: 0.0,
+                        y: 0.0,
+                        font_size: child_font_size,
+                        anchor: child_style.text_anchor,
+                        text_length: parse_svg_text_length_attr(&child_attrs, child_font_size),
+                        length_adjust: parse_svg_length_adjust(
+                            &child_attrs,
+                            SvgLengthAdjust::Spacing,
+                        ),
+                    },
+                    path_text.style,
+                );
+                current_x = path_text.end.0;
+                current_y = path_text.end.1;
+            } else {
+                push_svg_text_element(
+                    elements,
+                    child_text,
+                    SvgTextPlacement {
+                        x: current_x,
+                        y: current_y,
+                        font_size: child_font_size,
+                        anchor: child_style.text_anchor,
+                        text_length: parse_svg_text_length_attr(&child_attrs, child_font_size),
+                        length_adjust: parse_svg_length_adjust(
+                            &child_attrs,
+                            SvgLengthAdjust::Spacing,
+                        ),
+                    },
+                    child_style,
+                );
+                current_x += advance;
+            }
+            if elements.len() >= 256 {
+                break;
+            }
+            continue;
+        }
+
+        if !local.eq_ignore_ascii_case("tspan") {
+            continue;
+        }
 
         let child_style = parse_svg_style_with_ancestors(
             "tspan",
@@ -4846,7 +4925,7 @@ fn push_svg_text_body_elements(
             child_y += dy;
         }
 
-        if svg_text_body_has_tspan(child_body) {
+        if svg_text_body_has_positioned_child(child_body) {
             let start_len = elements.len();
             ancestors.push(svg_css_ancestor("tspan", &child_attrs));
             let (end_x, end_y) = push_svg_text_body_elements(
@@ -4863,6 +4942,7 @@ fn push_svg_text_body_elements(
                 css_vars,
                 clip_paths,
                 filter_shadows,
+                reusable_defs,
                 ancestors,
                 depth + 1,
             );
@@ -4936,7 +5016,7 @@ fn push_svg_text_body_elements(
     (current_x, current_y)
 }
 
-fn svg_text_body_has_tspan(body: &str) -> bool {
+fn svg_text_body_has_positioned_child(body: &str) -> bool {
     let mut pos = 0usize;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
@@ -4958,11 +5038,277 @@ fn svg_text_body_has_tspan(body: &str) -> bool {
         }
         let (tag, _) = svg_tag_parts(raw);
         let tag_lower = tag.to_ascii_lowercase();
-        if svg_local_name(&tag_lower).eq_ignore_ascii_case("tspan") {
+        let local = svg_local_name(&tag_lower);
+        if local.eq_ignore_ascii_case("tspan") || local.eq_ignore_ascii_case("textpath") {
             return true;
         }
     }
     false
+}
+
+#[derive(Clone, Copy)]
+struct SvgTextPathPlacementResult {
+    style: SvgStyle,
+    end: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
+struct SvgPathPointTangent {
+    point: (f32, f32),
+    tangent: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
+struct SvgTextPathOffset {
+    value: f32,
+    percent: bool,
+}
+
+fn svg_text_path_placement(
+    mut style: SvgStyle,
+    attrs: &[(String, String)],
+    font_size: f32,
+    advance: f32,
+    reusable_defs: &[SvgReusableDef],
+) -> Option<SvgTextPathPlacementResult> {
+    let ops = svg_text_path_ops(attrs, reusable_defs)?;
+    let path_len = svg_path_approx_len(&ops)?;
+    let offset = parse_svg_text_path_offset(attrs, font_size).resolve(path_len);
+    let placed = svg_path_point_at_offset(&ops, offset)?;
+    let angle = placed.tangent.1.atan2(placed.tangent.0).to_degrees();
+    style.transform = style
+        .transform
+        .concat(SvgTransform::translate(placed.point.0, placed.point.1))
+        .concat(SvgTransform::rotate_degrees(angle));
+    let advance = if advance.is_finite() && advance >= 0.0 {
+        advance
+    } else {
+        0.0
+    };
+    Some(SvgTextPathPlacementResult {
+        style,
+        end: (
+            placed.point.0 + placed.tangent.0 * advance,
+            placed.point.1 + placed.tangent.1 * advance,
+        ),
+    })
+}
+
+fn svg_text_path_advance(
+    text: &str,
+    font_size: f32,
+    style: SvgStyle,
+    attrs: &[(String, String)],
+) -> f32 {
+    svg_attr(attrs, "textlength")
+        .and_then(|value| parse_svg_text_length(value, font_size))
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or_else(|| {
+            svg_text_advance(
+                text,
+                font_size,
+                style.letter_spacing.to_points(font_size),
+                style.word_spacing.to_points(font_size),
+            )
+        })
+}
+
+fn svg_text_path_ops(
+    attrs: &[(String, String)],
+    reusable_defs: &[SvgReusableDef],
+) -> Option<Vec<SvgPathOp>> {
+    let href = svg_attr(attrs, "href")
+        .or_else(|| svg_attr(attrs, "xlink:href"))
+        .and_then(parse_svg_fragment_href)?;
+    let def = reusable_defs
+        .iter()
+        .find(|def| def.id == href && def.tag == "path")?;
+    let mut ops = parse_svg_path_data(svg_attr(&def.attrs, "d")?)?;
+    if ops.is_empty() {
+        return None;
+    }
+    let transform = parse_svg_geometry_transform(&def.attrs);
+    if !transform.is_identity() {
+        transform_svg_path_ops(&mut ops, transform);
+    }
+    Some(ops)
+}
+
+fn parse_svg_text_path_offset(attrs: &[(String, String)], font_size: f32) -> SvgTextPathOffset {
+    let Some(value) = svg_attr(attrs, "startoffset").map(str::trim) else {
+        return SvgTextPathOffset {
+            value: 0.0,
+            percent: false,
+        };
+    };
+    let mut end = 0usize;
+    if read_svg_number_token(value, &mut end).is_none() {
+        return SvgTextPathOffset {
+            value: 0.0,
+            percent: false,
+        };
+    }
+    let Some(number) = value[..end]
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
+    else {
+        return SvgTextPathOffset {
+            value: 0.0,
+            percent: false,
+        };
+    };
+    let unit = value[end..].trim_start();
+    if unit.starts_with('%') {
+        SvgTextPathOffset {
+            value: number,
+            percent: true,
+        }
+    } else {
+        SvgTextPathOffset {
+            value: parse_svg_text_length(value, font_size).unwrap_or(number),
+            percent: false,
+        }
+    }
+}
+
+impl SvgTextPathOffset {
+    fn resolve(self, path_len: f32) -> f32 {
+        let value = if self.percent {
+            path_len * self.value / 100.0
+        } else {
+            self.value
+        };
+        if value.is_finite() { value } else { 0.0 }
+    }
+}
+
+fn svg_path_approx_len(ops: &[SvgPathOp]) -> Option<f32> {
+    let mut total = 0.0f32;
+    visit_svg_path_segments(ops, |from, to| {
+        total += svg_point_distance(from, to);
+        true
+    });
+    (total.is_finite() && total > 0.001).then_some(total)
+}
+
+fn svg_path_point_at_offset(ops: &[SvgPathOp], offset: f32) -> Option<SvgPathPointTangent> {
+    let target = offset.max(0.0);
+    let mut walked = 0.0f32;
+    let mut fallback = None;
+    let mut found = None;
+    visit_svg_path_segments(ops, |from, to| {
+        let len = svg_point_distance(from, to);
+        if !len.is_finite() || len <= 0.001 {
+            return true;
+        }
+        let tangent = ((to.0 - from.0) / len, (to.1 - from.1) / len);
+        fallback = Some(SvgPathPointTangent { point: to, tangent });
+        if target <= walked + len {
+            let t = ((target - walked) / len).clamp(0.0, 1.0);
+            found = Some(SvgPathPointTangent {
+                point: (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t),
+                tangent,
+            });
+            return false;
+        }
+        walked += len;
+        true
+    });
+    found.or(fallback)
+}
+
+fn visit_svg_path_segments(
+    ops: &[SvgPathOp],
+    mut visit: impl FnMut((f32, f32), (f32, f32)) -> bool,
+) {
+    const CURVE_STEPS: usize = 16;
+    let mut current = (0.0f32, 0.0f32);
+    let mut subpath_start = None;
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) => {
+                current = (x, y);
+                subpath_start = Some(current);
+            }
+            SvgPathOp::Line(x, y) => {
+                let next = (x, y);
+                if !visit(current, next) {
+                    return;
+                }
+                current = next;
+            }
+            SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
+                let start = current;
+                let mut previous = current;
+                for step in 1..=CURVE_STEPS {
+                    let t = step as f32 / CURVE_STEPS as f32;
+                    let next = svg_cubic_point(start, (x1, y1), (x2, y2), (x, y), t);
+                    if !visit(previous, next) {
+                        return;
+                    }
+                    previous = next;
+                }
+                current = (x, y);
+            }
+            SvgPathOp::Quad(x1, y1, x, y) => {
+                let start = current;
+                let mut previous = current;
+                for step in 1..=CURVE_STEPS {
+                    let t = step as f32 / CURVE_STEPS as f32;
+                    let next = svg_quad_point(start, (x1, y1), (x, y), t);
+                    if !visit(previous, next) {
+                        return;
+                    }
+                    previous = next;
+                }
+                current = (x, y);
+            }
+            SvgPathOp::Close => {
+                if let Some(start) = subpath_start {
+                    if !visit(current, start) {
+                        return;
+                    }
+                    current = start;
+                }
+            }
+        }
+    }
+}
+
+fn svg_cubic_point(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    t: f32,
+) -> (f32, f32) {
+    let mt = 1.0 - t;
+    let a = mt * mt * mt;
+    let b = 3.0 * mt * mt * t;
+    let c = 3.0 * mt * t * t;
+    let d = t * t * t;
+    (
+        a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+        a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+    )
+}
+
+fn svg_quad_point(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), t: f32) -> (f32, f32) {
+    let mt = 1.0 - t;
+    let a = mt * mt;
+    let b = 2.0 * mt * t;
+    let c = t * t;
+    (
+        a * p0.0 + b * p1.0 + c * p2.0,
+        a * p0.1 + b * p1.1 + c * p2.1,
+    )
+}
+
+fn svg_point_distance(from: (f32, f32), to: (f32, f32)) -> f32 {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    (dx * dx + dy * dy).sqrt()
 }
 
 fn push_svg_text_element(
@@ -5494,7 +5840,8 @@ fn parse_svg_use_refs(src: &str) -> Vec<String> {
         }
         let (tag, attrs_src) = svg_tag_parts(raw);
         let tag_lower = tag.to_ascii_lowercase();
-        if !svg_local_name(&tag_lower).eq_ignore_ascii_case("use") {
+        let local = svg_local_name(&tag_lower);
+        if !matches!(local, "use" | "textpath") {
             continue;
         }
         let attrs = parse_svg_attrs(attrs_src);
@@ -8548,6 +8895,7 @@ fn parse_svg_use_elements(
                 css_vars,
                 clip_paths,
                 filter_shadows,
+                reusable_defs,
                 ancestors,
             )
         }),
@@ -8805,11 +9153,8 @@ fn parse_svg_reusable_body_elements(
                 elements.append(&mut used);
             }
             "text" if !self_closing => {
-                let needle = format!("</{tag_name_lower}");
-                if let Some(end_rel) =
-                    find_ascii_case_insensitive(body.get(pos..).unwrap_or_default(), &needle)
-                {
-                    let text_src = body.get(pos..pos + end_rel).unwrap_or_default();
+                if let Some(end_open) = find_svg_matching_end_tag(body, pos, tag_lower) {
+                    let text_src = body.get(pos..end_open).unwrap_or_default();
                     let mut text_elements = parse_svg_text_elements(
                         &attrs,
                         text_src,
@@ -8820,12 +9165,13 @@ fn parse_svg_reusable_body_elements(
                         css_vars,
                         clip_paths,
                         filter_shadows,
+                        reusable_defs,
                         &selector_stack,
                     );
                     apply_svg_links(&mut text_elements, inherited_link.as_ref());
                     elements.extend(text_elements);
-                    if let Some(tag_end) = body.get(pos + end_rel..).and_then(|s| s.find('>')) {
-                        pos += end_rel + tag_end + 1;
+                    if let Some(tag_end) = body.get(end_open..).and_then(|s| s.find('>')) {
+                        pos = end_open + tag_end + 1;
                     }
                 }
             }
@@ -25197,6 +25543,54 @@ mod png_decode_tests {
     fn a_non_empty_iend_is_still_rejected() {
         // IEND must carry no data; a non-empty IEND is malformed.
         assert!(parse_png_chunks(&png_1x1(b"junk", &[])).is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod svg_text_path_tests {
+    use super::*;
+
+    #[test]
+    fn text_path_href_collects_referenced_path_def_and_places_text() {
+        let svg = r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40">
+  <defs><path id="curve" d="M 4 20 L 96 20"/></defs>
+  <text><textPath href="#curve">Along</textPath></text>
+</svg>
+"##;
+        let refs = parse_svg_use_refs(svg);
+        assert_eq!(refs, vec!["curve".to_string()]);
+        let defs = parse_svg_reusable_defs(svg, &refs);
+        assert!(
+            defs.iter()
+                .any(|def| def.id == "curve" && def.tag == "path"),
+            "referenced textPath path should be retained as a reusable def"
+        );
+
+        let attrs = parse_svg_attrs(r##"href="#curve" startOffset="50%""##);
+        let advance = svg_text_path_advance("Along", 10.0, SvgStyle::INITIAL, &attrs);
+        let placed = svg_text_path_placement(SvgStyle::INITIAL, &attrs, 10.0, advance, &defs)
+            .expect("retained path def should produce textPath placement");
+        assert!(
+            placed.end.0 > 50.0,
+            "startOffset=50% should place text along the path, got end x {}",
+            placed.end.0
+        );
+
+        let parsed = parse_svg_document(svg).expect("textPath SVG should parse as vector content");
+        let first_text = parsed
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                SvgElement::Text(text) => Some(text),
+                _ => None,
+            })
+            .expect("textPath should render as selectable SVG text");
+        assert!(
+            first_text.transform.e > 3.0,
+            "document parser should apply the referenced textPath position"
+        );
     }
 }
 

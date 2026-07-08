@@ -110,7 +110,7 @@ fn utf16be_pdf_hex_string(text: &str) -> String {
     out
 }
 
-fn first_text_matrix_xy_after(pdf_text: &str, marker: &str) -> (f32, f32) {
+fn first_text_matrix_after(pdf_text: &str, marker: &str) -> [f32; 6] {
     let tail = pdf_text
         .split(marker)
         .nth(1)
@@ -120,19 +120,21 @@ fn first_text_matrix_xy_after(pdf_text: &str, marker: &str) -> (f32, f32) {
         .nth(1)
         .unwrap_or_else(|| panic!("text font operator not found after marker {marker}: {tail}"));
     let mut parts = matrix_tail.split_whitespace();
-    let _a = parts.next();
-    let _b = parts.next();
-    let _c = parts.next();
-    let _d = parts.next();
-    let x = parts
-        .next()
-        .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or_else(|| panic!("text matrix x not found after marker {marker}: {matrix_tail}"));
-    let y = parts
-        .next()
-        .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or_else(|| panic!("text matrix y not found after marker {marker}: {matrix_tail}"));
-    (x, y)
+    let mut matrix = [0.0f32; 6];
+    for value in &mut matrix {
+        *value = parts
+            .next()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or_else(|| {
+                panic!("text matrix value not found after marker {marker}: {matrix_tail}")
+            });
+    }
+    matrix
+}
+
+fn first_text_matrix_xy_after(pdf_text: &str, marker: &str) -> (f32, f32) {
+    let matrix = first_text_matrix_after(pdf_text, marker);
+    (matrix[4], matrix[5])
 }
 
 fn first_text_font_size_after(pdf_text: &str, marker: &str) -> f32 {
@@ -1699,6 +1701,47 @@ fn pdf_svg_text_transform_uses_pdf_text_matrix() {
     assert!(
         text.contains("TJ ET\nQ\n"),
         "the transformed SVG text run should still close and restore its graphics state: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_text_path_uses_referenced_path_position_and_tangent() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 110">
+  <defs>
+    <path id="h" d="M 10 22 L 130 22"/>
+    <path id="v" d="M 24 38 L 24 104"/>
+  </defs>
+  <text font-size="10" fill="#ff0000"><textPath href="#h">Start</textPath></text>
+  <text font-size="10" fill="#00ff00"><textPath href="#h" startOffset="50%">Middle</textPath></text>
+  <text font-size="10" fill="#0000ff"><textPath href="#v">Vertical</textPath></text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("text-path.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Text path](text-path.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let (start_x, start_y) = first_text_matrix_xy_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let (middle_x, middle_y) = first_text_matrix_xy_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    assert!(
+        middle_x > start_x + 20.0,
+        "textPath startOffset=50% should move the selectable text along the referenced path: {text}"
+    );
+    assert!(
+        (middle_y - start_y).abs() < 1.0,
+        "textPath labels on the same horizontal path should stay on the same baseline: {text}"
+    );
+
+    let vertical = first_text_matrix_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    assert!(
+        vertical[0].abs() < 0.01
+            && vertical[1] < -0.9
+            && vertical[2] > 0.9
+            && vertical[3].abs() < 0.01,
+        "textPath on a vertical path should emit a rotated selectable text matrix instead of a flat fallback: {text}"
     );
 }
 

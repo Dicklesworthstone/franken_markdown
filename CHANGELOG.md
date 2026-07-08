@@ -18,7 +18,7 @@ ratcheted floors enforced in CI, not aspirational targets.
 - Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-07), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.1` DSR-built renderer capability and performance release.**
+- Version state: **`0.3.2` PDF reading-quality release (checkboxes, token wrapping, shrink semantics).**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -34,6 +34,24 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-03 | Crates.io + hardening release | `0.2.0` enables the crates.io package, trims package contents, hardens staged native writes, validates zlib/PNG payloads more strictly, and tightens public JSON escaping |
 | 2026-07-07 | SVG/PDF fidelity + speed release | `0.3.0` expands vector SVG PDF drawing, Mermaid/MMD highlighting, local PDF assets, safer staged writes, optional batch receipts, and a measured optimization wave across parser, HTML, layout, PDF, highlighting, and compression |
 | 2026-07-07 | DSR patch release | `0.3.1` is the DSR-built publication tag for the same renderer wave, with the late HTML base64 and PDF empty-segment drawing passes included and the rejected PDF decimal-string trial left out of the shipped source |
+
+## 0.3.2 - 2026-07-08
+
+PDF reading-quality release. Task-list markers now draw as vector checkboxes
+(rounded accent-filled box with a white check when done, neutral rounded
+outline when open) while the `[x]`/`[ ]` text stays selectable via invisible
+render mode; URLs, underscored identifiers, and other non-hyphenatable tokens
+gain separator and emergency break points so they wrap (with per-line link
+annotations) instead of running off the page, in body text and table cells
+alike; and `line_badness` now treats shrinking past the shrink budget as
+infeasible per TeX semantics, ending crushed-interword-space justification.
+Also carries the HTML embedded-font `OS/2` fix (Chromium's sanitizer accepts
+the subsets instead of silently falling back to system fonts), the published
+`@franken-suite/franken-markdown` npm package with an idempotent release
+workflow, SVG text fidelity work (`baseline-shift`, word spacing, explicit
+whitespace, aria-label alt text, separated code panels), and thirty-plus
+behavior-preserving performance passes across the PDF writer, compressor,
+parser, and HTML emitter.
 
 ## 0.3.1 - 2026-07-07
 

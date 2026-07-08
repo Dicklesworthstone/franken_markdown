@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 
 </div>
 
-> **Current status.** The `v0.3.1` GitHub release ships checksum-verified `fmd`
+> **Current status.** The `v0.3.2` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
 > x86_64, built and smoke-tested with DSR. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`. Crates.io still serves

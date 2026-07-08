@@ -464,8 +464,12 @@ struct SvgText {
     baseline_shift: f32,
     anchor: SvgTextAnchor,
     decoration: SvgTextDecoration,
-    fill: (f32, f32, f32),
-    opacity: f32,
+    fill: Option<SvgColor>,
+    fill_opacity: f32,
+    stroke: Option<SvgColor>,
+    stroke_width: f32,
+    stroke_opacity: f32,
+    paint_order: SvgPaintOrder,
     clip_path: Option<usize>,
     mask_path: Option<usize>,
     transform: SvgTransform,
@@ -5929,9 +5933,13 @@ fn svg_text_element(
     if !style.visible {
         return None;
     }
-    let fill = style.fill?;
-    let opacity = svg_effective_fill_opacity(style);
-    if opacity <= 0.001 {
+    let fill_opacity = svg_effective_fill_opacity(style);
+    let stroke_opacity = svg_effective_stroke_opacity(style);
+    let fill = style.fill.filter(|_| fill_opacity > 0.001);
+    let stroke = style.stroke.filter(|_| {
+        style.stroke_width.is_finite() && style.stroke_width > 0.001 && stroke_opacity > 0.001
+    });
+    if fill.is_none() && stroke.is_none() {
         return None;
     }
     (!text.is_empty()).then_some(SvgElement::Text(SvgText {
@@ -5953,7 +5961,11 @@ fn svg_text_element(
         anchor: placement.anchor,
         decoration: style.text_decoration,
         fill,
-        opacity,
+        fill_opacity,
+        stroke,
+        stroke_width: style.stroke_width,
+        stroke_opacity,
+        paint_order: style.paint_order,
         clip_path: style.clip_path,
         mask_path: style.mask_path,
         transform: style.transform,
@@ -6988,7 +7000,7 @@ fn svg_element_representative_color(element: &SvgElement) -> Option<SvgColor> {
         SvgElement::Polyline(poly) | SvgElement::Polygon(poly) => Some(poly.style),
         SvgElement::Path(path) => Some(path.style),
         SvgElement::Image(_) => None,
-        SvgElement::Text(text) => return Some(text.fill),
+        SvgElement::Text(text) => return text.fill.or(text.stroke),
     }?;
     style.fill.or(style.stroke)
 }
@@ -17060,8 +17072,12 @@ mod font_slot_text_refs_tests {
             baseline_shift: 0.0,
             anchor: SvgTextAnchor::Start,
             decoration: SvgTextDecoration::NONE,
-            fill: (0.0, 0.0, 0.0),
-            opacity: 1.0,
+            fill: Some((0.0, 0.0, 0.0)),
+            fill_opacity: 1.0,
+            stroke: None,
+            stroke_width: 1.0,
+            stroke_opacity: 1.0,
+            paint_order: SvgPaintOrder::NORMAL,
             clip_path: None,
             mask_path: None,
             transform: SvgTransform::IDENTITY,
@@ -17632,7 +17648,9 @@ fn svg_element_visible_for_link(element: &SvgElement) -> bool {
         SvgElement::Image(image) => {
             image.style.visible && image.style.opacity > 0.001 && image.w > 0.001 && image.h > 0.001
         }
-        SvgElement::Text(text) => text.opacity > 0.001 && !text.text.is_empty(),
+        SvgElement::Text(text) => {
+            !text.text.is_empty() && (text.fill.is_some() || text.stroke.is_some())
+        }
     }
 }
 
@@ -20609,19 +20627,9 @@ fn draw_svg_text(
             matrix.y -= matrix.b * width;
         }
     }
-    let (r, g, b) = text.fill;
     body.push_str("q\n");
     if let Some((x, y, w, h)) = image_transform.viewport_clip {
         append_svg_text_viewport_clip(body, x, y, w, h);
-    }
-    if text.opacity < 0.999 {
-        append_svg_alpha_state_recorded(
-            body,
-            alpha_states,
-            quantize_svg_alpha(text.opacity),
-            quantize_svg_alpha(text.opacity),
-        );
-        body.push('\n');
     }
     let text_bbox = svg_text_link_bbox(text);
     if let Some(clip_path) = text
@@ -20638,20 +20646,140 @@ fn draw_svg_text(
     {
         append_svg_text_clip_path(body, mask_path, text.transform, image_transform, text_bbox);
     }
-    append_svg_text_operator(
-        body,
-        (r, g, b),
-        slot,
-        matrix,
-        &face.map,
-        source,
-        &face.kern,
-        shaped,
-        pdf_tj_spacing_adjust(letter_spacing, matrix.size),
-        pdf_tj_spacing_adjust(word_spacing, matrix.size),
-    );
-    append_svg_text_decoration(body, text.decoration, matrix, width, text.fill);
+    let letter_spacing_adjust = pdf_tj_spacing_adjust(letter_spacing, matrix.size);
+    let word_spacing_adjust = pdf_tj_spacing_adjust(word_spacing, matrix.size);
+    let stroke_width = svg_text_pdf_stroke_width(text.stroke_width, text.font_size, matrix.size);
+    let stroke = text.stroke.filter(|_| stroke_width > 0.001);
+    let fill = text.fill;
+    let fill_alpha = fill
+        .map(|_| quantize_svg_alpha(text.fill_opacity))
+        .unwrap_or(1000);
+    let stroke_alpha = stroke
+        .map(|_| quantize_svg_alpha(text.stroke_opacity))
+        .unwrap_or(1000);
+    let mut current_alpha = (1000, 1000);
+    if fill.is_some() && stroke.is_some() && text.paint_order == SvgPaintOrder::NORMAL {
+        append_svg_text_alpha_state_if_changed(
+            body,
+            alpha_states,
+            &mut current_alpha,
+            (fill_alpha, stroke_alpha),
+        );
+        append_svg_text_operator(
+            body,
+            fill,
+            stroke,
+            stroke_width,
+            Some(2),
+            slot,
+            matrix,
+            &face.map,
+            source,
+            &face.kern,
+            shaped,
+            letter_spacing_adjust,
+            word_spacing_adjust,
+        );
+    } else {
+        for layer in text.paint_order.layers {
+            match layer {
+                SvgPaintLayer::Fill => {
+                    if let Some(fill) = fill {
+                        append_svg_text_alpha_state_if_changed(
+                            body,
+                            alpha_states,
+                            &mut current_alpha,
+                            (fill_alpha, 1000),
+                        );
+                        append_svg_text_operator(
+                            body,
+                            Some(fill),
+                            None,
+                            0.0,
+                            None,
+                            slot,
+                            matrix,
+                            &face.map,
+                            source,
+                            &face.kern,
+                            shaped,
+                            letter_spacing_adjust,
+                            word_spacing_adjust,
+                        );
+                    }
+                }
+                SvgPaintLayer::Stroke => {
+                    if let Some(stroke) = stroke {
+                        append_svg_text_alpha_state_if_changed(
+                            body,
+                            alpha_states,
+                            &mut current_alpha,
+                            (1000, stroke_alpha),
+                        );
+                        append_svg_text_operator(
+                            body,
+                            None,
+                            Some(stroke),
+                            stroke_width,
+                            Some(1),
+                            slot,
+                            matrix,
+                            &face.map,
+                            source,
+                            &face.kern,
+                            shaped,
+                            letter_spacing_adjust,
+                            word_spacing_adjust,
+                        );
+                    }
+                }
+                SvgPaintLayer::Markers => {}
+            }
+        }
+    }
+    if !text.decoration.is_empty() && width > 0.001 && width.is_finite() && matrix.size.is_finite()
+    {
+        if let Some((decoration_color, decoration_alpha)) = text
+            .fill
+            .map(|color| (color, fill_alpha))
+            .or_else(|| stroke.map(|color| (color, stroke_alpha)))
+        {
+            append_svg_text_alpha_state_if_changed(
+                body,
+                alpha_states,
+                &mut current_alpha,
+                (1000, decoration_alpha),
+            );
+            append_svg_text_decoration(body, text.decoration, matrix, width, decoration_color);
+        }
+    }
     body.push_str("Q\n");
+}
+
+fn svg_text_pdf_stroke_width(stroke_width: f32, font_size: f32, matrix_size: f32) -> f32 {
+    if !stroke_width.is_finite() || stroke_width <= 0.001 {
+        return 0.0;
+    }
+    let scale = if font_size.is_finite() && font_size > 0.001 && matrix_size.is_finite() {
+        matrix_size / font_size
+    } else {
+        1.0
+    };
+    (stroke_width * scale.max(0.001)).clamp(0.01, 96.0)
+}
+
+fn append_svg_text_alpha_state_if_changed(
+    body: &mut String,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
+    current: &mut (u16, u16),
+    next: (u16, u16),
+) {
+    if *current == next {
+        return;
+    }
+    append_svg_alpha_state_recorded(body, alpha_states, next.0, next.1);
+    body.push('\n');
+    *current = next;
 }
 
 fn append_svg_text_viewport_clip(body: &mut String, x: f32, y: f32, w: f32, h: f32) {
@@ -20668,7 +20796,10 @@ fn append_svg_text_viewport_clip(body: &mut String, x: f32, y: f32, w: f32, h: f
 #[allow(clippy::too_many_arguments)]
 fn append_svg_text_operator(
     body: &mut String,
-    color: (f32, f32, f32),
+    fill_color: Option<SvgColor>,
+    stroke_color: Option<SvgColor>,
+    stroke_width: f32,
+    render_mode: Option<u8>,
     slot: u8,
     matrix: SvgTextMatrix,
     map: &BTreeMap<u16, u16>,
@@ -20678,12 +20809,23 @@ fn append_svg_text_operator(
     letter_spacing_adjust: i32,
     word_spacing_adjust: i32,
 ) {
-    append_rgb_fill_operator(body, color);
+    if let Some(color) = fill_color {
+        append_rgb_fill_operator(body, color);
+    }
+    if let Some(color) = stroke_color {
+        append_rgb_stroke_space_operator(body, color);
+        append_pdf_num(body, stroke_width);
+        body.push_str(" w 0 J 0 j 4 M [] 0 d\n");
+    }
     body.push_str("BT /F");
     append_decimal_u64_string(body, u64::from(slot));
     body.push(' ');
     append_pdf_fixed2(body, matrix.size);
     body.push_str(" Tf ");
+    if let Some(mode) = render_mode {
+        append_decimal_u64_string(body, u64::from(mode));
+        body.push_str(" Tr ");
+    }
     append_pdf_num(body, matrix.a);
     body.push(' ');
     append_pdf_num(body, matrix.b);
@@ -20705,7 +20847,11 @@ fn append_svg_text_operator(
         letter_spacing_adjust,
         word_spacing_adjust,
     );
-    body.push_str(" TJ ET\n");
+    body.push_str(" TJ");
+    if render_mode.is_some() {
+        body.push_str(" 0 Tr");
+    }
+    body.push_str(" ET\n");
 }
 
 fn append_svg_text_decoration(
@@ -25961,7 +26107,10 @@ mod pdf_writer_tests {
         append_svg_text_viewport_clip(&mut streamed, 1.25, -0.5, 20.0, 3.125);
         append_svg_text_operator(
             &mut streamed,
-            (1.0, 0.5, 0.0),
+            Some((1.0, 0.5, 0.0)),
+            None,
+            0.0,
+            None,
             F_BODY,
             matrix,
             &map,

@@ -1845,6 +1845,74 @@ fn pdf_svg_text_with_fill_none_does_not_render_as_black() {
 }
 
 #[test]
+fn pdf_svg_text_stroke_and_paint_order_render_selectable_text() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 48">
+  <path d="M8 24 H152" fill="none" stroke="#64748b" stroke-width="4"/>
+  <text x="80" y="29"
+        text-anchor="middle"
+        font-size="16"
+        fill="#0f172a"
+        stroke="#ffffff"
+        stroke-width="5"
+        paint-order="stroke fill">edge label</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("text-stroke.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Diagram](text-stroke.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "stroked SVG text should stay native vector text rather than rasterizing the SVG: {text}"
+    );
+    let stroke = "1.000 1.000 1.000 RG 3.75 w 0 J 0 j 4 M [] 0 d\nBT /F1";
+    let fill = "0.059 0.090 0.165 rg\nBT /F1";
+    let stroke_index = text
+        .find(stroke)
+        .unwrap_or_else(|| panic!("text stroke paint pass should be emitted first: {text}"));
+    let fill_index = text
+        .find(fill)
+        .unwrap_or_else(|| panic!("text fill paint pass should be emitted after stroke: {text}"));
+    assert!(
+        stroke_index < fill_index,
+        "paint-order='stroke fill' should draw the text halo before the fill: {text}"
+    );
+    assert!(
+        text.contains("1 Tr") && text.contains("0 Tr"),
+        "the stroke pass should use PDF text rendering mode 1 and reset it afterward: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_stroke_only_text_does_not_disappear() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">
+  <text x="10" y="24" font-size="16" fill="none" stroke="#2563eb" stroke-width="2">Outline</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("stroke-only-text.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Stroke text](stroke-only-text.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.145 0.388 0.922 RG 1.5 w 0 J 0 j 4 M [] 0 d\nBT /F1")
+            && text.contains("1 Tr"),
+        "fill=none stroke-only SVG text should render as native stroked PDF text: {text}"
+    );
+    assert!(
+        !text.contains("0.000 0.000 0.000 rg\nBT /F1"),
+        "stroke-only SVG text must not fall back to black fill text: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_tspan_children_render_as_separate_text_runs() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 52">
@@ -2717,8 +2785,8 @@ fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
         "stylesheet color/currentColor and inline rgb() fill values should strip terminal !important before color parsing: {text}"
     );
     assert!(
-        text.contains("/GSa05000500 gs\n0.000 0.502 1.000 rg"),
-        "inline rgb() alpha should survive terminal !important cleanup and emit a native PDF alpha state: {text}"
+        text.contains("/GSa05001000 gs\n0.000 0.502 1.000 rg"),
+        "inline rgb() fill alpha should survive terminal !important cleanup and emit a native non-stroking PDF alpha state: {text}"
     );
     assert!(
         !text.contains("1.000 0.000 0.000 rg 1.000 0.000 0.000 RG"),
@@ -2814,8 +2882,8 @@ fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
         "rgba fill alpha should use the same native PDF alpha path: {text}"
     );
     assert!(
-        text.contains("/GSa03000300 << /ca 0.300 /CA 0.300 >>"),
-        "selectable SVG text opacity should also be backed by an ExtGState resource: {text}"
+        text.contains("/GSa03001000 << /ca 0.300 /CA 1.000 >>"),
+        "fill-only selectable SVG text opacity should be backed by a non-stroking ExtGState resource: {text}"
     );
     assert!(
         text.contains("/GSa06001000 << /ca 0.600 /CA 1.000 >>"),
@@ -2842,7 +2910,7 @@ fn pdf_svg_partial_opacity_uses_native_pdf_extgstate_resources() {
         "modern percentage rgb channels without alpha should map 0%, 50%, 100% to normalized RGB: {text}"
     );
     assert!(
-        text.contains("/GSa03000300 gs\n0.000 0.000 0.000 rg\nBT /F1"),
+        text.contains("/GSa03001000 gs\n0.000 0.000 0.000 rg\nBT /F1"),
         "transparent SVG labels should remain real selectable PDF text: {text}"
     );
     assert!(

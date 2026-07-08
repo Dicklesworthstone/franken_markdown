@@ -1827,9 +1827,9 @@ fn html_raw_text_end_markers(t: &str) -> Option<&'static [&'static str]> {
         ("style", &["</style>"]),
         ("textarea", &["</textarea>"]),
     ];
-    let lower = t.to_ascii_lowercase();
+    let rest = t.strip_prefix('<')?;
     for (name, markers) in RAW {
-        if let Some(after) = lower.strip_prefix('<').and_then(|s| s.strip_prefix(name)) {
+        if let Some(after) = strip_ascii_prefix_ignore_case(rest, name) {
             match after.chars().next() {
                 None => return Some(markers),
                 Some(c) if c.is_whitespace() || c == '>' || c == '/' => return Some(markers),
@@ -1852,8 +1852,9 @@ fn html_block_end<T>(
         HtmlBlockEnd::Marker(markers) => {
             let mut k = start;
             while k < lines.len() {
-                let lower = text(&lines[k]).to_ascii_lowercase();
-                let hit = markers.iter().any(|m| lower.contains(m));
+                let hit = markers
+                    .iter()
+                    .any(|marker| contains_ascii_ignore_case(text(&lines[k]), marker));
                 k += 1;
                 if hit {
                     break;
@@ -1888,8 +1889,16 @@ fn html_tag_name(t: &str) -> Option<&str> {
 }
 
 fn is_html_block_tag(name: &str) -> bool {
+    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        is_html_block_tag_lowercase(&name.to_ascii_lowercase())
+    } else {
+        is_html_block_tag_lowercase(name)
+    }
+}
+
+fn is_html_block_tag_lowercase(name: &str) -> bool {
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        name,
         "address"
             | "article"
             | "aside"
@@ -1955,6 +1964,110 @@ fn is_html_block_tag(name: &str) -> bool {
             | "track"
             | "ul"
     )
+}
+
+fn strip_ascii_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix = prefix.as_bytes();
+    let bytes = s.as_bytes();
+    if bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        s.get(prefix.len()..)
+    } else {
+        None
+    }
+}
+
+fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    if needle.len() == 1 {
+        return haystack
+            .iter()
+            .any(|byte| byte.eq_ignore_ascii_case(&needle[0]));
+    }
+
+    let first = needle[0];
+    let last_start = haystack.len() - needle.len();
+    let mut start = 0usize;
+    while start <= last_start {
+        if haystack[start].eq_ignore_ascii_case(&first)
+            && haystack[start..start + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            return true;
+        }
+        start += 1;
+    }
+    false
+}
+
+#[cfg(test)]
+mod html_block_classifier_tests {
+    use super::{
+        HtmlBlockEnd, contains_ascii_ignore_case, html_block_end, html_block_kind,
+        html_raw_text_end_markers, is_html_block_tag, strip_ascii_prefix_ignore_case,
+    };
+
+    fn raw_marker(line: &str) -> Option<&'static [&'static str]> {
+        match html_block_kind(line) {
+            Some(HtmlBlockEnd::Marker(markers)) => Some(markers),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn raw_text_html_block_starts_match_ascii_case_insensitively() {
+        assert_eq!(
+            raw_marker("<SCRIPT type=\"module\">").map(|m| m[0]),
+            Some("</script>")
+        );
+        assert_eq!(raw_marker("<Pre>").map(|m| m[0]), Some("</pre>"));
+        assert_eq!(raw_marker("<STYLE>").map(|m| m[0]), Some("</style>"));
+        assert_eq!(raw_marker("<TextArea>").map(|m| m[0]), Some("</textarea>"));
+        assert!(html_raw_text_end_markers("<scripture>").is_none());
+        assert!(html_raw_text_end_markers("<prelude>").is_none());
+    }
+
+    #[test]
+    fn raw_text_html_block_end_markers_match_ascii_case_insensitively() {
+        let lines = ["<SCRIPT>", "alert(1);", "</SCRIPT>", "after"];
+        let end = html_block_end(&lines, 0, HtmlBlockEnd::Marker(&["</script>"]), |line| {
+            *line
+        });
+        assert_eq!(end, 3);
+
+        assert!(contains_ascii_ignore_case(
+            "before </SCRIPT> after",
+            "</script>"
+        ));
+        assert!(contains_ascii_ignore_case("<![CDATA[x]]>", "]]>"));
+        assert!(!contains_ascii_ignore_case("<scripture>", "</script>"));
+    }
+
+    #[test]
+    fn block_level_html_tags_still_match_ascii_case_insensitively() {
+        assert!(is_html_block_tag("table"));
+        assert!(is_html_block_tag("TaBlE"));
+        assert!(is_html_block_tag("UL"));
+        assert!(!is_html_block_tag("videocustomtag"));
+
+        assert!(matches!(
+            html_block_kind("<TaBlE>"),
+            Some(HtmlBlockEnd::Blank)
+        ));
+        assert_eq!(
+            strip_ascii_prefix_ignore_case("SCRIPT type=\"module\"", "script"),
+            Some(" type=\"module\"")
+        );
+        assert_eq!(
+            strip_ascii_prefix_ignore_case("scripture", "script"),
+            Some("ure")
+        );
+    }
 }
 
 // ---- lists ------------------------------------------------------------------

@@ -194,6 +194,21 @@ fn reference_images_resolve_alt_dest_and_title() {
 }
 
 #[test]
+fn alphabetic_pipe_table_before_reference_keeps_reference_boundary() {
+    let out = html(
+        "Name | Value\n\
+         --- | ---\n\
+         alpha | beta\n\n\
+         [id]: /ok\n\n\
+         See [id].",
+    );
+
+    assert!(out.contains("<table>"));
+    assert!(out.contains("<a href=\"/ok\">id</a>"));
+    assert!(!out.contains("[id]:"));
+}
+
+#[test]
 fn lazy_list_item_continuation_stays_in_the_item() {
     let out = html("- first line\ncontinued without indentation\n- second");
 

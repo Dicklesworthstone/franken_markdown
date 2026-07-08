@@ -776,27 +776,23 @@ fn reference_collector_needs_block_scan(line: &str) -> bool {
         return false;
     };
 
-    let mut has_reference_colon = false;
+    match first {
+        b'[' => tail.contains(&b'|') || contains_reference_colon(tail),
+        b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => true,
+        b'0'..=b'9' => reference_collector_ordered_marker_candidate(tail) || tail.contains(&b'|'),
+        _ => tail.contains(&b'|'),
+    }
+}
+
+fn contains_reference_colon(bytes: &[u8]) -> bool {
     let mut previous = 0u8;
     for &byte in bytes {
-        if matches!(byte, b'\t' | b'|') {
-            return true;
-        }
         if previous == b']' && byte == b':' {
-            has_reference_colon = true;
+            return true;
         }
         previous = byte;
     }
-
-    if first == b'[' && has_reference_colon {
-        return true;
-    }
-
-    match first {
-        b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => true,
-        b'0'..=b'9' => reference_collector_ordered_marker_candidate(tail),
-        _ => false,
-    }
+    false
 }
 
 fn reference_collector_ordered_marker_candidate(bytes: &[u8]) -> bool {

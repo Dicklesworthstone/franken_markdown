@@ -23,15 +23,15 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 
 > **Current status.** The `v0.3.1` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
-> x86_64, built and smoke-tested with DSR. Crates.io currently lists `0.2.0`;
-> install `v0.3.1` from the release archives or tagged source until the crate is
-> published. The current renderer ships shared HTML/PDF syntax
+> x86_64, built and smoke-tested with DSR. The browser/WASM package is published
+> to npm as `@franken-suite/franken-markdown`. Crates.io still serves
+> `franken_markdown = "0.2.0"` as checked on July 8, 2026, so use the release
+> archives or tagged source for the current `0.3.1` CLI and library until the
+> Rust crate catches up. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, staged native writes, optional Asupersync batch rendering,
 > browser/WASM package sources, and a long set of measured scalar optimizations.
-> The WASM package is build-checked, native-parity tested, and published to npm
-> as `@franken-suite/franken-markdown`.
 > SIMD and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
@@ -97,14 +97,14 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input PDF renders auto-load relative local PNG/SVG destinations. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text, transforms, gradients, spread modes, patterns, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift handling, transforms, gradients, spread modes, patterns, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; crates.io currently lists `0.2.0` |
+| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; npm package `@franken-suite/franken-markdown`; crates.io currently lists `0.2.0` |
 
 ### Mainline Highlights
 
@@ -114,7 +114,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, drop shadows, `paint-order`, and embedded PNG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, drop shadows, baseline-shift text, `paint-order`, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -220,14 +220,15 @@ Performance work starts with `release-perf` profiles, changes one lever at a
 time, and lands only when golden output plus targeted tests keep behavior
 stable.
 
-CPU-specific optimization in this project starts with target-native builds,
-layout, memory traffic, and branch behavior rather than intrinsics. M-series,
-Intel, and AMD cores all benefit when the renderer keeps hot data compact, scans
-bytes linearly, writes PDF buffers append-only, and avoids allocator churn.
-Published archives are specialized by target family (`aarch64-apple-darwin`,
-`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
-`x86_64-pc-windows-msvc`) while staying portable within that family. Local source
-builds can opt into host-specific codegen when portability is not required.
+CPU-specific optimization in this project starts with target-family native
+archives, layout, memory traffic, and branch behavior rather than intrinsics.
+M-series, Intel, and AMD cores all benefit when the renderer keeps hot data
+compact, scans bytes linearly, writes PDF buffers append-only, and avoids
+allocator churn. Published archives are specialized by target family
+(`aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc`) while staying portable
+within that family. Local source builds can opt into host-specific codegen when
+portability is not required.
 
 ### Optimizations Already In The Renderer
 
@@ -238,6 +239,7 @@ builds can opt into host-specific codegen when portability is not required.
 | Inline and HTML escaping | Shared scanner primitives find Markdown/HTML escape bytes without per-character allocation on clean text runs | The common path fits branch predictors and cache lines on ARM64 and x86_64 |
 | Syntax highlighting | Supported language fences, including Mermaid/MMD, dispatch directly into the clean-room highlighter. Unknown fences stay on the plain escaped path, and PDF avoids duplicate lexer lookup where possible | Code-heavy documents avoid repeated language normalization and duplicate token construction |
 | Font use tracking | HTML font subsetting records ASCII glyph use with a compact bitset, then preserves first-seen order for non-ASCII glyphs | Embedded-font CSS stays deterministic while per-render bookkeeping drops |
+| HTML heading anchors | Repeated heading-id collisions write exact-capacity decimal suffixes directly into the output candidate instead of allocating `format!` temporaries | Large generated documents with repeated headings keep byte-identical anchors while reducing allocator traffic in the HTML hot path |
 | PDF shaping and layout | Render-local shaped-width caches avoid recomputing font shaping, kerning, ligatures, and repeated word widths. Table-cell inline tokens are reused for measurement and final layout | Repeated table, code, and body tokens reuse nearby cache entries instead of re-entering shaping loops |
 | PDF glyph collection | Cached shaped runs are collected with a single shape-cache lookup on hits | Cuts deterministic map traffic during subset glyph collection without changing PDF bytes |
 | PDF content streams | Text segment operators, `TJ` arrays, decimal tokens, object references, and common structure tokens stream directly into page buffers | Reduces temporary string traffic in text-heavy PDF pages and lowers allocator pressure |
@@ -378,8 +380,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package; this currently installs 0.2.0
-# until 0.3.1 is published to crates.io.
+# Or install the published crates.io package. As checked on July 8, 2026, this
+# currently installs 0.2.0 until 0.3.1 is published to crates.io.
 cargo install franken_markdown
 ```
 

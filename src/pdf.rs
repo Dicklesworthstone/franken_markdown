@@ -14731,7 +14731,7 @@ fn serialize(
                     if seg.text.is_empty() {
                         continue;
                     }
-                    let mut path = prefix.clone();
+                    let mut path = clone_prefix_with_extra(&prefix, 3);
                     path.push(SElem {
                         key: SKey::Table(line.flow.group),
                         tag: "Table",
@@ -14775,7 +14775,7 @@ fn serialize(
                 if marked {
                     let leaf = leaf_elem(line);
                     append_marked_content_begin(&mut body, leaf.tag, next_mcid);
-                    let mut path = container_prefix(line);
+                    let mut path = container_prefix_with_extra(line, 1);
                     path.push(leaf);
                     let (alt, bbox) = if let Some(image) = &line.image {
                         let x0 = line.rule_x;
@@ -14943,7 +14943,7 @@ struct PageContent {
 /// the same `TableRow`, every wrapped line of one paragraph reuses the same
 /// `Paragraph`). Two marks open/extend the same element iff their keys compare
 /// equal at the same path depth.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
     BlockQuote(usize),
     List(u32),
@@ -14961,7 +14961,7 @@ enum SKey {
 
 /// One element on a mark's container path: its sharing key plus the `/S`
 /// structure type emitted for it.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct SElem {
     key: SKey,
     tag: &'static str,
@@ -15086,10 +15086,10 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
             open.truncate(common);
             for elem in &mark.path[common..] {
                 let parent_node = open.last().map_or(0, |&(_, idx)| idx);
-                if let Some(&existing) = child_by_key.get(&(parent_node, elem.key.clone())) {
+                if let Some(&existing) = child_by_key.get(&(parent_node, elem.key)) {
                     // A fragment of an element that already exists under this
                     // parent (a wrapped/re-entered cell, list item, ...): extend it.
-                    open.push((elem.key.clone(), existing));
+                    open.push((elem.key, existing));
                     continue;
                 }
                 let node_index = nodes.len();
@@ -15103,8 +15103,8 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                     page: None,
                 });
                 nodes[parent_node].kids.push(SKid::Node(node_index));
-                child_by_key.insert((parent_node, elem.key.clone()), node_index);
-                open.push((elem.key.clone(), node_index));
+                child_by_key.insert((parent_node, elem.key), node_index);
+                open.push((elem.key, node_index));
             }
 
             let owner = open.last().map_or(0, |&(_, idx)| idx);
@@ -19349,6 +19349,10 @@ fn leaf_elem(line: &Line) -> SElem {
 /// gets `> - item` (list inside quote) and `- > quote` (quote inside list)
 /// right, rather than always nesting one kind inside the other.
 fn container_prefix(line: &Line) -> Vec<SElem> {
+    container_prefix_with_extra(line, 0)
+}
+
+fn container_prefix_with_extra(line: &Line, extra_len: usize) -> Vec<SElem> {
     enum Container {
         Quote(usize),
         List { list: u32, item: u32 },
@@ -19369,7 +19373,12 @@ fn container_prefix(line: &Line) -> Vec<SElem> {
     }
     containers.sort_by_key(|(start, _)| *start);
 
-    let mut path = Vec::new();
+    let capacity = line
+        .quote_bars
+        .len()
+        .saturating_add(line.list_path.len().saturating_mul(3))
+        .saturating_add(extra_len);
+    let mut path = Vec::with_capacity(capacity);
     for (_, container) in containers {
         match container {
             Container::Quote(qid) => path.push(SElem {
@@ -19392,6 +19401,12 @@ fn container_prefix(line: &Line) -> Vec<SElem> {
             }
         }
     }
+    path
+}
+
+fn clone_prefix_with_extra(prefix: &[SElem], extra_len: usize) -> Vec<SElem> {
+    let mut path = Vec::with_capacity(prefix.len().saturating_add(extra_len));
+    path.extend_from_slice(prefix);
     path
 }
 

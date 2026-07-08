@@ -13104,8 +13104,9 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         return;
     }
 
-    let plain = needs_dictionary.then(|| pdf_word_string(word, stats.byte_len));
-    let dict_points = if let Some(plain) = plain.as_deref() {
+    let dict_points = if needs_dictionary {
+        let plain = pdf_word_plain_text(word, stats.byte_len);
+        let plain = plain.as_ref();
         // Hyphenation points are case-independent and depend only on the word's
         // letters, so the lowercase word is a sound cache key (opts are always the
         // default here). A cache hit returns exactly what the hyphenator would
@@ -13138,7 +13139,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         Vec::new()
     };
 
-    let points = if plain.is_some() {
+    let points = if needs_dictionary {
         pdf_ascii_alphabetic_word_break_points(stats.char_len, &dict_points)
     } else {
         let chars = pdf_word_chars(word, stats.char_len);
@@ -13231,6 +13232,14 @@ fn pdf_word_string(word: &[Tok], byte_len: usize) -> String {
         out.push_str(&tok.text);
     }
     out
+}
+
+fn pdf_word_plain_text(word: &[Tok], byte_len: usize) -> Cow<'_, str> {
+    if let [tok] = word {
+        Cow::Borrowed(tok.text.as_str())
+    } else {
+        Cow::Owned(pdf_word_string(word, byte_len))
+    }
 }
 
 fn pdf_word_chars(word: &[Tok], char_len: usize) -> Vec<char> {
@@ -22131,8 +22140,8 @@ mod pdf_writer_tests {
         finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
         kerned_tj_with_spacing, line_has_visible_content, measure_word, normalize_svg_text_node,
         pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
-        pdf_word_break_points, push_text_tokens, rounded_rect_fill, shape_run,
-        svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        pdf_word_break_points, pdf_word_plain_text, pdf_word_stats, push_text_tokens,
+        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ThemeColors;
     use crate::ast::Inline;
@@ -22440,6 +22449,72 @@ mod pdf_writer_tests {
             assert_eq!(tok_group_visible_text(&built.item_toks[boxes[0].0]), text);
             assert_eq!(boxes[0].1, measure_word(&toks, fs, &faces));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn pdf_word_plain_text_borrows_single_tokens_and_owns_joined_words() {
+        let mut single = Vec::new();
+        push_text_tokens("characteristically", F_BODY, false, None, &mut single);
+        let single_stats = pdf_word_stats(&single);
+        let plain = pdf_word_plain_text(&single, single_stats.byte_len);
+        assert!(matches!(plain, Cow::Borrowed("characteristically")));
+
+        let joined = vec![
+            Tok {
+                text: "char".to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            Tok {
+                text: "acteristically".to_string(),
+                slot: F_BOLD,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+        ];
+        let joined_stats = pdf_word_stats(&joined);
+        let plain = pdf_word_plain_text(&joined, joined_stats.byte_len);
+        assert!(matches!(plain, Cow::Owned(ref text) if text == "characteristically"));
+    }
+
+    #[test]
+    fn borrowed_single_token_pdf_word_keeps_hyphenation_breaks() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
+        let mut toks = Vec::new();
+        push_text_tokens("characteristically", F_BODY, false, None, &mut toks);
+        assert_eq!(toks.len(), 1);
+
+        let built = build_paragraph(
+            &toks,
+            fs,
+            &faces,
+            ParagraphPolicy::TEX_PARAGRAPH,
+            &cache,
+            &width_cache,
+        );
+        assert!(
+            built
+                .items
+                .iter()
+                .any(|item| matches!(item, ParagraphItem::Penalty(penalty)
+                    if penalty.flagged && penalty.penalty != FORCED_BREAK_PENALTY)),
+            "borrowed plain word path must still emit dictionary hyphen penalties"
+        );
+        assert!(
+            built.break_toks.iter().any(|tok| tok
+                .as_ref()
+                .is_some_and(|tok| token_visible_text(tok) == "-")),
+            "dictionary hyphen break must still render a discretionary hyphen"
+        );
         Ok(())
     }
 

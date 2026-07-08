@@ -479,9 +479,11 @@ fn looks_like_reference_definition(line: &str) -> bool {
 }
 
 fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap, bool) {
-    let (consumed, refs) = collect_link_reference_metadata(lines);
-    let (kept, kept_reference_candidate) =
-        strip_consumed_references_with_candidate(lines, &consumed);
+    let mut consumed = ConsumedReferenceLines::new();
+    let mut refs = ReferenceMap::new();
+    let kept_reference_candidate =
+        collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs);
+    let kept = strip_consumed_references(lines, &consumed);
     (kept, refs, kept_reference_candidate)
 }
 
@@ -513,24 +515,15 @@ fn strip_consumed_source_lines<'a>(
 }
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[Range<usize>]) -> Vec<&'a str> {
-    strip_consumed_references_with_candidate(lines, consumed).0
-}
-
-fn strip_consumed_references_with_candidate<'a>(
-    lines: &[&'a str],
-    consumed: &[Range<usize>],
-) -> (Vec<&'a str>, bool) {
     let consumed_line_count: usize = consumed
         .iter()
         .map(|range| range.end.saturating_sub(range.start))
         .sum();
     let mut kept = Vec::with_capacity(lines.len().saturating_sub(consumed_line_count));
-    let mut kept_reference_candidate = false;
     let mut cursor = 0usize;
 
     for range in consumed {
         for line in &lines[cursor..range.start] {
-            kept_reference_candidate |= line.contains("]:");
             kept.push(*line);
         }
         if consumed_reference_run_separates_tables(lines, range) {
@@ -540,10 +533,9 @@ fn strip_consumed_references_with_candidate<'a>(
     }
 
     for line in &lines[cursor..] {
-        kept_reference_candidate |= line.contains("]:");
         kept.push(*line);
     }
-    (kept, kept_reference_candidate)
+    kept
 }
 
 fn consumed_reference_run_separates_tables(lines: &[&str], range: &Range<usize>) -> bool {
@@ -594,7 +586,7 @@ fn collect_link_reference_metadata_into(
     lines: &[&str],
     mut consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
-) {
+) -> bool {
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
     // paragraph. A link reference definition can only be *defined* at a block
@@ -603,6 +595,7 @@ fn collect_link_reference_metadata_into(
     // which used to silently delete the line and merge the surrounding text
     // (e.g. `foo\n[bar]: /url\nbaz` dropped the middle line).
     let mut in_paragraph = false;
+    let mut kept_reference_candidate = false;
 
     while i < lines.len() {
         let line = lines[i];
@@ -659,9 +652,11 @@ fn collect_link_reference_metadata_into(
             let mut last_inner: Option<&str> = None;
             while i < lines.len() {
                 if lines[i].trim_start().starts_with('>') {
+                    kept_reference_candidate |= lines[i].contains("]:");
                     last_inner = Some(strip_blockquote_marker(lines[i]));
                     i += 1;
                 } else if blockquote_lazy_continuation(last_inner, lines[i]) {
+                    kept_reference_candidate |= lines[i].contains("]:");
                     last_inner = Some(lines[i].trim_start());
                     i += 1;
                 } else {
@@ -699,27 +694,29 @@ fn collect_link_reference_metadata_into(
 
         // Extract a reference definition only at a block boundary, never as a
         // paragraph continuation.
-        if !in_paragraph
-            && scan.maybe_reference
-            && let Some((label, mut reference)) = parse_reference_definition(line)
-        {
-            let mut used = 1usize;
-            if reference.title.is_none()
-                && let Some(title_line) = lines.get(i + 1)
-                && let Some(title) = parse_reference_title_line(title_line)
+        if scan.maybe_reference {
+            if !in_paragraph && let Some((label, mut reference)) = parse_reference_definition(line)
             {
-                reference.title = Some(title);
-                used = 2;
+                let mut used = 1usize;
+                if reference.title.is_none()
+                    && let Some(title_line) = lines.get(i + 1)
+                    && let Some(title) = parse_reference_title_line(title_line)
+                {
+                    reference.title = Some(title);
+                    used = 2;
+                }
+
+                refs.entry(label).or_insert(reference);
+                if let Some(consumed) = consumed.as_mut() {
+                    push_consumed_reference_range(consumed, i..i + used);
+                }
+                i += used;
+                // Leading reference definitions do not themselves open a paragraph.
+                in_paragraph = false;
+                continue;
             }
 
-            refs.entry(label).or_insert(reference);
-            if let Some(consumed) = consumed.as_mut() {
-                push_consumed_reference_range(consumed, i..i + used);
-            }
-            i += used;
-            // Leading reference definitions do not themselves open a paragraph.
-            in_paragraph = false;
-            continue;
+            kept_reference_candidate = true;
         }
 
         // A setext underline (`===`/`---`) following paragraph text closes that
@@ -740,6 +737,7 @@ fn collect_link_reference_metadata_into(
         in_paragraph = line_is_paragraph_text_with_scan(line, scan);
         i += 1;
     }
+    kept_reference_candidate
 }
 
 fn push_consumed_reference_range(consumed: &mut ConsumedReferenceLines, range: Range<usize>) {
@@ -4147,6 +4145,35 @@ mod refdef_paragraph_tests {
         assert!(
             !kept_reference_candidate,
             "consumed definitions must not force the nested-reference walk"
+        );
+    }
+
+    #[test]
+    fn collect_candidate_tracking_ignores_plain_inline_colons_but_keeps_container_refs() {
+        let (kept, refs, kept_reference_candidate) =
+            collect_link_references(&["See [text]: not a boundary definition"]);
+        assert!(refs.is_empty());
+        assert_eq!(kept, vec!["See [text]: not a boundary definition"]);
+        assert!(
+            !kept_reference_candidate,
+            "plain inline-looking text must not force the nested-reference walk"
+        );
+
+        let (kept, refs, kept_reference_candidate) = collect_link_references(&["> [a]: /x"]);
+        assert!(refs.is_empty(), "top-level quote body is collected later");
+        assert_eq!(kept, vec!["> [a]: /x"]);
+        assert!(
+            kept_reference_candidate,
+            "blockquote definitions must still trigger nested reference collection"
+        );
+
+        let (kept, refs, kept_reference_candidate) =
+            collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
+        assert!(refs.contains_key("a"));
+        assert_eq!(kept, vec!["text", "[b]: /y"]);
+        assert!(
+            kept_reference_candidate,
+            "unconsumed reference-shaped continuations must stay conservative"
         );
     }
 

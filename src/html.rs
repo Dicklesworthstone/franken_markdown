@@ -1085,46 +1085,44 @@ fn push_font_face(
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let encoded_len = bytes.len().div_ceil(3) * 4;
-    let mut out = Vec::with_capacity(encoded_len);
+    let mut out = vec![0u8; encoded_len];
     let mut i = 0usize;
+    let mut o = 0usize;
     let full_len = bytes.len() / 3 * 3;
     while i < full_len {
         let b0 = bytes[i];
         let b1 = bytes[i + 1];
         let b2 = bytes[i + 2];
 
-        out.extend_from_slice(&[
-            TABLE[(b0 >> 2) as usize],
-            TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize],
-            TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize],
-            TABLE[(b2 & 0b0011_1111) as usize],
-        ]);
+        out[o] = TABLE[(b0 >> 2) as usize];
+        out[o + 1] = TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize];
+        out[o + 2] = TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize];
+        out[o + 3] = TABLE[(b2 & 0b0011_1111) as usize];
 
         i += 3;
+        o += 4;
     }
     match bytes.len() - full_len {
         0 => {}
         1 => {
             let b0 = bytes[full_len];
-            out.extend_from_slice(&[
-                TABLE[(b0 >> 2) as usize],
-                TABLE[((b0 & 0b0000_0011) << 4) as usize],
-                b'=',
-                b'=',
-            ]);
+            out[o] = TABLE[(b0 >> 2) as usize];
+            out[o + 1] = TABLE[((b0 & 0b0000_0011) << 4) as usize];
+            out[o + 2] = b'=';
+            out[o + 3] = b'=';
+            o += 4;
         }
         _ => {
             let b0 = bytes[full_len];
             let b1 = bytes[full_len + 1];
-            out.extend_from_slice(&[
-                TABLE[(b0 >> 2) as usize],
-                TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize],
-                TABLE[((b1 & 0b0000_1111) << 2) as usize],
-                b'=',
-            ]);
+            out[o] = TABLE[(b0 >> 2) as usize];
+            out[o + 1] = TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize];
+            out[o + 2] = TABLE[((b1 & 0b0000_1111) << 2) as usize];
+            out[o + 3] = b'=';
+            o += 4;
         }
     }
-    debug_assert_eq!(out.len(), encoded_len);
+    debug_assert_eq!(o, encoded_len);
     debug_assert!(out.is_ascii());
     match String::from_utf8(out) {
         Ok(s) => s,

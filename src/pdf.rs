@@ -18730,8 +18730,11 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
 
     let mut best = last_fit;
     let mut best_score = f32::INFINITY;
+    let mut candidate_used = 0.0f32;
     for candidate in (start + 1)..=last_fit {
-        let score = break_score(lines, start, candidate, capacity);
+        let line = &lines[candidate - 1];
+        candidate_used += line_leading(line) + line.gap_after;
+        let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
         if score < best_score {
             best_score = score;
             best = candidate;
@@ -18741,8 +18744,7 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     best.max(start + 1).min(lines.len())
 }
 
-fn break_score(lines: &[Line], start: usize, candidate: usize, capacity: f32) -> f32 {
-    let used = vertical_height(&lines[start..candidate]);
+fn break_score_for_used_height(lines: &[Line], candidate: usize, capacity: f32, used: f32) -> f32 {
     let remaining = (capacity - used).max(0.0);
     let fill_badness = (remaining / capacity.max(1.0)).powi(2) * 10_000.0;
     fill_badness + break_penalty(lines, candidate)
@@ -19049,13 +19051,27 @@ mod keep_with_next_tests {
             "table-header keep-with-first-row regression"
         );
     }
-}
 
-fn vertical_height(lines: &[Line]) -> f32 {
-    lines
-        .iter()
-        .map(|line| line_leading(line) + line.gap_after)
-        .sum()
+    #[test]
+    fn page_break_scoring_prefers_the_fullest_unpenalized_fit() {
+        let lines = [
+            line(FlowKind::Paragraph, 1, 0, 1),
+            line(FlowKind::Paragraph, 2, 0, 1),
+            line(FlowKind::Paragraph, 3, 0, 1),
+            line(FlowKind::Paragraph, 4, 0, 1),
+        ];
+        let page = PageGeom {
+            width: 100.0,
+            height: 45.0,
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            content_w: 100.0,
+        };
+
+        assert_eq!(choose_page_break(&lines, 0, page), 3);
+    }
 }
 
 fn line_leading(line: &Line) -> f32 {

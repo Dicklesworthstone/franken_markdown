@@ -8997,7 +8997,18 @@ fn parse_svg_style_patch(
                     }
                 } else {
                     let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
-                    if let Some(paint) = parse_svg_paint(value, gradients, css_vars) {
+                    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+                    let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
+                        if paint.is_some() {
+                            Some(paint)
+                        } else {
+                            pattern_ref
+                                .and_then(|index| patterns.get(index))
+                                .map(|pattern| Some(pattern.color))
+                                .or(Some(None))
+                        }
+                    });
+                    if let Some(paint) = paint {
                         patch.stroke = Some(paint);
                         patch.stroke_gradient =
                             Some(paint.is_some().then_some(gradient_ref).flatten());
@@ -11377,7 +11388,7 @@ fn apply_svg_paint_attr(
     let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
     let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
-        if target == "fill" && paint.is_none() {
+        if (target == "fill" || target == "stroke") && paint.is_none() {
             pattern_ref
                 .and_then(|index| patterns.get(index))
                 .map(|pattern| Some(pattern.color))

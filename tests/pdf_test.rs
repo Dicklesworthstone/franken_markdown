@@ -4198,6 +4198,40 @@ fn pdf_svg_user_space_patterns_tile_vector_children_under_shape_clip() {
 }
 
 #[test]
+fn pdf_svg_pattern_strokes_keep_representative_color_fallback() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16">
+  <style>
+    .pattern-stroke { stroke: url(#stripe); stroke-width: 2; fill: none; }
+  </style>
+  <defs>
+    <pattern id="stripe" patternUnits="userSpaceOnUse" width="4" height="4">
+      <rect x="0" y="0" width="2" height="4" fill="#ff0000"/>
+      <rect x="2" y="0" width="2" height="4" fill="#0000ff"/>
+    </pattern>
+  </defs>
+  <line x1="2" y1="4" x2="18" y2="4" stroke="url(#stripe)" stroke-width="2"/>
+  <path class="pattern-stroke" d="M2 12 L18 12"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-stroke.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern stroke](pattern-stroke.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 4 m 18 4 l S\n"),
+        "presentation-attribute pattern strokes should not disappear when falling back to the pattern representative color: {text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 12 m 18 12 l S\n"),
+        "stylesheet pattern strokes should not disappear when falling back to the pattern representative color: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_default_object_bounding_box_patterns_tile_vector_children() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 20">

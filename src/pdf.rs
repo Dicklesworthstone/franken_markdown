@@ -742,21 +742,66 @@ struct SvgCssRadialGradient {
     stops: Vec<SvgGradientStop>,
 }
 
+const SVG_MAX_SHADOW_LAYERS: usize = 2;
+
 #[derive(Clone, Copy)]
-struct SvgShadow {
+struct SvgShadowLayer {
     dx: f32,
     dy: f32,
     color: SvgColor,
     opacity: f32,
 }
 
-impl SvgShadow {
+impl SvgShadowLayer {
     const FALLBACK: Self = Self {
         dx: 2.0,
         dy: 2.0,
         color: (0.890, 0.900, 0.920),
         opacity: 1.0,
     };
+}
+
+#[derive(Clone, Copy)]
+struct SvgShadow {
+    layers: [SvgShadowLayer; SVG_MAX_SHADOW_LAYERS],
+    len: u8,
+}
+
+impl SvgShadow {
+    const FALLBACK: Self = Self::single(SvgShadowLayer::FALLBACK);
+
+    const fn empty() -> Self {
+        Self {
+            layers: [SvgShadowLayer::FALLBACK; SVG_MAX_SHADOW_LAYERS],
+            len: 0,
+        }
+    }
+
+    const fn single(layer: SvgShadowLayer) -> Self {
+        let mut shadow = Self::empty();
+        shadow.layers[0] = layer;
+        shadow.len = 1;
+        shadow
+    }
+
+    fn push(&mut self, layer: SvgShadowLayer) -> bool {
+        let index = self.len as usize;
+        if index >= SVG_MAX_SHADOW_LAYERS {
+            return false;
+        }
+        self.layers[index] = layer;
+        self.len += 1;
+        true
+    }
+
+    #[cfg(test)]
+    fn first(&self) -> Option<SvgShadowLayer> {
+        (self.len > 0).then_some(self.layers[0])
+    }
+
+    fn layers(&self) -> &[SvgShadowLayer] {
+        &self.layers[..self.len as usize]
+    }
 }
 
 #[derive(Clone)]
@@ -9565,7 +9610,7 @@ fn parse_svg_filter_shadow_body(body: &str, css_vars: &[SvgCssVariable]) -> Opti
 }
 
 fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> SvgShadow {
-    let mut shadow = SvgShadow::FALLBACK;
+    let mut shadow = SvgShadowLayer::FALLBACK;
     if let Some(dx) = svg_attr(attrs, "dx").and_then(parse_svg_filter_length) {
         shadow.dx = dx;
     }
@@ -9586,11 +9631,11 @@ fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariab
         apply_svg_fe_drop_shadow_style(&mut shadow, style, css_vars);
     }
     shadow.opacity = shadow.opacity.clamp(0.0, 1.0);
-    shadow
+    SvgShadow::single(shadow)
 }
 
 fn apply_svg_fe_drop_shadow_style(
-    shadow: &mut SvgShadow,
+    shadow: &mut SvgShadowLayer,
     style: &str,
     css_vars: &[SvgCssVariable],
 ) {
@@ -9657,13 +9702,26 @@ fn parse_svg_filter_shadow(
 fn parse_svg_css_drop_shadow(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
     let lower = value.to_ascii_lowercase();
     let marker = "drop-shadow(";
-    let start = lower.find(marker)? + marker.len();
-    let rest = value.get(start..)?;
-    let close = find_svg_css_function_close(rest)?;
-    parse_svg_drop_shadow_args(rest.get(..close)?, css_vars)
+    let mut shadow = SvgShadow::empty();
+    let mut search_start = 0usize;
+    while let Some(rel_start) = lower.get(search_start..)?.find(marker) {
+        let start = search_start + rel_start + marker.len();
+        let rest = value.get(start..)?;
+        let Some(close) = find_svg_css_function_close(rest) else {
+            break;
+        };
+        if let Some(layer) = parse_svg_drop_shadow_args(rest.get(..close)?, css_vars) {
+            shadow.push(layer);
+            if shadow.layers().len() >= SVG_MAX_SHADOW_LAYERS {
+                break;
+            }
+        }
+        search_start = start + close + 1;
+    }
+    (!shadow.layers().is_empty()).then_some(shadow)
 }
 
-fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
+fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadowLayer> {
     let mut lengths = Vec::new();
     let mut color = None;
     let mut opacity = None;
@@ -9679,7 +9737,7 @@ fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option
             lengths.push(length);
         }
     }
-    (lengths.len() >= 2).then_some(SvgShadow {
+    (lengths.len() >= 2).then_some(SvgShadowLayer {
         dx: lengths[0],
         dy: lengths[1],
         color: color.unwrap_or((0.0, 0.0, 0.0)),
@@ -16792,10 +16850,9 @@ fn draw_svg_rect(
         Some((rect.x, rect.y, rect.w, rect.h)),
         page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
+    append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_rect_path(body, rect);
-        append_svg_shadow_operator(body, style);
-    }
+    });
     append_svg_painted_shape(
         body,
         style,
@@ -16851,10 +16908,9 @@ fn draw_svg_ellipse(
         )),
         page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
+    append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_ellipse_path(body, ellipse.cx, ellipse.cy, ellipse.rx, ellipse.ry);
-        append_svg_shadow_operator(body, style);
-    }
+    });
     append_svg_painted_shape(
         body,
         style,
@@ -16940,10 +16996,9 @@ fn draw_svg_line(
         line_bbox,
         page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
+    append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_line_path(body, line);
-        append_svg_shadow_operator(body, style);
-    }
+    });
     if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
         for layer in style.paint_order.layers {
             match layer {
@@ -17217,10 +17272,9 @@ fn draw_svg_poly(
         poly_bbox,
         page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
+    append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_poly_path(body, poly, closed);
-        append_svg_shadow_operator(body, style);
-    }
+    });
     if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
         append_svg_ordered_painted_shape_with_markers(
             body,
@@ -17414,10 +17468,9 @@ fn draw_svg_path(
         path_bbox,
         page_resources.alpha_states,
     );
-    if append_svg_shadow_prefix(body, style, page_resources.alpha_states) {
+    append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_path_ops(body, &path.ops);
-        append_svg_shadow_operator(body, style);
-    }
+    });
     if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
         append_svg_ordered_painted_shape_with_markers(
             body,
@@ -18015,6 +18068,7 @@ fn append_svg_transform_suffix(body: &mut String, transformed: bool) {
     }
 }
 
+#[cfg(test)]
 fn append_svg_shadow_prefix(
     body: &mut String,
     style: SvgStyle,
@@ -18023,9 +18077,42 @@ fn append_svg_shadow_prefix(
     let Some(shadow) = style.shadow else {
         return false;
     };
+    let Some(layer) = shadow.first() else {
+        return false;
+    };
     let Some(uses_fill) = svg_shadow_uses_fill(style) else {
         return false;
     };
+    append_svg_shadow_layer_prefix(body, style, layer, uses_fill, alpha_states);
+    true
+}
+
+fn append_svg_shadow_layers(
+    body: &mut String,
+    style: SvgStyle,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
+    mut append_path: impl FnMut(&mut String),
+) {
+    let Some(shadow) = style.shadow else {
+        return;
+    };
+    let Some(uses_fill) = svg_shadow_uses_fill(style) else {
+        return;
+    };
+    for layer in shadow.layers() {
+        append_svg_shadow_layer_prefix(body, style, *layer, uses_fill, alpha_states);
+        append_path(body);
+        append_svg_shadow_operator(body, style);
+    }
+}
+
+fn append_svg_shadow_layer_prefix(
+    body: &mut String,
+    style: SvgStyle,
+    shadow: SvgShadowLayer,
+    uses_fill: bool,
+    alpha_states: &mut BTreeSet<(u16, u16)>,
+) {
     body.push_str("q 1 0 0 1 ");
     append_pdf_num(body, shadow.dx);
     body.push(' ');
@@ -18048,7 +18135,6 @@ fn append_svg_shadow_prefix(
         append_rgb_stroke_space_operator(body, (r, g, b));
         append_svg_stroke_options(body, style);
     }
-    true
 }
 
 fn append_svg_shadow_operator(body: &mut String, style: SvgStyle) {
@@ -19218,10 +19304,9 @@ fn append_svg_marker(
         }
         let transformed =
             append_svg_element_state_prefix(body, shape_style, &[], None, alpha_states);
-        if append_svg_shadow_prefix(body, shape_style, alpha_states) {
+        append_svg_shadow_layers(body, shape_style, alpha_states, |body| {
             append_svg_path_ops(body, &shape.ops);
-            append_svg_shadow_operator(body, shape_style);
-        }
+        });
         append_svg_marker_shape_paint(body, shape_style, &shape.ops);
         append_svg_transform_suffix(body, transformed);
     }
@@ -22783,8 +22868,8 @@ mod pdf_writer_tests {
         PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfStream,
         PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode,
         Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
-        SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache,
-        append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        SvgShadowLayer, SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup,
+        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
         append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
@@ -24574,12 +24659,12 @@ mod pdf_writer_tests {
         append_rgb_stroke_space_operator(&mut colors, (0.4, 0.5, 0.6));
         assert_eq!(colors, "0.100 0.200 0.300 rg 0.400 0.500 0.600 RG ");
 
-        style.shadow = Some(SvgShadow {
+        style.shadow = Some(SvgShadow::single(SvgShadowLayer {
             dx: 2.0,
             dy: -1.25,
             color: (0.1, 0.2, 0.3),
             opacity: 1.0,
-        });
+        }));
         style.fill = None;
         let mut shadow = String::new();
         let mut alpha_states = BTreeSet::new();

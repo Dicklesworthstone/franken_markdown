@@ -4659,6 +4659,50 @@ fn pdf_svg_css_drop_shadow_uses_declared_shadow_values() {
 }
 
 #[test]
+fn pdf_svg_css_chained_drop_shadows_emit_vector_shadow_layers() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 32">
+  <defs>
+    <filter id="drop-shadow"><feDropShadow dx="9" dy="9" flood-color="#ff0000" flood-opacity="1"/></filter>
+  </defs>
+  <style>
+    .fm-node rect {
+      filter: drop-shadow(4px 1px 2px rgba(12, 34, 56, 0.25)) drop-shadow(-2px 3px 1px rgba(200, 10, 30, 0.40));
+    }
+  </style>
+  <g class="fm-node">
+    <rect x="4" y="4" width="32" height="16" fill="#0000ff" fill-opacity="0.5" filter="url(#drop-shadow)"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("css-shadow-chain.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Shadow](css-shadow-chain.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let first = text
+        .find("q 1 0 0 1 4 1 cm /GSa01250125 gs 0.047 0.133 0.220 rg")
+        .expect("first CSS drop-shadow layer should render as a vector shadow");
+    let second = text
+        .find("q 1 0 0 1 -2 3 cm /GSa02000200 gs 0.784 0.039 0.118 rg")
+        .expect("second CSS drop-shadow layer should render as a vector shadow");
+    assert!(
+        first < second,
+        "chained CSS drop-shadow layers should render in source order: {text}"
+    );
+    assert!(
+        !text.contains("q 1 0 0 1 9 9 cm"),
+        "the frankenmermaid-style CSS filter rule should override the presentation filter attribute: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 rg"),
+        "the real SVG fill should still paint after both shadow layers: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_missing_or_unsupported_url_filters_do_not_invent_shadows() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 28">

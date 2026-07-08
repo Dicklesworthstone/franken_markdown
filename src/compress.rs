@@ -309,6 +309,28 @@ fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) ->
     }
 
     let n = data.len();
+    // No legal LZ77 match exists before MIN_MATCH, so skip the hash tables.
+    if n < MIN_MATCH {
+        for &b in data {
+            emit_literal(&mut bw, b);
+            if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
+                return FixedDeflate {
+                    body: bw.out,
+                    adler32: adler32(data),
+                    complete: false,
+                };
+            }
+            adler.update_byte(b);
+        }
+        emit_litlen(&mut bw, 256);
+        bw.finish();
+        return FixedDeflate {
+            body: bw.out,
+            adler32: adler.finish(),
+            complete: true,
+        };
+    }
+
     let mut head = vec![NONE; HASH_SIZE];
     let mut prev = vec![NONE; n];
 
@@ -1114,6 +1136,30 @@ mod tests {
             fixed_body_capacity_hint(10_000, Some(64)),
             64 + FIXED_LIMIT_OVERSHOOT_BYTES
         );
+    }
+
+    #[test]
+    fn fixed_deflate_short_inputs_keep_exact_fixed_body_bytes() {
+        for (input, expected_body) in [
+            (b"".as_slice(), &[3, 0][..]),
+            (b"a".as_slice(), &[75, 4, 0][..]),
+            (b"ab".as_slice(), &[75, 76, 2, 0][..]),
+        ] {
+            let fixed = deflate_fixed(input);
+            assert!(fixed.complete);
+            assert_eq!(fixed.body, expected_body);
+            assert_eq!(fixed.adler32, adler32(input));
+
+            let comp = zlib_compress(input);
+            assert_eq!(
+                comp.get(2..comp.len().saturating_sub(4)),
+                Some(expected_body)
+            );
+            assert_eq!(
+                zlib_decompress(&comp, input.len() + 1).as_deref(),
+                Some(input)
+            );
+        }
     }
 
     #[test]

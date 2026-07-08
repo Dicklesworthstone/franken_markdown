@@ -13850,7 +13850,8 @@ fn serialize(
     // Subset each used face to the characters it renders, and keep the parsed
     // subset (its cmap gives the new glyph ids we encode in the content stream).
     let mut subsets: Vec<EmbeddedFace> = Vec::with_capacity(used_slots.len());
-    let mut shaped_cache: ShapedRunCache = std::array::from_fn(|_| BTreeMap::new());
+    let mut shaped_cache: ShapedRunCache =
+        std::array::from_fn(|slot_idx| HashMap::with_capacity(slot_texts[slot_idx].texts.len()));
     let mut shape_cache_hits = 0usize;
     let mut shape_cache_hit_bytes = 0usize;
     let mut shape_cache_misses = 0usize;
@@ -19301,7 +19302,7 @@ struct ShapedRun {
     ligatures: Vec<(u16, String)>,
 }
 
-type ShapedRunCache = [BTreeMap<String, ShapedRun>; PDF_FONT_SLOT_COUNT];
+type ShapedRunCache = [HashMap<String, ShapedRun>; PDF_FONT_SLOT_COUNT];
 
 struct PdfStream<'a> {
     bytes: Cow<'a, [u8]>,

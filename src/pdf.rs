@@ -15128,7 +15128,11 @@ impl HeadingIdState {
             let candidate = if suffix == 1 {
                 base.clone()
             } else {
-                format!("{base}-{suffix}")
+                let mut candidate = String::with_capacity(base.len() + 21);
+                candidate.push_str(&base);
+                candidate.push('-');
+                append_decimal_usize_string(&mut candidate, suffix);
+                candidate
             };
             suffix += 1;
             if self.used.insert(candidate.clone()) {
@@ -21807,9 +21811,9 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, Faces, Fill, FlowMark,
-        Line, LineTok, LinkTarget, PageContentCapacityEstimate, Palette, ParagraphItem,
-        ParagraphPolicy, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts, Placed,
-        SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
+        HeadingIdState, Line, LineTok, LinkTarget, PageContentCapacityEstimate, Palette,
+        ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts,
+        Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
         SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
@@ -21838,6 +21842,17 @@ mod pdf_writer_tests {
     use crate::ast::Inline;
     use std::borrow::Cow;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn heading_id_state_preserves_collision_suffixes() {
+        let mut state = HeadingIdState::default();
+
+        assert_eq!(state.heading_id("Alpha"), "alpha");
+        assert_eq!(state.heading_id("Alpha"), "alpha-2");
+        assert_eq!(state.heading_id("Alpha"), "alpha-3");
+        assert_eq!(state.heading_id(""), "section");
+        assert_eq!(state.heading_id("!"), "section-2");
+    }
 
     fn test_line_with_segment_texts(texts: &[&str]) -> Line {
         Line {

@@ -587,7 +587,8 @@ cargo build --release --bin fmd --features batch
 ```bash
 fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
                       [--batch-mode interactive|throughput] [--mem-budget BYTES]
-                      [--continue-on-error] [--font sans|serif] [--css FILE] [--json]
+                      [--max-pdf-image-bytes BYTES] [--continue-on-error]
+                      [--font sans|serif] [--css FILE] [--json]
 ```
 
 | Flag | Meaning |
@@ -599,6 +600,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css` | Shared theme overrides, as in `render` |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |

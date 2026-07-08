@@ -2005,6 +2005,58 @@ fn batch_html_auto_loads_relative_svg_assets_for_file_inputs() {
 
 #[cfg(feature = "batch")]
 #[test]
+fn batch_auto_loaded_assets_obey_max_pdf_image_byte_limit() {
+    let dir = temp_dir("batch-auto-image-byte-limit");
+    let out_dir = dir.join("out");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("note.md");
+    let image = dir.join("tiny.png");
+    fs::write(&image, tiny_rgb_png()).unwrap();
+    fs::write(&input, "# Diagram\n\n![Tiny](tiny.png)\n").unwrap();
+
+    let out = fmd(&[
+        "batch",
+        input.to_str().unwrap(),
+        "--to",
+        "html",
+        "--max-pdf-image-bytes",
+        "4",
+        "--json",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(66),
+        "oversized auto-loaded image should be an input error: stdout={} stderr={}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains("\"failed\":1"),
+        "receipt should show one failure: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"error_kind\":\"input\""),
+        "receipt should classify the failure as input: {stdout}"
+    );
+    assert!(
+        stdout.contains("auto HTML image asset tiny.png")
+            && stdout.contains("exceeds --max-pdf-image-bytes 4"),
+        "receipt should name the auto-loaded asset and configured limit: {stdout}"
+    );
+    assert!(
+        !out_dir.join("note.html").exists(),
+        "failed preflight must not write HTML"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "batch")]
+#[test]
 fn batch_pdf_auto_loads_relative_svg_assets_for_file_inputs() {
     let dir = temp_dir("batch-auto-svg-assets");
     let diagrams = dir.join("diagrams");

@@ -33,6 +33,7 @@ use crate::{
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
 /// ceiling when the caller does not supply one.
 const DEFAULT_PER_JOB_RSS: u64 = 64 * 1024 * 1024;
+#[cfg(test)]
 const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_COLLECT_DIR_DEPTH: usize = 128;
 
@@ -185,6 +186,10 @@ pub struct BatchOptions {
     /// a failed entry rather than loaded whole, so a batch over a large tree
     /// cannot exhaust memory (mirrors the single-file `--max-input-bytes` guard).
     pub max_input_bytes: u64,
+    /// Per auto-loaded local image asset limit in bytes. Applies to both HTML
+    /// data-URI embedding and PDF image/SVG drawing, mirroring single-file
+    /// `--max-pdf-image-bytes` behavior for file-input renders.
+    pub max_pdf_image_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -616,6 +621,7 @@ fn append_auto_image_assets_for_input(
     doc: &Document,
     assets: &mut Vec<PdfImageAsset>,
     output_kind: &str,
+    max_bytes: u64,
 ) -> Result<(), String> {
     let base_dir = input
         .parent()
@@ -655,22 +661,23 @@ fn append_auto_image_assets_for_input(
             "auto {output_kind} image asset {destination} from {}",
             path.display()
         );
-        if meta.len() > DEFAULT_MAX_PDF_IMAGE_BYTES {
+        if meta.len() > max_bytes {
             return Err(format!(
-                "{label} is {bytes} bytes, which exceeds the batch PDF image limit {limit}",
+                "{label} is {bytes} bytes; exceeds --max-pdf-image-bytes {limit}",
                 bytes = meta.len(),
-                limit = DEFAULT_MAX_PDF_IMAGE_BYTES
+                limit = max_bytes
             ));
         }
         let file =
             std::fs::File::open(&canonical_path).map_err(|e| format!("reading {label}: {e}"))?;
         let mut bytes = Vec::new();
-        file.take(DEFAULT_MAX_PDF_IMAGE_BYTES.saturating_add(1))
+        file.take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)
             .map_err(|e| format!("reading {label}: {e}"))?;
-        if bytes.len() as u64 > DEFAULT_MAX_PDF_IMAGE_BYTES {
+        if bytes.len() as u64 > max_bytes {
             return Err(format!(
-                "{label} exceeds the batch PDF image limit {DEFAULT_MAX_PDF_IMAGE_BYTES}"
+                "{label} is {} bytes; exceeds --max-pdf-image-bytes {max_bytes}",
+                bytes.len()
             ));
         }
         assets.push(PdfImageAsset::new(destination, bytes));
@@ -781,6 +788,7 @@ fn render_one(
     html: &HtmlOptions,
     pdf: &PdfOptions,
     max_input_bytes: u64,
+    max_pdf_image_bytes: u64,
 ) -> FileEntry {
     let md = match read_input_limited(input, max_input_bytes) {
         Ok(text) => text,
@@ -800,9 +808,13 @@ fn render_one(
     let mut rendered = Vec::new();
     if format.wants_html() {
         let mut html_opts = html.clone();
-        if let Err(e) =
-            append_auto_image_assets_for_input(input, &doc, &mut html_opts.image_assets, "HTML")
-        {
+        if let Err(e) = append_auto_image_assets_for_input(
+            input,
+            &doc,
+            &mut html_opts.image_assets,
+            "HTML",
+            max_pdf_image_bytes,
+        ) {
             return failed(input, FileErrorKind::Input, e);
         }
         match render_html_document(&doc, &html_opts) {
@@ -825,9 +837,13 @@ fn render_one(
     }
     if format.wants_pdf() {
         let mut pdf_opts = pdf.clone();
-        if let Err(e) =
-            append_auto_image_assets_for_input(input, &doc, &mut pdf_opts.image_assets, "PDF")
-        {
+        if let Err(e) = append_auto_image_assets_for_input(
+            input,
+            &doc,
+            &mut pdf_opts.image_assets,
+            "PDF",
+            max_pdf_image_bytes,
+        ) {
             return failed(input, FileErrorKind::Input, e);
         }
         match render_pdf_document(&doc, &pdf_opts) {
@@ -1030,6 +1046,7 @@ pub async fn render_batch(
         let out_dir = plan.out_dir.clone();
         let format = plan.format;
         let max_input_bytes = opts.max_input_bytes;
+        let max_pdf_image_bytes = opts.max_pdf_image_bytes;
         tasks.push(handle.spawn(async move {
             let mut entries: Vec<(usize, FileEntry)> = Vec::new();
             let mut stop = false;
@@ -1065,6 +1082,7 @@ pub async fn render_batch(
                             &html,
                             &pdf,
                             max_input_bytes,
+                            max_pdf_image_bytes,
                         )
                     }))
                     .unwrap_or_else(|_| {
@@ -1205,6 +1223,7 @@ mod tests {
             continue_on_error: true,
             timeout_secs: None,
             max_input_bytes: 64 * 1024 * 1024,
+            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
         }
     }
 
@@ -1388,6 +1407,7 @@ mod tests {
             continue_on_error: true,
             timeout_secs: None,
             max_input_bytes: 64 * 1024 * 1024,
+            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
         };
 
         let r1 = run_batch_blocking(make_plan(), &opts).unwrap();
@@ -1535,6 +1555,7 @@ mod tests {
             continue_on_error: true,
             timeout_secs: None,
             max_input_bytes: 64 * 1024 * 1024,
+            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
         };
         let budget = WorkerBudget {
             workers: 2,

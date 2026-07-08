@@ -40,8 +40,8 @@ Three options were considered:
 fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR]
                       [--workers N] [--batch-mode interactive|throughput]
                       [--mem-budget BYTES] [--continue-on-error]
-                      [--timeout SECS] [--json] [--font sans|serif]
-                      [--css FILE] [--no-config]
+                      [--timeout SECS] [--max-pdf-image-bytes BYTES]
+                      [--json] [--font sans|serif] [--css FILE] [--no-config]
 ```
 
 - **inputs**: any mix of files and directories (recursively collected `*.md`/
@@ -91,6 +91,7 @@ pub struct BatchOptions {
     pub continue_on_error: bool,
     pub timeout_secs: Option<u64>,
     pub max_input_bytes: u64,
+    pub max_pdf_image_bytes: u64,
 }
 
 /// Render every input under a bounded worker budget. `&Cx` first; returns the

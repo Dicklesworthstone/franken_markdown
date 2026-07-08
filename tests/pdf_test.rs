@@ -4158,6 +4158,129 @@ fn pdf_svg_pattern_content_units_object_bounding_box_maps_child_coordinates() {
 }
 
 #[test]
+fn pdf_svg_pattern_view_box_scales_child_content_into_tile() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12">
+  <defs>
+    <pattern id="scaled" patternUnits="userSpaceOnUse" x="4" y="3" width="8" height="6" viewBox="0 0 4 3">
+      <rect x="1" y="1" width="2" height="1" fill="#ff0000"/>
+    </pattern>
+  </defs>
+  <rect x="4" y="3" width="8" height="6" fill="url(#scaled)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-viewbox.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern viewBox](pattern-viewbox.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 4 3 8 6 re W n q 1 0 0 1 4 3 cm 2 0 0 2 0 0 cm"),
+        "pattern viewBox should map child coordinates into the resolved tile viewport: {text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 0.000 rg 1 1 2 1 re f"),
+        "pattern viewBox children should remain vector content in viewBox coordinates: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_object_bbox_pattern_view_box_uses_resolved_tile_viewport() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 20">
+  <defs>
+    <pattern id="bbox-viewbox" width="0.25" height="1" viewBox="0 0 5 5">
+      <rect x="1" y="1" width="2" height="2" fill="#ff00ff"/>
+    </pattern>
+  </defs>
+  <rect x="10" y="4" width="40" height="10" fill="url(#bbox-viewbox)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-bbox-viewbox.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern bbox viewBox](pattern-bbox-viewbox.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 10 4 40 10 re W n q 1 0 0 1 10 4 cm 2 0 0 2 0 0 cm"),
+        "objectBoundingBox pattern viewBox should use the resolved tile viewport dimensions: {text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 1.000 rg 1 1 2 2 re f\nQ\nq 1 0 0 1 20 4 cm 2 0 0 2"),
+        "objectBoundingBox pattern viewBox should repeat vector children at bbox-relative tile offsets: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_pattern_view_box_preserve_aspect_none_uses_non_uniform_scaling() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12">
+  <defs>
+    <pattern id="stretch" patternUnits="userSpaceOnUse" x="2" y="2" width="12" height="6" viewBox="0 0 4 4" preserveAspectRatio="none">
+      <rect x="1" y="1" width="2" height="2" fill="#0000ff"/>
+    </pattern>
+  </defs>
+  <rect x="2" y="2" width="12" height="6" fill="url(#stretch)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-viewbox-none.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern viewBox none](pattern-viewbox-none.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 2 2 12 6 re W n q 1 0 0 1 2 2 cm 3 0 0 1.5"),
+        "pattern preserveAspectRatio=none should stretch the viewBox non-uniformly into the tile: {text}"
+    );
+    assert!(
+        !text.contains("q 2 2 12 6 re W n q 1 0 0 1 2 2 cm 1.5 0 0 1.5 3 0 cm"),
+        "pattern preserveAspectRatio=none must not use default meet centering: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_pattern_view_box_overrides_object_bbox_content_units() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12">
+  <defs>
+    <pattern id="normalized" patternUnits="userSpaceOnUse" patternContentUnits="objectBoundingBox" x="2" y="2" width="10" height="6" viewBox="0 0 5 3">
+      <rect x="1" y="1" width="2" height="1" fill="#00ff00"/>
+    </pattern>
+  </defs>
+  <rect x="2" y="2" width="10" height="6" fill="url(#normalized)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "pattern-viewbox-content-units.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Pattern viewBox content units](pattern-viewbox-content-units.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 2 2 10 6 re W n q 1 0 0 1 2 2 cm 2 0 0 2 0 0 cm"),
+        "pattern viewBox should take precedence over objectBoundingBox content units: {text}"
+    );
+    assert!(
+        !text.contains("10 0 0 6 0 0 cm 0.000 1.000 0.000 rg"),
+        "patternContentUnits=objectBoundingBox should not add bbox scaling when viewBox is present: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_patterns_tile_embedded_svg_images_as_vector_shapes() {
     let nested_svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 6">

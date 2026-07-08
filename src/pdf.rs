@@ -1021,6 +1021,8 @@ struct SvgPatternPaint {
     id: String,
     units: SvgGradientUnits,
     content_units: SvgGradientUnits,
+    view_box: Option<SvgViewBox>,
+    preserve_aspect: SvgPreserveAspectRatio,
     x: SvgGradientLength,
     y: SvgGradientLength,
     w: SvgGradientLength,
@@ -6768,6 +6770,11 @@ fn parse_svg_pattern_paints(
             id: definition.id.clone(),
             units,
             content_units,
+            view_box: parse_svg_view_box(&attrs),
+            preserve_aspect: parse_svg_preserve_aspect_ratio(svg_attr(
+                &attrs,
+                "preserveaspectratio",
+            )),
             x: svg_attr(&attrs, "x")
                 .and_then(parse_svg_gradient_length)
                 .unwrap_or(SvgGradientLength {
@@ -19151,7 +19158,27 @@ where
                 );
                 body.push(' ');
             }
-            if pattern.content_units == SvgGradientUnits::ObjectBoundingBox {
+            if let Some(view_box) = pattern.view_box {
+                if let Some(transform) = svg_view_box_to_viewport_transform(
+                    view_box,
+                    SvgViewport {
+                        w: pattern_w,
+                        h: pattern_h,
+                    },
+                    pattern.preserve_aspect,
+                ) {
+                    append_pdf_cm_operator(
+                        body,
+                        transform.a,
+                        transform.b,
+                        transform.c,
+                        transform.d,
+                        transform.e,
+                        transform.f,
+                    );
+                    body.push(' ');
+                }
+            } else if pattern.content_units == SvgGradientUnits::ObjectBoundingBox {
                 append_pdf_cm_operator(body, bw, 0.0, 0.0, bh, 0.0, 0.0);
                 body.push(' ');
             }

@@ -85,15 +85,19 @@ fn first_heading_text(doc: &Document) -> Option<String> {
 }
 
 #[derive(Default)]
-struct RenderState {
+struct RenderState<'a> {
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: BTreeMap<String, usize>,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
+    /// Last highlighted language, for a one-entry repeated-code cache.
+    cached_highlight_lang: Option<&'a str>,
+    /// Last highlighted code block, for a one-entry repeated-code cache.
+    cached_highlight_code: Option<&'a str>,
 }
 
-impl RenderState {
+impl<'a> RenderState<'a> {
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
         let mut base = slug_inlines(inlines);
         if base.is_empty() {
@@ -129,9 +133,26 @@ impl RenderState {
             }
         }
     }
+
+    fn highlight_code(&mut self, lang: &'a str, code: &'a str, out: &mut String) {
+        if self.cached_highlight_lang == Some(lang) && self.cached_highlight_code == Some(code) {
+            emit_highlighted_spans(code, out, &self.highlight_spans);
+            return;
+        }
+
+        highlight_into(lang, code, &mut self.highlight_spans);
+        self.cached_highlight_lang = Some(lang);
+        self.cached_highlight_code = Some(code);
+        emit_highlighted_spans(code, out, &self.highlight_spans);
+    }
 }
 
-fn render_blocks(blocks: &[Block], out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
+fn render_blocks<'a>(
+    blocks: &'a [Block],
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     for block in blocks {
         render_block(block, out, opts, state);
     }
@@ -141,7 +162,12 @@ fn initial_body_capacity(blocks: usize) -> usize {
     blocks.saturating_mul(4096).min(4 * 1024 * 1024)
 }
 
-fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
+fn render_block<'a>(
+    block: &'a Block,
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     match block {
         Block::Heading { level, inlines } => {
             out.push_str("<h");
@@ -167,10 +193,10 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
                 out.push('"');
             }
             out.push('>');
-            // The highlighter itself falls back to one plain span for unknown
-            // languages, so supported languages only pay for one lookup here.
+            // Supported languages use the shared highlighter; unknown languages
+            // remain plain escaped code inside the language-tagged block.
             match lang.as_deref() {
-                Some(l) => highlight_code(l, code, out, &mut state.highlight_spans),
+                Some(l) => state.highlight_code(l, code, out),
                 None => push_escaped_text(code, out),
             }
             out.push_str("</code></pre>\n");
@@ -196,7 +222,12 @@ fn render_block(block: &Block, out: &mut String, opts: &HtmlOptions, state: &mut
     }
 }
 
-fn render_list(list: &List, out: &mut String, opts: &HtmlOptions, state: &mut RenderState) {
+fn render_list<'a>(
+    list: &'a List,
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     let tag = if list.ordered { "ol" } else { "ul" };
     if list.ordered && list.start != 1 {
         out.push('<');
@@ -714,8 +745,7 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token,
 /// always HTML-escaped; plain tokens are escaped text with no wrapping span.
-fn highlight_code(lang: &str, code: &str, out: &mut String, spans: &mut Vec<Span>) {
-    highlight_into(lang, code, spans);
+fn emit_highlighted_spans(code: &str, out: &mut String, spans: &[Span]) {
     for span in spans.iter().copied() {
         let text = code.get(span.start..span.end).unwrap_or("");
         match span.kind.css_class() {
@@ -1639,9 +1669,10 @@ mod tests {
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
-        FontCharSet, ascii_char_mask, base64_encode, css_num, css_token, escape_attr, escape_text,
-        initial_body_capacity, inlines_to_plain, push_html_image_asset_data_uri, push_u64, render,
-        sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
+        FontCharSet, RenderState, ascii_char_mask, base64_encode, css_num, css_token, escape_attr,
+        escape_text, initial_body_capacity, inlines_to_plain, push_html_image_asset_data_uri,
+        push_u64, render, sanitize_custom_css, slug, slug_inlines,
+        svg_without_remote_style_imports,
     };
 
     #[test]
@@ -1663,6 +1694,22 @@ mod tests {
             "url(javascriptalert(1))"
         );
         assert_eq!(css_token("\n\t;"), "initial");
+    }
+
+    #[test]
+    fn repeated_supported_code_block_reuses_cached_highlight_spans() {
+        let mut state = RenderState::default();
+        let code = "fn main() { println!(\"hi\"); }\n";
+        let mut first = String::new();
+        state.highlight_code("rust", code, &mut first);
+        assert!(!state.highlight_spans.is_empty());
+
+        let mut second = String::new();
+        state.highlight_code("rust", code, &mut second);
+
+        assert_eq!(second, first);
+        assert_eq!(state.cached_highlight_lang, Some("rust"));
+        assert_eq!(state.cached_highlight_code, Some(code));
     }
 
     #[test]

@@ -329,7 +329,9 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             Inline::Image { dest, title, alt } => {
                 if let Some(src) = safe_url(dest, UrlContext::Image) {
                     out.push_str("<img src=\"");
-                    if !push_html_image_asset_data_uri(src, opts, out) {
+                    if opts.image_assets.is_empty()
+                        || !push_html_image_asset_data_uri(src, opts, out)
+                    {
                         out.push_str(&escape_attr(src));
                     }
                     out.push_str("\" alt=\"");

@@ -194,6 +194,63 @@ fn reference_images_resolve_alt_dest_and_title() {
 }
 
 #[test]
+fn repeated_inline_parses_match_and_reference_scope_stays_per_document() {
+    let repeated = "Repeated **content** with [docs][ref] and `code`.";
+    let src = format!("[ref]: /one \"One\"\n\n{repeated}\n\n{repeated}");
+    let doc = parse_markdown(&src);
+    let expected = vec![
+        Inline::Text("Repeated ".to_string()),
+        Inline::Strong(vec![Inline::Text("content".to_string())]),
+        Inline::Text(" with ".to_string()),
+        Inline::Link {
+            dest: "/one".to_string(),
+            title: Some("One".to_string()),
+            content: vec![Inline::Text("docs".to_string())],
+        },
+        Inline::Text(" and ".to_string()),
+        Inline::Code("code".to_string()),
+        Inline::Text(".".to_string()),
+    ];
+
+    assert_eq!(
+        doc.blocks,
+        vec![
+            Block::Paragraph(expected.clone()),
+            Block::Paragraph(expected)
+        ]
+    );
+
+    let other_doc = parse_markdown(&format!("[ref]: /two\n\n{repeated}"));
+    assert!(matches!(
+        &other_doc.blocks[..],
+        [Block::Paragraph(inlines)]
+            if inlines.iter().any(|inline| {
+                matches!(inline, Inline::Link { dest, .. } if dest == "/two")
+            })
+    ));
+
+    let nested = "Outer [label [inner][inner]](/outer) tail.";
+    let nested_doc = parse_markdown(&format!("[inner]: /inner\n\n{nested}\n\n{nested}"));
+    let first = match &nested_doc.blocks[0] {
+        Block::Paragraph(inlines) => inlines.clone(),
+        other => panic!("expected first repeated paragraph, got {other:?}"),
+    };
+    assert_eq!(nested_doc.blocks[1], Block::Paragraph(first.clone()));
+    assert!(
+        first
+            .iter()
+            .any(|inline| matches!(inline, Inline::Link { dest, .. } if dest == "/inner")),
+        "inner reference link should resolve inside repeated nested link text: {first:?}"
+    );
+    assert!(
+        !first
+            .iter()
+            .any(|inline| matches!(inline, Inline::Link { dest, .. } if dest == "/outer")),
+        "outer inline link must stay literal because its content contains a link: {first:?}"
+    );
+}
+
+#[test]
 fn alphabetic_pipe_table_before_reference_keeps_reference_boundary() {
     let out = html(
         "Name | Value\n\

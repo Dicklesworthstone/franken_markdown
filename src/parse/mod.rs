@@ -33,6 +33,44 @@ struct LinkReference {
 type ReferenceMap = BTreeMap<String, LinkReference>;
 type ConsumedReferenceLines = Vec<Range<usize>>;
 
+const INLINE_PARSE_NOTES: &str =
+    "parse inline delimiters, links, references, autolinks, code spans, and text";
+
+const INLINE_PARSE_CACHE_MIN_BYTES: usize = 16;
+const INLINE_PARSE_CACHE_MAX_KEY_BYTES: usize = 4096;
+const INLINE_PARSE_CACHE_MAX_ENTRIES: usize = 512;
+const INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES: usize = 128 * 1024;
+
+#[derive(Default)]
+struct InlineParseCache {
+    entries: BTreeMap<String, Vec<Inline>>,
+    total_key_bytes: usize,
+}
+
+impl InlineParseCache {
+    fn get(&self, text: &str) -> Option<Vec<Inline>> {
+        self.entries.get(text).cloned()
+    }
+
+    fn insert(&mut self, text: &str, inlines: &[Inline]) {
+        if self.entries.contains_key(text) {
+            return;
+        }
+        if self.entries.len() >= INLINE_PARSE_CACHE_MAX_ENTRIES
+            || self.total_key_bytes.saturating_add(text.len())
+                > INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES
+        {
+            return;
+        }
+        self.total_key_bytes += text.len();
+        self.entries.insert(text.to_string(), inlines.to_vec());
+    }
+}
+
+fn inline_cache_size_allows(text: &str) -> bool {
+    text.len() >= INLINE_PARSE_CACHE_MIN_BYTES && text.len() <= INLINE_PARSE_CACHE_MAX_KEY_BYTES
+}
+
 /// Parsed document plus parser stage attribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseProfile {
@@ -72,6 +110,11 @@ pub struct ParseStageSummary {
 struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
+    // Reuse only outer inline handoffs. Recursive link/image/strike text is
+    // assembled into temporary strings and participates in link-containment
+    // checks, so it intentionally bypasses this per-parse cache.
+    inline_cache: InlineParseCache,
+    inline_parse_depth: usize,
     /// Current block-nesting recursion depth, used to bound deeply-nested
     /// blockquote/list input so pathological untrusted documents cannot overflow
     /// the stack (a DoS). Threaded for free since the profiler is already `&mut`
@@ -84,6 +127,8 @@ impl ParseProfiler {
         Self {
             enabled: false,
             stages: Vec::new(),
+            inline_cache: InlineParseCache::default(),
+            inline_parse_depth: 0,
             block_depth: 0,
         }
     }
@@ -92,6 +137,8 @@ impl ParseProfiler {
         Self {
             enabled: true,
             stages: Vec::new(),
+            inline_cache: InlineParseCache::default(),
+            inline_parse_depth: 0,
             block_depth: 0,
         }
     }
@@ -1437,7 +1484,7 @@ fn parse_lines_as_inlines(
                     char_count,
                     len,
                     inlines.len(),
-                    "parse inline delimiters, links, references, autolinks, code spans, and text",
+                    INLINE_PARSE_NOTES,
                     started,
                 );
                 return (inlines, len, 0);
@@ -2486,21 +2533,58 @@ fn parse_inlines_with_refs_profiled(
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     let started = profiler.checkpoint();
-    if let Some(inlines) = plain_inline_fast_path(text, profiler, started) {
+    let maybe_cacheable = profiler.inline_parse_depth == 0 && inline_cache_size_allows(text);
+    let needs_full_parse = maybe_cacheable.then(|| inline_text_needs_full_parse(text));
+    let cacheable = maybe_cacheable && needs_full_parse == Some(true);
+    if cacheable && let Some(inlines) = profiler.inline_cache.get(text) {
+        let char_count = if profiler.enabled {
+            text.chars().count()
+        } else {
+            0
+        };
+        let allocations = inline_tree_node_count(&inlines);
+        profiler.record_since(
+            "inline_parse",
+            char_count,
+            text.len(),
+            allocations,
+            INLINE_PARSE_NOTES,
+            started,
+        );
         return inlines;
+    }
+
+    profiler.inline_parse_depth += 1;
+    let inlines =
+        parse_inlines_with_refs_profiled_uncached(text, refs, profiler, started, needs_full_parse);
+    profiler.inline_parse_depth -= 1;
+
+    if cacheable {
+        profiler.inline_cache.insert(text, &inlines);
+    }
+
+    inlines
+}
+
+fn parse_inlines_with_refs_profiled_uncached(
+    text: &str,
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+    started: Option<ParseStageStart>,
+    needs_full_parse: Option<bool>,
+) -> Vec<Inline> {
+    if !needs_full_parse.unwrap_or_else(|| inline_text_needs_full_parse(text)) {
+        return record_plain_inline_parse(text, profiler, started);
     }
     let bytes: Vec<char> = text.chars().collect();
     parse_inlines_chars_with_refs_profiled(bytes, text.len(), refs, profiler, started)
 }
 
-fn plain_inline_fast_path(
+fn record_plain_inline_parse(
     text: &str,
     profiler: &mut ParseProfiler,
     started: Option<ParseStageStart>,
-) -> Option<Vec<Inline>> {
-    if inline_text_needs_full_parse(text) {
-        return None;
-    }
+) -> Vec<Inline> {
     let inlines = if text.is_empty() {
         Vec::new()
     } else {
@@ -2516,10 +2600,10 @@ fn plain_inline_fast_path(
         char_count,
         text.len(),
         inlines.len(),
-        "parse inline delimiters, links, references, autolinks, code spans, and text",
+        INLINE_PARSE_NOTES,
         started,
     );
-    Some(inlines)
+    inlines
 }
 
 fn inline_text_needs_full_parse(text: &str) -> bool {
@@ -2786,10 +2870,28 @@ fn parse_inlines_chars_with_refs_profiled(
         bytes.len(),
         byte_len,
         2 + resolver_allocations + out.len(),
-        "parse inline delimiters, links, references, autolinks, code spans, and text",
+        INLINE_PARSE_NOTES,
         started,
     );
     out
+}
+
+fn inline_tree_node_count(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .map(|inline| match inline {
+            Inline::Emphasis(content)
+            | Inline::Strong(content)
+            | Inline::Strikethrough(content) => 1 + inline_tree_node_count(content),
+            Inline::Link { content, .. } => 1 + inline_tree_node_count(content),
+            Inline::Text(_)
+            | Inline::Code(_)
+            | Inline::Image { .. }
+            | Inline::SoftBreak
+            | Inline::HardBreak
+            | Inline::Html(_) => 1,
+        })
+        .sum()
 }
 
 fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {

@@ -19945,6 +19945,16 @@ struct PdfPageObjectParts<'a> {
     struct_parent: Option<usize>,
 }
 
+struct PdfOutlineItemObjectParts<'a> {
+    object_id: usize,
+    title: &'a str,
+    parent_object_id: usize,
+    prev_object_id: Option<usize>,
+    next_object_id: Option<usize>,
+    page_object_id: usize,
+    y: f32,
+}
+
 fn append_pdf_page_object(out: &mut Vec<u8>, offsets: &mut [usize], parts: PdfPageObjectParts<'_>) {
     offsets[parts.object_id] = out.len();
     append_pdf_object_header(out, parts.object_id);
@@ -19978,6 +19988,32 @@ fn append_pdf_page_object(out: &mut Vec<u8>, offsets: &mut [usize], parts: PdfPa
         out.extend_from_slice(b" /Tabs /S");
     }
     out.extend_from_slice(b" >>\nendobj\n");
+}
+
+fn append_pdf_outline_item_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfOutlineItemObjectParts<'_>,
+) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Title ");
+    append_pdf_text_string_bytes(out, parts.title);
+    out.extend_from_slice(b" /Parent ");
+    append_pdf_object_ref_bytes(out, parts.parent_object_id);
+    if let Some(prev) = parts.prev_object_id {
+        out.extend_from_slice(b" /Prev ");
+        append_pdf_object_ref_bytes(out, prev);
+    }
+    if let Some(next) = parts.next_object_id {
+        out.extend_from_slice(b" /Next ");
+        append_pdf_object_ref_bytes(out, next);
+    }
+    out.extend_from_slice(b" /Dest [");
+    append_pdf_object_ref_bytes(out, parts.page_object_id);
+    out.extend_from_slice(b" /XYZ null ");
+    append_pdf_num_bytes(out, parts.y);
+    out.extend_from_slice(b" null] >>\nendobj\n");
 }
 
 fn append_pdf_stream_dict(out: &mut Vec<u8>, stream: &PdfStream<'_>) {
@@ -20958,28 +20994,18 @@ fn build_pdf(
             ),
         );
         for (i, outline) in outlines.iter().enumerate() {
-            let prev = if i == 0 {
-                String::new()
-            } else {
-                format!(" /Prev {} 0 R", outline_item_obj(i - 1))
-            };
-            let next = if i + 1 == outline_count {
-                String::new()
-            } else {
-                format!(" /Next {} 0 R", outline_item_obj(i + 1))
-            };
-            append_pdf_object_str(
+            append_pdf_outline_item_object(
                 &mut buf,
                 &mut offsets,
-                outline_item_obj(i),
-                &format!(
-                    "<< /Title {title} /Parent {parent} 0 R{prev}{next} \
-                     /Dest [{page} 0 R /XYZ null {y} null] >>",
-                    title = pdf_text_string(&outline.title),
-                    parent = outline_root_obj,
-                    page = page_obj(outline.page_index),
-                    y = pdf_num(outline.y),
-                ),
+                PdfOutlineItemObjectParts {
+                    object_id: outline_item_obj(i),
+                    title: &outline.title,
+                    parent_object_id: outline_root_obj,
+                    prev_object_id: (i != 0).then(|| outline_item_obj(i - 1)),
+                    next_object_id: (i + 1 != outline_count).then(|| outline_item_obj(i + 1)),
+                    page_object_id: page_obj(outline.page_index),
+                    y: outline.y,
+                },
             );
         }
     }
@@ -21812,31 +21838,32 @@ mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, Faces, Fill, FlowMark,
         HeadingIdState, Line, LineTok, LinkTarget, PageContentCapacityEstimate, Palette,
-        ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts,
-        Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
-        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
-        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
-        append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
-        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_page_object,
-        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
-        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
-        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
-        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
-        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
-        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
-        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
-        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
-        append_svg_style, append_svg_text_operator, append_svg_text_viewport_clip,
-        append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
-        append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
-        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
-        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
-        kerned_tj_with_spacing, line_has_visible_content, measure_word, normalize_svg_text_node,
-        pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string, pdf_word_break_points, push_text_tokens,
-        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        ParagraphItem, ParagraphPolicy, PdfOutlineItemObjectParts, PdfPageObjectParts, PdfStream,
+        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg,
+        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle,
+        SvgTextMatrix, SvgTransform, Tok, WidthCache, append_artifact_rule_stroke,
+        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
+        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
+        append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
+        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
+        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_stream_dict,
+        append_pdf_string_escaped, append_pdf_struct_element_object, append_pdf_text_string_bytes,
+        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
+        append_svg_alpha_state_name, append_svg_alpha_state_resource_entry,
+        append_svg_element_state_prefix, append_svg_line_path, append_svg_line_stroke_outline,
+        append_svg_path_ops, append_svg_poly_path, append_svg_shadow_prefix,
+        append_svg_stroke_options, append_svg_style, append_svg_text_operator,
+        append_svg_text_viewport_clip, append_task_checkbox_marker_operator,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
+        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
+        first_visible_segment_index, font_size_of, kerned_tj, kerned_tj_with_spacing,
+        line_has_visible_content, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3,
+        pdf_num, pdf_text_string, pdf_word_break_points, push_text_tokens, rounded_rect_fill,
+        shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ThemeColors;
     use crate::ast::Inline;
@@ -22753,6 +22780,61 @@ mod pdf_writer_tests {
 
         assert_eq!(direct_offsets[9], legacy_offsets[9]);
         assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn outline_item_object_byte_writer_matches_legacy_format_shape() {
+        let cases = [
+            (7, "Alpha", 6, None, Some(8), 3, 712.5),
+            (8, "A(B)\\C", 6, Some(7), Some(9), 4, -0.0),
+            (9, "A—B", 6, Some(8), None, 5, 123.456),
+        ];
+
+        for (
+            object_id,
+            title,
+            parent_object_id,
+            prev_object_id,
+            next_object_id,
+            page_object_id,
+            y,
+        ) in cases
+        {
+            let mut direct = b"%PDF-1.7\n".to_vec();
+            let mut direct_offsets = [0usize; 16];
+            append_pdf_outline_item_object(
+                &mut direct,
+                &mut direct_offsets,
+                PdfOutlineItemObjectParts {
+                    object_id,
+                    title,
+                    parent_object_id,
+                    prev_object_id,
+                    next_object_id,
+                    page_object_id,
+                    y,
+                },
+            );
+
+            let prev = prev_object_id.map_or_else(String::new, |id| format!(" /Prev {id} 0 R"));
+            let next = next_object_id.map_or_else(String::new, |id| format!(" /Next {id} 0 R"));
+            let mut legacy = b"%PDF-1.7\n".to_vec();
+            let mut legacy_offsets = [0usize; 16];
+            append_pdf_object_str(
+                &mut legacy,
+                &mut legacy_offsets,
+                object_id,
+                &format!(
+                    "<< /Title {title_pdf} /Parent {parent_object_id} 0 R{prev}{next} \
+                     /Dest [{page_object_id} 0 R /XYZ null {y_pdf} null] >>",
+                    title_pdf = pdf_text_string(title),
+                    y_pdf = pdf_num(y),
+                ),
+            );
+
+            assert_eq!(direct_offsets[object_id], legacy_offsets[object_id]);
+            assert_eq!(direct, legacy);
+        }
     }
 
     #[test]

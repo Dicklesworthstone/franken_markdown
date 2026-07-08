@@ -18825,14 +18825,10 @@ fn append_svg_text_decoration(
         return;
     }
     let stroke_width = (matrix.size * 0.055).clamp(0.35, 3.0);
-    let (r, g, b) = color;
-    body.push_str(&format!(
-        "{r} {g} {b} RG {w} w 0 J [] 0 d\n",
-        r = pdf_fixed3(r),
-        g = pdf_fixed3(g),
-        b = pdf_fixed3(b),
-        w = pdf_num(stroke_width),
-    ));
+    append_rgb_components_fixed3(body, color);
+    body.push_str(" RG ");
+    append_pdf_num(body, stroke_width);
+    body.push_str(" w 0 J [] 0 d\n");
     if decoration.contains(SvgTextDecoration::UNDERLINE) {
         append_svg_text_decoration_line(body, matrix, width, -0.12 * matrix.size);
     }
@@ -18857,13 +18853,9 @@ fn append_svg_text_decoration_line(
     if ![x1, y1, x2, y2].iter().all(|value| value.is_finite()) {
         return;
     }
-    body.push_str(&format!(
-        "{x1} {y1} m {x2} {y2} l S\n",
-        x1 = pdf_num(x1),
-        y1 = pdf_num(y1),
-        x2 = pdf_num(x2),
-        y2 = pdf_num(y2),
-    ));
+    append_svg_path_point_op(body, x1, y1, 'm');
+    append_svg_path_point_op(body, x2, y2, 'l');
+    body.push_str("S\n");
 }
 
 fn svg_text_layout_adjustment(
@@ -22036,22 +22028,23 @@ mod pdf_writer_tests {
         PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfStream,
         PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg,
         SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle,
-        SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
-        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
-        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
-        append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
-        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
-        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_parent_tree_object,
-        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
-        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
-        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
-        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
-        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
-        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
-        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
-        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
-        append_svg_style, append_svg_text_operator, append_svg_text_viewport_clip,
+        SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache,
+        append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
+        append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
+        append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
+        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_outline_item_object,
+        append_pdf_page_object, append_pdf_parent_tree_object, append_pdf_stream_dict,
+        append_pdf_string_escaped, append_pdf_struct_element_object, append_pdf_text_string_bytes,
+        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
+        append_svg_alpha_state_name, append_svg_alpha_state_resource_entry,
+        append_svg_element_state_prefix, append_svg_line_path, append_svg_line_stroke_outline,
+        append_svg_path_ops, append_svg_poly_path, append_svg_shadow_prefix,
+        append_svg_stroke_options, append_svg_style, append_svg_text_decoration,
+        append_svg_text_operator, append_svg_text_viewport_clip,
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
         collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
@@ -23428,6 +23421,33 @@ mod pdf_writer_tests {
         );
         assert_eq!(streamed, expected);
         Ok(())
+    }
+
+    #[test]
+    fn svg_text_decoration_writer_preserves_legacy_format_shape() {
+        let mut out = String::new();
+        append_svg_text_decoration(
+            &mut out,
+            SvgTextDecoration::NONE
+                .with(SvgTextDecoration::UNDERLINE)
+                .with(SvgTextDecoration::LINE_THROUGH),
+            SvgTextMatrix {
+                a: 1.25,
+                b: -0.5,
+                c: 0.75,
+                d: 2.0,
+                x: 12.5,
+                y: 700.25,
+                size: 11.0,
+            },
+            42.0,
+            (1.0, 0.5, 0.0),
+        );
+
+        assert_eq!(
+            out,
+            "1.000 0.500 0.000 RG 0.61 w 0 J [] 0 d\n11.51 697.61 m 64.01 676.61 l S\n14.98 706.85 m 67.47 685.85 l S\n"
+        );
     }
 
     #[test]

@@ -1928,6 +1928,48 @@ fn pdf_svg_dominant_baseline_adjusts_selectable_text_position() {
 }
 
 #[test]
+fn pdf_svg_baseline_shift_moves_selectable_tspan_text() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 48">
+  <style>
+    :root { --sub-shift: sub; }
+    .sub { baseline-shift: var(--sub-shift); }
+  </style>
+  <text x="10" y="24" font-size="12" fill="#ff0000">Base</text>
+  <text x="48" y="24" font-size="12" fill="#0000ff" baseline-shift="super">Super</text>
+  <text x="96" y="24" font-size="12" fill="#00ff00" class="sub">Sub</text>
+  <text x="130" y="24" font-size="12" fill="#123456" baseline-shift="super">
+    <tspan style="baseline-shift: baseline !important">Reset</tspan>
+  </text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("baseline-shift.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Baseline shift](baseline-shift.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let (_, base_y) = first_text_matrix_xy_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let (_, super_y) = first_text_matrix_xy_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    let (_, sub_y) = first_text_matrix_xy_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    let (_, reset_y) = first_text_matrix_xy_after(&text, "0.071 0.204 0.337 rg\nBT /F1");
+
+    assert!(
+        super_y > base_y + 0.5,
+        "baseline-shift=super should raise selectable PDF text relative to the base run: {text}"
+    );
+    assert!(
+        sub_y < base_y - 0.1,
+        "stylesheet baseline-shift=sub through a CSS var should lower selectable PDF text: {text}"
+    );
+    assert!(
+        (reset_y - base_y).abs() < 0.1,
+        "inline baseline-shift=baseline should reset an inherited super shift on a tspan: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_letter_spacing_adjusts_selectable_text_and_anchor_width() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 54">

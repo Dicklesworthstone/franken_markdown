@@ -453,6 +453,7 @@ struct SvgText {
     text_length: Option<f32>,
     length_adjust: SvgLengthAdjust,
     baseline: SvgDominantBaseline,
+    baseline_shift: f32,
     anchor: SvgTextAnchor,
     decoration: SvgTextDecoration,
     fill: (f32, f32, f32),
@@ -788,6 +789,7 @@ struct SvgStyle {
     font_slant: SvgFontSlant,
     font_family: SvgFontFamily,
     dominant_baseline: SvgDominantBaseline,
+    baseline_shift: SvgTextSpacing,
     letter_spacing: SvgTextSpacing,
     text_decoration: SvgTextDecoration,
 }
@@ -828,6 +830,7 @@ impl SvgStyle {
         font_slant: SvgFontSlant::Normal,
         font_family: SvgFontFamily::Body,
         dominant_baseline: SvgDominantBaseline::Auto,
+        baseline_shift: SvgTextSpacing::ZERO,
         letter_spacing: SvgTextSpacing::ZERO,
         text_decoration: SvgTextDecoration::NONE,
     };
@@ -875,6 +878,7 @@ struct SvgStylePatch {
     font_slant: Option<SvgFontSlant>,
     font_family: Option<SvgFontFamily>,
     dominant_baseline: Option<SvgDominantBaseline>,
+    baseline_shift: Option<SvgTextSpacing>,
     letter_spacing: Option<SvgTextSpacing>,
     text_decoration: Option<SvgTextDecoration>,
 }
@@ -4243,6 +4247,7 @@ fn parse_svg_line(
                 font_slant: inherited.font_slant,
                 font_family: inherited.font_family,
                 dominant_baseline: inherited.dominant_baseline,
+                baseline_shift: inherited.baseline_shift,
                 letter_spacing: inherited.letter_spacing,
                 text_decoration: inherited.text_decoration,
             },
@@ -4316,6 +4321,7 @@ fn parse_svg_poly(
             font_slant: inherited.font_slant,
             font_family: inherited.font_family,
             dominant_baseline: inherited.dominant_baseline,
+            baseline_shift: inherited.baseline_shift,
             letter_spacing: inherited.letter_spacing,
             text_decoration: inherited.text_decoration,
         }
@@ -4870,6 +4876,7 @@ fn svg_text_element(
         text_length: placement.text_length,
         length_adjust: placement.length_adjust,
         baseline: style.dominant_baseline,
+        baseline_shift: style.baseline_shift.to_points(placement.font_size),
         anchor: placement.anchor,
         decoration: style.text_decoration,
         fill,
@@ -7202,6 +7209,11 @@ fn parse_svg_style_with_ancestors(
         svg_attr(attrs, "alignment-baseline"),
         &scoped_css_vars,
     );
+    apply_svg_baseline_shift_attr(
+        &mut style,
+        svg_attr(attrs, "baseline-shift"),
+        &scoped_css_vars,
+    );
     if let Some(width) = svg_attr(attrs, "stroke-width")
         .and_then(|value| parse_svg_css_number(value, &scoped_css_vars))
     {
@@ -7656,6 +7668,7 @@ fn parse_svg_style_patch(
             "dominant-baseline" | "alignment-baseline" => {
                 patch.dominant_baseline = parse_svg_dominant_baseline(value, css_vars);
             }
+            "baseline-shift" => patch.baseline_shift = parse_svg_baseline_shift(value, css_vars),
             "opacity" => patch.opacity = parse_svg_opacity(value, css_vars),
             "fill-opacity" => patch.fill_opacity = parse_svg_opacity(value, css_vars),
             "stroke-opacity" => patch.stroke_opacity = parse_svg_opacity(value, css_vars),
@@ -7976,6 +7989,9 @@ fn apply_svg_style_patch(
     if let Some(dominant_baseline) = patch.dominant_baseline {
         style.dominant_baseline = dominant_baseline;
     }
+    if let Some(baseline_shift) = patch.baseline_shift {
+        style.baseline_shift = baseline_shift;
+    }
     if let Some(letter_spacing) = patch.letter_spacing {
         style.letter_spacing = letter_spacing;
     }
@@ -8041,6 +8057,7 @@ fn apply_svg_style_declaration(
         "dominant-baseline" | "alignment-baseline" => {
             apply_svg_dominant_baseline_attr(style, Some(value), css_vars);
         }
+        "baseline-shift" => apply_svg_baseline_shift_attr(style, Some(value), css_vars),
         "opacity" | "fill-opacity" | "stroke-opacity" => {
             apply_svg_opacity_attr(style, name, Some(value), css_vars);
         }
@@ -9443,6 +9460,47 @@ fn parse_svg_letter_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<
     }
     if value.eq_ignore_ascii_case("normal") {
         return Some(SvgTextSpacing::ZERO);
+    }
+
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let number = value[..end].parse::<f32>().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let unit = value[end..].trim_start().to_ascii_lowercase();
+    if unit.starts_with("em") {
+        Some(SvgTextSpacing::Em(number))
+    } else if unit.starts_with("ex") {
+        Some(SvgTextSpacing::Ex(number))
+    } else if unit.starts_with('%') {
+        Some(SvgTextSpacing::Percent(number))
+    } else {
+        Some(SvgTextSpacing::Points(number))
+    }
+}
+
+fn apply_svg_baseline_shift_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(shift) = value.and_then(|value| parse_svg_baseline_shift(value, css_vars)) {
+        style.baseline_shift = shift;
+    }
+}
+
+fn parse_svg_baseline_shift(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_baseline_shift(&resolved, css_vars);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "baseline" => return Some(SvgTextSpacing::ZERO),
+        "super" => return Some(SvgTextSpacing::Em(0.6)),
+        "sub" => return Some(SvgTextSpacing::Em(-0.2)),
+        _ => {}
     }
 
     let mut end = 0usize;
@@ -14960,6 +15018,7 @@ mod font_slot_text_refs_tests {
             text_length: None,
             length_adjust: SvgLengthAdjust::Spacing,
             baseline: SvgDominantBaseline::Auto,
+            baseline_shift: 0.0,
             anchor: SvgTextAnchor::Start,
             decoration: SvgTextDecoration::NONE,
             fill: (0.0, 0.0, 0.0),
@@ -15582,7 +15641,7 @@ fn svg_text_link_bbox(text: &SvgText) -> Option<(f32, f32, f32, f32)> {
         SvgTextAnchor::Middle => text.x - width * 0.5,
         SvgTextAnchor::End => text.x - width,
     };
-    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size;
+    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size - text.baseline_shift;
     let y = baseline_y - text.font_size * 0.9;
     let h = text.font_size * 1.15;
     Some((x, y, width, h))
@@ -15854,6 +15913,7 @@ fn draw_svg_line(
         font_slant: line.style.font_slant,
         font_family: line.style.font_family,
         dominant_baseline: line.style.dominant_baseline,
+        baseline_shift: line.style.baseline_shift,
         letter_spacing: line.style.letter_spacing,
         text_decoration: line.style.text_decoration,
     };
@@ -18378,7 +18438,7 @@ fn pdf_tj_spacing_adjust(spacing: f32, font_size: f32) -> i32 {
 }
 
 fn svg_text_pdf_matrix(text: &SvgText, image_transform: SvgImageTransform) -> SvgTextMatrix {
-    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size;
+    let baseline_y = text.y + text.baseline.y_shift_em() * text.font_size - text.baseline_shift;
     let (svg_x, svg_y) = text.transform.apply_point(text.x, baseline_y);
     let (x, y) = image_transform.map_point(svg_x, svg_y);
 

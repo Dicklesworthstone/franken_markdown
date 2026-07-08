@@ -3960,6 +3960,70 @@ fn pdf_svg_gradient_stops_honor_stylesheet_selectors() {
 }
 
 #[test]
+fn pdf_svg_gradient_stop_current_color_resolves_from_gradient_stop_and_css_color() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 20">
+  <style>
+    .css-current { color: #ff0000; stop-color: currentColor; }
+    .css-color-only { color: #ff00ff; }
+  </style>
+  <defs>
+    <linearGradient id="gradient-color" color="#123456">
+      <stop offset="0%" stop-color="currentColor"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="stop-style-color">
+      <stop offset="0%" style="stop-color: currentColor; color: #00ff00"/>
+      <stop offset="100%" style="color: #0000ff; stop-color: currentColor; stop-opacity: 50%"/>
+    </linearGradient>
+    <linearGradient id="css-stop-color">
+      <stop class="css-current" offset="0%"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="css-color-attr-current">
+      <stop class="css-color-only" offset="0%" stop-color="currentColor"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="16" height="10" fill="url(#gradient-color)"/>
+  <rect x="26" y="2" width="16" height="10" fill="url(#stop-style-color)"/>
+  <rect x="50" y="2" width="16" height="10" fill="url(#css-stop-color)"/>
+  <rect x="2" y="14" width="16" height="4" fill="url(#css-color-attr-current)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "gradient-current-color.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Gradient currentColor](gradient-current-color.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/C0 [0.071 0.204 0.337] /C1 [1.000 1.000 1.000] /N 1"),
+        "stop-color=currentColor should resolve from the owning gradient color attribute: {text}"
+    );
+    assert!(
+        text.contains("/C0 [0.000 1.000 0.000] /C1 [0.500 0.500 1.000] /N 1"),
+        "inline stop style should resolve currentColor after the final color declaration and preserve opacity blending: {text}"
+    );
+    assert!(
+        text.contains("/C0 [1.000 0.000 0.000] /C1 [1.000 1.000 1.000] /N 1"),
+        "stylesheet stop color/currentColor rules should feed native PDF gradient colors: {text}"
+    );
+    assert!(
+        text.contains("/C0 [1.000 0.000 1.000] /C1 [1.000 1.000 1.000] /N 1"),
+        "stylesheet color-only rules should feed a stop-color=currentColor presentation attribute: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_linear_gradient_transform_and_spread_method_are_respected() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">

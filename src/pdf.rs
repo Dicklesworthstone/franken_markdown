@@ -714,6 +714,12 @@ struct SvgParsedColor {
     alpha: Option<f32>,
 }
 
+#[derive(Clone, Copy)]
+enum SvgGradientStopPaint {
+    Color(SvgColor),
+    CurrentColor,
+}
+
 #[derive(Clone)]
 struct SvgRootBackground {
     color: Option<SvgRootBackgroundColor>,
@@ -979,6 +985,7 @@ struct SvgGradientStopCssRule {
 #[derive(Clone, Copy, Default)]
 struct SvgGradientStopPatch {
     color: Option<SvgColor>,
+    stop_color: Option<SvgGradientStopPaint>,
     opacity: Option<f32>,
 }
 
@@ -7031,8 +7038,13 @@ fn parse_svg_gradient_definitions(
             id: id.to_string(),
             linear: local == "lineargradient",
             href: svg_use_href(&attrs).map(str::to_string),
+            stops: parse_svg_gradient_stops(
+                body,
+                css_vars,
+                stop_css_rules,
+                parse_svg_gradient_inherited_color(&attrs, css_vars),
+            ),
             attrs,
-            stops: parse_svg_gradient_stops(body, css_vars, stop_css_rules),
         });
         if definitions.len() >= 256 {
             break;
@@ -7167,7 +7179,7 @@ fn parse_svg_gradient_stop_css_rules_from_css(
                 css.get(open + 1..close).unwrap_or_default(),
                 css_vars,
             );
-            if patch.color.is_some() || patch.opacity.is_some() {
+            if patch.color.is_some() || patch.stop_color.is_some() || patch.opacity.is_some() {
                 for selector in selectors.split(',') {
                     if let Some(selector) = parse_svg_css_selector(selector) {
                         out.push(SvgGradientStopCssRule {
@@ -7209,11 +7221,14 @@ fn apply_svg_gradient_stop_patch_declaration(
     css_vars: &[SvgCssVariable],
 ) {
     match name {
+        "color" => patch.color = parse_svg_color(value, css_vars),
         "stop-color" => {
-            if value.eq_ignore_ascii_case("transparent") {
+            if parse_svg_current_color_paint(value, css_vars) {
+                patch.stop_color = Some(SvgGradientStopPaint::CurrentColor);
+            } else if clean_svg_css_keyword_value(value).eq_ignore_ascii_case("transparent") {
                 patch.opacity = Some(0.0);
             } else if let Some(color) = parse_svg_color(value, css_vars) {
-                patch.color = Some(color);
+                patch.stop_color = Some(SvgGradientStopPaint::Color(color));
             }
         }
         "stop-opacity" => {
@@ -7229,6 +7244,7 @@ fn parse_svg_gradient_stops(
     body: &str,
     css_vars: &[SvgCssVariable],
     css_rules: &[SvgGradientStopCssRule],
+    inherited_color: SvgColor,
 ) -> Vec<SvgGradientStop> {
     let mut stops = Vec::new();
     let mut pos = 0usize;
@@ -7248,7 +7264,7 @@ fn parse_svg_gradient_stops(
             continue;
         }
         let attrs = parse_svg_attrs(attrs_src);
-        if let Some(stop) = parse_svg_gradient_stop(&attrs, css_vars, css_rules) {
+        if let Some(stop) = parse_svg_gradient_stop(&attrs, css_vars, css_rules, inherited_color) {
             stops.push(stop);
         }
         if stops.len() >= 64 {
@@ -7476,17 +7492,39 @@ fn add_svg_weighted_color(accum: &mut (f32, f32, f32), color: (f32, f32, f32), w
     accum.2 += color.2 * weight;
 }
 
+fn parse_svg_gradient_inherited_color(
+    attrs: &[(String, String)],
+    css_vars: &[SvgCssVariable],
+) -> SvgColor {
+    let mut color = SvgStyle::INITIAL.color;
+    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), css_vars);
+    if let Some(style) = svg_attr(attrs, "style") {
+        for decl in style.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("color") {
+                apply_svg_gradient_color_attr(&mut color, Some(value.trim()), css_vars);
+            }
+        }
+    }
+    color
+}
+
 fn parse_svg_gradient_stop(
     attrs: &[(String, String)],
     css_vars: &[SvgCssVariable],
     css_rules: &[SvgGradientStopCssRule],
+    inherited_color: SvgColor,
 ) -> Option<SvgGradientStop> {
-    let mut color = None;
+    let mut color = inherited_color;
+    let mut stop_color = None;
     let mut opacity = 1.0;
 
-    apply_svg_gradient_stop_css(&mut color, &mut opacity, attrs, css_rules);
+    apply_svg_gradient_stop_css(&mut color, &mut stop_color, &mut opacity, attrs, css_rules);
+    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), css_vars);
     if let Some(value) = svg_attr(attrs, "stop-color") {
-        apply_svg_gradient_stop_color(&mut color, &mut opacity, value, css_vars);
+        apply_svg_gradient_stop_color(&mut stop_color, &mut opacity, value, css_vars);
     }
     if let Some(parsed) =
         svg_attr(attrs, "stop-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
@@ -7500,8 +7538,16 @@ fn parse_svg_gradient_stop(
                 continue;
             };
             match name.trim().to_ascii_lowercase().as_str() {
+                "color" => {
+                    apply_svg_gradient_color_attr(&mut color, Some(value.trim()), css_vars);
+                }
                 "stop-color" => {
-                    apply_svg_gradient_stop_color(&mut color, &mut opacity, value.trim(), css_vars);
+                    apply_svg_gradient_stop_color(
+                        &mut stop_color,
+                        &mut opacity,
+                        value.trim(),
+                        css_vars,
+                    );
                 }
                 "stop-opacity" => {
                     if let Some(parsed) = parse_svg_opacity(value.trim(), css_vars) {
@@ -7513,7 +7559,10 @@ fn parse_svg_gradient_stop(
         }
     }
 
-    let mut color = color.unwrap_or((0.0, 0.0, 0.0));
+    let mut color = match stop_color.unwrap_or(SvgGradientStopPaint::Color((0.0, 0.0, 0.0))) {
+        SvgGradientStopPaint::Color(color) => color,
+        SvgGradientStopPaint::CurrentColor => color,
+    };
     if opacity <= 0.001 {
         color = (1.0, 1.0, 1.0);
     } else if opacity < 0.999 {
@@ -7532,7 +7581,8 @@ fn parse_svg_gradient_stop(
 }
 
 fn apply_svg_gradient_stop_css(
-    color: &mut Option<SvgColor>,
+    color: &mut SvgColor,
+    stop_color: &mut Option<SvgGradientStopPaint>,
     opacity: &mut f32,
     attrs: &[(String, String)],
     css_rules: &[SvgGradientStopCssRule],
@@ -7548,8 +7598,11 @@ fn apply_svg_gradient_stop_css(
     }
     matched.sort_by_key(|rule| (rule.selector.specificity, rule.order));
     for rule in matched {
-        if let Some(stop_color) = rule.patch.color {
-            *color = Some(stop_color);
+        if let Some(next_color) = rule.patch.color {
+            *color = next_color;
+        }
+        if let Some(next_stop_color) = rule.patch.stop_color {
+            *stop_color = Some(next_stop_color);
         }
         if let Some(stop_opacity) = rule.patch.opacity {
             *opacity = stop_opacity;
@@ -7557,16 +7610,28 @@ fn apply_svg_gradient_stop_css(
     }
 }
 
+fn apply_svg_gradient_color_attr(
+    color: &mut SvgColor,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(parsed) = value.and_then(|value| parse_svg_color(value, css_vars)) {
+        *color = parsed;
+    }
+}
+
 fn apply_svg_gradient_stop_color(
-    color: &mut Option<SvgColor>,
+    color: &mut Option<SvgGradientStopPaint>,
     opacity: &mut f32,
     value: &str,
     css_vars: &[SvgCssVariable],
 ) {
-    if value.eq_ignore_ascii_case("transparent") {
+    if parse_svg_current_color_paint(value, css_vars) {
+        *color = Some(SvgGradientStopPaint::CurrentColor);
+    } else if clean_svg_css_keyword_value(value).eq_ignore_ascii_case("transparent") {
         *opacity = 0.0;
     } else if let Some(parsed) = parse_svg_color(value, css_vars) {
-        *color = Some(parsed);
+        *color = Some(SvgGradientStopPaint::Color(parsed));
     }
 }
 

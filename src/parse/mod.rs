@@ -2666,11 +2666,14 @@ fn parse_inlines_chars_with_refs_profiled(
 }
 
 fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {
-    matches!(
-        chars.get(idx),
-        Some('h') if starts_with_chars(chars, idx, "http://")
-            || starts_with_chars(chars, idx, "https://")
-    ) || matches!(chars.get(idx), Some('w') if starts_with_chars(chars, idx, "www."))
+    match chars.get(idx) {
+        Some('h') => {
+            starts_with_ascii_chars(chars, idx, b"http://")
+                || starts_with_ascii_chars(chars, idx, b"https://")
+        }
+        Some('w') => starts_with_ascii_chars(chars, idx, b"www."),
+        _ => false,
+    }
 }
 
 const fn inline_char_maybe_bare_email_start(ch: char) -> bool {
@@ -3498,13 +3501,16 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
         return None;
     }
 
-    let is_www = starts_with_chars(chars, i, "www.");
-    if !(starts_with_chars(chars, i, "http://")
-        || starts_with_chars(chars, i, "https://")
-        || is_www)
-    {
-        return None;
-    }
+    let is_www = match chars.get(i) {
+        Some('h')
+            if starts_with_ascii_chars(chars, i, b"http://")
+                || starts_with_ascii_chars(chars, i, b"https://") =>
+        {
+            false
+        }
+        Some('w') if starts_with_ascii_chars(chars, i, b"www.") => true,
+        _ => return None,
+    };
 
     let mut end = i;
     while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '<' && chars[end] != '>'
@@ -3567,8 +3573,7 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
     if end <= domain_start || matches!(chars[end - 1], '-' | '_') {
         return None;
     }
-    let domain: String = chars[domain_start..end].iter().collect();
-    if !domain.contains('.') {
+    if !chars[domain_start..end].contains(&'.') {
         return None;
     }
     let label: String = chars[i..end].iter().collect();
@@ -3576,9 +3581,15 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
     Some((label, dest, end))
 }
 
-fn starts_with_chars(chars: &[char], i: usize, needle: &str) -> bool {
-    for (offset, expected) in needle.chars().enumerate() {
-        if chars.get(i + offset) != Some(&expected) {
+fn starts_with_ascii_chars(chars: &[char], i: usize, needle: &[u8]) -> bool {
+    let Some(end) = i.checked_add(needle.len()) else {
+        return false;
+    };
+    let Some(window) = chars.get(i..end) else {
+        return false;
+    };
+    for idx in 0..needle.len() {
+        if window[idx] != needle[idx] as char {
             return false;
         }
     }

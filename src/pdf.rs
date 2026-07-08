@@ -13994,12 +13994,11 @@ fn serialize(
         for &text in &slot_refs.texts {
             segment_count += 1;
             text_bytes += text.len();
-            chars.extend(text.chars());
-            if let Some(shaped) = slot_cache.get(text) {
+            if slot_cache.contains_key(text) {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += text.len();
-                collect_shaped_run_glyphs(shaped, &mut shaped_glyphs, &mut lig_src_uni);
             } else {
+                chars.extend(text.chars());
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += text.len();
                 let shaped = shape_run(source, lig, text);
@@ -15181,6 +15180,32 @@ mod font_slot_text_refs_tests {
         );
         assert_eq!(refs[BOLD_IDX].texts, vec!["line-1-bold"]);
         assert_eq!(refs[MONO_IDX].texts, vec!["line-2-svg-mono"]);
+    }
+
+    #[test]
+    fn font_slot_text_refs_preserve_duplicates_for_shape_cache_accounting() {
+        let lines = [
+            line(
+                vec![
+                    seg(F_BODY, "repeat"),
+                    seg(F_BODY, "repeat"),
+                    seg(F_BODY, "other"),
+                    seg(F_BOLD, "repeat"),
+                ],
+                vec![svg_text(F_BODY, "repeat")],
+            ),
+            line(vec![seg(F_BODY, "other")], Vec::new()),
+        ];
+
+        let refs = collect_font_slot_text_refs(&lines);
+        const BODY_IDX: usize = 0;
+        const BOLD_IDX: usize = 1;
+
+        assert_eq!(
+            refs[BODY_IDX].texts,
+            vec!["repeat", "repeat", "other", "other", "repeat"]
+        );
+        assert_eq!(refs[BOLD_IDX].texts, vec!["repeat"]);
     }
 }
 

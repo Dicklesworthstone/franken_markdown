@@ -466,7 +466,9 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
         return false;
     };
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
-    trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
+    starts_with_ascii_case_insensitive(trimmed, "<svg")
+        || (starts_with_ascii_case_insensitive(trimmed, "<?xml")
+            && contains_ascii_case_insensitive(trimmed, "<svg"))
 }
 
 fn svg_without_remote_style_imports(bytes: &[u8]) -> Cow<'_, [u8]> {
@@ -634,6 +636,13 @@ fn css_import_at_rule_boundary(css: &str, import_start: usize) -> bool {
 
 fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
     find_ascii_case_insensitive(haystack, needle).is_some()
+}
+
+fn starts_with_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .get(..needle.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
@@ -1844,6 +1853,31 @@ mod tests {
             format!(
                 "data:image/svg+xml;base64,{}",
                 base64_encode(clean.as_slice())
+            )
+        );
+    }
+
+    #[test]
+    fn svg_asset_data_uri_accepts_case_insensitive_xml_and_svg_tags() {
+        let svg = br#"<?XML version="1.0" encoding="UTF-8"?>
+<SVG xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+<rect width="10" height="10"/></SVG>"#;
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new("diagram.svg", svg.as_slice())],
+            ..HtmlOptions::default()
+        };
+        let mut out = String::new();
+
+        assert!(push_html_image_asset_data_uri(
+            "diagram.svg",
+            &opts,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            format!(
+                "data:image/svg+xml;base64,{}",
+                base64_encode(svg.as_slice())
             )
         );
     }

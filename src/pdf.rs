@@ -2110,6 +2110,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+        table_layout_cache: TableLayoutCache::default(),
         paragraph_scratch: ParagraphLayoutScratch::new(),
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
@@ -2128,6 +2129,11 @@ const WIDTH_CACHE_MAX: usize = 32_768;
 const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX: usize = 256;
 const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES: usize = 4096;
 const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_LINES: usize = 64;
+const TABLE_LAYOUT_CACHE_MAX: usize = 64;
+const TABLE_LAYOUT_CACHE_MAX_CELLS: usize = 256;
+const TABLE_LAYOUT_CACHE_MAX_INLINE_BYTES: usize = 24 * 1024;
+const TABLE_LAYOUT_CACHE_MAX_INLINE_NODES: usize = 4096;
+const TABLE_LAYOUT_CACHE_MAX_LINES: usize = 512;
 
 #[derive(Default)]
 struct WidthCache {
@@ -2263,6 +2269,242 @@ impl SimpleParagraphLayoutCache {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TableLayoutKey {
+    indent_bits: u32,
+    page_width_bits: u32,
+    page_height_bits: u32,
+    page_left_bits: u32,
+    page_right_bits: u32,
+    page_top_bits: u32,
+    page_bottom_bits: u32,
+    page_content_w_bits: u32,
+    font_size_bits: u32,
+    col_gutter_bits: u32,
+    min_col_width_bits: u32,
+    alloc_min_unit_bits: u32,
+    alloc_max_extra_states: usize,
+    header_wrap_weight_bits: u32,
+    body_wrap_weight_bits: u32,
+    align: Vec<u8>,
+    head: Vec<Vec<TableLayoutInlineKey>>,
+    rows: Vec<Vec<Vec<TableLayoutInlineKey>>>,
+}
+
+impl TableLayoutKey {
+    fn new(table: &Table, indent: f32, page: PageGeom) -> Option<Self> {
+        let cell_count = table
+            .head
+            .len()
+            .saturating_add(table.rows.iter().map(Vec::len).sum::<usize>());
+        if cell_count > TABLE_LAYOUT_CACHE_MAX_CELLS
+            || table.align.len() > TABLE_LAYOUT_CACHE_MAX_CELLS
+        {
+            return None;
+        }
+
+        let mut inline_bytes = 0usize;
+        let mut inline_nodes = 0usize;
+        let head = table_layout_cell_row_key(&table.head, &mut inline_bytes, &mut inline_nodes)?;
+        let mut rows = Vec::with_capacity(table.rows.len());
+        for row in &table.rows {
+            rows.push(table_layout_cell_row_key(
+                row,
+                &mut inline_bytes,
+                &mut inline_nodes,
+            )?);
+        }
+
+        Some(Self {
+            indent_bits: indent.to_bits(),
+            page_width_bits: page.width.to_bits(),
+            page_height_bits: page.height.to_bits(),
+            page_left_bits: page.left.to_bits(),
+            page_right_bits: page.right.to_bits(),
+            page_top_bits: page.top.to_bits(),
+            page_bottom_bits: page.bottom.to_bits(),
+            page_content_w_bits: page.content_w.to_bits(),
+            font_size_bits: TABLE_FONT_SIZE.to_bits(),
+            col_gutter_bits: TABLE_COL_GUTTER.to_bits(),
+            min_col_width_bits: TABLE_MIN_COL_WIDTH.to_bits(),
+            alloc_min_unit_bits: TABLE_ALLOC_MIN_UNIT_PT.to_bits(),
+            alloc_max_extra_states: TABLE_ALLOC_MAX_EXTRA_STATES,
+            header_wrap_weight_bits: TABLE_HEADER_WRAP_WEIGHT.to_bits(),
+            body_wrap_weight_bits: TABLE_BODY_WRAP_WEIGHT.to_bits(),
+            align: table
+                .align
+                .iter()
+                .map(|&align| align_cache_code(align))
+                .collect(),
+            head,
+            rows,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum TableLayoutInlineKey {
+    Text(String),
+    Emphasis(Vec<TableLayoutInlineKey>),
+    Strong(Vec<TableLayoutInlineKey>),
+    Strikethrough(Vec<TableLayoutInlineKey>),
+    Code(String),
+    Link {
+        dest: String,
+        title: Option<String>,
+        content: Vec<TableLayoutInlineKey>,
+    },
+    Image {
+        dest: String,
+        title: Option<String>,
+        alt: String,
+    },
+    SoftBreak,
+    HardBreak,
+    Html(String),
+}
+
+fn align_cache_code(align: Align) -> u8 {
+    match align {
+        Align::None => 0,
+        Align::Left => 1,
+        Align::Center => 2,
+        Align::Right => 3,
+    }
+}
+
+fn table_layout_cell_row_key(
+    row: &[Vec<Inline>],
+    inline_bytes: &mut usize,
+    inline_nodes: &mut usize,
+) -> Option<Vec<Vec<TableLayoutInlineKey>>> {
+    let mut out = Vec::with_capacity(row.len());
+    for cell in row {
+        out.push(table_layout_inline_keys(cell, inline_bytes, inline_nodes)?);
+    }
+    Some(out)
+}
+
+fn table_layout_inline_keys(
+    inlines: &[Inline],
+    inline_bytes: &mut usize,
+    inline_nodes: &mut usize,
+) -> Option<Vec<TableLayoutInlineKey>> {
+    let mut out = Vec::with_capacity(inlines.len());
+    for inline in inlines {
+        out.push(table_layout_inline_key(inline, inline_bytes, inline_nodes)?);
+    }
+    Some(out)
+}
+
+fn table_layout_inline_key(
+    inline: &Inline,
+    inline_bytes: &mut usize,
+    inline_nodes: &mut usize,
+) -> Option<TableLayoutInlineKey> {
+    add_table_layout_key_node(inline_nodes)?;
+    match inline {
+        Inline::Text(text) => {
+            add_table_layout_key_bytes(inline_bytes, text.len())?;
+            Some(TableLayoutInlineKey::Text(text.clone()))
+        }
+        Inline::Emphasis(children) => Some(TableLayoutInlineKey::Emphasis(
+            table_layout_inline_keys(children, inline_bytes, inline_nodes)?,
+        )),
+        Inline::Strong(children) => Some(TableLayoutInlineKey::Strong(table_layout_inline_keys(
+            children,
+            inline_bytes,
+            inline_nodes,
+        )?)),
+        Inline::Strikethrough(children) => Some(TableLayoutInlineKey::Strikethrough(
+            table_layout_inline_keys(children, inline_bytes, inline_nodes)?,
+        )),
+        Inline::Code(code) => {
+            add_table_layout_key_bytes(inline_bytes, code.len())?;
+            Some(TableLayoutInlineKey::Code(code.clone()))
+        }
+        Inline::Link {
+            dest,
+            title,
+            content,
+        } => {
+            add_table_layout_key_bytes(inline_bytes, dest.len())?;
+            if let Some(title) = title {
+                add_table_layout_key_bytes(inline_bytes, title.len())?;
+            }
+            Some(TableLayoutInlineKey::Link {
+                dest: dest.clone(),
+                title: title.clone(),
+                content: table_layout_inline_keys(content, inline_bytes, inline_nodes)?,
+            })
+        }
+        Inline::Image { dest, title, alt } => {
+            add_table_layout_key_bytes(inline_bytes, dest.len())?;
+            if let Some(title) = title {
+                add_table_layout_key_bytes(inline_bytes, title.len())?;
+            }
+            add_table_layout_key_bytes(inline_bytes, alt.len())?;
+            Some(TableLayoutInlineKey::Image {
+                dest: dest.clone(),
+                title: title.clone(),
+                alt: alt.clone(),
+            })
+        }
+        Inline::SoftBreak => Some(TableLayoutInlineKey::SoftBreak),
+        Inline::HardBreak => Some(TableLayoutInlineKey::HardBreak),
+        Inline::Html(html) => {
+            add_table_layout_key_bytes(inline_bytes, html.len())?;
+            Some(TableLayoutInlineKey::Html(html.clone()))
+        }
+    }
+}
+
+fn add_table_layout_key_bytes(total: &mut usize, bytes: usize) -> Option<()> {
+    *total = total.saturating_add(bytes);
+    if *total > TABLE_LAYOUT_CACHE_MAX_INLINE_BYTES {
+        return None;
+    }
+    Some(())
+}
+
+fn add_table_layout_key_node(total: &mut usize) -> Option<()> {
+    *total = total.saturating_add(1);
+    if *total > TABLE_LAYOUT_CACHE_MAX_INLINE_NODES {
+        return None;
+    }
+    Some(())
+}
+
+#[derive(Default)]
+struct TableLayoutCache {
+    entries: HashMap<TableLayoutKey, Vec<Line>>,
+}
+
+impl TableLayoutCache {
+    fn get(&self, key: &TableLayoutKey) -> Option<&[Line]> {
+        self.entries.get(key).map(Vec::as_slice)
+    }
+
+    fn insert_if_room(&mut self, key: TableLayoutKey, mut lines: Vec<Line>) {
+        if self.entries.len() >= TABLE_LAYOUT_CACHE_MAX
+            || lines.is_empty()
+            || lines.len() > TABLE_LAYOUT_CACHE_MAX_LINES
+        {
+            return;
+        }
+
+        for line in &mut lines {
+            line.flow.group = 0;
+        }
+        self.entries.entry(key).or_insert(lines);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 /// One open list level during layout. The stack in [`LayoutCx`] lets
 /// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
 /// nested lists tag correctly in the structure tree.
@@ -2292,6 +2534,10 @@ struct LayoutCx<'a> {
     /// Entries are cloned as unmarked templates and then stamped with the
     /// occurrence's flow group, preserving tagged-PDF grouping per paragraph.
     simple_paragraph_cache: SimpleParagraphLayoutCache,
+    /// Per-render cache for repeated GFM table layouts. Entries retain stable
+    /// row/header flow shape but scrub the table group; cache hits stamp the
+    /// occurrence's fresh group so tagged-PDF table structure remains distinct.
+    table_layout_cache: TableLayoutCache,
     /// Reused workspace for the paragraph optimizer. This avoids the allocating
     /// `break_paragraph` wrapper on every PDF paragraph while keeping all state
     /// render-call-local and deterministic.
@@ -2528,15 +2774,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
         Block::List(list) => layout_list(list, indent, out, cx),
         Block::Table(table) => {
             let group = cx.alloc_flow();
-            layout_table(
-                table,
-                indent,
-                cx.faces,
-                &cx.width_cache,
-                cx.page,
-                group,
-                out,
-            );
+            layout_table(table, indent, group, out, cx);
         }
         Block::ThematicBreak => {
             let group = cx.alloc_flow();
@@ -12958,6 +13196,41 @@ fn finish_table_allocated_widths(columns: &[TableColumnMetrics], widths: &mut [f
 fn layout_table(
     table: &Table,
     indent: f32,
+    group: u32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) {
+    let page = cx.page;
+    let Some(key) = TableLayoutKey::new(table, indent, page) else {
+        layout_table_uncached(table, indent, cx.faces, &cx.width_cache, page, group, out);
+        return;
+    };
+
+    if let Some(template) = cx.table_layout_cache.get(&key) {
+        let start = out.len();
+        out.extend(template.iter().cloned());
+        stamp_table_layout_group(out, start, group);
+        return;
+    }
+
+    let start = out.len();
+    layout_table_uncached(table, indent, cx.faces, &cx.width_cache, page, group, out);
+    let lines = out[start..].to_vec();
+    cx.table_layout_cache.insert_if_room(key, lines);
+}
+
+fn stamp_table_layout_group(out: &mut [Line], start: usize, group: u32) {
+    let Some(lines) = out.get_mut(start..) else {
+        return;
+    };
+    for line in lines {
+        line.flow.group = group;
+    }
+}
+
+fn layout_table_uncached(
+    table: &Table,
+    indent: f32,
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
     page: PageGeom,
@@ -23007,7 +23280,8 @@ mod pdf_writer_tests {
         PdfParentTreeObjectParts, PdfStream, PdfStructElementObjectParts, Placed,
         SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache,
         SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
-        SvgShadowLayer, SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup,
+        SvgShadowLayer, SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform,
+        TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
@@ -23029,13 +23303,13 @@ mod pdf_writer_tests {
         collect_svg_alpha_states, container_prefix_with_extra, decode_xml_entities,
         estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
         font_size_of, kerned_tj, kerned_tj_with_spacing, layout_inlines,
-        layout_simple_text_paragraph, line_has_visible_content, measure_word,
-        normalize_svg_text_node, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
-        pdf_num, pdf_text_string, pdf_word_break_points, pdf_word_plain_text, pdf_word_stats,
-        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
-        token_visible_text, tokenize,
+        layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        line_has_visible_content, measure_word, normalize_svg_text_node,
+        pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
+        pdf_word_break_points, pdf_word_plain_text, pdf_word_stats, push_text_tokens,
+        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
-    use crate::ast::Inline;
+    use crate::ast::{Align, Inline, Table};
     use crate::{PdfOptions, ThemeColors};
     use std::borrow::Cow;
     use std::collections::BTreeSet;
@@ -23103,6 +23377,7 @@ mod pdf_writer_tests {
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             width_cache: std::cell::RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+            table_layout_cache: TableLayoutCache::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
@@ -23126,6 +23401,73 @@ mod pdf_writer_tests {
                 kind: FlowKind::Paragraph,
             },
         );
+    }
+
+    fn text_cell(text: &str) -> Vec<Inline> {
+        vec![Inline::Text(text.to_string())]
+    }
+
+    fn table_for_cache_tests() -> Table {
+        Table {
+            align: vec![Align::Left, Align::Right, Align::Center],
+            head: vec![
+                text_cell("Metric"),
+                vec![Inline::Strong(text_cell("Value"))],
+                text_cell("Notes"),
+            ],
+            rows: vec![
+                vec![
+                    text_cell("Revenue growth"),
+                    vec![Inline::Code("12.5%".to_string())],
+                    vec![Inline::Link {
+                        dest: "#details".to_string(),
+                        title: Some("Jump".to_string()),
+                        content: text_cell("details repeat words"),
+                    }],
+                ],
+                vec![
+                    text_cell("Operating margin with repeated wording"),
+                    text_cell("24.0%"),
+                    vec![
+                        Inline::Text("stable ".to_string()),
+                        Inline::Emphasis(text_cell("memoized")),
+                        Inline::Text(" cell".to_string()),
+                    ],
+                ],
+            ],
+        }
+    }
+
+    fn push_cached_table(
+        table: &Table,
+        indent: f32,
+        out: &mut Vec<Line>,
+        cx: &mut LayoutCx<'_>,
+    ) -> (usize, u32) {
+        let start = out.len();
+        let group = cx.alloc_flow();
+        layout_table(table, indent, group, out, cx);
+        (start, group)
+    }
+
+    fn push_uncached_table(
+        table: &Table,
+        indent: f32,
+        out: &mut Vec<Line>,
+        cx: &mut LayoutCx<'_>,
+    ) -> (usize, u32) {
+        let start = out.len();
+        let group = cx.alloc_flow();
+        layout_table_uncached(
+            table,
+            indent,
+            cx.faces,
+            &cx.width_cache,
+            cx.page,
+            group,
+            out,
+        );
+        (start, group)
     }
 
     fn assert_same_line_layout(actual: &[Line], expected: &[Line]) {
@@ -23322,6 +23664,139 @@ mod pdf_writer_tests {
             assert_eq!(line.flow.count, out.len() - first_count);
         }
         Ok(())
+    }
+
+    #[test]
+    fn table_layout_cache_hit_matches_uncached_layout() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let page = test_page_geom();
+        let table = table_for_cache_tests();
+
+        let mut cached_cx = test_layout_cx(&opts, &faces, page);
+        let mut cached = Vec::new();
+        let (first_start, first_group) =
+            push_cached_table(&table, 0.0, &mut cached, &mut cached_cx);
+        assert_eq!(cached_cx.table_layout_cache.len(), 1);
+        let first_count = cached.len() - first_start;
+        let (second_start, second_group) =
+            push_cached_table(&table, 0.0, &mut cached, &mut cached_cx);
+        assert_eq!(
+            cached_cx.table_layout_cache.len(),
+            1,
+            "second identical table should reuse the cached template"
+        );
+
+        let mut uncached_cx = test_layout_cx(&opts, &faces, page);
+        let mut uncached = Vec::new();
+        push_uncached_table(&table, 0.0, &mut uncached, &mut uncached_cx);
+        push_uncached_table(&table, 0.0, &mut uncached, &mut uncached_cx);
+
+        assert_same_line_layout(&cached, &uncached);
+        assert_ne!(first_group, second_group);
+        assert!(
+            cached[first_start..first_start + first_count]
+                .iter()
+                .all(|line| line.flow.group == first_group)
+        );
+        assert!(
+            cached[second_start..]
+                .iter()
+                .all(|line| line.flow.group == second_group)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn table_layout_cache_templates_scrub_groups_and_restamp_hits() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let mut cx = test_layout_cx(&opts, &faces, test_page_geom());
+        let table = table_for_cache_tests();
+        let mut out = Vec::new();
+
+        let (_first_start, first_group) = push_cached_table(&table, 0.0, &mut out, &mut cx);
+        assert_eq!(cx.table_layout_cache.len(), 1);
+        for template in cx.table_layout_cache.entries.values() {
+            assert!(
+                template.iter().all(|line| line.flow.group == 0),
+                "cached table templates must not retain an occurrence flow group"
+            );
+            assert!(
+                template
+                    .iter()
+                    .any(|line| line.flow.kind == FlowKind::TableHeader)
+                    && template
+                        .iter()
+                        .any(|line| line.flow.kind == FlowKind::TableRule)
+                    && template
+                        .iter()
+                        .any(|line| line.flow.kind == FlowKind::TableRow),
+                "cached templates should retain the stable table flow shape"
+            );
+        }
+
+        let (second_start, second_group) = push_cached_table(&table, 0.0, &mut out, &mut cx);
+        assert_ne!(first_group, second_group);
+        for line in &out[second_start..] {
+            assert_eq!(line.flow.group, second_group);
+            assert!(matches!(
+                line.flow.kind,
+                FlowKind::TableHeader | FlowKind::TableRule | FlowKind::TableRow
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn table_layout_cache_key_distinguishes_indent_alignment_and_content() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let mut cx = test_layout_cx(&opts, &faces, test_page_geom());
+        let base = table_for_cache_tests();
+        let mut out = Vec::new();
+
+        push_cached_table(&base, 0.0, &mut out, &mut cx);
+        assert_eq!(cx.table_layout_cache.len(), 1);
+        let indent_start = out.len();
+        push_cached_table(&base, 18.0, &mut out, &mut cx);
+        assert_eq!(cx.table_layout_cache.len(), 2);
+        assert!(
+            out[indent_start].segs[0].x > out[0].segs[0].x,
+            "indent changes table x positions and available width"
+        );
+
+        let mut different_alignment = base.clone();
+        different_alignment.align[1] = Align::Center;
+        push_cached_table(&different_alignment, 0.0, &mut out, &mut cx);
+        assert_eq!(cx.table_layout_cache.len(), 3);
+
+        let mut different_content = base.clone();
+        different_content.rows[0][0] = text_cell("Different revenue wording");
+        push_cached_table(&different_content, 0.0, &mut out, &mut cx);
+        assert_eq!(
+            cx.table_layout_cache.len(),
+            4,
+            "indent, alignment, and content variants must occupy distinct cache entries"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn table_layout_cache_key_rejects_zero_byte_inline_node_bombs() {
+        let table = Table {
+            align: vec![Align::Left],
+            head: vec![vec![
+                Inline::SoftBreak;
+                TABLE_LAYOUT_CACHE_MAX_INLINE_NODES + 1
+            ]],
+            rows: Vec::new(),
+        };
+
+        assert!(
+            TableLayoutKey::new(&table, 0.0, test_page_geom()).is_none(),
+            "the table cache key must bound inline node count, not just text bytes"
+        );
     }
 
     #[test]
@@ -26620,6 +27095,7 @@ mod table_wrap_tests {
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             width_cache: width_cache(),
             simple_paragraph_cache: super::SimpleParagraphLayoutCache::default(),
+            table_layout_cache: super::TableLayoutCache::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),

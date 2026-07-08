@@ -1947,7 +1947,7 @@ fn pdf_stage_elapsed_ns(_started: Option<PdfStageStart>) -> u128 {
 // ---- layout -----------------------------------------------------------------
 
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
     let mut cx = LayoutCx {
         opts,
         faces,

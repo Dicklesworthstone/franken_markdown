@@ -13871,36 +13871,20 @@ fn serialize(
         };
         let slot_refs = &slot_texts[slot_idx];
         let slot_cache = &mut shaped_cache[slot_idx];
-        for seg in &slot_refs.segs {
+        for &text in &slot_refs.texts {
             segment_count += 1;
-            text_bytes += seg.text.len();
-            chars.extend(seg.text.chars());
-            if let Some(shaped) = slot_cache.get(seg.text.as_str()) {
+            text_bytes += text.len();
+            chars.extend(text.chars());
+            if let Some(shaped) = slot_cache.get(text) {
                 shape_cache_hits += 1;
-                shape_cache_hit_bytes += seg.text.len();
+                shape_cache_hit_bytes += text.len();
                 collect_shaped_run_glyphs(shaped, &mut shaped_glyphs, &mut lig_src_uni);
             } else {
                 shape_cache_misses += 1;
-                shape_cache_miss_bytes += seg.text.len();
-                let shaped = shape_run(source, lig, &seg.text);
+                shape_cache_miss_bytes += text.len();
+                let shaped = shape_run(source, lig, text);
                 collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
-                slot_cache.insert(seg.text.clone(), shaped);
-            }
-        }
-        for text in &slot_refs.svg_texts {
-            segment_count += 1;
-            text_bytes += text.text.len();
-            chars.extend(text.text.chars());
-            if let Some(shaped) = slot_cache.get(text.text.as_str()) {
-                shape_cache_hits += 1;
-                shape_cache_hit_bytes += text.text.len();
-                collect_shaped_run_glyphs(shaped, &mut shaped_glyphs, &mut lig_src_uni);
-            } else {
-                shape_cache_misses += 1;
-                shape_cache_miss_bytes += text.text.len();
-                let shaped = shape_run(source, lig, &text.text);
-                collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
-                slot_cache.insert(text.text.clone(), shaped);
+                slot_cache.insert(text.to_string(), shaped);
             }
         }
         profiler.record_since(
@@ -14891,36 +14875,35 @@ fn collect_svg_pdf_images(svg: &PdfSvgImage, by_key: &mut BTreeMap<String, PdfIm
 }
 
 struct FontSlotTextRefs<'a> {
-    segs: Vec<&'a Seg>,
-    svg_texts: Vec<&'a SvgText>,
+    texts: Vec<&'a str>,
 }
 
 impl FontSlotTextRefs<'_> {
     fn is_empty(&self) -> bool {
-        self.segs.is_empty() && self.svg_texts.is_empty()
+        self.texts.is_empty()
     }
 }
 
 fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.len()] {
-    let mut refs: [FontSlotTextRefs<'_>; SLOTS.len()] = std::array::from_fn(|_| FontSlotTextRefs {
-        segs: Vec::new(),
-        svg_texts: Vec::new(),
-    });
+    let mut refs: [FontSlotTextRefs<'_>; SLOTS.len()] =
+        std::array::from_fn(|_| FontSlotTextRefs { texts: Vec::new() });
     for line in lines {
         for seg in &line.segs {
             if seg.text.is_empty() {
                 continue;
             }
             if let Some(slot_idx) = pdf_font_slot_index(seg.slot) {
-                refs[slot_idx].segs.push(seg);
+                refs[slot_idx].texts.push(seg.text.as_str());
             }
         }
+    }
+    for line in lines {
         for text in svg_texts_in_line(line) {
             if text.text.is_empty() {
                 continue;
             }
             if let Some(slot_idx) = pdf_font_slot_index(text.slot) {
-                refs[slot_idx].svg_texts.push(text);
+                refs[slot_idx].texts.push(text.text.as_str());
             }
         }
     }
@@ -14948,6 +14931,135 @@ fn svg_texts_in_line(line: &Line) -> impl Iterator<Item = &SvgText> {
             SvgElement::Text(text) => Some(text),
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod font_slot_text_refs_tests {
+    use super::*;
+
+    fn seg(slot: u8, text: &str) -> Seg {
+        Seg {
+            x: 0.0,
+            slot,
+            text: text.to_owned(),
+            link: None,
+            fill: Fill::Black,
+            strike: false,
+            width: 0.0,
+        }
+    }
+
+    fn svg_text(slot: u8, text: &str) -> SvgText {
+        SvgText {
+            x: 0.0,
+            y: 0.0,
+            text: text.to_owned(),
+            slot,
+            font_size: 12.0,
+            letter_spacing: 0.0,
+            text_length: None,
+            length_adjust: SvgLengthAdjust::Spacing,
+            baseline: SvgDominantBaseline::Auto,
+            anchor: SvgTextAnchor::Start,
+            decoration: SvgTextDecoration::NONE,
+            fill: (0.0, 0.0, 0.0),
+            opacity: 1.0,
+            clip_path: None,
+            mask_path: None,
+            transform: SvgTransform::IDENTITY,
+            link: None,
+        }
+    }
+
+    fn line(segs: Vec<Seg>, svg_texts: Vec<SvgText>) -> Line {
+        let image = (!svg_texts.is_empty()).then(|| ImageLine {
+            image: PdfImageData {
+                key: "test-svg".to_owned(),
+                width_px: 1,
+                height_px: 1,
+                vector: Some(PdfSvgImage {
+                    view_box: SvgViewBox {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    viewport: SvgViewport { w: 1.0, h: 1.0 },
+                    preserve_aspect: SvgPreserveAspectRatio::DEFAULT,
+                    root_background: None,
+                    accessible_text: None,
+                    elements: svg_texts.into_iter().map(SvgElement::Text).collect(),
+                    gradients: Vec::new(),
+                    patterns: Vec::new(),
+                    clip_paths: Vec::new(),
+                    markers: Vec::new(),
+                }),
+                color: PdfImageColor::Rgb,
+                data: Vec::new(),
+                png_predictor: false,
+                smask: None,
+            },
+            alt: String::new(),
+            width_pt: 1.0,
+            height_pt: 1.0,
+        });
+        Line {
+            size: 12.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs,
+            image,
+        }
+    }
+
+    #[test]
+    fn font_slot_text_refs_preserve_legacy_segment_then_svg_order() {
+        let lines = [
+            line(
+                vec![
+                    seg(F_BODY, "line-1-body-a"),
+                    seg(F_BOLD, "line-1-bold"),
+                    seg(F_BODY, "line-1-body-b"),
+                ],
+                vec![svg_text(F_BODY, "line-1-svg"), svg_text(F_BODY, "")],
+            ),
+            line(
+                vec![seg(F_BODY, "line-2-body")],
+                vec![
+                    svg_text(F_BODY, "line-2-svg-body"),
+                    svg_text(F_MONO, "line-2-svg-mono"),
+                ],
+            ),
+        ];
+
+        let refs = collect_font_slot_text_refs(&lines);
+        const BODY_IDX: usize = 0;
+        const BOLD_IDX: usize = 1;
+        const MONO_IDX: usize = 3;
+        assert_eq!(pdf_font_slot_index(F_BODY), Some(BODY_IDX));
+        assert_eq!(pdf_font_slot_index(F_BOLD), Some(BOLD_IDX));
+        assert_eq!(pdf_font_slot_index(F_MONO), Some(MONO_IDX));
+
+        assert_eq!(
+            refs[BODY_IDX].texts,
+            vec![
+                "line-1-body-a",
+                "line-1-body-b",
+                "line-2-body",
+                "line-1-svg",
+                "line-2-svg-body",
+            ]
+        );
+        assert_eq!(refs[BOLD_IDX].texts, vec!["line-1-bold"]);
+        assert_eq!(refs[MONO_IDX].texts, vec!["line-2-svg-mono"]);
+    }
 }
 
 fn image_name(index: usize) -> String {

@@ -125,6 +125,49 @@ fn simple_svg(label: &str) -> String {
     )
 }
 
+fn svg_with_remote_font_import(label: &str) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60">
+  <style>@import url('https://fonts.googleapis.com/css2?family=Inter'); text{{font-family:Inter,sans-serif}}</style>
+  <rect x="8" y="8" width="104" height="44" rx="6" fill="#ffffff" stroke="#2563eb"/>
+  <text x="60" y="35" text-anchor="middle" font-size="14" fill="#0f172a">{label}</text>
+</svg>"##
+    )
+}
+
+fn svg_without_remote_font_import(label: &str) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60">
+  <style>text{{font-family:Inter,sans-serif}}</style>
+  <rect x="8" y="8" width="104" height="44" rx="6" fill="#ffffff" stroke="#2563eb"/>
+  <text x="60" y="35" text-anchor="middle" font-size="14" fill="#0f172a">{label}</text>
+</svg>"##
+    )
+}
+
+fn test_base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 #[test]
 fn bare_invocation_prints_help_and_exits_successfully() {
     let out = fmd(&[]);
@@ -623,7 +666,7 @@ fn html_render_auto_loads_relative_svg_assets_for_file_inputs() {
     let input = dir.join("note.md");
     let svg = diagrams.join("flow.svg");
     let out_path = dir.join("note.html");
-    fs::write(&svg, simple_svg("Flow")).unwrap();
+    fs::write(&svg, svg_with_remote_font_import("Flow")).unwrap();
     fs::write(&input, "# Diagram\n\n![Flow chart](diagrams/flow.svg)\n").unwrap();
 
     let input_s = input.display().to_string();
@@ -634,6 +677,12 @@ fn html_render_auto_loads_relative_svg_assets_for_file_inputs() {
     assert!(out.stdout.is_empty());
     let html = fs::read_to_string(&out_path).unwrap();
     assert!(html.contains("<img src=\"data:image/svg+xml;base64,"));
+    assert!(
+        html.contains(&test_base64_encode(
+            svg_without_remote_font_import("Flow").as_bytes()
+        )),
+        "file-input HTML should remove remote CSS imports before embedding SVG data URI"
+    );
     assert!(html.contains("alt=\"Flow chart\""));
     assert!(
         !html.contains("src=\"diagrams/flow.svg\""),

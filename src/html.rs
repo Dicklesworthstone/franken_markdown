@@ -364,10 +364,15 @@ fn push_html_image_asset_data_uri(dest: &str, opts: &HtmlOptions, out: &mut Stri
     let Some((mime, bytes)) = html_image_asset(dest, opts) else {
         return false;
     };
+    let bytes = if mime == "image/svg+xml" {
+        svg_without_remote_style_imports(bytes)
+    } else {
+        Cow::Borrowed(bytes)
+    };
     out.push_str("data:");
     out.push_str(mime);
     out.push_str(";base64,");
-    push_base64_encoded(out, bytes);
+    push_base64_encoded(out, bytes.as_ref());
     true
 }
 
@@ -406,6 +411,124 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
     };
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
     trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
+}
+
+fn svg_without_remote_style_imports(bytes: &[u8]) -> Cow<'_, [u8]> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Cow::Borrowed(bytes);
+    };
+    if !contains_ascii_case_insensitive(text, "@import")
+        || !(contains_ascii_case_insensitive(text, "http://")
+            || contains_ascii_case_insensitive(text, "https://"))
+    {
+        return Cow::Borrowed(bytes);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut search = 0;
+    let mut last = 0;
+    let mut changed = false;
+    while let Some(style_rel) = find_ascii_case_insensitive(&text[search..], "<style") {
+        let style_start = search + style_rel;
+        let Some(open_end_rel) = text[style_start..].find('>') else {
+            break;
+        };
+        let content_start = style_start + open_end_rel + 1;
+        let Some(close_rel) = find_ascii_case_insensitive(&text[content_start..], "</style") else {
+            break;
+        };
+        let content_end = content_start + close_rel;
+        if let Some(cleaned) = css_without_remote_imports(&text[content_start..content_end]) {
+            out.push_str(&text[last..content_start]);
+            out.push_str(&cleaned);
+            last = content_end;
+            changed = true;
+        }
+        search = content_end;
+    }
+
+    if changed {
+        out.push_str(&text[last..]);
+        Cow::Owned(out.into_bytes())
+    } else {
+        Cow::Borrowed(bytes)
+    }
+}
+
+fn css_without_remote_imports(css: &str) -> Option<String> {
+    let mut out = String::with_capacity(css.len());
+    let mut search = 0;
+    let mut last = 0;
+    let mut changed = false;
+    while let Some(import_rel) = find_ascii_case_insensitive(&css[search..], "@import") {
+        let import_start = search + import_rel;
+        let Some(statement_end_rel) = css[import_start..].find(';') else {
+            break;
+        };
+        let statement_end = import_start + statement_end_rel + 1;
+        let statement = &css[import_start..statement_end];
+        if css_import_at_rule_boundary(css, import_start)
+            && (contains_ascii_case_insensitive(statement, "http://")
+                || contains_ascii_case_insensitive(statement, "https://"))
+        {
+            out.push_str(&css[last..import_start]);
+            let mut next = statement_end;
+            while css
+                .as_bytes()
+                .get(next)
+                .is_some_and(u8::is_ascii_whitespace)
+            {
+                next += 1;
+            }
+            last = next;
+            search = next;
+            changed = true;
+        } else {
+            search = statement_end;
+        }
+    }
+
+    if changed {
+        out.push_str(&css[last..]);
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn css_import_at_rule_boundary(css: &str, import_start: usize) -> bool {
+    let bytes = css.as_bytes();
+    let mut idx = import_start;
+    loop {
+        while idx > 0 && bytes[idx - 1].is_ascii_whitespace() {
+            idx -= 1;
+        }
+        if idx >= 2
+            && bytes[idx - 2] == b'*'
+            && bytes[idx - 1] == b'/'
+            && let Some(comment_start) = css[..idx - 2].rfind("/*")
+        {
+            idx = comment_start;
+            continue;
+        }
+        break;
+    }
+    idx == 0 || matches!(bytes[idx - 1], b';' | b'}')
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    find_ascii_case_insensitive(haystack, needle).is_some()
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn wrap(out: &mut String, tag: &str, content: &[Inline], opts: &HtmlOptions) {
@@ -1452,13 +1575,13 @@ mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
-    use crate::HtmlOptions;
     use crate::ast::{Block, Document, Inline};
+    use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
         FontCharSet, ascii_char_mask, base64_encode, css_num, css_token, escape_attr, escape_text,
-        initial_body_capacity, inlines_to_plain, push_u64, render, sanitize_custom_css, slug,
-        slug_inlines,
+        initial_body_capacity, inlines_to_plain, push_html_image_asset_data_uri, push_u64, render,
+        sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
     };
 
     #[test]
@@ -1546,6 +1669,60 @@ mod tests {
             base64_encode(&[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]),
             "/+7dzLuq"
         );
+    }
+
+    #[test]
+    fn svg_asset_data_uri_strips_remote_style_imports() {
+        let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>@import url('https://fonts.googleapis.com/css2?family=Inter');
+.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let clean = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new("diagram.svg", dirty.as_slice())],
+            ..HtmlOptions::default()
+        };
+        let mut out = String::new();
+
+        assert!(push_html_image_asset_data_uri(
+            "diagram.svg",
+            &opts,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            format!(
+                "data:image/svg+xml;base64,{}",
+                base64_encode(clean.as_slice())
+            )
+        );
+    }
+
+    #[test]
+    fn svg_asset_data_uri_leaves_non_remote_imports_unchanged() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>@import url('diagram.css');
+.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+
+        assert!(matches!(
+            svg_without_remote_style_imports(svg),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn svg_asset_data_uri_does_not_strip_import_text_inside_css_strings() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>.node::before{content:"@import url('https://example.com/not-a-rule.css');"}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+
+        assert!(matches!(
+            svg_without_remote_style_imports(svg),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]

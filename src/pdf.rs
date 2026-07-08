@@ -100,6 +100,7 @@ const SLOTS: [u8; 5] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.
+#[derive(Clone)]
 struct Seg {
     x: f32,
     slot: u8,
@@ -152,6 +153,7 @@ struct ListMark {
 }
 
 /// One laid-out line: a baseline-aligned row of styled segments, or a rule.
+#[derive(Clone)]
 struct Line {
     size: f32,
     gap_after: f32,
@@ -2107,6 +2109,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         list_stack: Vec::new(),
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
+        simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
         paragraph_scratch: ParagraphLayoutScratch::new(),
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
@@ -2122,6 +2125,9 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
 /// order), while never changing the hyphenation result.
 const HYPHEN_CACHE_MAX: usize = 16_384;
 const WIDTH_CACHE_MAX: usize = 32_768;
+const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX: usize = 256;
+const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES: usize = 4096;
+const SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_LINES: usize = 64;
 
 #[derive(Default)]
 struct WidthCache {
@@ -2177,6 +2183,86 @@ impl WidthCache {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SimpleParagraphLayoutKey {
+    text: String,
+    left_bits: u32,
+    content_width_milli: i32,
+    size_bits: u32,
+    gap_after_bits: u32,
+    flow_kind: u8,
+    hyphenate: bool,
+    justify: bool,
+}
+
+impl SimpleParagraphLayoutKey {
+    fn new(
+        text: &str,
+        left: f32,
+        content_width: LayoutUnit,
+        size: f32,
+        gap_after: f32,
+        flow: FlowKind,
+        policy: ParagraphPolicy,
+    ) -> Self {
+        Self {
+            text: text.to_string(),
+            left_bits: left.to_bits(),
+            content_width_milli: content_width.milli_points(),
+            size_bits: size.to_bits(),
+            gap_after_bits: gap_after.to_bits(),
+            flow_kind: flow_kind_cache_code(flow),
+            hyphenate: policy.hyphenate,
+            justify: policy.justify,
+        }
+    }
+}
+
+fn flow_kind_cache_code(kind: FlowKind) -> u8 {
+    match kind {
+        FlowKind::Paragraph => 1,
+        FlowKind::Heading => 2,
+        FlowKind::Code => 3,
+        FlowKind::Image => 4,
+        FlowKind::TableHeader => 5,
+        FlowKind::TableRule => 6,
+        FlowKind::TableRow => 7,
+        FlowKind::Rule => 8,
+        FlowKind::Other => 9,
+    }
+}
+
+#[derive(Default)]
+struct SimpleParagraphLayoutCache {
+    entries: HashMap<SimpleParagraphLayoutKey, Vec<Line>>,
+}
+
+impl SimpleParagraphLayoutCache {
+    fn get(&self, key: &SimpleParagraphLayoutKey) -> Option<&[Line]> {
+        self.entries.get(key).map(Vec::as_slice)
+    }
+
+    fn insert_if_room(&mut self, key: SimpleParagraphLayoutKey, mut lines: Vec<Line>) {
+        if self.entries.len() >= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX
+            || key.text.len() > SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES
+            || lines.is_empty()
+            || lines.len() > SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_LINES
+        {
+            return;
+        }
+
+        for line in &mut lines {
+            line.flow = FlowMark::default();
+        }
+        self.entries.entry(key).or_insert(lines);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 /// One open list level during layout. The stack in [`LayoutCx`] lets
 /// [`layout_list`] stamp every line with its full `/L`→`/LI` ancestor chain so
 /// nested lists tag correctly in the structure tree.
@@ -2202,6 +2288,10 @@ struct LayoutCx<'a> {
     /// Per-render shaped-width cache for PDF paragraph layout. Values are the
     /// exact `Faces::shaped_width` result for a font slot, size, and text.
     width_cache: RefCell<WidthCache>,
+    /// Per-render cache for repeated simple plain-text paragraph layouts.
+    /// Entries are cloned as unmarked templates and then stamped with the
+    /// occurrence's flow group, preserving tagged-PDF grouping per paragraph.
+    simple_paragraph_cache: SimpleParagraphLayoutCache,
     /// Reused workspace for the paragraph optimizer. This avoids the allocating
     /// `break_paragraph` wrapper on every PDF paragraph while keeping all state
     /// render-call-local and deterministic.
@@ -2290,6 +2380,11 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
         }
         Block::Paragraph(inlines) => {
             if layout_standalone_image(inlines, indent, out, cx) {
+                return;
+            }
+            if let [Inline::Text(text)] = inlines.as_slice() {
+                let group = cx.alloc_flow();
+                layout_simple_text_paragraph(text, indent, out, cx, group);
                 return;
             }
             let mut toks = Vec::new();
@@ -2487,6 +2582,49 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             );
         }
     }
+}
+
+fn layout_simple_text_paragraph(
+    text: &str,
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+    group: u32,
+) {
+    let left = cx.page.left + indent;
+    let size = 11.0;
+    let gap_after = 7.0;
+    let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
+    let flow = FlowSpec {
+        group,
+        kind: FlowKind::Paragraph,
+    };
+    let policy = ParagraphPolicy::for_flow(flow.kind);
+    let cacheable = text.len() <= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES;
+
+    if cacheable {
+        let key = SimpleParagraphLayoutKey::new(
+            text, left, content_w, size, gap_after, flow.kind, policy,
+        );
+        if let Some(template) = cx.simple_paragraph_cache.get(&key) {
+            let start = out.len();
+            out.extend(template.iter().cloned());
+            mark_flow(out, start, flow.group, flow.kind);
+            return;
+        }
+
+        let start = out.len();
+        let mut toks = Vec::new();
+        push_text_tokens(text, F_BODY, false, None, &mut toks);
+        layout_inlines(toks, indent, size, gap_after, out, cx, flow);
+        let lines = out[start..].to_vec();
+        cx.simple_paragraph_cache.insert_if_room(key, lines);
+        return;
+    }
+
+    let mut toks = Vec::new();
+    push_text_tokens(text, F_BODY, false, None, &mut toks);
+    layout_inlines(toks, indent, size, gap_after, out, cx, flow);
 }
 
 fn heading_gap_before(level: u8) -> f32 {
@@ -22863,11 +23001,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
-        Faces, Fill, FlowMark, HeadingIdState, Line, LineTok, LinkTarget, ListMark,
-        PageContentCapacityEstimate, Palette, ParagraphItem, ParagraphPolicy,
-        PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfStream,
-        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode,
-        Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
+        Faces, Fill, FlowKind, FlowMark, FlowSpec, HeadingIdState, LayoutCx, Line, LineTok,
+        LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem,
+        ParagraphLayoutScratch, ParagraphPolicy, PdfOutlineItemObjectParts, PdfPageObjectParts,
+        PdfParentTreeObjectParts, PdfStream, PdfStructElementObjectParts, Placed,
+        SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache,
+        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
         SvgShadowLayer, SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
@@ -22889,14 +23028,15 @@ mod pdf_writer_tests {
         append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
         collect_svg_alpha_states, container_prefix_with_extra, decode_xml_entities,
         estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
-        font_size_of, kerned_tj, kerned_tj_with_spacing, line_has_visible_content, measure_word,
+        font_size_of, kerned_tj, kerned_tj_with_spacing, layout_inlines,
+        layout_simple_text_paragraph, line_has_visible_content, measure_word,
         normalize_svg_text_node, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
         pdf_num, pdf_text_string, pdf_word_break_points, pdf_word_plain_text, pdf_word_stats,
         push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
         token_visible_text, tokenize,
     };
-    use crate::ThemeColors;
     use crate::ast::Inline;
+    use crate::{PdfOptions, ThemeColors};
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
@@ -22938,6 +23078,250 @@ mod pdf_writer_tests {
                 .collect(),
             image: None,
         }
+    }
+
+    fn test_page_geom() -> PageGeom {
+        PageGeom {
+            width: 320.0,
+            height: 500.0,
+            left: 36.0,
+            right: 36.0,
+            top: 36.0,
+            bottom: 36.0,
+            content_w: 180.0,
+        }
+    }
+
+    fn test_layout_cx<'a>(opts: &'a PdfOptions, faces: &'a Faces, page: PageGeom) -> LayoutCx<'a> {
+        LayoutCx {
+            opts,
+            faces,
+            page,
+            list_stack: Vec::new(),
+            next_bg: 0,
+            next_flow: 0,
+            hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            width_cache: std::cell::RefCell::new(WidthCache::default()),
+            simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+            paragraph_scratch: ParagraphLayoutScratch::new(),
+            line_breaks: Vec::new(),
+            line_toks: Vec::new(),
+            glue_adjustments: Vec::new(),
+        }
+    }
+
+    fn push_uncached_simple_paragraph(text: &str, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+        let mut toks = Vec::new();
+        push_text_tokens(text, F_BODY, false, None, &mut toks);
+        let group = cx.alloc_flow();
+        layout_inlines(
+            toks,
+            0.0,
+            11.0,
+            7.0,
+            out,
+            cx,
+            FlowSpec {
+                group,
+                kind: FlowKind::Paragraph,
+            },
+        );
+    }
+
+    fn assert_same_line_layout(actual: &[Line], expected: &[Line]) {
+        assert_eq!(actual.len(), expected.len());
+        for (line_idx, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                actual.size.to_bits(),
+                expected.size.to_bits(),
+                "line {line_idx}"
+            );
+            assert_eq!(
+                actual.gap_after.to_bits(),
+                expected.gap_after.to_bits(),
+                "line {line_idx}"
+            );
+            assert_eq!(actual.rule, expected.rule, "line {line_idx}");
+            assert_eq!(
+                actual.rule_x.to_bits(),
+                expected.rule_x.to_bits(),
+                "line {line_idx}"
+            );
+            assert_eq!(actual.quote_bars.len(), expected.quote_bars.len());
+            for (bar_idx, (actual, expected)) in actual
+                .quote_bars
+                .iter()
+                .zip(expected.quote_bars.iter())
+                .enumerate()
+            {
+                assert_eq!(actual.0, expected.0, "line {line_idx} quote {bar_idx}");
+                assert_eq!(
+                    actual.1.to_bits(),
+                    expected.1.to_bits(),
+                    "line {line_idx} quote {bar_idx}"
+                );
+            }
+            assert_eq!(actual.bg, expected.bg, "line {line_idx}");
+            assert_eq!(actual.shade, expected.shade, "line {line_idx}");
+            assert_eq!(actual.flow.group, expected.flow.group, "line {line_idx}");
+            assert_eq!(actual.flow.index, expected.flow.index, "line {line_idx}");
+            assert_eq!(actual.flow.count, expected.flow.count, "line {line_idx}");
+            assert_eq!(actual.flow.kind, expected.flow.kind, "line {line_idx}");
+            assert_eq!(
+                actual.flow.list_start, expected.flow.list_start,
+                "line {line_idx}"
+            );
+            assert_eq!(actual.list_path.len(), expected.list_path.len());
+            for (list_idx, (actual, expected)) in actual
+                .list_path
+                .iter()
+                .zip(expected.list_path.iter())
+                .enumerate()
+            {
+                assert_eq!(
+                    actual.list, expected.list,
+                    "line {line_idx} list {list_idx}"
+                );
+                assert_eq!(
+                    actual.item, expected.item,
+                    "line {line_idx} list {list_idx}"
+                );
+            }
+            assert_eq!(actual.table_cols, expected.table_cols, "line {line_idx}");
+            assert_eq!(
+                actual.image.is_some(),
+                expected.image.is_some(),
+                "line {line_idx}"
+            );
+            assert_eq!(actual.segs.len(), expected.segs.len(), "line {line_idx}");
+            for (seg_idx, (actual, expected)) in
+                actual.segs.iter().zip(expected.segs.iter()).enumerate()
+            {
+                assert_eq!(
+                    actual.x.to_bits(),
+                    expected.x.to_bits(),
+                    "line {line_idx} seg {seg_idx}"
+                );
+                assert_eq!(actual.slot, expected.slot, "line {line_idx} seg {seg_idx}");
+                assert_eq!(actual.text, expected.text, "line {line_idx} seg {seg_idx}");
+                assert!(
+                    actual.link == expected.link,
+                    "line {line_idx} seg {seg_idx}"
+                );
+                assert!(
+                    actual.fill == expected.fill,
+                    "line {line_idx} seg {seg_idx}"
+                );
+                assert_eq!(
+                    actual.strike, expected.strike,
+                    "line {line_idx} seg {seg_idx}"
+                );
+                assert_eq!(actual.task, expected.task, "line {line_idx} seg {seg_idx}");
+                assert_eq!(
+                    actual.width.to_bits(),
+                    expected.width.to_bits(),
+                    "line {line_idx} seg {seg_idx}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simple_paragraph_cache_hit_matches_uncached_layout() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let page = test_page_geom();
+        let text = "Ordinary prose repeats across generated reports with enough words to wrap \
+            into multiple balanced physical lines.";
+
+        let mut cached_cx = test_layout_cx(&opts, &faces, page);
+        let mut cached = Vec::new();
+        let first_group = cached_cx.alloc_flow();
+        layout_simple_text_paragraph(text, 0.0, &mut cached, &mut cached_cx, first_group);
+        assert_eq!(cached_cx.simple_paragraph_cache.len(), 1);
+        let first_count = cached.len();
+        let second_group = cached_cx.alloc_flow();
+        layout_simple_text_paragraph(text, 0.0, &mut cached, &mut cached_cx, second_group);
+        assert_eq!(
+            cached_cx.simple_paragraph_cache.len(),
+            1,
+            "second identical paragraph should reuse the cached template"
+        );
+
+        let mut uncached_cx = test_layout_cx(&opts, &faces, page);
+        let mut uncached = Vec::new();
+        push_uncached_simple_paragraph(text, &mut uncached, &mut uncached_cx);
+        push_uncached_simple_paragraph(text, &mut uncached, &mut uncached_cx);
+
+        assert_same_line_layout(&cached, &uncached);
+        assert_ne!(first_group, second_group);
+        assert_eq!(cached[0].flow.group, first_group);
+        assert_eq!(cached[first_count].flow.group, second_group);
+        Ok(())
+    }
+
+    #[test]
+    fn simple_paragraph_cache_key_distinguishes_indent() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let mut cx = test_layout_cx(&opts, &faces, test_page_geom());
+        let text = "Repeated plain text with different indents must not reuse stale x positions.";
+        let mut out = Vec::new();
+
+        let first_group = cx.alloc_flow();
+        layout_simple_text_paragraph(text, 0.0, &mut out, &mut cx, first_group);
+        let second_start = out.len();
+        let second_group = cx.alloc_flow();
+        layout_simple_text_paragraph(text, 24.0, &mut out, &mut cx, second_group);
+
+        assert_eq!(
+            cx.simple_paragraph_cache.len(),
+            2,
+            "indent affects both x positions and available line width"
+        );
+        assert_eq!(out[0].flow.group, first_group);
+        assert_eq!(out[second_start].flow.group, second_group);
+        assert!(out[second_start].segs[0].x > out[0].segs[0].x);
+        Ok(())
+    }
+
+    #[test]
+    fn simple_paragraph_cache_templates_remain_unmarked_per_occurrence() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let mut cx = test_layout_cx(&opts, &faces, test_page_geom());
+        let text = "A repeated unformatted paragraph should share cached line geometry while \
+            keeping tagged PDF flow groups distinct.";
+        let mut out = Vec::new();
+
+        let first_group = cx.alloc_flow();
+        layout_simple_text_paragraph(text, 0.0, &mut out, &mut cx, first_group);
+        let first_count = out.len();
+        let second_group = cx.alloc_flow();
+        layout_simple_text_paragraph(text, 0.0, &mut out, &mut cx, second_group);
+
+        assert_eq!(cx.simple_paragraph_cache.len(), 1);
+        for template in cx.simple_paragraph_cache.entries.values() {
+            assert!(
+                template.iter().all(|line| line.flow.group == 0
+                    && line.flow.index == 0
+                    && line.flow.count == 1
+                    && line.flow.kind == FlowKind::Other),
+                "cached templates must stay unmarked and be stamped after cloning"
+            );
+        }
+        for line in &out[..first_count] {
+            assert_eq!(line.flow.group, first_group);
+            assert_eq!(line.flow.kind, FlowKind::Paragraph);
+            assert_eq!(line.flow.count, first_count);
+        }
+        for (idx, line) in out[first_count..].iter().enumerate() {
+            assert_eq!(line.flow.group, second_group);
+            assert_eq!(line.flow.kind, FlowKind::Paragraph);
+            assert_eq!(line.flow.index, idx);
+            assert_eq!(line.flow.count, out.len() - first_count);
+        }
+        Ok(())
     }
 
     #[test]
@@ -26235,6 +26619,7 @@ mod table_wrap_tests {
             list_stack: Vec::new(),
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             width_cache: width_cache(),
+            simple_paragraph_cache: super::SimpleParagraphLayoutCache::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),

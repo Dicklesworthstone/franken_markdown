@@ -13404,15 +13404,25 @@ const fn is_ascii_diagram_char(ch: char) -> bool {
 fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
     let longest = code
         .lines()
-        .map(expand_code_tabs)
         .map(|line| {
-            text_width_cached(
-                &line,
-                spec.default_size,
-                F_MONO,
-                spec.faces,
-                spec.width_cache,
-            )
+            if line.contains('\t') {
+                let expanded = expand_code_tabs(line);
+                text_width_cached(
+                    &expanded,
+                    spec.default_size,
+                    F_MONO,
+                    spec.faces,
+                    spec.width_cache,
+                )
+            } else {
+                text_width_cached(
+                    line,
+                    spec.default_size,
+                    F_MONO,
+                    spec.faces,
+                    spec.width_cache,
+                )
+            }
         })
         .fold(0.0f32, f32::max);
     if longest <= 0.0 {

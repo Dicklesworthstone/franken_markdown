@@ -91,11 +91,18 @@ struct RenderState<'a> {
     heading_id_suffixes: BTreeMap<String, usize>,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
-    /// Last highlighted language, for a one-entry repeated-code cache.
-    cached_highlight_lang: Option<&'a str>,
-    /// Last highlighted code block, for a one-entry repeated-code cache.
-    cached_highlight_code: Option<&'a str>,
+    /// Bounded per-render cache for repeated non-consecutive code blocks.
+    highlight_cache: Vec<HighlightCacheEntry<'a>>,
+    highlight_cache_next: usize,
 }
+
+struct HighlightCacheEntry<'a> {
+    lang: &'a str,
+    code: &'a str,
+    spans: Vec<Span>,
+}
+
+const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
 
 impl<'a> RenderState<'a> {
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
@@ -135,15 +142,33 @@ impl<'a> RenderState<'a> {
     }
 
     fn highlight_code(&mut self, lang: &'a str, code: &'a str, out: &mut String) {
-        if self.cached_highlight_lang == Some(lang) && self.cached_highlight_code == Some(code) {
-            emit_highlighted_spans(code, out, &self.highlight_spans);
+        if let Some(entry) = self
+            .highlight_cache
+            .iter()
+            .find(|entry| entry.lang == lang && entry.code == code)
+        {
+            emit_highlighted_spans(code, out, &entry.spans);
             return;
         }
 
         highlight_into(lang, code, &mut self.highlight_spans);
-        self.cached_highlight_lang = Some(lang);
-        self.cached_highlight_code = Some(code);
         emit_highlighted_spans(code, out, &self.highlight_spans);
+        self.remember_highlight(lang, code);
+    }
+
+    fn remember_highlight(&mut self, lang: &'a str, code: &'a str) {
+        let entry = HighlightCacheEntry {
+            lang,
+            code,
+            spans: self.highlight_spans.clone(),
+        };
+        if self.highlight_cache.len() < HIGHLIGHT_CACHE_MAX_ENTRIES {
+            self.highlight_cache.push(entry);
+            return;
+        }
+
+        self.highlight_cache[self.highlight_cache_next] = entry;
+        self.highlight_cache_next = (self.highlight_cache_next + 1) % HIGHLIGHT_CACHE_MAX_ENTRIES;
     }
 }
 
@@ -1697,19 +1722,35 @@ mod tests {
     }
 
     #[test]
-    fn repeated_supported_code_block_reuses_cached_highlight_spans() {
+    fn repeated_supported_code_blocks_reuse_non_consecutive_highlight_spans() {
         let mut state = RenderState::default();
-        let code = "fn main() { println!(\"hi\"); }\n";
-        let mut first = String::new();
-        state.highlight_code("rust", code, &mut first);
+        let rust = "fn main() { println!(\"hi\"); }\n";
+        let python = "print('hi')\n";
+
+        let mut first_rust = String::new();
+        state.highlight_code("rust", rust, &mut first_rust);
         assert!(!state.highlight_spans.is_empty());
 
-        let mut second = String::new();
-        state.highlight_code("rust", code, &mut second);
+        let mut first_python = String::new();
+        state.highlight_code("python", python, &mut first_python);
 
-        assert_eq!(second, first);
-        assert_eq!(state.cached_highlight_lang, Some("rust"));
-        assert_eq!(state.cached_highlight_code, Some(code));
+        let mut second_rust = String::new();
+        state.highlight_code("rust", rust, &mut second_rust);
+
+        assert_eq!(second_rust, first_rust);
+        assert_eq!(state.highlight_cache.len(), 2);
+        assert!(
+            state
+                .highlight_cache
+                .iter()
+                .any(|entry| entry.lang == "rust" && entry.code == rust)
+        );
+        assert!(
+            state
+                .highlight_cache
+                .iter()
+                .any(|entry| entry.lang == "python" && entry.code == python)
+        );
     }
 
     #[test]

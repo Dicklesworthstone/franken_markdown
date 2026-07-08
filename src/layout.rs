@@ -1892,6 +1892,14 @@ fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
     if available <= 0 {
         return INF_PENALTY;
     }
+    // TeX semantics: glue can stretch past its budget (at cubically growing
+    // badness) but can never shrink below width minus shrink. A line that only
+    // "fits" by shrinking beyond the budget is overfull: infinitely bad, not
+    // merely ugly, otherwise the breaker happily crushes interword spaces
+    // toward zero instead of taking a feasible later break.
+    if diff < 0 && -diff > available {
+        return INF_PENALTY;
+    }
     let ratio_milli = (diff.unsigned_abs() as u128).saturating_mul(1000) / available as u128;
     let badness = 100u128
         .saturating_mul(ratio_milli)
@@ -2103,7 +2111,10 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
 mod overfull_selectability_tests {
     //! Real bundled-font metrics (no test doubles): `Font` implements
     //! `AdvanceMetrics`/`PairMetrics`, so these drive the real breaker end to end.
-    use super::{FontSize, INF_PENALTY, LayoutUnit, break_paragraph, paragraph_items_from_text};
+    use super::{
+        FontSize, INF_PENALTY, LayoutUnit, SegmentMetrics, break_paragraph, line_badness,
+        paragraph_items_from_text,
+    };
     use crate::FontFamily;
     use crate::fonts::{FontStyle, load_body};
     use crate::text::Font;
@@ -2176,6 +2187,30 @@ mod overfull_selectability_tests {
         let items = paragraph_items_from_text(&font, "the quick brown fox", size);
         let breaks = break_paragraph(&items, width);
         assert!(breaks.iter().all(|b| b.badness < INF_PENALTY));
+    }
+
+    #[test]
+    fn line_badness_rejects_shrink_past_available_glue() {
+        let over_shrunk = SegmentMetrics {
+            width: LayoutUnit::from_points(120),
+            stretch: LayoutUnit::ZERO,
+            shrink: LayoutUnit::from_points(5),
+        };
+        assert_eq!(
+            line_badness(over_shrunk, LayoutUnit::from_points(100)),
+            INF_PENALTY,
+            "a line cannot be made feasible by shrinking more than its glue permits"
+        );
+
+        let feasible_shrink = SegmentMetrics {
+            width: LayoutUnit::from_points(104),
+            stretch: LayoutUnit::ZERO,
+            shrink: LayoutUnit::from_points(5),
+        };
+        assert!(
+            line_badness(feasible_shrink, LayoutUnit::from_points(100)) < INF_PENALTY,
+            "shrinking within the available budget remains a finite badness edge"
+        );
     }
 
     #[test]

@@ -6013,6 +6013,41 @@ fn pdf_tags_task_list_markers_and_keeps_them_selectable() {
             "task marker scalar {scalar} must be selectable"
         );
     }
+    // Vector checkbox art: rounded corners (Bezier `c` segments on a closed
+    // `h` path), an accent-filled checked box with a white check stroke, and
+    // the `[x]` text rendered invisibly (mode 3) instead of as visible glyphs.
+    assert!(
+        text.contains(" c "),
+        "checkbox outline should use Bezier corner segments"
+    );
+    assert!(
+        text.contains("h f"),
+        "checked box should fill a closed rounded path"
+    );
+    assert!(
+        text.contains("f 1 1 1 RG"),
+        "check mark should stroke white over the accent fill"
+    );
+    assert!(
+        text.contains("3 Tr"),
+        "marker text should render invisibly for extraction"
+    );
+}
+
+#[test]
+fn pdf_wraps_long_urls_instead_of_overflowing() {
+    // A bare long URL used to become one unbreakable box that ran off the
+    // page. It must now wrap: the link annotation splits into one rect per
+    // line, so at least two /URI annotations prove the wrap happened.
+    let url = format!("https://example.com/{}/{}", "a".repeat(80), "b".repeat(30));
+    let md = format!("Visit {url} now.\n");
+    let pdf = render_pdf(&md, &PdfOptions::default()).unwrap();
+    let text = as_text(&pdf);
+    let annots = text.matches("/URI").count();
+    assert!(
+        annots >= 2,
+        "a long URL should wrap onto multiple annotated lines, got {annots}"
+    );
 }
 
 #[test]

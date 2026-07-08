@@ -111,6 +111,10 @@ struct Seg {
     fill: Fill,
     /// `~~strikethrough~~` run: draw a thin line through the run's middle.
     strike: bool,
+    /// `Some(done)` when this segment is a task-list marker: the writer draws
+    /// a vector checkbox and emits the `[x]`/`[ ]` text invisibly so
+    /// extraction and assistive tech still see the state.
+    task: Option<bool>,
     /// Shaped layout advance, used to size decorations and subsequent segments.
     width: f32,
 }
@@ -2265,6 +2269,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     link: None,
                     fill: Fill::Black,
                     strike: false,
+                    task: None,
                     width: 0.0,
                 });
                 out.push(Line {
@@ -12316,6 +12321,7 @@ fn layout_table(
                         link: run.link.clone(),
                         fill,
                         strike: run.strike,
+                        task: None,
                         width: run.width,
                     });
                     cols.push(k as u32);
@@ -12435,6 +12441,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             link: None,
             fill: Fill::Black,
             strike: false,
+            task: item.task,
             width: marker.width,
         };
         // Split the item's blocks: only the FIRST block, when it is a paragraph,
@@ -12819,46 +12826,156 @@ fn build_paragraph<'a>(
     built
 }
 
+/// Minimum word length (in chars) before synthetic (separator/emergency)
+/// break points are considered. Shorter words always fit some line.
+const FORCED_BREAK_MIN_WORD: usize = 12;
+/// Longest run allowed without ANY break opportunity. Runs beyond this get
+/// emergency break points so a single token (a bare URL, a long identifier)
+/// can never overflow the measure and run off the page.
+const FORCED_BREAK_CHUNK: usize = 14;
+/// Mild penalty for breaking after a URL/path/identifier separator; slightly
+/// worse than a dictionary hyphen (50) so prose breaks stay preferred.
+const SEPARATOR_BREAK_PENALTY: i32 = 120;
+/// Emergency mid-token break: chosen only when the alternative is an
+/// absurdly stretched line or an overfull one.
+const EMERGENCY_BREAK_PENALTY: i32 = 2_000;
+
+/// A candidate intra-word break for the paragraph builder. `hyphen` marks
+/// dictionary hyphenation points, which render a `-` at the break;
+/// separator/emergency points render nothing (a URL or identifier must
+/// never gain characters it does not have).
+#[derive(Debug)]
+struct PdfBreakPoint {
+    at: usize,
+    penalty: i32,
+    hyphen: bool,
+}
+
+/// Characters after which a long token may break without a hyphen: URL and
+/// path punctuation plus common identifier separators.
+fn pdf_separator_break_char(c: char) -> bool {
+    matches!(
+        c,
+        '/' | '?' | '#' | '&' | '=' | '_' | '-' | '.' | ',' | ':' | ';' | '@' | '%' | '+'
+    )
+}
+
+/// Merge dictionary hyphenation points with separator and emergency break
+/// points for one word of `len` chars. Every point keeps at least two chars
+/// on each side; separator runs break only after their last character; any
+/// remaining gap longer than [`FORCED_BREAK_CHUNK`] is filled with emergency
+/// points so no unbreakable run longer than the chunk survives.
+fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
+    let len = chars.len();
+    let mut points: Vec<PdfBreakPoint> = dict
+        .iter()
+        .filter(|&&at| at >= 2 && len - at >= 2)
+        .map(|&at| PdfBreakPoint {
+            at,
+            penalty: 50,
+            hyphen: true,
+        })
+        .collect();
+    points.sort_by_key(|point| point.at);
+    points.dedup_by_key(|point| point.at);
+
+    if len >= FORCED_BREAK_MIN_WORD {
+        for (i, &c) in chars.iter().enumerate() {
+            let at = i + 1;
+            if at < 2 || len - at < 2 {
+                continue;
+            }
+            // Break after separators, but only after the LAST of a run
+            // ("https://" splits after the second slash, never between).
+            if pdf_separator_break_char(c)
+                && !pdf_separator_break_char(chars[at])
+                && !points.iter().any(|p| p.at == at)
+            {
+                points.push(PdfBreakPoint {
+                    at,
+                    penalty: SEPARATOR_BREAK_PENALTY,
+                    hyphen: false,
+                });
+            }
+        }
+        points.sort_by_key(|p| p.at);
+
+        // Emergency fill: bound every gap (including word start/end) so no
+        // unbreakable run exceeds the chunk length.
+        let mut filled = Vec::with_capacity(points.len());
+        let mut prev = 0usize;
+        for idx in 0..=points.len() {
+            let bound = points.get(idx).map_or(len, |p| p.at);
+            let mut at = prev + FORCED_BREAK_CHUNK;
+            while at < bound && len - at >= 2 && at >= 2 {
+                filled.push(PdfBreakPoint {
+                    at,
+                    penalty: EMERGENCY_BREAK_PENALTY,
+                    hyphen: false,
+                });
+                at += FORCED_BREAK_CHUNK;
+            }
+            if let Some(p) = points.get_mut(idx) {
+                filled.push(std::mem::replace(
+                    p,
+                    PdfBreakPoint {
+                        at: 0,
+                        penalty: 0,
+                        hyphen: false,
+                    },
+                ));
+                prev = filled.last().map_or(prev, |p| p.at);
+            }
+        }
+        points = filled;
+    }
+
+    points.sort_by_key(|p| p.at);
+    points.dedup_by_key(|p| p.at);
+    points
+}
+
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
         return;
     }
 
-    if !cx.policy.hyphenate || !pdf_word_is_ascii_alphabetic(word) {
-        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
-        return;
-    }
-
     let plain: String = word.iter().map(|t| t.text.as_str()).collect();
-    // Hyphenation points are case-independent and depend only on the word's
-    // letters, so the lowercase word is a sound cache key (opts are always the
-    // default here). A cache hit returns exactly what the hyphenator would
-    // compute, so output stays byte-identical. To avoid an allocation on the
-    // common all-lowercase lookup, only fold case when an uppercase letter is
-    // present.
-    let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
-        std::borrow::Cow::Owned(plain.to_ascii_lowercase())
-    } else {
-        std::borrow::Cow::Borrowed(plain.as_str())
-    };
-    let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
-    let points = cached.unwrap_or_else(|| {
-        let pts = cx
-            .hyphenator
-            .hyphenation_points(&plain, HyphenationOptions::default());
-        // Only cache words that actually hyphenate. A non-hyphenating word gains
-        // nothing from caching, so skipping the insert (no key clone, no map entry)
-        // keeps unique / non-hyphenating corpora from paying any cache cost — they
-        // do not regress — while repeated hyphenating words still hit.
-        if !pts.is_empty() {
-            let mut cache = cx.hyphen_cache.borrow_mut();
-            if cache.len() < HYPHEN_CACHE_MAX {
-                cache.insert(key.into_owned(), pts.clone());
+    let dict_points = if cx.policy.hyphenate && pdf_word_is_ascii_alphabetic(word) {
+        // Hyphenation points are case-independent and depend only on the word's
+        // letters, so the lowercase word is a sound cache key (opts are always the
+        // default here). A cache hit returns exactly what the hyphenator would
+        // compute, so output stays byte-identical. To avoid an allocation on the
+        // common all-lowercase lookup, only fold case when an uppercase letter is
+        // present.
+        let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(plain.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(plain.as_str())
+        };
+        let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
+        cached.unwrap_or_else(|| {
+            let pts = cx
+                .hyphenator
+                .hyphenation_points(&plain, HyphenationOptions::default());
+            // Only cache words that actually hyphenate. A non-hyphenating word gains
+            // nothing from caching, so skipping the insert (no key clone, no map entry)
+            // keeps unique / non-hyphenating corpora from paying any cache cost — they
+            // do not regress — while repeated hyphenating words still hit.
+            if !pts.is_empty() {
+                let mut cache = cx.hyphen_cache.borrow_mut();
+                if cache.len() < HYPHEN_CACHE_MAX {
+                    cache.insert(key.into_owned(), pts.clone());
+                }
             }
-        }
-        pts
-    });
+            pts
+        })
+    } else {
+        Vec::new()
+    };
 
+    let chars: Vec<char> = plain.chars().collect();
+    let points = pdf_word_break_points(&chars, &dict_points);
     if points.is_empty() {
         push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
@@ -12866,32 +12983,37 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
 
     let mut start = 0usize;
     for point in points {
-        let part = split_pdf_word_tokens(word, start, point);
+        let part = split_pdf_word_tokens(word, start, point.at);
         if !part.is_empty() {
-            let hyphen_tok = part.last().map(|tok| Tok {
-                text: "-".to_string(),
-                slot: tok.slot,
-                space: false,
-                hard_break: false,
-                link: tok.link.clone(),
-                strike: tok.strike,
-            });
-            let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
-                cached_shaped_width(cx.faces, cx.width_cache, tok.slot, "-", cx.fs)
-            });
+            let (break_tok, penalty_width) = if point.hyphen {
+                let hyphen_tok = part.last().map(|tok| Tok {
+                    text: "-".to_string(),
+                    slot: tok.slot,
+                    space: false,
+                    hard_break: false,
+                    link: tok.link.clone(),
+                    strike: tok.strike,
+                });
+                let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
+                    cached_shaped_width(cx.faces, cx.width_cache, tok.slot, "-", cx.fs)
+                });
+                (hyphen_tok, hyphen_width)
+            } else {
+                (None, LayoutUnit::ZERO)
+            };
             push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
             built.items.push(ParagraphItem::Penalty(Penalty {
-                width: hyphen_width,
-                penalty: 50,
-                flagged: true,
+                width: penalty_width,
+                penalty: point.penalty,
+                flagged: point.hyphen,
             }));
             built.item_toks.push(TokGroup::empty());
-            built.break_toks.push(hyphen_tok);
+            built.break_toks.push(break_tok);
         }
-        start = point;
+        start = point.at;
     }
 
-    let tail = split_pdf_word_tokens(word, start, plain.chars().count());
+    let tail = split_pdf_word_tokens(word, start, chars.len());
     if !tail.is_empty() {
         push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
     }
@@ -13428,6 +13550,7 @@ fn build_segs_adjusted(
                         Fill::Black
                     },
                     strike: tok.strike,
+                    task: None,
                     width: advance,
                 });
             }
@@ -13482,6 +13605,7 @@ fn build_single_adjusted_seg(
             Fill::Black
         },
         strike,
+        task: None,
         width,
     })
 }
@@ -13857,6 +13981,7 @@ fn code_frags_to_segs(
             link: None,
             fill: frag.fill,
             strike: false,
+            task: None,
             width,
         });
         x += width;
@@ -13891,6 +14016,7 @@ fn code_line_number_seg(
         link: None,
         fill: Fill::Syntax(HighlightTok::Comment),
         strike: false,
+        task: None,
         width,
     }
 }
@@ -13903,6 +14029,7 @@ fn empty_code_seg(x: f32) -> Seg {
         link: None,
         fill: Fill::Black,
         strike: false,
+        task: None,
         width: 0.0,
     }
 }
@@ -15144,6 +15271,7 @@ mod font_slot_text_refs_tests {
             link: None,
             fill: Fill::Black,
             strike: false,
+            task: None,
             width: 0.0,
         }
     }
@@ -18830,14 +18958,21 @@ fn draw_seg(
             fallback.glyphs.as_slice()
         }
     };
-    if seg.fill != *current_fill {
-        let (r, g, b) = fill_rgb(seg.fill, palette);
-        append_rgb_fill_operator(body, (r, g, b));
-        *current_fill = seg.fill;
+    if let Some(done) = seg.task {
+        append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
+        append_invisible_text_segment_operator(
+            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
+        );
+    } else {
+        if seg.fill != *current_fill {
+            let (r, g, b) = fill_rgb(seg.fill, palette);
+            append_rgb_fill_operator(body, (r, g, b));
+            *current_fill = seg.fill;
+        }
+        append_text_segment_operator(
+            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
+        );
     }
-    append_text_segment_operator(
-        body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped,
-    );
     // Strikethrough: a thin stroke through the run's middle, in the text's own
     // color (stroke `RG`, leaving the text fill `rg` untouched).
     if seg.strike && seg.width > 0.0 {
@@ -18867,6 +19002,76 @@ fn draw_seg(
             });
         }
     }
+}
+
+/// Draw the vector checkbox for a task-list marker. Checked boxes fill with
+/// the theme accent (the link color) and carry a white check; open boxes are
+/// a neutral rounded outline. The checkbox border gray is a constant, like
+/// the syntax palette: it is not a theme token.
+fn append_task_checkbox_marker_operator(
+    body: &mut String,
+    seg: &Seg,
+    size: f32,
+    y: f32,
+    done: bool,
+    palette: &Palette,
+) {
+    let side = (size * 0.72).clamp(5.5, 9.0);
+    let x0 = seg.x + (seg.width - side).max(0.0) * 0.5;
+    let y0 = y - size * 0.07;
+    let radius = side * 0.28;
+    body.push_str("q ");
+    if done {
+        append_rgb_components_fixed3(body, palette.link);
+        body.push_str(" rg ");
+        append_rounded_rect_path(body, x0, y0, side, radius);
+        body.push_str("f 1 1 1 RG ");
+        append_pdf_fixed2(body, (side * 0.16).max(0.9));
+        body.push_str(" w 1 J 1 j ");
+        append_checkbox_xy(body, x0 + side * 0.26, y0 + side * 0.52, " m ");
+        append_checkbox_xy(body, x0 + side * 0.44, y0 + side * 0.30, " l ");
+        append_checkbox_xy(body, x0 + side * 0.76, y0 + side * 0.70, " l ");
+        body.push('S');
+    } else {
+        body.push_str("0.506 0.549 0.596 RG ");
+        append_pdf_fixed2(body, (side * 0.11).max(0.8));
+        body.push_str(" w ");
+        append_rounded_rect_path(body, x0, y0, side, radius);
+        body.push('S');
+    }
+    body.push_str(" Q\n");
+}
+
+fn append_checkbox_xy(body: &mut String, x: f32, y: f32, op: &str) {
+    append_pdf_fixed2(body, x);
+    body.push(' ');
+    append_pdf_fixed2(body, y);
+    body.push_str(op);
+}
+
+/// Append a closed rounded-square path (side `s`, corner radius `r`) from
+/// four lines and four cubic Bezier corners (circle constant 0.5523).
+fn append_rounded_rect_path(body: &mut String, x0: f32, y0: f32, s: f32, r: f32) {
+    let k = r * 0.5523;
+    let (x1, y1) = (x0 + s, y0 + s);
+    append_checkbox_xy(body, x0 + r, y0, " m ");
+    append_checkbox_xy(body, x1 - r, y0, " l ");
+    append_checkbox_xy(body, x1 - r + k, y0, " ");
+    append_checkbox_xy(body, x1, y0 + r - k, " ");
+    append_checkbox_xy(body, x1, y0 + r, " c ");
+    append_checkbox_xy(body, x1, y1 - r, " l ");
+    append_checkbox_xy(body, x1, y1 - r + k, " ");
+    append_checkbox_xy(body, x1 - r + k, y1, " ");
+    append_checkbox_xy(body, x1 - r, y1, " c ");
+    append_checkbox_xy(body, x0 + r, y1, " l ");
+    append_checkbox_xy(body, x0 + r - k, y1, " ");
+    append_checkbox_xy(body, x0, y1 - r + k, " ");
+    append_checkbox_xy(body, x0, y1 - r, " c ");
+    append_checkbox_xy(body, x0, y0 + r, " l ");
+    append_checkbox_xy(body, x0, y0 + r - k, " ");
+    append_checkbox_xy(body, x0 + r - k, y0, " ");
+    append_checkbox_xy(body, x0 + r, y0, " c ");
+    body.push_str("h ");
 }
 
 /// The `/H1`..`/H6`/`/H` structure tag for a heading line, by its display size.
@@ -21198,17 +21403,70 @@ fn append_text_segment_operator(
     kern: &Kerning,
     shaped: &[u16],
 ) {
+    append_text_segment_operator_with_render_mode(
+        body, slot, size, x, y, map, source, kern, shaped, None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_invisible_text_segment_operator(
+    body: &mut String,
+    slot: u8,
+    size: f32,
+    x: f32,
+    y: f32,
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+) {
+    append_text_segment_operator_with_render_mode(
+        body,
+        slot,
+        size,
+        x,
+        y,
+        map,
+        source,
+        kern,
+        shaped,
+        Some(3),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_text_segment_operator_with_render_mode(
+    body: &mut String,
+    slot: u8,
+    size: f32,
+    x: f32,
+    y: f32,
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+    render_mode: Option<u8>,
+) {
     body.push_str("BT /F");
     append_decimal_u64_string(body, u64::from(slot));
     body.push(' ');
     append_pdf_fixed2(body, size);
-    body.push_str(" Tf 1 0 0 1 ");
+    body.push_str(" Tf ");
+    if let Some(mode) = render_mode {
+        append_decimal_u64_string(body, u64::from(mode));
+        body.push_str(" Tr ");
+    }
+    body.push_str("1 0 0 1 ");
     append_pdf_fixed2(body, x);
     body.push(' ');
     append_pdf_fixed2(body, y);
     body.push_str(" Tm ");
     append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0, 0);
-    body.push_str(" TJ ET\n");
+    body.push_str(" TJ");
+    if render_mode.is_some() {
+        body.push_str(" 0 Tr");
+    }
+    body.push_str(" ET\n");
 }
 
 fn append_rgb_components_fixed3(out: &mut String, color: (f32, f32, f32)) {
@@ -21548,9 +21806,10 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LineTok, LinkTarget,
-        PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
-        PdfStructElementObjectParts, Placed, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
+        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, Faces, Fill, FlowMark,
+        Line, LineTok, LinkTarget, PageContentCapacityEstimate, Palette, ParagraphItem,
+        ParagraphPolicy, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts, Placed,
+        SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
         SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
@@ -21567,14 +21826,15 @@ mod pdf_writer_tests {
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
         append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
         append_svg_style, append_svg_text_operator, append_svg_text_viewport_clip,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
-        first_visible_segment_index, font_size_of, kerned_tj, kerned_tj_with_spacing,
-        line_has_visible_content, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3,
-        pdf_num, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
-        svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
+        append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
+        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
+        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
+        kerned_tj_with_spacing, line_has_visible_content, measure_word, normalize_svg_text_node,
+        pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string, pdf_word_break_points, push_text_tokens,
+        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
+    use crate::ThemeColors;
     use crate::ast::Inline;
     use std::borrow::Cow;
     use std::collections::BTreeSet;
@@ -21600,6 +21860,7 @@ mod pdf_writer_tests {
                     link: None,
                     fill: Fill::Black,
                     strike: false,
+                    task: None,
                     width: 0.0,
                 })
                 .collect(),
@@ -21845,6 +22106,7 @@ mod pdf_writer_tests {
                 link,
                 fill: Fill::Black,
                 strike,
+                task: None,
                 width,
             }
         }
@@ -22728,6 +22990,89 @@ mod pdf_writer_tests {
         assert_eq!(
             out,
             "0.100 0.250 1.000 RG 0.66 w 12.50 700.25 m 42.00 700.25 l S\n"
+        );
+    }
+
+    #[test]
+    fn long_pdf_words_gain_separator_and_emergency_break_points() {
+        let word = format!("https://example.com/{}", "x".repeat(40));
+        let chars: Vec<char> = word.chars().collect();
+        let points = pdf_word_break_points(&chars, &[]);
+
+        assert!(
+            points
+                .iter()
+                .any(|point| point.at == "https://".chars().count()
+                    && point.penalty == SEPARATOR_BREAK_PENALTY
+                    && !point.hyphen),
+            "URL separators should create non-hyphen break points: {points:?}"
+        );
+        assert!(
+            points
+                .iter()
+                .any(|point| point.penalty == EMERGENCY_BREAK_PENALTY && !point.hyphen),
+            "long URL tails need emergency non-hyphen breaks: {points:?}"
+        );
+
+        let solid = "a".repeat(40);
+        let solid_chars: Vec<char> = solid.chars().collect();
+        let solid_points = pdf_word_break_points(&solid_chars, &[]);
+        assert!(
+            !solid_points.is_empty()
+                && solid_points
+                    .iter()
+                    .all(|point| point.penalty == EMERGENCY_BREAK_PENALTY && !point.hyphen),
+            "separator-free spans need emergency non-hyphen breaks: {solid_points:?}"
+        );
+
+        let mut prev = 0usize;
+        for point in &points {
+            assert!(point.at > prev, "break points should be sorted and unique");
+            assert!(
+                point.at - prev <= FORCED_BREAK_CHUNK,
+                "unbreakable run before {:?} exceeds chunk {}",
+                point,
+                FORCED_BREAK_CHUNK
+            );
+            prev = point.at;
+        }
+        assert!(
+            chars.len() - prev <= FORCED_BREAK_CHUNK,
+            "tail run exceeds emergency chunk"
+        );
+
+        let edge_chars: Vec<char> = "abcdefghij".chars().collect();
+        let edge_points = pdf_word_break_points(&edge_chars, &[1, 2, 2, 8, 9]);
+        assert_eq!(
+            edge_points.iter().map(|point| point.at).collect::<Vec<_>>(),
+            vec![2, 8],
+            "dictionary break points should keep two chars on each side and stay unique"
+        );
+    }
+
+    #[test]
+    fn task_checkbox_marker_writer_draws_box_and_checkmark() {
+        let seg = Seg {
+            x: 12.0,
+            slot: F_BODY,
+            text: "[x]".to_string(),
+            link: None,
+            fill: Fill::Black,
+            strike: false,
+            task: Some(true),
+            width: 15.0,
+        };
+        let mut out = String::new();
+        let palette = Palette::from_colors(&ThemeColors::default());
+        append_task_checkbox_marker_operator(&mut out, &seg, 11.0, 100.0, true, &palette);
+
+        assert!(
+            out.contains(" rg "),
+            "checked checkbox should fill a vector path with the accent color: {out}"
+        );
+        assert!(
+            out.ends_with(" l S Q\n"),
+            "checked marker should draw a vector check path: {out}"
         );
     }
 

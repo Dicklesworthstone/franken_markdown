@@ -365,7 +365,11 @@ fn break_paragraph_optimizes_across_the_whole_paragraph() {
     let metrics = StubMetrics;
     let size = FontSize::from_points(10);
     let items = paragraph_items_from_text(&metrics, "A A A A A", size);
-    let breaks = break_paragraph(&items, LayoutUnit::from_milli_points(18_000));
+    // 18_400 lets "A A A" (natural 20_000) fit by shrinking 1_600 of the
+    // 1_666 shrink budget: a legal, Tight line. (At narrower measures the
+    // first line would need to shrink PAST its budget, which is overfull and
+    // correctly infeasible since the TeX shrink-semantics fix.)
+    let breaks = break_paragraph(&items, LayoutUnit::from_milli_points(18_400));
 
     assert_eq!(breaks.len(), 2);
     assert_eq!(line_text(&items, breaks[0].start, breaks[0].end), "A A A");
@@ -430,11 +434,18 @@ fn line_break_certificate_locks_prefix_metric_behavior() {
         })
         .collect::<Vec<_>>();
 
+    // Re-locked for TeX shrink semantics: at width 18_000 the old two-line
+    // break needed "A A A" (natural 20_000) to shrink 2_000 against a
+    // 1_666 budget: an overfull line the breaker used to accept at
+    // badness 172, crushing interword spaces below their minimum. Overfull
+    // shrink is now infeasible, so the paragraph takes three legal (loose)
+    // lines instead: stretched spacing is legible; crushed spacing is not.
     assert_eq!(
         certificate,
         vec![
-            (0, 5, 6, 20_000, 172, FitnessClass::Tight, 29_929),
-            (6, 9, 10, 12_500, 0, FitnessClass::Decent, 29_930),
+            (0, 3, 4, 12_500, 8_518, FitnessClass::VeryLoose, 72_573_361),
+            (4, 7, 8, 12_500, 8_518, FitnessClass::VeryLoose, 145_146_722),
+            (8, 9, 10, 5_000, 0, FitnessClass::Decent, 145_149_723),
         ]
     );
 }

@@ -20107,6 +20107,16 @@ struct PdfOutlineItemObjectParts<'a> {
     y: f32,
 }
 
+struct PdfParentTreeObjectParts<'a, F>
+where
+    F: Fn(usize) -> usize,
+{
+    object_id: usize,
+    parent_tree: &'a [Vec<usize>],
+    struct_annot_nums: &'a [(usize, usize)],
+    struct_elem_obj: &'a F,
+}
+
 fn append_pdf_page_object(out: &mut Vec<u8>, offsets: &mut [usize], parts: PdfPageObjectParts<'_>) {
     offsets[parts.object_id] = out.len();
     append_pdf_object_header(out, parts.object_id);
@@ -20166,6 +20176,39 @@ fn append_pdf_outline_item_object(
     out.extend_from_slice(b" /XYZ null ");
     append_pdf_num_bytes(out, parts.y);
     out.extend_from_slice(b" null] >>\nendobj\n");
+}
+
+fn append_pdf_parent_tree_object<F>(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfParentTreeObjectParts<'_, F>,
+) where
+    F: Fn(usize) -> usize,
+{
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Nums [ ");
+    for (page_index, leaf_for_mcid) in parts.parent_tree.iter().enumerate() {
+        if leaf_for_mcid.is_empty() {
+            continue;
+        }
+        append_decimal_usize(out, page_index);
+        out.extend_from_slice(b" [ ");
+        append_pdf_object_ref_list_bytes(
+            out,
+            leaf_for_mcid
+                .iter()
+                .map(|&node| (parts.struct_elem_obj)(node)),
+        );
+        out.extend_from_slice(b" ] ");
+    }
+    for (key, owner_node) in parts.struct_annot_nums {
+        append_decimal_usize(out, *key);
+        out.push(b' ');
+        append_pdf_object_ref_bytes(out, (parts.struct_elem_obj)(*owner_node));
+        out.push(b' ');
+    }
+    out.extend_from_slice(b"] >>\nendobj\n");
 }
 
 fn append_pdf_stream_dict(out: &mut Vec<u8>, stream: &PdfStream<'_>) {
@@ -20231,6 +20274,18 @@ fn append_pdf_object_ref_list_string(out: &mut String, refs: impl IntoIterator<I
             out.push(' ');
         }
         append_pdf_object_ref_string(out, object_id);
+    }
+}
+
+fn append_pdf_object_ref_list_bytes(out: &mut Vec<u8>, refs: impl IntoIterator<Item = usize>) {
+    let mut first = true;
+    for object_id in refs {
+        if first {
+            first = false;
+        } else {
+            out.push(b' ');
+        }
+        append_pdf_object_ref_bytes(out, object_id);
     }
 }
 
@@ -21180,30 +21235,15 @@ fn build_pdf(
         // element; annotation keys (p..) map a single OBJR-referenced link
         // annotation back to its owning /Link element. Keys stay sorted because
         // every page key is < p <= every annotation key.
-        let mut nums = String::new();
-        for (page_index, leaf_for_mcid) in stree.parent_tree.iter().enumerate() {
-            if leaf_for_mcid.is_empty() {
-                continue;
-            }
-            append_decimal_usize_string(&mut nums, page_index);
-            nums.push_str(" [ ");
-            append_pdf_object_ref_list_string(
-                &mut nums,
-                leaf_for_mcid.iter().map(|&node| struct_elem_obj(node)),
-            );
-            nums.push_str(" ] ");
-        }
-        for (key, owner_node) in &struct_annot_nums {
-            append_decimal_usize_string(&mut nums, *key);
-            nums.push(' ');
-            append_pdf_object_ref_string(&mut nums, struct_elem_obj(*owner_node));
-            nums.push(' ');
-        }
-        append_pdf_object_str(
+        append_pdf_parent_tree_object(
             &mut buf,
             &mut offsets,
-            parent_tree_obj,
-            &format!("<< /Nums [ {nums}] >>"),
+            PdfParentTreeObjectParts {
+                object_id: parent_tree_obj,
+                parent_tree: &stree.parent_tree,
+                struct_annot_nums: &struct_annot_nums,
+                struct_elem_obj: &struct_elem_obj,
+            },
         );
 
         // Serialize each structure element.
@@ -21991,30 +22031,30 @@ mod pdf_writer_tests {
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
         Faces, Fill, FlowMark, HeadingIdState, Line, LineTok, LinkTarget,
         PageContentCapacityEstimate, Palette, ParagraphItem, ParagraphPolicy,
-        PdfOutlineItemObjectParts, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts,
-        Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
-        TokGroup, WidthCache, append_artifact_rule_stroke, append_decimal_u64,
-        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
-        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
-        append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
-        append_pdf_num_bytes, append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
-        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_outline_item_object,
-        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
-        append_pdf_struct_element_object, append_pdf_text_string_bytes, append_rgb_fill_operator,
-        append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
-        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
-        append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
-        append_svg_alpha_state_name, append_svg_alpha_state_resource_entry,
-        append_svg_element_state_prefix, append_svg_line_path, append_svg_line_stroke_outline,
-        append_svg_path_ops, append_svg_poly_path, append_svg_shadow_prefix,
-        append_svg_stroke_options, append_svg_style, append_svg_text_operator,
-        append_svg_text_viewport_clip, append_task_checkbox_marker_operator,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
-        first_visible_segment_index, font_size_of, kerned_tj, kerned_tj_with_spacing,
-        line_has_visible_content, measure_word, normalize_svg_text_node,
+        PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfStream,
+        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg,
+        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle,
+        SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
+        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
+        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
+        append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
+        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
+        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_parent_tree_object,
+        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
+        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
+        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
+        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
+        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
+        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
+        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
+        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
+        append_svg_style, append_svg_text_operator, append_svg_text_viewport_clip,
+        append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
+        append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
+        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
+        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
+        kerned_tj_with_spacing, line_has_visible_content, measure_word, normalize_svg_text_node,
         pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
         pdf_word_break_points, push_text_tokens, rounded_rect_fill, shape_run,
         svg_alpha_extgstate_resource, token_visible_text, tokenize,
@@ -23042,6 +23082,61 @@ mod pdf_writer_tests {
 
         assert_eq!(direct_offsets[9], legacy_offsets[9]);
         assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn parent_tree_object_byte_writer_matches_legacy_string_shape() {
+        let parent_tree = vec![vec![1, 2], Vec::new(), vec![2]];
+        let struct_annot_nums = vec![(3, 4), (9, 1)];
+        let struct_elem_obj = |node: usize| 100 + node;
+
+        let mut direct = b"%PDF-1.7\n".to_vec();
+        let mut direct_offsets = [0usize; 16];
+        append_pdf_parent_tree_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfParentTreeObjectParts {
+                object_id: 7,
+                parent_tree: &parent_tree,
+                struct_annot_nums: &struct_annot_nums,
+                struct_elem_obj: &struct_elem_obj,
+            },
+        );
+
+        let mut nums = String::new();
+        for (page_index, leaf_for_mcid) in parent_tree.iter().enumerate() {
+            if leaf_for_mcid.is_empty() {
+                continue;
+            }
+            append_decimal_usize_string(&mut nums, page_index);
+            nums.push_str(" [ ");
+            append_pdf_object_ref_list_string(
+                &mut nums,
+                leaf_for_mcid.iter().map(|&node| struct_elem_obj(node)),
+            );
+            nums.push_str(" ] ");
+        }
+        for (key, owner_node) in &struct_annot_nums {
+            append_decimal_usize_string(&mut nums, *key);
+            nums.push(' ');
+            append_pdf_object_ref_string(&mut nums, struct_elem_obj(*owner_node));
+            nums.push(' ');
+        }
+        let mut legacy = b"%PDF-1.7\n".to_vec();
+        let mut legacy_offsets = [0usize; 16];
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            7,
+            &format!("<< /Nums [ {nums}] >>"),
+        );
+
+        assert_eq!(direct_offsets[7], legacy_offsets[7]);
+        assert_eq!(direct, legacy);
+        assert_eq!(
+            direct,
+            b"%PDF-1.7\n7 0 obj\n<< /Nums [ 0 [ 101 0 R 102 0 R ] 2 [ 102 0 R ] 3 104 0 R 9 101 0 R ] >>\nendobj\n"
+        );
     }
 
     #[test]

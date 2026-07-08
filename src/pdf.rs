@@ -1019,10 +1019,12 @@ struct SvgGradientPaint {
 #[derive(Clone)]
 struct SvgPatternPaint {
     id: String,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    units: SvgGradientUnits,
+    content_units: SvgGradientUnits,
+    x: SvgGradientLength,
+    y: SvgGradientLength,
+    w: SvgGradientLength,
+    h: SvgGradientLength,
     transform: SvgTransform,
     color: SvgColor,
     elements: Vec<SvgElement>,
@@ -6725,18 +6727,20 @@ fn parse_svg_pattern_paints(
             continue;
         };
         let attrs = resolved.attrs;
-        if !svg_attr(&attrs, "patternunits")
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("userSpaceOnUse"))
-        {
-            continue;
-        }
-        let Some(w) = svg_attr(&attrs, "width").and_then(parse_svg_number) else {
+        let units =
+            parse_svg_pattern_units(&attrs, "patternunits", SvgGradientUnits::ObjectBoundingBox);
+        let content_units = parse_svg_pattern_units(
+            &attrs,
+            "patterncontentunits",
+            SvgGradientUnits::UserSpaceOnUse,
+        );
+        let Some(w) = svg_attr(&attrs, "width").and_then(parse_svg_gradient_length) else {
             continue;
         };
-        let Some(h) = svg_attr(&attrs, "height").and_then(parse_svg_number) else {
+        let Some(h) = svg_attr(&attrs, "height").and_then(parse_svg_gradient_length) else {
             continue;
         };
-        if !w.is_finite() || !h.is_finite() || w <= 0.001 || h <= 0.001 {
+        if !w.value.is_finite() || !h.value.is_finite() || w.value <= 0.0 || h.value <= 0.0 {
             continue;
         }
         let mut ancestor_attrs = attrs.clone();
@@ -6762,12 +6766,20 @@ fn parse_svg_pattern_paints(
         let color = svg_pattern_representative_color(&elements).unwrap_or((0.0, 0.0, 0.0));
         patterns.push(SvgPatternPaint {
             id: definition.id.clone(),
+            units,
+            content_units,
             x: svg_attr(&attrs, "x")
-                .and_then(parse_svg_number)
-                .unwrap_or(0.0),
+                .and_then(parse_svg_gradient_length)
+                .unwrap_or(SvgGradientLength {
+                    value: 0.0,
+                    percent: false,
+                }),
             y: svg_attr(&attrs, "y")
-                .and_then(parse_svg_number)
-                .unwrap_or(0.0),
+                .and_then(parse_svg_gradient_length)
+                .unwrap_or(SvgGradientLength {
+                    value: 0.0,
+                    percent: false,
+                }),
             w,
             h,
             transform: svg_attr(&attrs, "patterntransform")
@@ -6844,6 +6856,22 @@ fn parse_svg_pattern_definitions(src: &str) -> Vec<SvgPatternDefinition> {
         }
     }
     definitions
+}
+
+fn parse_svg_pattern_units(
+    attrs: &[(String, String)],
+    name: &str,
+    default: SvgGradientUnits,
+) -> SvgGradientUnits {
+    match svg_attr(attrs, name)
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("userspaceonuse") => SvgGradientUnits::UserSpaceOnUse,
+        Some("objectboundingbox") => SvgGradientUnits::ObjectBoundingBox,
+        _ => default,
+    }
 }
 
 fn resolve_svg_pattern_definition(
@@ -19066,23 +19094,22 @@ where
     let Some(pattern) = style.fill_pattern.and_then(|index| patterns.get(index)) else {
         return false;
     };
-    if pattern.elements.is_empty()
-        || pattern.w <= 0.001
-        || pattern.h <= 0.001
-        || ![pattern.x, pattern.y, pattern.w, pattern.h]
-            .iter()
-            .all(|value| value.is_finite())
-    {
+    if pattern.elements.is_empty() {
         return false;
     }
     let Some((bx, by, bw, bh)) = bbox.filter(|(_, _, w, h)| *w > 0.001 && *h > 0.001) else {
         return false;
     };
+    let Some((pattern_x, pattern_y, pattern_w, pattern_h)) =
+        resolve_svg_pattern_tile(pattern, (bx, by, bw, bh))
+    else {
+        return false;
+    };
 
-    let start_x = ((bx - pattern.x) / pattern.w).floor() as i32;
-    let end_x = ((bx + bw - pattern.x) / pattern.w).ceil() as i32;
-    let start_y = ((by - pattern.y) / pattern.h).floor() as i32;
-    let end_y = ((by + bh - pattern.y) / pattern.h).ceil() as i32;
+    let start_x = ((bx - pattern_x) / pattern_w).floor() as i32;
+    let end_x = ((bx + bw - pattern_x) / pattern_w).ceil() as i32;
+    let start_y = ((by - pattern_y) / pattern_h).floor() as i32;
+    let end_y = ((by + bh - pattern_y) / pattern_h).ceil() as i32;
     let cols = end_x.saturating_sub(start_x);
     let rows = end_y.saturating_sub(start_y);
     let tiles = cols.saturating_mul(rows);
@@ -19107,8 +19134,8 @@ where
     };
     for tile_y in start_y..end_y {
         for tile_x in start_x..end_x {
-            let tx = pattern.x + tile_x as f32 * pattern.w;
-            let ty = pattern.y + tile_y as f32 * pattern.h;
+            let tx = pattern_x + tile_x as f32 * pattern_w;
+            let ty = pattern_y + tile_y as f32 * pattern_h;
             body.push_str("q ");
             append_pdf_cm_operator(body, 1.0, 0.0, 0.0, 1.0, tx, ty);
             body.push(' ');
@@ -19124,6 +19151,10 @@ where
                 );
                 body.push(' ');
             }
+            if pattern.content_units == SvgGradientUnits::ObjectBoundingBox {
+                append_pdf_cm_operator(body, bw, 0.0, 0.0, bh, 0.0, 0.0);
+                body.push(' ');
+            }
             for element in &pattern.elements {
                 draw_svg_shape(body, element, resources, None, page_resources);
             }
@@ -19132,6 +19163,36 @@ where
     }
     body.push_str("Q\n");
     true
+}
+
+fn resolve_svg_pattern_tile(
+    pattern: &SvgPatternPaint,
+    bbox: (f32, f32, f32, f32),
+) -> Option<(f32, f32, f32, f32)> {
+    let (bx, by, bw, bh) = bbox;
+    let tile = match pattern.units {
+        SvgGradientUnits::ObjectBoundingBox => (
+            bx + svg_gradient_object_bbox_coord(pattern.x) * bw,
+            by + svg_gradient_object_bbox_coord(pattern.y) * bh,
+            svg_gradient_object_bbox_coord(pattern.w) * bw,
+            svg_gradient_object_bbox_coord(pattern.h) * bh,
+        ),
+        SvgGradientUnits::UserSpaceOnUse => (
+            svg_pattern_user_space_coord(pattern.x),
+            svg_pattern_user_space_coord(pattern.y),
+            svg_pattern_user_space_coord(pattern.w),
+            svg_pattern_user_space_coord(pattern.h),
+        ),
+    };
+    [tile.0, tile.1, tile.2, tile.3]
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(tile)
+        .filter(|(_, _, w, h)| *w > 0.001 && *h > 0.001)
+}
+
+fn svg_pattern_user_space_coord(length: SvgGradientLength) -> f32 {
+    length.value
 }
 
 fn append_svg_stroke_style(body: &mut String, style: SvgStyle) {

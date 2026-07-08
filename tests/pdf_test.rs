@@ -4088,6 +4088,76 @@ fn pdf_svg_user_space_patterns_tile_vector_children_under_shape_clip() {
 }
 
 #[test]
+fn pdf_svg_default_object_bounding_box_patterns_tile_vector_children() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 20">
+  <defs>
+    <pattern id="stripe" width="0.25" height="1">
+      <rect x="0" y="0" width="4" height="10" fill="#ff0000"/>
+    </pattern>
+  </defs>
+  <rect x="10" y="4" width="40" height="10" fill="url(#stripe)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "pattern-default-units.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern](pattern-default-units.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 10 4 40 10 re W n q 1 0 0 1 10 4 cm"),
+        "default objectBoundingBox patternUnits should clip to the painted shape and start at the bbox origin: {text}"
+    );
+    assert!(
+        text.contains("1.000 0.000 0.000 rg 0 0 4 10 re f\nQ\nq 1 0 0 1 20 4 cm"),
+        "default objectBoundingBox patternUnits should tile vector children by bbox-relative width/height fractions: {text}"
+    );
+    assert!(
+        !text.contains("0.000 0.000 0.000 rg 10 4 40 10 re f"),
+        "default objectBoundingBox patterns should not be dropped into a black solid fallback: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_pattern_content_units_object_bounding_box_maps_child_coordinates() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70 20">
+  <defs>
+    <pattern id="normalized" width="0.5" height="1" patternContentUnits="objectBoundingBox">
+      <rect x="0.1" y="0.2" width="0.2" height="0.6" fill="#0000ff"/>
+    </pattern>
+  </defs>
+  <rect x="20" y="5" width="40" height="10" fill="url(#normalized)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "pattern-content-object-bbox.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern](pattern-content-object-bbox.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains(
+            "q 20 5 40 10 re W n q 1 0 0 1 20 5 cm 40 0 0 10 0 0 cm 0.000 0.000 1.000 rg 0.1 0.2 0.2 0.6 re f"
+        ),
+        "patternContentUnits=objectBoundingBox should scale normalized child coordinates by the painted bbox: {text}"
+    );
+    assert!(
+        text.contains("Q\nq 1 0 0 1 40 5 cm 40 0 0 10 0 0 cm"),
+        "objectBoundingBox content should repeat under each bbox-relative pattern tile: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_patterns_tile_embedded_svg_images_as_vector_shapes() {
     let nested_svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 6">

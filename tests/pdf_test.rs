@@ -1188,6 +1188,44 @@ fn pdf_svg_root_title_and_desc_backfill_empty_markdown_alt() {
 }
 
 #[test]
+fn pdf_svg_root_aria_label_backfills_empty_markdown_alt() {
+    let aria_only = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 20" role="img" aria-label="Mermaid flow &amp; retry budget">
+  <rect x="2" y="2" width="44" height="16" fill="#ffffff" stroke="#000000"/>
+</svg>
+"##;
+    let aria_with_desc = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 20" role="img" aria-label="Runtime diagram">
+  <title>Incidental root title</title>
+  <desc>Worker queue state.</desc>
+  <rect x="2" y="2" width="44" height="16" fill="#ffffff" stroke="#000000"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![
+            PdfImageAsset::new("aria-only.svg", aria_only.to_vec()),
+            PdfImageAsset::new("aria-desc.svg", aria_with_desc.to_vec()),
+        ],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![](aria-only.svg)\n\n![](aria-desc.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/Alt (Mermaid flow & retry budget)"),
+        "empty Markdown alt text should fall back to the root SVG aria-label: {text}"
+    );
+    assert!(
+        text.contains("/Alt (Runtime diagram - Worker queue state.)"),
+        "root aria-label should act as the accessible name while root desc remains useful context: {text}"
+    );
+    assert!(
+        !text.contains("/Alt (Incidental root title"),
+        "root aria-label should override an incidental root title for the PDF alt name: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_accessible_text_replaces_invalid_numeric_entities_without_dropping_text() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" role="img">

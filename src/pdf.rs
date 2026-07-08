@@ -3626,21 +3626,23 @@ fn split_svg_css_top_level_commas(value: &str) -> Vec<&str> {
 }
 
 fn parse_svg_accessible_text(src: &str) -> Option<String> {
-    let (title, desc) = parse_svg_root_accessible_texts(src);
-    match (title, desc) {
-        (Some(title), Some(desc)) if title == desc => Some(title),
-        (Some(title), Some(desc)) => truncate_svg_accessible_text(&format!("{title} - {desc}"))
+    let (aria_label, title, desc) = parse_svg_root_accessible_texts(src);
+    let name = aria_label.or(title);
+    match (name, desc) {
+        (Some(name), Some(desc)) if name == desc => Some(name),
+        (Some(name), Some(desc)) => truncate_svg_accessible_text(&format!("{name} - {desc}"))
             .filter(|text| !text.is_empty()),
-        (Some(title), None) => Some(title),
+        (Some(name), None) => Some(name),
         (None, Some(desc)) => Some(desc),
         (None, None) => None,
     }
 }
 
-fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>) {
+fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut pos = 0usize;
     let mut in_root = false;
     let mut depth = 0usize;
+    let mut aria_label = None;
     let mut title = None;
     let mut desc = None;
 
@@ -3667,7 +3669,7 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
         let closing = raw.starts_with('/');
         let raw = if closing { raw[1..].trim_start() } else { raw };
         let self_closing = raw.trim_end().ends_with('/');
-        let (tag, _) = svg_tag_parts(raw);
+        let (tag, attrs_src) = svg_tag_parts(raw);
         if tag.is_empty() {
             continue;
         }
@@ -3687,6 +3689,8 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
         if !in_root {
             if local == "svg" {
                 in_root = true;
+                let attrs = parse_svg_attrs(attrs_src);
+                aria_label = svg_attr(&attrs, "aria-label").and_then(normalize_svg_accessible_attr);
                 if self_closing {
                     break;
                 }
@@ -3732,13 +3736,17 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
         }
     }
 
-    (title, desc)
+    (aria_label, title, desc)
 }
 
 fn normalize_svg_accessible_text(src: &str) -> Option<String> {
     let stripped = strip_svg_tags(src);
     let decoded = decode_xml_entities(&stripped);
     truncate_svg_accessible_text(&decoded).filter(|text| !text.is_empty())
+}
+
+fn normalize_svg_accessible_attr(value: &str) -> Option<String> {
+    truncate_svg_accessible_text(value).filter(|text| !text.is_empty())
 }
 
 fn truncate_svg_accessible_text(src: &str) -> Option<String> {

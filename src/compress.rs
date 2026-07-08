@@ -44,9 +44,9 @@ struct BitWriter {
 }
 
 impl BitWriter {
-    fn new() -> Self {
+    fn with_capacity(capacity: usize) -> Self {
         BitWriter {
-            out: Vec::new(),
+            out: Vec::with_capacity(capacity),
             bitbuf: 0,
             bitcount: 0,
         }
@@ -217,6 +217,7 @@ const STORED_BLOCK_MAX: usize = u16::MAX as usize;
 const NONE: usize = usize::MAX;
 const ADLER_MOD: u32 = 65521;
 const ADLER_NMAX: usize = 5552;
+const FIXED_LIMIT_OVERSHOOT_BYTES: usize = 4;
 
 struct Adler32 {
     s1: u32,
@@ -293,7 +294,8 @@ fn deflate_fixed(data: &[u8]) -> FixedDeflate {
 }
 
 fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) -> FixedDeflate {
-    let mut bw = BitWriter::new();
+    let mut bw =
+        BitWriter::with_capacity(fixed_body_capacity_hint(data.len(), abort_after_body_len));
     let mut adler = Adler32::new();
     // Block header: BFINAL = 1, BTYPE = 01 (fixed Huffman), both LSB-first.
     bw.write_bits(1, 1);
@@ -401,6 +403,21 @@ fn fixed_body_exceeds_limit(bw: &BitWriter, abort_after_body_len: Option<usize>)
         Some(limit) => bw.pending_byte_len() > limit,
         None => false,
     }
+}
+
+fn fixed_body_capacity_hint(input_len: usize, abort_after_body_len: Option<usize>) -> usize {
+    let fixed_upper = fixed_huffman_body_len_upper_bound(input_len);
+    match abort_after_body_len {
+        Some(limit) => fixed_upper.min(limit.saturating_add(FIXED_LIMIT_OVERSHOOT_BYTES)),
+        None => fixed_upper,
+    }
+}
+
+fn fixed_huffman_body_len_upper_bound(input_len: usize) -> usize {
+    input_len
+        .checked_mul(9)
+        .and_then(|bits| bits.checked_add(10))
+        .map_or(usize::MAX, |bits| bits.div_ceil(8))
 }
 
 /// Append one or more raw DEFLATE stored (BTYPE=00) blocks to `out`.
@@ -1082,6 +1099,20 @@ mod tests {
         assert_eq!(
             zlib_decompress(&comp, v.len() + 64).as_deref(),
             Some(v.as_slice())
+        );
+    }
+
+    #[test]
+    fn fixed_deflate_capacity_hint_caps_abort_path_without_overflow() {
+        assert_eq!(fixed_huffman_body_len_upper_bound(0), 2);
+        assert_eq!(fixed_huffman_body_len_upper_bound(1), 3);
+        assert_eq!(fixed_huffman_body_len_upper_bound(8), 11);
+        assert_eq!(fixed_huffman_body_len_upper_bound(usize::MAX), usize::MAX);
+
+        assert_eq!(fixed_body_capacity_hint(1, Some(64)), 3);
+        assert_eq!(
+            fixed_body_capacity_hint(10_000, Some(64)),
+            64 + FIXED_LIMIT_OVERSHOOT_BYTES
         );
     }
 

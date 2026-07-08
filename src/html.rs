@@ -116,7 +116,10 @@ impl RenderState {
                 continue;
             }
 
-            let candidate = format!("{base}-{suffix}");
+            let mut candidate = String::with_capacity(base.len() + 1 + decimal_len_usize(suffix));
+            candidate.push_str(&base);
+            candidate.push('-');
+            push_usize(&mut candidate, suffix);
             suffix += 1;
             if let Entry::Vacant(entry) = self.heading_id_suffixes.entry(candidate) {
                 out.push_str(entry.key());
@@ -376,6 +379,30 @@ fn push_u64(out: &mut String, value: u64) {
         }
     }
     out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
+}
+
+fn push_usize(out: &mut String, value: usize) {
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut idx = buf.len();
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
+}
+
+fn decimal_len_usize(mut value: usize) -> usize {
+    let mut len = 1;
+    while value >= 10 {
+        value /= 10;
+        len += 1;
+    }
+    len
 }
 
 fn inlines_to_plain(inlines: &[Inline]) -> String {

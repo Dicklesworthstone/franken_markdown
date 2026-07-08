@@ -61,6 +61,7 @@ const PANEL_PAD_V: f32 = 5.0; // vertical breathing room above/below the code
 const PANEL_RADIUS: f32 = 4.0;
 const PANEL_ASCENT_FRAC: f32 = 0.78; // glyph top above baseline (mono)
 const PANEL_DESCENT_FRAC: f32 = 0.30; // glyph bottom below baseline
+const CODE_BLOCK_GAP_AFTER: f32 = 10.0; // clear adjacent rounded-panel padding
 const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
@@ -2273,7 +2274,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 });
             }
             mark_flow(out, start, group, FlowKind::Code);
-            gap(out, 6.0);
+            gap(out, CODE_BLOCK_GAP_AFTER);
         }
         Block::BlockQuote(inner) => {
             let start = out.len();
@@ -23133,6 +23134,20 @@ flowchart LR
             .find_map(|part| part.strip_prefix("y="))
     }
 
+    fn render_tree_y_for_text(tree: &str, text: &str) -> f32 {
+        let needle = format!("{text:?}");
+        for line in tree.lines() {
+            if line.contains("Code ") && line.contains(&needle) {
+                return render_tree_y_label(line)
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .unwrap_or_else(|| {
+                        panic!("code line should expose a parseable y coordinate: {line}")
+                    });
+            }
+        }
+        panic!("missing code text {text:?} in render tree\n{tree}");
+    }
+
     #[test]
     fn performance_plan_render_tree_pins_user_visible_regressions() {
         let tree = render_tree_debug(&performance_plan_markdown(), &small_opts(612.0, 792.0));
@@ -23203,6 +23218,24 @@ flowchart LR
         assert!(
             syntax_lines.iter().any(|line| line.contains("\"-->\"")),
             "Mermaid edge operators should emit a non-body fill in PDF code blocks\n{tree}"
+        );
+    }
+
+    #[test]
+    fn consecutive_code_panels_keep_visible_air_between_backgrounds() {
+        let tree = render_tree_debug(
+            "```text\nalpha\n```\n\n```text\nbeta\n```\n",
+            &small_opts(320.0, 400.0),
+        );
+        let alpha_y = render_tree_y_for_text(&tree, "alpha");
+        let beta_y = render_tree_y_for_text(&tree, "beta");
+        let baseline_gap = alpha_y - beta_y;
+        let min_non_overlapping_panel_gap =
+            CODE_FONT_SIZE * (PANEL_ASCENT_FRAC + PANEL_DESCENT_FRAC) + 2.0 * PANEL_PAD_V;
+
+        assert!(
+            baseline_gap > min_non_overlapping_panel_gap + 2.0,
+            "consecutive code panels should not visually merge: baseline gap {baseline_gap:.2}, minimum {min_non_overlapping_panel_gap:.2}\n{tree}"
         );
     }
 }

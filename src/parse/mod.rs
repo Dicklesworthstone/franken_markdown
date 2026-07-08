@@ -3779,19 +3779,23 @@ fn skip_spaces(chars: &[char], i: &mut usize) {
 
 fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut s = String::new();
+    push_inlines_to_plain(inlines, &mut s);
+    s
+}
+
+fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
-            Inline::Text(t) | Inline::Code(t) => s.push_str(t),
+            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                s.push_str(&inlines_to_plain(c));
+                push_inlines_to_plain(c, out);
             }
-            Inline::Link { content, .. } => s.push_str(&inlines_to_plain(content)),
-            Inline::Image { alt, .. } => s.push_str(alt),
-            Inline::SoftBreak | Inline::HardBreak => s.push(' '),
-            Inline::Html(h) => s.push_str(h),
+            Inline::Link { content, .. } => push_inlines_to_plain(content, out),
+            Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::SoftBreak | Inline::HardBreak => out.push(' '),
+            Inline::Html(h) => out.push_str(h),
         }
     }
-    s
 }
 
 // ---- small helpers ----------------------------------------------------------

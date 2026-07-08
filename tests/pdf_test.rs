@@ -1649,6 +1649,56 @@ fn pdf_svg_embedded_png_image_preserve_aspect_ratio_is_respected() {
 }
 
 #[test]
+fn pdf_svg_embedded_svg_image_renders_as_nested_vector_content() {
+    let nested_svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10">
+  <rect x="2" y="2" width="16" height="6" fill="#22c55e"/>
+  <text x="10" y="7" text-anchor="middle" font-size="4" fill="#111827">Nested</text>
+</svg>
+"##;
+    let nested_data = base64_encode(nested_svg);
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">
+  <rect x="0.5" y="0.5" width="39" height="19" fill="#ffffff" stroke="#111827"/>
+  <image x="4" y="3" width="24" height="12" preserveAspectRatio="none" href="data:image/svg+xml;base64,{nested_data}"/>
+</svg>
+"##
+    );
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("nested-vector.svg", svg.into_bytes())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Nested vector](nested-vector.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "embedded SVG data URI should not be rasterized into an image XObject: {text}"
+    );
+    assert!(
+        !text.contains("/XObject << /Im"),
+        "pure nested SVG content should not allocate raster image resources: {text}"
+    );
+    assert!(
+        !text.contains("/Im1 Do"),
+        "nested SVG content should be drawn as vector operators, not as a missing image XObject: {text}"
+    );
+    assert!(
+        text.contains("1.2 0 0 1.2 4 3 cm"),
+        "nested SVG viewBox should map through the embedded image x/y/width/height: {text}"
+    );
+    assert!(
+        text.contains("2 2 16 6 re"),
+        "nested SVG shapes should remain path operators in the page stream: {text}"
+    );
+    assert!(
+        text.contains("BT /F1"),
+        "nested SVG text should remain selectable PDF text: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_text_does_not_leak_graphics_state() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 36">
@@ -3955,6 +4005,46 @@ fn pdf_svg_user_space_patterns_tile_vector_children_under_shape_clip() {
     assert!(
         !text.contains("0.000 0.000 0.000 rg 2 2 8 8 re f"),
         "known pattern paint servers should not fall back to a solid default fill: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_patterns_tile_embedded_svg_images_as_vector_shapes() {
+    let nested_svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 6">
+  <rect x="1" y="1" width="4" height="4" fill="#00aaff"/>
+</svg>
+"##;
+    let nested_data = base64_encode(nested_svg);
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 6">
+  <defs>
+    <pattern id="tile" patternUnits="userSpaceOnUse" width="6" height="6">
+      <image x="0" y="0" width="6" height="6" preserveAspectRatio="none" href="data:image/svg+xml;base64,{nested_data}"/>
+    </pattern>
+  </defs>
+  <rect x="0" y="0" width="6" height="6" fill="url(#tile)"/>
+</svg>
+"##
+    );
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "pattern-svg-image.svg",
+            svg.into_bytes(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern embedded SVG](pattern-svg-image.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "pattern-embedded SVG data URI should stay vector, not become a raster image XObject: {text}"
+    );
+    assert!(
+        text.contains("1 0 0 1 0 0 cm\n0.000 0.667 1.000 rg 1 1 4 4 re f"),
+        "pattern-embedded SVG shapes should render inside the pattern tile even without text resources: {text}"
     );
 }
 

@@ -1798,9 +1798,19 @@ fn collect_svg_image_text(image: &PdfImageData, out: &mut String) {
     let Some(svg) = image.vector.as_ref() else {
         return;
     };
+    collect_svg_document_text(svg, out);
+}
+
+fn collect_svg_document_text(svg: &PdfSvgImage, out: &mut String) {
     for element in &svg.elements {
-        if let SvgElement::Text(text) = element {
-            out.push_str(&text.text);
+        match element {
+            SvgElement::Text(text) => out.push_str(&text.text),
+            SvgElement::Image(image) => {
+                if let Some(nested_svg) = image.image.vector.as_ref() {
+                    collect_svg_document_text(nested_svg, out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -4532,9 +4542,14 @@ fn parse_svg_embedded_image(
         return None;
     }
     let href = svg_attr(attrs, "href").or_else(|| svg_attr(attrs, "xlink:href"))?;
-    let png = decode_svg_png_data_uri(href)?;
-    let key = svg_inline_png_key(&png);
-    let image = parse_png_image_asset(&key, &png)?;
+    let image = if let Some(png) = decode_svg_png_data_uri(href) {
+        let key = svg_inline_png_key(&png);
+        parse_png_image_asset(&key, &png)?
+    } else {
+        let svg = decode_svg_svg_data_uri(href)?;
+        let key = svg_inline_svg_key(&svg);
+        parse_svg_image_asset(&key, &svg)?
+    };
     Some(SvgEmbeddedImage {
         x: svg_attr(attrs, "x")
             .and_then(parse_svg_number)
@@ -4566,6 +4581,51 @@ fn decode_svg_png_data_uri(href: &str) -> Option<Vec<u8>> {
         return None;
     }
     decode_svg_base64_payload(payload)
+}
+
+fn decode_svg_svg_data_uri(href: &str) -> Option<Vec<u8>> {
+    let (metadata, payload) = href.trim().split_once(',')?;
+    let metadata = metadata.trim().to_ascii_lowercase();
+    let suffix = metadata.strip_prefix("data:image/svg+xml")?;
+    if !suffix.is_empty() && !suffix.starts_with(';') {
+        return None;
+    }
+    if suffix
+        .split(';')
+        .skip(1)
+        .any(|part| part.trim() == "base64")
+    {
+        decode_svg_base64_payload(payload)
+    } else {
+        decode_svg_data_uri_payload(payload)
+    }
+}
+
+fn decode_svg_data_uri_payload(payload: &str) -> Option<Vec<u8>> {
+    if payload.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(payload.len());
+    let bytes = payload.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'%' => {
+                let high = *bytes.get(idx + 1)?;
+                let low = *bytes.get(idx + 2)?;
+                out.push(svg_hex_pair(high, low)?);
+                idx += 3;
+            }
+            byte => {
+                out.push(byte);
+                idx += 1;
+            }
+        }
+        if out.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 fn decode_svg_base64_payload(payload: &str) -> Option<Vec<u8>> {
@@ -4621,12 +4681,20 @@ fn decode_svg_base64_payload(payload: &str) -> Option<Vec<u8>> {
 }
 
 fn svg_inline_png_key(bytes: &[u8]) -> String {
+    svg_inline_image_key("svg-inline-png", bytes)
+}
+
+fn svg_inline_svg_key(bytes: &[u8]) -> String {
+    svg_inline_image_key("svg-inline-svg", bytes)
+}
+
+fn svg_inline_image_key(prefix: &str, bytes: &[u8]) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for &byte in bytes {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("svg-inline-png-{hash:016x}-{}", bytes.len())
+    format!("{prefix}-{hash:016x}-{}", bytes.len())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15827,13 +15895,12 @@ fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.l
         }
     }
     for line in lines {
-        for text in svg_texts_in_line(line) {
-            if text.text.is_empty() {
-                continue;
-            }
-            if let Some(slot_idx) = pdf_font_slot_index(text.slot) {
-                refs[slot_idx].texts.push(text.text.as_str());
-            }
+        if let Some(svg) = line
+            .image
+            .as_ref()
+            .and_then(|image| image.image.vector.as_ref())
+        {
+            collect_svg_font_slot_text_refs(svg, &mut refs);
         }
     }
     refs
@@ -15850,16 +15917,27 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
     }
 }
 
-fn svg_texts_in_line(line: &Line) -> impl Iterator<Item = &SvgText> {
-    line.image
-        .as_ref()
-        .and_then(|image| image.image.vector.as_ref())
-        .into_iter()
-        .flat_map(|svg| svg.elements.iter())
-        .filter_map(|element| match element {
-            SvgElement::Text(text) => Some(text),
-            _ => None,
-        })
+fn collect_svg_font_slot_text_refs<'a>(
+    svg: &'a PdfSvgImage,
+    refs: &mut [FontSlotTextRefs<'a>; SLOTS.len()],
+) {
+    for element in &svg.elements {
+        match element {
+            SvgElement::Text(text) => {
+                if !text.text.is_empty()
+                    && let Some(slot_idx) = pdf_font_slot_index(text.slot)
+                {
+                    refs[slot_idx].texts.push(text.text.as_str());
+                }
+            }
+            SvgElement::Image(image) => {
+                if let Some(nested_svg) = image.image.vector.as_ref() {
+                    collect_svg_font_slot_text_refs(nested_svg, refs);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -16042,10 +16120,20 @@ struct SvgPaintResources<'a> {
     stroke_scale: Option<f32>,
 }
 
+#[derive(Clone, Copy)]
+struct SvgTextDrawResources<'a> {
+    subsets: &'a [EmbeddedFace],
+    subset_lookup: &'a EmbeddedFaceLookup,
+    faces: &'a Faces,
+    shaped_cache: &'a ShapedRunCache,
+}
+
 struct SvgPageResources<'a> {
     shadings: &'a mut Vec<PdfShading>,
     alpha_states: &'a mut BTreeSet<(u16, u16)>,
 }
+
+type SvgViewportRect = (f32, f32, f32, f32);
 
 #[derive(Clone, Copy)]
 struct SvgImageTransform {
@@ -16364,6 +16452,12 @@ fn draw_svg_image(
         image_index,
         stroke_scale: svg_uniform_stroke_scale(transform),
     };
+    let text_resources = SvgTextDrawResources {
+        subsets,
+        subset_lookup,
+        faces,
+        shaped_cache,
+    };
     for element in &svg.elements {
         if let SvgElement::Text(text) = element {
             if in_shape_group {
@@ -16388,7 +16482,13 @@ fn draw_svg_image(
             append_svg_image_transform_prefix(body, transform);
             in_shape_group = true;
         }
-        draw_svg_shape(body, element, resources, page_resources);
+        draw_svg_shape(
+            body,
+            element,
+            resources,
+            Some(text_resources),
+            page_resources,
+        );
         push_svg_link_annotation(annots, element, transform);
     }
     if in_shape_group {
@@ -16596,6 +16696,7 @@ fn draw_svg_shape(
     body: &mut String,
     element: &SvgElement,
     resources: SvgPaintResources<'_>,
+    text_resources: Option<SvgTextDrawResources<'_>>,
     page_resources: &mut SvgPageResources<'_>,
 ) {
     match element {
@@ -16663,7 +16764,9 @@ fn draw_svg_shape(
             image,
             resources.clip_paths,
             resources.image_index,
-            page_resources.alpha_states,
+            text_resources,
+            page_resources,
+            resources.stroke_scale,
         ),
         SvgElement::Text(_) => {}
     }
@@ -17519,18 +17622,25 @@ fn draw_svg_embedded_image(
     image: &SvgEmbeddedImage,
     clip_paths: &[SvgClipPath],
     image_index: &BTreeMap<&str, usize>,
-    alpha_states: &mut BTreeSet<(u16, u16)>,
+    text_resources: Option<SvgTextDrawResources<'_>>,
+    page_resources: &mut SvgPageResources<'_>,
+    stroke_scale: Option<f32>,
 ) {
     if !image.style.visible || image.w <= 0.0 || image.h <= 0.0 {
         return;
     }
-    let Some(idx) = image_index.get(image.image.key.as_str()) else {
-        return;
+    let raster_idx = if image.image.vector.is_none() {
+        let Some(idx) = image_index.get(image.image.key.as_str()) else {
+            return;
+        };
+        Some(*idx)
+    } else {
+        None
     };
     body.push_str("q ");
     let alpha = quantize_svg_alpha(image.style.opacity);
     if alpha < 1000 {
-        append_svg_alpha_state_recorded(body, alpha_states, alpha, alpha);
+        append_svg_alpha_state_recorded(body, page_resources.alpha_states, alpha, alpha);
         body.push(' ');
     }
     if !image.style.transform.is_identity() {
@@ -17579,11 +17689,182 @@ fn draw_svg_embedded_image(
             h = pdf_num(image.h),
         ));
     }
-    let name = image_name(*idx);
-    append_pdf_cm_operator(body, draw_w, 0.0, 0.0, -draw_h, draw_x, draw_y + draw_h);
-    body.push_str(" /");
-    body.push_str(&name);
-    body.push_str(" Do Q\n");
+    if let Some(svg) = image.image.vector.as_ref() {
+        draw_svg_embedded_vector_image(
+            body,
+            svg,
+            (draw_x, draw_y, draw_w, draw_h),
+            image_index,
+            text_resources,
+            page_resources,
+            stroke_scale,
+        );
+        body.push_str("Q\n");
+        return;
+    }
+    if let Some(idx) = raster_idx {
+        let name = image_name(idx);
+        append_pdf_cm_operator(body, draw_w, 0.0, 0.0, -draw_h, draw_x, draw_y + draw_h);
+        body.push_str(" /");
+        body.push_str(&name);
+        body.push_str(" Do ");
+    }
+    body.push_str("Q\n");
+}
+
+fn draw_svg_embedded_vector_image(
+    body: &mut String,
+    svg: &PdfSvgImage,
+    viewport: SvgViewportRect,
+    image_index: &BTreeMap<&str, usize>,
+    text_resources: Option<SvgTextDrawResources<'_>>,
+    page_resources: &mut SvgPageResources<'_>,
+    parent_stroke_scale: Option<f32>,
+) {
+    let Some((transform, viewport_clip)) = svg_embedded_vector_transform(svg, viewport) else {
+        return;
+    };
+    body.push_str("q ");
+    if let Some((x, y, w, h)) = viewport_clip {
+        body.push_str(&format!(
+            "{x} {y} {w} {h} re W n ",
+            x = pdf_num(x),
+            y = pdf_num(y),
+            w = pdf_num(w),
+            h = pdf_num(h),
+        ));
+    }
+    append_pdf_cm_operator(
+        body,
+        transform.a,
+        transform.b,
+        transform.c,
+        transform.d,
+        transform.e,
+        transform.f,
+    );
+    body.push('\n');
+
+    let local_stroke_scale = svg_uniform_svg_transform_scale(transform);
+    let stroke_scale = match (parent_stroke_scale, local_stroke_scale) {
+        (Some(parent), Some(local)) => Some(parent * local),
+        (None, Some(local)) => Some(local),
+        _ => None,
+    };
+    let resources = SvgPaintResources {
+        gradients: &svg.gradients,
+        patterns: &svg.patterns,
+        clip_paths: &svg.clip_paths,
+        markers: &svg.markers,
+        image_index,
+        stroke_scale,
+    };
+    for element in &svg.elements {
+        match element {
+            SvgElement::Text(text) => {
+                if let Some(text_resources) = text_resources {
+                    draw_svg_text(
+                        body,
+                        text,
+                        SVG_CURRENT_CTM_TEXT_TRANSFORM,
+                        &svg.clip_paths,
+                        text_resources.subsets,
+                        text_resources.subset_lookup,
+                        text_resources.faces,
+                        text_resources.shaped_cache,
+                        page_resources.alpha_states,
+                    );
+                }
+            }
+            _ => draw_svg_shape(body, element, resources, text_resources, page_resources),
+        }
+    }
+    body.push_str("Q\n");
+}
+
+const SVG_CURRENT_CTM_TEXT_TRANSFORM: SvgImageTransform = SvgImageTransform {
+    sx: 1.0,
+    sy: -1.0,
+    tx: 0.0,
+    ty: 0.0,
+    viewport_clip: None,
+};
+
+fn svg_embedded_vector_transform(
+    svg: &PdfSvgImage,
+    viewport: SvgViewportRect,
+) -> Option<(SvgTransform, Option<SvgViewportRect>)> {
+    let (x, y, w, h) = viewport;
+    let raw_sx = w / svg.view_box.w.max(1.0);
+    let raw_sy = h / svg.view_box.h.max(1.0);
+    if ![x, y, w, h, raw_sx, raw_sy]
+        .iter()
+        .all(|value| value.is_finite())
+        || w <= 0.0
+        || h <= 0.0
+        || raw_sx <= 0.0
+        || raw_sy <= 0.0
+    {
+        return None;
+    }
+
+    let (sx, sy, tx, ty, clip) = match svg.preserve_aspect.mode {
+        SvgAspectScaleMode::None => (
+            raw_sx,
+            raw_sy,
+            x - svg.view_box.x * raw_sx,
+            y - svg.view_box.y * raw_sy,
+            None,
+        ),
+        SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
+            let scale = if svg.preserve_aspect.mode == SvgAspectScaleMode::Slice {
+                raw_sx.max(raw_sy)
+            } else {
+                raw_sx.min(raw_sy)
+            };
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let content_w = svg.view_box.w * scale;
+            let content_h = svg.view_box.h * scale;
+            let offset_x = (w - content_w) * svg.preserve_aspect.align_x;
+            let offset_y = (h - content_h) * svg.preserve_aspect.align_y;
+            (
+                scale,
+                scale,
+                x + offset_x - svg.view_box.x * scale,
+                y + offset_y - svg.view_box.y * scale,
+                (svg.preserve_aspect.mode == SvgAspectScaleMode::Slice).then_some((x, y, w, h)),
+            )
+        }
+    };
+    if ![sx, sy, tx, ty].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    Some((
+        SvgTransform {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: sy,
+            e: tx,
+            f: ty,
+        },
+        clip,
+    ))
+}
+
+fn svg_uniform_svg_transform_scale(transform: SvgTransform) -> Option<f32> {
+    if transform.b.abs() > 0.0001 || transform.c.abs() > 0.0001 {
+        return None;
+    }
+    let sx = transform.a.abs();
+    let sy = transform.d.abs();
+    if sx.is_finite() && sy.is_finite() && sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
+        Some((sx + sy) * 0.5)
+    } else {
+        None
+    }
 }
 
 fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> Option<(f32, f32, f32, f32, bool)> {
@@ -18161,7 +18442,7 @@ where
                 body.push(' ');
             }
             for element in &pattern.elements {
-                draw_svg_shape(body, element, resources, page_resources);
+                draw_svg_shape(body, element, resources, None, page_resources);
             }
             body.push_str("Q\n");
         }

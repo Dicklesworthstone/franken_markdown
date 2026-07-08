@@ -16335,9 +16335,9 @@ fn draw_svg_poly(
 
 fn append_svg_poly_path(body: &mut String, poly: &SvgPoly, closed: bool) {
     let (x0, y0) = poly.points[0];
-    body.push_str(&format!("{} {} m ", pdf_num(x0), pdf_num(y0)));
+    append_svg_path_point_op(body, x0, y0, 'm');
     for &(x, y) in &poly.points[1..] {
-        body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+        append_svg_path_point_op(body, x, y, 'l');
     }
     if closed {
         body.push_str("h ");
@@ -18608,27 +18608,19 @@ fn append_svg_text_clip_path(
                 let (x, y) = map(x, y);
                 current = (x, y);
                 subpath_start = Some(current);
-                body.push_str(&format!("{} {} m ", pdf_num(x), pdf_num(y)));
+                append_svg_path_point_op(body, x, y, 'm');
             }
             SvgPathOp::Line(x, y) => {
                 let (x, y) = map(x, y);
                 current = (x, y);
-                body.push_str(&format!("{} {} l ", pdf_num(x), pdf_num(y)));
+                append_svg_path_point_op(body, x, y, 'l');
             }
             SvgPathOp::Cubic(x1, y1, x2, y2, x, y) => {
                 let (x1, y1) = map(x1, y1);
                 let (x2, y2) = map(x2, y2);
                 let (x, y) = map(x, y);
                 current = (x, y);
-                body.push_str(&format!(
-                    "{} {} {} {} {} {} c ",
-                    pdf_num(x1),
-                    pdf_num(y1),
-                    pdf_num(x2),
-                    pdf_num(y2),
-                    pdf_num(x),
-                    pdf_num(y)
-                ));
+                append_svg_path_cubic_op(body, x1, y1, x2, y2, x, y);
             }
             SvgPathOp::Quad(x1, y1, x, y) => {
                 let (x1, y1) = map(x1, y1);
@@ -18639,15 +18631,7 @@ fn append_svg_text_clip_path(
                 );
                 let c2 = (x + (x1 - x) * (2.0 / 3.0), y + (y1 - y) * (2.0 / 3.0));
                 current = (x, y);
-                body.push_str(&format!(
-                    "{} {} {} {} {} {} c ",
-                    pdf_num(c1.0),
-                    pdf_num(c1.1),
-                    pdf_num(c2.0),
-                    pdf_num(c2.1),
-                    pdf_num(x),
-                    pdf_num(y)
-                ));
+                append_svg_path_cubic_op(body, c1.0, c1.1, c2.0, c2.1, x, y);
             }
             SvgPathOp::Close => {
                 if let Some(start) = subpath_start {
@@ -21421,7 +21405,7 @@ mod pdf_writer_tests {
         F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LineTok, LinkTarget,
         PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
         PdfStructElementObjectParts, Placed, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgPathOp, SvgShadow, SvgStyle, SvgTransform, Tok, WidthCache,
+        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTransform, Tok, WidthCache,
         append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
@@ -21435,14 +21419,14 @@ mod pdf_writer_tests {
         append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
         append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
-        append_svg_shadow_prefix, append_svg_stroke_options, append_svg_style,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
-        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
-        first_visible_segment_index, font_size_of, kerned_tj, line_has_visible_content,
-        measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
-        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
-        token_visible_text, tokenize,
+        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
+        append_svg_style, append_text_segment_operator, append_xref_in_use_row, append_xref_offset,
+        build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
+        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
+        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
+        line_has_visible_content, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3,
+        pdf_num, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
+        svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ast::Inline;
     use std::borrow::Cow;
@@ -22720,6 +22704,25 @@ mod pdf_writer_tests {
             out,
             "1 2 m 3.5 4.25 l 5 6 7.5 8.25 9 10 c 11 14 14 18 18 22 c h "
         );
+    }
+
+    #[test]
+    fn svg_poly_path_writer_preserves_legacy_format_shape() {
+        let poly = SvgPoly {
+            points: vec![(1.0, 2.0), (3.5, 4.25), (-0.0, 5.0)],
+            style: SvgStyle::INITIAL,
+            marker_end: None,
+            marker_mid: None,
+            marker_start: None,
+            link: None,
+        };
+        let mut open = String::new();
+        append_svg_poly_path(&mut open, &poly, false);
+        assert_eq!(open, "1 2 m 3.5 4.25 l -0 5 l ");
+
+        let mut closed = String::new();
+        append_svg_poly_path(&mut closed, &poly, true);
+        assert_eq!(closed, "1 2 m 3.5 4.25 l -0 5 l h ");
     }
 
     #[test]

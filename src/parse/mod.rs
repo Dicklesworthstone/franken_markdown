@@ -605,7 +605,7 @@ fn collect_link_reference_metadata_into(
             continue;
         }
 
-        if let Some(is_paragraph_text) = reference_collector_plain_line_fast_path(line) {
+        if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
             in_paragraph = is_paragraph_text;
             i += 1;
             continue;
@@ -753,22 +753,27 @@ fn push_consumed_reference_range(consumed: &mut ConsumedReferenceLines, range: R
     consumed.push(range);
 }
 
+#[cfg(test)]
 fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
     if line.trim().is_empty() {
         return Some(false);
     }
-    if indented_code_start(line) {
+    reference_collector_plain_nonblank_line_fast_path(line)
+}
+
+fn reference_collector_plain_nonblank_line_fast_path(line: &str) -> Option<bool> {
+    let indent = leading_spaces(line);
+    if indent >= 4 {
         return Some(false);
     }
-    if reference_collector_needs_block_scan(line) {
+    if reference_collector_needs_block_scan_after_indent(line, indent) {
         return None;
     }
     Some(true)
 }
 
-fn reference_collector_needs_block_scan(line: &str) -> bool {
+fn reference_collector_needs_block_scan_after_indent(line: &str, indent: usize) -> bool {
     let bytes = line.as_bytes();
-    let indent = leading_spaces(line);
     let tail = bytes.get(indent..).unwrap_or_default();
     let Some(&first) = tail.first() else {
         return false;
@@ -914,7 +919,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             i += 1;
             continue;
         }
-        if let Some(is_paragraph_text) = reference_collector_plain_line_fast_path(line) {
+        if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
             in_paragraph = is_paragraph_text;
             i += 1;
             continue;
@@ -4071,7 +4076,8 @@ mod char_ref_dos_tests {
 mod refdef_paragraph_tests {
     use super::{
         collect_link_references, line_is_paragraph_text, parse_document,
-        reference_collector_plain_line_fast_path, table_ends_at, table_extent,
+        reference_collector_plain_line_fast_path,
+        reference_collector_plain_nonblank_line_fast_path, table_ends_at, table_extent,
     };
     use crate::{
         HtmlOptions,
@@ -4238,6 +4244,29 @@ mod refdef_paragraph_tests {
                 reference_collector_plain_line_fast_path(line),
                 None,
                 "{line:?} must still use the full reference/block classifier"
+            );
+        }
+    }
+
+    #[test]
+    fn reference_collector_nonblank_fast_path_matches_wrapper() {
+        for line in [
+            "Version 2.0 (draft)! & contact@example.com",
+            "See <span> and [text]: not at boundary",
+            "    [code]: stays literal",
+            "# heading",
+            "> quote",
+            "```rust",
+            "---",
+            "1. item",
+            "| a | b |",
+            "[a]: /url",
+            "<div>",
+        ] {
+            assert_eq!(
+                reference_collector_plain_nonblank_line_fast_path(line),
+                reference_collector_plain_line_fast_path(line),
+                "nonblank fast path must preserve wrapper classification for {line:?}"
             );
         }
     }

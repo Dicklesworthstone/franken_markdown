@@ -5379,13 +5379,14 @@ fn parse_svg_document_css_rules(src: &str) -> Vec<SvgCssRule> {
 fn parse_svg_css_variables_from_css(css: &str, out: &mut Vec<SvgCssVariable>) {
     let mut pos = 0usize;
     while let Some(open) = find_css_block_open(css, pos) {
-        let selectors = css
-            .get(pos..open)
-            .unwrap_or_default()
-            .rsplit(';')
-            .next()
-            .unwrap_or_default()
-            .trim();
+        let selectors = clean_svg_css_selector_wrapper(
+            css.get(pos..open)
+                .unwrap_or_default()
+                .rsplit(';')
+                .next()
+                .unwrap_or_default()
+                .trim(),
+        );
         let Some(close) = find_css_block_close(css, open) else {
             break;
         };
@@ -7445,13 +7446,14 @@ fn parse_svg_style_with_ancestors(
 fn parse_svg_css_rules(css: &str, out: &mut Vec<SvgCssRule>) {
     let mut pos = 0usize;
     while let Some(open) = find_css_block_open(css, pos) {
-        let selectors = css
-            .get(pos..open)
-            .unwrap_or_default()
-            .rsplit(';')
-            .next()
-            .unwrap_or_default()
-            .trim();
+        let selectors = clean_svg_css_selector_wrapper(
+            css.get(pos..open)
+                .unwrap_or_default()
+                .rsplit(';')
+                .next()
+                .unwrap_or_default()
+                .trim(),
+        );
         let Some(close) = find_css_block_close(css, open) else {
             break;
         };
@@ -7470,6 +7472,69 @@ fn parse_svg_css_rules(css: &str, out: &mut Vec<SvgCssRule>) {
         }
         pos = close + 1;
     }
+}
+
+fn clean_svg_css_selector_wrapper(mut selectors: &str) -> &str {
+    loop {
+        selectors = selectors.trim_start();
+        if let Some(rest) = selectors.strip_prefix("<![CDATA[") {
+            selectors = rest;
+            continue;
+        }
+        if let Some(rest) = selectors.strip_prefix("<!--") {
+            selectors = rest;
+            continue;
+        }
+        if let Some(rest) = selectors.strip_prefix("/*")
+            && let Some(end) = rest.find("*/")
+        {
+            selectors = &rest[end + 2..];
+            continue;
+        }
+        break;
+    }
+
+    selectors = selectors.trim_end();
+    loop {
+        if let Some(rest) = selectors.strip_suffix("]]>") {
+            selectors = rest.trim_end();
+            continue;
+        }
+        if let Some(rest) = selectors.strip_suffix("-->") {
+            selectors = rest.trim_end();
+            continue;
+        }
+        if selectors.ends_with("*/")
+            && let Some(start) = selectors.rfind("/*")
+        {
+            selectors = selectors[..start].trim_end();
+            continue;
+        }
+        break;
+    }
+
+    selectors.trim()
+}
+
+#[cfg(test)]
+#[test]
+fn clean_svg_css_selector_wrapper_handles_exporter_wrappers() {
+    assert_eq!(
+        clean_svg_css_selector_wrapper(" <![CDATA[\n :root "),
+        ":root"
+    );
+    assert_eq!(
+        clean_svg_css_selector_wrapper("<!--\n /* exporter */\n .edge "),
+        ".edge"
+    );
+    assert_eq!(
+        clean_svg_css_selector_wrapper("@media screen "),
+        "@media screen"
+    );
+    assert_eq!(
+        clean_svg_css_selector_wrapper(".outer /* unsupported interior comment */ .inner"),
+        ".outer /* unsupported interior comment */ .inner"
+    );
 }
 
 fn find_css_block_open(css: &str, mut pos: usize) -> Option<usize> {

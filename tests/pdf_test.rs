@@ -3316,6 +3316,39 @@ fn pdf_svg_stylesheets_apply_document_wide_from_defs_and_late_positions() {
 }
 
 #[test]
+fn pdf_svg_stylesheet_cdata_and_comment_wrappers_do_not_hide_first_rule() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 32">
+  <style><![CDATA[
+    :root { --wrapped-fill: #0000ff; }
+  ]]></style>
+  <style><!--
+    /* common exporter wrapper */
+    .wrapped-text { fill: var(--wrapped-fill); }
+    .wrapped-edge { stroke: #00ff00; stroke-width: 2; }
+  --></style>
+  <text class="wrapped-text" x="4" y="14" font-size="10">Wrapped</text>
+  <path class="wrapped-edge" d="M4 24 H64" fill="none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("wrapped-css.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Wrapped CSS](wrapped-css.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.000 0.000 1.000 rg\nBT /F1"),
+        "CDATA-wrapped :root variables should resolve before class fill rules: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 0.000 RG 2 w 0 J 0 j 4 M 4 24 m 64 24 l S"),
+        "HTML/CSS-comment-wrapped first class selector should still style the path: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_evenodd_fill_rule_uses_pdf_even_odd_paint_operators() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">

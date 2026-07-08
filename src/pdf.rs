@@ -19275,22 +19275,29 @@ fn append_decimal_usize(out: &mut Vec<u8>, value: usize) {
 }
 
 fn append_xref_offset(out: &mut Vec<u8>, offset: usize) {
-    let mut buf = [0u8; 20];
-    let mut n = offset;
-    let mut pos = buf.len();
-    loop {
-        pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
+    const DECIMAL_PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+          2021222324252627282930313233343536373839\
+          4041424344454647484950515253545556575859\
+          6061626364656667686970717273747576777879\
+          8081828384858687888990919293949596979899";
+    const CLASSIC_XREF_OFFSET_LIMIT: u64 = 10_000_000_000;
+
+    if (offset as u64) < CLASSIC_XREF_OFFSET_LIMIT {
+        let mut buf = [b'0'; 10];
+        let mut n = offset;
+        let mut pos = buf.len();
+        while pos != 0 {
+            let pair = (n % 100) * 2;
+            n /= 100;
+            pos -= 2;
+            buf[pos] = DECIMAL_PAIRS[pair];
+            buf[pos + 1] = DECIMAL_PAIRS[pair + 1];
         }
+        out.extend_from_slice(&buf);
+        return;
     }
-    let digits = &buf[pos..];
-    for _ in digits.len()..10 {
-        out.push(b'0');
-    }
-    out.extend_from_slice(digits);
+
+    append_decimal_usize(out, offset);
 }
 
 fn append_pdf_object_header(out: &mut Vec<u8>, object_id: usize) {
@@ -21799,9 +21806,14 @@ mod pdf_writer_tests {
         out.push(b'\n');
         append_xref_offset(&mut out, 1_234_567_890);
         out.push(b'\n');
+        append_xref_offset(&mut out, 9_999_999_999);
+        out.push(b'\n');
         append_xref_offset(&mut out, 10_000_000_000);
 
-        assert_eq!(out, b"0000000000\n0000000042\n1234567890\n10000000000");
+        assert_eq!(
+            out,
+            b"0000000000\n0000000042\n1234567890\n9999999999\n10000000000"
+        );
     }
 
     #[test]

@@ -112,11 +112,20 @@ if [ "$SELF_TEST" -eq 1 ]; then
   echo "-- (1) real README must PASS --"
   if run_gate "README.md" "${ART}/self-real.txt"; then echo "  real README: PASS (ok)"; else echo "  real README: unexpectedly FAILED"; exit 1; fi
   echo "-- (2) overclaimed README must FAIL --"
+  # The fixture used to append an `npm install` snippet, which was an
+  # overclaim while the package was unpublished; the package is published
+  # now, so every real registry row is genuinely satisfiable. To keep the
+  # teeth check independent of which capabilities happen to be true, the
+  # fixture gets its own registry copy with one impossible synthetic row
+  # (a capability key the binary will never report) whose README pattern
+  # is injected below.
   FAKE="${ART}/overclaimed-README.md"
   cat README.md >"$FAKE"
-  # shellcheck disable=SC2016 # The Markdown code fence is intentional literal fixture text.
-  printf '\n## Install\n\n```\nnpm install @franken-suite/franken-markdown\n```\n' >>"$FAKE"
-  if run_gate "$FAKE" "${ART}/self-fake.txt"; then
+  printf '\nThis build performs faster-than-light rendering.\n' >>"$FAKE"
+  FAKE_REGISTRY="${ART}/overclaimed-claims.tsv"
+  cp "$REGISTRY" "$FAKE_REGISTRY"
+  printf 'ftl_rendering\tfaster-than-light rendering\tftl_rendering\tavailable\tscripts/check-claim-discipline.sh\n' >>"$FAKE_REGISTRY"
+  if REGISTRY="$FAKE_REGISTRY" run_gate "$FAKE" "${ART}/self-fake.txt"; then
     echo "  overclaimed README: UNEXPECTEDLY PASSED — gate has no teeth"; exit 1
   else
     echo "  overclaimed README: correctly FAILED (gate has teeth)"

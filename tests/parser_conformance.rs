@@ -539,6 +539,30 @@ fn profiled_parser_plain_inline_fast_path_skips_tokenizer_without_losing_autolin
 }
 
 #[test]
+fn profiled_parser_plain_inline_fast_path_ignores_non_url_h_and_w_words() {
+    let src = "where whales hover without autolinks";
+    let profiled = parse_markdown_profiled(src);
+    let inline_stage = profiled
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "inline_parse")
+        .expect("plain h/w-heavy paragraph should still report inline parse");
+
+    assert_eq!(inline_stage.count, src.chars().count());
+    assert_eq!(inline_stage.allocations, 1);
+    assert_eq!(
+        profiled.document.blocks,
+        vec![Block::Paragraph(vec![Inline::Text(src.to_string())])]
+    );
+
+    let autolinked = html("See https://example.test and www.example.org");
+    assert!(autolinked.contains(
+        "<a href=\"https://example.test\">https://example.test</a> and \
+         <a href=\"http://www.example.org\">www.example.org</a>"
+    ));
+}
+
+#[test]
 fn profiled_full_inline_parse_without_emphasis_skips_resolver_state() {
     let src = "before `code` &amp; <https://example.test> user@example.test <!-- note --> after";
     let profiled = parse_markdown_profiled(src);

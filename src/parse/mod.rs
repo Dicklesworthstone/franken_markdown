@@ -2529,15 +2529,24 @@ fn inline_text_needs_full_parse(text: &str) -> bool {
         match bytes[i] {
             b'\\' | b'\n' | b'\r' | b'`' | b'!' | b'[' | b'<' | b'&' | b'~' | b'*' | b'_'
             | b'@' => return true,
-            b'h' if bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://") => {
+            b':' if bytes[i..].starts_with(b"://") && inline_http_scheme_before_colon(bytes, i) => {
                 return true;
             }
-            b'w' if bytes[i..].starts_with(b"www.") => return true,
+            b'.' if inline_www_prefix_before_dot(bytes, i) => return true,
             _ => {}
         }
         i += 1;
     }
     false
+}
+
+fn inline_http_scheme_before_colon(bytes: &[u8], colon: usize) -> bool {
+    (colon >= 4 && bytes.get(colon - 4..colon) == Some(b"http".as_slice()))
+        || (colon >= 5 && bytes.get(colon - 5..colon) == Some(b"https".as_slice()))
+}
+
+fn inline_www_prefix_before_dot(bytes: &[u8], dot: usize) -> bool {
+    dot >= 3 && bytes.get(dot - 3..dot) == Some(b"www".as_slice())
 }
 
 fn parse_inlines_chars_with_refs_profiled(

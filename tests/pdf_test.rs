@@ -4024,6 +4024,52 @@ fn pdf_svg_gradient_stop_current_color_resolves_from_gradient_stop_and_css_color
 }
 
 #[test]
+fn pdf_svg_gradient_stop_current_color_resolves_from_gradient_stylesheet_color() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16">
+  <style>
+    linearGradient.brand-gradient { --brand-start: #123456; color: var(--brand-start); }
+    #inline-wins { --wrong-start: #ff0000; color: var(--wrong-start); }
+  </style>
+  <defs>
+    <linearGradient id="class-gradient" class="brand-gradient">
+      <stop offset="0%" stop-color="currentColor"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="inline-wins" style="--inline-start: #00ff80; color: var(--inline-start)">
+      <stop offset="0%" stop-color="currentColor"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="18" height="10" fill="url(#class-gradient)"/>
+  <rect x="26" y="2" width="18" height="10" fill="url(#inline-wins)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "gradient-stylesheet-current-color.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Gradient stylesheet currentColor](gradient-stylesheet-current-color.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/C0 [0.071 0.204 0.337] /C1 [1.000 1.000 1.000] /N 1"),
+        "gradient-level stylesheet color should feed stop-color=currentColor: {text}"
+    );
+    assert!(
+        text.contains("/C0 [0.000 1.000 0.502] /C1 [1.000 1.000 1.000] /N 1"),
+        "inline gradient color should override a matching stylesheet rule before resolving currentColor: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_linear_gradient_transform_and_spread_method_are_respected() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 32">

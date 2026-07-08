@@ -3155,11 +3155,11 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
     let mut link_stack: Vec<Option<LinkTarget>> = vec![None];
     let mut selector_stack: Vec<SvgCssAncestor> = Vec::new();
     let css_vars = parse_svg_css_variables(src);
-    let gradients = parse_svg_gradient_paints(src, &css_vars);
+    let css_rules = parse_svg_document_css_rules(src);
+    let gradients = parse_svg_gradient_paints(src, &css_vars, &css_rules);
     let filter_shadows = parse_svg_filter_shadows(src, &css_vars);
     let mut clip_paths = parse_svg_clip_paths(src);
     clip_paths.extend(parse_svg_masks(src, &css_vars));
-    let css_rules = parse_svg_document_css_rules(src);
     let patterns = parse_svg_pattern_paints(
         src,
         &gradients,
@@ -6674,10 +6674,14 @@ fn find_svg_matching_end_tag(src: &str, mut pos: usize, local_name: &str) -> Opt
     None
 }
 
-fn parse_svg_gradient_paints(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgGradientPaint> {
+fn parse_svg_gradient_paints(
+    src: &str,
+    css_vars: &[SvgCssVariable],
+    css_rules: &[SvgCssRule],
+) -> Vec<SvgGradientPaint> {
     let mut gradients = Vec::new();
     let stop_css_rules = parse_svg_gradient_stop_css_rules(src, css_vars);
-    let definitions = parse_svg_gradient_definitions(src, css_vars, &stop_css_rules);
+    let definitions = parse_svg_gradient_definitions(src, css_vars, css_rules, &stop_css_rules);
     for index in 0..definitions.len() {
         let definition = &definitions[index];
         if gradients
@@ -6985,6 +6989,7 @@ fn svg_element_representative_color(element: &SvgElement) -> Option<SvgColor> {
 fn parse_svg_gradient_definitions(
     src: &str,
     css_vars: &[SvgCssVariable],
+    css_rules: &[SvgCssRule],
     stop_css_rules: &[SvgGradientStopCssRule],
 ) -> Vec<SvgGradientDefinition> {
     let mut definitions = Vec::new();
@@ -7042,7 +7047,7 @@ fn parse_svg_gradient_definitions(
                 body,
                 css_vars,
                 stop_css_rules,
-                parse_svg_gradient_inherited_color(&attrs, css_vars),
+                parse_svg_gradient_inherited_color(local, &attrs, css_vars, css_rules),
             ),
             attrs,
         });
@@ -7493,22 +7498,45 @@ fn add_svg_weighted_color(accum: &mut (f32, f32, f32), color: (f32, f32, f32), w
 }
 
 fn parse_svg_gradient_inherited_color(
+    tag: &str,
     attrs: &[(String, String)],
     css_vars: &[SvgCssVariable],
+    css_rules: &[SvgCssRule],
 ) -> SvgColor {
+    let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, &[], tag, attrs);
     let mut color = SvgStyle::INITIAL.color;
-    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), css_vars);
+    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), &scoped_css_vars);
+    apply_svg_gradient_color_css(&mut color, tag, attrs, &scoped_css_vars, css_rules);
     if let Some(style) = svg_attr(attrs, "style") {
         for decl in style.split(';') {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
             if name.trim().eq_ignore_ascii_case("color") {
-                apply_svg_gradient_color_attr(&mut color, Some(value.trim()), css_vars);
+                apply_svg_gradient_color_attr(&mut color, Some(value.trim()), &scoped_css_vars);
             }
         }
     }
     color
+}
+
+fn apply_svg_gradient_color_css(
+    color: &mut SvgColor,
+    tag: &str,
+    attrs: &[(String, String)],
+    css_vars: &[SvgCssVariable],
+    css_rules: &[SvgCssRule],
+) {
+    for rule in svg_matching_css_rules(tag, attrs, css_rules, &[]) {
+        for decl in rule.decls.split(';') {
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("color") {
+                apply_svg_gradient_color_attr(color, Some(value.trim()), css_vars);
+            }
+        }
+    }
 }
 
 fn parse_svg_gradient_stop(

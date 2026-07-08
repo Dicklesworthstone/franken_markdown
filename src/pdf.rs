@@ -14715,14 +14715,17 @@ fn serialize(
         // wrap the whole prelude as one /Artifact so it stays out of the tagged
         // reading order. (Per-rule and per-quote-bar artifacts are wrapped at
         // their draw sites above and below.)
-        let mut stream =
-            String::with_capacity(bg.len().saturating_add(body.len()).saturating_add(24));
-        if !bg.is_empty() {
+        let stream = if bg.is_empty() {
+            body
+        } else {
+            let mut stream =
+                String::with_capacity(bg.len().saturating_add(body.len()).saturating_add(24));
             stream.push_str("/Artifact BMC\n");
             stream.push_str(&bg);
             stream.push_str("EMC\n");
-        }
-        stream.push_str(&body);
+            stream.push_str(&body);
+            stream
+        };
 
         scratch.pages.push(PageContent {
             stream,

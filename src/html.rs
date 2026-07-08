@@ -462,10 +462,9 @@ fn css_without_remote_imports(css: &str) -> Option<String> {
     let mut changed = false;
     while let Some(import_rel) = find_ascii_case_insensitive(&css[search..], "@import") {
         let import_start = search + import_rel;
-        let Some(statement_end_rel) = css[import_start..].find(';') else {
+        let Some(statement_end) = css_import_statement_end(css, import_start) else {
             break;
         };
-        let statement_end = import_start + statement_end_rel + 1;
         let statement = &css[import_start..statement_end];
         if css_import_at_rule_boundary(css, import_start)
             && (contains_ascii_case_insensitive(statement, "http://")
@@ -494,6 +493,67 @@ fn css_without_remote_imports(css: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn css_import_statement_end(css: &str, import_start: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut idx = import_start;
+    let mut quote = None;
+    let mut paren_depth = 0usize;
+    let mut in_comment = false;
+
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if in_comment {
+            if byte == b'*' && bytes.get(idx + 1) == Some(&b'/') {
+                idx += 2;
+                in_comment = false;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if let Some(quote_byte) = quote {
+            if byte == b'\\' {
+                idx += 1;
+                if idx < bytes.len() {
+                    idx += 1;
+                }
+                continue;
+            }
+            if byte == quote_byte {
+                quote = None;
+            }
+            idx += 1;
+            continue;
+        }
+
+        if byte == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+            idx += 2;
+            in_comment = true;
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => {
+                quote = Some(byte);
+                idx += 1;
+            }
+            b'(' => {
+                paren_depth += 1;
+                idx += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                idx += 1;
+            }
+            b';' if paren_depth == 0 => return Some(idx + 1),
+            _ => idx += 1,
+        }
+    }
+
+    None
 }
 
 fn css_import_at_rule_boundary(css: &str, import_start: usize) -> bool {
@@ -1698,6 +1758,52 @@ mod tests {
                 base64_encode(clean.as_slice())
             )
         );
+    }
+
+    #[test]
+    fn svg_asset_data_uri_strips_remote_imports_with_semicolon_rich_urls() {
+        let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let clean = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new("diagram.svg", dirty.as_slice())],
+            ..HtmlOptions::default()
+        };
+        let mut out = String::new();
+
+        assert!(push_html_image_asset_data_uri(
+            "diagram.svg",
+            &opts,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            format!(
+                "data:image/svg+xml;base64,{}",
+                base64_encode(clean.as_slice())
+            )
+        );
+    }
+
+    #[test]
+    fn checked_in_showcase_svg_drops_google_fonts_import_without_residue() {
+        let clean =
+            svg_without_remote_style_imports(include_bytes!("../examples/showcase-mermaid.svg"));
+        assert!(
+            std::str::from_utf8(clean.as_ref()).is_ok(),
+            "showcase SVG should stay UTF-8"
+        );
+        let clean_text = String::from_utf8_lossy(clean.as_ref());
+
+        assert!(!clean_text.contains("@import"));
+        assert!(!clean_text.contains("fonts.googleapis"));
+        assert!(!clean_text.contains("500;600;700"));
+        assert!(clean_text.contains(".fm-text"));
+        assert!(matches!(clean, Cow::Owned(_)));
     }
 
     #[test]

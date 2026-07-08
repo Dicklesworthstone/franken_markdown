@@ -450,6 +450,7 @@ struct SvgText {
     slot: u8,
     font_size: f32,
     letter_spacing: f32,
+    word_spacing: f32,
     text_length: Option<f32>,
     length_adjust: SvgLengthAdjust,
     baseline: SvgDominantBaseline,
@@ -791,6 +792,7 @@ struct SvgStyle {
     dominant_baseline: SvgDominantBaseline,
     baseline_shift: SvgTextSpacing,
     letter_spacing: SvgTextSpacing,
+    word_spacing: SvgTextSpacing,
     text_decoration: SvgTextDecoration,
 }
 
@@ -832,6 +834,7 @@ impl SvgStyle {
         dominant_baseline: SvgDominantBaseline::Auto,
         baseline_shift: SvgTextSpacing::ZERO,
         letter_spacing: SvgTextSpacing::ZERO,
+        word_spacing: SvgTextSpacing::ZERO,
         text_decoration: SvgTextDecoration::NONE,
     };
 }
@@ -880,6 +883,7 @@ struct SvgStylePatch {
     dominant_baseline: Option<SvgDominantBaseline>,
     baseline_shift: Option<SvgTextSpacing>,
     letter_spacing: Option<SvgTextSpacing>,
+    word_spacing: Option<SvgTextSpacing>,
     text_decoration: Option<SvgTextDecoration>,
 }
 
@@ -4249,6 +4253,7 @@ fn parse_svg_line(
                 dominant_baseline: inherited.dominant_baseline,
                 baseline_shift: inherited.baseline_shift,
                 letter_spacing: inherited.letter_spacing,
+                word_spacing: inherited.word_spacing,
                 text_decoration: inherited.text_decoration,
             },
             css_rules,
@@ -4323,6 +4328,7 @@ fn parse_svg_poly(
             dominant_baseline: inherited.dominant_baseline,
             baseline_shift: inherited.baseline_shift,
             letter_spacing: inherited.letter_spacing,
+            word_spacing: inherited.word_spacing,
             text_decoration: inherited.text_decoration,
         }
     };
@@ -4624,7 +4630,12 @@ fn push_svg_text_body_elements(
 ) -> (f32, f32) {
     if depth >= 8 {
         let text = normalize_svg_text(&strip_svg_tags(body));
-        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
+        let advance = svg_text_advance(
+            &text,
+            font_size,
+            style.letter_spacing.to_points(font_size),
+            style.word_spacing.to_points(font_size),
+        );
         push_svg_text_element(
             elements,
             text,
@@ -4645,7 +4656,12 @@ fn push_svg_text_body_elements(
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
         let text = normalize_svg_text_node(body.get(pos..open).unwrap_or_default());
-        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
+        let advance = svg_text_advance(
+            &text,
+            font_size,
+            style.letter_spacing.to_points(font_size),
+            style.word_spacing.to_points(font_size),
+        );
         push_svg_text_element(
             elements,
             text,
@@ -4764,6 +4780,7 @@ fn push_svg_text_body_elements(
                     &child_text,
                     child_font_size,
                     child_style.letter_spacing.to_points(child_font_size),
+                    child_style.word_spacing.to_points(child_font_size),
                 )
             });
             push_svg_text_element(
@@ -4789,7 +4806,12 @@ fn push_svg_text_body_elements(
     }
     if pos < body.len() {
         let text = normalize_svg_text(body.get(pos..).unwrap_or_default());
-        let advance = svg_text_advance(&text, font_size, style.letter_spacing.to_points(font_size));
+        let advance = svg_text_advance(
+            &text,
+            font_size,
+            style.letter_spacing.to_points(font_size),
+            style.word_spacing.to_points(font_size),
+        );
         push_svg_text_element(
             elements,
             text,
@@ -4873,6 +4895,7 @@ fn svg_text_element(
         ),
         font_size: placement.font_size,
         letter_spacing: style.letter_spacing.to_points(placement.font_size),
+        word_spacing: style.word_spacing.to_points(placement.font_size),
         text_length: placement.text_length,
         length_adjust: placement.length_adjust,
         baseline: style.dominant_baseline,
@@ -4914,7 +4937,7 @@ fn normalize_svg_text_node(src: &str) -> String {
     out
 }
 
-fn svg_text_advance(text: &str, font_size: f32, letter_spacing: f32) -> f32 {
+fn svg_text_advance(text: &str, font_size: f32, letter_spacing: f32, word_spacing: f32) -> f32 {
     let mut glyph_count = 0usize;
     let width = text
         .chars()
@@ -4930,7 +4953,13 @@ fn svg_text_advance(text: &str, font_size: f32, letter_spacing: f32) -> f32 {
         })
         .sum::<f32>()
         * font_size;
-    width + glyph_count.saturating_sub(1) as f32 * letter_spacing
+    width
+        + glyph_count.saturating_sub(1) as f32 * letter_spacing
+        + svg_word_spacing_gap_count(text) as f32 * word_spacing
+}
+
+fn svg_word_spacing_gap_count(text: &str) -> usize {
+    text.chars().filter(|ch| ch.is_whitespace()).count()
 }
 
 fn apply_svg_parent_text_length(
@@ -4968,7 +4997,12 @@ fn apply_svg_parent_text_length(
         } else {
             first_y = Some(text.y);
         }
-        let advance = svg_text_advance(&text.text, text.font_size, text.letter_spacing);
+        let advance = svg_text_advance(
+            &text.text,
+            text.font_size,
+            text.letter_spacing,
+            text.word_spacing,
+        );
         if !advance.is_finite() || advance <= 0.001 {
             return;
         }
@@ -7189,6 +7223,11 @@ fn parse_svg_style_with_ancestors(
         svg_attr(attrs, "letter-spacing"),
         &scoped_css_vars,
     );
+    apply_svg_word_spacing_attr(
+        &mut style,
+        svg_attr(attrs, "word-spacing"),
+        &scoped_css_vars,
+    );
     apply_svg_text_decoration_attr(
         &mut style,
         svg_attr(attrs, "text-decoration"),
@@ -7662,6 +7701,7 @@ fn parse_svg_style_patch(
             }
             "text-anchor" => patch.text_anchor = parse_svg_text_anchor_value(value, css_vars),
             "letter-spacing" => patch.letter_spacing = parse_svg_letter_spacing(value, css_vars),
+            "word-spacing" => patch.word_spacing = parse_svg_word_spacing(value, css_vars),
             "text-decoration" | "text-decoration-line" => {
                 patch.text_decoration = parse_svg_text_decoration(value, css_vars);
             }
@@ -7995,6 +8035,9 @@ fn apply_svg_style_patch(
     if let Some(letter_spacing) = patch.letter_spacing {
         style.letter_spacing = letter_spacing;
     }
+    if let Some(word_spacing) = patch.word_spacing {
+        style.word_spacing = word_spacing;
+    }
     if let Some(text_decoration) = patch.text_decoration {
         style.text_decoration = text_decoration;
     }
@@ -8051,6 +8094,7 @@ fn apply_svg_style_declaration(
         }
         "text-anchor" => apply_svg_text_anchor_attr(style, Some(value), css_vars),
         "letter-spacing" => apply_svg_letter_spacing_attr(style, Some(value), css_vars),
+        "word-spacing" => apply_svg_word_spacing_attr(style, Some(value), css_vars),
         "text-decoration" | "text-decoration-line" => {
             apply_svg_text_decoration_attr(style, Some(value), css_vars);
         }
@@ -9452,11 +9496,29 @@ fn apply_svg_letter_spacing_attr(
     }
 }
 
+fn apply_svg_word_spacing_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(word_spacing) = value.and_then(|value| parse_svg_word_spacing(value, css_vars)) {
+        style.word_spacing = word_spacing;
+    }
+}
+
 fn parse_svg_letter_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
+    parse_svg_text_spacing(value, css_vars)
+}
+
+fn parse_svg_word_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
+    parse_svg_text_spacing(value, css_vars)
+}
+
+fn parse_svg_text_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
     let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
-        return parse_svg_letter_spacing(&resolved, css_vars);
+        return parse_svg_text_spacing(&resolved, css_vars);
     }
     if value.eq_ignore_ascii_case("normal") {
         return Some(SvgTextSpacing::ZERO);
@@ -15015,6 +15077,7 @@ mod font_slot_text_refs_tests {
             slot,
             font_size: 12.0,
             letter_spacing: 0.0,
+            word_spacing: 0.0,
             text_length: None,
             length_adjust: SvgLengthAdjust::Spacing,
             baseline: SvgDominantBaseline::Auto,
@@ -15632,7 +15695,14 @@ fn svg_text_link_bbox(text: &SvgText) -> Option<(f32, f32, f32, f32)> {
     let width = text
         .text_length
         .filter(|value| value.is_finite() && *value >= 0.0)
-        .unwrap_or_else(|| svg_text_advance(&text.text, text.font_size, text.letter_spacing));
+        .unwrap_or_else(|| {
+            svg_text_advance(
+                &text.text,
+                text.font_size,
+                text.letter_spacing,
+                text.word_spacing,
+            )
+        });
     if !width.is_finite() || width <= 0.001 || !text.font_size.is_finite() {
         return None;
     }
@@ -15915,6 +15985,7 @@ fn draw_svg_line(
         dominant_baseline: line.style.dominant_baseline,
         baseline_shift: line.style.baseline_shift,
         letter_spacing: line.style.letter_spacing,
+        word_spacing: line.style.word_spacing,
         text_decoration: line.style.text_decoration,
     };
     let style = svg_style_with_non_scaling_stroke(style, stroke_scale);
@@ -18235,7 +18306,7 @@ fn draw_svg_text(
         }
     };
     let mut matrix = svg_text_pdf_matrix(text, image_transform);
-    let (spacing, width, glyph_scale) =
+    let (letter_spacing, word_spacing, width, glyph_scale) =
         svg_text_layout_adjustment(text, matrix, slot, faces, shaped);
     if glyph_scale != 1.0 {
         matrix.a *= glyph_scale;
@@ -18305,7 +18376,8 @@ fn draw_svg_text(
             source,
             &face.kern,
             shaped,
-            pdf_tj_spacing_adjust(spacing, matrix.size),
+            pdf_tj_spacing_adjust(letter_spacing, matrix.size),
+            pdf_tj_spacing_adjust(word_spacing, matrix.size),
         ),
     ));
     append_svg_text_decoration(body, text.decoration, matrix, width, text.fill);
@@ -18370,35 +18442,48 @@ fn svg_text_layout_adjustment(
     slot: u8,
     faces: &Faces,
     shaped: &[u16],
-) -> (f32, f32, f32) {
-    let base_spacing = svg_letter_spacing_for_matrix(text, matrix);
-    let natural_width =
-        svg_text_width_with_spacing(&text.text, matrix.size, slot, faces, base_spacing, shaped);
+) -> (f32, f32, f32, f32) {
+    let base_letter_spacing = svg_letter_spacing_for_matrix(text, matrix);
+    let base_word_spacing = svg_word_spacing_for_matrix(text, matrix);
+    let natural_width = svg_text_width_with_spacing(
+        &text.text,
+        matrix.size,
+        slot,
+        faces,
+        base_letter_spacing,
+        base_word_spacing,
+        shaped,
+    );
     let Some(target_width) = svg_text_target_width_for_matrix(text, matrix) else {
-        return (base_spacing, natural_width, 1.0);
+        return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
     };
     if target_width < 0.0 || !target_width.is_finite() || natural_width <= 0.001 {
-        return (base_spacing, natural_width, 1.0);
+        return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
     }
     match text.length_adjust {
         SvgLengthAdjust::Spacing => {
             let gaps = shaped.len().saturating_sub(1);
             if gaps == 0 {
-                return (base_spacing, natural_width, 1.0);
+                return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
             }
-            let spacing = base_spacing + (target_width - natural_width) / gaps as f32;
-            if spacing.is_finite() {
-                (spacing, target_width, 1.0)
+            let letter_spacing = base_letter_spacing + (target_width - natural_width) / gaps as f32;
+            if letter_spacing.is_finite() {
+                (letter_spacing, base_word_spacing, target_width, 1.0)
             } else {
-                (base_spacing, natural_width, 1.0)
+                (base_letter_spacing, base_word_spacing, natural_width, 1.0)
             }
         }
         SvgLengthAdjust::SpacingAndGlyphs => {
             let glyph_scale = (target_width / natural_width).clamp(0.001, 1000.0);
             if glyph_scale.is_finite() {
-                (base_spacing, natural_width, glyph_scale)
+                (
+                    base_letter_spacing,
+                    base_word_spacing,
+                    natural_width,
+                    glyph_scale,
+                )
             } else {
-                (base_spacing, natural_width, 1.0)
+                (base_letter_spacing, base_word_spacing, natural_width, 1.0)
             }
         }
     }
@@ -18417,16 +18502,25 @@ fn svg_letter_spacing_for_matrix(text: &SvgText, matrix: SvgTextMatrix) -> f32 {
     if spacing.is_finite() { spacing } else { 0.0 }
 }
 
+fn svg_word_spacing_for_matrix(text: &SvgText, matrix: SvgTextMatrix) -> f32 {
+    let scale = matrix.size / text.font_size.max(0.001);
+    let spacing = text.word_spacing * scale;
+    if spacing.is_finite() { spacing } else { 0.0 }
+}
+
 fn svg_text_width_with_spacing(
     text: &str,
     size: f32,
     slot: u8,
     faces: &Faces,
-    spacing: f32,
+    letter_spacing: f32,
+    word_spacing: f32,
     shaped: &[u16],
 ) -> f32 {
     let width = text_width(text, size, slot, faces);
-    width + shaped.len().saturating_sub(1) as f32 * spacing
+    width
+        + shaped.len().saturating_sub(1) as f32 * letter_spacing
+        + svg_word_spacing_gap_count(text) as f32 * word_spacing
 }
 
 fn pdf_tj_spacing_adjust(spacing: f32, font_size: f32) -> i32 {
@@ -20885,7 +20979,7 @@ fn collect_shaped_run_glyphs(
 /// kerning (looked up on the original ids) inserted between glyphs.
 #[cfg(test)]
 fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
-    kerned_tj_with_spacing(map, source, kern, shaped, 0)
+    kerned_tj_with_spacing(map, source, kern, shaped, 0, 0)
 }
 
 fn kerned_tj_with_spacing(
@@ -20893,10 +20987,19 @@ fn kerned_tj_with_spacing(
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
-    spacing_adjust: i32,
+    letter_spacing_adjust: i32,
+    word_spacing_adjust: i32,
 ) -> String {
     let mut out = String::with_capacity(shaped.len().saturating_mul(4).saturating_add(4));
-    append_kerned_tj_with_spacing(&mut out, map, source, kern, shaped, spacing_adjust);
+    append_kerned_tj_with_spacing(
+        &mut out,
+        map,
+        source,
+        kern,
+        shaped,
+        letter_spacing_adjust,
+        word_spacing_adjust,
+    );
     out
 }
 
@@ -20906,9 +21009,12 @@ fn append_kerned_tj_with_spacing(
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
-    spacing_adjust: i32,
+    letter_spacing_adjust: i32,
+    word_spacing_adjust: i32,
 ) {
     let upm = i32::from(source.units_per_em.max(1));
+    let word_spacing_glyphs = (word_spacing_adjust != 0)
+        .then(|| (source.glyph_index(' '), source.glyph_index('\u{00a0}')));
     out.push_str("[<");
     for (i, &g) in shaped.iter().enumerate() {
         append_hex_u16(out, map.get(&g).copied().unwrap_or(0));
@@ -20921,7 +21027,15 @@ fn append_kerned_tj_with_spacing(
             } else {
                 0
             };
-            let adj = kern_adjust.saturating_add(spacing_adjust);
+            let word_adjust =
+                if svg_word_spacing_after_glyph(g, word_spacing_glyphs, word_spacing_adjust) {
+                    word_spacing_adjust
+                } else {
+                    0
+                };
+            let adj = kern_adjust
+                .saturating_add(letter_spacing_adjust)
+                .saturating_add(word_adjust);
             if adj != 0 {
                 out.push('>');
                 append_i32_string(out, adj);
@@ -20930,6 +21044,17 @@ fn append_kerned_tj_with_spacing(
         }
     }
     out.push_str(">]");
+}
+
+fn svg_word_spacing_after_glyph(
+    glyph: u16,
+    word_spacing_glyphs: Option<(u16, u16)>,
+    word_spacing_adjust: i32,
+) -> bool {
+    let Some((space, nbsp)) = word_spacing_glyphs else {
+        return false;
+    };
+    word_spacing_adjust != 0 && glyph != 0 && (glyph == space || glyph == nbsp)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -20953,7 +21078,7 @@ fn append_text_segment_operator(
     body.push(' ');
     append_pdf_fixed2(body, y);
     body.push_str(" Tm ");
-    append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0);
+    append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0, 0);
     body.push_str(" TJ ET\n");
 }
 

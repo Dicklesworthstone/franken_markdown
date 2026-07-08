@@ -2019,6 +2019,55 @@ fn pdf_svg_letter_spacing_adjusts_selectable_text_and_anchor_width() {
 }
 
 #[test]
+fn pdf_svg_word_spacing_adjusts_selectable_text_and_anchor_width() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 54">
+  <style>
+    :root { --wide-word-spacing: 0.1em; }
+    .wide { word-spacing: var(--wide-word-spacing, 0.1em); }
+  </style>
+  <text x="80" y="16" font-size="10" text-anchor="middle" fill="#ff0000">H H</text>
+  <text x="80" y="32" font-size="10" text-anchor="middle" class="wide" fill="#0000ff">H H</text>
+  <text x="12" y="46" font-size="10" word-spacing="-0.05em" fill="#00ff00">N N</text>
+  <text x="96" y="46" font-size="10" class="wide" fill="#123456">
+    <tspan style="word-spacing: normal !important">O O</tspan>
+  </text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("word-spacing.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Word spacing](word-spacing.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let (plain_x, _) = first_text_matrix_xy_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let (wide_x, _) = first_text_matrix_xy_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    assert!(
+        wide_x < plain_x,
+        "text-anchor=middle should account for the extra word-spacing width: {text}"
+    );
+
+    let wide_object = first_text_object_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    assert!(
+        wide_object.contains(">-100<"),
+        "positive 0.1em SVG word-spacing should become a negative PDF TJ adjustment after a space glyph: {text}"
+    );
+
+    let tight_object = first_text_object_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    assert!(
+        tight_object.contains(">50<"),
+        "negative SVG word-spacing should become a positive PDF TJ adjustment after a space glyph: {text}"
+    );
+
+    let reset_object = first_text_object_after(&text, "0.071 0.204 0.337 rg\nBT /F1");
+    assert!(
+        !reset_object.contains(">-100<") && !reset_object.contains(">50<"),
+        "a tspan should be able to reset inherited word-spacing back to normal: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_text_stylesheet_font_size_and_anchor_affect_selectable_text() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 128">

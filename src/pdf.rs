@@ -10175,6 +10175,7 @@ fn parse_svg_filter_shadows(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgFi
 }
 
 fn parse_svg_filter_shadow_body(body: &str, css_vars: &[SvgCssVariable]) -> Option<SvgShadow> {
+    let mut primitive_chain = SvgFilterPrimitiveShadowChain::new();
     let mut pos = 0usize;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
@@ -10191,19 +10192,260 @@ fn parse_svg_filter_shadow_body(body: &str, css_vars: &[SvgCssVariable]) -> Opti
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
             continue;
         }
+        if let Some(closing) = raw.strip_prefix('/') {
+            let (tag, _) = svg_tag_parts(closing);
+            let tag_lower = tag.to_ascii_lowercase();
+            if svg_local_name(&tag_lower).eq_ignore_ascii_case("femerge") {
+                primitive_chain.close_merge();
+            }
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
         let (tag, attrs_src) = svg_tag_parts(raw);
         let tag_lower = tag.to_ascii_lowercase();
-        if svg_local_name(&tag_lower).eq_ignore_ascii_case("fedropshadow") {
-            return Some(parse_svg_fe_drop_shadow(
-                &parse_svg_attrs(attrs_src),
-                css_vars,
-            ));
+        let local = svg_local_name(&tag_lower);
+        let attrs = parse_svg_attrs(attrs_src);
+        if local.eq_ignore_ascii_case("fedropshadow") {
+            return Some(parse_svg_fe_drop_shadow(&attrs, css_vars));
+        }
+        if let Some(shadow) = primitive_chain.ingest(local, &attrs, self_closing, css_vars) {
+            return Some(shadow);
         }
     }
     None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgFilterPrimitiveShadowStage {
+    Waiting,
+    Offset,
+    Blur,
+    Flood,
+    Composite,
+    Merge,
+}
+
+struct SvgFilterPrimitiveShadowChain {
+    stage: SvgFilterPrimitiveShadowStage,
+    layer: SvgShadowLayer,
+    offset_result: Option<String>,
+    blur_result: Option<String>,
+    flood_result: Option<String>,
+    composite_result: Option<String>,
+    merge_shadow_seen: bool,
+}
+
+impl SvgFilterPrimitiveShadowChain {
+    fn new() -> Self {
+        Self {
+            stage: SvgFilterPrimitiveShadowStage::Waiting,
+            layer: SvgShadowLayer {
+                dx: 0.0,
+                dy: 0.0,
+                color: (0.0, 0.0, 0.0),
+                opacity: 1.0,
+            },
+            offset_result: None,
+            blur_result: None,
+            flood_result: None,
+            composite_result: None,
+            merge_shadow_seen: false,
+        }
+    }
+
+    fn ingest(
+        &mut self,
+        local: &str,
+        attrs: &[(String, String)],
+        self_closing: bool,
+        css_vars: &[SvgCssVariable],
+    ) -> Option<SvgShadow> {
+        match local {
+            "feoffset" => self.start_offset(attrs),
+            "fegaussianblur" => {
+                if !self.record_blur(attrs) {
+                    self.reset();
+                }
+            }
+            "feflood" => {
+                if !self.record_flood(attrs, css_vars) {
+                    self.reset();
+                }
+            }
+            "fecomposite" => {
+                if !self.record_composite(attrs) {
+                    self.reset();
+                }
+            }
+            "femerge" => {
+                if !self.start_merge(self_closing) {
+                    self.reset();
+                }
+            }
+            "femergenode" => {
+                if let Some(shadow) = self.record_merge_node(attrs) {
+                    return Some(shadow);
+                }
+            }
+            _ if local.starts_with("fe")
+                && self.stage != SvgFilterPrimitiveShadowStage::Waiting =>
+            {
+                self.reset();
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    fn start_offset(&mut self, attrs: &[(String, String)]) {
+        self.reset();
+        if !svg_filter_input_is_source(svg_attr(attrs, "in")) {
+            return;
+        }
+        if let Some(dx) = svg_attr(attrs, "dx").and_then(parse_svg_filter_length) {
+            self.layer.dx = dx;
+        }
+        if let Some(dy) = svg_attr(attrs, "dy").and_then(parse_svg_filter_length) {
+            self.layer.dy = dy;
+        }
+        self.offset_result = svg_filter_result_name(attrs);
+        self.stage = SvgFilterPrimitiveShadowStage::Offset;
+    }
+
+    fn record_blur(&mut self, attrs: &[(String, String)]) -> bool {
+        if self.stage != SvgFilterPrimitiveShadowStage::Offset {
+            return false;
+        }
+        if !svg_filter_input_matches_previous(svg_attr(attrs, "in"), self.offset_result.as_deref())
+        {
+            return false;
+        }
+        self.blur_result = svg_filter_result_name(attrs);
+        self.stage = SvgFilterPrimitiveShadowStage::Blur;
+        true
+    }
+
+    fn record_flood(&mut self, attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> bool {
+        if self.stage != SvgFilterPrimitiveShadowStage::Blur {
+            return false;
+        }
+        if let Some(color) =
+            svg_attr(attrs, "flood-color").and_then(|value| parse_svg_color(value, css_vars))
+        {
+            self.layer.color = color;
+        }
+        if let Some(opacity) =
+            svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+        {
+            self.layer.opacity = opacity;
+        }
+        if let Some(style) = svg_attr(attrs, "style") {
+            apply_svg_fe_drop_shadow_style(&mut self.layer, style, css_vars);
+        }
+        self.layer.opacity = self.layer.opacity.clamp(0.0, 1.0);
+        self.flood_result = svg_filter_result_name(attrs);
+        self.stage = SvgFilterPrimitiveShadowStage::Flood;
+        true
+    }
+
+    fn record_composite(&mut self, attrs: &[(String, String)]) -> bool {
+        if self.stage != SvgFilterPrimitiveShadowStage::Flood {
+            return false;
+        }
+        if !svg_attr(attrs, "operator").is_some_and(|operator| operator.trim() == "in") {
+            return false;
+        }
+        let Some(blur_result) = self.blur_result.as_deref() else {
+            return false;
+        };
+        if !svg_filter_input_matches_previous(svg_attr(attrs, "in"), self.flood_result.as_deref()) {
+            return false;
+        }
+        if !svg_filter_input_matches_named(svg_attr(attrs, "in2"), blur_result) {
+            return false;
+        }
+        self.composite_result = svg_filter_result_name(attrs);
+        self.stage = SvgFilterPrimitiveShadowStage::Composite;
+        true
+    }
+
+    fn start_merge(&mut self, self_closing: bool) -> bool {
+        if self.stage != SvgFilterPrimitiveShadowStage::Composite || self_closing {
+            return false;
+        }
+        self.merge_shadow_seen = false;
+        self.stage = SvgFilterPrimitiveShadowStage::Merge;
+        true
+    }
+
+    fn record_merge_node(&mut self, attrs: &[(String, String)]) -> Option<SvgShadow> {
+        if self.stage != SvgFilterPrimitiveShadowStage::Merge {
+            return None;
+        }
+        let input = svg_filter_attr_value(svg_attr(attrs, "in"));
+        if input.is_some_and(|value| value.eq_ignore_ascii_case("SourceGraphic")) {
+            if self.merge_shadow_seen {
+                return Some(SvgShadow::single(self.layer));
+            }
+            self.reset();
+            return None;
+        }
+        if svg_filter_input_is_shadow_merge_node(input, self.composite_result.as_deref()) {
+            self.merge_shadow_seen = true;
+        } else {
+            self.reset();
+        }
+        None
+    }
+
+    fn close_merge(&mut self) {
+        if self.stage == SvgFilterPrimitiveShadowStage::Merge {
+            self.reset();
+        }
+    }
+}
+
+fn svg_filter_result_name(attrs: &[(String, String)]) -> Option<String> {
+    svg_filter_attr_value(svg_attr(attrs, "result")).map(str::to_string)
+}
+
+fn svg_filter_attr_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn svg_filter_input_is_source(value: Option<&str>) -> bool {
+    svg_filter_attr_value(value).is_none_or(|input| {
+        input.eq_ignore_ascii_case("SourceAlpha") || input.eq_ignore_ascii_case("SourceGraphic")
+    })
+}
+
+fn svg_filter_input_matches_previous(value: Option<&str>, previous_result: Option<&str>) -> bool {
+    match svg_filter_attr_value(value) {
+        None => true,
+        Some(input) => previous_result.is_some_and(|previous| input == previous),
+    }
+}
+
+fn svg_filter_input_matches_named(value: Option<&str>, expected: &str) -> bool {
+    svg_filter_attr_value(value).is_some_and(|input| input == expected)
+}
+
+fn svg_filter_input_is_shadow_merge_node(
+    value: Option<&str>,
+    composite_result: Option<&str>,
+) -> bool {
+    match (value, composite_result) {
+        (None, _) => true,
+        (Some(input), Some(result)) => input == result,
+        (Some(_), None) => false,
+    }
 }
 
 fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> SvgShadow {

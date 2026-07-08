@@ -4908,6 +4908,90 @@ fn pdf_svg_filter_drop_shadow_gets_vector_shadow_fallback() {
 }
 
 #[test]
+fn pdf_svg_filter_primitive_chain_gets_vector_shadow_fallback() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 28">
+  <defs>
+    <filter id="shadow-chain">
+      <feOffset in="SourceAlpha" dx="6" dy="5" result="offset"/>
+      <feGaussianBlur in="offset" stdDeviation="4" result="blur"/>
+      <feFlood flood-color="#123456" flood-opacity="0.35" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="32" height="16" fill="#0000ff" filter="url(#shadow-chain)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("shadow-chain.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Shadow chain](shadow-chain.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let shadow = text
+        .find("q 1 0 0 1 6 5 cm /GSa03500350 gs 0.071 0.204 0.337 rg")
+        .unwrap_or_else(|| {
+            panic!(
+                "primitive filter chain should preserve dx/dy, flood color, and flood opacity in the vector fallback: {text}"
+            )
+        });
+    let real_shape = text.find("f Q\n0.000 0.000 1.000 rg").unwrap_or_else(|| {
+        panic!("the real SVG fill should still paint after the primitive-chain shadow: {text}")
+    });
+    assert!(
+        shadow < real_shape,
+        "the primitive-chain shadow fallback should paint before the real shape: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_filter_primitive_chain_accepts_default_previous_inputs() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 28">
+  <defs>
+    <filter id="shadow-defaults">
+      <feOffset in="SourceAlpha" dx="-3" dy="2"/>
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feFlood result="color" style="flood-color: #abcdef; flood-opacity: 0.40"/>
+      <feComposite in2="blur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="32" height="16" fill="#00ff00" filter="url(#shadow-defaults)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("shadow-defaults.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Shadow defaults](shadow-defaults.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let shadow = text
+        .find("q 1 0 0 1 -3 2 cm /GSa04000400 gs 0.671 0.804 0.937 rg")
+        .unwrap_or_else(|| {
+            panic!(
+                "primitive filter chain should honor default previous inputs and feFlood style values: {text}"
+            )
+        });
+    let real_shape = text.find("f Q\n0.000 1.000 0.000 rg").unwrap_or_else(|| {
+        panic!("the real SVG fill should still paint after the default-input shadow: {text}")
+    });
+    assert!(
+        shadow < real_shape,
+        "the default-input primitive-chain shadow should paint before the real shape: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_css_drop_shadow_uses_declared_shadow_values() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 28">
@@ -4995,6 +5079,10 @@ fn pdf_svg_missing_or_unsupported_url_filters_do_not_invent_shadows() {
     assert!(
         !text.contains("q 1 0 0 1 2 2 cm"),
         "missing or unsupported url() filters must not synthesize the fallback shadow transform: {text}"
+    );
+    assert!(
+        !text.contains("q 1 0 0 1 0 0 cm"),
+        "standalone blur-only url() filters must not synthesize a zero-offset vector shadow: {text}"
     );
     assert!(
         !text.contains("0.890 0.900 0.920 rg"),

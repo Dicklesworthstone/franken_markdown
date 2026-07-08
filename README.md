@@ -90,13 +90,13 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Area | Current functionality |
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
-| PNG and SVG assets | File-input PDF renders auto-load relative local PNG/SVG destinations. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
+| PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
 | Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift handling, transforms, gradients, spread modes, patterns, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
@@ -155,7 +155,7 @@ fmd examples/showcase.md --to pdf --title "Showcase" --author "FMD" --out showca
 # Render HTML and PDF together (extensions derived from --out)
 fmd examples/showcase.md --to both --out showcase.html
 
-# Render a document with a sibling SVG diagram; file-input PDF auto-loads it
+# Render a document with a sibling SVG diagram; file-input renders auto-load it
 fmd examples/showcase.md --to pdf --out showcase.pdf
 
 # Build the native batch renderer and render a directory with deterministic JSON
@@ -497,8 +497,8 @@ fmd --text '<markdown>' --out out.html
 | `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML in the source through instead of escaping it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
-| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input PDF renders also auto-load relative local PNG/SVG image destinations. The render core never reads files or fetches network resources itself |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit or auto-loaded PDF image file before rendering (default `33554432`, 32 MiB) |
+| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG image destinations. The render core never reads files or fetches network resources itself |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering (default `33554432`, 32 MiB) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
 
@@ -645,8 +645,8 @@ and render in one call. For editor and tooling integrations,
 diagnostics. Hosts can supply their own fonts as bytes through
 `FontAssets`/`FontAssetSlot` (`body-regular`, `body-bold`, `body-italic`,
 `body-bold-italic`, `mono-regular`); any missing slot falls back to bundled
-deterministic fonts. PDF images are supplied as bytes through `PdfImageAsset`, so
-the core never reads files or the network.
+deterministic fonts. Image assets are supplied as bytes through `PdfImageAsset`
+for HTML and PDF, so the core never reads files or the network.
 
 ### Browser / WASM
 
@@ -791,8 +791,9 @@ Honest about what the renderer does not do yet.
   running prose or arbitrary CSS. (Inline styling and links *inside table cells*
   now render, with bold/italic/mono faces and clickable link annotations.) PDF
   images are standalone PNG or SVG assets supplied by the host; the native CLI
-  auto-loads relative local image destinations for file-input renders, and
-  `--pdf-image` can provide or override assets explicitly.
+  auto-loads relative local image destinations for file-input HTML/PDF renders,
+  HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
+  override PDF assets explicitly.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
   embedded PNGs, marker view boxes/orientation/units, and `paint-order` behavior

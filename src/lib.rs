@@ -250,6 +250,14 @@ pub struct HtmlOptions {
     pub allow_raw_html: bool,
     /// Optional caller-supplied fonts. Missing slots use bundled fonts.
     pub font_assets: FontAssets,
+    /// Caller-provided image bytes keyed by the Markdown image destination.
+    ///
+    /// The HTML renderer emits supported host-supplied PNG/SVG assets as data
+    /// URIs after the source destination passes the normal safe-URL policy.
+    /// Native CLI and browser/WASM callers resolve image destinations into
+    /// explicit byte assets before rendering; the core never fetches network
+    /// resources or reads files.
+    pub image_assets: Vec<PdfImageAsset>,
 }
 
 /// Options for the PDF renderer.
@@ -286,7 +294,7 @@ pub struct PdfOptions {
     pub font_assets: FontAssets,
 }
 
-/// Image bytes supplied by a host for PDF rendering.
+/// Image bytes supplied by a host for PDF/HTML rendering.
 ///
 /// `destination` is matched against the Markdown image destination after
 /// trimming ASCII/Unicode whitespace. The first matching asset wins, keeping

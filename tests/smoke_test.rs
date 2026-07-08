@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use franken_markdown::{HtmlOptions, Theme, render_html};
+use franken_markdown::{HtmlOptions, PdfImageAsset, Theme, render_html};
 
 fn render(md: &str) -> String {
     render_html(md, &HtmlOptions::default()).unwrap()
@@ -109,6 +109,44 @@ fn html_escaping_is_safe() {
     assert!(!html.contains("<script>alert(1)</script>"));
     assert!(html.contains("&lt;script&gt;"));
     assert!(html.contains("&amp;"));
+}
+
+#[test]
+fn host_supplied_svg_image_assets_render_as_self_contained_data_uris() {
+    let opts = HtmlOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "diagrams/flow.svg",
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><text>Flow</text></svg>"#
+                .to_vec(),
+        )],
+        ..HtmlOptions::default()
+    };
+    let html = render_html(
+        "![Flow chart](diagrams/flow.svg \"Rendered diagram\")",
+        &opts,
+    )
+    .unwrap();
+
+    assert!(html.contains("<img src=\"data:image/svg+xml;base64,"));
+    assert!(html.contains("alt=\"Flow chart\""));
+    assert!(html.contains("title=\"Rendered diagram\""));
+    assert!(!html.contains("src=\"diagrams/flow.svg\""));
+}
+
+#[test]
+fn host_supplied_image_assets_do_not_bypass_unsafe_image_destinations() {
+    let opts = HtmlOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "data:image/svg+xml;base64,PHN2Zy8+",
+            b"<svg/>".to_vec(),
+        )],
+        ..HtmlOptions::default()
+    };
+    let html = render_html("![Unsafe](data:image/svg+xml;base64,PHN2Zy8+)", &opts).unwrap();
+
+    assert!(html.contains("<p>Unsafe</p>"));
+    assert!(!html.contains("<img"));
+    assert!(!html.contains("data:image"));
 }
 
 #[test]

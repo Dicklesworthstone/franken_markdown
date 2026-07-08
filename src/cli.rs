@@ -12,7 +12,7 @@ use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{
     FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Theme,
-    parse_markdown, render_html, render_pdf_document, render_warnings,
+    parse_markdown, render_html_document, render_pdf_document, render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -162,13 +162,13 @@ struct RenderArgs {
     #[arg(long)]
     pdf_line_numbers: bool,
     /// Provide or override a local PDF image asset as MARKDOWN_DEST=PATH.
-    /// File-based PDF renders also auto-load relative local PNG/SVG image
+    /// File-based HTML/PDF renders also auto-load relative local PNG/SVG image
     /// destinations; the render core itself never fetches or reads files.
     /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
-    /// Maximum bytes accepted for each explicit or auto-loaded PDF image file
-    /// before rendering.
+    /// Maximum bytes accepted for each explicit PDF image or auto-loaded local
+    /// HTML/PDF image file before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
     /// Maximum Markdown input bytes accepted before rendering.
@@ -389,20 +389,32 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
-    let pdf_doc = if want_pdf {
-        Some(parse_markdown(&src))
+    let doc = parse_markdown(&src);
+    let mut image_destinations = Vec::new();
+    collect_image_destinations(&doc.blocks, &mut image_destinations);
+    let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
+    let html_image_assets = if want_html {
+        let mut assets = Vec::new();
+        if let Some(base_dir) = base_image_dir.as_deref()
+            && let Err(e) = append_auto_image_assets(
+                &doc,
+                base_dir,
+                &mut assets,
+                args.max_pdf_image_bytes,
+                "HTML",
+            )
+        {
+            return fail_json(66, "input_error", &e, json);
+        }
+        assets
     } else {
-        None
+        Vec::new()
     };
-    let mut pdf_image_destinations = Vec::new();
-    if let Some(doc) = pdf_doc.as_ref() {
-        collect_image_destinations(&doc.blocks, &mut pdf_image_destinations);
-    }
     let pdf_image_assets = if want_pdf {
         let mut assets = match read_pdf_image_assets(
             &args.pdf_images,
             args.max_pdf_image_bytes,
-            &pdf_image_destinations,
+            &image_destinations,
         ) {
             Ok(assets) => assets,
             // A malformed `--pdf-image` spec is a usage error (64); a missing/
@@ -410,11 +422,14 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
             Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
         };
-        if let (Some(doc), Some(base_dir)) = (
-            pdf_doc.as_ref(),
-            auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref()),
-        ) && let Err(e) =
-            append_auto_pdf_image_assets(doc, &base_dir, &mut assets, args.max_pdf_image_bytes)
+        if let Some(base_dir) = base_image_dir.as_deref()
+            && let Err(e) = append_auto_image_assets(
+                &doc,
+                base_dir,
+                &mut assets,
+                args.max_pdf_image_bytes,
+                "PDF",
+            )
         {
             return fail_json(66, "input_error", &e, json);
         }
@@ -434,8 +449,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             custom_css: custom_css.clone(),
             allow_raw_html: args.allow_html,
             font_assets: FontAssets::default(),
+            image_assets: html_image_assets,
         };
-        match render_html(&src, &opts) {
+        match render_html_document(&doc, &opts) {
             Ok(html) => Some(html.into_bytes()),
             Err(e) => return fail_render(e, json),
         }
@@ -454,15 +470,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             image_assets: pdf_image_assets,
             font_assets: FontAssets::default(),
         };
-        let Some(doc) = pdf_doc.as_ref() else {
-            return fail_json(
-                70,
-                "render_error",
-                "internal PDF document state was unavailable before rendering",
-                json,
-            );
-        };
-        match render_pdf_document(doc, &opts) {
+        match render_pdf_document(&doc, &opts) {
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
             Ok(bytes) => Some((opts, bytes)),
@@ -521,15 +529,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     if let Some((opts, bytes)) = pdf_render.as_ref()
         && let Some(path) = pdf_path.as_deref()
     {
-        let Some(doc) = pdf_doc.as_ref() else {
-            return fail_json(
-                70,
-                "render_error",
-                "internal PDF document state was unavailable before warning reporting",
-                json,
-            );
-        };
-        report_pdf_warnings(doc, opts, json);
+        report_pdf_warnings(&doc, opts, json);
         report_write("pdf", path, bytes.len(), json);
     }
 
@@ -641,6 +641,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         custom_css,
         allow_raw_html: false,
         font_assets: FontAssets::default(),
+        image_assets: Vec::new(),
     };
     let pdf = PdfOptions {
         theme,
@@ -985,11 +986,12 @@ fn auto_pdf_image_base_dir(input: Option<&str>, text: Option<&str>) -> Option<Pa
     )
 }
 
-fn append_auto_pdf_image_assets(
+fn append_auto_image_assets(
     doc: &Document,
     base_dir: &Path,
     assets: &mut Vec<PdfImageAsset>,
     max_bytes: u64,
+    output_kind: &str,
 ) -> std::result::Result<(), String> {
     let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
         return Ok(());
@@ -1020,7 +1022,10 @@ fn append_auto_pdf_image_assets(
         if !meta.is_file() {
             continue;
         }
-        let label = format!("auto PDF image asset {destination} from {}", path.display());
+        let label = format!(
+            "auto {output_kind} image asset {destination} from {}",
+            path.display()
+        );
         if meta.len() > max_bytes {
             return Err(pdf_image_too_large(&label, meta.len(), max_bytes).to_string());
         }
@@ -1377,7 +1382,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -1392,7 +1397,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input PDF renders auto-load relative local PNG/SVG image destinations from the Markdown file's directory. Use --pdf-image to provide or override a Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG image assets via auto file-input loading or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG image assets via auto file-input loading or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
     )
 }
 

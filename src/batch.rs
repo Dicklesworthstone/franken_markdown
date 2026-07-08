@@ -611,10 +611,11 @@ fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "read failed: input is not valid UTF-8".to_string())
 }
 
-fn append_auto_pdf_image_assets_for_input(
+fn append_auto_image_assets_for_input(
     input: &Path,
     doc: &Document,
     assets: &mut Vec<PdfImageAsset>,
+    output_kind: &str,
 ) -> Result<(), String> {
     let base_dir = input
         .parent()
@@ -650,7 +651,10 @@ fn append_auto_pdf_image_assets_for_input(
         if !meta.is_file() {
             continue;
         }
-        let label = format!("auto PDF image asset {destination} from {}", path.display());
+        let label = format!(
+            "auto {output_kind} image asset {destination} from {}",
+            path.display()
+        );
         if meta.len() > DEFAULT_MAX_PDF_IMAGE_BYTES {
             return Err(format!(
                 "{label} is {bytes} bytes, which exceeds the batch PDF image limit {limit}",
@@ -795,7 +799,13 @@ fn render_one(
 
     let mut rendered = Vec::new();
     if format.wants_html() {
-        match render_html_document(&doc, html) {
+        let mut html_opts = html.clone();
+        if let Err(e) =
+            append_auto_image_assets_for_input(input, &doc, &mut html_opts.image_assets, "HTML")
+        {
+            return failed(input, FileErrorKind::Input, e);
+        }
+        match render_html_document(&doc, &html_opts) {
             Ok(doc) => {
                 let path = output_path(input, out_dir, "html");
                 rendered.push(PendingOutput {
@@ -816,7 +826,7 @@ fn render_one(
     if format.wants_pdf() {
         let mut pdf_opts = pdf.clone();
         if let Err(e) =
-            append_auto_pdf_image_assets_for_input(input, &doc, &mut pdf_opts.image_assets)
+            append_auto_image_assets_for_input(input, &doc, &mut pdf_opts.image_assets, "PDF")
         {
             return failed(input, FileErrorKind::Input, e);
         }

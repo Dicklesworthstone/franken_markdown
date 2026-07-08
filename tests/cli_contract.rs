@@ -170,6 +170,7 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"source_date_epoch_pdf\":\"available\""));
     assert!(stdout.contains("\"tagged_pdf\":\"available_hierarchical_accessible\""));
     assert!(stdout.contains("\"stream_compression_pdf\":\"available\""));
+    assert!(stdout.contains("\"html_image_assets\":\"available_local_png_svg_data_uri\""));
     assert!(stdout.contains("\"pdf_image_assets\":\"available_png_svg_v0\""));
     assert!(stdout.contains("--pdf-line-numbers"));
     assert!(stdout.contains("--pdf-image"));
@@ -612,6 +613,85 @@ fn pdf_render_auto_loads_relative_svg_assets_for_file_inputs() {
     let _ = fs::remove_file(out_path);
     let _ = fs::remove_dir(diagrams);
     let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn html_render_auto_loads_relative_svg_assets_for_file_inputs() {
+    let dir = temp_dir("auto-svg-html-assets");
+    let diagrams = dir.join("diagrams");
+    fs::create_dir_all(&diagrams).unwrap();
+    let input = dir.join("note.md");
+    let svg = diagrams.join("flow.svg");
+    let out_path = dir.join("note.html");
+    fs::write(&svg, simple_svg("Flow")).unwrap();
+    fs::write(&input, "# Diagram\n\n![Flow chart](diagrams/flow.svg)\n").unwrap();
+
+    let input_s = input.display().to_string();
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[&input_s, "--out", &out_path_s, "--json"]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let html = fs::read_to_string(&out_path).unwrap();
+    assert!(html.contains("<img src=\"data:image/svg+xml;base64,"));
+    assert!(html.contains("alt=\"Flow chart\""));
+    assert!(
+        !html.contains("src=\"diagrams/flow.svg\""),
+        "file-input HTML should be self-contained when a supported local SVG asset is available"
+    );
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(svg);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir(diagrams);
+    let _ = fs::remove_dir(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn html_render_auto_loaded_assets_must_resolve_under_the_markdown_directory() {
+    let dir = temp_dir("auto-svg-html-symlink-escape");
+    let outside = temp_dir("auto-svg-html-outside");
+    let diagrams = dir.join("diagrams");
+    fs::create_dir_all(&diagrams).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let input = dir.join("note.md");
+    let outside_svg = outside.join("outside.svg");
+    let escaped_link = diagrams.join("escaped.svg");
+    let out_path = dir.join("note.html");
+    fs::write(&outside_svg, simple_svg("Outside")).unwrap();
+    std::os::unix::fs::symlink(&outside_svg, &escaped_link).unwrap();
+    fs::write(
+        &input,
+        "# Diagram\n\n![Escaped symlink](diagrams/escaped.svg)\n",
+    )
+    .unwrap();
+
+    let input_s = input.display().to_string();
+    let out_path_s = out_path.display().to_string();
+    let out = fmd(&[&input_s, "--out", &out_path_s, "--json"]);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let html = fs::read_to_string(&out_path).unwrap();
+    assert!(
+        html.contains("<img src=\"diagrams/escaped.svg\" alt=\"Escaped symlink\">"),
+        "escaped sibling symlink should stay as an external reference: {html}"
+    );
+    assert!(
+        !html.contains("data:image/svg+xml;base64,"),
+        "escaped sibling symlink should not be inlined into HTML"
+    );
+    assert!(
+        !html.contains("Outside"),
+        "escaped sibling symlink should not let outside SVG text enter the HTML"
+    );
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(escaped_link);
+    let _ = fs::remove_file(out_path);
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(outside);
 }
 
 #[cfg(unix)]
@@ -1880,6 +1960,45 @@ fn batch_continue_on_error_receipt_merges_expansion_failures_in_input_order() {
     );
     assert!(stdout.contains("\"failed\":1"));
     assert!(stdout.contains("\"ok\":1"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "batch")]
+#[test]
+fn batch_html_auto_loads_relative_svg_assets_for_file_inputs() {
+    let dir = temp_dir("batch-auto-svg-html-assets");
+    let diagrams = dir.join("diagrams");
+    let out_dir = dir.join("out");
+    fs::create_dir_all(&diagrams).unwrap();
+    let input = dir.join("note.md");
+    let svg = diagrams.join("flow.svg");
+    fs::write(&svg, simple_svg("BatchFlow")).unwrap();
+    fs::write(&input, "# Diagram\n\n![Batch flow](diagrams/flow.svg)\n").unwrap();
+
+    let out = fmd(&[
+        "batch",
+        input.to_str().unwrap(),
+        "--to",
+        "html",
+        "--json",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "batch HTML render should succeed: stdout={} stderr={}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let html = fs::read_to_string(out_dir.join("note.html")).unwrap();
+    assert!(html.contains("<img src=\"data:image/svg+xml;base64,"));
+    assert!(html.contains("alt=\"Batch flow\""));
+    assert!(
+        !html.contains("src=\"diagrams/flow.svg\""),
+        "batch file-input HTML should inline supported local SVG assets"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

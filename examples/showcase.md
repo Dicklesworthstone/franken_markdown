@@ -69,9 +69,9 @@ A second, denser table to stress column measuring:
 ## Diagrams
 
 The same document can carry a Mermaid source block and a frankenmermaid-rendered
-SVG asset. HTML displays the SVG directly; file-input PDF renders auto-load the
-same sibling SVG file and draw the diagram as vector content with selectable
-labels.
+SVG asset. For file input, HTML embeds the sibling SVG as a data URI; PDF
+auto-loads the same sibling SVG file and draws the diagram as vector content
+with selectable labels.
 
 ![franken_markdown rendering pipeline](showcase-mermaid.svg)
 

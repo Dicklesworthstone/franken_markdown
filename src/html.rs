@@ -329,7 +329,9 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             Inline::Image { dest, title, alt } => {
                 if let Some(src) = safe_url(dest, UrlContext::Image) {
                     out.push_str("<img src=\"");
-                    out.push_str(&escape_attr(src));
+                    if !push_html_image_asset_data_uri(src, opts, out) {
+                        out.push_str(&escape_attr(src));
+                    }
                     out.push_str("\" alt=\"");
                     out.push_str(&escape_attr(alt));
                     out.push('"');
@@ -354,6 +356,54 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             }
         }
     }
+}
+
+fn push_html_image_asset_data_uri(dest: &str, opts: &HtmlOptions, out: &mut String) -> bool {
+    let Some((mime, bytes)) = html_image_asset(dest, opts) else {
+        return false;
+    };
+    out.push_str("data:");
+    out.push_str(mime);
+    out.push_str(";base64,");
+    push_base64_encoded(out, bytes);
+    true
+}
+
+fn html_image_asset<'a>(dest: &str, opts: &'a HtmlOptions) -> Option<(&'static str, &'a [u8])> {
+    let dest = dest.trim();
+    opts.image_assets.iter().find_map(|asset| {
+        if asset.destination.trim() == dest {
+            html_image_asset_mime(&asset.destination, &asset.bytes)
+                .map(|mime| (mime, asset.bytes.as_slice()))
+        } else {
+            None
+        }
+    })
+}
+
+fn html_image_asset_mime(destination: &str, bytes: &[u8]) -> Option<&'static str> {
+    let path = destination
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let ext = path.rsplit_once('.').map(|(_, ext)| ext)?;
+    if ext.eq_ignore_ascii_case("png") && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if ext.eq_ignore_ascii_case("svg") && looks_like_svg(bytes) {
+        return Some("image/svg+xml");
+    }
+    None
+}
+
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
 }
 
 fn wrap(out: &mut String, tag: &str, content: &[Inline], opts: &HtmlOptions) {

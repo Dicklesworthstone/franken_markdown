@@ -189,6 +189,7 @@ impl WasmRenderOptions {
             custom_css: self.custom_css.clone(),
             allow_raw_html: self.allow_raw_html,
             font_assets: self.font_assets.clone(),
+            image_assets: self.pdf_image_assets.clone(),
         }
     }
 

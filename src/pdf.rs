@@ -13805,17 +13805,10 @@ fn build_single_adjusted_seg(
     let slot = first.tok.slot;
     let link = &first.tok.link;
     let strike = first.tok.strike;
-    let mut text = String::new();
+    let text_len = single_adjusted_seg_text_len(toks, slot, link, strike)?;
+    let mut text = String::with_capacity(text_len);
     for line_tok in toks {
-        let tok = &line_tok.tok;
-        if line_tok.extra_advance != 0.0
-            || tok.slot != slot
-            || tok.link != *link
-            || tok.strike != strike
-        {
-            return None;
-        }
-        text.push_str(token_visible_text(tok));
+        text.push_str(token_visible_text(&line_tok.tok));
     }
     let fs = font_size_of(size);
     let width = shaped_width_points_for_layout(faces, width_cache, slot, &text, fs);
@@ -13833,6 +13826,27 @@ fn build_single_adjusted_seg(
         task: None,
         width,
     })
+}
+
+fn single_adjusted_seg_text_len(
+    toks: &[LineTok],
+    slot: u8,
+    link: &Option<LinkTarget>,
+    strike: bool,
+) -> Option<usize> {
+    let mut len = 0usize;
+    for line_tok in toks {
+        let tok = &line_tok.tok;
+        if line_tok.extra_advance != 0.0
+            || tok.slot != slot
+            || tok.link != *link
+            || tok.strike != strike
+        {
+            return None;
+        }
+        len = len.saturating_add(token_visible_text(tok).len());
+    }
+    Some(len)
 }
 
 #[derive(Clone)]

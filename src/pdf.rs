@@ -12374,12 +12374,12 @@ fn push_text_tokens(
     link: Option<&LinkTarget>,
     out: &mut Vec<Tok>,
 ) {
-    let mut word = String::new();
-    for c in text.chars() {
+    let mut word_start = 0usize;
+    for (idx, c) in text.char_indices() {
         if is_breakable_whitespace(c) {
-            if !word.is_empty() {
+            if word_start < idx {
                 out.push(Tok {
-                    text: std::mem::take(&mut word),
+                    text: text[word_start..idx].to_string(),
                     slot,
                     space: false,
                     hard_break: false,
@@ -12395,13 +12395,12 @@ fn push_text_tokens(
                 link: link.cloned(),
                 strike,
             });
-        } else {
-            word.push(c);
+            word_start = idx + c.len_utf8();
         }
     }
-    if !word.is_empty() {
+    if word_start < text.len() {
         out.push(Tok {
-            text: word,
+            text: text[word_start..].to_string(),
             slot,
             space: false,
             hard_break: false,
@@ -21676,6 +21675,33 @@ mod pdf_writer_tests {
             "segment width should still measure the visible spaces"
         );
         Ok(())
+    }
+
+    #[test]
+    fn pdf_text_tokenizer_slices_words_and_preserves_whitespace_policy() {
+        let mut toks = Vec::new();
+        push_text_tokens(
+            "alpha\tbeta\u{00A0}gamma  delta",
+            F_BODY,
+            false,
+            None,
+            &mut toks,
+        );
+
+        assert_eq!(toks.len(), 6);
+        assert_eq!(toks[0].text, "alpha");
+        assert!(!toks[0].space);
+        assert_eq!(toks[1].text, "");
+        assert!(toks[1].space);
+        assert_eq!(token_visible_text(&toks[1]), " ");
+        assert_eq!(toks[2].text, "beta\u{00A0}gamma");
+        assert!(!toks[2].space);
+        assert_eq!(toks[3].text, "");
+        assert!(toks[3].space);
+        assert_eq!(toks[4].text, "");
+        assert!(toks[4].space);
+        assert_eq!(toks[5].text, "delta");
+        assert!(!toks[5].space);
     }
 
     #[test]

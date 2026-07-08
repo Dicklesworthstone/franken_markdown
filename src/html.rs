@@ -1070,6 +1070,12 @@ fn push_font_face(
         .and_then(|font| font.subset(&keep))
         .unwrap_or_else(|| font_bytes.to_vec());
     let encoded = base64_encode(&subset);
+    css.reserve(font_face_css_capacity(
+        family.len(),
+        style.len(),
+        weight.len(),
+        encoded.len(),
+    ));
     css.push_str("@font-face {\n");
     css.push_str("  font-family: \"");
     css.push_str(family);
@@ -1080,6 +1086,19 @@ fn push_font_face(
     css.push_str(";\n  font-display: swap;\n  src: url(\"data:font/ttf;base64,");
     css.push_str(&encoded);
     css.push_str("\") format(\"truetype\");\n}\n");
+}
+
+fn font_face_css_capacity(
+    family_len: usize,
+    style_len: usize,
+    weight_len: usize,
+    encoded_len: usize,
+) -> usize {
+    128usize
+        .saturating_add(family_len)
+        .saturating_add(style_len)
+        .saturating_add(weight_len)
+        .saturating_add(encoded_len)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

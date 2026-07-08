@@ -2140,6 +2140,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
         glue_adjustments: Vec::new(),
+        code_highlight_spans: Vec::new(),
     };
     layout_blocks(blocks, 0.0, &mut out, &mut cx);
     out
@@ -2574,6 +2575,11 @@ struct LayoutCx<'a> {
     line_toks: Vec<LineTok>,
     /// Reused justification workspace for TeX-style glue stretch/shrink.
     glue_adjustments: Vec<(usize, f32)>,
+    /// Reused syntax-highlight span workspace for PDF fenced-code layout.
+    /// HTML already reuses highlight state; keeping this render-local avoids a
+    /// fresh span Vec allocation for every code line while preserving exact
+    /// source-byte slicing and token colors.
+    code_highlight_spans: Vec<highlight::Span>,
 }
 
 impl LayoutCx<'_> {
@@ -2722,6 +2728,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         faces: cx.faces,
                         width_cache: &cx.width_cache,
                     },
+                    &mut cx.code_highlight_spans,
                 );
                 let row_count = rows.len();
                 for (row_idx, segs) in rows.into_iter().enumerate() {
@@ -15522,7 +15529,11 @@ fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
     low
 }
 
-fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
+fn wrapped_code_rows(
+    text: &str,
+    spec: CodeWrapSpec<'_>,
+    highlight_spans: &mut Vec<highlight::Span>,
+) -> Vec<Vec<Seg>> {
     let first_text_x = spec.x0 + spec.number_col;
     if spec.preserve_lines {
         let mut segs = Vec::new();
@@ -15538,7 +15549,7 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
             ));
         }
         segs.extend(code_frags_to_segs(
-            &code_fragments(spec.lang, text),
+            &code_fragments(spec.lang, text, highlight_spans),
             first_text_x,
             spec.size,
             spec.faces,
@@ -15552,8 +15563,9 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
 
     let continuation_indent = CODE_HANGING_INDENT.min((spec.max_text_width * 0.35).max(0.0));
     let continuation_width = (spec.max_text_width - continuation_indent).max(8.0);
+    let frags = code_fragments(spec.lang, text, highlight_spans);
     let frag_lines = wrap_code_fragments(
-        &code_fragments(spec.lang, text),
+        &frags,
         spec.max_text_width.max(8.0),
         continuation_width,
         spec.size,
@@ -15615,13 +15627,19 @@ fn wrapped_code_rows(text: &str, spec: CodeWrapSpec<'_>) -> Vec<Vec<Seg>> {
     }
 }
 
-fn code_fragments(lang: Option<&str>, text: &str) -> Vec<CodeFrag> {
+fn code_fragments(
+    lang: Option<&str>,
+    text: &str,
+    highlight_spans: &mut Vec<highlight::Span>,
+) -> Vec<CodeFrag> {
     if text.is_empty() {
+        highlight_spans.clear();
         return Vec::new();
     }
 
     let mut frags = Vec::new();
     let Some(lang) = lang else {
+        highlight_spans.clear();
         return vec![CodeFrag {
             text: expand_code_tabs(text),
             fill: Fill::Black,
@@ -15630,7 +15648,8 @@ fn code_fragments(lang: Option<&str>, text: &str) -> Vec<CodeFrag> {
 
     // The highlighter falls back to one plain span for unknown languages, so
     // code blocks with a language only pay for one lexer lookup here.
-    for span in highlight::highlight(lang, text) {
+    highlight::highlight_into(lang, text, highlight_spans);
+    for span in highlight_spans.iter().copied() {
         let Some(slice) = text.get(span.start..span.end) else {
             continue;
         };
@@ -24102,6 +24121,7 @@ mod pdf_writer_tests {
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
+            code_highlight_spans: Vec::new(),
         }
     }
 
@@ -27544,10 +27564,11 @@ mod svg_text_path_tests {
 mod table_wrap_tests {
     use super::{
         CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
-        Faces, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_FONT_SIZE,
+        Faces, Fill, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_FONT_SIZE,
         TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
-        fitted_code_font_size, layout_list, list_marker_layouts, preserve_code_block_lines,
-        table_cell_measure, table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
+        code_fragments, fitted_code_font_size, layout_list, list_marker_layouts,
+        preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
+        wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
     use crate::ast::{Inline, List, ListItem};
@@ -27775,6 +27796,7 @@ mod table_wrap_tests {
             "the fitted code line should be present in the shared width cache"
         );
 
+        let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
             line,
             CodeWrapSpec {
@@ -27790,6 +27812,7 @@ mod table_wrap_tests {
                 faces: &faces,
                 width_cache: &width_cache,
             },
+            &mut highlight_spans,
         );
         assert_eq!(rows.len(), 1);
 
@@ -27797,6 +27820,53 @@ mod table_wrap_tests {
         assert_eq!(
             entries_after_wrap, entries_after_fit,
             "code row construction should reuse the fitter's cached line width"
+        );
+    }
+
+    #[test]
+    fn code_fragments_reuse_highlight_span_scratch_without_stale_spans() {
+        let mut highlight_spans = vec![crate::highlight::Span {
+            kind: crate::highlight::Tok::Comment,
+            start: 99,
+            end: 100,
+        }];
+
+        let rust = "fn main() { return; }";
+        let rust_frags = code_fragments(Some("rust"), rust, &mut highlight_spans);
+        assert!(
+            rust_frags
+                .iter()
+                .any(|frag| frag.text == "fn" && frag.fill != Fill::Black),
+            "rust syntax fragments should be highlighted, not flattened to stale/plain output"
+        );
+        assert!(
+            highlight_spans.iter().all(|span| span.end <= rust.len()),
+            "highlight scratch must be fully refreshed for the current input"
+        );
+        let scratch_capacity = highlight_spans.capacity();
+
+        let plain = code_fragments(None, "plain text", &mut highlight_spans);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].text, "plain text");
+        assert!(plain[0].fill == Fill::Black);
+        assert!(
+            highlight_spans.is_empty(),
+            "no-language code clears stale spans"
+        );
+        assert!(
+            highlight_spans.capacity() >= scratch_capacity,
+            "clearing scratch should retain its allocation for later code lines"
+        );
+
+        let later = "let x = 1;";
+        let later_frags = code_fragments(Some("rust"), later, &mut highlight_spans);
+        assert!(
+            later_frags.iter().all(|frag| !frag.text.is_empty()),
+            "refreshed fragments should not inherit empty or stale slices"
+        );
+        assert!(
+            highlight_spans.iter().all(|span| span.end <= later.len()),
+            "reused scratch spans must describe only the latest highlighted line"
         );
     }
 
@@ -27820,6 +27890,7 @@ mod table_wrap_tests {
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
+            code_highlight_spans: Vec::new(),
         };
         let empty_item = || ListItem {
             task: None,
@@ -27924,6 +27995,7 @@ mod table_wrap_tests {
             "diagram font should shrink to preserve geometry"
         );
 
+        let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
             diagram.lines().next().unwrap(),
             CodeWrapSpec {
@@ -27939,6 +28011,7 @@ mod table_wrap_tests {
                 faces: &faces,
                 width_cache: &width_cache,
             },
+            &mut highlight_spans,
         );
         assert_eq!(rows.len(), 1, "diagram source rows must not hard-wrap");
         let row_width: f32 = rows[0]
@@ -27985,6 +28058,7 @@ mod table_wrap_tests {
             },
         );
         let number_col = super::code_line_number_column_width(digits, size, &faces, &width_cache);
+        let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
             diagram.lines().next().unwrap(),
             CodeWrapSpec {
@@ -28000,6 +28074,7 @@ mod table_wrap_tests {
                 faces: &faces,
                 width_cache: &width_cache,
             },
+            &mut highlight_spans,
         );
 
         assert_eq!(rows.len(), 1, "diagram source rows must not hard-wrap");
@@ -28017,6 +28092,7 @@ mod table_wrap_tests {
     fn ordinary_source_code_still_wraps_when_requested() {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
         let width_cache = width_cache();
+        let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
             "let unusually_long_identifier_name = compute_the_value_from_many_inputs();",
             CodeWrapSpec {
@@ -28032,6 +28108,7 @@ mod table_wrap_tests {
                 faces: &faces,
                 width_cache: &width_cache,
             },
+            &mut highlight_spans,
         );
         assert!(
             rows.len() > 1,

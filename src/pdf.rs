@@ -1207,14 +1207,20 @@ impl Default for FlowMark {
 
 /// One source face plus the OpenType layout tables used by PDF shaping.
 struct Face {
-    font: Font,
+    font: Cow<'static, Font>,
     kern: Kerning,
     lig: Ligatures,
 }
 
+#[derive(Clone, Copy)]
+struct PdfFontFace<'a> {
+    bytes: &'a [u8],
+    parsed: Option<&'static Font>,
+}
+
 impl Face {
-    fn load(slot: FontAssetSlot, bytes: &[u8]) -> Result<Self> {
-        let font = parse_face(slot, bytes)?;
+    fn load(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Self> {
+        let font = load_pdf_face_font(slot, face)?;
         let kern = font.gpos_kerning();
         let lig = font.gsub_ligatures();
         Ok(Self { font, kern, lig })
@@ -1345,23 +1351,23 @@ impl Faces {
         Ok(Self {
             body: Face::load(
                 FontAssetSlot::BodyRegular,
-                body_font_bytes(&opts.font_assets, fam, FontStyle::Regular),
+                body_font_face(&opts.font_assets, fam, FontStyle::Regular),
             )?,
             bold: Face::load(
                 FontAssetSlot::BodyBold,
-                body_font_bytes(&opts.font_assets, fam, FontStyle::Bold),
+                body_font_face(&opts.font_assets, fam, FontStyle::Bold),
             )?,
             italic: Face::load(
                 FontAssetSlot::BodyItalic,
-                body_font_bytes(&opts.font_assets, fam, FontStyle::Italic),
+                body_font_face(&opts.font_assets, fam, FontStyle::Italic),
             )?,
             bolditalic: Face::load(
                 FontAssetSlot::BodyBoldItalic,
-                body_font_bytes(&opts.font_assets, fam, FontStyle::BoldItalic),
+                body_font_face(&opts.font_assets, fam, FontStyle::BoldItalic),
             )?,
             mono: Face::load(
                 FontAssetSlot::MonoRegular,
-                mono_font_bytes(&opts.font_assets, FontStyle::Regular),
+                mono_font_face(&opts.font_assets, FontStyle::Regular),
             )?,
         })
     }
@@ -1377,7 +1383,7 @@ impl Faces {
     }
 
     fn get(&self, slot: u8) -> &Font {
-        &self.face(slot).font
+        self.face(slot).font.as_ref()
     }
 
     /// Advance of `c` in 1/1000 em (PDF text space) for the slot's face.
@@ -1394,32 +1400,71 @@ impl Faces {
     }
 }
 
-fn body_font_bytes(font_assets: &FontAssets, family: crate::FontFamily, style: FontStyle) -> &[u8] {
+fn body_font_face(
+    font_assets: &FontAssets,
+    family: crate::FontFamily,
+    style: FontStyle,
+) -> PdfFontFace<'_> {
     match style {
-        FontStyle::Regular => font_assets
-            .body_regular
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::Bold => font_assets
-            .body_bold
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::Italic => font_assets
-            .body_italic
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::BoldItalic => font_assets
-            .body_bold_italic
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Regular => pdf_font_face(
+            font_assets.body_regular.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::Bold => pdf_font_face(
+            font_assets.body_bold.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::Italic => pdf_font_face(
+            font_assets.body_italic.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::BoldItalic => pdf_font_face(
+            font_assets.body_bold_italic.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
     }
 }
 
-fn mono_font_bytes(font_assets: &FontAssets, style: FontStyle) -> &[u8] {
-    font_assets
-        .mono_regular
-        .as_deref()
-        .unwrap_or_else(|| fonts::mono_bytes(style))
+fn mono_font_face(font_assets: &FontAssets, style: FontStyle) -> PdfFontFace<'_> {
+    pdf_font_face(
+        font_assets.mono_regular.as_deref(),
+        || fonts::mono_bytes(style),
+        || fonts::mono_font(style).ok(),
+    )
+}
+
+fn pdf_font_face<'a>(
+    custom_bytes: Option<&'a [u8]>,
+    default_bytes: impl FnOnce() -> &'static [u8],
+    default_font: impl FnOnce() -> Option<&'static Font>,
+) -> PdfFontFace<'a> {
+    match custom_bytes {
+        Some(bytes) => PdfFontFace {
+            bytes,
+            parsed: None,
+        },
+        None => PdfFontFace {
+            bytes: default_bytes(),
+            parsed: default_font(),
+        },
+    }
+}
+
+fn load_pdf_face_font(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Cow<'static, Font>> {
+    if let Some(font) = face.parsed {
+        if !font.has_glyf_outlines() {
+            return Err(RenderError::InvalidInput(format!(
+                "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
+                slot.as_str()
+            )));
+        }
+        return Ok(Cow::Borrowed(font));
+    }
+    parse_face(slot, face.bytes).map(Cow::Owned)
 }
 
 fn parse_face(slot: FontAssetSlot, bytes: &[u8]) -> Result<Font> {

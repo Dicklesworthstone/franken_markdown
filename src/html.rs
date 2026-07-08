@@ -888,6 +888,12 @@ struct EmbeddedFontCss {
     has_mono: bool,
 }
 
+#[derive(Clone, Copy)]
+struct HtmlFontFace<'a> {
+    bytes: &'a [u8],
+    parsed: Option<&'static Font>,
+}
+
 fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) -> EmbeddedFontCss {
     let mut usage = collect_font_usage(doc);
     usage.add_stability_seed();
@@ -901,7 +907,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "FMD Body",
         "normal",
         "400",
-        body_font_bytes(font_assets, theme.font, FontStyle::Regular),
+        body_font_face(font_assets, theme.font, FontStyle::Regular),
         &usage.body_regular,
     );
     has_body |= !usage.body_regular.is_empty();
@@ -911,7 +917,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "FMD Body",
         "normal",
         "700",
-        body_font_bytes(font_assets, theme.font, FontStyle::Bold),
+        body_font_face(font_assets, theme.font, FontStyle::Bold),
         &usage.body_bold,
     );
     has_body |= !usage.body_bold.is_empty();
@@ -921,7 +927,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "FMD Body",
         "italic",
         "400",
-        body_font_bytes(font_assets, theme.font, FontStyle::Italic),
+        body_font_face(font_assets, theme.font, FontStyle::Italic),
         &usage.body_italic,
     );
     has_body |= !usage.body_italic.is_empty();
@@ -931,7 +937,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "FMD Body",
         "italic",
         "700",
-        body_font_bytes(font_assets, theme.font, FontStyle::BoldItalic),
+        body_font_face(font_assets, theme.font, FontStyle::BoldItalic),
         &usage.body_bold_italic,
     );
     has_body |= !usage.body_bold_italic.is_empty();
@@ -941,7 +947,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "FMD Mono",
         "normal",
         "400",
-        mono_font_bytes(font_assets, FontStyle::Regular),
+        mono_font_face(font_assets, FontStyle::Regular),
         &usage.mono,
     );
     has_mono |= !usage.mono.is_empty();
@@ -953,32 +959,58 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
     }
 }
 
-fn body_font_bytes(font_assets: &FontAssets, family: crate::FontFamily, style: FontStyle) -> &[u8] {
+fn body_font_face(
+    font_assets: &FontAssets,
+    family: crate::FontFamily,
+    style: FontStyle,
+) -> HtmlFontFace<'_> {
     match style {
-        FontStyle::Regular => font_assets
-            .body_regular
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::Bold => font_assets
-            .body_bold
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::Italic => font_assets
-            .body_italic
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
-        FontStyle::BoldItalic => font_assets
-            .body_bold_italic
-            .as_deref()
-            .unwrap_or_else(|| fonts::body_bytes(family, style)),
+        FontStyle::Regular => html_font_face(
+            font_assets.body_regular.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::Bold => html_font_face(
+            font_assets.body_bold.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::Italic => html_font_face(
+            font_assets.body_italic.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
+        FontStyle::BoldItalic => html_font_face(
+            font_assets.body_bold_italic.as_deref(),
+            || fonts::body_bytes(family, style),
+            || fonts::body_font(family, style).ok(),
+        ),
     }
 }
 
-fn mono_font_bytes(font_assets: &FontAssets, style: FontStyle) -> &[u8] {
-    font_assets
-        .mono_regular
-        .as_deref()
-        .unwrap_or_else(|| fonts::mono_bytes(style))
+fn mono_font_face(font_assets: &FontAssets, style: FontStyle) -> HtmlFontFace<'_> {
+    html_font_face(
+        font_assets.mono_regular.as_deref(),
+        || fonts::mono_bytes(style),
+        || fonts::mono_font(style).ok(),
+    )
+}
+
+fn html_font_face<'a>(
+    custom_bytes: Option<&'a [u8]>,
+    default_bytes: impl FnOnce() -> &'static [u8],
+    default_font: impl FnOnce() -> Option<&'static Font>,
+) -> HtmlFontFace<'a> {
+    match custom_bytes {
+        Some(bytes) => HtmlFontFace {
+            bytes,
+            parsed: None,
+        },
+        None => HtmlFontFace {
+            bytes: default_bytes(),
+            parsed: default_font(),
+        },
+    }
 }
 
 impl FontUsage {
@@ -1084,7 +1116,7 @@ fn push_font_face(
     family: &str,
     style: &str,
     weight: &str,
-    font_bytes: &[u8],
+    font_face: HtmlFontFace<'_>,
     chars: &FontCharSet,
 ) {
     if chars.is_empty() {
@@ -1092,10 +1124,15 @@ fn push_font_face(
     }
 
     let keep = chars.to_chars();
-    let subset = Font::parse(font_bytes.to_vec())
-        .ok()
+    let subset = font_face
+        .parsed
         .and_then(|font| font.subset(&keep))
-        .unwrap_or_else(|| font_bytes.to_vec());
+        .or_else(|| {
+            Font::parse(font_face.bytes.to_vec())
+                .ok()
+                .and_then(|font| font.subset(&keep))
+        })
+        .unwrap_or_else(|| font_face.bytes.to_vec());
     let encoded = base64_encode(&subset);
     css.reserve(font_face_css_capacity(
         family.len(),

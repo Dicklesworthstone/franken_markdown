@@ -598,6 +598,12 @@ impl SvgTextSpacing {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SvgWhiteSpace {
+    Collapse,
+    Preserve,
+}
+
 #[derive(Clone, Copy)]
 struct SvgDashPattern {
     values: [f32; 16],
@@ -794,6 +800,7 @@ struct SvgStyle {
     baseline_shift: SvgTextSpacing,
     letter_spacing: SvgTextSpacing,
     word_spacing: SvgTextSpacing,
+    white_space: SvgWhiteSpace,
     text_decoration: SvgTextDecoration,
 }
 
@@ -836,6 +843,7 @@ impl SvgStyle {
         baseline_shift: SvgTextSpacing::ZERO,
         letter_spacing: SvgTextSpacing::ZERO,
         word_spacing: SvgTextSpacing::ZERO,
+        white_space: SvgWhiteSpace::Collapse,
         text_decoration: SvgTextDecoration::NONE,
     };
 }
@@ -885,6 +893,7 @@ struct SvgStylePatch {
     baseline_shift: Option<SvgTextSpacing>,
     letter_spacing: Option<SvgTextSpacing>,
     word_spacing: Option<SvgTextSpacing>,
+    white_space: Option<SvgWhiteSpace>,
     text_decoration: Option<SvgTextDecoration>,
 }
 
@@ -4263,6 +4272,7 @@ fn parse_svg_line(
                 baseline_shift: inherited.baseline_shift,
                 letter_spacing: inherited.letter_spacing,
                 word_spacing: inherited.word_spacing,
+                white_space: inherited.white_space,
                 text_decoration: inherited.text_decoration,
             },
             css_rules,
@@ -4338,6 +4348,7 @@ fn parse_svg_poly(
             baseline_shift: inherited.baseline_shift,
             letter_spacing: inherited.letter_spacing,
             word_spacing: inherited.word_spacing,
+            white_space: inherited.white_space,
             text_decoration: inherited.text_decoration,
         }
     };
@@ -4580,7 +4591,7 @@ fn parse_svg_text_elements(
     let length_adjust = parse_svg_length_adjust(attrs, SvgLengthAdjust::Spacing);
     if !svg_text_body_has_tspan(body) {
         return svg_text_element(
-            normalize_svg_text(&strip_svg_tags(body)),
+            normalize_svg_text_for_style(&strip_svg_tags(body), style.white_space),
             SvgTextPlacement {
                 x,
                 y,
@@ -4638,7 +4649,7 @@ fn push_svg_text_body_elements(
     depth: usize,
 ) -> (f32, f32) {
     if depth >= 8 {
-        let text = normalize_svg_text(&strip_svg_tags(body));
+        let text = normalize_svg_text_for_style(&strip_svg_tags(body), style.white_space);
         let advance = svg_text_advance(
             &text,
             font_size,
@@ -4664,7 +4675,10 @@ fn push_svg_text_body_elements(
     let mut pos = 0usize;
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
-        let text = normalize_svg_text_node(body.get(pos..open).unwrap_or_default());
+        let text = normalize_svg_text_node_for_style(
+            body.get(pos..open).unwrap_or_default(),
+            style.white_space,
+        );
         let advance = svg_text_advance(
             &text,
             font_size,
@@ -4783,7 +4797,8 @@ fn push_svg_text_body_elements(
             current_x = child_text_length.map_or(end_x, |width| child_x + width);
             current_y = end_y;
         } else {
-            let child_text = normalize_svg_text(&strip_svg_tags(child_body));
+            let child_text =
+                normalize_svg_text_for_style(&strip_svg_tags(child_body), child_style.white_space);
             let advance = child_text_length.unwrap_or_else(|| {
                 svg_text_advance(
                     &child_text,
@@ -4814,7 +4829,8 @@ fn push_svg_text_body_elements(
         }
     }
     if pos < body.len() {
-        let text = normalize_svg_text(body.get(pos..).unwrap_or_default());
+        let text =
+            normalize_svg_text_for_style(body.get(pos..).unwrap_or_default(), style.white_space);
         let advance = svg_text_advance(
             &text,
             font_size,
@@ -4927,6 +4943,13 @@ fn normalize_svg_text(src: &str) -> String {
         .join(" ")
 }
 
+fn normalize_svg_text_for_style(src: &str, white_space: SvgWhiteSpace) -> String {
+    match white_space {
+        SvgWhiteSpace::Collapse => normalize_svg_text(src),
+        SvgWhiteSpace::Preserve => decode_xml_entities(src),
+    }
+}
+
 fn normalize_svg_text_node(src: &str) -> String {
     let decoded = decode_xml_entities(src);
     let text = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4944,6 +4967,13 @@ fn normalize_svg_text_node(src: &str) -> String {
         out.push(' ');
     }
     out
+}
+
+fn normalize_svg_text_node_for_style(src: &str, white_space: SvgWhiteSpace) -> String {
+    match white_space {
+        SvgWhiteSpace::Collapse => normalize_svg_text_node(src),
+        SvgWhiteSpace::Preserve => decode_xml_entities(src),
+    }
 }
 
 fn svg_text_advance(text: &str, font_size: f32, letter_spacing: f32, word_spacing: f32) -> f32 {
@@ -7237,6 +7267,8 @@ fn parse_svg_style_with_ancestors(
         svg_attr(attrs, "word-spacing"),
         &scoped_css_vars,
     );
+    apply_svg_xml_space_attr(&mut style, svg_attr(attrs, "xml:space"));
+    apply_svg_white_space_attr(&mut style, svg_attr(attrs, "white-space"), &scoped_css_vars);
     apply_svg_text_decoration_attr(
         &mut style,
         svg_attr(attrs, "text-decoration"),
@@ -7711,6 +7743,7 @@ fn parse_svg_style_patch(
             "text-anchor" => patch.text_anchor = parse_svg_text_anchor_value(value, css_vars),
             "letter-spacing" => patch.letter_spacing = parse_svg_letter_spacing(value, css_vars),
             "word-spacing" => patch.word_spacing = parse_svg_word_spacing(value, css_vars),
+            "white-space" => patch.white_space = parse_svg_white_space(value, css_vars),
             "text-decoration" | "text-decoration-line" => {
                 patch.text_decoration = parse_svg_text_decoration(value, css_vars);
             }
@@ -8047,6 +8080,9 @@ fn apply_svg_style_patch(
     if let Some(word_spacing) = patch.word_spacing {
         style.word_spacing = word_spacing;
     }
+    if let Some(white_space) = patch.white_space {
+        style.white_space = white_space;
+    }
     if let Some(text_decoration) = patch.text_decoration {
         style.text_decoration = text_decoration;
     }
@@ -8104,6 +8140,7 @@ fn apply_svg_style_declaration(
         "text-anchor" => apply_svg_text_anchor_attr(style, Some(value), css_vars),
         "letter-spacing" => apply_svg_letter_spacing_attr(style, Some(value), css_vars),
         "word-spacing" => apply_svg_word_spacing_attr(style, Some(value), css_vars),
+        "white-space" => apply_svg_white_space_attr(style, Some(value), css_vars),
         "text-decoration" | "text-decoration-line" => {
             apply_svg_text_decoration_attr(style, Some(value), css_vars);
         }
@@ -9521,6 +9558,40 @@ fn parse_svg_letter_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<
 
 fn parse_svg_word_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
     parse_svg_text_spacing(value, css_vars)
+}
+
+fn apply_svg_xml_space_attr(style: &mut SvgStyle, value: Option<&str>) {
+    let Some(value) = value.map(str::trim) else {
+        return;
+    };
+    if value.eq_ignore_ascii_case("preserve") {
+        style.white_space = SvgWhiteSpace::Preserve;
+    } else if value.eq_ignore_ascii_case("default") {
+        style.white_space = SvgWhiteSpace::Collapse;
+    }
+}
+
+fn apply_svg_white_space_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(white_space) = value.and_then(|value| parse_svg_white_space(value, css_vars)) {
+        style.white_space = white_space;
+    }
+}
+
+fn parse_svg_white_space(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgWhiteSpace> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_white_space(&resolved, css_vars);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "pre" | "pre-wrap" | "break-spaces" => Some(SvgWhiteSpace::Preserve),
+        "normal" | "nowrap" | "pre-line" => Some(SvgWhiteSpace::Collapse),
+        _ => None,
+    }
 }
 
 fn parse_svg_text_spacing(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgTextSpacing> {
@@ -16020,6 +16091,7 @@ fn draw_svg_line(
         baseline_shift: line.style.baseline_shift,
         letter_spacing: line.style.letter_spacing,
         word_spacing: line.style.word_spacing,
+        white_space: line.style.white_space,
         text_decoration: line.style.text_decoration,
     };
     let style = svg_style_with_non_scaling_stroke(style, stroke_scale);

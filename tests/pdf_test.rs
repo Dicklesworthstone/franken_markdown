@@ -162,6 +162,23 @@ fn first_text_object_after(pdf_text: &str, marker: &str) -> String {
     tail[..end].to_string()
 }
 
+fn pdf_tj_glyph_count(text_object: &str) -> usize {
+    let mut count = 0usize;
+    let mut rest = text_object;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let hex = &rest[..end];
+        if hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            count += hex.len() / 4;
+        }
+        rest = &rest[end + 1..];
+    }
+    count
+}
+
 fn first_graphics_state_after<'a>(pdf_text: &'a str, marker: &str) -> &'a str {
     let tail = pdf_text
         .split(marker)
@@ -2102,6 +2119,100 @@ fn pdf_svg_word_spacing_adjusts_selectable_text_and_anchor_width() {
     assert!(
         !reset_object.contains(">-100<") && !reset_object.contains(">50<"),
         "a tspan should be able to reset inherited word-spacing back to normal: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_xml_space_preserve_keeps_significant_text_spacing() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 72">
+  <text x="8" y="14" font-size="10" fill="#ff0000">A   B</text>
+  <text x="8" y="30" font-size="10" fill="#0000ff" xml:space="preserve">A   B</text>
+  <g xml:space="preserve">
+    <text x="8" y="46" font-size="10" fill="#00ff00">A   B</text>
+    <text x="8" y="62" font-size="10" fill="#123456" xml:space="default">A   B</text>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("xml-space.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![XML space](xml-space.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let collapsed = first_text_object_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let preserved = first_text_object_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    let inherited = first_text_object_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    let reset = first_text_object_after(&text, "0.071 0.204 0.337 rg\nBT /F1");
+
+    assert_eq!(
+        pdf_tj_glyph_count(&collapsed),
+        3,
+        "default SVG text whitespace should continue to collapse: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&preserved),
+        5,
+        "xml:space=preserve should keep all significant spaces in selectable PDF text: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&inherited),
+        5,
+        "xml:space=preserve should inherit through SVG groups: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&reset),
+        3,
+        "xml:space=default should reset an inherited preserve mode: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_white_space_pre_preserves_text_spacing_without_treating_nowrap_as_pre() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 72">
+  <style>
+    .pre { white-space: pre; }
+    .nowrap { white-space: nowrap; }
+  </style>
+  <text x="8" y="14" font-size="10" fill="#ff0000" class="pre">A   B</text>
+  <text x="8" y="30" font-size="10" fill="#0000ff" class="nowrap">A   B</text>
+  <text x="8" y="46" font-size="10" fill="#00ff00" class="pre" style="white-space: normal">A   B</text>
+  <text x="8" y="62" font-size="10" fill="#123456" class="pre"><tspan>A   B</tspan></text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("white-space.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![White space](white-space.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let pre = first_text_object_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    let nowrap = first_text_object_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    let inline_normal = first_text_object_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    let inherited_tspan = first_text_object_after(&text, "0.071 0.204 0.337 rg\nBT /F1");
+
+    assert_eq!(
+        pdf_tj_glyph_count(&pre),
+        5,
+        "white-space: pre should preserve repeated spaces in SVG text: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&nowrap),
+        3,
+        "white-space: nowrap should retain SVG's existing collapsed-space behavior: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&inline_normal),
+        3,
+        "inline white-space: normal should override a preserving stylesheet rule: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&inherited_tspan),
+        5,
+        "white-space: pre should inherit from text to child tspan content: {text}"
     );
 }
 

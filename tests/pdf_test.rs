@@ -1332,6 +1332,45 @@ fn pdf_svg_vector_effect_non_scaling_stroke_preserves_device_width() {
 }
 
 #[test]
+fn pdf_svg_vector_effect_non_scaling_stroke_applies_to_selectable_text() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60" viewBox="0 0 100 30">
+  <style>
+    .fixed { vector-effect: non-scaling-stroke; }
+  </style>
+  <text class="fixed" x="5" y="13" font-size="10" fill="none" stroke="#2563eb" stroke-width="6">Fixed</text>
+  <text x="5" y="27" font-size="10" fill="none" stroke="#64748b" stroke-width="6">Scaled</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "diagrams/vector-effect-text.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Vector effect text](diagrams/vector-effect-text.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "vector-effect SVG text should stay native selectable text rather than rasterizing: {text}"
+    );
+    assert!(
+        text.contains("0.145 0.388 0.922 RG 6 w 0 J 0 j 4 M [] 0 d\nBT /F1"),
+        "non-scaling stroked SVG text should keep the authored 6-unit width under the 1.5x viewport scale: {text}"
+    );
+    assert!(
+        text.contains("0.392 0.455 0.545 RG 9 w 0 J 0 j 4 M [] 0 d\nBT /F1"),
+        "ordinary stroked SVG text should keep scaling with the 1.5x viewport: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_root_viewport_preserves_viewbox_aspect_ratio() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100">

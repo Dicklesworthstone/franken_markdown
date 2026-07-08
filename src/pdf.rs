@@ -469,6 +469,7 @@ struct SvgText {
     stroke: Option<SvgColor>,
     stroke_width: f32,
     stroke_opacity: f32,
+    non_scaling_stroke: bool,
     paint_order: SvgPaintOrder,
     clip_path: Option<usize>,
     mask_path: Option<usize>,
@@ -5965,6 +5966,7 @@ fn svg_text_element(
         stroke,
         stroke_width: style.stroke_width,
         stroke_opacity,
+        non_scaling_stroke: style.non_scaling_stroke,
         paint_order: style.paint_order,
         clip_path: style.clip_path,
         mask_path: style.mask_path,
@@ -17077,6 +17079,7 @@ mod font_slot_text_refs_tests {
             stroke: None,
             stroke_width: 1.0,
             stroke_opacity: 1.0,
+            non_scaling_stroke: false,
             paint_order: SvgPaintOrder::NORMAL,
             clip_path: None,
             mask_path: None,
@@ -20648,7 +20651,14 @@ fn draw_svg_text(
     }
     let letter_spacing_adjust = pdf_tj_spacing_adjust(letter_spacing, matrix.size);
     let word_spacing_adjust = pdf_tj_spacing_adjust(word_spacing, matrix.size);
-    let stroke_width = svg_text_pdf_stroke_width(text.stroke_width, text.font_size, matrix.size);
+    let stroke_width = svg_text_pdf_stroke_width(
+        text.stroke_width,
+        text.font_size,
+        matrix.size,
+        text.non_scaling_stroke,
+        text.transform,
+        image_transform,
+    );
     let stroke = text.stroke.filter(|_| stroke_width > 0.001);
     let fill = text.fill;
     let fill_alpha = fill
@@ -20756,7 +20766,14 @@ fn draw_svg_text(
     body.push_str("Q\n");
 }
 
-fn svg_text_pdf_stroke_width(stroke_width: f32, font_size: f32, matrix_size: f32) -> f32 {
+fn svg_text_pdf_stroke_width(
+    stroke_width: f32,
+    font_size: f32,
+    matrix_size: f32,
+    non_scaling_stroke: bool,
+    transform: SvgTransform,
+    image_transform: SvgImageTransform,
+) -> f32 {
     if !stroke_width.is_finite() || stroke_width <= 0.001 {
         return 0.0;
     }
@@ -20765,7 +20782,13 @@ fn svg_text_pdf_stroke_width(stroke_width: f32, font_size: f32, matrix_size: f32
     } else {
         1.0
     };
-    (stroke_width * scale.max(0.001)).clamp(0.01, 96.0)
+    let width = stroke_width * scale.max(0.001);
+    if non_scaling_stroke && svg_transform_preserves_stroke_scale(transform) {
+        if let Some(viewport_scale) = svg_uniform_stroke_scale(image_transform) {
+            return (width / viewport_scale).clamp(0.01, 96.0);
+        }
+    }
+    width.clamp(0.01, 96.0)
 }
 
 fn append_svg_text_alpha_state_if_changed(

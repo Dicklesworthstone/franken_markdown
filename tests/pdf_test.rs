@@ -5203,6 +5203,62 @@ fn pdf_svg_css_chained_drop_shadows_emit_vector_shadow_layers() {
 }
 
 #[test]
+fn pdf_svg_url_resource_properties_resolve_css_variables() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 24">
+  <defs>
+    <filter id="shadow"><feDropShadow dx="3" dy="2" flood-color="#123456" flood-opacity="0.5"/></filter>
+    <clipPath id="clip-a"><rect x="18" y="2" width="8" height="8"/></clipPath>
+    <clipPath id="clip-b"><rect x="58" y="2" width="8" height="8"/></clipPath>
+    <mask id="hard-mask"><rect x="38" y="2" width="8" height="8" fill="#ffffff"/></mask>
+  </defs>
+  <style>
+    :root {
+      --shadow-ref: url(#shadow);
+      --mask-ref: url(#hard-mask);
+    }
+    .filtered { filter: var(--shadow-ref); }
+    .clipped { --clip-ref: url(#clip-a); clip-path: var(--clip-ref); }
+    .masked { mask: var(--mask-ref); }
+  </style>
+  <rect class="filtered" x="2" y="2" width="10" height="8" fill="#0000ff"/>
+  <rect class="clipped" x="16" y="0" width="18" height="12" fill="#00ff00"/>
+  <rect class="masked" x="36" y="0" width="18" height="12" fill="#ff0000"/>
+  <rect style="--local-clip: url(#clip-b); clip-path: var(--local-clip)" x="56" y="0" width="18" height="12" fill="#00ffff"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("url-var-resources.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![URL vars](url-var-resources.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 1 0 0 1 3 2 cm /GSa05000500 gs 0.071 0.204 0.337 rg"),
+        "filter: var(--shadow-ref) should resolve to the referenced filter shadow: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 18 2 m 26 2 l 26 10 l 18 10 l h W n 0.000 1.000 0.000 rg 16 0 18 12 re f\nQ"
+        ),
+        "clip-path: var(--clip-ref) should resolve through scoped CSS variables: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 38 2 m 46 2 l 46 10 l 38 10 l h W n 1.000 0.000 0.000 rg 36 0 18 12 re f\nQ"
+        ),
+        "mask: var(--mask-ref) should resolve to the supported hard-mask clip geometry: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 58 2 m 66 2 l 66 10 l 58 10 l h W n 0.000 1.000 1.000 rg 56 0 18 12 re f\nQ"
+        ),
+        "inline custom properties should resolve URL-valued clip-path declarations: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_missing_or_unsupported_url_filters_do_not_invent_shadows() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 28">

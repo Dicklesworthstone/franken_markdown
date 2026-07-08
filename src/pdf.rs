@@ -8427,8 +8427,18 @@ fn parse_svg_style_with_ancestors(
 
     apply_svg_color_attr(&mut style, svg_attr(attrs, "color"), &scoped_css_vars);
     apply_svg_transform_attr(&mut style, svg_attr(attrs, "transform"));
-    apply_svg_clip_path_attr(&mut style, svg_attr(attrs, "clip-path"), clip_paths);
-    apply_svg_mask_attr(&mut style, svg_attr(attrs, "mask"), clip_paths);
+    apply_svg_clip_path_attr(
+        &mut style,
+        svg_attr(attrs, "clip-path"),
+        clip_paths,
+        &scoped_css_vars,
+    );
+    apply_svg_mask_attr(
+        &mut style,
+        svg_attr(attrs, "mask"),
+        clip_paths,
+        &scoped_css_vars,
+    );
     apply_svg_paint_attr(
         &mut style,
         "fill",
@@ -9024,8 +9034,8 @@ fn parse_svg_style_patch(
             "visibility" => patch.visibility_visible = parse_svg_visibility_visible(value),
             "filter" => patch.shadow = parse_svg_filter_shadow(value, filter_shadows, css_vars),
             "transform" => patch.transform = parse_svg_transform(value),
-            "clip-path" => patch.clip_path = parse_svg_clip_path_ref(value, clip_paths),
-            "mask" => patch.mask_path = parse_svg_mask_ref(value, clip_paths),
+            "clip-path" => patch.clip_path = parse_svg_clip_path_ref(value, clip_paths, css_vars),
+            "mask" => patch.mask_path = parse_svg_mask_ref(value, clip_paths, css_vars),
             "fill-rule" => patch.fill_rule = parse_svg_fill_rule(value),
             "paint-order" => patch.paint_order = parse_svg_paint_order(value, css_vars),
             "stroke-width" => {
@@ -9418,8 +9428,8 @@ fn apply_svg_style_declaration(
         }
         "filter" => apply_svg_filter_attr(style, Some(value), filter_shadows, css_vars),
         "transform" => apply_svg_transform_attr(style, Some(value)),
-        "clip-path" => apply_svg_clip_path_attr(style, Some(value), clip_paths),
-        "mask" => apply_svg_mask_attr(style, Some(value), clip_paths),
+        "clip-path" => apply_svg_clip_path_attr(style, Some(value), clip_paths, css_vars),
+        "mask" => apply_svg_mask_attr(style, Some(value), clip_paths, css_vars),
         "fill-rule" => apply_svg_fill_rule_attr(style, Some(value)),
         "paint-order" => apply_svg_paint_order_attr(style, Some(value), css_vars),
         "stroke-width" => {
@@ -9487,20 +9497,41 @@ fn apply_svg_transform_attr(style: &mut SvgStyle, value: Option<&str>) {
     style.transform = style.transform.concat(transform);
 }
 
-fn apply_svg_clip_path_attr(style: &mut SvgStyle, value: Option<&str>, clip_paths: &[SvgClipPath]) {
-    if let Some(clip_path) = value.and_then(|value| parse_svg_clip_path_ref(value, clip_paths)) {
+fn apply_svg_clip_path_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    clip_paths: &[SvgClipPath],
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(clip_path) =
+        value.and_then(|value| parse_svg_clip_path_ref(value, clip_paths, css_vars))
+    {
         style.clip_path = clip_path;
     }
 }
 
-fn apply_svg_mask_attr(style: &mut SvgStyle, value: Option<&str>, clip_paths: &[SvgClipPath]) {
-    if let Some(mask_path) = value.and_then(|value| parse_svg_mask_ref(value, clip_paths)) {
+fn apply_svg_mask_attr(
+    style: &mut SvgStyle,
+    value: Option<&str>,
+    clip_paths: &[SvgClipPath],
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some(mask_path) = value.and_then(|value| parse_svg_mask_ref(value, clip_paths, css_vars))
+    {
         style.mask_path = mask_path;
     }
 }
 
-fn parse_svg_clip_path_ref(value: &str, clip_paths: &[SvgClipPath]) -> Option<Option<usize>> {
-    let value = value.trim();
+fn parse_svg_clip_path_ref(
+    value: &str,
+    clip_paths: &[SvgClipPath],
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<usize>> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_clip_path_ref(&resolved, clip_paths, css_vars);
+    }
     if value.eq_ignore_ascii_case("none") {
         return Some(None);
     }
@@ -9508,8 +9539,16 @@ fn parse_svg_clip_path_ref(value: &str, clip_paths: &[SvgClipPath]) -> Option<Op
     Some(clip_paths.iter().position(|clip_path| clip_path.id == id))
 }
 
-fn parse_svg_mask_ref(value: &str, clip_paths: &[SvgClipPath]) -> Option<Option<usize>> {
-    let value = value.trim();
+fn parse_svg_mask_ref(
+    value: &str,
+    clip_paths: &[SvgClipPath],
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<usize>> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_mask_ref(&resolved, clip_paths, css_vars);
+    }
     if value.eq_ignore_ascii_case("none") {
         return Some(None);
     }
@@ -10622,7 +10661,11 @@ fn parse_svg_filter_shadow(
     filter_shadows: &[SvgFilterShadow],
     css_vars: &[SvgCssVariable],
 ) -> Option<Option<SvgShadow>> {
-    let value = value.trim();
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_filter_shadow(&resolved, filter_shadows, css_vars);
+    }
     if value.is_empty() || value.eq_ignore_ascii_case("none") {
         return Some(None);
     }

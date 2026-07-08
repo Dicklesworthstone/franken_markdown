@@ -1137,12 +1137,12 @@ fn push_font_face(
                 .and_then(|font| font.subset(&keep))
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
-    let encoded = base64_encode(&subset);
+    let encoded_len = base64_encoded_len(subset.len());
     css.reserve(font_face_css_capacity(
         family.len(),
         style.len(),
         weight.len(),
-        encoded.len(),
+        encoded_len,
     ));
     css.push_str("@font-face {\n");
     css.push_str("  font-family: \"");
@@ -1152,7 +1152,7 @@ fn push_font_face(
     css.push_str(";\n  font-weight: ");
     css.push_str(weight);
     css.push_str(";\n  font-display: swap;\n  src: url(\"data:font/ttf;base64,");
-    css.push_str(&encoded);
+    push_base64_encoded(css, &subset);
     css.push_str("\") format(\"truetype\");\n}\n");
 }
 
@@ -1169,52 +1169,53 @@ fn font_face_css_capacity(
         .saturating_add(encoded_len)
 }
 
+#[cfg(test)]
 fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(base64_encoded_len(bytes.len()));
+    push_base64_encoded(&mut out, bytes);
+    out
+}
+
+fn base64_encoded_len(byte_len: usize) -> usize {
+    byte_len.div_ceil(3) * 4
+}
+
+fn push_base64_encoded(out: &mut String, bytes: &[u8]) {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let encoded_len = bytes.len().div_ceil(3) * 4;
-    let mut out = vec![0u8; encoded_len];
+    let start_len = out.len();
     let mut i = 0usize;
-    let mut o = 0usize;
     let full_len = bytes.len() / 3 * 3;
     while i < full_len {
         let b0 = bytes[i];
         let b1 = bytes[i + 1];
         let b2 = bytes[i + 2];
 
-        out[o] = TABLE[(b0 >> 2) as usize];
-        out[o + 1] = TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize];
-        out[o + 2] = TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize];
-        out[o + 3] = TABLE[(b2 & 0b0011_1111) as usize];
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
 
         i += 3;
-        o += 4;
     }
     match bytes.len() - full_len {
         0 => {}
         1 => {
             let b0 = bytes[full_len];
-            out[o] = TABLE[(b0 >> 2) as usize];
-            out[o + 1] = TABLE[((b0 & 0b0000_0011) << 4) as usize];
-            out[o + 2] = b'=';
-            out[o + 3] = b'=';
-            o += 4;
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[((b0 & 0b0000_0011) << 4) as usize] as char);
+            out.push('=');
+            out.push('=');
         }
         _ => {
             let b0 = bytes[full_len];
             let b1 = bytes[full_len + 1];
-            out[o] = TABLE[(b0 >> 2) as usize];
-            out[o + 1] = TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize];
-            out[o + 2] = TABLE[((b1 & 0b0000_1111) << 2) as usize];
-            out[o + 3] = b'=';
-            o += 4;
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+            out.push(TABLE[((b1 & 0b0000_1111) << 2) as usize] as char);
+            out.push('=');
         }
     }
-    debug_assert_eq!(o, encoded_len);
-    debug_assert!(out.is_ascii());
-    match String::from_utf8(out) {
-        Ok(s) => s,
-        Err(err) => String::from_utf8_lossy(&err.into_bytes()).into_owned(),
-    }
+    debug_assert_eq!(out.len() - start_len, base64_encoded_len(bytes.len()));
 }
 
 const HTML_FONT_SEED: &str = " \t\n0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}<>/\\'\"+-_=*#%&@|`~^•–—“”‘’";

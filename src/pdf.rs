@@ -4907,8 +4907,10 @@ fn push_svg_text_body_elements(
         }
     }
     if pos < body.len() {
-        let text =
-            normalize_svg_text_for_style(body.get(pos..).unwrap_or_default(), style.white_space);
+        let text = normalize_svg_text_node_for_style(
+            body.get(pos..).unwrap_or_default(),
+            style.white_space,
+        );
         let advance = svg_text_advance(
             &text,
             font_size,

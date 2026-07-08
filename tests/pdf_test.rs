@@ -1788,6 +1788,35 @@ fn pdf_svg_tspan_children_render_as_separate_text_runs() {
 }
 
 #[test]
+fn pdf_svg_trailing_text_node_after_tspan_keeps_boundary_space() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 24">
+  <text x="10" y="14" font-size="10" fill="#ff0000"><tspan fill="#0000ff">A</tspan> B</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("tspan-tail.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Tspan tail](tspan-tail.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let tspan_object = first_text_object_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    let trailing_object = first_text_object_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+
+    assert_eq!(
+        pdf_tj_glyph_count(&tspan_object),
+        1,
+        "the child tspan should still render only its own glyph: {text}"
+    );
+    assert_eq!(
+        pdf_tj_glyph_count(&trailing_object),
+        2,
+        "a trailing sibling text node after a tspan should keep its leading boundary space: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_text_font_weight_and_style_select_embedded_font_slots() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 72">

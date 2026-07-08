@@ -1,7 +1,7 @@
 [layout]
 algorithm = "sugiyama"
-node_spacing = 34
-rank_spacing = 44
+node_spacing = 18
+rank_spacing = 20
 edge_routing = "spline"
 
 [svg]

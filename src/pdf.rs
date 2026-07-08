@@ -18432,13 +18432,7 @@ fn draw_svg_text(
     let (r, g, b) = text.fill;
     body.push_str("q\n");
     if let Some((x, y, w, h)) = image_transform.viewport_clip {
-        body.push_str(&format!(
-            "{x} {y} {w} {h} re W n\n",
-            x = pdf_num(x),
-            y = pdf_num(y),
-            w = pdf_num(w),
-            h = pdf_num(h),
-        ));
+        append_svg_text_viewport_clip(body, x, y, w, h);
     }
     if text.opacity < 0.999 {
         append_svg_alpha_state_recorded(
@@ -18464,30 +18458,74 @@ fn draw_svg_text(
     {
         append_svg_text_clip_path(body, mask_path, text.transform, image_transform, text_bbox);
     }
-    body.push_str(&format!(
-        "{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\n",
-        r = pdf_fixed3(r),
-        g = pdf_fixed3(g),
-        b = pdf_fixed3(b),
-        font = slot,
-        size = pdf_fixed2(matrix.size),
-        a = pdf_num(matrix.a),
-        b_matrix = pdf_num(matrix.b),
-        c = pdf_num(matrix.c),
-        d = pdf_num(matrix.d),
-        x = pdf_fixed2(matrix.x),
-        y = pdf_fixed2(matrix.y),
-        tj = kerned_tj_with_spacing(
-            &face.map,
-            source,
-            &face.kern,
-            shaped,
-            pdf_tj_spacing_adjust(letter_spacing, matrix.size),
-            pdf_tj_spacing_adjust(word_spacing, matrix.size),
-        ),
-    ));
+    append_svg_text_operator(
+        body,
+        (r, g, b),
+        slot,
+        matrix,
+        &face.map,
+        source,
+        &face.kern,
+        shaped,
+        pdf_tj_spacing_adjust(letter_spacing, matrix.size),
+        pdf_tj_spacing_adjust(word_spacing, matrix.size),
+    );
     append_svg_text_decoration(body, text.decoration, matrix, width, text.fill);
     body.push_str("Q\n");
+}
+
+fn append_svg_text_viewport_clip(body: &mut String, x: f32, y: f32, w: f32, h: f32) {
+    append_pdf_num(body, x);
+    body.push(' ');
+    append_pdf_num(body, y);
+    body.push(' ');
+    append_pdf_num(body, w);
+    body.push(' ');
+    append_pdf_num(body, h);
+    body.push_str(" re W n\n");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_text_operator(
+    body: &mut String,
+    color: (f32, f32, f32),
+    slot: u8,
+    matrix: SvgTextMatrix,
+    map: &BTreeMap<u16, u16>,
+    source: &Font,
+    kern: &Kerning,
+    shaped: &[u16],
+    letter_spacing_adjust: i32,
+    word_spacing_adjust: i32,
+) {
+    append_rgb_fill_operator(body, color);
+    body.push_str("BT /F");
+    append_decimal_u64_string(body, u64::from(slot));
+    body.push(' ');
+    append_pdf_fixed2(body, matrix.size);
+    body.push_str(" Tf ");
+    append_pdf_num(body, matrix.a);
+    body.push(' ');
+    append_pdf_num(body, matrix.b);
+    body.push(' ');
+    append_pdf_num(body, matrix.c);
+    body.push(' ');
+    append_pdf_num(body, matrix.d);
+    body.push(' ');
+    append_pdf_fixed2(body, matrix.x);
+    body.push(' ');
+    append_pdf_fixed2(body, matrix.y);
+    body.push_str(" Tm ");
+    append_kerned_tj_with_spacing(
+        body,
+        map,
+        source,
+        kern,
+        shaped,
+        letter_spacing_adjust,
+        word_spacing_adjust,
+    );
+    body.push_str(" TJ ET\n");
 }
 
 fn append_svg_text_decoration(
@@ -21072,6 +21110,7 @@ fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[
     kerned_tj_with_spacing(map, source, kern, shaped, 0, 0)
 }
 
+#[cfg(test)]
 fn kerned_tj_with_spacing(
     map: &BTreeMap<u16, u16>,
     source: &Font,
@@ -21479,6 +21518,7 @@ fn finite_pdf_scalar(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
 
+#[cfg(test)]
 fn pdf_fixed2(value: f32) -> String {
     format!("{:.2}", finite_pdf_scalar(value))
 }
@@ -21511,8 +21551,8 @@ mod pdf_writer_tests {
         F_BODY, F_BOLD, F_MONO, Faces, Fill, FlowMark, Line, LineTok, LinkTarget,
         PageContentCapacityEstimate, ParagraphItem, ParagraphPolicy, PdfPageObjectParts, PdfStream,
         PdfStructElementObjectParts, Placed, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTransform, Tok, WidthCache,
-        append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
+        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
         append_pdf_fixed2, append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes,
@@ -21526,10 +21566,11 @@ mod pdf_writer_tests {
         append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
         append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
         append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
-        append_svg_style, append_text_segment_operator, append_xref_in_use_row, append_xref_offset,
-        build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
-        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
-        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
+        append_svg_style, append_svg_text_operator, append_svg_text_viewport_clip,
+        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
+        decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
+        first_visible_segment_index, font_size_of, kerned_tj, kerned_tj_with_spacing,
         line_has_visible_content, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3,
         pdf_num, pdf_text_string, push_text_tokens, rounded_rect_fill, shape_run,
         svg_alpha_extgstate_resource, token_visible_text, tokenize,
@@ -22610,6 +22651,62 @@ mod pdf_writer_tests {
             x = pdf_fixed2(12.5),
             y = pdf_fixed2(700.25),
             tj = kerned_tj(&map, &face.font, &face.kern, &shaped.glyphs),
+        );
+        assert_eq!(streamed, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn streamed_svg_text_operator_matches_legacy_format_shape() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let face = faces.face(F_BODY);
+        let shaped = shape_run(&face.font, &face.lig, "A V A");
+        let map = shaped
+            .glyphs
+            .iter()
+            .copied()
+            .map(|glyph| (glyph, glyph))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let matrix = SvgTextMatrix {
+            a: 1.25,
+            b: -0.5,
+            c: 0.75,
+            d: 2.0,
+            x: 12.5,
+            y: 700.25,
+            size: 11.0,
+        };
+
+        let mut streamed = String::new();
+        append_svg_text_viewport_clip(&mut streamed, 1.25, -0.5, 20.0, 3.125);
+        append_svg_text_operator(
+            &mut streamed,
+            (1.0, 0.5, 0.0),
+            F_BODY,
+            matrix,
+            &map,
+            &face.font,
+            &face.kern,
+            &shaped.glyphs,
+            -25,
+            -75,
+        );
+
+        let expected = format!(
+            "{clip}{r} {g} {b} rg\nBT /F{font} {size} Tf {a} {b_matrix} {c} {d} {x} {y} Tm {tj} TJ ET\n",
+            clip = "1.25 -0.5 20 3.13 re W n\n",
+            r = pdf_fixed3(1.0),
+            g = pdf_fixed3(0.5),
+            b = pdf_fixed3(0.0),
+            font = F_BODY,
+            size = pdf_fixed2(matrix.size),
+            a = pdf_num(matrix.a),
+            b_matrix = pdf_num(matrix.b),
+            c = pdf_num(matrix.c),
+            d = pdf_num(matrix.d),
+            x = pdf_fixed2(matrix.x),
+            y = pdf_fixed2(matrix.y),
+            tj = kerned_tj_with_spacing(&map, &face.font, &face.kern, &shaped.glyphs, -25, -75),
         );
         assert_eq!(streamed, expected);
         Ok(())

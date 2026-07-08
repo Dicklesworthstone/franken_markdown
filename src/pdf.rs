@@ -12940,17 +12940,7 @@ fn pdf_separator_break_char(c: char) -> bool {
 /// points so no unbreakable run longer than the chunk survives.
 fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
     let len = chars.len();
-    let mut points: Vec<PdfBreakPoint> = dict
-        .iter()
-        .filter(|&&at| at >= 2 && len - at >= 2)
-        .map(|&at| PdfBreakPoint {
-            at,
-            penalty: 50,
-            hyphen: true,
-        })
-        .collect();
-    points.sort_by_key(|point| point.at);
-    points.dedup_by_key(|point| point.at);
+    let mut points = pdf_dictionary_break_points(len, dict);
 
     if len >= FORCED_BREAK_MIN_WORD {
         for (i, &c) in chars.iter().enumerate() {
@@ -12972,35 +12962,7 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
             }
         }
         points.sort_by_key(|p| p.at);
-
-        // Emergency fill: bound every gap (including word start/end) so no
-        // unbreakable run exceeds the chunk length.
-        let mut filled = Vec::with_capacity(points.len());
-        let mut prev = 0usize;
-        for idx in 0..=points.len() {
-            let bound = points.get(idx).map_or(len, |p| p.at);
-            let mut at = prev + FORCED_BREAK_CHUNK;
-            while at < bound && len - at >= 2 && at >= 2 {
-                filled.push(PdfBreakPoint {
-                    at,
-                    penalty: EMERGENCY_BREAK_PENALTY,
-                    hyphen: false,
-                });
-                at += FORCED_BREAK_CHUNK;
-            }
-            if let Some(p) = points.get_mut(idx) {
-                filled.push(std::mem::replace(
-                    p,
-                    PdfBreakPoint {
-                        at: 0,
-                        penalty: 0,
-                        hyphen: false,
-                    },
-                ));
-                prev = filled.last().map_or(prev, |p| p.at);
-            }
-        }
-        points = filled;
+        points = fill_pdf_emergency_break_points(len, points);
     }
 
     points.sort_by_key(|p| p.at);
@@ -13008,13 +12970,75 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
     points
 }
 
+fn pdf_ascii_alphabetic_word_break_points(len: usize, dict: &[usize]) -> Vec<PdfBreakPoint> {
+    let mut points = pdf_dictionary_break_points(len, dict);
+    if len >= FORCED_BREAK_MIN_WORD {
+        points = fill_pdf_emergency_break_points(len, points);
+    }
+    points.sort_by_key(|point| point.at);
+    points.dedup_by_key(|point| point.at);
+    points
+}
+
+fn pdf_dictionary_break_points(len: usize, dict: &[usize]) -> Vec<PdfBreakPoint> {
+    let mut points: Vec<PdfBreakPoint> = dict
+        .iter()
+        .filter(|&&at| at >= 2 && len - at >= 2)
+        .map(|&at| PdfBreakPoint {
+            at,
+            penalty: 50,
+            hyphen: true,
+        })
+        .collect();
+    points.sort_by_key(|point| point.at);
+    points.dedup_by_key(|point| point.at);
+    points
+}
+
+fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Vec<PdfBreakPoint> {
+    let mut filled = Vec::with_capacity(points.len());
+    let mut prev = 0usize;
+    for point in points {
+        let mut at = prev + FORCED_BREAK_CHUNK;
+        while at < point.at && len - at >= 2 && at >= 2 {
+            filled.push(PdfBreakPoint {
+                at,
+                penalty: EMERGENCY_BREAK_PENALTY,
+                hyphen: false,
+            });
+            at += FORCED_BREAK_CHUNK;
+        }
+        prev = point.at;
+        filled.push(point);
+    }
+
+    let mut at = prev + FORCED_BREAK_CHUNK;
+    while at < len && len - at >= 2 && at >= 2 {
+        filled.push(PdfBreakPoint {
+            at,
+            penalty: EMERGENCY_BREAK_PENALTY,
+            hyphen: false,
+        });
+        at += FORCED_BREAK_CHUNK;
+    }
+    filled
+}
+
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
         return;
     }
 
-    let plain: String = word.iter().map(|t| t.text.as_str()).collect();
-    let dict_points = if cx.policy.hyphenate && pdf_word_is_ascii_alphabetic(word) {
+    let stats = pdf_word_stats(word);
+    let needs_dictionary = cx.policy.hyphenate && stats.ascii_alphabetic;
+    let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
+    if !needs_dictionary && !needs_synthetic_breaks {
+        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
+        return;
+    }
+
+    let plain = needs_dictionary.then(|| pdf_word_string(word, stats.byte_len));
+    let dict_points = if let Some(plain) = plain.as_deref() {
         // Hyphenation points are case-independent and depend only on the word's
         // letters, so the lowercase word is a sound cache key (opts are always the
         // default here). A cache hit returns exactly what the hyphenator would
@@ -13024,13 +13048,13 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
             std::borrow::Cow::Owned(plain.to_ascii_lowercase())
         } else {
-            std::borrow::Cow::Borrowed(plain.as_str())
+            std::borrow::Cow::Borrowed(plain)
         };
         let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
         cached.unwrap_or_else(|| {
             let pts = cx
                 .hyphenator
-                .hyphenation_points(&plain, HyphenationOptions::default());
+                .hyphenation_points(plain, HyphenationOptions::default());
             // Only cache words that actually hyphenate. A non-hyphenating word gains
             // nothing from caching, so skipping the insert (no key clone, no map entry)
             // keeps unique / non-hyphenating corpora from paying any cache cost — they
@@ -13047,8 +13071,12 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         Vec::new()
     };
 
-    let chars: Vec<char> = plain.chars().collect();
-    let points = pdf_word_break_points(&chars, &dict_points);
+    let points = if plain.is_some() {
+        pdf_ascii_alphabetic_word_break_points(stats.char_len, &dict_points)
+    } else {
+        let chars = pdf_word_chars(word, stats.char_len);
+        pdf_word_break_points(&chars, &dict_points)
+    };
     if points.is_empty() {
         push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
@@ -13086,16 +13114,64 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         start = point.at;
     }
 
-    let tail = split_pdf_word_tokens(word, start, chars.len());
+    let tail = split_pdf_word_tokens(word, start, stats.char_len);
     if !tail.is_empty() {
         push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
     }
     word.clear();
 }
 
-fn pdf_word_is_ascii_alphabetic(word: &[Tok]) -> bool {
-    word.iter()
-        .all(|tok| tok.text.bytes().all(|byte| byte.is_ascii_alphabetic()))
+#[derive(Clone, Copy)]
+struct PdfWordStats {
+    char_len: usize,
+    byte_len: usize,
+    ascii_alphabetic: bool,
+}
+
+fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
+    let mut stats = PdfWordStats {
+        char_len: 0,
+        byte_len: 0,
+        ascii_alphabetic: true,
+    };
+    for tok in word {
+        let bytes = tok.text.as_bytes();
+        stats.byte_len += bytes.len();
+        let mut ascii = true;
+        let mut ascii_alphabetic = true;
+        for &byte in bytes {
+            if !byte.is_ascii() {
+                ascii = false;
+                ascii_alphabetic = false;
+                break;
+            }
+            ascii_alphabetic &= byte.is_ascii_alphabetic();
+        }
+        if ascii {
+            stats.char_len += bytes.len();
+            stats.ascii_alphabetic &= ascii_alphabetic;
+        } else {
+            stats.char_len += tok.text.chars().count();
+            stats.ascii_alphabetic = false;
+        }
+    }
+    stats
+}
+
+fn pdf_word_string(word: &[Tok], byte_len: usize) -> String {
+    let mut out = String::with_capacity(byte_len);
+    for tok in word {
+        out.push_str(&tok.text);
+    }
+    out
+}
+
+fn pdf_word_chars(word: &[Tok], char_len: usize) -> Vec<char> {
+    let mut chars = Vec::with_capacity(char_len);
+    for tok in word {
+        chars.extend(tok.text.chars());
+    }
+    chars
 }
 
 fn push_pdf_word_box(
@@ -21912,20 +21988,21 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[cfg(test)]
 mod pdf_writer_tests {
     use super::{
-        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, Faces, Fill, FlowMark,
-        HeadingIdState, Line, LineTok, LinkTarget, PageContentCapacityEstimate, Palette,
-        ParagraphItem, ParagraphPolicy, PdfOutlineItemObjectParts, PdfPageObjectParts, PdfStream,
-        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg,
-        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle,
-        SvgTextMatrix, SvgTransform, Tok, WidthCache, append_artifact_rule_stroke,
-        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_string, append_image_xobject_do,
-        append_marked_content_begin, append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
-        append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
-        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
-        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_stream_dict,
-        append_pdf_string_escaped, append_pdf_struct_element_object, append_pdf_text_string_bytes,
-        append_rgb_fill_operator, append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
+        Faces, Fill, FlowMark, HeadingIdState, Line, LineTok, LinkTarget,
+        PageContentCapacityEstimate, Palette, ParagraphItem, ParagraphPolicy,
+        PdfOutlineItemObjectParts, PdfPageObjectParts, PdfStream, PdfStructElementObjectParts,
+        Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg, SvgDashPattern, SvgLine, SvgLineCap,
+        SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle, SvgTextMatrix, SvgTransform, Tok,
+        TokGroup, WidthCache, append_artifact_rule_stroke, append_decimal_u64,
+        append_decimal_u64_string, append_decimal_usize, append_decimal_usize_string,
+        append_hex_u16, append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3, append_pdf_num,
+        append_pdf_num_bytes, append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
+        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_outline_item_object,
+        append_pdf_page_object, append_pdf_stream_dict, append_pdf_string_escaped,
+        append_pdf_struct_element_object, append_pdf_text_string_bytes, append_rgb_fill_operator,
+        append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
         append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
         append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
         append_svg_alpha_state_name, append_svg_alpha_state_resource_entry,
@@ -21937,9 +22014,10 @@ mod pdf_writer_tests {
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         decode_xml_entities, estimate_page_content_capacity, finite_pdf_scalar,
         first_visible_segment_index, font_size_of, kerned_tj, kerned_tj_with_spacing,
-        line_has_visible_content, measure_word, normalize_svg_text_node, pdf_fixed2, pdf_fixed3,
-        pdf_num, pdf_text_string, pdf_word_break_points, push_text_tokens, rounded_rect_fill,
-        shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        line_has_visible_content, measure_word, normalize_svg_text_node,
+        pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
+        pdf_word_break_points, push_text_tokens, rounded_rect_fill, shape_run,
+        svg_alpha_extgstate_resource, token_visible_text, tokenize,
     };
     use crate::ThemeColors;
     use crate::ast::Inline;
@@ -22189,6 +22267,114 @@ mod pdf_writer_tests {
                 .any(|item| matches!(item, ParagraphItem::Box(_)));
             assert_eq!(built.has_boxes, scanned, "case {case_idx}");
         }
+        Ok(())
+    }
+
+    fn tok_group_visible_text(group: &TokGroup) -> String {
+        let mut out = String::new();
+        if let Some(tok) = &group.first {
+            out.push_str(token_visible_text(tok));
+        }
+        for tok in &group.rest {
+            out.push_str(token_visible_text(tok));
+        }
+        out
+    }
+
+    #[test]
+    fn short_non_hyphenating_pdf_words_stay_single_measured_boxes() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
+
+        for (text, policy) in [
+            ("hyphenation", ParagraphPolicy::RAGGED),
+            ("v1.2", ParagraphPolicy::TEX_PARAGRAPH),
+            ("café", ParagraphPolicy::TEX_PARAGRAPH),
+        ] {
+            let mut toks = Vec::new();
+            push_text_tokens(text, F_BODY, false, None, &mut toks);
+            let built = build_paragraph(&toks, fs, &faces, policy, &cache, &width_cache);
+            let boxes: Vec<_> = built
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| match item {
+                    ParagraphItem::Box(text_box) => Some((idx, text_box.width)),
+                    _ => None,
+                })
+                .collect();
+            let discretionary_penalties = built
+                .items
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        ParagraphItem::Penalty(penalty)
+                            if penalty.penalty != FORCED_BREAK_PENALTY
+                    )
+                })
+                .count();
+
+            assert_eq!(boxes.len(), 1, "{text:?} should remain one word box");
+            assert_eq!(
+                discretionary_penalties, 0,
+                "{text:?} should not gain discretionary break penalties"
+            );
+            assert_eq!(tok_group_visible_text(&built.item_toks[boxes[0].0]), text);
+            assert_eq!(boxes[0].1, measure_word(&toks, fs, &faces));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ragged_long_pdf_words_keep_non_hyphen_break_points() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let cache = std::cell::RefCell::new(std::collections::HashMap::new());
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
+        let mut toks = Vec::new();
+        let url = format!("https://example.com/{}", "x".repeat(40));
+        push_text_tokens(&url, F_BODY, false, None, &mut toks);
+
+        let built = build_paragraph(
+            &toks,
+            fs,
+            &faces,
+            ParagraphPolicy::RAGGED,
+            &cache,
+            &width_cache,
+        );
+        let boxes = built
+            .items
+            .iter()
+            .filter(|item| matches!(item, ParagraphItem::Box(_)))
+            .count();
+        let discretionary_penalties = built
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    ParagraphItem::Penalty(penalty)
+                        if penalty.penalty != FORCED_BREAK_PENALTY
+                )
+            })
+            .count();
+
+        assert!(
+            boxes > 1,
+            "long ragged URL-like word should still split into multiple boxes"
+        );
+        assert!(
+            discretionary_penalties > 0,
+            "long ragged URL-like word should keep non-hyphen break penalties"
+        );
+        assert!(
+            built.break_toks.iter().all(Option::is_none),
+            "ragged synthetic breaks must not synthesize discretionary hyphen text"
+        );
         Ok(())
     }
 
@@ -23190,6 +23376,18 @@ mod pdf_writer_tests {
         let solid = "a".repeat(40);
         let solid_chars: Vec<char> = solid.chars().collect();
         let solid_points = pdf_word_break_points(&solid_chars, &[]);
+        let solid_ascii_points = pdf_ascii_alphabetic_word_break_points(solid.len(), &[]);
+        assert_eq!(
+            solid_ascii_points
+                .iter()
+                .map(|point| (point.at, point.penalty, point.hyphen))
+                .collect::<Vec<_>>(),
+            solid_points
+                .iter()
+                .map(|point| (point.at, point.penalty, point.hyphen))
+                .collect::<Vec<_>>(),
+            "ASCII alphabetic fast path should keep the same emergency break points"
+        );
         assert!(
             !solid_points.is_empty()
                 && solid_points

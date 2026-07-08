@@ -532,6 +532,20 @@ struct SvgTextPlacement {
     length_adjust: SvgLengthAdjust,
 }
 
+#[derive(Clone, Default)]
+struct SvgTextPositionLists {
+    x: Vec<f32>,
+    y: Vec<f32>,
+    dx: Vec<f32>,
+    dy: Vec<f32>,
+}
+
+impl SvgTextPositionLists {
+    fn has_per_character_positions(&self) -> bool {
+        self.x.len() > 1 || self.y.len() > 1 || self.dx.len() > 1 || self.dy.len() > 1
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SvgFontWeight {
     Normal,
@@ -5147,19 +5161,44 @@ fn parse_svg_text_elements(
     if !style.display_visible || style.opacity <= 0.001 {
         return Vec::new();
     }
-    let x = svg_attr(attrs, "x")
-        .and_then(parse_svg_number)
-        .unwrap_or(0.0);
-    let y = svg_attr(attrs, "y")
-        .and_then(parse_svg_number)
-        .unwrap_or(0.0);
     let font_size = style.font_size;
+    let positions = parse_svg_text_position_lists(attrs, font_size);
+    let base_x = svg_text_initial_position(&positions.x, 0.0);
+    let base_y = svg_text_initial_position(&positions.y, 0.0);
+    let x = base_x + svg_text_initial_relative_position(&positions.dx);
+    let y = base_y + svg_text_initial_relative_position(&positions.dy);
     let anchor = style.text_anchor;
     let text_length = parse_svg_text_length_attr(attrs, font_size);
     let length_adjust = parse_svg_length_adjust(attrs, SvgLengthAdjust::Spacing);
     if !svg_text_body_has_positioned_child(body) {
+        let text = normalize_svg_text_for_style(&strip_svg_tags(body), style.white_space);
+        let placement = SvgTextPlacement {
+            x,
+            y,
+            font_size,
+            anchor,
+            text_length,
+            length_adjust,
+        };
+        if positions.has_per_character_positions() {
+            let mut elements = Vec::new();
+            push_svg_positioned_text_elements(
+                &mut elements,
+                text,
+                SvgTextPlacement {
+                    x: base_x,
+                    y: base_y,
+                    text_length: None,
+                    length_adjust: SvgLengthAdjust::Spacing,
+                    ..placement
+                },
+                style,
+                &positions,
+            );
+            return elements;
+        }
         return svg_text_element(
-            normalize_svg_text_for_style(&strip_svg_tags(body), style.white_space),
+            text,
             SvgTextPlacement {
                 x,
                 y,
@@ -5397,22 +5436,11 @@ fn push_svg_text_body_elements(
         let child_anchor = child_style.text_anchor;
         let child_text_length = parse_svg_text_length_attr(&child_attrs, child_font_size);
         let child_length_adjust = parse_svg_length_adjust(&child_attrs, SvgLengthAdjust::Spacing);
-        let mut child_x = svg_attr(&child_attrs, "x")
-            .and_then(parse_svg_number)
-            .unwrap_or(current_x);
-        let mut child_y = svg_attr(&child_attrs, "y")
-            .and_then(parse_svg_number)
-            .unwrap_or(current_y);
-        if let Some(dx) = svg_attr(&child_attrs, "dx")
-            .and_then(|value| parse_svg_text_length(value, child_font_size))
-        {
-            child_x += dx;
-        }
-        if let Some(dy) = svg_attr(&child_attrs, "dy")
-            .and_then(|value| parse_svg_text_length(value, child_font_size))
-        {
-            child_y += dy;
-        }
+        let child_positions = parse_svg_text_position_lists(&child_attrs, child_font_size);
+        let child_base_x = svg_text_initial_position(&child_positions.x, current_x);
+        let child_base_y = svg_text_initial_position(&child_positions.y, current_y);
+        let child_x = child_base_x + svg_text_initial_relative_position(&child_positions.dx);
+        let child_y = child_base_y + svg_text_initial_relative_position(&child_positions.dy);
 
         if svg_text_body_has_positioned_child(child_body) {
             let start_len = elements.len();
@@ -5446,29 +5474,43 @@ fn push_svg_text_body_elements(
         } else {
             let child_text =
                 normalize_svg_text_for_style(&strip_svg_tags(child_body), child_style.white_space);
-            let advance = child_text_length.unwrap_or_else(|| {
-                svg_text_advance(
-                    &child_text,
-                    child_font_size,
-                    child_style.letter_spacing.to_points(child_font_size),
-                    child_style.word_spacing.to_points(child_font_size),
-                )
-            });
-            push_svg_text_element(
-                elements,
-                child_text,
-                SvgTextPlacement {
-                    x: child_x,
-                    y: child_y,
-                    font_size: child_font_size,
-                    anchor: child_anchor,
-                    text_length: child_text_length,
-                    length_adjust: child_length_adjust,
-                },
-                child_style,
-            );
-            current_x = child_x + advance;
-            current_y = child_y;
+            let placement = SvgTextPlacement {
+                x: child_x,
+                y: child_y,
+                font_size: child_font_size,
+                anchor: child_anchor,
+                text_length: child_text_length,
+                length_adjust: child_length_adjust,
+            };
+            if child_positions.has_per_character_positions() {
+                let (end_x, end_y) = push_svg_positioned_text_elements(
+                    elements,
+                    child_text,
+                    SvgTextPlacement {
+                        x: child_base_x,
+                        y: child_base_y,
+                        text_length: None,
+                        length_adjust: SvgLengthAdjust::Spacing,
+                        ..placement
+                    },
+                    child_style,
+                    &child_positions,
+                );
+                current_x = end_x;
+                current_y = end_y;
+            } else {
+                let advance = child_text_length.unwrap_or_else(|| {
+                    svg_text_advance(
+                        &child_text,
+                        child_font_size,
+                        child_style.letter_spacing.to_points(child_font_size),
+                        child_style.word_spacing.to_points(child_font_size),
+                    )
+                });
+                push_svg_text_element(elements, child_text, placement, child_style);
+                current_x = child_x + advance;
+                current_y = child_y;
+            }
         }
 
         if elements.len() >= 256 {
@@ -5800,6 +5842,56 @@ fn svg_point_distance(from: (f32, f32), to: (f32, f32)) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
+fn push_svg_positioned_text_elements(
+    out: &mut Vec<SvgElement>,
+    text: String,
+    placement: SvgTextPlacement,
+    style: SvgStyle,
+    positions: &SvgTextPositionLists,
+) -> (f32, f32) {
+    let mut current_x = placement.x;
+    let mut current_y = placement.y;
+    for (index, ch) in text.chars().enumerate() {
+        if out.len() >= 256 {
+            break;
+        }
+        if let Some(x) = positions.x.get(index).copied() {
+            current_x = x;
+        }
+        if let Some(y) = positions.y.get(index).copied() {
+            current_y = y;
+        }
+        if let Some(dx) = positions.dx.get(index).copied() {
+            current_x += dx;
+        }
+        if let Some(dy) = positions.dy.get(index).copied() {
+            current_y += dy;
+        }
+        let mut char_text = String::new();
+        char_text.push(ch);
+        push_svg_text_element(
+            out,
+            char_text,
+            SvgTextPlacement {
+                x: current_x,
+                y: current_y,
+                text_length: None,
+                length_adjust: SvgLengthAdjust::Spacing,
+                ..placement
+            },
+            style,
+        );
+        let mut buf = [0; 4];
+        current_x += svg_text_advance(
+            ch.encode_utf8(&mut buf),
+            placement.font_size,
+            style.letter_spacing.to_points(placement.font_size),
+            style.word_spacing.to_points(placement.font_size),
+        );
+    }
+    (current_x, current_y)
+}
+
 fn push_svg_text_element(
     out: &mut Vec<SvgElement>,
     text: String,
@@ -6089,21 +6181,115 @@ fn parse_svg_length_adjust_value(value: &str) -> Option<SvgLengthAdjust> {
     }
 }
 
+fn parse_svg_text_position_lists(
+    attrs: &[(String, String)],
+    font_size: f32,
+) -> SvgTextPositionLists {
+    SvgTextPositionLists {
+        x: svg_attr(attrs, "x")
+            .map(|value| parse_svg_text_coordinate_list(value, font_size))
+            .unwrap_or_default(),
+        y: svg_attr(attrs, "y")
+            .map(|value| parse_svg_text_coordinate_list(value, font_size))
+            .unwrap_or_default(),
+        dx: svg_attr(attrs, "dx")
+            .map(|value| parse_svg_text_length_list(value, font_size))
+            .unwrap_or_default(),
+        dy: svg_attr(attrs, "dy")
+            .map(|value| parse_svg_text_length_list(value, font_size))
+            .unwrap_or_default(),
+    }
+}
+
+fn svg_text_initial_position(values: &[f32], fallback: f32) -> f32 {
+    values.first().copied().unwrap_or(fallback)
+}
+
+fn svg_text_initial_relative_position(values: &[f32]) -> f32 {
+    values.first().copied().unwrap_or(0.0)
+}
+
+fn parse_svg_text_coordinate_list(value: &str, font_size: f32) -> Vec<f32> {
+    parse_svg_text_length_list_with_percent(value, font_size, false)
+}
+
+fn parse_svg_text_length_list(value: &str, font_size: f32) -> Vec<f32> {
+    parse_svg_text_length_list_with_percent(value, font_size, true)
+}
+
+fn parse_svg_text_length_list_with_percent(
+    value: &str,
+    font_size: f32,
+    percent_relative_to_font: bool,
+) -> Vec<f32> {
+    const MAX_TEXT_POSITION_VALUES: usize = 256;
+
+    let mut values = Vec::new();
+    let mut pos = 0usize;
+    while pos < value.len() && values.len() < MAX_TEXT_POSITION_VALUES {
+        skip_svg_number_separators(value, &mut pos);
+        if pos >= value.len() {
+            break;
+        }
+        let start = pos;
+        if read_svg_number_token(value, &mut pos).is_none() {
+            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        let Ok(number) = value[start..pos].parse::<f32>() else {
+            continue;
+        };
+        let unit_start = pos;
+        while let Some(ch) = value[pos..].chars().next() {
+            if ch == ',' || ch.is_ascii_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if let Some(length) = svg_text_length_from_number_and_unit_with_percent(
+            number,
+            value[unit_start..pos].trim(),
+            font_size,
+            percent_relative_to_font,
+        ) {
+            values.push(length);
+        }
+    }
+    values
+}
+
 fn parse_svg_text_length(value: &str, font_size: f32) -> Option<f32> {
     let value = value.trim();
     let mut end = 0usize;
     read_svg_number_token(value, &mut end)?;
     let number = value[..end].parse::<f32>().ok()?;
+    let unit = value[end..].trim_start();
+    svg_text_length_from_number_and_unit(number, unit, font_size)
+}
+
+fn svg_text_length_from_number_and_unit(number: f32, unit: &str, font_size: f32) -> Option<f32> {
+    svg_text_length_from_number_and_unit_with_percent(number, unit, font_size, true)
+}
+
+fn svg_text_length_from_number_and_unit_with_percent(
+    number: f32,
+    unit: &str,
+    font_size: f32,
+    percent_relative_to_font: bool,
+) -> Option<f32> {
     if !number.is_finite() {
         return None;
     }
-    let unit = value[end..].trim_start();
     if unit.starts_with("em") {
         Some(number * font_size)
     } else if unit.starts_with("ex") {
         Some(number * font_size * 0.5)
     } else if unit.starts_with('%') {
-        Some(number * font_size / 100.0)
+        Some(if percent_relative_to_font {
+            number * font_size / 100.0
+        } else {
+            number
+        })
     } else {
         Some(number)
     }

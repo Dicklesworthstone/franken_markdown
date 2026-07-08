@@ -137,6 +137,30 @@ fn first_text_matrix_xy_after(pdf_text: &str, marker: &str) -> (f32, f32) {
     (matrix[4], matrix[5])
 }
 
+fn text_matrix_xys_after(pdf_text: &str, marker: &str) -> Vec<(f32, f32)> {
+    let mut positions = Vec::new();
+    let mut rest = pdf_text;
+    while let Some(marker_start) = rest.find(marker) {
+        let tail = &rest[marker_start + marker.len()..];
+        let matrix_tail = tail.split(" Tf ").nth(1).unwrap_or_else(|| {
+            panic!("text font operator not found after marker {marker}: {tail}")
+        });
+        let mut parts = matrix_tail.split_whitespace();
+        let mut matrix = [0.0f32; 6];
+        for value in &mut matrix {
+            *value = parts
+                .next()
+                .and_then(|value| value.parse::<f32>().ok())
+                .unwrap_or_else(|| {
+                    panic!("text matrix value not found after marker {marker}: {matrix_tail}")
+                });
+        }
+        positions.push((matrix[4], matrix[5]));
+        rest = tail;
+    }
+    positions
+}
+
 fn first_text_font_size_after(pdf_text: &str, marker: &str) -> f32 {
     let tail = pdf_text
         .split(marker)
@@ -1877,6 +1901,61 @@ fn pdf_svg_tspan_children_render_as_separate_text_runs() {
     assert!(
         right_x > left_x,
         "adjacent tspans without explicit x should advance instead of overlapping: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_text_coordinate_lists_position_individual_selectable_runs() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 52">
+  <text x="10 30 50" y="14" font-size="10" fill="#ff0000">ABC</text>
+  <text x="10" y="34" font-size="10" fill="#0000ff">
+    <tspan dx="0 8 8">ABC</tspan>
+  </text>
+  <text x="50%" y="46" font-size="10" fill="#00ff00">P</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "text-coordinate-lists.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Text coordinates](text-coordinate-lists.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let absolute = text_matrix_xys_after(&text, "1.000 0.000 0.000 rg\nBT /F1");
+    assert!(
+        absolute.len() >= 3,
+        "x/y coordinate lists should split root SVG text into positioned selectable runs: {text}"
+    );
+    assert!(
+        absolute[1].0 > absolute[0].0 + 10.0 && absolute[2].0 > absolute[1].0 + 10.0,
+        "x coordinate lists should place each glyph at the supplied absolute positions: {absolute:?}\n{text}"
+    );
+    assert!(
+        (absolute[1].1 - absolute[0].1).abs() < 0.05
+            && (absolute[2].1 - absolute[1].1).abs() < 0.05,
+        "single y coordinate should apply to every split glyph run: {absolute:?}\n{text}"
+    );
+
+    let relative = text_matrix_xys_after(&text, "0.000 0.000 1.000 rg\nBT /F1");
+    assert!(
+        relative.len() >= 3,
+        "dx coordinate lists on tspan should split text into positioned selectable runs: {text}"
+    );
+    assert!(
+        relative[1].0 > relative[0].0 + 7.0 && relative[2].0 > relative[1].0 + 7.0,
+        "dx coordinate lists should offset each glyph from the running text cursor: {relative:?}\n{text}"
+    );
+
+    let percent = text_matrix_xys_after(&text, "0.000 1.000 0.000 rg\nBT /F1");
+    assert!(
+        percent
+            .first()
+            .is_some_and(|(x, _)| *x > relative[0].0 + 20.0),
+        "x/y percentage coordinates should keep coordinate semantics instead of resolving against font size: {percent:?}\n{text}"
     );
 }
 

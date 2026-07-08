@@ -1208,21 +1208,20 @@ impl Default for FlowMark {
 /// One source face plus the OpenType layout tables used by PDF shaping.
 struct Face {
     font: Cow<'static, Font>,
-    kern: Kerning,
-    lig: Ligatures,
+    kern: Cow<'static, Kerning>,
+    lig: Cow<'static, Ligatures>,
 }
 
 #[derive(Clone, Copy)]
 struct PdfFontFace<'a> {
     bytes: &'a [u8],
     parsed: Option<&'static Font>,
+    layout: Option<&'static fonts::OpenTypeLayoutTables>,
 }
 
 impl Face {
     fn load(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Self> {
-        let font = load_pdf_face_font(slot, face)?;
-        let kern = font.gpos_kerning();
-        let lig = font.gsub_ligatures();
+        let (font, kern, lig) = load_pdf_face_parts(slot, face)?;
         Ok(Self { font, kern, lig })
     }
 
@@ -1410,21 +1409,25 @@ fn body_font_face(
             font_assets.body_regular.as_deref(),
             || fonts::body_bytes(family, style),
             || fonts::body_font(family, style).ok(),
+            || fonts::body_layout_tables(family, style).ok(),
         ),
         FontStyle::Bold => pdf_font_face(
             font_assets.body_bold.as_deref(),
             || fonts::body_bytes(family, style),
             || fonts::body_font(family, style).ok(),
+            || fonts::body_layout_tables(family, style).ok(),
         ),
         FontStyle::Italic => pdf_font_face(
             font_assets.body_italic.as_deref(),
             || fonts::body_bytes(family, style),
             || fonts::body_font(family, style).ok(),
+            || fonts::body_layout_tables(family, style).ok(),
         ),
         FontStyle::BoldItalic => pdf_font_face(
             font_assets.body_bold_italic.as_deref(),
             || fonts::body_bytes(family, style),
             || fonts::body_font(family, style).ok(),
+            || fonts::body_layout_tables(family, style).ok(),
         ),
     }
 }
@@ -1434,6 +1437,7 @@ fn mono_font_face(font_assets: &FontAssets, style: FontStyle) -> PdfFontFace<'_>
         font_assets.mono_regular.as_deref(),
         || fonts::mono_bytes(style),
         || fonts::mono_font(style).ok(),
+        || fonts::mono_layout_tables(style).ok(),
     )
 }
 
@@ -1441,20 +1445,30 @@ fn pdf_font_face<'a>(
     custom_bytes: Option<&'a [u8]>,
     default_bytes: impl FnOnce() -> &'static [u8],
     default_font: impl FnOnce() -> Option<&'static Font>,
+    default_layout: impl FnOnce() -> Option<&'static fonts::OpenTypeLayoutTables>,
 ) -> PdfFontFace<'a> {
     match custom_bytes {
         Some(bytes) => PdfFontFace {
             bytes,
             parsed: None,
+            layout: None,
         },
         None => PdfFontFace {
             bytes: default_bytes(),
             parsed: default_font(),
+            layout: default_layout(),
         },
     }
 }
 
-fn load_pdf_face_font(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Cow<'static, Font>> {
+fn load_pdf_face_parts(
+    slot: FontAssetSlot,
+    face: PdfFontFace<'_>,
+) -> Result<(
+    Cow<'static, Font>,
+    Cow<'static, Kerning>,
+    Cow<'static, Ligatures>,
+)> {
     if let Some(font) = face.parsed {
         if !font.has_glyf_outlines() {
             return Err(RenderError::InvalidInput(format!(
@@ -1462,9 +1476,23 @@ fn load_pdf_face_font(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Cow<
                 slot.as_str()
             )));
         }
-        return Ok(Cow::Borrowed(font));
+        if let Some(layout) = face.layout {
+            return Ok((
+                Cow::Borrowed(font),
+                Cow::Borrowed(&layout.kern),
+                Cow::Borrowed(&layout.lig),
+            ));
+        }
+        return Ok((
+            Cow::Borrowed(font),
+            Cow::Owned(font.gpos_kerning()),
+            Cow::Owned(font.gsub_ligatures()),
+        ));
     }
-    parse_face(slot, face.bytes).map(Cow::Owned)
+    let font = parse_face(slot, face.bytes)?;
+    let kern = font.gpos_kerning();
+    let lig = font.gsub_ligatures();
+    Ok((Cow::Owned(font), Cow::Owned(kern), Cow::Owned(lig)))
 }
 
 fn parse_face(slot: FontAssetSlot, bytes: &[u8]) -> Result<Font> {
@@ -14230,8 +14258,8 @@ fn serialize(
     let mut shape_cache_miss_bytes = 0usize;
     for &slot in &used_slots {
         let face = faces.face(slot);
-        let source = &face.font;
-        let lig = &face.lig;
+        let source = face.font.as_ref();
+        let lig = face.lig.as_ref();
         let collect_started = profiler.checkpoint();
         let mut chars: BTreeSet<char> = BTreeSet::new();
         let mut shaped_glyphs: BTreeSet<u16> = BTreeSet::new();
@@ -14300,8 +14328,8 @@ fn serialize(
             slot,
             bytes,
             font,
-            kern: face.kern.clone(),
-            lig: face.lig.clone(),
+            kern: face.kern.clone().into_owned(),
+            lig: face.lig.clone().into_owned(),
             map,
             cmap_chars: keep,
             lig_uni,

@@ -11,7 +11,7 @@
 //! * [`FontFamily::Serif`] → Computer Modern (the classic LaTeX serif)
 //! * monospace / code → CM Typewriter
 
-use crate::text::{Font, FontError};
+use crate::text::{Font, FontError, Kerning, Ligatures};
 use crate::theme::FontFamily;
 use std::sync::OnceLock;
 
@@ -61,6 +61,21 @@ static CM_BOLD_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_BOLD_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static MONO_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
+static PLEX_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static PLEX_BOLD_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static PLEX_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static PLEX_BOLD_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static CM_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static CM_BOLD_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static CM_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static CM_BOLD_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static MONO_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+
+/// Parsed OpenType layout tables for a bundled face.
+pub(crate) struct OpenTypeLayoutTables {
+    pub(crate) kern: Kerning,
+    pub(crate) lig: Ligatures,
+}
 
 /// Raw TTF bytes for a proportional body face.
 #[must_use]
@@ -112,6 +127,39 @@ pub(crate) fn mono_font(_style: FontStyle) -> Result<&'static Font, FontError> {
     cached_font(&MONO_REGULAR_FONT, MONO_REGULAR)
 }
 
+/// Cached GPOS/GSUB tables for a bundled proportional body font.
+///
+/// # Errors
+/// Returns [`FontError`] only if a bundled font is malformed.
+pub(crate) fn body_layout_tables(
+    family: FontFamily,
+    style: FontStyle,
+) -> Result<&'static OpenTypeLayoutTables, FontError> {
+    let font = body_font(family, style)?;
+    let cache = match (family, style) {
+        (FontFamily::Sans, FontStyle::Regular) => &PLEX_REGULAR_LAYOUT,
+        (FontFamily::Sans, FontStyle::Bold) => &PLEX_BOLD_LAYOUT,
+        (FontFamily::Sans, FontStyle::Italic) => &PLEX_ITALIC_LAYOUT,
+        (FontFamily::Sans, FontStyle::BoldItalic) => &PLEX_BOLD_ITALIC_LAYOUT,
+        (FontFamily::Serif, FontStyle::Regular) => &CM_REGULAR_LAYOUT,
+        (FontFamily::Serif, FontStyle::Bold) => &CM_BOLD_LAYOUT,
+        (FontFamily::Serif, FontStyle::Italic) => &CM_ITALIC_LAYOUT,
+        (FontFamily::Serif, FontStyle::BoldItalic) => &CM_BOLD_ITALIC_LAYOUT,
+    };
+    Ok(cached_layout_tables(cache, font))
+}
+
+/// Cached GPOS/GSUB tables for the bundled monospace font.
+///
+/// # Errors
+/// See [`body_layout_tables`].
+pub(crate) fn mono_layout_tables(
+    style: FontStyle,
+) -> Result<&'static OpenTypeLayoutTables, FontError> {
+    let font = mono_font(style)?;
+    Ok(cached_layout_tables(&MONO_REGULAR_LAYOUT, font))
+}
+
 fn cached_font(
     cache: &'static OnceLock<Result<Font, FontError>>,
     bytes: &'static [u8],
@@ -120,6 +168,16 @@ fn cached_font(
         Ok(font) => Ok(font),
         Err(err) => Err(err.clone()),
     }
+}
+
+fn cached_layout_tables(
+    cache: &'static OnceLock<OpenTypeLayoutTables>,
+    font: &'static Font,
+) -> &'static OpenTypeLayoutTables {
+    cache.get_or_init(|| OpenTypeLayoutTables {
+        kern: font.gpos_kerning(),
+        lig: font.gsub_ligatures(),
+    })
 }
 
 /// Parse a bundled proportional body font.
@@ -141,7 +199,10 @@ pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FontError, FontStyle, body_bytes, body_font, load_body, load_mono, mono_font};
+    use super::{
+        FontError, FontStyle, body_bytes, body_font, body_layout_tables, load_body, load_mono,
+        mono_font, mono_layout_tables,
+    };
     use crate::FontFamily;
 
     #[test]
@@ -160,6 +221,9 @@ mod tests {
                 assert_eq!(cached.ascent, loaded.ascent);
                 assert_eq!(cached.descent, loaded.descent);
                 assert_eq!(cached.subset(&['A', 'b']), loaded.subset(&['A', 'b']));
+                let tables = body_layout_tables(family, style)?;
+                assert_eq!(tables.kern.pair(0, 0), loaded.gpos_kerning().pair(0, 0));
+                assert_eq!(tables.lig.is_empty(), loaded.gsub_ligatures().is_empty());
                 assert!(!body_bytes(family, style).is_empty());
             }
         }
@@ -173,6 +237,9 @@ mod tests {
         assert_eq!(cached.units_per_em, loaded.units_per_em);
         assert_eq!(cached.num_glyphs, loaded.num_glyphs);
         assert_eq!(cached.subset(&['A', 'b']), loaded.subset(&['A', 'b']));
+        let tables = mono_layout_tables(FontStyle::Regular)?;
+        assert_eq!(tables.kern.pair(0, 0), loaded.gpos_kerning().pair(0, 0));
+        assert_eq!(tables.lig.is_empty(), loaded.gsub_ligatures().is_empty());
         Ok(())
     }
 }

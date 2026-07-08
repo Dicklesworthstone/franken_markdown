@@ -30,7 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, staged native writes, optional Asupersync batch rendering,
 > browser/WASM package sources, and a long set of measured scalar optimizations.
-> The WASM package is build-checked, native-parity tested, and publish-ready.
+> The WASM package is build-checked, native-parity tested, and published to npm
+> as `@franken-suite/franken-markdown`.
 > SIMD and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
@@ -78,7 +79,7 @@ as a Rust library, the `fmd` binary, and browser/WASM package sources.
 | Render raw Markdown or stdin | `fmd --text '# Hi' --out hi.html` or `fmd - --out README.html < README.md` |
 | Ask for the machine-readable contract | `fmd capabilities --json`, `fmd doctor --json`, `fmd robot-docs guide` |
 | Render a directory with bounded native workers | `cargo build --release --bin fmd --features batch`, then `fmd batch docs examples --to both --json` |
-| Use it in the browser | Build `wasm/`, then pass Markdown, font bytes, image bytes, and options from the host. npm publication is still pending |
+| Use it in the browser | `npm install @franken-suite/franken-markdown`, then pass Markdown, font bytes, image bytes, and options from the host |
 
 ### What Works Today
 
@@ -401,9 +402,10 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 The browser/WASM build is assembled separately as
-`@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml`; it is
-build-checked and publish-ready, with publication controlled by the release
-workflow's npm token.
+`@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
+published on npm (`npm install @franken-suite/franken-markdown`). Tag pushes
+re-verify and publish new versions; the workflow skips versions that are
+already on the registry.
 
 ---
 
@@ -648,8 +650,8 @@ the core never reads files or the network.
 
 The same core powers the browser package. The WASM build provides a wasm-bindgen
 module, TypeScript types, an interactive demo, and a headless smoke harness, and
-renders HTML and PDF with byte-identical parity to native. It is publish-ready as
-`@franken-suite/franken-markdown` but not yet published to npm. See
+renders HTML and PDF with byte-identical parity to native. It is published to npm
+as [`@franken-suite/franken-markdown`](https://www.npmjs.com/package/@franken-suite/franken-markdown). See
 [`wasm/README.md`](wasm/README.md) and run `scripts/check-wasm-package.sh` to
 build and verify it.
 
@@ -802,9 +804,9 @@ Honest about what the renderer does not do yet.
   raw HTML by default). This is a ratcheted floor: CI fails if it drops.
 - **HTML font subsets are TTF data URLs, not WOFF2.** Output is deterministic and
   portable; smaller WOFF2 subsets are future work.
-- **The WASM package is publish-ready but unpublished.** It builds, loads, and
-  renders with proven native parity, and the manifest and size budget are gated,
-  but it is one tag push from npm. Browser visual/golden fixtures are still early.
+- **Browser visual/golden fixtures are still early.** The npm package
+  (`@franken-suite/franken-markdown`) is published with proven native parity and
+  gated manifest/size budgets, but browser-side visual fixtures remain thin.
 - **`batch` is opt-in and native-only.** It is not in the default build; enable
   it with `--features batch`, which pulls in Asupersync.
 - **Tagged-PDF accessibility is partial.** H1-H3 headings keep exact heading

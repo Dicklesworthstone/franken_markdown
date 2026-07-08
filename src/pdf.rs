@@ -19362,6 +19362,10 @@ fn container_prefix(line: &Line) -> Vec<SElem> {
 }
 
 fn container_prefix_with_extra(line: &Line, extra_len: usize) -> Vec<SElem> {
+    if line.quote_bars.is_empty() && line.list_path.is_empty() {
+        return Vec::with_capacity(extra_len);
+    }
+
     enum Container {
         Quote(usize),
         List { list: u32, item: u32 },
@@ -22112,12 +22116,12 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
-        Faces, Fill, FlowMark, HeadingIdState, Line, LineTok, LinkTarget,
+        Faces, Fill, FlowMark, HeadingIdState, Line, LineTok, LinkTarget, ListMark,
         PageContentCapacityEstimate, Palette, ParagraphItem, ParagraphPolicy,
         PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfStream,
-        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SKid, SNode, Seg,
-        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow, SvgStyle,
-        SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache,
+        PdfStructElementObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode,
+        Seg, SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
+        SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform, Tok, TokGroup, WidthCache,
         append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
         append_image_xobject_do, append_marked_content_begin, append_pdf_cm_operator,
@@ -22136,12 +22140,13 @@ mod pdf_writer_tests {
         append_svg_text_operator, append_svg_text_viewport_clip,
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, build_paragraph, build_segs, build_segs_adjusted, cached_shaped_width,
-        collect_svg_alpha_states, decode_xml_entities, estimate_page_content_capacity,
-        finite_pdf_scalar, first_visible_segment_index, font_size_of, kerned_tj,
-        kerned_tj_with_spacing, line_has_visible_content, measure_word, normalize_svg_text_node,
-        pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3, pdf_num, pdf_text_string,
-        pdf_word_break_points, pdf_word_plain_text, pdf_word_stats, push_text_tokens,
-        rounded_rect_fill, shape_run, svg_alpha_extgstate_resource, token_visible_text, tokenize,
+        collect_svg_alpha_states, container_prefix_with_extra, decode_xml_entities,
+        estimate_page_content_capacity, finite_pdf_scalar, first_visible_segment_index,
+        font_size_of, kerned_tj, kerned_tj_with_spacing, line_has_visible_content, measure_word,
+        normalize_svg_text_node, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
+        pdf_num, pdf_text_string, pdf_word_break_points, pdf_word_plain_text, pdf_word_stats,
+        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
+        token_visible_text, tokenize,
     };
     use crate::ThemeColors;
     use crate::ast::Inline;
@@ -22739,6 +22744,52 @@ mod pdf_writer_tests {
         assert_eq!(no_inline_chip_estimate.quote_bars, 0);
         assert_eq!(no_inline_chip_estimate.mono_chips, 0);
         assert!(!no_inline_chip_estimate.has_mono_chips());
+    }
+
+    #[test]
+    fn container_prefix_empty_path_keeps_sorted_container_semantics() {
+        fn line_with_containers(quote_bars: Vec<(usize, f32)>, list_path: Vec<ListMark>) -> Line {
+            Line {
+                size: 12.0,
+                gap_after: 0.0,
+                rule: false,
+                rule_x: 72.0,
+                quote_bars,
+                bg: 0,
+                shade: false,
+                flow: FlowMark::default(),
+                list_path,
+                table_cols: Vec::new(),
+                segs: Vec::new(),
+                image: None,
+            }
+        }
+
+        let empty = line_with_containers(Vec::new(), Vec::new());
+        assert!(
+            container_prefix_with_extra(&empty, 3).is_empty(),
+            "an ordinary line has no container prefix; callers append leaves"
+        );
+
+        let mixed = line_with_containers(
+            vec![(9, 90.0), (1, 70.0)],
+            vec![ListMark { list: 3, item: 4 }],
+        );
+        let prefix = container_prefix_with_extra(&mixed, 1);
+        let tags = prefix
+            .iter()
+            .map(|elem: &SElem| elem.tag)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags,
+            vec!["BlockQuote", "L", "LI", "LBody", "BlockQuote"],
+            "non-empty prefixes still sort quote/list containers by source start"
+        );
+        assert!(matches!(prefix[0].key, SKey::BlockQuote(1)));
+        assert!(matches!(prefix[1].key, SKey::List(3)));
+        assert!(matches!(prefix[2].key, SKey::ListItem(4)));
+        assert!(matches!(prefix[3].key, SKey::ListBody(4)));
+        assert!(matches!(prefix[4].key, SKey::BlockQuote(9)));
     }
 
     #[test]

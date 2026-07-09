@@ -440,17 +440,17 @@ fn deflate_fixed_with_scratch(
             }
             pos = end;
         } else {
-            if let Some(&b) = data.get(pos) {
-                emit_literal(&mut bw, b);
-                if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
-                    return FixedDeflate {
-                        body: bw.out,
-                        adler32: adler32(data),
-                        complete: false,
-                    };
-                }
-                adler.update_byte(b);
+            debug_assert!(pos < n);
+            let b = data[pos];
+            emit_literal(&mut bw, b);
+            if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
+                return FixedDeflate {
+                    body: bw.out,
+                    adler32: adler32(data),
+                    complete: false,
+                };
             }
+            adler.update_byte(b);
             insert(&mut *head, &mut *prev, pos);
             pos += 1;
         }

@@ -9199,6 +9199,9 @@ fn parse_svg_style_patch(
                 }
             }
             "fill" => {
+                if apply_svg_initial_paint_patch(&mut patch, "fill", value, css_vars) {
+                    continue;
+                }
                 let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
                 let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
                 let fallback = parse_svg_missing_resource_paint_fallback(
@@ -9252,6 +9255,9 @@ fn parse_svg_style_patch(
                 }
             }
             "stroke" => {
+                if apply_svg_initial_paint_patch(&mut patch, "stroke", value, css_vars) {
+                    continue;
+                }
                 let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
                 let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
                 let fallback = parse_svg_missing_resource_paint_fallback(
@@ -11700,6 +11706,22 @@ fn apply_svg_paint_attr(
     let Some(value) = value else {
         return;
     };
+    if let Some(paint) = parse_svg_initial_paint(target, value, css_vars) {
+        if target == "fill" {
+            style.fill = paint;
+            style.fill_current_color = false;
+            style.fill_context = None;
+            style.fill_gradient = None;
+            style.fill_pattern = None;
+        } else if target == "stroke" {
+            style.stroke = paint;
+            style.stroke_current_color = false;
+            style.stroke_context = None;
+            style.stroke_gradient = None;
+            style.stroke_pattern = None;
+        }
+        return;
+    }
     let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
     let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
     let fallback = parse_svg_missing_resource_paint_fallback(
@@ -11806,6 +11828,51 @@ fn apply_svg_paint_attr(
         if let Some(alpha) = paint_alpha {
             style.stroke_opacity = alpha;
         }
+    }
+}
+
+fn apply_svg_initial_paint_patch(
+    patch: &mut SvgStylePatch,
+    target: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> bool {
+    let Some(paint) = parse_svg_initial_paint(target, value, css_vars) else {
+        return false;
+    };
+    if target == "fill" {
+        patch.fill = Some(paint);
+        patch.fill_current_color = Some(false);
+        patch.fill_context = Some(None);
+        patch.fill_gradient = Some(None);
+        patch.fill_pattern = Some(None);
+    } else if target == "stroke" {
+        patch.stroke = Some(paint);
+        patch.stroke_current_color = Some(false);
+        patch.stroke_context = Some(None);
+        patch.stroke_gradient = Some(None);
+        patch.stroke_pattern = Some(None);
+    }
+    true
+}
+
+fn parse_svg_initial_paint(
+    target: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<SvgColor>> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_initial_paint(target, &resolved, css_vars);
+    }
+    if !value.eq_ignore_ascii_case("initial") {
+        return None;
+    }
+    match target {
+        "fill" => Some(Some((0.0, 0.0, 0.0))),
+        "stroke" => Some(None),
+        _ => None,
     }
 }
 
@@ -31649,6 +31716,46 @@ mod coverage_gap_tests {
             style.stroke_gradient.is_none(),
             "stroke: none clears gradient"
         );
+    }
+
+    #[test]
+    fn style_patch_initial_fill_and_stroke_reset_inherited_paint() {
+        let patch = parse_svg_style_patch(
+            "fill: initial; stroke: var(--reset)",
+            &[],
+            &[],
+            &[SvgCssVariable {
+                name: "--reset".to_string(),
+                value: "initial".to_string(),
+            }],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        style.fill = Some((1.0, 0.0, 0.0));
+        style.fill_gradient = Some(1);
+        style.fill_pattern = Some(2);
+        style.fill_current_color = true;
+        style.fill_context = Some(SvgContextPaint::Stroke);
+        style.stroke = Some((0.0, 0.0, 1.0));
+        style.stroke_gradient = Some(3);
+        style.stroke_pattern = Some(4);
+        style.stroke_current_color = true;
+        style.stroke_context = Some(SvgContextPaint::Fill);
+
+        apply_svg_style_patch(&mut style, patch, true);
+
+        assert_color(style.fill.unwrap(), (0.0, 0.0, 0.0), "initial fill");
+        assert!(style.fill_gradient.is_none());
+        assert!(style.fill_pattern.is_none());
+        assert!(!style.fill_current_color);
+        assert!(style.fill_context.is_none());
+        assert!(style.stroke.is_none(), "initial stroke is none");
+        assert!(style.stroke_gradient.is_none());
+        assert!(style.stroke_pattern.is_none());
+        assert!(!style.stroke_current_color);
+        assert!(style.stroke_context.is_none());
     }
 
     #[test]

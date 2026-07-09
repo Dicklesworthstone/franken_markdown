@@ -2905,6 +2905,36 @@ fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
 }
 
 #[test]
+fn pdf_svg_initial_fill_and_stroke_reset_inherited_paint() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">
+  <g fill="#ff0000" stroke="#0000ff" stroke-width="3">
+    <rect x="2" y="2" width="14" height="12" fill="initial" stroke="initial"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("initial-paint.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Initial paint](initial-paint.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.000 0.000 0.000 rg"),
+        "fill: initial should reset inherited fill to SVG's initial black paint: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg"),
+        "fill: initial must not keep the inherited red fill: {text}"
+    );
+    assert!(
+        !text.contains("0.000 0.000 1.000 RG"),
+        "stroke: initial should reset inherited stroke to none: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">

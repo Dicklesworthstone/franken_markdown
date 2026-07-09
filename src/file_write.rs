@@ -402,7 +402,10 @@ mod tests {
         let dir = fresh_dir("success");
         let html = dir.join("doc.html");
         let pdf = dir.join("doc.pdf");
+        // Both destinations pre-exist as distinct files, so preflight compares
+        // two real directory entries (same device, different inodes).
         std::fs::write(&html, "old html").unwrap();
+        std::fs::write(&pdf, "old pdf").unwrap();
 
         write_outputs_staged(&[
             OutputFile {
@@ -450,6 +453,9 @@ mod tests {
     #[test]
     fn duplicate_lexical_destinations_fail_before_staging() {
         let dir = fresh_dir("duplicate-alias");
+        // An unrelated entry guarantees the temp-file scan below inspects at
+        // least one directory entry.
+        std::fs::write(dir.join("unrelated.txt"), "keep").unwrap();
         let path = dir.join("doc.html");
         let alias = dir.join(".").join("doc.html");
 
@@ -520,6 +526,9 @@ mod tests {
         let link_dir = dir.join("link");
         std::fs::create_dir_all(&real_dir).unwrap();
         std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+        // An unrelated entry guarantees the temp-file scan below inspects at
+        // least one directory entry.
+        std::fs::write(real_dir.join("unrelated.txt"), "keep").unwrap();
         let path = real_dir.join("doc.html");
         let alias = link_dir.join("doc.html");
 
@@ -616,6 +625,266 @@ mod tests {
                 .contains(".fmd-bak")),
             "failed directory commit must not leave backup artifacts"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_lexical_path_resolves_parent_components() {
+        // ".." pops a preceding normal component.
+        assert_eq!(
+            normalize_lexical_path(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        // ".." directly under the root is absorbed.
+        assert_eq!(
+            normalize_lexical_path(Path::new("/../a")),
+            PathBuf::from("/a")
+        );
+        // A leading ".." on a relative path is preserved...
+        assert_eq!(
+            normalize_lexical_path(Path::new("../a")),
+            PathBuf::from("../a")
+        );
+        // ...including stacked parents, which must not cancel each other.
+        assert_eq!(
+            normalize_lexical_path(Path::new("../../a")),
+            PathBuf::from("../../a")
+        );
+        // "." components vanish.
+        assert_eq!(
+            normalize_lexical_path(Path::new("./a/./b")),
+            PathBuf::from("a/b")
+        );
+        // Relative destinations are resolved against the current directory
+        // before normalization, so lexically aliased relative paths collapse
+        // to the same identity.
+        assert_eq!(
+            lexical_output_identity(Path::new("x/../doc.html")),
+            lexical_output_identity(Path::new("doc.html"))
+        );
+    }
+
+    #[test]
+    fn duplicate_parent_traversal_destinations_fail_before_staging() {
+        let dir = fresh_dir("duplicate-traversal");
+        let path = dir.join("doc.html");
+        // "sub" never exists, so the alias can only be resolved lexically (the
+        // canonicalizing parent comparison fails with NotFound on it).
+        let alias = dir.join("sub").join("..").join("doc.html");
+
+        let err = write_outputs_staged(&[
+            OutputFile {
+                path: &path,
+                bytes: b"first",
+            },
+            OutputFile {
+                path: &alias,
+                bytes: b"second",
+            },
+        ])
+        .expect_err("parent-traversal aliases should be rejected");
+
+        assert_eq!(err.path, alias);
+        assert_eq!(err.source.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            !path.exists(),
+            "duplicate preflight failure must not create the shared destination"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_name_identity_requires_both_names() {
+        assert!(!same_file_name(None, None));
+        assert!(!same_file_name(Some(OsStr::new("doc.html")), None));
+        assert!(same_file_name(
+            Some(OsStr::new("doc.html")),
+            Some(OsStr::new("doc.html"))
+        ));
+        // Root paths have no file name, so parent-based identity never applies.
+        assert!(!same_parent_output_entry(Path::new("/"), Path::new("/")));
+    }
+
+    #[test]
+    fn temp_path_for_rejects_paths_without_a_file_name() {
+        let err = temp_path_for(Path::new("/"), "tmp").expect_err("root has no file name");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "output path has no file name");
+    }
+
+    #[test]
+    fn stage_output_fails_cleanly_when_every_temp_candidate_is_taken() {
+        let dir = fresh_dir("stage-exhausted");
+        let path = dir.join("doc.html");
+        // Pre-create files at the next several hundred candidate temp names so
+        // all 128 allocation attempts collide. The counter may advance a little
+        // due to concurrently running tests; the wide range absorbs that.
+        let start = TEMP_COUNTER.load(Ordering::Relaxed);
+        for count in start..start + 512 {
+            let name = format!(".doc.html.fmd-tmp-{}-{count}", std::process::id());
+            std::fs::write(dir.join(name), b"occupied").unwrap();
+        }
+
+        let err = stage_output(&OutputFile {
+            path: &path,
+            bytes: b"new html",
+        })
+        .expect_err("an exhausted temp namespace must fail staging");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            err.to_string(),
+            "could not allocate a temporary output path"
+        );
+        assert!(
+            !path.exists(),
+            "failed staging must not touch the destination"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vacant_temp_path_fails_cleanly_when_every_backup_candidate_is_taken() {
+        let dir = fresh_dir("backup-exhausted");
+        let path = dir.join("doc.html");
+        let start = TEMP_COUNTER.load(Ordering::Relaxed);
+        for count in start..start + 512 {
+            let name = format!(".doc.html.fmd-bak-{}-{count}", std::process::id());
+            std::fs::write(dir.join(name), b"occupied").unwrap();
+        }
+
+        let err = vacant_temp_path_for(&path, "bak")
+            .expect_err("an exhausted backup namespace must fail");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            err.to_string(),
+            "could not allocate a temporary backup path"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vacant_temp_path_propagates_probe_errors() {
+        let dir = fresh_dir("backup-probe-error");
+        let file = dir.join("plain.txt");
+        std::fs::write(&file, "not a directory").unwrap();
+
+        // The candidate's parent is a regular file: probing it must surface the
+        // underlying NotADirectory error instead of retrying or masking it.
+        let err = vacant_temp_path_for(&file.join("doc.html"), "bak")
+            .expect_err("probing through a file must fail");
+        assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_surfaces_metadata_errors_for_unreachable_destinations() {
+        let dir = fresh_dir("commit-probe-error");
+        let file = dir.join("plain.txt");
+        std::fs::write(&file, "not a directory").unwrap();
+        let temp_path = dir.join(".doc.html.fmd-tmp-test");
+        std::fs::write(&temp_path, "new html").unwrap();
+        // The destination's parent is a regular file, so the existence probe
+        // fails with NotADirectory (not NotFound) and must abort the commit.
+        let final_path = file.join("doc.html");
+
+        let err = commit_staged(vec![StagedOutput {
+            temp_path: temp_path.clone(),
+            final_path: final_path.clone(),
+        }])
+        .expect_err("committing beneath a file must fail");
+
+        assert_eq!(err.path, final_path);
+        assert_eq!(err.source.kind(), io::ErrorKind::NotADirectory);
+        assert!(
+            !temp_path.exists(),
+            "failed commit must clean the staged temp file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_final_rename_restores_the_backup() {
+        let dir = fresh_dir("restore-backup");
+        let final_path = dir.join("doc.html");
+        std::fs::write(&final_path, "old html").unwrap();
+        // The staged temp file has vanished: the destination is first moved to
+        // a backup, the temp rename fails, and the backup must be moved back.
+        let missing_temp = dir.join(".doc.html.fmd-tmp-vanished");
+
+        let err = commit_staged(vec![StagedOutput {
+            temp_path: missing_temp,
+            final_path: final_path.clone(),
+        }])
+        .expect_err("a vanished temp file must fail the commit");
+
+        assert_eq!(err.path, final_path);
+        assert_eq!(err.source.kind(), io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read_to_string(&final_path).unwrap(), "old html");
+        assert!(
+            std::fs::read_dir(&dir).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".fmd-bak")),
+            "restored backups must not linger"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_deletes_fresh_outputs_that_had_no_backup() {
+        let dir = fresh_dir("rollback-fresh");
+        let first_final = dir.join("first.html");
+        let first_temp = dir.join(".first.html.fmd-tmp-test");
+        std::fs::write(&first_temp, "first").unwrap();
+        let second_final = dir.join("second.html");
+        let missing_temp = dir.join(".second.html.fmd-tmp-missing");
+
+        let err = commit_staged(vec![
+            StagedOutput {
+                temp_path: first_temp.clone(),
+                final_path: first_final.clone(),
+            },
+            StagedOutput {
+                temp_path: missing_temp,
+                final_path: second_final.clone(),
+            },
+        ])
+        .expect_err("the second commit must fail and roll back the first");
+
+        assert_eq!(err.path, second_final);
+        // The first output was committed to a previously vacant destination
+        // (no backup): rollback must delete it outright, restoring the
+        // nothing-was-written state.
+        assert!(
+            !first_final.exists(),
+            "rolled-back fresh output must be deleted"
+        );
+        assert!(!second_final.exists());
+        assert!(!first_temp.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "batch")]
+    #[test]
+    fn same_existing_file_requires_both_paths_to_exist() {
+        let dir = fresh_dir("same-existing");
+        let file = dir.join("doc.html");
+        std::fs::write(&file, "x").unwrap();
+
+        assert!(same_existing_file(&file, &file));
+        assert!(!same_existing_file(&file, &dir.join("missing.html")));
+        let other = dir.join("other.html");
+        std::fs::write(&other, "y").unwrap();
+        assert!(!same_existing_file(&file, &other));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1458,4 +1458,336 @@ mod tests {
             Some(v.as_slice())
         );
     }
+
+    // ---- const-table builders re-executed at runtime --------------------------
+
+    #[test]
+    fn const_table_builders_match_rfc1951_at_runtime() {
+        // The fixed-code tables are produced by const fns at compile time; re-run
+        // the builders at runtime and pin them against both the compiled tables
+        // and hand-checked RFC 1951 values.
+        assert_eq!(reverse_bits(0b1, 3), 0b100);
+        assert_eq!(reverse_bits(0b1011, 4), 0b1101);
+        assert_eq!(reverse_bits(0, 0), 0);
+
+        // RFC 1951 section 3.2.6 fixed literal/length code ranges.
+        assert_eq!(litlen_code(0), (0x30, 8));
+        assert_eq!(litlen_code(143), (0xBF, 8));
+        assert_eq!(litlen_code(144), (0x190, 9));
+        assert_eq!(litlen_code(255), (0x1FF, 9));
+        assert_eq!(litlen_code(256), (0x00, 7));
+        assert_eq!(litlen_code(279), (0x17, 7));
+        assert_eq!(litlen_code(280), (0xC0, 8));
+        assert_eq!(litlen_code(287), (0xC7, 8));
+
+        assert_eq!(build_fixed_litlen_codes(), FIXED_LITLEN_CODES);
+        assert_eq!(build_fixed_dist_codes(), FIXED_DIST_CODES);
+        assert_eq!(build_length_symbol_by_len(), LENGTH_SYMBOL_BY_LEN);
+        assert_eq!(
+            build_dist_symbol_by_distance().as_slice(),
+            DIST_SYMBOL_BY_DISTANCE.as_slice()
+        );
+
+        // Literal 0: canonical code 0x30 (0011_0000, 8 bits) stored bit-reversed
+        // as 0000_1100. Distance symbol 1: 5-bit 00001 reversed to 10000.
+        assert_eq!(FIXED_LITLEN_CODES[0], (0x0C, 8));
+        assert_eq!(FIXED_DIST_CODES[1], 0b10000);
+    }
+
+    #[test]
+    fn bitwriter_full_width_write_is_lsb_first() {
+        // n >= 32 takes the saturated-mask arm; all four bytes flush LSB-first.
+        let mut bw = BitWriter::with_capacity(4);
+        bw.write_bits(0xA5B4_C3D2, 32);
+        assert_eq!(bw.out, [0xD2, 0xC3, 0xB4, 0xA5]);
+        assert_eq!(bw.bitcount, 0);
+    }
+
+    // ---- fixed-deflate abort points -------------------------------------------
+
+    #[test]
+    fn fixed_deflate_zero_limit_aborts_right_after_block_header() {
+        // A zero-byte budget trips on the 3 pending header bits before any
+        // symbol is emitted; the body stays empty and the Adler-32 still covers
+        // the whole input via the reference scan.
+        let limited = deflate_fixed_with_limit(b"abcdef", Some(0));
+        assert!(!limited.complete);
+        assert!(limited.body.is_empty());
+        assert_eq!(limited.adler32, adler32(b"abcdef"));
+    }
+
+    #[test]
+    fn fixed_deflate_limit_aborts_short_input_literal_loop() {
+        // Inputs below MIN_MATCH use the literal-only path. Header (3 bits) plus
+        // one 8-bit literal spans 2 pending bytes, crossing the 1-byte limit on
+        // the first literal with exactly one flushed byte.
+        let limited = deflate_fixed_with_limit(b"ab", Some(1));
+        assert!(!limited.complete);
+        assert_eq!(limited.body.len(), 1);
+        assert_eq!(limited.adler32, adler32(b"ab"));
+    }
+
+    #[test]
+    fn fixed_deflate_limit_aborts_immediately_after_a_match() {
+        // "aaaaaa" emits literal 'a' (8 bits) then a len-5/dist-1 match (7+5
+        // bits). The 23 pending bits span 3 bytes, crossing the 2-byte limit on
+        // the match-emission check (not the literal one).
+        let limited = deflate_fixed_with_limit(b"aaaaaa", Some(2));
+        assert!(!limited.complete);
+        assert_eq!(limited.body.len(), 2);
+        assert_eq!(limited.adler32, adler32(b"aaaaaa"));
+    }
+
+    #[test]
+    fn hash_chain_budget_exhaustion_still_roundtrips() {
+        // Find one trigram, containing no 'a', that lands in the same hash
+        // bucket as "abc" (density is 1/32768, so the scan ends quickly).
+        let target = hash3(b"abc", 0);
+        let mut collider = None;
+        for v in 0..(1u32 << 24) {
+            let t = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+            if t.contains(&b'a') {
+                continue;
+            }
+            if hash3(&t, 0) == target {
+                collider = Some(t);
+                break;
+            }
+        }
+        let t = collider.expect("some trigram collides with \"abc\"");
+        // 300 copies keep the "abc" bucket's chain deeper than MAX_CHAIN (256).
+        // No byte of the prefix is 'a', so the final "abc" search can never
+        // match: it must burn its entire chain budget candidate by candidate
+        // and fall back to literals, and the stream must still round-trip.
+        let mut v = Vec::with_capacity(300 * 3 + 3);
+        for _ in 0..300 {
+            v.extend_from_slice(&t);
+        }
+        v.extend_from_slice(b"abc");
+        roundtrip(&v);
+        prod_roundtrip(&v);
+    }
+
+    // ---- crafted DEFLATE streams for the production inflater -------------------
+
+    /// Wrap a raw DEFLATE body in a zlib frame whose trailer is the Adler-32 of
+    /// `plain` (irrelevant for streams that must be rejected before the check).
+    fn zlib_frame(body: &[u8], plain: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x9C];
+        out.extend_from_slice(body);
+        out.extend_from_slice(&adler32(plain).to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn zlib_decompress_rejects_oversized_window_and_reserved_block_type() {
+        // CMF 0x88: valid deflate method nibble but CINFO 8 exceeds the 32KiB
+        // window maximum of 7.
+        assert!(zlib_decompress(&[0x88, 0x00, 0, 0, 0, 0], 100).is_none());
+        // Reserved BTYPE=11 inside a frame long enough to reach the inflater
+        // (a bare 3-byte stream is rejected by the header length check instead).
+        assert!(zlib_decompress(&[0x78, 0x9C, 0x07, 0, 0, 0, 0], 100).is_none());
+    }
+
+    #[test]
+    fn zlib_decompress_enforces_max_out_on_stored_blocks() {
+        let mut v = Vec::with_capacity(1000);
+        let mut s: u64 = 0x0123_4567_89ab_cdef;
+        for _ in 0..1000 {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            v.push((s >> 33) as u8);
+        }
+        let comp = zlib_compress(&v);
+        // Incompressible input picks the stored encoding: BFINAL=1, BTYPE=00.
+        assert_eq!(comp[2], 0x01);
+        assert_eq!(comp.len(), 2 + 5 + v.len() + 4);
+        // The stored block declares 1000 bytes; a 100-byte cap must refuse it
+        // before copying anything, while the exact cap still succeeds.
+        assert!(zlib_decompress(&comp, 100).is_none());
+        assert_eq!(
+            zlib_decompress(&comp, v.len()).as_deref(),
+            Some(v.as_slice())
+        );
+    }
+
+    #[test]
+    fn zlib_decompress_enforces_max_out_on_fixed_literals() {
+        let data: Vec<u8> = (b'a'..=b'z').cycle().take(260).collect();
+        let comp = zlib_compress(&data);
+        // Repetitive text keeps the fixed-Huffman encoding: BFINAL=1, BTYPE=01.
+        assert_eq!(comp[2] & 0x07, 0b011);
+        // The first 26 outputs are literals, so a 10-byte cap trips on the 11th
+        // literal before any back-reference is reached.
+        assert!(zlib_decompress(&comp, 10).is_none());
+        assert_eq!(
+            zlib_decompress(&comp, data.len()).as_deref(),
+            Some(data.as_slice())
+        );
+    }
+
+    #[test]
+    fn inflaters_reject_back_reference_before_any_output() {
+        // A fixed-Huffman block whose very first symbol is a length/distance
+        // pair: distance 1 has no prior output byte to point at.
+        let mut bw = BitWriter::with_capacity(8);
+        bw.write_bits(1, 1); // BFINAL
+        bw.write_bits(0b01, 2); // BTYPE=01 (fixed)
+        emit_match(&mut bw, 3, 1);
+        emit_litlen(&mut bw, 256);
+        bw.finish();
+        let frame = zlib_frame(&bw.out, b"");
+        assert!(zlib_decompress(&frame, 100).is_none());
+        // The cfg(test) verification inflater applies the same guard.
+        assert!(inflate(&frame).is_none());
+    }
+
+    #[test]
+    fn verification_inflater_rejects_dynamic_blocks() {
+        // The cfg(test) verifier only understands stored + fixed blocks; a real
+        // dynamic-Huffman stream must be refused, never misdecoded.
+        assert!(inflate(DYN_ZLIB).is_none());
+    }
+
+    // ---- Huffman decoder edge cases --------------------------------------------
+
+    #[test]
+    fn huffman_from_lengths_rejects_overlong_codes() {
+        // 16 exceeds MAX_HUFFMAN_BITS (15): a malformed dynamic header must not
+        // build a decoder with impossible code lengths, while 15 is still legal.
+        assert!(Huffman::from_lengths(&[16]).is_none());
+        assert!(Huffman::from_lengths(&[15]).is_some());
+    }
+
+    #[test]
+    fn huffman_decode_fails_on_code_absent_from_incomplete_table() {
+        // The table holds a single 1-bit code '0'; an all-ones stream never
+        // resolves and must exhaust all 15 candidate lengths and fail.
+        let huff = Huffman::from_lengths(&[1]).expect("single-code table");
+        let mut br = BitStream::new(&[0xFF, 0xFF]);
+        assert_eq!(huff.decode(&mut br), None);
+    }
+
+    #[test]
+    fn bitstream_alignment_guards_partial_bytes() {
+        let mut br = BitStream::new(&[0xAB, 0xCD]);
+        // Aligning an already-aligned reader must not consume a byte.
+        br.align_to_byte();
+        assert_eq!((br.byte, br.bit), (0, 0));
+        assert_eq!(br.bits(4), Some(0xB));
+        // Mid-byte readers must refuse to hand out aligned byte slices.
+        assert!(br.aligned_bytes(1).is_none());
+        br.align_to_byte();
+        assert_eq!(br.aligned_bytes(1), Some(&[0xCD][..]));
+    }
+
+    // ---- crafted dynamic-Huffman headers ---------------------------------------
+
+    #[test]
+    fn dynamic_header_rejects_oversized_symbol_counts() {
+        // HLIT=30 declares 287 literal/length codes (max 286).
+        let mut bw = BitWriter::with_capacity(4);
+        bw.write_bits(1, 1); // BFINAL
+        bw.write_bits(0b10, 2); // BTYPE=10 (dynamic)
+        bw.write_bits(30, 5); // HLIT
+        bw.write_bits(0, 5); // HDIST
+        bw.write_bits(0, 4); // HCLEN
+        bw.finish();
+        assert!(zlib_decompress(&zlib_frame(&bw.out, b""), 100).is_none());
+
+        // HDIST=30 declares 31 distance codes (max 30).
+        let mut bw = BitWriter::with_capacity(4);
+        bw.write_bits(1, 1);
+        bw.write_bits(0b10, 2);
+        bw.write_bits(0, 5);
+        bw.write_bits(30, 5);
+        bw.write_bits(0, 4);
+        bw.finish();
+        assert!(zlib_decompress(&zlib_frame(&bw.out, b""), 100).is_none());
+    }
+
+    /// Shared preamble for the code-length overflow tests: a dynamic block with
+    /// HLIT=0/HDIST=0 (258 total lengths), a code-length table assigning
+    /// sym18 -> '0', sym16 -> '10', sym17 -> '11', and two 18-runs that fill
+    /// exactly 257 zero lengths, leaving room for exactly one more.
+    fn dynamic_overflow_preamble() -> BitWriter {
+        let mut bw = BitWriter::with_capacity(16);
+        bw.write_bits(1, 1); // BFINAL
+        bw.write_bits(0b10, 2); // BTYPE=10 (dynamic)
+        bw.write_bits(0, 5); // HLIT -> 257 literal/length codes
+        bw.write_bits(0, 5); // HDIST -> 1 distance code
+        bw.write_bits(0, 4); // HCLEN -> 4 entries: order 16, 17, 18, 0
+        bw.write_bits(2, 3); // len(sym16) = 2
+        bw.write_bits(2, 3); // len(sym17) = 2
+        bw.write_bits(1, 3); // len(sym18) = 1
+        bw.write_bits(0, 3); // len(sym0)  = 0
+        bw.write_bits(0, 1); // sym18 (code '0')
+        bw.write_bits(127, 7); // repeat 11 + 127 = 138 zeros
+        bw.write_bits(0, 1); // sym18
+        bw.write_bits(108, 7); // repeat 11 + 108 = 119 zeros -> 257 total
+        bw
+    }
+
+    #[test]
+    fn dynamic_header_rejects_code_length_repeats_running_past_total() {
+        // Symbol 16 (copy previous) crossing the 258-length budget.
+        let mut bw = dynamic_overflow_preamble();
+        bw.write_bits(1, 2); // sym16 (code '10' -> stream bits 1,0)
+        bw.write_bits(0, 2); // repeat 3: 257 + 3 > 258
+        bw.finish();
+        assert!(zlib_decompress(&zlib_frame(&bw.out, b""), 100).is_none());
+
+        // Symbol 17 (short zero run) crossing the budget.
+        let mut bw = dynamic_overflow_preamble();
+        bw.write_bits(3, 2); // sym17 (code '11')
+        bw.write_bits(0, 3); // repeat 3
+        bw.finish();
+        assert!(zlib_decompress(&zlib_frame(&bw.out, b""), 100).is_none());
+
+        // Symbol 18 (long zero run) crossing the budget.
+        let mut bw = dynamic_overflow_preamble();
+        bw.write_bits(0, 1); // sym18
+        bw.write_bits(0, 7); // repeat 11
+        bw.finish();
+        assert!(zlib_decompress(&zlib_frame(&bw.out, b""), 100).is_none());
+    }
+
+    #[test]
+    fn zlib_decompress_handles_dynamic_block_with_short_zero_runs() {
+        // Hand-built dynamic block: code-length table {0, 1, 17, 18} all 2 bits;
+        // the literal table gives 'A' (65) and end-of-block (256) 1-bit codes.
+        // The 65 leading zero lengths use an 18-run of 62 followed by a 17-run
+        // of 3, exercising the symbol-17 decode arm end to end.
+        let mut bw = BitWriter::with_capacity(24);
+        bw.write_bits(1, 1); // BFINAL
+        bw.write_bits(0b10, 2); // BTYPE=10 (dynamic)
+        bw.write_bits(0, 5); // HLIT -> 257 literal/length codes
+        bw.write_bits(0, 5); // HDIST -> 1 distance code
+        bw.write_bits(14, 4); // HCLEN -> 18 entries (through sym 1 in ORDER)
+        for len in [0u32, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2] {
+            bw.write_bits(len, 3);
+        }
+        // Code-length codes (canonical): 0 -> '00', 1 -> '01', 17 -> '10',
+        // 18 -> '11'; each written LSB-first as its bit-reversed value.
+        bw.write_bits(3, 2); // sym18
+        bw.write_bits(51, 7); // 62 zeros
+        bw.write_bits(1, 2); // sym17
+        bw.write_bits(0, 3); // 3 zeros -> symbols 0..=64 unused
+        bw.write_bits(2, 2); // sym1: literal 'A' (65) gets a 1-bit code
+        bw.write_bits(3, 2); // sym18
+        bw.write_bits(127, 7); // 138 zeros
+        bw.write_bits(3, 2); // sym18
+        bw.write_bits(41, 7); // 52 zeros -> symbols 66..=255 unused
+        bw.write_bits(2, 2); // sym1: end-of-block (256) gets a 1-bit code
+        bw.write_bits(0, 2); // sym0: the single distance code stays unused
+        // Payload: 'A' (code '0'), end of block (code '1').
+        bw.write_bits(0, 1);
+        bw.write_bits(1, 1);
+        bw.finish();
+        assert_eq!(
+            zlib_decompress(&zlib_frame(&bw.out, b"A"), 8).as_deref(),
+            Some(&b"A"[..])
+        );
+    }
 }

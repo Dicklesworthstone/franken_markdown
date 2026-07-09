@@ -3727,6 +3727,60 @@ fn pdf_svg_url_paint_current_color_fallbacks_resolve_only_when_resource_missing(
 }
 
 #[test]
+fn pdf_svg_url_paint_fallback_color_alpha_is_preserved_when_resource_missing() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 84 24">
+  <defs>
+    <linearGradient id="real" gradientUnits="userSpaceOnUse" x1="62" y1="2" x2="74" y2="2">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .css-fallback {
+      fill: url(#missing-css-fill) rgba(0, 255, 0, 0.25);
+      stroke: url(#missing-css-stroke) #0000ff80;
+      stroke-width: 2;
+    }
+  </style>
+  <rect x="2" y="2" width="10" height="8" fill="url(#missing-attr) rgb(255 0 0 / 50%)"/>
+  <rect class="css-fallback" x="18" y="2" width="10" height="8"/>
+  <path d="M34 2 L44 2 L44 10 Z" style="fill: url(#missing-inline) hsl(240 100% 50% / 40%)"/>
+  <rect x="62" y="2" width="10" height="8" fill="url(#real) rgba(255 0 255 / 12.3%)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("url-fallback-alpha.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint fallback alpha](url-fallback-alpha.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa05001000 gs 1.000 0.000 0.000 rg 2 2 10 8 re f"),
+        "presentation url(#missing) color fallback should keep its embedded fill alpha: {text}"
+    );
+    assert!(
+        text.contains(
+            "/GSa02500502 gs 0.000 1.000 0.000 rg 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 18 2 10 8 re B"
+        ),
+        "stylesheet url(#missing) color fallbacks should keep fill and stroke alpha: {text}"
+    );
+    assert!(
+        text.contains("/GSa04001000 gs 0.000 0.000 1.000 rg 34 2 m 44 2 l 44 10 l h f"),
+        "inline style url(#missing) color fallback should keep hsl slash alpha: {text}"
+    );
+    assert!(
+        text.contains("q 62 2 10 8 re W n /SG"),
+        "resolved paint servers should still use native shading: {text}"
+    );
+    assert!(
+        !text.contains("/GSa01231000"),
+        "resolved url(#real) must ignore fallback color alpha instead of applying 12.3% opacity: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_stylesheets_apply_document_wide_from_defs_and_late_positions() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 24">

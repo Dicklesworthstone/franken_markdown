@@ -9207,12 +9207,14 @@ fn parse_svg_style_patch(
                     gradient_ref.is_some() || pattern_ref.is_some(),
                 );
                 let paint_control_value = fallback.as_deref().unwrap_or(value);
+                let paint_alpha =
+                    parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.fill_current_color = Some(true);
                     patch.fill_context = Some(None);
                     patch.fill_gradient = Some(None);
                     patch.fill_pattern = Some(None);
-                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                    if let Some(alpha) = paint_alpha {
                         patch.fill_opacity = Some(alpha);
                     }
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
@@ -9222,7 +9224,7 @@ fn parse_svg_style_patch(
                     patch.fill_context = Some(Some(context));
                     patch.fill_gradient = Some(None);
                     patch.fill_pattern = Some(None);
-                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                    if let Some(alpha) = paint_alpha {
                         patch.fill_opacity = Some(alpha);
                     }
                 } else {
@@ -9243,7 +9245,7 @@ fn parse_svg_style_patch(
                         patch.fill_gradient =
                             Some(paint.is_some().then_some(gradient_ref).flatten());
                         patch.fill_pattern = Some(paint.is_some().then_some(pattern_ref).flatten());
-                        if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        if let Some(alpha) = paint_alpha {
                             patch.fill_opacity = Some(alpha);
                         }
                     }
@@ -9258,12 +9260,14 @@ fn parse_svg_style_patch(
                     gradient_ref.is_some() || pattern_ref.is_some(),
                 );
                 let paint_control_value = fallback.as_deref().unwrap_or(value);
+                let paint_alpha =
+                    parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.stroke_current_color = Some(true);
                     patch.stroke_context = Some(None);
                     patch.stroke_gradient = Some(None);
                     patch.stroke_pattern = Some(None);
-                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                    if let Some(alpha) = paint_alpha {
                         patch.stroke_opacity = Some(alpha);
                     }
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
@@ -9273,7 +9277,7 @@ fn parse_svg_style_patch(
                     patch.stroke_context = Some(Some(context));
                     patch.stroke_gradient = Some(None);
                     patch.stroke_pattern = Some(None);
-                    if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                    if let Some(alpha) = paint_alpha {
                         patch.stroke_opacity = Some(alpha);
                     }
                 } else {
@@ -9295,7 +9299,7 @@ fn parse_svg_style_patch(
                             Some(paint.is_some().then_some(pattern_ref).flatten());
                         patch.stroke_current_color = Some(false);
                         patch.stroke_context = Some(None);
-                        if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
+                        if let Some(alpha) = paint_alpha {
                             patch.stroke_opacity = Some(alpha);
                         }
                     }
@@ -11696,7 +11700,6 @@ fn apply_svg_paint_attr(
     let Some(value) = value else {
         return;
     };
-    let paint_alpha = parse_svg_paint_alpha(value, css_vars);
     let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
     let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
     let fallback = parse_svg_missing_resource_paint_fallback(
@@ -11704,6 +11707,7 @@ fn apply_svg_paint_attr(
         css_vars,
         gradient_ref.is_some() || pattern_ref.is_some(),
     );
+    let paint_alpha = parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
     let paint_control_value = fallback.as_deref().unwrap_or(value);
     if parse_svg_current_color_paint(paint_control_value, css_vars) {
         if target == "fill" {
@@ -11822,6 +11826,16 @@ fn parse_svg_missing_resource_paint_fallback(
     let (_, fallback) = value.split_once(')')?;
     let fallback = fallback.trim();
     (!fallback.is_empty()).then(|| fallback.to_string())
+}
+
+fn parse_svg_effective_paint_alpha(
+    value: &str,
+    fallback: Option<&str>,
+    css_vars: &[SvgCssVariable],
+) -> Option<f32> {
+    fallback
+        .and_then(|fallback| parse_svg_paint_alpha(fallback, css_vars))
+        .or_else(|| parse_svg_paint_alpha(value, css_vars))
 }
 
 fn parse_svg_current_color_paint(value: &str, css_vars: &[SvgCssVariable]) -> bool {

@@ -494,14 +494,19 @@ fn write_pdf_large_stage_artifacts(
         "stage attribution for pre-parsed large mixed Markdown document to PDF"
     ));
 
-    let mut ranked: Vec<(&'static str, u128, u128)> = Vec::new();
+    let mut ranked: Vec<StageRank> = Vec::new();
     for (stage, bucket) in &mut buckets {
         bucket.samples.sort_unstable();
         let p50 = percentile_ns_u128(&bucket.samples, 50);
         let p95 = percentile_ns_u128(&bucket.samples, 95);
         let p99 = percentile_ns_u128(&bucket.samples, 99);
         let max = bucket.samples.last().copied().unwrap_or(0);
-        ranked.push((*stage, p95, bucket.total_ns));
+        ranked.push(StageRank {
+            stage,
+            p95_ns: p95,
+            total_ns: bucket.total_ns,
+            allocation_count: bucket.allocation_count,
+        });
         stage_jsonl.push_str(&format!(
             "{{\"type\":\"stage_summary\",\"scenario\":\"pdf-large\",\"stage\":\"{}\",\"count\":{},\"work_count\":{},\"total_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{},\"output_bytes\":{},\"total_output_bytes\":{},\"unit\":\"ns\",\"notes\":\"{}\"}}\n",
             stage,
@@ -526,28 +531,114 @@ fn write_pdf_large_stage_artifacts(
     ));
     fs::write(&stage_path, stage_jsonl)?;
 
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
-    let (top_stage, top_p95, top_total) = ranked
+    sort_stage_ranks_by_total_cost(&mut ranked);
+    let top_rank = ranked
         .iter()
-        .find(|(stage, _, _)| !stage.ends_with("_total"))
         .copied()
-        .unwrap_or(("unknown", 0, 0));
-    let recommended = recommended_pdf_perf_bead(top_stage);
+        .find(|rank| !rank.stage.ends_with("_total"))
+        .unwrap_or_else(unknown_stage_rank);
+    let recommended = recommended_pdf_perf_bead(top_rank.stage);
     let recommendation_path = dir.join("pdf-large-recommendation.jsonl");
     fs::write(
         recommendation_path,
         format!(
-            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{}}}\n",
+            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_ranking_metric\":\"total_ns\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{}}}\n",
             recommended.bead_id,
             json_escape(recommended.reason),
             "golden/pdf-large-stages.jsonl",
             recommended.confidence,
-            top_stage,
-            top_p95,
-            top_total,
+            top_rank.stage,
+            top_rank.p95_ns,
+            top_rank.total_ns,
         ),
     )?;
     Ok(())
+}
+
+fn unknown_stage_rank() -> StageRank {
+    StageRank {
+        stage: "unknown",
+        p95_ns: 0,
+        total_ns: 0,
+        allocation_count: 0,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StageRank {
+    stage: &'static str,
+    p95_ns: u128,
+    total_ns: u128,
+    allocation_count: usize,
+}
+
+fn sort_stage_ranks_by_total_cost(ranked: &mut [StageRank]) {
+    ranked.sort_by(|a, b| {
+        b.total_ns
+            .cmp(&a.total_ns)
+            .then_with(|| b.p95_ns.cmp(&a.p95_ns))
+            .then_with(|| a.stage.cmp(b.stage))
+    });
+}
+
+#[cfg(test)]
+mod stage_rank_tests {
+    use super::{StageRank, sort_stage_ranks_by_total_cost};
+
+    #[test]
+    fn ranks_repeated_stage_by_cumulative_cost_before_single_call_p95() {
+        let mut ranked = vec![
+            StageRank {
+                stage: "layout",
+                p95_ns: 3_700_000,
+                total_ns: 11_000_000,
+                allocation_count: 0,
+            },
+            StageRank {
+                stage: "page_stream_compression",
+                p95_ns: 250_000,
+                total_ns: 50_000_000,
+                allocation_count: 0,
+            },
+        ];
+
+        sort_stage_ranks_by_total_cost(&mut ranked);
+
+        assert_eq!(ranked[0].stage, "page_stream_compression");
+    }
+
+    #[test]
+    fn pdf_target_selection_can_skip_aggregate_totals_after_total_ranking() {
+        let mut ranked = vec![
+            StageRank {
+                stage: "serialize_total",
+                p95_ns: 25_000_000,
+                total_ns: 75_000_000,
+                allocation_count: 0,
+            },
+            StageRank {
+                stage: "page_stream_compression",
+                p95_ns: 250_000,
+                total_ns: 50_000_000,
+                allocation_count: 0,
+            },
+            StageRank {
+                stage: "layout",
+                p95_ns: 3_700_000,
+                total_ns: 11_000_000,
+                allocation_count: 0,
+            },
+        ];
+
+        sort_stage_ranks_by_total_cost(&mut ranked);
+        let top_actionable = ranked
+            .iter()
+            .copied()
+            .find(|rank| !rank.stage.ends_with("_total"))
+            .expect("expected at least one actionable rank");
+
+        assert_eq!(top_actionable.stage, "page_stream_compression");
+    }
 }
 
 fn write_parser_large_stage_artifacts(
@@ -642,24 +733,24 @@ fn write_parser_large_stage_artifacts(
         &mut spanned_buckets,
     )?;
 
-    let (top_stage, top_p95, top_total, top_allocations) = ranked
+    let top_rank = ranked
         .iter()
         .copied()
         .next()
-        .unwrap_or(("unknown", 0, 0, 0));
-    let recommended = recommended_parser_perf_bead(top_stage, top_allocations);
+        .unwrap_or_else(unknown_stage_rank);
+    let recommended = recommended_parser_perf_bead(top_rank.stage, top_rank.allocation_count);
     fs::write(
         dir.join("parser-large-recommendation.jsonl"),
         format!(
-            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{},\"top_stage_allocations\":{}}}\n",
+            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_ranking_metric\":\"total_ns\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{},\"top_stage_allocations\":{}}}\n",
             recommended.bead_id,
             json_escape(recommended.reason),
             "golden/parser-large-stages.jsonl",
             recommended.confidence,
-            top_stage,
-            top_p95,
-            top_total,
-            top_allocations,
+            top_rank.stage,
+            top_rank.p95_ns,
+            top_rank.total_ns,
+            top_rank.allocation_count,
         ),
     )?;
     Ok(())
@@ -685,7 +776,7 @@ struct StageProof<'a> {
 fn write_stage_summary_jsonl(
     spec: StageJsonlSpec<'_>,
     buckets: &mut BTreeMap<&'static str, StageBucket>,
-) -> io::Result<Vec<(&'static str, u128, u128, usize)>> {
+) -> io::Result<Vec<StageRank>> {
     let mut jsonl = String::new();
     jsonl.push_str(&format!(
         "{{\"type\":\"scenario_start\",\"scenario\":\"{}\",\"category\":\"{}\",\"input_bytes\":{},\"iterations\":{},\"notes\":\"{}\"}}\n",
@@ -703,7 +794,12 @@ fn write_stage_summary_jsonl(
         let p95 = percentile_ns_u128(&bucket.samples, 95);
         let p99 = percentile_ns_u128(&bucket.samples, 99);
         let max = bucket.samples.last().copied().unwrap_or(0);
-        ranked.push((*stage, p95, bucket.total_ns, bucket.allocation_count));
+        ranked.push(StageRank {
+            stage,
+            p95_ns: p95,
+            total_ns: bucket.total_ns,
+            allocation_count: bucket.allocation_count,
+        });
         jsonl.push_str(&format!(
             "{{\"type\":\"stage_summary\",\"scenario\":\"{}\",\"stage\":\"{}\",\"count\":{},\"work_count\":{},\"allocation_count\":{},\"total_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{},\"input_bytes\":{},\"total_input_bytes\":{},\"unit\":\"ns\",\"notes\":\"{}\"}}\n",
             spec.scenario,
@@ -731,7 +827,7 @@ fn write_stage_summary_jsonl(
         ));
     }
     fs::write(spec.path, jsonl)?;
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+    sort_stage_ranks_by_total_cost(&mut ranked);
     Ok(ranked)
 }
 

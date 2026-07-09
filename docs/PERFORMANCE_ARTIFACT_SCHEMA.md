@@ -282,6 +282,15 @@ Required fields:
 | `evidence_path` | string | Artifact path |
 | `confidence` | string | `low`, `medium`, or `high` |
 
+Recommended supplemental fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `top_stage` | string | Stage id selected as the next actionable target |
+| `top_stage_ranking_metric` | string | Ranking metric used to choose `top_stage`, normally `total_ns` for cumulative stage cost |
+| `top_stage_p95_ns` | integer | Per-call p95 latency for the selected stage |
+| `top_stage_total_ns` | integer | Cumulative latency for the selected stage across the profiled run |
+
 ## Current Gauntlet Mapping
 
 `scripts/perf-gauntlet.sh` now stamps each run with this schema:
@@ -353,5 +362,5 @@ Minimal `proof_obligation`:
 Minimal `next_target_recommendation`:
 
 ```json
-{"type":"next_target_recommendation","recommended_bead_id":"br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.2","reason":"pdf_object_serialization has the highest p95 stage after attribution","evidence_path":"golden/pdf-large-stages.jsonl","confidence":"high"}
+{"type":"next_target_recommendation","recommended_bead_id":"br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-fep.6.2","reason":"page_stream_compression has the highest cumulative actionable stage cost after attribution","evidence_path":"golden/pdf-large-stages.jsonl","confidence":"high","top_stage":"page_stream_compression","top_stage_ranking_metric":"total_ns","top_stage_p95_ns":250000,"top_stage_total_ns":50000000}
 ```

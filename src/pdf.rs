@@ -10770,7 +10770,7 @@ fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option
             lengths.push(length);
         }
     }
-    (lengths.len() >= 2).then_some(SvgShadowLayer {
+    (lengths.len() >= 2).then(|| SvgShadowLayer {
         dx: lengths[0],
         dy: lengths[1],
         color: color.unwrap_or((0.0, 0.0, 0.0)),

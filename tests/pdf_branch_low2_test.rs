@@ -2550,3 +2550,29 @@ fn css_empty_custom_property_name_is_ignored() {
     );
     has(&text, "1.000 0.000 0.000 rg 0 0 10 10 re f");
 }
+
+/// Regression: `drop-shadow()` with fewer than two lengths used to panic with
+/// index-out-of-bounds because `bool::then_some` evaluates its argument (and
+/// its `lengths[0]`/`lengths[1]` indexing) eagerly even when the guard is
+/// false. Both malformed forms must render the shape unshadowed, not crash.
+#[test]
+fn drop_shadow_with_fewer_than_two_lengths_renders_without_shadow() {
+    for (name, filter) in [
+        ("shadow-color-only.svg", "drop-shadow(red)"),
+        ("shadow-no-lengths.svg", "drop-shadow(foo bar)"),
+        ("shadow-one-length.svg", "drop-shadow(4px)"),
+    ] {
+        let text = svg(
+            name,
+            &format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect x="4" y="4" width="30" height="30" fill="#204060" style="filter: {filter}"/></svg>"##
+            ),
+        );
+        has(&text, "0.125 0.251 0.376 rg");
+        assert_eq!(
+            text.matches("0.125 0.251 0.376 rg").count(),
+            1,
+            "{name}: exactly one fill pass (no shadow layer duplicate)"
+        );
+    }
+}

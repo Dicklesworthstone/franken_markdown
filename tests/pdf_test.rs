@@ -6768,6 +6768,33 @@ fn pdf_splits_long_list_across_pages_keeping_list_tags() {
 }
 
 #[test]
+fn pdf_avoids_stranding_a_single_final_task_list_item() {
+    let opts = small_page_opts(240.0, 92.0);
+    let pdf = render_pdf(
+        "- [x] first task\n- [x] second task\n- [x] third task\n- [ ] final task\n",
+        &opts,
+    )
+    .unwrap();
+    let pages = page_tag_sequences(&pdf);
+
+    assert_eq!(
+        pages.len(),
+        2,
+        "the short task list should split across exactly two pages; got {pages:?}"
+    );
+    assert_eq!(
+        pages[0].iter().filter(|tag| tag.as_str() == "P").count(),
+        2,
+        "page 1 should carry two task-list paragraphs instead of three; got {pages:?}"
+    );
+    assert_eq!(
+        pages[1].iter().filter(|tag| tag.as_str() == "P").count(),
+        2,
+        "page 2 should carry two task-list paragraphs instead of a lone orphan; got {pages:?}"
+    );
+}
+
+#[test]
 fn pdf_splits_long_blockquote_across_pages_repeating_gutter_bar() {
     let opts = small_page_opts(240.0, 110.0);
     let mut md = String::new();

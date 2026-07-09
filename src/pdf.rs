@@ -21696,6 +21696,14 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 700_000.0;
     }
 
+    // Avoid leaving the final, short item of a list alone on the next page when
+    // pulling the previous item over would produce a more balanced split. Long
+    // lists still split naturally, and a genuinely tall final item can occupy a
+    // page by itself.
+    if break_leaves_short_final_list_item(lines, candidate) {
+        penalty += 650_000.0;
+    }
+
     // Code fences are visually framed blocks. Splitting a short code block is
     // especially bad for ASCII diagrams, whose geometry depends on neighboring
     // rows staying together. If a block is too tall for a page this penalty is
@@ -21718,6 +21726,55 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     }
 
     penalty
+}
+
+fn break_leaves_short_final_list_item(lines: &[Line], candidate: usize) -> bool {
+    if candidate == 0 || candidate >= lines.len() {
+        return false;
+    }
+
+    let before = &lines[candidate - 1];
+    let after = &lines[candidate];
+    let (Some(before_mark), Some(after_mark)) = (before.list_path.last(), after.list_path.last())
+    else {
+        return false;
+    };
+    if before_mark.list != after_mark.list || before_mark.item == after_mark.item {
+        return false;
+    }
+
+    let list_id = after_mark.list;
+    let mut tail_item = None;
+    let mut item_count = 0usize;
+    let mut visible_lines = 0usize;
+
+    for line in &lines[candidate..] {
+        let Some(mark) = line
+            .list_path
+            .iter()
+            .rev()
+            .find(|mark| mark.list == list_id)
+        else {
+            break;
+        };
+
+        if tail_item != Some(mark.item) {
+            item_count += 1;
+            tail_item = Some(mark.item);
+            if item_count > 1 {
+                return false;
+            }
+        }
+
+        if line_has_visible_content(line) {
+            visible_lines += 1;
+            if visible_lines > 2 {
+                return false;
+            }
+        }
+    }
+
+    item_count == 1 && visible_lines > 0
 }
 
 // ---- render-tree golden support (bead qw1.1.2) ------------------------------
@@ -21863,6 +21920,22 @@ mod keep_with_next_tests {
         }
     }
 
+    fn list_line(list: u32, item: u32) -> Line {
+        let mut line = line(FlowKind::Paragraph, item, 0, 1);
+        line.list_path.push(ListMark { list, item });
+        line.segs.push(Seg {
+            x: 0.0,
+            slot: F_BODY,
+            text: "x".to_string(),
+            link: None,
+            fill: Fill::Black,
+            strike: false,
+            task: None,
+            width: 1.0,
+        });
+        line
+    }
+
     #[test]
     fn short_caption_before_table_code_or_image_is_kept() {
         for kind in [FlowKind::TableHeader, FlowKind::Code, FlowKind::Image] {
@@ -21932,6 +22005,53 @@ mod keep_with_next_tests {
             line(FlowKind::Paragraph, 2, 0, 1),
         ];
         assert_eq!(break_penalty(&plain, 1), 0.0);
+    }
+
+    #[test]
+    fn short_final_list_item_resists_being_stranded() {
+        let lines = [
+            list_line(12, 1),
+            list_line(12, 2),
+            list_line(12, 3),
+            list_line(12, 4),
+            line(FlowKind::Paragraph, 99, 0, 1),
+        ];
+        assert!(
+            break_penalty(&lines, 3) >= 650_000.0,
+            "breaking before the final short list item should carry an orphan penalty"
+        );
+        assert_eq!(
+            break_penalty(&lines, 2),
+            0.0,
+            "a split that leaves two list items is balanced enough"
+        );
+    }
+
+    #[test]
+    fn tall_final_list_item_can_still_occupy_its_own_page() {
+        let mut final_line_1 = list_line(12, 4);
+        final_line_1.flow.index = 0;
+        final_line_1.flow.count = 3;
+        let mut final_line_2 = list_line(12, 4);
+        final_line_2.flow.index = 1;
+        final_line_2.flow.count = 3;
+        let mut final_line_3 = list_line(12, 4);
+        final_line_3.flow.index = 2;
+        final_line_3.flow.count = 3;
+        let lines = [
+            list_line(12, 1),
+            list_line(12, 2),
+            list_line(12, 3),
+            final_line_1,
+            final_line_2,
+            final_line_3,
+            line(FlowKind::Paragraph, 99, 0, 1),
+        ];
+        assert_eq!(
+            break_penalty(&lines, 3),
+            0.0,
+            "a multi-line final item is not a short visual orphan"
+        );
     }
 
     #[test]

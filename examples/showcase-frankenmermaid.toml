@@ -8,5 +8,5 @@ edge_routing = "spline"
 theme = "corporate"
 rounded_corners = 6
 shadows = true
-gradients = false
+gradients = true
 accessibility = true

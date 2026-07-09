@@ -1599,6 +1599,12 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
     chars
 }
 
+fn collect_inline_chars_from_text(text: &str) -> Vec<char> {
+    let mut chars = Vec::with_capacity(text.len());
+    chars.extend(text.chars());
+    chars
+}
+
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     if let Some(reference) = parse_simple_ascii_reference_definition(line) {
         return Some(reference);
@@ -2971,7 +2977,7 @@ fn parse_inlines_with_refs_profiled_uncached(
     if !needs_full_parse.unwrap_or_else(|| inline_text_needs_full_parse(text)) {
         return record_plain_inline_parse(text, profiler, started);
     }
-    let bytes: Vec<char> = text.chars().collect();
+    let bytes = collect_inline_chars_from_text(text);
     parse_inlines_chars_with_refs_profiled(bytes, text.len(), refs, profiler, started)
 }
 
@@ -5521,9 +5527,9 @@ mod inline_helper_branch_tests {
     use super::{
         INLINE_PARSE_CACHE_MAX_ENTRIES, INLINE_PARSE_CACHE_MAX_KEY_BYTES,
         INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache,
-        inline_cache_size_allows, inline_http_scheme_before_colon, is_email_autolink,
-        is_intraword_underscore_run, parse_angle_link_destination, parse_bare_url_autolink,
-        reference_collector_ordered_marker_candidate,
+        collect_inline_chars_from_text, inline_cache_size_allows, inline_http_scheme_before_colon,
+        is_email_autolink, is_intraword_underscore_run, parse_angle_link_destination,
+        parse_bare_url_autolink, reference_collector_ordered_marker_candidate,
     };
     use crate::ast::Inline;
 
@@ -5601,6 +5607,25 @@ mod inline_helper_branch_tests {
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
         full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())]);
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn collect_inline_chars_from_text_matches_chars_collect() {
+        for src in [
+            "",
+            "plain ascii",
+            "**strong** [link](https://example.test) `code`",
+            "line one\nline two  \nline three",
+            "emoji \u{1f642} and accents caf\u{e9}",
+            "mix [\u{1f680}](dest) &amp; user@example.test",
+        ] {
+            let collected = collect_inline_chars_from_text(src);
+            assert_eq!(collected, src.chars().collect::<Vec<_>>(), "{src:?}");
+            assert!(
+                collected.capacity() >= src.len(),
+                "single-line inline collection should preallocate from byte length"
+            );
+        }
     }
 }
 

@@ -1095,6 +1095,39 @@ fn gradient_stop_transparent_color_becomes_white() {
 }
 
 #[test]
+fn gradient_stop_color_alpha_blends_toward_white() {
+    // Alpha embedded in stop-color must feed the same white-composited native
+    // shading approximation as stop-opacity; it should not be dropped.
+    let text = grad(
+        "stoprgba.svg",
+        r##"<stop offset="0" stop-color="rgba(255 0 0 / 50%)"/><stop offset="1" stop-color="#0000ff"/>"##,
+    );
+    has(&text, "/C0 [1.000 0.500 0.500] /C1 [0.000 0.000 1.000]");
+}
+
+#[test]
+fn gradient_stop_color_alpha_multiplies_stop_opacity() {
+    // stop-color alpha and stop-opacity are independent SVG properties, so the
+    // effective native shading approximation uses their product.
+    let text = grad(
+        "stoprgbaopacity.svg",
+        r##"<stop offset="0" stop-color="rgba(255,0,0,0.5)" stop-opacity="0.5"/><stop offset="1" stop-color="#0000ff"/>"##,
+    );
+    has(&text, "/C0 [1.000 0.750 0.750] /C1 [0.000 0.000 1.000]");
+}
+
+#[test]
+fn gradient_stop_transparent_color_stays_transparent_with_stop_opacity() {
+    // `transparent` is color alpha 0, not an ordinary black stop whose opacity
+    // can be resurrected by a later stop-opacity property.
+    let text = grad(
+        "stoptransparentopacity.svg",
+        r##"<stop offset="0" stop-color="transparent" stop-opacity="0.5"/><stop offset="1" stop-color="#0000ff"/>"##,
+    );
+    has(&text, "/C0 [1.000 1.000 1.000] /C1 [0.000 0.000 1.000]");
+}
+
+#[test]
 fn gradient_stop_style_opacity_blends_toward_white() {
     // stop-opacity supplied via the `style` attribute (line 7615): a half-opaque
     // red stop becomes 1.0/0.5/0.5.

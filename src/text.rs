@@ -2039,6 +2039,13 @@ mod subset_degradation_tests {
     }
 
     #[test]
+    fn simple_instruction_len_rejects_composite_data() {
+        // The helper reads numberOfContours first; a negative count (composite)
+        // has no simple-glyph instruction stream to measure.
+        assert_eq!(simple_instruction_len(&(-1i16).to_be_bytes()), None);
+    }
+
+    #[test]
     fn subset_glyph_bytes_substitutes_notdef_for_a_missing_component() {
         // A composite whose component is not in `new_of` (a malformed out-of-range
         // component gid) must be substituted with `.notdef`, not abort.
@@ -2057,5 +2064,1416 @@ mod subset_degradation_tests {
             .subset_glyph_bytes(comp, &new_of)
             .expect("missing component must be substituted, not abort");
         assert!(!bytes.is_empty(), "a composite glyph is non-empty");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+mod synthetic_font_tests {
+    use super::*;
+
+    // --- byte-level builders ------------------------------------------------
+
+    fn push16(out: &mut Vec<u8>, v: u16) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    fn push_i16(out: &mut Vec<u8>, v: i16) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    fn push32(out: &mut Vec<u8>, v: u32) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    /// Assemble an sfnt file. The directory records each table's real length;
+    /// truncation tests chop bytes off the end of the returned file afterwards
+    /// (the directory keeps claiming the full length, exactly like a damaged
+    /// or malicious font would).
+    fn sfnt(magic: u32, tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        push32(&mut out, magic);
+        push16(&mut out, u16::try_from(tables.len()).unwrap());
+        out.extend_from_slice(&[0u8; 6]); // search fields: unread by the parser
+        let mut offset = 12 + tables.len() * 16;
+        let mut body = Vec::new();
+        for (tag, bytes) in tables {
+            out.extend_from_slice(&tag[..]);
+            push32(&mut out, 0); // checksum: unread by the parser
+            push32(&mut out, u32::try_from(offset).unwrap());
+            push32(&mut out, u32::try_from(bytes.len()).unwrap());
+            offset += bytes.len();
+            body.extend_from_slice(bytes);
+        }
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn head_table(upem: u16, loca_long: bool) -> Vec<u8> {
+        let mut t = vec![0u8; 54];
+        t[18..20].copy_from_slice(&upem.to_be_bytes());
+        t[50..52].copy_from_slice(&u16::from(loca_long).to_be_bytes());
+        t
+    }
+
+    fn maxp_table(num_glyphs: u16) -> Vec<u8> {
+        let mut t = vec![0u8; 6];
+        t[4..6].copy_from_slice(&num_glyphs.to_be_bytes());
+        t
+    }
+
+    fn hhea_table(num_h_metrics: u16) -> Vec<u8> {
+        let mut t = vec![0u8; 36];
+        t[4..6].copy_from_slice(&700i16.to_be_bytes());
+        t[6..8].copy_from_slice(&(-200i16).to_be_bytes());
+        t[8..10].copy_from_slice(&50i16.to_be_bytes());
+        t[34..36].copy_from_slice(&num_h_metrics.to_be_bytes());
+        t
+    }
+
+    fn hmtx_long(metrics: &[(u16, i16)]) -> Vec<u8> {
+        let mut t = Vec::new();
+        for &(aw, lsb) in metrics {
+            push16(&mut t, aw);
+            push_i16(&mut t, lsb);
+        }
+        t
+    }
+
+    /// A complete `cmap` table holding one format-4 `(3,1)` subtable built from
+    /// raw `(endCode, startCode, idDelta, idRangeOffset)` segments, followed by
+    /// `glyph_id_array` bytes.
+    fn cmap4_table(segs: &[(u16, u16, u16, u16)], glyph_id_array: &[u8]) -> Vec<u8> {
+        let seg_count = segs.len();
+        let mut t = Vec::new();
+        push16(&mut t, 0); // version
+        push16(&mut t, 1); // numTables
+        push16(&mut t, 3); // platformID (Windows)
+        push16(&mut t, 1); // encodingID (Unicode BMP)
+        push32(&mut t, 12); // subtable offset
+        push16(&mut t, 4); // format
+        push16(
+            &mut t,
+            u16::try_from(16 + seg_count * 8 + glyph_id_array.len()).unwrap(),
+        );
+        push16(&mut t, 0); // language
+        push16(&mut t, u16::try_from(seg_count * 2).unwrap()); // segCountX2
+        push16(&mut t, 0); // searchRange (unread)
+        push16(&mut t, 0); // entrySelector (unread)
+        push16(&mut t, 0); // rangeShift (unread)
+        for &(end, _, _, _) in segs {
+            push16(&mut t, end);
+        }
+        push16(&mut t, 0); // reservedPad
+        for &(_, start, _, _) in segs {
+            push16(&mut t, start);
+        }
+        for &(_, _, delta, _) in segs {
+            push16(&mut t, delta);
+        }
+        for &(_, _, _, iro) in segs {
+            push16(&mut t, iro);
+        }
+        t.extend_from_slice(glyph_id_array);
+        t
+    }
+
+    /// A format-4 cmap mapping each ascending `(code, gid)` pair via its own
+    /// delta-only segment, plus the mandatory final 0xFFFF segment.
+    fn cmap4_simple(map: &[(u16, u16)]) -> Vec<u8> {
+        let mut segs: Vec<(u16, u16, u16, u16)> = map
+            .iter()
+            .map(|&(code, gid)| (code, code, gid.wrapping_sub(code), 0))
+            .collect();
+        segs.push((0xFFFF, 0xFFFF, 1, 0));
+        cmap4_table(&segs, &[])
+    }
+
+    /// A complete `cmap` table holding one format-12 `(3,10)` subtable.
+    fn cmap12_table(groups: &[(u32, u32, u32)]) -> Vec<u8> {
+        let mut t = Vec::new();
+        push16(&mut t, 0); // version
+        push16(&mut t, 1); // numTables
+        push16(&mut t, 3); // platformID (Windows)
+        push16(&mut t, 10); // encodingID (Unicode full repertoire)
+        push32(&mut t, 12); // subtable offset
+        push16(&mut t, 12); // format
+        push16(&mut t, 0); // reserved
+        push32(&mut t, u32::try_from(16 + groups.len() * 12).unwrap());
+        push32(&mut t, 0); // language
+        push32(&mut t, u32::try_from(groups.len()).unwrap());
+        for &(start, end, gid) in groups {
+            push32(&mut t, start);
+            push32(&mut t, end);
+            push32(&mut t, gid);
+        }
+        t
+    }
+
+    fn base_tables(
+        num_glyphs: u16,
+        num_h_metrics: u16,
+        upem: u16,
+        hmtx: Vec<u8>,
+        cmap: Vec<u8>,
+    ) -> Vec<(&'static [u8; 4], Vec<u8>)> {
+        vec![
+            (b"head", head_table(upem, false)),
+            (b"maxp", maxp_table(num_glyphs)),
+            (b"hhea", hhea_table(num_h_metrics)),
+            (b"hmtx", hmtx),
+            (b"cmap", cmap),
+        ]
+    }
+
+    fn parse(tables: &[(&[u8; 4], Vec<u8>)]) -> Font {
+        Font::parse(sfnt(0x0001_0000, tables)).expect("synthetic font parses")
+    }
+
+    // --- glyph builders -------------------------------------------------
+
+    const ARGW: u16 = 0x0001; // ARG_1_AND_2_ARE_WORDS
+    const WHS: u16 = 0x0008; // WE_HAVE_A_SCALE
+    const MORE: u16 = 0x0020; // MORE_COMPONENTS
+    const XYS: u16 = 0x0040; // WE_HAVE_AN_X_AND_Y_SCALE
+    const TWO: u16 = 0x0080; // WE_HAVE_A_TWO_BY_TWO
+    const INSTR: u16 = 0x0100; // WE_HAVE_INSTRUCTIONS
+
+    /// A composite glyph: each record is `(flags, component gid, arg/scale
+    /// payload)`; `trailer` bytes follow the last record.
+    fn composite_glyph(bbox: [i16; 4], records: &[(u16, u16, &[u8])], trailer: &[u8]) -> Vec<u8> {
+        let mut g = Vec::new();
+        push_i16(&mut g, -1);
+        for v in bbox {
+            push_i16(&mut g, v);
+        }
+        for &(flags, gid, payload) in records {
+            push16(&mut g, flags);
+            push16(&mut g, gid);
+            g.extend_from_slice(payload);
+        }
+        g.extend_from_slice(trailer);
+        g
+    }
+
+    /// A minimal valid hint-free simple glyph (16 bytes).
+    fn simple_glyph16() -> Vec<u8> {
+        let mut g = Vec::new();
+        push_i16(&mut g, 1); // numberOfContours
+        g.extend_from_slice(&[0u8; 8]); // bbox
+        push16(&mut g, 0); // endPtsOfContours[0]
+        push16(&mut g, 0); // instructionLength
+        g.extend_from_slice(&[0x01, 0x00]); // flag + coordinate payload
+        g
+    }
+
+    /// Glyph zoo: 0 empty, 1 bare simple stub, 2/3/4 composites using the three
+    /// transform payload sizes, 5 valid simple, 6 word-args + MORE chain,
+    /// 7 MORE record ending exactly at the glyph end, 8 overlong instruction
+    /// claim, 9 component gid past numGlyphs, 10 trailing junk after the last
+    /// record, 11 transform payload overrunning the glyph, 12 valid composite
+    /// instructions.
+    fn zoo_font() -> Font {
+        let glyphs: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            1i16.to_be_bytes().to_vec(),
+            composite_glyph([1, 2, 3, 4], &[(WHS, 5, &[0, 0, 0x40, 0])], &[]),
+            composite_glyph([0; 4], &[(XYS, 5, &[0, 0, 0x40, 0, 0x40, 0])], &[]),
+            composite_glyph(
+                [0; 4],
+                &[(TWO, 5, &[0, 0, 0x40, 0, 0, 0, 0, 0, 0x40, 0])],
+                &[],
+            ),
+            simple_glyph16(),
+            composite_glyph(
+                [0; 4],
+                &[(ARGW | MORE, 2, &[0, 0, 0, 0]), (0, 3, &[0, 0])],
+                &[],
+            ),
+            composite_glyph([0; 4], &[(MORE, 5, &[0, 0])], &[]),
+            composite_glyph([0; 4], &[(INSTR, 5, &[0, 0])], &[0xFF, 0xFF]),
+            composite_glyph([0; 4], &[(0, 900, &[0, 0])], &[]),
+            composite_glyph([0; 4], &[(MORE, 5, &[0, 0])], &[0, 0]),
+            composite_glyph([0; 4], &[(TWO, 5, &[0, 0, 0x40, 0])], &[]),
+            composite_glyph([0; 4], &[(INSTR, 5, &[0, 0])], &[0x00, 0x02, 0xAA, 0xBB]),
+        ];
+        let mut glyf = Vec::new();
+        let mut loca = Vec::new();
+        push16(&mut loca, 0);
+        for g in &glyphs {
+            glyf.extend_from_slice(g);
+            push16(&mut loca, u16::try_from(glyf.len() / 2).unwrap());
+        }
+        let metrics: Vec<(u16, i16)> = (0..13u16).map(|g| (500 + g, g as i16)).collect();
+        let mut tables = base_tables(13, 13, 1000, hmtx_long(&metrics), cmap4_simple(&[]));
+        tables.push((b"loca", loca));
+        tables.push((b"glyf", glyf));
+        parse(&tables)
+    }
+
+    /// One composite glyph whose loca/glyf directory claims 16 bytes while the
+    /// file physically ends after `keep` of them.
+    fn truncated_composite_font(keep: usize) -> Font {
+        let glyph = composite_glyph([0; 4], &[(0, 5, &[0, 0])], &[]);
+        assert_eq!(glyph.len(), 16);
+        let mut loca = Vec::new();
+        push16(&mut loca, 0);
+        push16(&mut loca, 8);
+        let mut tables = base_tables(1, 1, 1000, hmtx_long(&[(500, 0)]), cmap4_simple(&[]));
+        tables.push((b"loca", loca));
+        tables.push((b"glyf", glyph));
+        let mut bytes = sfnt(0x0001_0000, &tables);
+        bytes.truncate(bytes.len() - (16 - keep));
+        Font::parse(bytes).expect("glyf payload is lazily read")
+    }
+
+    /// A `kern` table with one version-0 format-0 horizontal subtable.
+    fn kern0_table(pairs: &[(u16, u16, i16)]) -> Vec<u8> {
+        let mut t = Vec::new();
+        push16(&mut t, 0); // version
+        push16(&mut t, 1); // nTables
+        push16(&mut t, 0); // subtable version
+        push16(&mut t, u16::try_from(14 + pairs.len() * 6).unwrap()); // length
+        push16(&mut t, 0x0001); // coverage: horizontal, format 0
+        push16(&mut t, u16::try_from(pairs.len()).unwrap()); // nPairs
+        t.extend_from_slice(&[0u8; 6]); // search fields (unread)
+        for &(l, r, v) in pairs {
+            push16(&mut t, l);
+            push16(&mut t, r);
+            push_i16(&mut t, v);
+        }
+        t
+    }
+
+    /// Raw GPOS table: a `kern` feature routing through an Extension (type 9)
+    /// lookup to a Pair Adjustment format-1 subtable holding (5, 6) -> -40.
+    fn gpos_table(ext_format: u16, ext_type: u16, lookup_index: u16, pos_format: u16) -> Vec<u8> {
+        let mut g = Vec::new();
+        push32(&mut g, 0x0001_0000); // version
+        push16(&mut g, 0); // scriptList (unread)
+        push16(&mut g, 10); // featureList
+        push16(&mut g, 24); // lookupList
+        // FeatureList @10
+        push16(&mut g, 1); // featureCount
+        g.extend_from_slice(b"kern");
+        push16(&mut g, 8); // feature @ featureList+8
+        // Feature @18
+        push16(&mut g, 0); // featureParams
+        push16(&mut g, 1); // lookupIndexCount
+        push16(&mut g, lookup_index);
+        // LookupList @24
+        push16(&mut g, 1); // lookupCount
+        push16(&mut g, 4); // lookup @ lookupList+4
+        // Lookup @28: Extension Positioning
+        push16(&mut g, 9); // lookupType
+        push16(&mut g, 0); // lookupFlag
+        push16(&mut g, 1); // subTableCount
+        push16(&mut g, 8); // subtable @ lookup+8
+        // Extension @36
+        push16(&mut g, ext_format);
+        push16(&mut g, ext_type);
+        push32(&mut g, 8); // wrapped subtable @ 36+8
+        // PairPos @44
+        push16(&mut g, pos_format);
+        push16(&mut g, 18); // coverage @ 44+18
+        push16(&mut g, 0x0004); // valueFormat1: X_ADVANCE
+        push16(&mut g, 0); // valueFormat2
+        push16(&mut g, 1); // pairSetCount
+        push16(&mut g, 12); // pair set @ 44+12
+        // PairSet @56
+        push16(&mut g, 1); // pairValueCount
+        push16(&mut g, 6); // secondGlyph
+        push_i16(&mut g, -40); // xAdvance
+        // Coverage @62
+        push16(&mut g, 1);
+        push16(&mut g, 1);
+        push16(&mut g, 5);
+        assert_eq!(g.len(), 68);
+        g
+    }
+
+    /// Attach raw GPOS bytes (as the last table, so shortened tables truncate
+    /// the file) and parse its kerning.
+    fn gpos_kerning_of(table: Vec<u8>) -> Kerning {
+        let mut tables = base_tables(
+            2,
+            2,
+            1000,
+            hmtx_long(&[(600, 0), (600, 0)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"GPOS", table));
+        parse(&tables).gpos_kerning()
+    }
+
+    fn gpos_font(ext_format: u16, ext_type: u16, lookup_index: u16, pos_format: u16) -> Kerning {
+        gpos_kerning_of(gpos_table(ext_format, ext_type, lookup_index, pos_format))
+    }
+
+    /// Raw GSUB table: a `liga` feature routing through an Extension (type 7)
+    /// lookup to a LigatureSubst with (10,11,12)->99 and (10,11)->77.
+    fn gsub_table(ext_format: u16, ext_type: u16, lookup_index: u16) -> Vec<u8> {
+        let mut g = Vec::new();
+        push32(&mut g, 0x0001_0000);
+        push16(&mut g, 0); // scriptList (unread)
+        push16(&mut g, 10); // featureList
+        push16(&mut g, 24); // lookupList
+        // FeatureList @10
+        push16(&mut g, 1);
+        g.extend_from_slice(b"liga");
+        push16(&mut g, 8); // feature @18
+        // Feature @18
+        push16(&mut g, 0);
+        push16(&mut g, 1);
+        push16(&mut g, lookup_index);
+        // LookupList @24
+        push16(&mut g, 1);
+        push16(&mut g, 4); // lookup @28
+        // Lookup @28: Extension Substitution
+        push16(&mut g, 7);
+        push16(&mut g, 0);
+        push16(&mut g, 1);
+        push16(&mut g, 8); // subtable @36
+        // Extension @36
+        push16(&mut g, ext_format);
+        push16(&mut g, ext_type);
+        push32(&mut g, 8); // wrapped subtable @44
+        // LigatureSubst @44
+        push16(&mut g, 1); // substFormat
+        push16(&mut g, 28); // coverage @ 44+28
+        push16(&mut g, 1); // ligSetCount
+        push16(&mut g, 8); // ligature set @ 44+8
+        // LigatureSet @52
+        push16(&mut g, 2); // ligatureCount
+        push16(&mut g, 6); // ligature @ 52+6
+        push16(&mut g, 14); // ligature @ 52+14
+        // Ligature @58: components (10, 11, 12) -> 99
+        push16(&mut g, 99);
+        push16(&mut g, 3);
+        push16(&mut g, 11);
+        push16(&mut g, 12);
+        // Ligature @66: components (10, 11) -> 77
+        push16(&mut g, 77);
+        push16(&mut g, 2);
+        push16(&mut g, 11);
+        // Coverage @72
+        push16(&mut g, 1);
+        push16(&mut g, 1);
+        push16(&mut g, 10);
+        assert_eq!(g.len(), 78);
+        g
+    }
+
+    /// Attach raw GSUB bytes (as the last table) and parse its ligatures.
+    fn gsub_ligatures_of(table: Vec<u8>) -> Ligatures {
+        let mut tables = base_tables(
+            2,
+            2,
+            1000,
+            hmtx_long(&[(600, 0), (600, 0)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"GSUB", table));
+        parse(&tables).gsub_ligatures()
+    }
+
+    fn gsub_font(ext_format: u16, ext_type: u16, lookup_index: u16) -> Ligatures {
+        gsub_ligatures_of(gsub_table(ext_format, ext_type, lookup_index))
+    }
+
+    // --- parse errors and magics ---------------------------------------
+
+    #[test]
+    fn parse_error_variants_and_display_messages() {
+        assert_eq!(Font::parse(Vec::new()).err(), Some(FontError::Truncated));
+        assert_eq!(
+            Font::parse(vec![0x00, 0x02, 0x00, 0x00]).err(),
+            Some(FontError::BadMagic)
+        );
+
+        // Required tables are demanded in a fixed order.
+        let mut tables: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+        let steps: [(&'static [u8; 4], &'static str, Vec<u8>); 4] = [
+            (b"head", "head", head_table(1000, false)),
+            (b"maxp", "maxp", maxp_table(1)),
+            (b"hhea", "hhea", hhea_table(1)),
+            (b"hmtx", "hmtx", hmtx_long(&[(500, 0)])),
+        ];
+        for (tag, name, table) in steps {
+            assert_eq!(
+                Font::parse(sfnt(0x0001_0000, &tables)).err(),
+                Some(FontError::MissingTable(name))
+            );
+            tables.push((tag, table));
+        }
+        assert_eq!(
+            Font::parse(sfnt(0x0001_0000, &tables)).err(),
+            Some(FontError::MissingTable("cmap"))
+        );
+
+        // A cmap with only a Mac record and an unsupported-format Windows
+        // record has no usable Unicode subtable.
+        let mut bad_cmap = Vec::new();
+        push16(&mut bad_cmap, 0);
+        push16(&mut bad_cmap, 2);
+        push16(&mut bad_cmap, 1); // platform 1 (Macintosh): not Unicode
+        push16(&mut bad_cmap, 0);
+        push32(&mut bad_cmap, 20);
+        push16(&mut bad_cmap, 3); // (3,1) but pointing at a format-6 subtable
+        push16(&mut bad_cmap, 1);
+        push32(&mut bad_cmap, 20);
+        push16(&mut bad_cmap, 6); // subtable @20: format 6 (unsupported)
+        tables.push((b"cmap", bad_cmap));
+        assert_eq!(
+            Font::parse(sfnt(0x0001_0000, &tables)).err(),
+            Some(FontError::NoUnicodeCmap)
+        );
+
+        // All tables found, but the file ends before head's unitsPerEm.
+        let short_head: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"maxp", maxp_table(1)),
+            (b"hhea", hhea_table(1)),
+            (b"hmtx", hmtx_long(&[(500, 0)])),
+            (b"cmap", cmap4_simple(&[])),
+            (b"head", vec![0u8; 10]),
+        ];
+        assert_eq!(
+            Font::parse(sfnt(0x0001_0000, &short_head)).err(),
+            Some(FontError::Truncated)
+        );
+
+        assert_eq!(
+            FontError::BadMagic.to_string(),
+            "not a TrueType/OpenType font"
+        );
+        assert_eq!(
+            FontError::MissingTable("hhea").to_string(),
+            "missing required font table: hhea"
+        );
+        assert_eq!(FontError::Truncated.to_string(), "font data is truncated");
+        assert_eq!(
+            FontError::NoUnicodeCmap.to_string(),
+            "no usable Unicode cmap (format 4/12)"
+        );
+    }
+
+    #[test]
+    fn parse_accepts_true_and_otto_magics() {
+        let tables = base_tables(
+            3,
+            3,
+            2048,
+            hmtx_long(&[(500, 1), (510, 2), (520, 3)]),
+            cmap4_simple(&[(0x41, 1)]),
+        );
+        let t = Font::parse(sfnt(0x7472_7565, &tables)).expect("'true' magic parses");
+        assert_eq!(t.units_per_em, 2048);
+        assert_eq!(t.num_glyphs, 3);
+        assert_eq!(t.ascent, 700);
+        assert_eq!(t.descent, -200);
+        assert_eq!(t.line_gap, 50);
+        assert_eq!(t.glyph_index('A'), 1);
+
+        // CFF-flavored fonts parse for metrics but expose no glyf outlines.
+        let o = Font::parse(sfnt(0x4F54_544F, &tables)).expect("'OTTO' magic parses");
+        assert!(!o.has_glyf_outlines());
+        assert_eq!(o.subset(&['A']), None);
+        assert_eq!(o.glyph_bbox(1), None);
+        assert_eq!(o.glyph_data(1), None);
+        assert!(!o.is_composite(1));
+        assert!(o.glyph_components(1).is_empty());
+    }
+
+    // --- hmtx edges -------------------------------------------------------
+
+    #[test]
+    fn left_side_bearing_reads_trailing_run_and_zero_metrics() {
+        // 3 glyphs, 1 long metric: gid 0 keeps (advance, lsb); gids 1..2 share
+        // the last advance but read their own trailing i16 lsb.
+        let mut hmtx = hmtx_long(&[(500, 50)]);
+        push_i16(&mut hmtx, -7);
+        push_i16(&mut hmtx, 33);
+        let font = parse(&base_tables(3, 1, 1000, hmtx, cmap4_simple(&[])));
+        assert_eq!(font.left_side_bearing(0), 50);
+        assert_eq!(font.left_side_bearing(1), -7);
+        assert_eq!(font.left_side_bearing(2), 33);
+        assert_eq!(font.advance_width(0), 500);
+        assert_eq!(font.advance_width(2), 500);
+
+        // A face declaring zero hMetrics reports zero bearings.
+        let font0 = parse(&base_tables(1, 0, 1000, Vec::new(), cmap4_simple(&[])));
+        assert_eq!(font0.left_side_bearing(0), 0);
+    }
+
+    // --- legacy kern --------------------------------------------------------
+
+    #[test]
+    fn legacy_kern_pair_and_char_kerning() {
+        let pairs = [(1u16, 2u16, -30i16), (1, 3, 15), (4, 1, 7)];
+        let metrics: Vec<(u16, i16)> = (0..8u16).map(|g| (600 + g, 0)).collect();
+        let mut tables = base_tables(
+            8,
+            8,
+            1000,
+            hmtx_long(&metrics),
+            cmap4_simple(&[(0x41, 1), (0x56, 2)]),
+        );
+        tables.push((b"kern", kern0_table(&pairs)));
+        let font = parse(&tables);
+        assert_eq!(font.kerning_between_glyphs(1, 2), -30);
+        assert_eq!(font.kerning_between_glyphs(1, 3), 15);
+        assert_eq!(font.kerning_between_glyphs(4, 1), 7);
+        assert_eq!(font.kerning_between_glyphs(2, 1), 0);
+        assert_eq!(font.kerning_between_glyphs(1, 4), 0);
+        assert_eq!(font.kerning('A', 'V'), -30);
+        assert_eq!(font.kerning_1000('A', 'V'), -30); // upem == 1000
+        assert_eq!(font.advance_1000('A'), 601);
+
+        // unitsPerEm == 0 short-circuits both per-mille scalers.
+        let mut zero = base_tables(
+            8,
+            8,
+            0,
+            hmtx_long(&metrics),
+            cmap4_simple(&[(0x41, 1), (0x56, 2)]),
+        );
+        zero.push((b"kern", kern0_table(&pairs)));
+        let z = parse(&zero);
+        assert_eq!(z.units_per_em, 0);
+        assert_eq!(z.advance_1000('A'), 0);
+        assert_eq!(z.kerning_1000('A', 'V'), 0);
+    }
+
+    #[test]
+    fn legacy_kern_skips_short_vertical_minimum_and_format2_subtables() {
+        let mut k = Vec::new();
+        push16(&mut k, 0); // version
+        push16(&mut k, 5); // nTables
+        // horizontal format 0 but length < 14: skipped
+        push16(&mut k, 0);
+        push16(&mut k, 10);
+        push16(&mut k, 0x0001);
+        k.extend_from_slice(&[0u8; 4]);
+        // vertical (horizontal bit clear)
+        push16(&mut k, 0);
+        push16(&mut k, 14);
+        push16(&mut k, 0x0000);
+        k.extend_from_slice(&[0u8; 8]);
+        // minimum-values bit set
+        push16(&mut k, 0);
+        push16(&mut k, 14);
+        push16(&mut k, 0x0003);
+        k.extend_from_slice(&[0u8; 8]);
+        // format 2
+        push16(&mut k, 0);
+        push16(&mut k, 14);
+        push16(&mut k, 0x0201);
+        k.extend_from_slice(&[0u8; 8]);
+        // the real horizontal format-0 subtable
+        push16(&mut k, 0);
+        push16(&mut k, 20);
+        push16(&mut k, 0x0001);
+        push16(&mut k, 1); // nPairs
+        k.extend_from_slice(&[0u8; 6]);
+        push16(&mut k, 3);
+        push16(&mut k, 4);
+        push_i16(&mut k, -11);
+
+        let mut tables = base_tables(8, 1, 1000, hmtx_long(&[(600, 0)]), cmap4_simple(&[]));
+        tables.push((b"kern", k));
+        let font = parse(&tables);
+        assert_eq!(font.kerning_between_glyphs(3, 4), -11);
+        assert_eq!(font.kerning_between_glyphs(3, 5), 0);
+    }
+
+    #[test]
+    fn legacy_kern_rejects_malformed_table_headers() {
+        fn kern_font(kern: Vec<u8>) -> Font {
+            let mut tables = base_tables(8, 1, 1000, hmtx_long(&[(600, 0)]), cmap4_simple(&[]));
+            tables.push((b"kern", kern));
+            parse(&tables)
+        }
+        // Table version != 0 (e.g. AAT kern 1.0): ignored entirely.
+        let mut v1 = kern0_table(&[(1, 2, -30)]);
+        v1[0..2].copy_from_slice(&1u16.to_be_bytes());
+        assert_eq!(kern_font(v1).kerning_between_glyphs(1, 2), 0);
+
+        // A zero-length subtable would never advance: bail.
+        let mut zero_len = Vec::new();
+        push16(&mut zero_len, 0);
+        push16(&mut zero_len, 2);
+        push16(&mut zero_len, 0); // subtable version
+        push16(&mut zero_len, 0); // length 0
+        push16(&mut zero_len, 0x0000); // vertical, so the format match misses
+        zero_len.extend_from_slice(&[0u8; 8]);
+        assert_eq!(kern_font(zero_len).kerning_between_glyphs(1, 2), 0);
+
+        // nTables claims a second subtable beyond the table end.
+        let mut walk_off = Vec::new();
+        push16(&mut walk_off, 0);
+        push16(&mut walk_off, 2);
+        push16(&mut walk_off, 0);
+        push16(&mut walk_off, 14);
+        push16(&mut walk_off, 0x0000); // vertical: skipped
+        walk_off.extend_from_slice(&[0u8; 8]);
+        assert_eq!(kern_font(walk_off).kerning_between_glyphs(1, 2), 0);
+
+        // Subtable length overrunning the kern table itself.
+        let mut overlong = Vec::new();
+        push16(&mut overlong, 0);
+        push16(&mut overlong, 1);
+        push16(&mut overlong, 0);
+        push16(&mut overlong, 200); // sub_end > table_end
+        push16(&mut overlong, 0x0001);
+        overlong.extend_from_slice(&[0u8; 8]);
+        assert_eq!(kern_font(overlong).kerning_between_glyphs(1, 2), 0);
+
+        // nPairs needing more bytes than the subtable declares.
+        let mut hungry = Vec::new();
+        push16(&mut hungry, 0);
+        push16(&mut hungry, 1);
+        push16(&mut hungry, 0);
+        push16(&mut hungry, 20); // room for exactly one pair
+        push16(&mut hungry, 0x0001);
+        push16(&mut hungry, 3); // nPairs 3: needs 18 pair bytes, has 6
+        hungry.extend_from_slice(&[0u8; 12]);
+        assert_eq!(kern_font(hungry).kerning_between_glyphs(1, 2), 0);
+
+        // A single skipped subtable: the walk ends without a match.
+        let mut vertical_only = Vec::new();
+        push16(&mut vertical_only, 0);
+        push16(&mut vertical_only, 1);
+        push16(&mut vertical_only, 0);
+        push16(&mut vertical_only, 14);
+        push16(&mut vertical_only, 0x0000);
+        vertical_only.extend_from_slice(&[0u8; 8]);
+        assert_eq!(kern_font(vertical_only).kerning_between_glyphs(1, 2), 0);
+    }
+
+    #[test]
+    fn legacy_kern_truncated_pair_records_kern_to_zero() {
+        // kern is the last table; its directory claims 4 pair records but the
+        // file ends inside them, so binary-search probes hit EOF and yield 0.
+        // chop 10 leaves record 2's left glyph readable (right glyph missing);
+        // chop 16 removes even the left glyph of the probed record.
+        let pairs = [(1u16, 2u16, -30i16), (1, 3, 15), (4, 1, 7), (5, 5, 9)];
+        for chop in [10usize, 16] {
+            let mut tables = base_tables(8, 1, 1000, hmtx_long(&[(600, 0)]), cmap4_simple(&[]));
+            tables.push((b"kern", kern0_table(&pairs)));
+            let mut bytes = sfnt(0x0001_0000, &tables);
+            bytes.truncate(bytes.len() - chop);
+            let font = Font::parse(bytes).expect("kern pair payload is lazily read");
+            assert_eq!(font.kerning_between_glyphs(1, 2), 0, "chop={chop}");
+        }
+    }
+
+    // --- glyf / loca edges ----------------------------------------------
+
+    #[test]
+    fn glyph_range_rejects_inverted_and_overlong_loca_entries() {
+        // loca (short) = [4, 2, 6]: glyph 0 is inverted (end < start); glyph 1
+        // claims [2, 6) but the glyf table is only 4 bytes long.
+        let mut loca = Vec::new();
+        push16(&mut loca, 2);
+        push16(&mut loca, 1);
+        push16(&mut loca, 3);
+        let mut tables = base_tables(
+            2,
+            2,
+            1000,
+            hmtx_long(&[(500, 0), (500, 0)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"loca", loca));
+        tables.push((b"glyf", vec![0u8; 4]));
+        let font = parse(&tables);
+        assert!(font.has_glyf_outlines());
+        assert_eq!(font.glyph_data(0), None);
+        assert_eq!(font.glyph_data(1), None);
+        assert_eq!(font.glyph_bbox(0), None);
+        assert!(!font.is_composite(0));
+    }
+
+    #[test]
+    fn glyph_components_walk_all_transform_variants() {
+        let font = zoo_font();
+        assert!(font.glyph_components(0).is_empty()); // empty glyph
+        assert!(font.glyph_components(1).is_empty()); // simple glyph
+        assert_eq!(font.glyph_components(2), vec![5]); // WE_HAVE_A_SCALE
+        assert_eq!(font.glyph_components(3), vec![5]); // X_AND_Y_SCALE
+        assert_eq!(font.glyph_components(4), vec![5]); // TWO_BY_TWO
+        assert_eq!(font.glyph_components(6), vec![2, 3]); // word args + MORE
+        assert_eq!(font.glyph_components(7), vec![5]); // MORE, record ends at glyph end
+        assert_eq!(font.glyph_components(10), vec![5]); // junk after the last record
+        assert!(font.glyph_components(11).is_empty()); // 2x2 payload overruns glyph
+        assert!(font.is_composite(2));
+        assert!(!font.is_composite(1));
+        assert!(!font.is_composite(0));
+        assert_eq!(font.glyph_bbox(2), Some([1, 2, 3, 4]));
+        assert_eq!(font.glyph_bbox(0), None);
+        assert_eq!(font.glyph_data(0), Some(&[][..]));
+    }
+
+    #[test]
+    fn glyph_components_stop_at_truncated_component_records() {
+        // keep = physically present bytes of the 16-byte composite: 1 cuts the
+        // contour count, 10 cuts the first record's flags, 12 its glyph index.
+        for keep in [1usize, 10, 12] {
+            let font = truncated_composite_font(keep);
+            assert!(font.glyph_components(0).is_empty(), "keep={keep}");
+            assert_eq!(font.glyph_data(0), None, "keep={keep}");
+        }
+    }
+
+    // --- subsetting edges -------------------------------------------------
+
+    #[test]
+    fn subset_rewrites_component_ids_across_transform_variants() {
+        let font = zoo_font();
+        let (bytes, remap) = font.subset_glyphs(&[2, 3, 4], &[]).expect("subset");
+        let remap: Vec<(u16, u16)> = remap.into_iter().collect();
+        assert_eq!(remap, vec![(0, 0), (2, 1), (3, 2), (4, 3), (5, 4)]);
+        let sub = Font::parse(bytes).expect("subset re-parses");
+        assert_eq!(sub.num_glyphs, 5);
+        assert_eq!(sub.glyph_components(1), vec![4]);
+        assert_eq!(sub.glyph_components(2), vec![4]);
+        assert_eq!(sub.glyph_components(3), vec![4]);
+        assert_eq!(sub.glyph_bbox(1), Some([1, 2, 3, 4]));
+        assert_eq!(sub.advance_width(1), 502);
+        assert_eq!(sub.left_side_bearing(1), 2);
+        assert_eq!(sub.advance_width(4), 505);
+        assert_eq!(sub.left_side_bearing(4), 5);
+    }
+
+    #[test]
+    fn subset_closure_skips_component_ids_past_num_glyphs() {
+        let font = zoo_font();
+        let (bytes, remap) = font.subset_glyphs(&[9], &[]).expect("subset");
+        assert_eq!(remap.get(&9).copied(), Some(1));
+        assert_eq!(remap.len(), 2); // .notdef + composite; gid 900 never joins
+        let sub = Font::parse(bytes).expect("subset re-parses");
+        assert_eq!(sub.num_glyphs, 2);
+        // The out-of-range component was substituted with .notdef.
+        assert_eq!(sub.glyph_components(1), vec![0]);
+    }
+
+    #[test]
+    fn subset_shares_a_component_between_two_composites() {
+        let font = zoo_font();
+        let (bytes, remap) = font.subset_glyphs(&[2, 4], &[]).expect("subset");
+        let remap: Vec<(u16, u16)> = remap.into_iter().collect();
+        assert_eq!(remap, vec![(0, 0), (2, 1), (4, 2), (5, 3)]);
+        let sub = Font::parse(bytes).expect("subset re-parses");
+        assert_eq!(sub.glyph_components(1), vec![3]);
+        assert_eq!(sub.glyph_components(2), vec![3]);
+    }
+
+    #[test]
+    fn subset_aborts_on_composite_whose_last_record_dangles_more() {
+        // `glyph_components` tolerates a final record with MORE_COMPONENTS set
+        // and nothing after it (gid 7), but `subset_glyph_bytes` keeps walking,
+        // fails the next bounds-checked read, and refuses the whole subset
+        // rather than emit a corrupt composite.
+        let font = zoo_font();
+        assert_eq!(font.glyph_components(7), vec![5]);
+        let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
+        new_of[0] = 0;
+        new_of[5] = 1;
+        new_of[7] = 2;
+        assert_eq!(font.subset_glyph_bytes(7, &new_of), None);
+        assert!(font.subset_glyphs(&[7], &[]).is_none());
+    }
+
+    #[test]
+    fn subset_strips_valid_composite_instructions_and_clears_the_flag() {
+        let font = zoo_font();
+        let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
+        new_of[0] = 0;
+        new_of[5] = 1;
+        new_of[12] = 2;
+        let out = font
+            .subset_glyph_bytes(12, &new_of)
+            .expect("valid instructions strip");
+        assert_eq!(out.len(), 16); // 20 minus the length field and 2 bytes
+        assert_eq!(be_u16(&out, 10), Some(0)); // WE_HAVE_INSTRUCTIONS cleared
+        assert_eq!(be_u16(&out, 12), Some(1)); // component 5 renumbered
+        let (bytes, remap) = font.subset_glyphs(&[12], &[]).expect("subset");
+        assert_eq!(remap.get(&12).copied(), Some(2));
+        let sub = Font::parse(bytes).expect("subset re-parses");
+        assert_eq!(sub.glyph_components(2), vec![1]);
+    }
+
+    #[test]
+    fn subset_cmap_skips_supplementary_plane_chars() {
+        let font = zoo_font();
+        let (bytes, _) = font.subset_glyphs(&[2], &['😀']).expect("subset");
+        let sub = Font::parse(bytes).expect("subset re-parses");
+        assert_eq!(sub.glyph_index('😀'), 0); // never entered the format-4 cmap
+    }
+
+    #[test]
+    fn subset_rejects_composite_with_overlong_instruction_claim() {
+        let font = zoo_font();
+        let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
+        new_of[0] = 0;
+        new_of[5] = 1;
+        new_of[8] = 2;
+        assert_eq!(font.subset_glyph_bytes(8, &new_of), None);
+        assert!(font.subset_glyphs(&[8], &[]).is_none());
+    }
+
+    #[test]
+    fn strip_simple_glyph_instructions_rejects_overlong_length() {
+        let mut glyph = Vec::new();
+        push_i16(&mut glyph, 1);
+        glyph.extend_from_slice(&[0u8; 8]); // bbox
+        push16(&mut glyph, 0); // endPtsOfContours[0]
+        push16(&mut glyph, 255); // instructionLength reaching past the data
+        assert_eq!(strip_simple_glyph_instructions(&glyph, 1), None);
+    }
+
+    // --- cmap lookup paths --------------------------------------------------
+
+    #[test]
+    fn cmap4_truncated_segment_arrays_fall_back_to_uncached_lookup() {
+        // Six declared segments; idRangeOffset[5] is cut off by the file end,
+        // so the parse-time cache fails and lookups walk the raw arrays.
+        // idRangeOffsets of segments 1/2 alias later idRangeOffset entries as
+        // their glyphIdArray storage.
+        let segs = [
+            (0x5Au16, 0x41u16, 1u16.wrapping_sub(0x41), 0u16), // 'A'..'Z' -> 1..26
+            (0x61, 0x61, 1, 6),                                // 'a' -> array at iro[4]
+            (0x62, 0x62, 0, 2),                                // 'b' -> array at iro[3] (0)
+            (0x63, 0x63, 0, 0),                                // 'c' -> delta path
+            (0x64, 0x64, 0, 7),                                // 'd' -> array past EOF
+            (0x00FF, 0x00F0, 0, 0),                            // its iro entry is cut off
+        ];
+        let tables = base_tables(30, 1, 1000, hmtx_long(&[(500, 0)]), cmap4_table(&segs, &[]));
+        let mut bytes = sfnt(0x0001_0000, &tables);
+        bytes.truncate(bytes.len() - 2); // drop idRangeOffset[5]
+        let font = Font::parse(bytes).expect("cmap payload is lazily read");
+        assert!(font.cmap4_cache.is_none());
+        assert_eq!(font.glyph_index('A'), 1);
+        assert_eq!(font.glyph_index('Z'), 26);
+        assert_eq!(font.glyph_index('@'), 0); // below the first segment start
+        assert_eq!(font.glyph_index('a'), 8); // glyphIdArray 7 + idDelta 1
+        assert_eq!(font.glyph_index('b'), 0); // glyphIdArray slot holds 0
+        assert_eq!(font.glyph_index('c'), 99); // idDelta 0 -> the code itself
+        assert_eq!(font.glyph_index('d'), 0); // glyphIdArray slot beyond EOF
+        assert_eq!(font.glyph_index('õ'), 0); // idRangeOffset entry beyond EOF
+        assert_eq!(font.glyph_index('Ā'), 0); // above every segment
+        assert_eq!(font.glyph_index('😀'), 0); // beyond the BMP
+    }
+
+    #[test]
+    fn cmap4_cached_lookup_reads_glyph_id_array() {
+        let segs = [(0x42u16, 0x41u16, 3u16, 4u16), (0xFFFF, 0xFFFF, 1, 0)];
+        let mut array = Vec::new();
+        push16(&mut array, 7);
+        push16(&mut array, 0);
+        let font = parse(&base_tables(
+            20,
+            1,
+            1000,
+            hmtx_long(&[(500, 0)]),
+            cmap4_table(&segs, &array),
+        ));
+        let cache = font.cmap4_cache.as_ref().expect("valid table caches");
+        assert!(cache.sorted_by_end);
+        assert_eq!(font.glyph_index('A'), 10); // glyphIdArray 7 + idDelta 3
+        assert_eq!(font.glyph_index('B'), 0); // glyphIdArray slot holds 0
+        assert_eq!(font.glyph_index('C'), 0); // below the final segment's start
+    }
+
+    #[test]
+    fn cmap4_unsorted_segments_use_first_match_linear_scan() {
+        let segs = [
+            (0x61u16, 0x61u16, 2u16.wrapping_sub(0x61), 0u16),
+            (0x5A, 0x41, 1u16.wrapping_sub(0x41), 0),
+            (0xFFFF, 0xFFFF, 1, 0),
+        ];
+        let font = parse(&base_tables(
+            30,
+            1,
+            1000,
+            hmtx_long(&[(500, 0)]),
+            cmap4_table(&segs, &[]),
+        ));
+        let cache = font
+            .cmap4_cache
+            .as_ref()
+            .expect("caches even when unsorted");
+        assert!(!cache.sorted_by_end);
+        assert_eq!(font.glyph_index('a'), 2);
+        // The linear scan takes the FIRST segment whose end covers the code,
+        // so the out-of-order table shadows 'A' behind the 'a' segment.
+        assert_eq!(font.glyph_index('A'), 0);
+        assert_eq!(font.glyph_index('p'), 0);
+    }
+
+    #[test]
+    fn cmap4_unsorted_lookup_misses_when_no_segment_covers_the_code() {
+        // Malformed table: no final 0xFFFF segment AND out-of-order ends, so
+        // the cached linear scan can run off the end of the segment list.
+        let segs = [
+            (0x61u16, 0x61u16, 2u16.wrapping_sub(0x61), 0u16),
+            (0x5A, 0x41, 1u16.wrapping_sub(0x41), 0),
+        ];
+        let font = parse(&base_tables(
+            30,
+            1,
+            1000,
+            hmtx_long(&[(500, 0)]),
+            cmap4_table(&segs, &[]),
+        ));
+        assert!(!font.cmap4_cache.as_ref().expect("caches").sorted_by_end);
+        assert_eq!(font.glyph_index('a'), 2);
+        assert_eq!(font.glyph_index('p'), 0); // beyond every segment end
+    }
+
+    #[test]
+    fn select_cmap_accepts_format4_under_a_non_bmp_encoding_record() {
+        // A (3,10) record pointing at a format-4 subtable ranks lowest but is
+        // still selected when nothing better exists.
+        let mut cmap = cmap4_simple(&[(0x41, 1)]);
+        cmap[6..8].copy_from_slice(&10u16.to_be_bytes()); // encodingID 1 -> 10
+        let font = parse(&base_tables(5, 1, 1000, hmtx_long(&[(500, 0)]), cmap));
+        assert_eq!(font.cmap_format, 4);
+        assert_eq!(font.glyph_index('A'), 1);
+    }
+
+    #[test]
+    fn cmap12_groups_map_across_planes_and_truncate_gids() {
+        let cmap = cmap12_table(&[
+            (0x41, 0x5A, 100),
+            (0x2000, 0x2000, 0x0001_2345),
+            (0x1F600, 0x1F601, 7),
+        ]);
+        let font = parse(&base_tables(200, 1, 1000, hmtx_long(&[(500, 0)]), cmap));
+        assert_eq!(font.cmap_format, 12);
+        assert!(font.cmap4_cache.is_none());
+        assert_eq!(font.glyph_index('A'), 100);
+        assert_eq!(font.glyph_index('Z'), 125);
+        assert_eq!(font.glyph_index('\u{2000}'), 0x2345); // gid wraps to u16
+        assert_eq!(font.glyph_index('😀'), 7);
+        assert_eq!(font.glyph_index('😁'), 8);
+        assert_eq!(font.glyph_index('0'), 0); // in no group
+    }
+
+    // --- GPOS -----------------------------------------------------------
+
+    #[test]
+    fn gpos_extension_lookup_resolves_wrapped_pair_kerning() {
+        let kern = gpos_font(1, 2, 0, 1);
+        assert_eq!(kern.pair(5, 6), -40);
+        assert_eq!(kern.pair(5, 7), 0);
+        assert_eq!(kern.pair(6, 6), 0);
+    }
+
+    #[test]
+    fn gpos_skips_foreign_extensions_bad_formats_and_lookup_indices() {
+        // Extension wrapping a non-pair lookup type is ignored.
+        assert_eq!(gpos_font(1, 5, 0, 1).pair(5, 6), 0);
+        // Extension subtable with an unknown format fails to resolve.
+        assert_eq!(gpos_font(2, 2, 0, 1).pair(5, 6), 0);
+        // Wrapped pair subtable with an unknown posFormat parses to nothing.
+        assert_eq!(gpos_font(1, 2, 0, 3).pair(5, 6), 0);
+        // A kern feature pointing past the lookup list is skipped.
+        assert_eq!(gpos_font(1, 2, 9, 1).pair(5, 6), 0);
+    }
+
+    #[test]
+    fn gpos_truncated_structures_yield_empty_kerning() {
+        // Each end point cuts the table just before a field the walker needs:
+        // 16 the feature offset, 20 the lookup-index count, 22 the index slot,
+        // 26 the lookup offset slot, 28 the lookup type, 32 the subtable
+        // count, 34 the subtable offset slot.
+        for end in [16usize, 20, 22, 26, 28, 32, 34] {
+            let mut g = gpos_table(1, 2, 0, 1);
+            g.truncate(end);
+            assert_eq!(gpos_kerning_of(g).pair(5, 6), 0, "end={end}");
+        }
+        // featureCount over-claim: trailing phantom records read garbage tags
+        // until the walk falls off the table; the real record still applies.
+        let mut over = gpos_table(1, 2, 0, 1);
+        over[10..12].copy_from_slice(&12u16.to_be_bytes());
+        assert_eq!(gpos_kerning_of(over).pair(5, 6), -40);
+        // A direct non-pair, non-extension lookup type is ignored.
+        let mut direct = gpos_table(1, 2, 0, 1);
+        direct[28..30].copy_from_slice(&1u16.to_be_bytes());
+        assert_eq!(gpos_kerning_of(direct).pair(5, 6), 0);
+    }
+
+    #[test]
+    fn resolve_extension_requires_format_1() {
+        let mut d = Vec::new();
+        push16(&mut d, 2);
+        push16(&mut d, 2);
+        push32(&mut d, 8);
+        assert_eq!(resolve_extension(&d, 0), None);
+        d[0..2].copy_from_slice(&1u16.to_be_bytes());
+        assert_eq!(resolve_extension(&d, 0), Some((2, 8)));
+        // Unknown pair-subtable formats are rejected outright.
+        assert!(parse_pair_subtable(&[0, 3], 0).is_none());
+    }
+
+    #[test]
+    fn value_record_x_advance_field_extraction() {
+        // No X_ADVANCE bit: defined as zero without touching the data.
+        assert_eq!(value_record_x_advance(&[], 0, 0), Some(0));
+        // X/Y placement precede xAdvance: skip 4 bytes.
+        let rec = [0, 0, 0, 0, 0x12, 0x34];
+        assert_eq!(value_record_x_advance(&rec, 0, 0x0007), Some(0x1234));
+        // Truncated record with the bit set: undecodable.
+        assert_eq!(value_record_x_advance(&[0], 0, 0x0004), None);
+    }
+
+    #[test]
+    fn coverage_and_class_def_malformed_and_boundary_variants() {
+        // Coverage format-2 range with end < start contributes nothing.
+        let mut cov = Vec::new();
+        push16(&mut cov, 2);
+        push16(&mut cov, 1);
+        push16(&mut cov, 20); // start
+        push16(&mut cov, 10); // end < start
+        push16(&mut cov, 0);
+        assert_eq!(parse_coverage_glyphs(&cov, 0), Some(Vec::new()));
+        // Coverage format 3 does not exist.
+        assert_eq!(parse_coverage_glyphs(&[0, 3, 0, 0], 0), None);
+        // ClassDef format 3 does not exist.
+        assert!(parse_class_def(&[0, 3, 0, 0], 0).is_none());
+
+        // Format-1 class array: in-range indices map, everything else class 0.
+        let mut cd = Vec::new();
+        push16(&mut cd, 1);
+        push16(&mut cd, 5); // startGlyphID
+        push16(&mut cd, 2); // glyphCount
+        push16(&mut cd, 7);
+        push16(&mut cd, 9);
+        let cd1 = parse_class_def(&cd, 0).expect("format 1 parses");
+        assert_eq!(cd1.class(5), 7);
+        assert_eq!(cd1.class(6), 9);
+        assert_eq!(cd1.class(7), 0); // past the array
+        assert_eq!(cd1.class(4), 0); // before startGlyphID
+
+        // Format-2 ranges: covered ranges map, gaps are class 0.
+        let mut cd2b = Vec::new();
+        push16(&mut cd2b, 2);
+        push16(&mut cd2b, 1);
+        push16(&mut cd2b, 10);
+        push16(&mut cd2b, 20);
+        push16(&mut cd2b, 3);
+        let cd2 = parse_class_def(&cd2b, 0).expect("format 2 parses");
+        assert_eq!(cd2.class(15), 3);
+        assert_eq!(cd2.class(9), 0);
+        assert_eq!(cd2.class(21), 0);
+    }
+
+    #[test]
+    fn kern_subtable_format2_guards_class_ranges_and_empty_matrix() {
+        let st = KernSubtable::Format2 {
+            coverage: vec![5, 9],
+            class1: ClassDef::Format1 {
+                start: 5,
+                classes: vec![1, 0, 0, 0, 9],
+            },
+            class2: ClassDef::Format1 {
+                start: 6,
+                classes: vec![1, 7],
+            },
+            class1_count: 2,
+            class2_count: 2,
+            matrix: vec![0, 0, 0, -55],
+        };
+        assert_eq!(st.lookup(4, 6), None); // left glyph not covered
+        assert_eq!(st.lookup(5, 6), Some(-55)); // classes (1, 1) -> cell 3
+        assert_eq!(st.lookup(9, 6), Some(0)); // class1 out of declared range
+        assert_eq!(st.lookup(5, 7), Some(0)); // class2 out of declared range
+
+        let empty = KernSubtable::Format2 {
+            coverage: vec![5],
+            class1: ClassDef::Format2 { ranges: Vec::new() },
+            class2: ClassDef::Format2 { ranges: Vec::new() },
+            class1_count: 1,
+            class2_count: 1,
+            matrix: Vec::new(),
+        };
+        assert_eq!(empty.lookup(5, 6), Some(0));
+
+        // A covered-but-zero first subtable still wins over later subtables.
+        let kerning = Kerning {
+            subtables: vec![empty, st],
+        };
+        assert_eq!(kerning.pair(5, 6), 0);
+        assert_eq!(kerning.pair(4, 6), 0);
+    }
+
+    #[test]
+    fn pair_format1_skips_malformed_sets_and_truncated_records() {
+        // pairSetCount 2 but the coverage names one glyph; the second set is
+        // skipped while the first still yields (5, 6) -> -40.
+        let mut d = Vec::new();
+        push16(&mut d, 1); // posFormat
+        push16(&mut d, 20); // coverage @20
+        push16(&mut d, 0x0004); // valueFormat1
+        push16(&mut d, 0); // valueFormat2
+        push16(&mut d, 2); // pairSetCount
+        push16(&mut d, 14); // pairSet[0] @14
+        push16(&mut d, 14); // pairSet[1] (no coverage glyph -> skipped)
+        push16(&mut d, 1); // pairValueCount
+        push16(&mut d, 6); // secondGlyph
+        push_i16(&mut d, -40);
+        push16(&mut d, 1); // coverage format
+        push16(&mut d, 1);
+        push16(&mut d, 5);
+        let st = parse_pair_subtable(&d, 0).expect("format 1 parses");
+        assert_eq!(st.lookup(5, 6), Some(-40));
+        assert_eq!(st.lookup(5, 7), None);
+
+        // A pair-set offset pointing past the data contributes nothing.
+        let mut d2 = Vec::new();
+        push16(&mut d2, 1);
+        push16(&mut d2, 12); // coverage @12
+        push16(&mut d2, 0x0004);
+        push16(&mut d2, 0);
+        push16(&mut d2, 1);
+        push16(&mut d2, 0x4000); // pairSet[0]: far past the end
+        push16(&mut d2, 1);
+        push16(&mut d2, 1);
+        push16(&mut d2, 5);
+        let st2 = parse_pair_subtable(&d2, 0).expect("parses to an empty set");
+        assert_eq!(st2.lookup(5, 6), None);
+
+        // pairValueCount claims 2 records but the data ends after the first.
+        let mut d3 = Vec::new();
+        push16(&mut d3, 1);
+        push16(&mut d3, 12); // coverage @12
+        push16(&mut d3, 0x0004);
+        push16(&mut d3, 0);
+        push16(&mut d3, 1);
+        push16(&mut d3, 18); // pairSet @18
+        push16(&mut d3, 1); // coverage format
+        push16(&mut d3, 1);
+        push16(&mut d3, 5);
+        push16(&mut d3, 2); // pairValueCount (overlong)
+        push16(&mut d3, 6);
+        push_i16(&mut d3, -40);
+        let st3 = parse_pair_subtable(&d3, 0).expect("parses the readable record");
+        assert_eq!(st3.lookup(5, 6), Some(-40));
+        assert_eq!(st3.lookup(5, 0), None);
+    }
+
+    #[test]
+    fn pair_format1_work_cap_stops_aliased_pair_set_expansion() {
+        // Two pair sets alias one huge set. With 65 535 records the ceiling
+        // trips between the sets; with 65 534 it trips inside the second one.
+        for count in [65_535u16, 65_534] {
+            let mut d = Vec::new();
+            push16(&mut d, 1); // posFormat
+            push16(&mut d, 14); // coverage @14
+            push16(&mut d, 0); // valueFormat1: empty records
+            push16(&mut d, 0); // valueFormat2
+            push16(&mut d, 2); // pairSetCount
+            push16(&mut d, 22); // pairSet[0] @22
+            push16(&mut d, 22); // pairSet[1]: aliases the same set
+            push16(&mut d, 1); // coverage format
+            push16(&mut d, 2);
+            push16(&mut d, 5);
+            push16(&mut d, 6);
+            push16(&mut d, count); // pairValueCount
+            d.resize(d.len() + usize::from(count) * 2, 0); // secondGlyph = 0 each
+            let st = parse_pair_subtable(&d, 0).expect("parses under the work cap");
+            // The first set registers (5, 0); the ceiling stops the aliased
+            // second set before it can register (6, 0).
+            assert_eq!(st.lookup(5, 0), Some(0), "count={count}");
+            assert_eq!(st.lookup(6, 0), None, "count={count}");
+        }
+    }
+
+    #[test]
+    fn pair_format2_empty_value_formats_and_oversized_matrix() {
+        // Both value formats empty: the matrix is elided and every covered
+        // pair resolves to zero.
+        let mut d = Vec::new();
+        push16(&mut d, 2); // posFormat
+        push16(&mut d, 16); // coverage @16
+        push16(&mut d, 0); // valueFormat1
+        push16(&mut d, 0); // valueFormat2
+        push16(&mut d, 22); // classDef1 @22
+        push16(&mut d, 22); // classDef2 @22 (shared)
+        push16(&mut d, 1); // class1Count
+        push16(&mut d, 1); // class2Count
+        push16(&mut d, 1); // coverage format
+        push16(&mut d, 1);
+        push16(&mut d, 3);
+        push16(&mut d, 1); // classdef format 1, empty array
+        push16(&mut d, 0);
+        push16(&mut d, 0);
+        let st = parse_pair_subtable(&d, 0).expect("empty-value format 2 parses");
+        assert!(matches!(
+            &st,
+            KernSubtable::Format2 { matrix, .. } if matrix.is_empty()
+        ));
+        assert_eq!(st.lookup(3, 42), Some(0));
+        assert_eq!(st.lookup(4, 42), None);
+
+        // A declared matrix larger than the whole table is rejected.
+        let mut big = Vec::new();
+        push16(&mut big, 2);
+        push16(&mut big, 16);
+        push16(&mut big, 0x0004);
+        push16(&mut big, 0);
+        push16(&mut big, 22);
+        push16(&mut big, 22);
+        push16(&mut big, 0xFFFF);
+        push16(&mut big, 0xFFFF);
+        assert!(parse_pair_subtable(&big, 0).is_none());
+    }
+
+    // --- GSUB -----------------------------------------------------------
+
+    #[test]
+    fn gsub_extension_lookup_parses_greedy_ligatures() {
+        let ligs = gsub_font(1, 4, 0);
+        assert!(!ligs.is_empty());
+        assert!(Ligatures::default().is_empty());
+        assert_eq!(ligs.substitute(&[10, 11, 12]), vec![99]);
+        assert_eq!(ligs.substitute(&[10, 11, 7]), vec![77, 7]);
+        assert_eq!(ligs.substitute(&[10, 7]), vec![10, 7]);
+        assert_eq!(
+            ligs.substitute_with_spans(&[10, 11, 12, 10, 11]),
+            vec![(99, 3), (77, 2)]
+        );
+    }
+
+    #[test]
+    fn gsub_skips_foreign_extensions_and_bad_lookup_indices() {
+        // Extension wrapping a non-ligature lookup type is ignored.
+        assert!(gsub_font(1, 2, 0).is_empty());
+        // Extension subtable with an unknown format fails to resolve.
+        assert!(gsub_font(2, 4, 0).is_empty());
+        // A liga feature pointing past the lookup list is skipped.
+        assert!(gsub_font(1, 4, 9).is_empty());
+    }
+
+    #[test]
+    fn gsub_truncated_structures_yield_no_ligatures() {
+        // Same cut points as the GPOS walker: the two table layouts share
+        // their header/feature/lookup shape.
+        for end in [16usize, 20, 22, 26, 28, 32, 34] {
+            let mut g = gsub_table(1, 4, 0);
+            g.truncate(end);
+            assert!(gsub_ligatures_of(g).is_empty(), "end={end}");
+        }
+        // featureCount over-claim: phantom records break the walk after the
+        // real record already registered its ligatures.
+        let mut over = gsub_table(1, 4, 0);
+        over[10..12].copy_from_slice(&12u16.to_be_bytes());
+        assert_eq!(gsub_ligatures_of(over).substitute(&[10, 11]), vec![77]);
+        // A direct non-ligature, non-extension lookup type is ignored.
+        let mut direct = gsub_table(1, 4, 0);
+        direct[28..30].copy_from_slice(&1u16.to_be_bytes());
+        assert!(gsub_ligatures_of(direct).is_empty());
+    }
+
+    #[test]
+    fn ligature_subst_skips_malformed_entries() {
+        let mut rules: std::collections::BTreeMap<u16, Vec<LigRule>> =
+            std::collections::BTreeMap::new();
+
+        // Unknown subtable format: ignored outright.
+        parse_ligature_subst(&[0, 2, 0, 0], 0, &mut rules);
+        assert!(rules.is_empty());
+
+        // Header reads running off the end return without any rules.
+        parse_ligature_subst(&[], 0, &mut rules); // no format
+        parse_ligature_subst(&[0, 1], 0, &mut rules); // no coverage offset
+        parse_ligature_subst(&[0, 1, 0, 8], 0, &mut rules); // no ligSetCount
+        parse_ligature_subst(&[0, 1, 0, 6, 0, 1, 0, 3], 0, &mut rules); // coverage fmt 3
+        assert!(rules.is_empty());
+
+        // LigatureSet offset far past the data: no rules.
+        let mut d = Vec::new();
+        push16(&mut d, 1); // substFormat
+        push16(&mut d, 8); // coverage @8
+        push16(&mut d, 1); // ligSetCount
+        push16(&mut d, 0x4000); // ligatureSet: far past the end
+        push16(&mut d, 1); // coverage format
+        push16(&mut d, 1);
+        push16(&mut d, 10);
+        parse_ligature_subst(&d, 0, &mut rules);
+        assert!(rules.is_empty());
+
+        // ligSetCount 2 with a single-glyph coverage: the second set has no
+        // coverage glyph, the first still parses (10, 11) -> 77.
+        let mut d2 = Vec::new();
+        push16(&mut d2, 1); // substFormat
+        push16(&mut d2, 20); // coverage @20
+        push16(&mut d2, 2); // ligSetCount
+        push16(&mut d2, 10); // set[0] @10
+        push16(&mut d2, 10); // set[1] (never reached)
+        push16(&mut d2, 1); // ligatureCount
+        push16(&mut d2, 4); // ligature @14
+        push16(&mut d2, 77); // ligatureGlyph
+        push16(&mut d2, 2); // componentCount
+        push16(&mut d2, 11); // component[1]
+        push16(&mut d2, 1); // coverage format
+        push16(&mut d2, 1);
+        push16(&mut d2, 10);
+        parse_ligature_subst(&d2, 0, &mut rules);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[&10].len(), 1);
+        assert_eq!(rules[&10][0].components, vec![11]);
+        assert_eq!(rules[&10][0].ligature, 77);
+
+        // Zero component count, comp-count/glyph reads past the end, and a
+        // truncated component array: each entry drops without a rule.
+        rules.clear();
+        let mut d3 = Vec::new();
+        push16(&mut d3, 1); // substFormat
+        push16(&mut d3, 8); // coverage @8
+        push16(&mut d3, 1); // ligSetCount
+        push16(&mut d3, 14); // ligatureSet @14
+        push16(&mut d3, 1); // coverage format
+        push16(&mut d3, 1);
+        push16(&mut d3, 10);
+        push16(&mut d3, 4); // ligatureCount
+        push16(&mut d3, 10); // @24: zero componentCount
+        push16(&mut d3, 20); // @34: componentCount past the end
+        push16(&mut d3, 0x4000); // unreadable ligature glyph
+        push16(&mut d3, 14); // @28: component array past the end
+        push16(&mut d3, 33); // ligature @24
+        push16(&mut d3, 0); // componentCount 0
+        push16(&mut d3, 88); // ligature @28
+        push16(&mut d3, 5); // componentCount 5, components cut off
+        push16(&mut d3, 11);
+        push16(&mut d3, 12);
+        assert_eq!(d3.len(), 36);
+        parse_ligature_subst(&d3, 0, &mut rules);
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn ligature_subst_work_cap_stops_aliased_sets() {
+        // Two ligature sets alias one set whose declared count is huge and
+        // whose offset array is entirely missing. With 65 535 the ceiling
+        // trips between the sets; with 65 534 inside the second one.
+        for lig_count in [65_535u16, 65_534] {
+            let mut d = Vec::new();
+            push16(&mut d, 1); // substFormat
+            push16(&mut d, 10); // coverage @10
+            push16(&mut d, 2); // ligSetCount
+            push16(&mut d, 18); // set[0] @18
+            push16(&mut d, 18); // set[1]: aliases set[0]
+            push16(&mut d, 1); // coverage format
+            push16(&mut d, 2);
+            push16(&mut d, 10);
+            push16(&mut d, 11);
+            push16(&mut d, lig_count); // every ligature offset is unreadable
+            let mut rules: std::collections::BTreeMap<u16, Vec<LigRule>> =
+                std::collections::BTreeMap::new();
+            parse_ligature_subst(&d, 0, &mut rules);
+            assert!(rules.is_empty(), "lig_count={lig_count}");
+        }
     }
 }

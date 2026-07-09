@@ -766,6 +766,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)] // ENOTDIR semantics; Windows reports InvalidInput here
     #[test]
     fn vacant_temp_path_propagates_probe_errors() {
         let dir = fresh_dir("backup-probe-error");
@@ -781,6 +782,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)] // ENOTDIR semantics; Windows reports InvalidInput here
     #[test]
     fn commit_surfaces_metadata_errors_for_unreachable_destinations() {
         let dir = fresh_dir("commit-probe-error");

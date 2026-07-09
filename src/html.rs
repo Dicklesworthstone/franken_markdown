@@ -1131,16 +1131,26 @@ impl FontCharSet {
     }
 
     fn extend_text(&mut self, text: &str) {
-        if text.is_ascii() {
-            let mut mask = 0u128;
-            for &byte in text.as_bytes() {
+        let mut mask = 0u128;
+        for (idx, &byte) in text.as_bytes().iter().enumerate() {
+            if byte.is_ascii() {
                 mask |= ascii_char_mask(byte);
+            } else {
+                self.ascii_mask |= mask;
+                for ch in text[idx..].chars() {
+                    self.insert(ch);
+                }
+                return;
             }
-            self.ascii_mask |= mask;
-        } else {
-            for ch in text.chars() {
-                self.insert(ch);
-            }
+        }
+        self.ascii_mask |= mask;
+    }
+
+    #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn extend_text_slow_reference(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.insert(ch);
         }
     }
 
@@ -1717,8 +1727,8 @@ mod tests {
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
-        FontCharSet, RenderState, ascii_char_mask, ascii_char_masks, base64_encode, css_num,
-        css_token, css_without_remote_imports, escape_attr, escape_text,
+        FontCharSet, HTML_FONT_SEED, RenderState, ascii_char_mask, ascii_char_masks, base64_encode,
+        css_num, css_token, css_without_remote_imports, escape_attr, escape_text,
         find_ascii_case_insensitive, html_image_asset_mime, initial_body_capacity,
         inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri, push_u64, render,
         sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
@@ -1822,6 +1832,29 @@ mod tests {
 
         let expected: Vec<char> = btree.into_iter().collect();
         assert_eq!(fast.to_chars(), expected);
+    }
+
+    #[test]
+    fn font_char_set_extend_text_matches_per_char_reference() {
+        for text in [
+            "",
+            "Plain ASCII text 123 !?",
+            "\0\t\n ASCII controls and punctuation",
+            "é",
+            "ASCII prefix then Café — and emoji \u{1F600}",
+            "Unicode first Ω then ASCII tail",
+            HTML_FONT_SEED,
+        ] {
+            let mut fast = FontCharSet::default();
+            let mut reference = FontCharSet::default();
+
+            fast.extend_text(text);
+            reference.extend_text_slow_reference(text);
+
+            assert_eq!(fast.ascii_mask, reference.ascii_mask, "text {text:?}");
+            assert_eq!(fast.non_ascii, reference.non_ascii, "text {text:?}");
+            assert_eq!(fast.to_chars(), reference.to_chars(), "text {text:?}");
+        }
     }
 
     #[test]

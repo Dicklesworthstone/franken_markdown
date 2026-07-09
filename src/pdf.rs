@@ -841,6 +841,7 @@ struct SvgFilterShadow {
 #[derive(Clone, Copy)]
 struct SvgStyle {
     color: SvgColor,
+    color_alpha: f32,
     fill: Option<(f32, f32, f32)>,
     fill_gradient: Option<usize>,
     fill_pattern: Option<usize>,
@@ -885,6 +886,7 @@ struct SvgStyle {
 impl SvgStyle {
     const INITIAL: Self = Self {
         color: (0.0, 0.0, 0.0),
+        color_alpha: 1.0,
         fill: Some((0.0, 0.0, 0.0)),
         fill_gradient: None,
         fill_pattern: None,
@@ -936,6 +938,7 @@ enum SvgContextPaint {
 #[derive(Clone, Copy, Default)]
 struct SvgStylePatch {
     color: Option<SvgColor>,
+    color_alpha: Option<f32>,
     fill: Option<Option<(f32, f32, f32)>>,
     fill_gradient: Option<Option<usize>>,
     fill_pattern: Option<Option<usize>>,
@@ -994,6 +997,7 @@ struct SvgGradientStopCssRule {
 #[derive(Clone, Copy, Default)]
 struct SvgGradientStopPatch {
     color: Option<SvgColor>,
+    color_alpha: Option<f32>,
     stop_color: Option<SvgGradientStopPaint>,
     stop_color_alpha: Option<f32>,
     opacity: Option<f32>,
@@ -1221,6 +1225,7 @@ struct SvgClipPath {
     ops: Vec<SvgPathOp>,
     fill_rule: SvgFillRule,
     units: SvgClipPathUnits,
+    empty_mask: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4799,6 +4804,7 @@ fn parse_svg_line(
             attrs,
             SvgStyle {
                 color: inherited.color,
+                color_alpha: inherited.color_alpha,
                 fill: None,
                 fill_gradient: None,
                 fill_pattern: None,
@@ -4876,6 +4882,7 @@ fn parse_svg_poly(
     } else {
         SvgStyle {
             color: inherited.color,
+            color_alpha: inherited.color_alpha,
             fill: None,
             fill_gradient: None,
             fill_pattern: None,
@@ -7339,7 +7346,12 @@ fn apply_svg_gradient_stop_patch_declaration(
     css_vars: &[SvgCssVariable],
 ) {
     match name {
-        "color" => patch.color = parse_svg_color(value, css_vars),
+        "color" => {
+            if let Some((color, alpha)) = parse_svg_color_state(value, css_vars) {
+                patch.color = Some(color);
+                patch.color_alpha = Some(alpha);
+            }
+        }
         "stop-color" => {
             if let Some((paint, alpha)) = parse_svg_gradient_stop_color_paint(value, css_vars) {
                 patch.stop_color = Some(paint);
@@ -7359,7 +7371,7 @@ fn parse_svg_gradient_stops(
     body: &str,
     css_vars: &[SvgCssVariable],
     css_rules: &[SvgGradientStopCssRule],
-    inherited_color: SvgColor,
+    inherited_color: (SvgColor, f32),
 ) -> Vec<SvgGradientStop> {
     let mut stops = Vec::new();
     let mut pos = 0usize;
@@ -7612,26 +7624,45 @@ fn parse_svg_gradient_inherited_color(
     attrs: &[(String, String)],
     css_vars: &[SvgCssVariable],
     css_rules: &[SvgCssRule],
-) -> SvgColor {
+) -> (SvgColor, f32) {
     let scoped_css_vars = svg_css_vars_for_element(css_vars, css_rules, &[], tag, attrs);
     let mut color = SvgStyle::INITIAL.color;
-    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), &scoped_css_vars);
-    apply_svg_gradient_color_css(&mut color, tag, attrs, &scoped_css_vars, css_rules);
+    let mut color_alpha = SvgStyle::INITIAL.color_alpha;
+    apply_svg_gradient_color_attr(
+        &mut color,
+        &mut color_alpha,
+        svg_attr(attrs, "color"),
+        &scoped_css_vars,
+    );
+    apply_svg_gradient_color_css(
+        &mut color,
+        &mut color_alpha,
+        tag,
+        attrs,
+        &scoped_css_vars,
+        css_rules,
+    );
     if let Some(style) = svg_attr(attrs, "style") {
         for decl in style.split(';') {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
             if name.trim().eq_ignore_ascii_case("color") {
-                apply_svg_gradient_color_attr(&mut color, Some(value.trim()), &scoped_css_vars);
+                apply_svg_gradient_color_attr(
+                    &mut color,
+                    &mut color_alpha,
+                    Some(value.trim()),
+                    &scoped_css_vars,
+                );
             }
         }
     }
-    color
+    (color, color_alpha)
 }
 
 fn apply_svg_gradient_color_css(
     color: &mut SvgColor,
+    color_alpha: &mut f32,
     tag: &str,
     attrs: &[(String, String)],
     css_vars: &[SvgCssVariable],
@@ -7643,7 +7674,7 @@ fn apply_svg_gradient_color_css(
                 continue;
             };
             if name.trim().eq_ignore_ascii_case("color") {
-                apply_svg_gradient_color_attr(color, Some(value.trim()), css_vars);
+                apply_svg_gradient_color_attr(color, color_alpha, Some(value.trim()), css_vars);
             }
         }
     }
@@ -7653,22 +7684,28 @@ fn parse_svg_gradient_stop(
     attrs: &[(String, String)],
     css_vars: &[SvgCssVariable],
     css_rules: &[SvgGradientStopCssRule],
-    inherited_color: SvgColor,
+    inherited_color: (SvgColor, f32),
 ) -> Option<SvgGradientStop> {
-    let mut color = inherited_color;
+    let (mut color, mut color_alpha) = inherited_color;
     let mut stop_color = None;
     let mut stop_color_alpha = 1.0;
     let mut stop_opacity = 1.0;
 
     apply_svg_gradient_stop_css(
         &mut color,
+        &mut color_alpha,
         &mut stop_color,
         &mut stop_color_alpha,
         &mut stop_opacity,
         attrs,
         css_rules,
     );
-    apply_svg_gradient_color_attr(&mut color, svg_attr(attrs, "color"), css_vars);
+    apply_svg_gradient_color_attr(
+        &mut color,
+        &mut color_alpha,
+        svg_attr(attrs, "color"),
+        css_vars,
+    );
     if let Some(value) = svg_attr(attrs, "stop-color") {
         apply_svg_gradient_stop_color(&mut stop_color, &mut stop_color_alpha, value, css_vars);
     }
@@ -7685,7 +7722,12 @@ fn parse_svg_gradient_stop(
             };
             match name.trim().to_ascii_lowercase().as_str() {
                 "color" => {
-                    apply_svg_gradient_color_attr(&mut color, Some(value.trim()), css_vars);
+                    apply_svg_gradient_color_attr(
+                        &mut color,
+                        &mut color_alpha,
+                        Some(value.trim()),
+                        css_vars,
+                    );
                 }
                 "stop-color" => {
                     apply_svg_gradient_stop_color(
@@ -7705,11 +7747,12 @@ fn parse_svg_gradient_stop(
         }
     }
 
-    let mut color = match stop_color.unwrap_or(SvgGradientStopPaint::Color((0.0, 0.0, 0.0))) {
-        SvgGradientStopPaint::Color(color) => color,
-        SvgGradientStopPaint::CurrentColor => color,
-    };
-    let opacity = (stop_color_alpha * stop_opacity).clamp(0.0, 1.0);
+    let (mut color, current_color_alpha) =
+        match stop_color.unwrap_or(SvgGradientStopPaint::Color((0.0, 0.0, 0.0))) {
+            SvgGradientStopPaint::Color(color) => (color, 1.0),
+            SvgGradientStopPaint::CurrentColor => (color, color_alpha),
+        };
+    let opacity = (stop_color_alpha * stop_opacity * current_color_alpha).clamp(0.0, 1.0);
     if opacity <= 0.001 {
         color = (1.0, 1.0, 1.0);
     } else if opacity < 0.999 {
@@ -7729,6 +7772,7 @@ fn parse_svg_gradient_stop(
 
 fn apply_svg_gradient_stop_css(
     color: &mut SvgColor,
+    color_alpha: &mut f32,
     stop_color: &mut Option<SvgGradientStopPaint>,
     stop_color_alpha: &mut f32,
     opacity: &mut f32,
@@ -7749,6 +7793,9 @@ fn apply_svg_gradient_stop_css(
         if let Some(next_color) = rule.patch.color {
             *color = next_color;
         }
+        if let Some(next_color_alpha) = rule.patch.color_alpha {
+            *color_alpha = next_color_alpha;
+        }
         if let Some(next_stop_color) = rule.patch.stop_color {
             *stop_color = Some(next_stop_color);
         }
@@ -7763,11 +7810,13 @@ fn apply_svg_gradient_stop_css(
 
 fn apply_svg_gradient_color_attr(
     color: &mut SvgColor,
+    color_alpha: &mut f32,
     value: Option<&str>,
     css_vars: &[SvgCssVariable],
 ) {
-    if let Some(parsed) = value.and_then(|value| parse_svg_color(value, css_vars)) {
+    if let Some((parsed, alpha)) = value.and_then(|value| parse_svg_color_state(value, css_vars)) {
         *color = parsed;
+        *color_alpha = alpha;
     }
 }
 
@@ -8176,6 +8225,7 @@ fn parse_svg_clip_path_body(
         ops,
         fill_rule,
         units,
+        empty_mask: false,
     })
 }
 
@@ -8211,6 +8261,22 @@ fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
             continue;
         };
         if self_closing {
+            let mask = SvgClipPath {
+                id: id.to_string(),
+                ops: Vec::new(),
+                fill_rule: SvgFillRule::NonZero,
+                units: parse_svg_clip_path_units(&attrs, "maskcontentunits"),
+                empty_mask: true,
+            };
+            if !masks
+                .iter()
+                .any(|existing: &SvgClipPath| existing.id == mask.id)
+            {
+                masks.push(mask);
+            }
+            if masks.len() >= 128 {
+                break;
+            }
             continue;
         }
         let needle = format!("</{tag_lower}");
@@ -8289,11 +8355,13 @@ fn parse_svg_mask_body(
             return None;
         }
     }
-    (!ops.is_empty()).then_some(SvgClipPath {
+    let empty_mask = ops.is_empty();
+    Some(SvgClipPath {
         id: id.to_string(),
         ops,
         fill_rule,
         units,
+        empty_mask,
     })
 }
 
@@ -8305,7 +8373,8 @@ fn parse_svg_clip_path_units(attrs: &[(String, String)], name: &str) -> SvgClipP
 }
 
 fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> bool {
-    let mut fill = svg_attr(attrs, "fill").and_then(|value| parse_svg_color(value, css_vars));
+    let mut fill =
+        svg_attr(attrs, "fill").and_then(|value| parse_svg_mask_fill(value, css_vars).flatten());
     let mut opacity = svg_attr(attrs, "opacity")
         .and_then(|value| parse_svg_opacity(value, css_vars))
         .unwrap_or(1.0);
@@ -8320,10 +8389,8 @@ fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable
             let name = name.trim();
             let value = value.trim();
             if name.eq_ignore_ascii_case("fill") {
-                if value.eq_ignore_ascii_case("none") {
-                    fill = None;
-                } else if let Some(color) = parse_svg_color(value, css_vars) {
-                    fill = Some(color);
+                if let Some(parsed) = parse_svg_mask_fill(value, css_vars) {
+                    fill = parsed;
                 }
             } else if name.eq_ignore_ascii_case("opacity") {
                 if let Some(parsed) = parse_svg_opacity(value, css_vars) {
@@ -8336,15 +8403,36 @@ fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable
             }
         }
     }
-    let Some((r, g, b)) = fill else {
+    let Some(((r, g, b), fill_alpha)) = fill else {
         return false;
     };
-    let alpha = (opacity * fill_opacity).clamp(0.0, 1.0);
+    let alpha = (opacity * fill_opacity * fill_alpha).clamp(0.0, 1.0);
     if alpha <= 0.001 {
         return false;
     }
     let luminance = r * 0.2126 + g * 0.7152 + b * 0.0722;
     luminance * alpha >= 0.5
+}
+
+fn parse_svg_mask_fill(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> Option<Option<(SvgColor, f32)>> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_mask_fill(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("transparent") {
+        return Some(None);
+    }
+    let parsed = parse_svg_color_with_alpha(value, css_vars)?;
+    let alpha = parsed.alpha.unwrap_or(1.0).clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        Some(None)
+    } else {
+        Some(Some((parsed.rgb, alpha)))
+    }
 }
 
 fn parse_svg_clip_rule(attrs: &[(String, String)]) -> Option<SvgFillRule> {
@@ -9087,7 +9175,12 @@ fn parse_svg_style_patch(
         let name = name.trim().to_ascii_lowercase();
         let value = clean_svg_css_keyword_value(value);
         match name.as_str() {
-            "color" => patch.color = parse_svg_color(value, css_vars),
+            "color" => {
+                if let Some((color, alpha)) = parse_svg_color_state(value, css_vars) {
+                    patch.color = Some(color);
+                    patch.color_alpha = Some(alpha);
+                }
+            }
             "fill" => {
                 let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
                 let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
@@ -9419,7 +9512,7 @@ fn apply_svg_style_patch(
     inherited_display_visible: bool,
 ) {
     if let Some(color) = patch.color {
-        apply_svg_color(style, color);
+        apply_svg_color(style, color, patch.color_alpha.unwrap_or(1.0));
     }
     if patch.fill_current_color == Some(true) {
         style.fill = Some(style.color);
@@ -11531,13 +11624,14 @@ fn clean_svg_css_keyword_value(value: &str) -> &str {
 }
 
 fn apply_svg_color_attr(style: &mut SvgStyle, value: Option<&str>, css_vars: &[SvgCssVariable]) {
-    if let Some(color) = value.and_then(|value| parse_svg_color(value, css_vars)) {
-        apply_svg_color(style, color);
+    if let Some((color, alpha)) = value.and_then(|value| parse_svg_color_state(value, css_vars)) {
+        apply_svg_color(style, color, alpha);
     }
 }
 
-fn apply_svg_color(style: &mut SvgStyle, color: SvgColor) {
+fn apply_svg_color(style: &mut SvgStyle, color: SvgColor, alpha: f32) {
     style.color = color;
+    style.color_alpha = alpha.clamp(0.0, 1.0);
     if style.fill_current_color {
         style.fill = Some(color);
         style.fill_gradient = None;
@@ -11855,6 +11949,19 @@ fn parse_svg_paint_url_id(value: &str) -> Option<&str> {
 
 fn parse_svg_color(value: &str, css_vars: &[SvgCssVariable]) -> Option<(f32, f32, f32)> {
     parse_svg_color_with_alpha(value, css_vars).map(|parsed| parsed.rgb)
+}
+
+fn parse_svg_color_state(value: &str, css_vars: &[SvgCssVariable]) -> Option<(SvgColor, f32)> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_color_state(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("transparent") {
+        return Some(((0.0, 0.0, 0.0), 0.0));
+    }
+    parse_svg_color_with_alpha(value, css_vars)
+        .map(|parsed| (parsed.rgb, parsed.alpha.unwrap_or(1.0).clamp(0.0, 1.0)))
 }
 
 fn parse_svg_color_with_alpha(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgParsedColor> {
@@ -18571,6 +18678,7 @@ fn draw_svg_line(
     let has_markers = line.marker_start.is_some() || line.marker_end.is_some();
     let style = SvgStyle {
         color: line.style.color,
+        color_alpha: line.style.color_alpha,
         fill: None,
         fill_gradient: None,
         fill_pattern: None,
@@ -20001,13 +20109,13 @@ fn svg_clip_path_applicable(
     clip_path: &SvgClipPath,
     element_bbox: Option<(f32, f32, f32, f32)>,
 ) -> bool {
-    !clip_path.ops.is_empty()
-        && match clip_path.units {
-            SvgClipPathUnits::UserSpaceOnUse => true,
-            SvgClipPathUnits::ObjectBoundingBox => {
-                svg_object_bbox_transform(element_bbox).is_some()
-            }
-        }
+    if clip_path.ops.is_empty() {
+        return clip_path.empty_mask;
+    }
+    match clip_path.units {
+        SvgClipPathUnits::UserSpaceOnUse => true,
+        SvgClipPathUnits::ObjectBoundingBox => svg_object_bbox_transform(element_bbox).is_some(),
+    }
 }
 
 fn append_svg_clip_path(
@@ -20018,15 +20126,19 @@ fn append_svg_clip_path(
     if !svg_clip_path_applicable(clip_path, element_bbox) {
         return false;
     }
-    match clip_path.units {
-        SvgClipPathUnits::UserSpaceOnUse => append_svg_path_ops(body, &clip_path.ops),
-        SvgClipPathUnits::ObjectBoundingBox => {
-            let Some(transform) = svg_object_bbox_transform(element_bbox) else {
-                return false;
-            };
-            let mut ops = clip_path.ops.clone();
-            transform_svg_path_ops(&mut ops, transform);
-            append_svg_path_ops(body, &ops);
+    if clip_path.ops.is_empty() {
+        body.push_str("0 0 0 0 re ");
+    } else {
+        match clip_path.units {
+            SvgClipPathUnits::UserSpaceOnUse => append_svg_path_ops(body, &clip_path.ops),
+            SvgClipPathUnits::ObjectBoundingBox => {
+                let Some(transform) = svg_object_bbox_transform(element_bbox) else {
+                    return false;
+                };
+                let mut ops = clip_path.ops.clone();
+                transform_svg_path_ops(&mut ops, transform);
+                append_svg_path_ops(body, &ops);
+            }
         }
     }
     match clip_path.fill_rule {
@@ -21126,11 +21238,21 @@ fn svg_style_has_marker_paint(style: SvgStyle) -> bool {
 }
 
 fn svg_effective_fill_opacity(style: SvgStyle) -> f32 {
-    (style.opacity * style.fill_opacity).clamp(0.0, 1.0)
+    let color_alpha = if style.fill_current_color {
+        style.color_alpha
+    } else {
+        1.0
+    };
+    (style.opacity * style.fill_opacity * color_alpha).clamp(0.0, 1.0)
 }
 
 fn svg_effective_stroke_opacity(style: SvgStyle) -> f32 {
-    (style.opacity * style.stroke_opacity).clamp(0.0, 1.0)
+    let color_alpha = if style.stroke_current_color {
+        style.color_alpha
+    } else {
+        1.0
+    };
+    (style.opacity * style.stroke_opacity * color_alpha).clamp(0.0, 1.0)
 }
 
 fn svg_style_alpha_values(style: SvgStyle) -> Option<(u16, u16)> {
@@ -22136,6 +22258,14 @@ fn append_svg_text_clip_path(
     image_transform: SvgImageTransform,
     element_bbox: Option<(f32, f32, f32, f32)>,
 ) {
+    if clip_path.ops.is_empty() {
+        body.push_str("0 0 0 0 re ");
+        match clip_path.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n\n"),
+            SvgFillRule::EvenOdd => body.push_str("W* n\n"),
+        }
+        return;
+    }
     let transformed_ops;
     let ops = match clip_path.units {
         SvgClipPathUnits::UserSpaceOnUse => clip_path.ops.as_slice(),

@@ -2893,8 +2893,52 @@ fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
         "inline rgb() fill alpha should survive terminal !important cleanup and emit a native non-stroking PDF alpha state: {text}"
     );
     assert!(
+        text.matches("/GSa05001000 gs\n0.000 0.502 1.000 rg")
+            .count()
+            >= 2,
+        "stylesheet color/currentColor alpha and inline rgb() fill alpha should both emit native non-stroking PDF alpha states: {text}"
+    );
+    assert!(
         !text.contains("1.000 0.000 0.000 rg 1.000 0.000 0.000 RG"),
         "failed stylesheet paint parsing must not leave the red presentation-attribute fallback in place: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">
+  <style>
+    :root { --brand: rgb(255 0 0 / 50%); }
+  </style>
+  <rect x="2" y="2" width="8" height="8" style="color: var(--brand); fill: currentColor"/>
+  <path d="M16 6 L30 6" style="color: rgb(0 0 255 / 25%); stroke: currentColor; stroke-width: 2; fill: none"/>
+  <text x="2" y="20" font-size="8" style="color: rgb(0 128 255 / 50%); fill: currentColor">Alpha</text>
+  <text x="38" y="20" font-size="8" style="color: transparent; fill: currentColor">Ghost</text>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("current-color-alpha.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Current color alpha](current-color-alpha.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa05001000 gs 1.000 0.000 0.000 rg 2 2 8 8 re f"),
+        "fill:currentColor should multiply inherited color alpha into non-stroking alpha: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000250 gs 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 16 6 m 30 6 l S"),
+        "stroke:currentColor should multiply inherited color alpha into stroking alpha: {text}"
+    );
+    assert!(
+        text.contains("/GSa05001000 gs\n0.000 0.502 1.000 rg\nBT /F1 6.00 Tf"),
+        "text fill:currentColor should preserve inherited color alpha at text construction time: {text}"
+    );
+    assert!(
+        !text.contains("Ghost"),
+        "color:transparent used through currentColor should make text fully transparent: {text}"
     );
 }
 
@@ -4359,6 +4403,51 @@ fn pdf_svg_gradient_stop_current_color_resolves_from_gradient_stop_and_css_color
     assert!(
         text.contains("/C0 [1.000 0.000 1.000] /C1 [1.000 1.000 1.000] /N 1"),
         "stylesheet color-only rules should feed a stop-color=currentColor presentation attribute: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_gradient_stop_current_color_preserves_color_alpha() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 20">
+  <style>
+    stop.soft-css { color: rgb(0 255 0 / 25%); stop-color: currentColor; }
+  </style>
+  <defs>
+    <linearGradient id="attr-alpha" color="rgb(255 0 0 / 50%)">
+      <stop offset="0%" stop-color="currentColor"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+    <linearGradient id="css-alpha">
+      <stop class="soft-css" offset="0%"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="16" height="10" fill="url(#attr-alpha)"/>
+  <rect x="24" y="2" width="16" height="10" fill="url(#css-alpha)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "gradient-current-color-alpha.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Gradient currentColor alpha](gradient-current-color-alpha.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/C0 [1.000 0.500 0.500] /C1 [0.000 0.000 1.000] /N 1"),
+        "stop-color=currentColor should multiply color alpha from the owning gradient color attribute: {text}"
+    );
+    assert!(
+        text.contains("/C0 [0.750 1.000 0.750] /C1 [0.000 0.000 1.000] /N 1"),
+        "stylesheet color alpha should also affect stop-color=currentColor native gradient stops: {text}"
     );
 }
 

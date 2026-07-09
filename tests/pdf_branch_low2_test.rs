@@ -1264,6 +1264,46 @@ fn mask_shape_fill_and_opacity_via_style_control_reveal() {
     assert_ne!(reveal, hide, "mask reveal vs hide must differ");
 }
 
+#[test]
+fn mask_shape_fill_color_alpha_controls_reveal_threshold() {
+    // Alpha embedded in the mask fill color contributes to the hard-mask
+    // luminance threshold exactly like fill-opacity.
+    let hide = svg(
+        "maskfillalphahide.svg",
+        &doc(
+            r##"<defs><mask id="m"><rect x="0" y="0" width="40" height="40" fill="rgba(255 255 255 / 49%)"/></mask></defs>
+<rect x="0" y="0" width="30" height="30" fill="#00ff00" mask="url(#m)"/>"##,
+        ),
+    );
+    has(&hide, "0 0 0 0 re W n 0.000 1.000 0.000 rg 0 0 30 30 re f");
+
+    let reveal = svg(
+        "maskfillalphareveal.svg",
+        &doc(
+            r##"<defs><mask id="m"><rect x="0" y="0" width="40" height="40" style="fill:rgba(255 255 255 / 50%)"/></mask></defs>
+<rect x="0" y="0" width="30" height="30" fill="#ff0000" mask="url(#m)"/>"##,
+        ),
+    );
+    has(
+        &reveal,
+        "0 0 m 40 0 l 40 40 l 0 40 l h W n 1.000 0.000 0.000 rg 0 0 30 30 re f",
+    );
+}
+
+#[test]
+fn self_closing_mask_hides_instead_of_failing_open() {
+    // A valid but empty mask reference must not degrade into "no mask"; it
+    // becomes an empty hard clip that suppresses the target.
+    let text = svg(
+        "maskselfclosing.svg",
+        &doc(r##"<defs><mask id="m"/></defs>
+<rect x="0" y="0" width="30" height="30" fill="#0000ff" mask="url(#m)"/>
+<text x="0" y="45" font-size="10" fill="#ff0000" mask="url(#m)">Hidden</text>"##),
+    );
+    has(&text, "0 0 0 0 re W n 0.000 0.000 1.000 rg 0 0 30 30 re f");
+    has(&text, "0 0 0 0 re W n\n");
+}
+
 // ===========================================================================
 // base64 data-URI decoder reject arms.
 // ===========================================================================

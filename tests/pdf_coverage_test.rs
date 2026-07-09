@@ -7,8 +7,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::{
-    PageMargins, PageSize, PdfImageAsset, PdfOptions, Theme, parse_markdown, render_pdf,
-    render_warnings,
+    PageMargins, PageSize, PdfImageAsset, PdfOptions, RenderWarning, Theme, parse_markdown,
+    render_pdf, render_warnings,
 };
 
 fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
@@ -41,6 +41,34 @@ fn tiny_rgba_png(pixels: &[[u8; 4]]) -> Vec<u8> {
     png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
     png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
     png.extend_from_slice(&png_chunk(b"IDAT", &idat));
+    png.extend_from_slice(&png_chunk(b"IEND", &[]));
+    png
+}
+
+fn rgba_png_from_filtered_rows(width: u32, rows: &[Vec<u8>]) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&(rows.len() as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA.
+
+    let row_bytes = width as usize * 4;
+    let mut raw = Vec::with_capacity(rows.len() * (row_bytes + 1));
+    for row in rows {
+        assert_eq!(
+            row.len(),
+            row_bytes + 1,
+            "row must include filter byte plus RGBA samples"
+        );
+        raw.extend_from_slice(row);
+    }
+
+    let mut png = Vec::new();
+    png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    png.extend_from_slice(&png_chunk(
+        b"IDAT",
+        &franken_markdown::compress::zlib_compress(&raw),
+    ));
     png.extend_from_slice(&png_chunk(b"IEND", &[]));
     png
 }
@@ -168,6 +196,40 @@ fn pdf_rgba_png_embeds_devicergb_xobject_with_soft_mask() {
     assert!(
         !text.contains("/Predictor 15"),
         "the full-decode alpha path re-compresses unfiltered samples, so no PNG predictor: {text}"
+    );
+}
+
+#[test]
+fn pdf_rgba_png_full_decode_handles_all_filter_rows_and_soft_mask() {
+    let png = rgba_png_from_filtered_rows(
+        1,
+        &[
+            vec![0, 0x10, 0x20, 0x30, 0xff],
+            vec![1, 0x05, 0x06, 0x07, 0x80],
+            vec![2, 0x00, 0x00, 0x00, 0x00],
+            vec![3, 0x08, 0x08, 0x08, 0x40],
+            vec![4, 0x00, 0x00, 0x00, 0x00],
+        ],
+    );
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("images/filters.png", png)],
+        ..PdfOptions::default()
+    };
+    let doc = parse_markdown("![Filtered](images/filters.png)");
+    assert!(
+        render_warnings(&doc, &opts).is_empty(),
+        "RGBA rows using PNG filters 0..4 should decode without degradation"
+    );
+
+    let pdf = render_pdf("![Filtered](images/filters.png)", &opts).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        text.contains("/ColorSpace /DeviceRGB") && text.contains(" /SMask "),
+        "full-decoded RGBA PNG should keep RGB samples and emit a soft mask: {text}"
+    );
+    assert!(
+        !text.contains("/Predictor 15"),
+        "full decode must re-encode unfiltered rows rather than claiming PNG predictor bytes: {text}"
     );
 }
 
@@ -783,6 +845,581 @@ fn pdf_svg_root_background_gradient_respects_root_opacity() {
     assert!(
         before.contains("/GSa05000500 gs"),
         "a half-opaque root must wrap its background shading in an ExtGState alpha: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial SVG definition bodies and text subtrees
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pdf_svg_css_comments_clip_masks_and_style_transforms_render_visible_content() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 50">
+  <style>
+  <![CDATA[
+    /* exporter wrapper with braces { } that must not affect block matching */
+    :root { --mask-white: #ffffff; --ink: #111111; }
+    .panel { fill: #22c55e; /* ignored { declaration } */ stroke: var(--ink); stroke-width: 2; }
+    g > rect.outline { fill: none; stroke: #0000ff; }
+    @media screen { rect { fill: #ff0000; } }
+  ]]>
+  </style>
+  <defs>
+    <clipPath id="clip" clipPathUnits="objectBoundingBox" clip-rule="evenodd"
+              transform="translate(0 0)">
+      <!-- comments and declarations inside definition bodies are skipped -->
+      <?ignored?>
+      <!ignored>
+      <rect x="0" y="0" width="1" height="1" fill-rule="evenodd"
+            style="transform: scale(0.9)"/>
+      <circle cx="0.5" cy="0.5" r="0.25"/>
+      <ellipse cx="0.5" cy="0.5" rx="0.12" ry="0.2"/>
+      <polygon points="0,0 1,0 0.5,1"/>
+      <path d="M0.15 0.15 L0.85 0.15 L0.5 0.85 Z"/>
+    </clipPath>
+    <mask id="mask" maskContentUnits="objectBoundingBox" style="transform: translate(0 0)">
+      <!-- only the bright, non-transparent shape should reveal content -->
+      <rect x="0" y="0" width="1" height="1"
+            style="fill: var(--mask-white); fill-opacity: 0.75"/>
+      <rect x="0" y="0" width="1" height="1" fill="#000000"/>
+      <rect x="0" y="0" width="1" height="1" fill="none"/>
+    </mask>
+  </defs>
+  <g>
+    <rect class="panel" x="6" y="6" width="36" height="20"
+          clip-path="url(#clip)" mask="url(#mask)"/>
+    <rect class="outline" x="48" y="6" width="28" height="20"/>
+  </g>
+</svg>
+"##;
+    let pdf = render_pdf(
+        "![Definitions](adversarial-defs.svg)",
+        &svg_opts("adversarial-defs.svg", *svg),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.133 0.773 0.369 rg"),
+        "the CSS class fill must survive comments, CDATA wrappers, and ignored @media: {text}"
+    );
+    assert!(
+        text.contains("W* n"),
+        "the even-odd clipPath should install an even-odd clipping path: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 RG"),
+        "the child-combinator CSS rule should stroke the outline rectangle blue: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg 6 6 36 20 re f"),
+        "the ignored @media rule must not turn the panel red: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_nested_text_tspans_text_paths_and_position_lists_all_render() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 42">
+  <defs>
+    <path id="curve" d="M4 28 C24 4 48 4 68 28"/>
+  </defs>
+  <text x="4" y="14" font-size="8" fill="#111111" textLength="64"
+        lengthAdjust="spacingAndGlyphs">
+    A
+    <!-- a comment between text children must be ignored -->
+    <tspan dx="2" dy="1" fill="#ff0000" textLength="24" lengthAdjust="spacing">red</tspan>
+    <tspan x="12 24 36" y="32 30 28" dx="1 2" dy="0 0" fill="#0000ff">xyz</tspan>
+    <textPath href="#curve" startOffset="25%" fill="#22c55e">path</textPath>
+    <tspan display="none">hidden</tspan>
+    <metadata><tspan fill="#ff00ff">ignored</tspan></metadata>
+  </text>
+</svg>
+"##;
+    let pdf = render_pdf(
+        "![Nested text](nested-text.svg)",
+        &svg_opts("nested-text.svg", *svg),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.matches("BT /F1").count() >= 5,
+        "plain text, a tspan, positioned characters, and a textPath should all draw: {text}"
+    );
+    for color in [
+        "0.067 0.067 0.067 rg",
+        "1.000 0.000 0.000 rg",
+        "0.000 0.000 1.000 rg",
+        "0.133 0.773 0.369 rg",
+    ] {
+        assert!(
+            text.contains(color),
+            "expected nested SVG text color operator {color}: {text}"
+        );
+    }
+    assert!(
+        !text.contains("1.000 0.000 1.000 rg"),
+        "metadata children and display:none tspans must not paint: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_percent_encoded_inner_svg_and_path_command_edges_render() {
+    let inner_svg = "%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Crect%20x%3D%221%22%20y%3D%221%22%20width%3D%228%22%20height%3D%228%22%20fill%3D%22%23dd3377%22%2F%3E%3C%2Fsvg%3E";
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 60">
+  <image x="4" y="4" width="18" height="18" preserveAspectRatio="none"
+         href="data:image/svg+xml,{inner_svg}"/>
+  <image x="28" y="4" width="18" height="18"
+         href="data:image/svg+xml;base64,QUJD=QUJD"/>
+  <path fill="none" stroke="#111111" stroke-width="1.5"
+        d="M50 20 h10 v-10 h-10 z
+           m18 0 c5 -10 15 -10 20 0 s15 10 20 0
+           q5 -10 10 0 t10 0
+           a5 3 30 0 1 15 5
+           a0 4 0 0 1 10 0
+           A5 5 0 1 0 136 20"/>
+</svg>
+"##
+    );
+    let pdf = render_pdf(
+        "![Nested data uri](data-uri-paths.svg)",
+        &svg_opts("data-uri-paths.svg", svg.into_bytes()),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.867 0.200 0.467 rg"),
+        "the percent-encoded nested SVG should decode and paint its inner rect: {text}"
+    );
+    assert!(
+        text.contains("0.067 0.067 0.067 RG 1.5 w"),
+        "the path command corpus should keep its stroke style: {text}"
+    );
+    assert!(
+        text.contains(" c "),
+        "cubic, smooth cubic, quadratic, smooth quadratic, and arc commands should lower \
+         to Bezier curve operators: {text}"
+    );
+    assert!(
+        !text.contains("/Subtype /Image"),
+        "the malformed base64 image should be ignored instead of becoming a raster XObject: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_accessible_and_nested_text_feed_missing_glyph_warnings() {
+    let nested = base64_encode(
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><text x="1" y="8" font-size="6">&#x10FFFF;</text></svg>"##,
+    );
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"
+     aria-label="Outer chart">
+  <title>Outer chart</title>
+  <desc>Nested labels should contribute to diagnostics.</desc>
+  <style>text {{ fill: #111111; }}</style>
+  <script>ignored()</script>
+  <text x="4" y="16" font-size="10">&#x10FFFF;</text>
+  <image x="4" y="20" width="24" height="12"
+         href="data:image/svg+xml;base64,{nested}"/>
+</svg>
+"##
+    );
+    let opts = svg_opts("accessible.svg", svg.into_bytes());
+    let doc = parse_markdown("![](accessible.svg)");
+    let warnings = render_warnings(&doc, &opts);
+    assert!(
+        warnings.iter().any(|warning| matches!(
+            warning,
+            RenderWarning::MissingGlyphs { count, sample }
+                if *count >= 2 && sample.contains('\u{10ffff}')
+        )),
+        "missing glyph diagnostics should include root and nested SVG text: {warnings:?}"
+    );
+
+    let pdf = render_pdf("![](accessible.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        text.contains("/Alt (Outer chart - Nested labels should contribute to diagnostics.)")
+            || text.contains("/Alt <FEFF"),
+        "empty markdown alt text should fall back to the SVG accessible name: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_background_colors_text_decoration_and_spacing_variants_render() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 64"
+     style="background-color: color-mix(in srgb, #ffffff 75%, #000000);
+            background-image: linear-gradient(to right bottom, rgba(255 0 0 / 50%) 0%, transparent, #0000ff 100%),
+                              radial-gradient(circle at right bottom, #00ff00, rgba(0,0,255,0.25));">
+  <defs>
+    <linearGradient id="reflect" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="24" y2="0"
+                    spreadMethod="reflect">
+      <stop offset="0%" stop-color="color-mix(in srgb, red 25%, blue)"/>
+      <stop offset="50%" stop-color="rgb(0 128 255 / 75%)"/>
+      <stop offset="100%" stop-color="#0f08"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="72" height="18" fill="url('#reflect') #123456"/>
+  <text x="6" y="44" font-size="12" fill="currentColor" color="#111111"
+        stroke="rgba(0,0,255,0.5)" stroke-width="0.75"
+        letter-spacing="0.1em" word-spacing="25%" baseline-shift="super"
+        dominant-baseline="hanging"
+        text-decoration="underline overline line-through"
+        paint-order="stroke fill">Decorated text</text>
+</svg>
+"##;
+    let pdf = render_pdf(
+        "![Decorated](decorated.svg)",
+        &svg_opts("decorated.svg", *svg),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.matches("/ShadingType").count() >= 3,
+        "root background layers plus reflected gradient fill should register native shadings: {text}"
+    );
+    assert!(
+        text.contains("0.067 0.067 0.067 rg"),
+        "currentColor fill should resolve from the text color attribute: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 RG 0.56 w"),
+        "rgba stroke and explicit stroke width should configure the scaled text stroke: {text}"
+    );
+    assert!(
+        text.matches("S\n").count() >= 3,
+        "underline, overline, and line-through should draw decoration strokes: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_symbol_use_filter_primitives_and_xml_noise_render() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 58">
+  <style>
+    symbol .leaf { fill: #22c55e; }
+    #blue rect { fill: #0000ff; }
+  </style>
+  <defs>
+    <?defs ignored?>
+    <!defs ignored>
+    <symbol id="badge" viewBox="0 0 20 10" preserveAspectRatio="xMaxYMin slice">
+      <>
+      <?inside-symbol?>
+      <!inside-symbol>
+      <g class="leaf">
+        <rect x="1" y="1" width="8" height="6"/>
+        <text x="11" y="7" font-size="5" fill="#111111">Hi</text>
+      </g>
+    </symbol>
+    <g id="blue">
+      <rect x="0" y="0" width="10" height="8"/>
+    </g>
+    <filter id="primitive-shadow">
+      <>
+      <?inside-filter?>
+      <!inside-filter>
+      <feOffset in="SourceAlpha" dx="2" dy="3" result="off"/>
+      <feGaussianBlur in="off" stdDeviation="0" result="blur"/>
+      <feFlood flood-color="#333333" flood-opacity="0.5" result="flood"/>
+      <feComposite in="flood" in2="blur" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <a href="https://example.com/badge">
+    <use href="#badge" x="4" y="6" width="50" height="24"
+         filter="url(#primitive-shadow)"/>
+  </a>
+  <use xlink:href="#blue" x="70" y="6"/>
+  <use href="url('#missing')" x="92" y="6"/>
+</svg>
+"##;
+    let pdf = render_pdf("![Use](use-filter.svg)", &svg_opts("use-filter.svg", *svg)).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.133 0.773 0.369 rg"),
+        "a CSS-styled symbol referenced by <use> should paint its green rect: {text}"
+    );
+    assert!(
+        text.contains("0.200 0.200 0.200 rg"),
+        "the feOffset/feGaussianBlur/feFlood/feComposite/feMerge chain should \
+         lower to the existing shadow layer: {text}"
+    );
+    assert!(
+        text.contains("BT /F1"),
+        "text inside a referenced symbol should be parsed and emitted: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 rg"),
+        "xlink:href <use> references should still resolve reusable groups: {text}"
+    );
+    assert!(
+        text.contains("/URI (https://example.com/badge)"),
+        "links wrapping <use> should propagate to the referenced elements: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_marker_bodies_skip_xml_noise_and_accept_shape_variants() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 70">
+  <defs>
+    <marker id="multi" markerWidth="12" markerHeight="12" refX="6" refY="6"
+            markerUnits="userSpaceOnUse" orient="0.25turn">
+      <>
+      <?inside-marker?>
+      <!inside-marker>
+      <line x1="0" y1="1" x2="12" y2="1" stroke="#111111" stroke-width="1"/>
+      <polyline points="0,4 6,0 12,4" fill="none" stroke="#0000ff" stroke-width="1"/>
+      <polygon points="0,8 6,12 12,8" fill="#22c55e"/>
+      <rect x="1" y="1" width="3" height="3" fill="#ff0000"/>
+      <circle cx="8" cy="3" r="2" fill="#ffaa00"/>
+      <ellipse cx="8" cy="9" rx="3" ry="2" fill="#dd3377"/>
+    </marker>
+    <marker id="rad" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="3.14159265rad">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#00ffff"/>
+    </marker>
+    <marker id="grad" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="100grad">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#ff00ff"/>
+    </marker>
+  </defs>
+  <line x1="10" y1="14" x2="70" y2="14" stroke="#000000" marker-end="url(#multi)"/>
+  <line x1="10" y1="34" x2="70" y2="34" stroke="#000000" marker-end="url(#rad)"/>
+  <line x1="10" y1="54" x2="70" y2="54" stroke="#000000" marker-end="url(#grad)"/>
+</svg>
+"##;
+    let pdf = render_pdf(
+        "![Marker variants](marker-variants.svg)",
+        &svg_opts("marker-variants.svg", *svg),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    for color in [
+        "0.067 0.067 0.067 RG",
+        "0.000 0.000 1.000 RG",
+        "0.133 0.773 0.369 rg",
+        "1.000 0.000 0.000 rg",
+        "1.000 0.667 0.000 rg",
+        "0.867 0.200 0.467 rg",
+        "0.000 1.000 1.000 rg",
+        "1.000 0.000 1.000 rg",
+    ] {
+        assert!(
+            text.contains(color),
+            "marker body shape/color variant {color} should render: {text}"
+        );
+    }
+}
+
+#[test]
+fn pdf_svg_embedded_raster_images_honor_meet_slice_and_xlink_href() {
+    let png_data = base64_encode(&tiny_rgba_png(&[
+        [0x10, 0x80, 0xF0, 0xFF],
+        [0xF0, 0x80, 0x10, 0xFF],
+    ]));
+    let png_with_ws = format!("{}\n {}", &png_data[..8], &png_data[8..]);
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 28">
+  <image x="4" y="4" width="16" height="16"
+         preserveAspectRatio="xMidYMid slice"
+         href="data:image/png;base64,{png_data}"/>
+  <image x="28" y="4" width="16" height="16"
+         preserveAspectRatio="xMinYMax meet"
+         xlink:href="data:image/png;base64,{png_with_ws}"/>
+  <image x="48" y="4" width="8" height="8"
+         href="data:image/pngbad;base64,{png_data}"/>
+</svg>
+"##
+    );
+    let pdf = render_pdf(
+        "![Embedded rasters](embedded-raster-aspect.svg)",
+        &svg_opts("embedded-raster-aspect.svg", svg.into_bytes()),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert_eq!(
+        text.matches(" Do").count(),
+        2,
+        "the valid href and xlink:href images draw; malformed metadata is ignored: {text}"
+    );
+    assert!(
+        text.contains("4 4 16 16 re W n"),
+        "slice preserveAspectRatio should clip overflowing raster content to its viewport: {text}"
+    );
+    assert!(
+        text.contains("16 0 0 -8 28 20 cm"),
+        "meet preserveAspectRatio with xMinYMax should letterbox a 2:1 image at the bottom: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_defensive_edge_corpus_skips_invalid_inputs_without_losing_valid_paint() {
+    let png_data = base64_encode(&tiny_rgba_png(&[[0x20, 0x90, 0xE0, 0xFF]]));
+    let svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" aria-label="Edge corpus">
+  <title>First title</title>
+  <title>Ignored second title</title>
+  <desc>First desc</desc>
+  <desc>Ignored second desc</desc>
+  <defs>
+    <linearGradient id="quoted" x1="0" y1="0" x2="40" y2="0">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+    <pattern id="zero-w" width="0" height="8"><rect width="8" height="8" fill="#ff0000"/></pattern>
+    <pattern id="zero-h" width="8" height="0"><rect width="8" height="8" fill="#ff0000"/></pattern>
+    <clipPath id="bbox"><rect x="0" y="0" width="1" height="1"/></clipPath>
+  </defs>
+  <rect x="1" y="1" width="0" height="8" fill="#ff0000"/>
+  <rect x="4" y="4" width="18" height="10" fill="url(&quot;#quoted&quot;) #00ff00"/>
+  <rect x="28" y="4" width="18" height="10" fill="transparent" stroke="none"/>
+  <rect x="52" y="4" width="18" height="10"
+        fill="color-mix(in display-p3, red, blue)" stroke="none"/>
+  <rect x="76" y="4" width="18" height="10" fill="url(#zero-w) #22c55e"/>
+  <rect x="100" y="4" width="18" height="10" fill="url(#zero-h) #22c55e"/>
+  <path d="M4 28 A5 5 0 0 1 4 28 M12 28 A0 5 0 0 1 20 28 M24 28 A5 5 0 0 0 34 28"
+        fill="none" stroke="#111111"/>
+  <a href="https://example.com/invisible-image">
+    <image x="4" y="40" width="8" height="8" opacity="0"
+           href="data:image/png;base64,{png_data}"/>
+  </a>
+  <image x="18" y="40" width="8" height="8" href="data:image/png;base64,=AAA"/>
+  <image x="32" y="40" width="8" height="8" href="data:image/png;base64,A=AA"/>
+  <image x="46" y="40" width="8" height="8" href="data:image/png;base64,AA=A"/>
+  <image x="60" y="40" width="8" height="8" href="data:image/svg+xml,%"/>
+  <text x="4" y="70" font-size="10" fill="none" stroke="none"
+        text-decoration="underline">No decoration color</text>
+  <text x="4" y="82" font-size="10" fill="#111111" textLength="0"
+        lengthAdjust="spacing">A</text>
+</svg>
+"##
+    );
+    let pdf = render_pdf(
+        "![Edge corpus](svg-edge-corpus.svg)",
+        &svg_opts("svg-edge-corpus.svg", svg.into_bytes()),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/ShadingType 2"),
+        "a double-quoted paint URL should resolve the gradient id and register a shading: {text}"
+    );
+    assert!(
+        text.contains("0.133 0.773 0.369 rg 76 4 18 10 re f")
+            && text.contains("0.133 0.773 0.369 rg 100 4 18 10 re f"),
+        "degenerate patterns should fall back to their explicit green fallback paint: {text}"
+    );
+    assert!(
+        text.contains("0.067 0.067 0.067 RG"),
+        "valid path stroke must still paint after degenerate arc commands: {text}"
+    );
+    assert!(
+        !text.contains("/URI (https://example.com/invisible-image)"),
+        "an opacity-zero image inside a link must not create a hitbox: {text}"
+    );
+    assert_eq!(
+        text.matches(" Do").count(),
+        0,
+        "opacity-zero and malformed embedded images should not draw raster XObjects: {text}"
+    );
+}
+
+#[test]
+fn pdf_image_asset_branch_corpus_exercises_svg_and_png_rejection_edges() {
+    let mut empty_idat_png = Vec::new();
+    empty_idat_png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    empty_idat_png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    empty_idat_png.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+    let mut missing_iend_png = Vec::new();
+    missing_iend_png.extend_from_slice(b"\x89PNG\r\n\x1A\n");
+    missing_iend_png.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    missing_iend_png.extend_from_slice(&png_chunk(
+        b"IDAT",
+        &franken_markdown::compress::zlib_compress(&[0, 0, 0, 0]),
+    ));
+
+    let valid_single_quote_svg = br##"
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 20'>
+  <style>/* unterminated exporter comment</style>
+  <rect x='2' y='2' width='12' height='8' fill='red'/>
+  <a href='https://example.com/stroke-text'>
+    <text x='2' y='17' font-size='6' fill='none' stroke='blue'>Stroke link</text>
+  </a>
+</svg>
+"##;
+    let invalid_zero_viewbox = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 0 10">
+  <rect x="0" y="0" width="10" height="10" fill="#22c55e"/>
+</svg>
+"##;
+    let empty_self_closing_svg =
+        br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"/>"##;
+    let bad_dimension_svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="10">
+  <rect x="0" y="0" width="10" height="10" fill="#22c55e"/>
+</svg>
+"##;
+
+    let opts = PdfOptions {
+        image_assets: vec![
+            PdfImageAsset::new("single-quote.svg", *valid_single_quote_svg),
+            PdfImageAsset::new("zero-viewbox.svg", *invalid_zero_viewbox),
+            PdfImageAsset::new("empty-root.svg", *empty_self_closing_svg),
+            PdfImageAsset::new("bad-dim.svg", *bad_dimension_svg),
+            PdfImageAsset::new("empty-idat.png", empty_idat_png),
+            PdfImageAsset::new("missing-iend.png", missing_iend_png),
+        ],
+        ..PdfOptions::default()
+    };
+    let md = "\
+![valid](single-quote.svg)\n\n\
+![zero viewbox](zero-viewbox.svg)\n\n\
+![empty root](empty-root.svg)\n\n\
+![bad dimensions](bad-dim.svg)\n\n\
+![empty idat](empty-idat.png)\n\n\
+![missing iend](missing-iend.png)\n";
+    let doc = parse_markdown(md);
+    let warnings = render_warnings(&doc, &opts);
+    assert!(
+        warnings.len() >= 5,
+        "malformed SVG/PNG assets should be reported as degraded content: {warnings:?}"
+    );
+
+    let pdf = render_pdf(md, &opts).unwrap();
+    let text = as_text(&pdf);
+    assert!(
+        text.contains("1.000 0.000 0.000 rg"),
+        "the valid single-quoted SVG should still paint red: {text}"
+    );
+    assert!(
+        text.contains("/URI (https://example.com/stroke-text)"),
+        "stroke-only linked SVG text should still create a usable annotation: {text}"
+    );
+    assert!(
+        !text.contains("0.133 0.773 0.369 rg"),
+        "invalid SVG roots must not leak their green rects into the PDF: {text}"
     );
 }
 

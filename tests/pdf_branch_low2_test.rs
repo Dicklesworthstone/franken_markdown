@@ -1107,21 +1107,36 @@ fn gradient_stop_style_opacity_blends_toward_white() {
 
 #[test]
 fn gradient_stop_named_color_supported_and_unsupported() {
-    // A supported named stop-color goes through the parse_svg_color branch
-    // (line 7695) and resolves; an unsupported name fails to parse so the stop
-    // keeps its default black.
+    // Standard SVG/CSS named stop-colors go through the parse_svg_color branch
+    // and resolve; an invalid token still fails to parse so the stop keeps its
+    // default black.
     let ok = grad(
         "stopgreen.svg",
-        r##"<stop offset="0" stop-color="green"/><stop offset="1" stop-color="red"/>"##,
+        r##"<stop offset="0" stop-color="chartreuse"/><stop offset="1" stop-color="red"/>"##,
     );
-    // green == 0,0.5,0 ; red == 1,0,0
-    has(&ok, "/C0 [0.000 0.500 0.000] /C1 [1.000 0.000 0.000]");
+    // chartreuse == #7fff00 ; red == #ff0000
+    has(&ok, "/C0 [0.498 1.000 0.000] /C1 [1.000 0.000 0.000]");
     let bad = grad(
         "stopunknown.svg",
-        r##"<stop offset="0" stop-color="chartreuse"/><stop offset="1" stop-color="#0000ff"/>"##,
+        r##"<stop offset="0" stop-color="not-a-color"/><stop offset="1" stop-color="#0000ff"/>"##,
     );
-    // The unsupported "chartreuse" leaves the first stop at default black.
+    // The invalid token leaves the first stop at default black.
     has(&bad, "/C0 [0.000 0.000 0.000] /C1 [0.000 0.000 1.000]");
+}
+
+#[test]
+fn standard_named_svg_colors_drive_fill_and_stroke_paint() {
+    let text = svg(
+        "namedcolors.svg",
+        &doc(
+            r##"<rect x="4" y="4" width="12" height="8" fill="orange" stroke="gray" stroke-width="2"/>
+<rect x="24" y="4" width="12" height="8" fill="rebeccapurple" stroke="lightgrey" stroke-width="2"/>"##,
+        ),
+    );
+    has(&text, "1.000 0.647 0.000 rg");
+    has(&text, "0.502 0.502 0.502 RG");
+    has(&text, "0.400 0.200 0.600 rg");
+    has(&text, "0.827 0.827 0.827 RG");
 }
 
 // ===========================================================================

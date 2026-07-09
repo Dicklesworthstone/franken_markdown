@@ -286,6 +286,43 @@ struct FixedDeflate {
     complete: bool,
 }
 
+pub(crate) struct ZlibCompressScratch {
+    head: Vec<usize>,
+    prev: Vec<usize>,
+}
+
+impl ZlibCompressScratch {
+    pub(crate) fn new() -> Self {
+        Self {
+            head: Vec::new(),
+            prev: Vec::new(),
+        }
+    }
+
+    fn fixed_tables(&mut self, input_len: usize) -> (&mut [usize], &mut [usize]) {
+        if self.head.len() == HASH_SIZE {
+            self.head.fill(NONE);
+        } else {
+            self.head.clear();
+            self.head.resize(HASH_SIZE, NONE);
+        }
+
+        if self.prev.len() < input_len {
+            self.prev.resize(input_len, NONE);
+        } else {
+            self.prev.truncate(input_len);
+        }
+
+        (&mut self.head, &mut self.prev)
+    }
+}
+
+impl Default for ZlibCompressScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Produce a raw DEFLATE byte stream (single final fixed-Huffman block) using
 /// greedy LZ77 matching over a hash-chain index.
 #[cfg(test)]
@@ -293,7 +330,17 @@ fn deflate_fixed(data: &[u8]) -> FixedDeflate {
     deflate_fixed_with_limit(data, None)
 }
 
+#[cfg(test)]
 fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) -> FixedDeflate {
+    let mut scratch = ZlibCompressScratch::new();
+    deflate_fixed_with_scratch(data, abort_after_body_len, &mut scratch)
+}
+
+fn deflate_fixed_with_scratch(
+    data: &[u8],
+    abort_after_body_len: Option<usize>,
+    scratch: &mut ZlibCompressScratch,
+) -> FixedDeflate {
     let mut bw =
         BitWriter::with_capacity(fixed_body_capacity_hint(data.len(), abort_after_body_len));
     let mut adler = Adler32::new();
@@ -331,8 +378,7 @@ fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) ->
         };
     }
 
-    let mut head = vec![NONE; HASH_SIZE];
-    let mut prev = vec![NONE; n];
+    let (head, prev) = scratch.fixed_tables(n);
 
     let insert = |head: &mut [usize], prev: &mut [usize], p: usize| {
         if p + MIN_MATCH <= n {
@@ -389,7 +435,7 @@ fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) ->
             let mut k = pos;
             while k < end {
                 adler.update_byte(data[k]);
-                insert(&mut head, &mut prev, k);
+                insert(&mut *head, &mut *prev, k);
                 k += 1;
             }
             pos = end;
@@ -405,7 +451,7 @@ fn deflate_fixed_with_limit(data: &[u8], abort_after_body_len: Option<usize>) ->
                 }
                 adler.update_byte(b);
             }
-            insert(&mut head, &mut prev, pos);
+            insert(&mut *head, &mut *prev, pos);
             pos += 1;
         }
     }
@@ -510,8 +556,16 @@ fn adler32(data: &[u8]) -> u32 {
 /// Whichever of the fixed-Huffman and stored encodings is smaller is used, so
 /// incompressible payloads (e.g. raw TrueType font bytes) do not expand.
 pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
+    let mut scratch = ZlibCompressScratch::new();
+    zlib_compress_with_scratch(data, &mut scratch)
+}
+
+pub(crate) fn zlib_compress_with_scratch(
+    data: &[u8],
+    scratch: &mut ZlibCompressScratch,
+) -> Vec<u8> {
     let stored_len = deflate_stored_len(data.len());
-    let fixed = deflate_fixed_with_limit(data, Some(stored_len));
+    let fixed = deflate_fixed_with_scratch(data, Some(stored_len), scratch);
     let use_stored = !fixed.complete || stored_len < fixed.body.len();
 
     let body_len = if use_stored {
@@ -1012,6 +1066,38 @@ mod tests {
             tail,
             &[(a >> 24) as u8, (a >> 16) as u8, (a >> 8) as u8, a as u8]
         );
+    }
+
+    #[test]
+    fn scratch_reuse_matches_fresh_zlib_bytes() {
+        let repeated = "The quick brown fox jumps over the lazy dog. ".repeat(512);
+        let mut lcg = Vec::with_capacity(96_000);
+        let mut state: u64 = 0x517c_c1b7_2722_0a95;
+        for _ in 0..96_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            lcg.push((state >> 32) as u8);
+        }
+        let tiny = b"abcabcabc";
+        let larger = "franken_markdown page stream ".repeat(4096);
+        let payloads: [&[u8]; 5] = [
+            b"",
+            repeated.as_bytes(),
+            lcg.as_slice(),
+            tiny,
+            larger.as_bytes(),
+        ];
+
+        let mut scratch = ZlibCompressScratch::new();
+        for data in payloads.into_iter().cycle().take(15) {
+            let fresh = zlib_compress(data);
+            let reused = zlib_compress_with_scratch(data, &mut scratch);
+            assert_eq!(
+                reused,
+                fresh,
+                "scratch compression must be byte-identical for len {}",
+                data.len()
+            );
+        }
     }
 
     #[test]

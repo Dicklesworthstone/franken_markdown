@@ -3562,6 +3562,62 @@ fn pdf_svg_current_color_resolves_through_cascade_and_inheritance() {
 }
 
 #[test]
+fn pdf_svg_url_paint_current_color_fallbacks_resolve_only_when_resource_missing() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 24">
+  <defs>
+    <linearGradient id="real" gradientUnits="userSpaceOnUse" x1="50" y1="2" x2="62" y2="2">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .css-fallback {
+      color: #00ff00;
+      fill: url(#missing-css-fill) currentColor;
+      stroke: url(#missing-css-stroke) currentColor;
+      stroke-width: 2;
+    }
+  </style>
+  <rect x="2" y="2" width="10" height="8" color="#ff0000" fill="url(#missing-attr) currentColor"/>
+  <rect class="css-fallback" x="18" y="2" width="10" height="8"/>
+  <path d="M34 2 L44 2 L44 10 Z" style="fill: url(#missing-inline) currentColor; color: #0000ff"/>
+  <rect x="50" y="2" width="10" height="8" color="#ff00ff" fill="url(#real) currentColor"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "url-current-color-fallback.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint fallback](url-current-color-fallback.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("1.000 0.000 0.000 rg 2 2 10 8 re f"),
+        "presentation url(#missing) currentColor fallback should use the element color: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 0.000 rg 0.000 1.000 0.000 RG 2 w 0 J 0 j 4 M 18 2 10 8 re B"),
+        "stylesheet url(#missing) currentColor fallback should drive fill and stroke: {text}"
+    );
+    assert!(
+        text.contains("0.000 0.000 1.000 rg 34 2 m 44 2 l 44 10 l h f"),
+        "inline color declarations after fallback fill should still update currentColor: {text}"
+    );
+    assert!(
+        text.contains("q 50 2 10 8 re W n /SG1 sh"),
+        "a resolved paint server should still use native gradient shading before its fallback: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 1.000 rg 50 2 10 8 re f"),
+        "resolved url(#real) currentColor must not collapse to the fallback color: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_stylesheets_apply_document_wide_from_defs_and_late_positions() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 24">
@@ -3701,6 +3757,79 @@ fn pdf_svg_paint_order_reorders_fill_and_stroke_layers() {
 }
 
 #[test]
+fn pdf_svg_paint_order_resource_path_strokes_keep_native_layers() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16">
+  <defs>
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="2" y1="8" x2="28" y2="8">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M2 8 L28 8" fill="#00ff00" stroke="url(#edge)" stroke-width="2" paint-order="stroke fill"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("paint-order-gradient.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint order gradient](paint-order-gradient.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    let stroke = text
+        .find("q 2 9 m 28 9 l 28 7 l 2 7 l h W n /SG")
+        .expect("resource stroke layer should use a native shading clipped to the stroke outline");
+    let fill = text
+        .find("0.000 1.000 0.000 rg 2 8 m 28 8 l f\n")
+        .expect("fill layer should still render after the ordered resource stroke");
+    assert!(
+        stroke < fill,
+        "paint-order=stroke fill should shade the path stroke before the fill layer: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 8 m 28 8 l S\n"),
+        "ordered straight path gradient strokes should not collapse to the representative fallback color: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_paint_order_stroke_only_resource_paths_keep_native_layers() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16">
+  <defs>
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="2" y1="8" x2="28" y2="8">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M2 8 L28 8" fill="none" stroke="url(#edge)" stroke-width="2" paint-order="fill stroke"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "paint-order-stroke-only-gradient.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Paint order stroke-only gradient](paint-order-stroke-only-gradient.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 2 9 m 28 9 l 28 7 l 2 7 l h W n /SG"),
+        "stroke-only ordered straight path gradient strokes should use a native shading clip: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 8 m 28 8 l S\n"),
+        "stroke-only ordered straight path gradient strokes should not collapse to the representative fallback color: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_paint_order_reorders_marker_layers() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">
@@ -3807,13 +3936,17 @@ fn pdf_svg_gradient_paints_use_native_linear_shading_and_fallback_colors() {
       <stop offset="0" style="stop-color: #00ff00"/>
       <stop offset="1" style="stop-color: #0000ff; stop-opacity: 0.5"/>
     </radialGradient>
+    <linearGradient id="path-warm" gradientUnits="userSpaceOnUse" x1="2" y1="16" x2="28" y2="16">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
     <linearGradient id="line-warm" gradientUnits="userSpaceOnUse" x1="2" y1="24" x2="28" y2="24">
       <stop offset="0%" stop-color="#ff0000"/>
       <stop offset="100%" stop-color="#0000ff"/>
     </linearGradient>
   </defs>
   <style>
-    .gradient-stroke { stroke: url(#cool); }
+    .gradient-stroke { stroke: url(#path-warm); }
   </style>
   <rect x="2" y="2" width="10" height="10" fill="url(#warm)"/>
   <path class="gradient-stroke" d="M2 16 L28 16" fill="none" stroke-width="2"/>
@@ -3845,8 +3978,13 @@ fn pdf_svg_gradient_paints_use_native_linear_shading_and_fallback_colors() {
         "linearGradient fills should clip the shape and paint the registered shading: {text}"
     );
     assert!(
-        text.contains("0.250 0.750 0.500 RG 2 w 0 J 0 j 4 M 2 16 m 28 16 l S\n"),
-        "unsupported gradient strokes should retain deterministic representative vector colors: {text}"
+        text.contains("/ShadingType 2 /ColorSpace /DeviceRGB /Coords [2 16 28 16]")
+            && text.contains("q 2 17 m 28 17 l 28 15 l 2 15 l h W n /SG"),
+        "single-segment path gradient strokes should clip the stroked outline and paint a native PDF shading: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 16 m 28 16 l S\n"),
+        "single-segment path gradient strokes should not collapse to the representative fallback color: {text}"
     );
     assert!(
         text.contains("/ShadingType 2 /ColorSpace /DeviceRGB /Coords [2 24 28 24]")
@@ -3856,6 +3994,35 @@ fn pdf_svg_gradient_paints_use_native_linear_shading_and_fallback_colors() {
     assert!(
         text.contains("0.000 1.000 0.000 rg 34 2 10 10 re f\n"),
         "url(#missing) fallback colors should keep shapes visible instead of dropping paint: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_multi_segment_path_gradient_strokes_keep_representative_color_fallback() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 20">
+  <defs>
+    <linearGradient id="warm" gradientUnits="userSpaceOnUse" x1="2" y1="12" x2="26" y2="12">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#0000ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M2 12 L14 6 L26 12" stroke="url(#warm)" stroke-width="2" fill="none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "gradient-multi-stroke.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Gradient stroke](gradient-multi-stroke.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.500 0.000 0.500 RG 2 w 0 J 0 j 4 M 2 12 m 14 6 l 26 12 l S\n"),
+        "unsupported multi-segment path gradient strokes should still render with the representative fallback color: {text}"
     );
 }
 
@@ -4341,7 +4508,7 @@ fn pdf_svg_line_pattern_strokes_tile_vector_children_under_stroke_clip() {
 }
 
 #[test]
-fn pdf_svg_path_pattern_strokes_keep_representative_color_fallback() {
+fn pdf_svg_single_segment_path_pattern_strokes_tile_vector_children_under_stroke_clip() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16">
   <style>
@@ -4364,8 +4531,44 @@ fn pdf_svg_path_pattern_strokes_keep_representative_color_fallback() {
     let text = as_text(&pdf);
 
     assert!(
-        text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 12 m 18 12 l S\n"),
-        "arbitrary path pattern strokes should not disappear while falling back to the pattern representative color: {text}"
+        text.contains("q 2 13 m 18 13 l 18 11 l 2 11 l h W n q 1 0 0 1 0 8 cm"),
+        "single-segment path pattern strokes should clip pattern tiles to the stroked outline: {text}"
+    );
+    assert!(
+        text.contains(
+            "1.000 0.000 0.000 rg 0 0 2 4 re f\n0.000 0.000 1.000 rg 2 0 2 4 re f\nQ\nq 1 0 0 1 4 8 cm"
+        ),
+        "pattern stroke tiles should repeat vector children along the path stroke bbox: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 12 m 18 12 l S\n"),
+        "single-segment path pattern strokes should not collapse to the representative solid-color fallback: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_multi_segment_path_pattern_strokes_keep_representative_color_fallback() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16">
+  <defs>
+    <pattern id="stripe" patternUnits="userSpaceOnUse" width="4" height="4">
+      <rect x="0" y="0" width="2" height="4" fill="#ff0000"/>
+      <rect x="2" y="0" width="2" height="4" fill="#0000ff"/>
+    </pattern>
+  </defs>
+  <path d="M2 12 L10 8 L18 12" stroke="url(#stripe)" stroke-width="2" fill="none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-multi-stroke.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern stroke](pattern-multi-stroke.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 12 m 10 8 l 18 12 l S\n"),
+        "unsupported multi-segment path pattern strokes should still render with the representative fallback color: {text}"
     );
 }
 
@@ -5083,6 +5286,39 @@ fn pdf_svg_masks_apply_supported_hard_mask_geometry_as_pdf_clipping() {
 }
 
 #[test]
+fn pdf_svg_polyline_clip_and_mask_geometry_apply() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 28">
+  <defs>
+    <clipPath id="poly-clip">
+      <polyline points="4,4 24,4 24,20"/>
+    </clipPath>
+    <mask id="poly-mask">
+      <polyline points="42,4 64,4 64,20" fill="white"/>
+    </mask>
+  </defs>
+  <rect x="0" y="0" width="30" height="24" fill="#ff0000" clip-path="url(#poly-clip)"/>
+  <rect x="38" y="0" width="30" height="24" fill="#00ff00" mask="url(#poly-mask)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("polyline-clip-mask.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Polyline clip mask](polyline-clip-mask.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q 4 4 m 24 4 l 24 20 l W n 1.000 0.000 0.000 rg 0 0 30 24 re f\nQ"),
+        "polyline clipPath geometry should become a scoped PDF clipping path: {text}"
+    );
+    assert!(
+        text.contains("q 42 4 m 64 4 l 64 20 l W n 0.000 1.000 0.000 rg 38 0 30 24 re f\nQ"),
+        "white polyline mask geometry should become a scoped hard-mask clipping path: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_object_bounding_box_clip_and_mask_units_scale_to_target_geometry() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 36">
@@ -5755,6 +5991,10 @@ fn pdf_svg_anchor_links_emit_safe_uri_annotations() {
   <a href="HTTPS://EXAMPLE.com/diagram2">
     <rect x="4" y="24" width="24" height="10" fill="#3b82f6"/>
   </a>
+  <text x="38" y="13" font-size="6" fill="#111827">
+    <a href="https://example.com/text-inline">Inline</a>
+    <a href="javascript:alert(3)">Unsafe</a>
+  </text>
   <a href="javascript:alert(1)">
     <rect x="42" y="4" width="24" height="14" fill="#ef4444"/>
   </a>
@@ -5779,11 +6019,12 @@ fn pdf_svg_anchor_links_emit_safe_uri_annotations() {
     );
     assert_eq!(
         text.matches("/Subtype /Link").count(),
-        2,
+        3,
         "only the safe visible SVG anchors should become PDF link annotations: {text}"
     );
     assert!(text.contains("/URI (https://example.com/diagram)"));
     assert!(text.contains("/URI (HTTPS://EXAMPLE.com/diagram2)"));
+    assert!(text.contains("/URI (https://example.com/text-inline)"));
     assert!(
         !text.contains("https://example.com/invisible"),
         "safe but invisible SVG anchors should not create phantom PDF hitboxes"

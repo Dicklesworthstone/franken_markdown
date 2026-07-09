@@ -659,6 +659,48 @@ fn pdf_render_auto_loads_relative_svg_assets_for_file_inputs() {
 }
 
 #[test]
+fn pdf_file_input_auto_loads_showcase_frankenmermaid_svg_as_vector_content() {
+    let out_path = temp_file("showcase-frankenmermaid", "pdf");
+    let out_path_s = out_path.display().to_string();
+    let out = fmd_with_env(
+        &[
+            "examples/showcase.md",
+            "--to",
+            "pdf",
+            "--out",
+            &out_path_s,
+            "--json",
+        ],
+        &[("SOURCE_DATE_EPOCH", "1700000000")],
+    );
+
+    assert!(out.status.success(), "stderr: {}", text(&out.stderr));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        !stderr.contains("\"event\":\"warning\""),
+        "showcase file input should auto-load the sibling frankenmermaid SVG without warnings: {stderr}"
+    );
+    assert!(stderr.contains("\"format\":\"pdf\""));
+
+    let pdf = fs::read(&out_path).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(
+        !pdf_text.contains("/Subtype /Image"),
+        "the showcase frankenmermaid SVG should stay vector PDF content, not a raster XObject"
+    );
+    assert!(
+        !pdf_text.contains("/XObject << /Im"),
+        "the showcase frankenmermaid SVG should not allocate image XObjects"
+    );
+    assert!(pdf_text.contains("/S /Figure"));
+    assert!(pdf_text.contains("/Alt (franken_markdown rendering pipeline)"));
+    assert!(pdf_text.contains("/O /Layout /BBox ["));
+
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
 fn html_render_auto_loads_relative_svg_assets_for_file_inputs() {
     let dir = temp_dir("auto-svg-html-assets");
     let diagrams = dir.join("diagrams");

@@ -822,6 +822,7 @@ impl SvgShadow {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn first(&self) -> Option<SvgShadowLayer> {
         (self.len > 0).then_some(self.layers[0])
     }
@@ -2199,16 +2200,19 @@ impl WidthCache {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn entry_count(&self) -> usize {
         self.len
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn slot_len(&self, key: (u8, u32)) -> Option<usize> {
         self.entries.get(&key).map(HashMap::len)
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn contains(&self, key: (u8, u32), text: &str) -> bool {
         self.entries
             .get(&key)
@@ -2216,6 +2220,7 @@ impl WidthCache {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn contains_text(&self, text: &str) -> bool {
         self.entries
             .values()
@@ -2298,6 +2303,7 @@ impl SimpleParagraphLayoutCache {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn len(&self) -> usize {
         self.entries.len()
     }
@@ -2534,6 +2540,7 @@ impl TableLayoutCache {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn len(&self) -> usize {
         self.entries.len()
     }
@@ -3111,10 +3118,7 @@ fn parse_svg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
     let vector = parse_svg_document(src)?;
     let w = vector.viewport.w.ceil().max(1.0);
     let h = vector.viewport.h.ceil().max(1.0);
-    if !w.is_finite()
-        || !h.is_finite()
-        || (w as u64).saturating_mul(h as u64) > MAX_PDF_IMAGE_PIXELS
-    {
+    if (w as u64).saturating_mul(h as u64) > MAX_PDF_IMAGE_PIXELS {
         return None;
     }
     Some(PdfImageData {
@@ -3146,7 +3150,7 @@ fn svg_has_supported_root(src: &str) -> bool {
         };
         let raw = src[open + 1..open + close_rel].trim();
         pos = open + close_rel + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
         if raw.starts_with('/') {
@@ -3206,7 +3210,7 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
         let close = open + src.get(open..)?.find('>')?;
         let raw = src.get(open + 1..close)?.trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
 
@@ -3461,6 +3465,7 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                 let mut used = parse_svg_use_elements(
                     &attrs,
                     inherited,
+                    inherited_link.as_ref(),
                     &css_rules,
                     &gradients,
                     &patterns,
@@ -3472,13 +3477,12 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                     &selector_stack,
                     0,
                 );
-                apply_svg_links(&mut used, inherited_link.as_ref());
                 elements.append(&mut used);
             }
             "text" if !self_closing => {
                 if let Some(end_open) = find_svg_matching_end_tag(src, pos, tag_lower) {
                     let text_src = src.get(pos..end_open).unwrap_or_default();
-                    let mut text_elements = parse_svg_text_elements(
+                    let text_elements = parse_svg_text_elements(
                         &attrs,
                         text_src,
                         inherited,
@@ -3489,9 +3493,9 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
                         &clip_paths,
                         &filter_shadows,
                         &reusable_defs,
+                        inherited_link.as_ref(),
                         &selector_stack,
                     );
-                    apply_svg_links(&mut text_elements, inherited_link.as_ref());
                     elements.extend(text_elements);
                     if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
                         pos = end_open + tag_end + 1;
@@ -3511,9 +3515,6 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
         w: view_box.w,
         h: view_box.h,
     });
-    if view_box.w <= 0.0 || view_box.h <= 0.0 {
-        return None;
-    }
     if elements.is_empty() && root_background.is_none() {
         return None;
     }
@@ -4228,7 +4229,7 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
         let close = open + close_rel;
         let raw = src[open + 1..close].trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
 
@@ -4347,6 +4348,16 @@ fn svg_tag_parts(raw: &str) -> (&str, &str) {
     (&raw[..name_end], raw[name_end..].trim())
 }
 
+#[inline]
+fn svg_raw_tag_is_xml_noise(raw: &str) -> bool {
+    raw.is_empty() || raw.starts_with('?') || raw.starts_with('!')
+}
+
+#[inline]
+fn svg_raw_tag_is_non_content(raw: &str) -> bool {
+    svg_raw_tag_is_xml_noise(raw) || raw.starts_with('/')
+}
+
 fn svg_local_name(tag: &str) -> &str {
     tag.rsplit_once(':').map_or(tag, |(_, local)| local)
 }
@@ -4435,12 +4446,6 @@ fn push_svg_element(
 ) {
     apply_svg_link(&mut element, link);
     elements.push(element);
-}
-
-fn apply_svg_links(elements: &mut [SvgElement], link: Option<&LinkTarget>) {
-    for element in elements {
-        apply_svg_link(element, link);
-    }
 }
 
 fn apply_svg_link(element: &mut SvgElement, link: Option<&LinkTarget>) {
@@ -4994,7 +4999,7 @@ fn parse_svg_embedded_image(
 ) -> Option<SvgEmbeddedImage> {
     let w = svg_attr(attrs, "width").and_then(parse_svg_number)?;
     let h = svg_attr(attrs, "height").and_then(parse_svg_number)?;
-    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+    if w <= 0.0 || h <= 0.0 {
         return None;
     }
     let style = parse_svg_style_with_ancestors(
@@ -5180,6 +5185,7 @@ fn parse_svg_text_elements(
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
     reusable_defs: &[SvgReusableDef],
+    inherited_link: Option<&LinkTarget>,
     ancestors: &[SvgCssAncestor],
 ) -> Vec<SvgElement> {
     let style = parse_svg_style_with_ancestors(
@@ -5230,10 +5236,13 @@ fn parse_svg_text_elements(
                 },
                 style,
                 &positions,
+                inherited_link,
             );
             return elements;
         }
-        return svg_text_element(
+        let mut elements = Vec::new();
+        push_svg_text_element(
+            &mut elements,
             text,
             SvgTextPlacement {
                 x,
@@ -5244,9 +5253,9 @@ fn parse_svg_text_elements(
                 length_adjust,
             },
             style,
-        )
-        .into_iter()
-        .collect();
+            inherited_link,
+        );
+        return elements;
     }
 
     let mut elements = Vec::new();
@@ -5267,6 +5276,7 @@ fn parse_svg_text_elements(
         clip_paths,
         filter_shadows,
         reusable_defs,
+        inherited_link,
         &mut child_ancestors,
         0,
     );
@@ -5290,6 +5300,7 @@ fn push_svg_text_body_elements(
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
     reusable_defs: &[SvgReusableDef],
+    link: Option<&LinkTarget>,
     ancestors: &mut Vec<SvgCssAncestor>,
     depth: usize,
 ) -> (f32, f32) {
@@ -5313,6 +5324,7 @@ fn push_svg_text_body_elements(
                 length_adjust: SvgLengthAdjust::Spacing,
             },
             style,
+            link,
         );
         return (current_x + advance, current_y);
     }
@@ -5342,6 +5354,7 @@ fn push_svg_text_body_elements(
                 length_adjust: SvgLengthAdjust::Spacing,
             },
             style,
+            link,
         );
         current_x += advance;
 
@@ -5358,7 +5371,7 @@ fn push_svg_text_body_elements(
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -5377,6 +5390,56 @@ fn push_svg_text_body_elements(
             break;
         };
         pos = end_open + end_close_rel + 1;
+
+        if local.eq_ignore_ascii_case("a") {
+            let child_style = parse_svg_style_with_ancestors(
+                "a",
+                &child_attrs,
+                style,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                ancestors,
+            );
+            if !child_style.display_visible || child_style.opacity <= 0.001 {
+                continue;
+            }
+            let child_link = parse_svg_anchor_link(&child_attrs);
+            let child_link = match child_link.as_ref() {
+                Some(target) => target.as_ref(),
+                None => link,
+            };
+            ancestors.push(svg_css_ancestor("a", &child_attrs));
+            let (end_x, end_y) = push_svg_text_body_elements(
+                elements,
+                child_body,
+                current_x,
+                current_y,
+                child_style,
+                child_style.font_size,
+                child_style.text_anchor,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                reusable_defs,
+                child_link,
+                ancestors,
+                depth + 1,
+            );
+            ancestors.pop();
+            current_x = end_x;
+            current_y = end_y;
+            if elements.len() >= 256 {
+                break;
+            }
+            continue;
+        }
 
         if local.eq_ignore_ascii_case("textpath") {
             let child_style = parse_svg_style_with_ancestors(
@@ -5421,6 +5484,7 @@ fn push_svg_text_body_elements(
                         ),
                     },
                     path_text.style,
+                    link,
                 );
                 current_x = path_text.end.0;
                 current_y = path_text.end.1;
@@ -5440,6 +5504,7 @@ fn push_svg_text_body_elements(
                         ),
                     },
                     child_style,
+                    link,
                 );
                 current_x += advance;
             }
@@ -5496,6 +5561,7 @@ fn push_svg_text_body_elements(
                 clip_paths,
                 filter_shadows,
                 reusable_defs,
+                link,
                 ancestors,
                 depth + 1,
             );
@@ -5531,6 +5597,7 @@ fn push_svg_text_body_elements(
                     },
                     child_style,
                     &child_positions,
+                    link,
                 );
                 current_x = end_x;
                 current_y = end_y;
@@ -5543,7 +5610,7 @@ fn push_svg_text_body_elements(
                         child_style.word_spacing.to_points(child_font_size),
                     )
                 });
-                push_svg_text_element(elements, child_text, placement, child_style);
+                push_svg_text_element(elements, child_text, placement, child_style, link);
                 current_x = child_x + advance;
                 current_y = child_y;
             }
@@ -5576,6 +5643,7 @@ fn push_svg_text_body_elements(
                 length_adjust: SvgLengthAdjust::Spacing,
             },
             style,
+            link,
         );
         current_x += advance;
     }
@@ -5600,13 +5668,16 @@ fn svg_text_body_has_positioned_child(body: &str) -> bool {
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let (tag, _) = svg_tag_parts(raw);
         let tag_lower = tag.to_ascii_lowercase();
         let local = svg_local_name(&tag_lower);
-        if local.eq_ignore_ascii_case("tspan") || local.eq_ignore_ascii_case("textpath") {
+        if local.eq_ignore_ascii_case("tspan")
+            || local.eq_ignore_ascii_case("textpath")
+            || local.eq_ignore_ascii_case("a")
+        {
             return true;
         }
     }
@@ -5884,6 +5955,7 @@ fn push_svg_positioned_text_elements(
     placement: SvgTextPlacement,
     style: SvgStyle,
     positions: &SvgTextPositionLists,
+    link: Option<&LinkTarget>,
 ) -> (f32, f32) {
     let mut current_x = placement.x;
     let mut current_y = placement.y;
@@ -5916,6 +5988,7 @@ fn push_svg_positioned_text_elements(
                 ..placement
             },
             style,
+            link,
         );
         let mut buf = [0; 4];
         current_x += svg_text_advance(
@@ -5933,8 +6006,10 @@ fn push_svg_text_element(
     text: String,
     placement: SvgTextPlacement,
     style: SvgStyle,
+    link: Option<&LinkTarget>,
 ) {
-    if let Some(text) = svg_text_element(text, placement, style) {
+    if let Some(mut text) = svg_text_element(text, placement, style) {
+        apply_svg_link(&mut text, link);
         out.push(text);
     }
 }
@@ -6555,7 +6630,7 @@ fn parse_svg_use_refs(src: &str) -> Vec<String> {
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let (tag, attrs_src) = svg_tag_parts(raw);
@@ -6599,7 +6674,7 @@ fn parse_svg_reusable_defs(src: &str, referenced_ids: &[String]) -> Vec<SvgReusa
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -6685,7 +6760,7 @@ fn find_svg_matching_end_tag(src: &str, mut pos: usize, local_name: &str) -> Opt
         let close = open + src.get(open..)?.find('>')?;
         let raw = src.get(open + 1..close)?.trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
         let closing = raw.starts_with('/');
@@ -6787,7 +6862,7 @@ fn parse_svg_pattern_paints(
         let Some(h) = svg_attr(&attrs, "height").and_then(parse_svg_gradient_length) else {
             continue;
         };
-        if !w.value.is_finite() || !h.value.is_finite() || w.value <= 0.0 || h.value <= 0.0 {
+        if w.value <= 0.0 || h.value <= 0.0 {
             continue;
         }
         let mut ancestor_attrs = attrs.clone();
@@ -6796,6 +6871,7 @@ fn parse_svg_pattern_paints(
         let elements = parse_svg_reusable_body_elements(
             &resolved.body,
             SvgStyle::INITIAL,
+            None,
             css_rules,
             gradients,
             &[],
@@ -6862,7 +6938,7 @@ fn parse_svg_pattern_definitions(src: &str) -> Vec<SvgPatternDefinition> {
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -7043,7 +7119,7 @@ fn parse_svg_gradient_definitions(
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -7734,7 +7810,7 @@ fn parse_svg_markers(
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -7838,7 +7914,7 @@ fn parse_svg_marker_body(
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let (tag, attrs_src) = svg_tag_parts(raw);
@@ -7979,7 +8055,7 @@ fn parse_svg_clip_paths(src: &str) -> Vec<SvgClipPath> {
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -8046,7 +8122,7 @@ fn parse_svg_clip_path_body(
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let (tag, attrs_src) = svg_tag_parts(raw);
@@ -8093,7 +8169,7 @@ fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -8161,7 +8237,7 @@ fn parse_svg_mask_body(
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let (tag, attrs_src) = svg_tag_parts(raw);
@@ -8323,6 +8399,10 @@ fn svg_clip_shape_ops(local: &str, attrs: &[(String, String)]) -> Option<Vec<Svg
         "rect" => svg_clip_rect_ops(attrs),
         "circle" => svg_clip_circle_ops(attrs),
         "ellipse" => svg_clip_ellipse_ops(attrs),
+        "polyline" => svg_attr(attrs, "points")
+            .map(parse_svg_points)
+            .filter(|points| points.len() >= 3)
+            .map(|points| svg_poly_path_ops(&points, false)),
         "polygon" => svg_attr(attrs, "points")
             .map(parse_svg_points)
             .filter(|points| points.len() >= 3)
@@ -8711,6 +8791,7 @@ fn clean_svg_css_selector_wrapper(mut selectors: &str) -> &str {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[test]
 fn clean_svg_css_selector_wrapper_handles_exporter_wrappers() {
     assert_eq!(
@@ -8980,7 +9061,15 @@ fn parse_svg_style_patch(
         match name.as_str() {
             "color" => patch.color = parse_svg_color(value, css_vars),
             "fill" => {
-                if parse_svg_current_color_paint(value, css_vars) {
+                let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+                let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+                let fallback = parse_svg_missing_resource_paint_fallback(
+                    value,
+                    css_vars,
+                    gradient_ref.is_some() || pattern_ref.is_some(),
+                );
+                let paint_control_value = fallback.as_deref().unwrap_or(value);
+                if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.fill_current_color = Some(true);
                     patch.fill_context = Some(None);
                     patch.fill_gradient = Some(None);
@@ -8988,7 +9077,8 @@ fn parse_svg_style_patch(
                     if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
                         patch.fill_opacity = Some(alpha);
                     }
-                } else if let Some(context) = parse_svg_context_paint(value, css_vars) {
+                } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
+                {
                     patch.fill = Some(None);
                     patch.fill_current_color = Some(false);
                     patch.fill_context = Some(Some(context));
@@ -8998,8 +9088,6 @@ fn parse_svg_style_patch(
                         patch.fill_opacity = Some(alpha);
                     }
                 } else {
-                    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
-                    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
                     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
                         if paint.is_some() {
                             Some(paint)
@@ -9024,7 +9112,15 @@ fn parse_svg_style_patch(
                 }
             }
             "stroke" => {
-                if parse_svg_current_color_paint(value, css_vars) {
+                let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+                let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+                let fallback = parse_svg_missing_resource_paint_fallback(
+                    value,
+                    css_vars,
+                    gradient_ref.is_some() || pattern_ref.is_some(),
+                );
+                let paint_control_value = fallback.as_deref().unwrap_or(value);
+                if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.stroke_current_color = Some(true);
                     patch.stroke_context = Some(None);
                     patch.stroke_gradient = Some(None);
@@ -9032,7 +9128,8 @@ fn parse_svg_style_patch(
                     if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
                         patch.stroke_opacity = Some(alpha);
                     }
-                } else if let Some(context) = parse_svg_context_paint(value, css_vars) {
+                } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
+                {
                     patch.stroke = Some(None);
                     patch.stroke_current_color = Some(false);
                     patch.stroke_context = Some(Some(context));
@@ -9042,8 +9139,6 @@ fn parse_svg_style_patch(
                         patch.stroke_opacity = Some(alpha);
                     }
                 } else {
-                    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
-                    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
                     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
                         if paint.is_some() {
                             Some(paint)
@@ -9696,6 +9791,7 @@ fn parse_svg_marker_ref_declaration(
 fn parse_svg_use_elements(
     attrs: &[(String, String)],
     inherited: SvgStyle,
+    inherited_link: Option<&LinkTarget>,
     css_rules: &[SvgCssRule],
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
@@ -9748,9 +9844,20 @@ fn parse_svg_use_elements(
             );
             let mut def_ancestors = ancestors.to_vec();
             def_ancestors.push(svg_css_ancestor(def.tag.as_str(), &def.attrs));
-            let mut elements = parse_svg_reusable_body_elements(
+            let def_anchor_link = (def.tag == "a")
+                .then(|| {
+                    parse_svg_anchor_link(&def.attrs).unwrap_or_else(|| inherited_link.cloned())
+                })
+                .flatten();
+            let group_link = if def.tag == "a" {
+                def_anchor_link.as_ref()
+            } else {
+                inherited_link
+            };
+            parse_svg_reusable_body_elements(
                 body,
                 group_base,
+                group_link,
                 css_rules,
                 gradients,
                 patterns,
@@ -9761,18 +9868,12 @@ fn parse_svg_use_elements(
                 reusable_defs,
                 &def_ancestors,
                 depth + 1,
-            );
-            if def.tag == "a" {
-                apply_svg_links(
-                    &mut elements,
-                    parse_svg_anchor_link(&def.attrs).flatten().as_ref(),
-                );
-            }
-            elements
+            )
         }),
         "use" => parse_svg_use_elements(
             &def.attrs,
             base,
+            inherited_link,
             css_rules,
             gradients,
             patterns,
@@ -9796,24 +9897,29 @@ fn parse_svg_use_elements(
                 clip_paths,
                 filter_shadows,
                 reusable_defs,
+                inherited_link,
                 ancestors,
             )
         }),
-        _ => parse_svg_reusable_shape(
-            def.tag.as_str(),
-            &def.attrs,
-            base,
-            css_rules,
-            gradients,
-            patterns,
-            css_vars,
-            clip_paths,
-            filter_shadows,
-            markers,
-            ancestors,
-        )
-        .into_iter()
-        .collect(),
+        _ => {
+            let mut elements = Vec::new();
+            if let Some(element) = parse_svg_reusable_shape(
+                def.tag.as_str(),
+                &def.attrs,
+                base,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                markers,
+                ancestors,
+            ) {
+                push_svg_element(&mut elements, element, inherited_link);
+            }
+            elements
+        }
     }
 }
 
@@ -9843,11 +9949,8 @@ fn parse_svg_symbol_use_base_style(
         w: parse_svg_positive_attr(attrs, "width").unwrap_or(view_box.w),
         h: parse_svg_positive_attr(attrs, "height").unwrap_or(view_box.h),
     };
-    if let Some(transform) =
-        svg_view_box_to_viewport_transform(view_box, viewport, def.preserve_aspect)
-    {
-        style.transform = style.transform.concat(transform);
-    }
+    let transform = svg_view_box_to_viewport_transform(view_box, viewport, def.preserve_aspect);
+    style.transform = style.transform.concat(transform);
     style
 }
 
@@ -9855,40 +9958,34 @@ fn svg_view_box_to_viewport_transform(
     view_box: SvgViewBox,
     viewport: SvgViewport,
     preserve_aspect: SvgPreserveAspectRatio,
-) -> Option<SvgTransform> {
+) -> SvgTransform {
     let raw_sx = viewport.w / view_box.w;
     let raw_sy = viewport.h / view_box.h;
-    if ![raw_sx, raw_sy].iter().all(|value| value.is_finite()) || raw_sx <= 0.0 || raw_sy <= 0.0 {
-        return None;
-    }
     match preserve_aspect.mode {
-        SvgAspectScaleMode::None => Some(SvgTransform {
+        SvgAspectScaleMode::None => SvgTransform {
             a: raw_sx,
             d: raw_sy,
             e: -view_box.x * raw_sx,
             f: -view_box.y * raw_sy,
             ..SvgTransform::IDENTITY
-        }),
+        },
         SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
             let scale = if preserve_aspect.mode == SvgAspectScaleMode::Slice {
                 raw_sx.max(raw_sy)
             } else {
                 raw_sx.min(raw_sy)
             };
-            if !scale.is_finite() || scale <= 0.0 {
-                return None;
-            }
             let content_w = view_box.w * scale;
             let content_h = view_box.h * scale;
             let offset_x = (viewport.w - content_w) * preserve_aspect.align_x;
             let offset_y = (viewport.h - content_h) * preserve_aspect.align_y;
-            Some(SvgTransform {
+            SvgTransform {
                 a: scale,
                 d: scale,
                 e: offset_x - view_box.x * scale,
                 f: offset_y - view_box.y * scale,
                 ..SvgTransform::IDENTITY
-            })
+            }
         }
     }
 }
@@ -9933,6 +10030,7 @@ fn parse_svg_use_base_style(
 fn parse_svg_reusable_body_elements(
     body: &str,
     inherited: SvgStyle,
+    inherited_link: Option<&LinkTarget>,
     css_rules: &[SvgCssRule],
     gradients: &[SvgGradientPaint],
     patterns: &[SvgPatternPaint],
@@ -9951,7 +10049,7 @@ fn parse_svg_reusable_body_elements(
     let mut pos = 0usize;
     let mut skip_depth = 0usize;
     let mut style_stack = vec![inherited];
-    let mut link_stack: Vec<Option<LinkTarget>> = vec![None];
+    let mut link_stack: Vec<Option<LinkTarget>> = vec![inherited_link.cloned()];
     let mut selector_stack = ancestors.to_vec();
     while let Some(open_rel) = body.get(pos..).and_then(|s| s.find('<')) {
         let open = pos + open_rel;
@@ -9968,7 +10066,7 @@ fn parse_svg_reusable_body_elements(
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
         let closing = raw.starts_with('/');
@@ -10038,6 +10136,7 @@ fn parse_svg_reusable_body_elements(
                 let mut used = parse_svg_use_elements(
                     &attrs,
                     inherited,
+                    inherited_link.as_ref(),
                     css_rules,
                     gradients,
                     patterns,
@@ -10049,13 +10148,12 @@ fn parse_svg_reusable_body_elements(
                     &selector_stack,
                     depth + 1,
                 );
-                apply_svg_links(&mut used, inherited_link.as_ref());
                 elements.append(&mut used);
             }
             "text" if !self_closing => {
                 if let Some(end_open) = find_svg_matching_end_tag(body, pos, tag_lower) {
                     let text_src = body.get(pos..end_open).unwrap_or_default();
-                    let mut text_elements = parse_svg_text_elements(
+                    let text_elements = parse_svg_text_elements(
                         &attrs,
                         text_src,
                         inherited,
@@ -10066,9 +10164,9 @@ fn parse_svg_reusable_body_elements(
                         clip_paths,
                         filter_shadows,
                         reusable_defs,
+                        inherited_link.as_ref(),
                         &selector_stack,
                     );
-                    apply_svg_links(&mut text_elements, inherited_link.as_ref());
                     elements.extend(text_elements);
                     if let Some(tag_end) = body.get(end_open..).and_then(|s| s.find('>')) {
                         pos = end_open + tag_end + 1;
@@ -10323,7 +10421,7 @@ fn parse_svg_filter_shadows(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgFi
         let close = open + close_rel;
         let raw = src.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('/') || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_non_content(raw) {
             continue;
         }
         let self_closing = raw.trim_end().ends_with('/');
@@ -10382,7 +10480,7 @@ fn parse_svg_filter_shadow_body(body: &str, css_vars: &[SvgCssVariable]) -> Opti
         let close = open + close_rel;
         let raw = body.get(open + 1..close).unwrap_or_default().trim();
         pos = close + 1;
-        if raw.is_empty() || raw.starts_with('?') || raw.starts_with('!') {
+        if svg_raw_tag_is_xml_noise(raw) {
             continue;
         }
         if let Some(closing) = raw.strip_prefix('/') {
@@ -11434,7 +11532,15 @@ fn apply_svg_paint_attr(
         return;
     };
     let paint_alpha = parse_svg_paint_alpha(value, css_vars);
-    if parse_svg_current_color_paint(value, css_vars) {
+    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
+    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
+    let fallback = parse_svg_missing_resource_paint_fallback(
+        value,
+        css_vars,
+        gradient_ref.is_some() || pattern_ref.is_some(),
+    );
+    let paint_control_value = fallback.as_deref().unwrap_or(value);
+    if parse_svg_current_color_paint(paint_control_value, css_vars) {
         if target == "fill" {
             style.fill = Some(style.color);
             style.fill_gradient = None;
@@ -11456,7 +11562,7 @@ fn apply_svg_paint_attr(
         }
         return;
     }
-    if let Some(context) = parse_svg_context_paint(value, css_vars) {
+    if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars) {
         if target == "fill" {
             style.fill = None;
             style.fill_gradient = None;
@@ -11478,8 +11584,6 @@ fn apply_svg_paint_attr(
         }
         return;
     }
-    let gradient_ref = parse_svg_paint_gradient_ref(value, gradients, css_vars);
-    let pattern_ref = parse_svg_paint_pattern_ref(value, patterns, css_vars);
     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
         if (target == "fill" || target == "stroke") && paint.is_none() {
             pattern_ref
@@ -11534,6 +11638,25 @@ fn apply_svg_paint_attr(
             style.stroke_opacity = alpha;
         }
     }
+}
+
+fn parse_svg_missing_resource_paint_fallback(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    resource_resolved: bool,
+) -> Option<String> {
+    if resource_resolved {
+        return None;
+    }
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_missing_resource_paint_fallback(&resolved, css_vars, false);
+    }
+    parse_svg_paint_url_id(value)?;
+    let (_, fallback) = value.split_once(')')?;
+    let fallback = fallback.trim();
+    (!fallback.is_empty()).then(|| fallback.to_string())
 }
 
 fn parse_svg_current_color_paint(value: &str, css_vars: &[SvgCssVariable]) -> bool {
@@ -11741,15 +11864,163 @@ fn parse_svg_color_inner_with_alpha(
     if let Some(color) = parse_svg_rgb_function(value, css_vars) {
         return Some(color);
     }
-    let rgb = match value.to_ascii_lowercase().as_str() {
-        "black" => (0.0, 0.0, 0.0),
-        "white" => (1.0, 1.0, 1.0),
-        "red" => (1.0, 0.0, 0.0),
-        "green" => (0.0, 0.5, 0.0),
-        "blue" => (0.0, 0.0, 1.0),
+    parse_svg_named_color(value).map(|rgb| SvgParsedColor { rgb, alpha: None })
+}
+
+fn parse_svg_named_color(value: &str) -> Option<SvgColor> {
+    let hex = match value.to_ascii_lowercase().as_str() {
+        "aliceblue" => 0xF0F8FF,
+        "antiquewhite" => 0xFAEBD7,
+        "aqua" => 0x00FFFF,
+        "aquamarine" => 0x7FFFD4,
+        "azure" => 0xF0FFFF,
+        "beige" => 0xF5F5DC,
+        "bisque" => 0xFFE4C4,
+        "black" => 0x000000,
+        "blanchedalmond" => 0xFFEBCD,
+        "blue" => 0x0000FF,
+        "blueviolet" => 0x8A2BE2,
+        "brown" => 0xA52A2A,
+        "burlywood" => 0xDEB887,
+        "cadetblue" => 0x5F9EA0,
+        "chartreuse" => 0x7FFF00,
+        "chocolate" => 0xD2691E,
+        "coral" => 0xFF7F50,
+        "cornflowerblue" => 0x6495ED,
+        "cornsilk" => 0xFFF8DC,
+        "crimson" => 0xDC143C,
+        "cyan" => 0x00FFFF,
+        "darkblue" => 0x00008B,
+        "darkcyan" => 0x008B8B,
+        "darkgoldenrod" => 0xB8860B,
+        "darkgray" | "darkgrey" => 0xA9A9A9,
+        "darkgreen" => 0x006400,
+        "darkkhaki" => 0xBDB76B,
+        "darkmagenta" => 0x8B008B,
+        "darkolivegreen" => 0x556B2F,
+        "darkorange" => 0xFF8C00,
+        "darkorchid" => 0x9932CC,
+        "darkred" => 0x8B0000,
+        "darksalmon" => 0xE9967A,
+        "darkseagreen" => 0x8FBC8F,
+        "darkslateblue" => 0x483D8B,
+        "darkslategray" | "darkslategrey" => 0x2F4F4F,
+        "darkturquoise" => 0x00CED1,
+        "darkviolet" => 0x9400D3,
+        "deeppink" => 0xFF1493,
+        "deepskyblue" => 0x00BFFF,
+        "dimgray" | "dimgrey" => 0x696969,
+        "dodgerblue" => 0x1E90FF,
+        "firebrick" => 0xB22222,
+        "floralwhite" => 0xFFFAF0,
+        "forestgreen" => 0x228B22,
+        "fuchsia" => 0xFF00FF,
+        "gainsboro" => 0xDCDCDC,
+        "ghostwhite" => 0xF8F8FF,
+        "gold" => 0xFFD700,
+        "goldenrod" => 0xDAA520,
+        "gray" | "grey" => 0x808080,
+        "green" => 0x008000,
+        "greenyellow" => 0xADFF2F,
+        "honeydew" => 0xF0FFF0,
+        "hotpink" => 0xFF69B4,
+        "indianred" => 0xCD5C5C,
+        "indigo" => 0x4B0082,
+        "ivory" => 0xFFFFF0,
+        "khaki" => 0xF0E68C,
+        "lavender" => 0xE6E6FA,
+        "lavenderblush" => 0xFFF0F5,
+        "lawngreen" => 0x7CFC00,
+        "lemonchiffon" => 0xFFFACD,
+        "lightblue" => 0xADD8E6,
+        "lightcoral" => 0xF08080,
+        "lightcyan" => 0xE0FFFF,
+        "lightgoldenrodyellow" => 0xFAFAD2,
+        "lightgray" | "lightgrey" => 0xD3D3D3,
+        "lightgreen" => 0x90EE90,
+        "lightpink" => 0xFFB6C1,
+        "lightsalmon" => 0xFFA07A,
+        "lightseagreen" => 0x20B2AA,
+        "lightskyblue" => 0x87CEFA,
+        "lightslategray" | "lightslategrey" => 0x778899,
+        "lightsteelblue" => 0xB0C4DE,
+        "lightyellow" => 0xFFFFE0,
+        "lime" => 0x00FF00,
+        "limegreen" => 0x32CD32,
+        "linen" => 0xFAF0E6,
+        "magenta" => 0xFF00FF,
+        "maroon" => 0x800000,
+        "mediumaquamarine" => 0x66CDAA,
+        "mediumblue" => 0x0000CD,
+        "mediumorchid" => 0xBA55D3,
+        "mediumpurple" => 0x9370DB,
+        "mediumseagreen" => 0x3CB371,
+        "mediumslateblue" => 0x7B68EE,
+        "mediumspringgreen" => 0x00FA9A,
+        "mediumturquoise" => 0x48D1CC,
+        "mediumvioletred" => 0xC71585,
+        "midnightblue" => 0x191970,
+        "mintcream" => 0xF5FFFA,
+        "mistyrose" => 0xFFE4E1,
+        "moccasin" => 0xFFE4B5,
+        "navajowhite" => 0xFFDEAD,
+        "navy" => 0x000080,
+        "oldlace" => 0xFDF5E6,
+        "olive" => 0x808000,
+        "olivedrab" => 0x6B8E23,
+        "orange" => 0xFFA500,
+        "orangered" => 0xFF4500,
+        "orchid" => 0xDA70D6,
+        "palegoldenrod" => 0xEEE8AA,
+        "palegreen" => 0x98FB98,
+        "paleturquoise" => 0xAFEEEE,
+        "palevioletred" => 0xDB7093,
+        "papayawhip" => 0xFFEFD5,
+        "peachpuff" => 0xFFDAB9,
+        "peru" => 0xCD853F,
+        "pink" => 0xFFC0CB,
+        "plum" => 0xDDA0DD,
+        "powderblue" => 0xB0E0E6,
+        "purple" => 0x800080,
+        "rebeccapurple" => 0x663399,
+        "red" => 0xFF0000,
+        "rosybrown" => 0xBC8F8F,
+        "royalblue" => 0x4169E1,
+        "saddlebrown" => 0x8B4513,
+        "salmon" => 0xFA8072,
+        "sandybrown" => 0xF4A460,
+        "seagreen" => 0x2E8B57,
+        "seashell" => 0xFFF5EE,
+        "sienna" => 0xA0522D,
+        "silver" => 0xC0C0C0,
+        "skyblue" => 0x87CEEB,
+        "slateblue" => 0x6A5ACD,
+        "slategray" | "slategrey" => 0x708090,
+        "snow" => 0xFFFAFA,
+        "springgreen" => 0x00FF7F,
+        "steelblue" => 0x4682B4,
+        "tan" => 0xD2B48C,
+        "teal" => 0x008080,
+        "thistle" => 0xD8BFD8,
+        "tomato" => 0xFF6347,
+        "turquoise" => 0x40E0D0,
+        "violet" => 0xEE82EE,
+        "wheat" => 0xF5DEB3,
+        "white" => 0xFFFFFF,
+        "whitesmoke" => 0xF5F5F5,
+        "yellow" => 0xFFFF00,
+        "yellowgreen" => 0x9ACD32,
         _ => return None,
     };
-    Some(SvgParsedColor { rgb, alpha: None })
+    Some(svg_color_from_hex24(hex))
+}
+
+fn svg_color_from_hex24(hex: u32) -> SvgColor {
+    (
+        ((hex >> 16) & 0xff) as f32 / 255.0,
+        ((hex >> 8) & 0xff) as f32 / 255.0,
+        (hex & 0xff) as f32 / 255.0,
+    )
 }
 
 fn parse_svg_hex_color_with_alpha(hex: &str) -> Option<SvgParsedColor> {
@@ -14325,6 +14596,7 @@ fn font_size_of(size: f32) -> FontSize {
 /// kerning is intentionally dropped because the renderer emits separate text
 /// segments for distinct faces/link/strike groups.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
     if let [tok] = runs {
         return faces.shaped_width(tok.slot, token_visible_text(tok), fs);
@@ -16144,7 +16416,6 @@ fn serialize(
             .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
             .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
         let mut bg = String::with_capacity(bg_capacity);
-        let mut body = String::with_capacity(body_capacity);
         let mut shadings = Vec::new();
         let mut alpha_states = BTreeSet::new();
         let mut page_resources = SvgPageResources {
@@ -16259,6 +16530,7 @@ fn serialize(
         // (d) Text + rules. Prime the nonstroking color to the theme body color
         // so the first run (which equals `current_fill` and would otherwise skip
         // emitting `rg`) renders in the theme `fg`, not PDF-default black.
+        let mut body = finish_page_content_stream(bg, body_capacity);
         let mut current_fill = Fill::Black;
         append_rgb_fill_operator(&mut body, palette.fg);
         // Per-page logical-row tracking for table cells: a new table fragment
@@ -16455,10 +16727,8 @@ fn serialize(
         // wrap the whole prelude as one /Artifact so it stays out of the tagged
         // reading order. (Per-rule and per-quote-bar artifacts are wrapped at
         // their draw sites above and below.)
-        let stream = finish_page_content_stream(bg, body);
-
         scratch.pages.push(PageContent {
-            stream,
+            stream: body,
             shadings,
             alpha_states,
             annots,
@@ -16639,7 +16909,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
     let mut annot_owner: Vec<Vec<Option<usize>>> = Vec::with_capacity(pages.len());
 
     for (page_idx, page) in pages.iter().enumerate() {
-        let mut leaf_for_mcid: Vec<usize> = Vec::new();
+        let mut leaf_for_mcid: Vec<usize> = Vec::with_capacity(page.marks.len());
         // Currently open path elements below /Document: (sharing key, node index).
         let mut open: Vec<(SKey, usize)> = Vec::new();
         // Existing child of a parent, keyed by (parent node, element key). Reset
@@ -16708,10 +16978,12 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
             if nodes[owner].page.is_none() {
                 nodes[owner].page = Some(page_idx);
             }
-            if leaf_for_mcid.len() <= mark.mcid {
-                leaf_for_mcid.resize(mark.mcid + 1, 0);
-            }
-            leaf_for_mcid[mark.mcid] = owner;
+            debug_assert_eq!(
+                leaf_for_mcid.len(),
+                mark.mcid,
+                "PageContent marks must append one owner for each dense MCID"
+            );
+            leaf_for_mcid.push(owner);
         }
 
         // Reference each resolved link annotation back from its owning /Link
@@ -16747,6 +17019,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::indexing_slicing)]
 mod struct_tree_tests {
     use super::*;
@@ -16869,7 +17142,14 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
                 linked += 1;
             }
         }
-        if visible {
+        if !line.table_cols.is_empty() {
+            marks += line
+                .segs
+                .iter()
+                .zip(line.table_cols.iter())
+                .filter(|(seg, _)| !seg.text.is_empty())
+                .count();
+        } else if visible {
             marks += 1;
         }
     }
@@ -17080,6 +17360,7 @@ fn collect_svg_font_slot_text_refs<'a>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod font_slot_text_refs_tests {
     use super::*;
 
@@ -17294,28 +17575,20 @@ impl SvgImageTransform {
     }
 }
 
-fn svg_image_transform(
-    svg: &PdfSvgImage,
-    image: &ImageLine,
-    x: f32,
-    y: f32,
-) -> Option<SvgImageTransform> {
+fn svg_image_transform(svg: &PdfSvgImage, image: &ImageLine, x: f32, y: f32) -> SvgImageTransform {
     let raw_sx = image.width_pt / svg.view_box.w.max(1.0);
     let raw_sy = image.height_pt / svg.view_box.h.max(1.0);
-    if !raw_sx.is_finite() || !raw_sy.is_finite() || raw_sx <= 0.0 || raw_sy <= 0.0 {
-        return None;
-    }
     match svg.preserve_aspect.mode {
         SvgAspectScaleMode::None => {
             let tx = x - svg.view_box.x * raw_sx;
             let ty = y + image.height_pt + svg.view_box.y * raw_sy;
-            Some(SvgImageTransform {
+            SvgImageTransform {
                 sx: raw_sx,
                 sy: raw_sy,
                 tx,
                 ty,
                 viewport_clip: None,
-            })
+            }
         }
         SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
             let scale = if svg.preserve_aspect.mode == SvgAspectScaleMode::Slice {
@@ -17323,16 +17596,13 @@ fn svg_image_transform(
             } else {
                 raw_sx.min(raw_sy)
             };
-            if !scale.is_finite() || scale <= 0.0 {
-                return None;
-            }
             let content_w = svg.view_box.w * scale;
             let content_h = svg.view_box.h * scale;
             let offset_x = (image.width_pt - content_w) * svg.preserve_aspect.align_x;
             let offset_y = (image.height_pt - content_h) * svg.preserve_aspect.align_y;
             let tx = x + offset_x - svg.view_box.x * scale;
             let ty = y + image.height_pt - offset_y + svg.view_box.y * scale;
-            Some(SvgImageTransform {
+            SvgImageTransform {
                 sx: scale,
                 sy: scale,
                 tx,
@@ -17343,7 +17613,7 @@ fn svg_image_transform(
                     image.width_pt,
                     image.height_pt,
                 )),
-            })
+            }
         }
     }
 }
@@ -17351,7 +17621,7 @@ fn svg_image_transform(
 fn svg_uniform_stroke_scale(transform: SvgImageTransform) -> Option<f32> {
     let sx = transform.sx.abs();
     let sy = transform.sy.abs();
-    if sx.is_finite() && sy.is_finite() && sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
+    if sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
         Some((sx + sy) * 0.5)
     } else {
         None
@@ -17381,13 +17651,14 @@ fn svg_transform_preserves_stroke_scale(transform: SvgTransform) -> bool {
 fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTransform) {
     body.push_str("q ");
     if let Some((x, y, w, h)) = transform.viewport_clip {
-        body.push_str(&format!(
-            "{x} {y} {w} {h} re W n ",
-            x = pdf_num(x),
-            y = pdf_num(y),
-            w = pdf_num(w),
-            h = pdf_num(h),
-        ));
+        append_pdf_num(body, x);
+        body.push(' ');
+        append_pdf_num(body, y);
+        body.push(' ');
+        append_pdf_num(body, w);
+        body.push(' ');
+        append_pdf_num(body, h);
+        body.push_str(" re W n ");
     }
     append_pdf_cm_operator(
         body,
@@ -17453,16 +17724,15 @@ fn append_svg_root_background_color(
         append_svg_alpha_state_recorded(body, alpha_states, alpha, alpha);
         body.push(' ');
     }
-    body.push_str(&format!(
-        "{r} {g} {b} rg {x} {y} {w} {h} re f\nQ\n",
-        r = pdf_fixed3(r),
-        g = pdf_fixed3(g),
-        b = pdf_fixed3(b),
-        x = pdf_num(x),
-        y = pdf_num(y),
-        w = pdf_num(image.width_pt),
-        h = pdf_num(image.height_pt),
-    ));
+    append_rgb_fill_space_operator(body, (r, g, b));
+    append_pdf_num(body, x);
+    body.push(' ');
+    append_pdf_num(body, y);
+    body.push(' ');
+    append_pdf_num(body, image.width_pt);
+    body.push(' ');
+    append_pdf_num(body, image.height_pt);
+    body.push_str(" re f\nQ\n");
 }
 
 fn append_svg_root_background_layer(
@@ -17579,9 +17849,7 @@ fn draw_svg_image(
     let Some(svg) = image.image.vector.as_ref() else {
         return;
     };
-    let Some(transform) = svg_image_transform(svg, image, x, y) else {
-        return;
-    };
+    let transform = svg_image_transform(svg, image, x, y);
 
     if let Some(background) = svg.root_background.as_ref() {
         append_svg_root_background(body, background, image, x, y, page_resources);
@@ -17685,9 +17953,7 @@ fn svg_element_visible_for_link(element: &SvgElement) -> bool {
             svg_style_has_link_paint(poly.style)
         }
         SvgElement::Path(path) => svg_style_has_link_paint(path.style),
-        SvgElement::Image(image) => {
-            image.style.visible && image.style.opacity > 0.001 && image.w > 0.001 && image.h > 0.001
-        }
+        SvgElement::Image(image) => image.style.opacity > 0.001,
         SvgElement::Text(text) => {
             !text.text.is_empty() && (text.fill.is_some() || text.stroke.is_some())
         }
@@ -17785,7 +18051,7 @@ fn svg_text_link_bbox(text: &SvgText) -> Option<(f32, f32, f32, f32)> {
                 text.word_spacing,
             )
         });
-    if !width.is_finite() || width <= 0.001 || !text.font_size.is_finite() {
+    if width <= 0.001 {
         return None;
     }
     let x = match text.anchor {
@@ -17805,7 +18071,7 @@ fn svg_bbox_pdf_rect(
     image_transform: SvgImageTransform,
 ) -> Option<Rect> {
     let (x, y, w, h) = bbox;
-    if ![x, y, w, h].iter().all(|value| value.is_finite()) || w <= 0.001 || h <= 0.001 {
+    if w <= 0.001 || h <= 0.001 {
         return None;
     }
     let mut min_x = f32::INFINITY;
@@ -17815,9 +18081,6 @@ fn svg_bbox_pdf_rect(
     for (cx, cy) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
         let (sx, sy) = transform.apply_point(cx, cy);
         let (px, py) = image_transform.map_point(sx, sy);
-        if !px.is_finite() || !py.is_finite() {
-            return None;
-        }
         min_x = min_x.min(px);
         max_x = max_x.max(px);
         min_y = min_y.min(py);
@@ -17960,13 +18223,14 @@ fn append_svg_rect_path(body: &mut String, rect: &SvgRect) {
     let rx = rect.rx.min(rect.w * 0.5).max(0.0);
     let ry = rect.ry.min(rect.h * 0.5).max(0.0);
     if rx <= 0.0 || ry <= 0.0 {
-        body.push_str(&format!(
-            "{x} {y} {w} {h} re ",
-            x = pdf_num(rect.x),
-            y = pdf_num(rect.y),
-            w = pdf_num(rect.w),
-            h = pdf_num(rect.h),
-        ));
+        append_pdf_num(body, rect.x);
+        body.push(' ');
+        append_pdf_num(body, rect.y);
+        body.push(' ');
+        append_pdf_num(body, rect.w);
+        body.push(' ');
+        append_pdf_num(body, rect.h);
+        body.push_str(" re ");
     } else {
         append_svg_rounded_rect_path(body, rect.x, rect.y, rect.w, rect.h, rx, ry);
     }
@@ -18186,14 +18450,32 @@ fn append_svg_line_gradient_stroke(
     gradients: &[SvgGradientPaint],
     page_resources: &mut SvgPageResources<'_>,
 ) -> bool {
+    append_svg_straight_segment_gradient_stroke(
+        body,
+        (line.x1, line.y1),
+        (line.x2, line.y2),
+        style,
+        gradients,
+        page_resources,
+    )
+}
+
+fn append_svg_straight_segment_gradient_stroke(
+    body: &mut String,
+    from: (f32, f32),
+    to: (f32, f32),
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
     if style.dash.len > 0 || matches!(style.line_cap, SvgLineCap::Round) {
         return false;
     }
     let width = style.stroke_width;
-    let dx = line.x2 - line.x1;
-    let dy = line.y2 - line.y1;
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
     let len = (dx.mul_add(dx, dy * dy)).sqrt();
-    if ![line.x1, line.y1, line.x2, line.y2, width, len]
+    if ![from.0, from.1, to.0, to.1, width, len]
         .iter()
         .all(|value| value.is_finite())
         || width <= 0.001
@@ -18210,10 +18492,10 @@ fn append_svg_line_gradient_stroke(
         SvgLineCap::Square => half,
         SvgLineCap::Round => return false,
     };
-    let sx = line.x1 - ux * cap;
-    let sy = line.y1 - uy * cap;
-    let ex = line.x2 + ux * cap;
-    let ey = line.y2 + uy * cap;
+    let sx = from.0 - ux * cap;
+    let sy = from.1 - uy * cap;
+    let ex = to.0 + ux * cap;
+    let ey = to.1 + uy * cap;
     let nx = -uy * half;
     let ny = ux * half;
     let points = [
@@ -18222,9 +18504,6 @@ fn append_svg_line_gradient_stroke(
         (ex - nx, ey - ny),
         (sx - nx, sy - ny),
     ];
-    if !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-        return false;
-    }
     let min_x = points.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
     let max_x = points
         .iter()
@@ -18399,9 +18678,62 @@ fn draw_svg_poly(
     append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_poly_path(body, poly, closed);
     });
-    if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
-        append_svg_ordered_painted_shape_with_markers(
+    if style.paint_order == SvgPaintOrder::NORMAL
+        && (style.stroke_pattern.is_some() || style.stroke_gradient.is_some())
+    {
+        if svg_style_has_paint(style) {
+            append_svg_fill_layer(
+                body,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_resources,
+                stroke_scale,
+                poly_bbox,
+                &|body| append_svg_poly_path(body, poly, closed),
+            );
+            if !append_svg_poly_pattern_stroke(
+                body,
+                poly,
+                closed,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                stroke_scale,
+                page_resources,
+            ) && !append_svg_poly_gradient_stroke(
+                body,
+                poly,
+                closed,
+                style,
+                gradients,
+                page_resources,
+            ) {
+                append_svg_stroke_layer(body, style, &|body| {
+                    append_svg_poly_path(body, poly, closed);
+                });
+            }
+        }
+        if has_markers {
+            append_svg_poly_markers(
+                body,
+                poly,
+                markers,
+                style.stroke,
+                style.fill,
+                style.stroke_width,
+                page_resources.alpha_states,
+            );
+        }
+    } else if style.paint_order != SvgPaintOrder::NORMAL
+        && (svg_style_has_paint(style) || has_markers)
+    {
+        append_svg_ordered_poly_painted_shape(
             body,
+            poly,
+            closed,
             style,
             gradients,
             patterns,
@@ -18409,18 +18741,7 @@ fn draw_svg_poly(
             page_resources,
             stroke_scale,
             poly_bbox,
-            &|body| append_svg_poly_path(body, poly, closed),
-            |body, alpha_states| {
-                append_svg_poly_markers(
-                    body,
-                    poly,
-                    markers,
-                    style.stroke,
-                    style.fill,
-                    style.stroke_width,
-                    alpha_states,
-                );
-            },
+            markers,
         );
     } else {
         if svg_style_has_paint(style) {
@@ -18451,6 +18772,63 @@ fn draw_svg_poly(
     append_svg_transform_suffix(body, transformed);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn append_svg_ordered_poly_painted_shape(
+    body: &mut String,
+    poly: &SvgPoly,
+    closed: bool,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_resources: &mut SvgPageResources<'_>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    markers: &[SvgMarker],
+) {
+    for layer in style.paint_order.layers {
+        match layer {
+            SvgPaintLayer::Fill => {
+                append_svg_fill_layer(
+                    body,
+                    style,
+                    gradients,
+                    patterns,
+                    clip_paths,
+                    page_resources,
+                    stroke_scale,
+                    bbox,
+                    &|body| append_svg_poly_path(body, poly, closed),
+                );
+            }
+            SvgPaintLayer::Stroke => {
+                append_svg_poly_stroke_layer(
+                    body,
+                    poly,
+                    closed,
+                    style,
+                    gradients,
+                    patterns,
+                    clip_paths,
+                    stroke_scale,
+                    page_resources,
+                );
+            }
+            SvgPaintLayer::Markers => {
+                append_svg_poly_markers(
+                    body,
+                    poly,
+                    markers,
+                    style.stroke,
+                    style.fill,
+                    style.stroke_width,
+                    page_resources.alpha_states,
+                );
+            }
+        }
+    }
+}
+
 fn append_svg_poly_path(body: &mut String, poly: &SvgPoly, closed: bool) {
     let (x0, y0) = poly.points[0];
     append_svg_path_point_op(body, x0, y0, 'm');
@@ -18460,6 +18838,83 @@ fn append_svg_poly_path(body: &mut String, poly: &SvgPoly, closed: bool) {
     if closed {
         body.push_str("h ");
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_poly_stroke_layer(
+    body: &mut String,
+    poly: &SvgPoly,
+    closed: bool,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    append_svg_poly_pattern_stroke(
+        body,
+        poly,
+        closed,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    ) || append_svg_poly_gradient_stroke(body, poly, closed, style, gradients, page_resources)
+        || append_svg_stroke_layer(body, style, &|body| {
+            append_svg_poly_path(body, poly, closed);
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_poly_pattern_stroke(
+    body: &mut String,
+    poly: &SvgPoly,
+    closed: bool,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    if closed || poly.points.len() != 2 {
+        return false;
+    }
+    append_svg_straight_segment_pattern_stroke(
+        body,
+        poly.points[0],
+        poly.points[1],
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    )
+}
+
+fn append_svg_poly_gradient_stroke(
+    body: &mut String,
+    poly: &SvgPoly,
+    closed: bool,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    if closed || poly.points.len() != 2 {
+        return false;
+    }
+    append_svg_straight_segment_gradient_stroke(
+        body,
+        poly.points[0],
+        poly.points[1],
+        style,
+        gradients,
+        page_resources,
+    )
 }
 
 fn append_svg_poly_markers(
@@ -18595,9 +19050,54 @@ fn draw_svg_path(
     append_svg_shadow_layers(body, style, page_resources.alpha_states, |body| {
         append_svg_path_ops(body, &path.ops);
     });
-    if style.paint_order != SvgPaintOrder::NORMAL && has_markers {
-        append_svg_ordered_painted_shape_with_markers(
+    if style.paint_order == SvgPaintOrder::NORMAL
+        && (style.stroke_pattern.is_some() || style.stroke_gradient.is_some())
+    {
+        if svg_style_has_paint(style) {
+            append_svg_fill_layer(
+                body,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                page_resources,
+                stroke_scale,
+                path_bbox,
+                &|body| append_svg_path_ops(body, &path.ops),
+            );
+            if !append_svg_path_pattern_stroke(
+                body,
+                path,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                stroke_scale,
+                page_resources,
+            ) && !append_svg_path_gradient_stroke(body, path, style, gradients, page_resources)
+            {
+                append_svg_stroke_layer(body, style, &|body| {
+                    append_svg_path_ops(body, &path.ops);
+                });
+            }
+        }
+        if has_markers {
+            append_svg_path_markers(
+                body,
+                path,
+                markers,
+                style.stroke,
+                style.fill,
+                style.stroke_width,
+                page_resources.alpha_states,
+            );
+        }
+    } else if style.paint_order != SvgPaintOrder::NORMAL
+        && (svg_style_has_paint(style) || has_markers)
+    {
+        append_svg_ordered_path_painted_shape(
             body,
+            path,
             style,
             gradients,
             patterns,
@@ -18605,18 +19105,7 @@ fn draw_svg_path(
             page_resources,
             stroke_scale,
             path_bbox,
-            &|body| append_svg_path_ops(body, &path.ops),
-            |body, alpha_states| {
-                append_svg_path_markers(
-                    body,
-                    path,
-                    markers,
-                    style.stroke,
-                    style.fill,
-                    style.stroke_width,
-                    alpha_states,
-                );
-            },
+            markers,
         );
     } else {
         if svg_style_has_paint(style) {
@@ -18645,6 +19134,145 @@ fn draw_svg_path(
         }
     }
     append_svg_transform_suffix(body, transformed);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_ordered_path_painted_shape(
+    body: &mut String,
+    path: &SvgPath,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    page_resources: &mut SvgPageResources<'_>,
+    stroke_scale: Option<f32>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    markers: &[SvgMarker],
+) {
+    for layer in style.paint_order.layers {
+        match layer {
+            SvgPaintLayer::Fill => {
+                append_svg_fill_layer(
+                    body,
+                    style,
+                    gradients,
+                    patterns,
+                    clip_paths,
+                    page_resources,
+                    stroke_scale,
+                    bbox,
+                    &|body| append_svg_path_ops(body, &path.ops),
+                );
+            }
+            SvgPaintLayer::Stroke => {
+                append_svg_path_stroke_layer(
+                    body,
+                    path,
+                    style,
+                    gradients,
+                    patterns,
+                    clip_paths,
+                    stroke_scale,
+                    page_resources,
+                );
+            }
+            SvgPaintLayer::Markers => {
+                append_svg_path_markers(
+                    body,
+                    path,
+                    markers,
+                    style.stroke,
+                    style.fill,
+                    style.stroke_width,
+                    page_resources.alpha_states,
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_path_pattern_stroke(
+    body: &mut String,
+    path: &SvgPath,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    let Some((from, to)) = svg_path_single_line_segment(&path.ops) else {
+        return false;
+    };
+    append_svg_straight_segment_pattern_stroke(
+        body,
+        from,
+        to,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_path_stroke_layer(
+    body: &mut String,
+    path: &SvgPath,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    append_svg_path_pattern_stroke(
+        body,
+        path,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    ) || append_svg_path_gradient_stroke(body, path, style, gradients, page_resources)
+        || append_svg_stroke_layer(body, style, &|body| {
+            append_svg_path_ops(body, &path.ops);
+        })
+}
+
+fn append_svg_path_gradient_stroke(
+    body: &mut String,
+    path: &SvgPath,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    let Some((from, to)) = svg_path_single_line_segment(&path.ops) else {
+        return false;
+    };
+    append_svg_straight_segment_gradient_stroke(body, from, to, style, gradients, page_resources)
+}
+
+fn svg_path_single_line_segment(ops: &[SvgPathOp]) -> Option<((f32, f32), (f32, f32))> {
+    let mut start = None;
+    let mut segment = None;
+    for op in ops {
+        match *op {
+            SvgPathOp::Move(x, y) if start.is_none() && segment.is_none() => {
+                start = Some((x, y));
+            }
+            SvgPathOp::Line(x, y) if segment.is_none() => {
+                let from = start?;
+                segment = Some((from, (x, y)));
+            }
+            _ => return None,
+        }
+    }
+    segment
 }
 
 fn append_svg_path_markers(
@@ -18803,9 +19431,6 @@ fn draw_svg_embedded_image(
     page_resources: &mut SvgPageResources<'_>,
     stroke_scale: Option<f32>,
 ) {
-    if !image.style.visible || image.w <= 0.0 || image.h <= 0.0 {
-        return;
-    }
     let raster_idx = if image.image.vector.is_none() {
         let Some(idx) = image_index.get(image.image.key.as_str()) else {
             return;
@@ -18852,11 +19477,7 @@ fn draw_svg_embedded_image(
     {
         append_svg_clip_path(body, mask_path, Some((image.x, image.y, image.w, image.h)));
     }
-    let Some((draw_x, draw_y, draw_w, draw_h, viewport_clip)) = svg_embedded_image_rect(image)
-    else {
-        body.push_str("Q\n");
-        return;
-    };
+    let (draw_x, draw_y, draw_w, draw_h, viewport_clip) = svg_embedded_image_rect(image);
     if viewport_clip {
         body.push_str(&format!(
             "{x} {y} {w} {h} re W n ",
@@ -18898,9 +19519,7 @@ fn draw_svg_embedded_vector_image(
     page_resources: &mut SvgPageResources<'_>,
     parent_stroke_scale: Option<f32>,
 ) {
-    let Some((transform, viewport_clip)) = svg_embedded_vector_transform(svg, viewport) else {
-        return;
-    };
+    let (transform, viewport_clip) = svg_embedded_vector_transform(svg, viewport);
     body.push_str("q ");
     if let Some((x, y, w, h)) = viewport_clip {
         body.push_str(&format!(
@@ -18970,20 +19589,10 @@ const SVG_CURRENT_CTM_TEXT_TRANSFORM: SvgImageTransform = SvgImageTransform {
 fn svg_embedded_vector_transform(
     svg: &PdfSvgImage,
     viewport: SvgViewportRect,
-) -> Option<(SvgTransform, Option<SvgViewportRect>)> {
+) -> (SvgTransform, Option<SvgViewportRect>) {
     let (x, y, w, h) = viewport;
     let raw_sx = w / svg.view_box.w.max(1.0);
     let raw_sy = h / svg.view_box.h.max(1.0);
-    if ![x, y, w, h, raw_sx, raw_sy]
-        .iter()
-        .all(|value| value.is_finite())
-        || w <= 0.0
-        || h <= 0.0
-        || raw_sx <= 0.0
-        || raw_sy <= 0.0
-    {
-        return None;
-    }
 
     let (sx, sy, tx, ty, clip) = match svg.preserve_aspect.mode {
         SvgAspectScaleMode::None => (
@@ -18999,9 +19608,6 @@ fn svg_embedded_vector_transform(
             } else {
                 raw_sx.min(raw_sy)
             };
-            if !scale.is_finite() || scale <= 0.0 {
-                return None;
-            }
             let content_w = svg.view_box.w * scale;
             let content_h = svg.view_box.h * scale;
             let offset_x = (w - content_w) * svg.preserve_aspect.align_x;
@@ -19015,10 +19621,7 @@ fn svg_embedded_vector_transform(
             )
         }
     };
-    if ![sx, sy, tx, ty].iter().all(|value| value.is_finite()) {
-        return None;
-    }
-    Some((
+    (
         SvgTransform {
             a: sx,
             b: 0.0,
@@ -19028,7 +19631,7 @@ fn svg_embedded_vector_transform(
             f: ty,
         },
         clip,
-    ))
+    )
 }
 
 fn svg_uniform_svg_transform_scale(transform: SvgTransform) -> Option<f32> {
@@ -19037,29 +19640,19 @@ fn svg_uniform_svg_transform_scale(transform: SvgTransform) -> Option<f32> {
     }
     let sx = transform.a.abs();
     let sy = transform.d.abs();
-    if sx.is_finite() && sy.is_finite() && sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
+    if sx > 0.001 && sy > 0.001 && (sx - sy).abs() <= 0.0001 {
         Some((sx + sy) * 0.5)
     } else {
         None
     }
 }
 
-fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> Option<(f32, f32, f32, f32, bool)> {
+fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> (f32, f32, f32, f32, bool) {
     let intrinsic_w = image.image.width_px as f32;
     let intrinsic_h = image.image.height_px as f32;
-    if ![image.x, image.y, image.w, image.h, intrinsic_w, intrinsic_h]
-        .iter()
-        .all(|value| value.is_finite())
-        || image.w <= 0.0
-        || image.h <= 0.0
-        || intrinsic_w <= 0.0
-        || intrinsic_h <= 0.0
-    {
-        return None;
-    }
 
     match image.preserve_aspect.mode {
-        SvgAspectScaleMode::None => Some((image.x, image.y, image.w, image.h, false)),
+        SvgAspectScaleMode::None => (image.x, image.y, image.w, image.h, false),
         SvgAspectScaleMode::Meet | SvgAspectScaleMode::Slice => {
             let sx = image.w / intrinsic_w;
             let sy = image.h / intrinsic_h;
@@ -19068,23 +19661,17 @@ fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> Option<(f32, f32, f32, f
             } else {
                 sx.min(sy)
             };
-            if !scale.is_finite() || scale <= 0.0 {
-                return None;
-            }
             let draw_w = intrinsic_w * scale;
             let draw_h = intrinsic_h * scale;
             let draw_x = image.x + (image.w - draw_w) * image.preserve_aspect.align_x;
             let draw_y = image.y + (image.h - draw_h) * image.preserve_aspect.align_y;
-            [draw_x, draw_y, draw_w, draw_h]
-                .iter()
-                .all(|value| value.is_finite())
-                .then_some((
-                    draw_x,
-                    draw_y,
-                    draw_w,
-                    draw_h,
-                    image.preserve_aspect.mode == SvgAspectScaleMode::Slice,
-                ))
+            (
+                draw_x,
+                draw_y,
+                draw_w,
+                draw_h,
+                image.preserve_aspect.mode == SvgAspectScaleMode::Slice,
+            )
         }
     }
 }
@@ -19180,7 +19767,7 @@ fn append_svg_clip_path(
 
 fn svg_object_bbox_transform(bbox: Option<(f32, f32, f32, f32)>) -> Option<SvgTransform> {
     let (x, y, w, h) = bbox?;
-    if ![x, y, w, h].iter().all(|value| value.is_finite()) || w <= 0.001 || h <= 0.001 {
+    if w <= 0.001 || h <= 0.001 {
         return None;
     }
     Some(SvgTransform::translate(x, y).concat(SvgTransform::scale(w, h)))
@@ -19193,6 +19780,7 @@ fn append_svg_transform_suffix(body: &mut String, transformed: bool) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn append_svg_shadow_prefix(
     body: &mut String,
     style: SvgStyle,
@@ -19583,6 +20171,31 @@ fn append_svg_line_pattern_stroke(
     stroke_scale: Option<f32>,
     page_resources: &mut SvgPageResources<'_>,
 ) -> bool {
+    append_svg_straight_segment_pattern_stroke(
+        body,
+        (line.x1, line.y1),
+        (line.x2, line.y2),
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_straight_segment_pattern_stroke(
+    body: &mut String,
+    from: (f32, f32),
+    to: (f32, f32),
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
     if style.dash.len > 0 || matches!(style.line_cap, SvgLineCap::Round) {
         return false;
     }
@@ -19590,10 +20203,10 @@ fn append_svg_line_pattern_stroke(
         return false;
     };
     let width = style.stroke_width;
-    let dx = line.x2 - line.x1;
-    let dy = line.y2 - line.y1;
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
     let len = (dx.mul_add(dx, dy * dy)).sqrt();
-    if ![line.x1, line.y1, line.x2, line.y2, width, len]
+    if ![from.0, from.1, to.0, to.1, width, len]
         .iter()
         .all(|value| value.is_finite())
         || width <= 0.001
@@ -19610,10 +20223,10 @@ fn append_svg_line_pattern_stroke(
         SvgLineCap::Square => half,
         SvgLineCap::Round => return false,
     };
-    let sx = line.x1 - ux * cap;
-    let sy = line.y1 - uy * cap;
-    let ex = line.x2 + ux * cap;
-    let ey = line.y2 + uy * cap;
+    let sx = from.0 - ux * cap;
+    let sy = from.1 - uy * cap;
+    let ex = to.0 + ux * cap;
+    let ey = to.1 + uy * cap;
     let nx = -uy * half;
     let ny = ux * half;
     let points = [
@@ -19622,9 +20235,6 @@ fn append_svg_line_pattern_stroke(
         (ex - nx, ey - ny),
         (sx - nx, sy - ny),
     ];
-    if !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-        return false;
-    }
     let min_x = points.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
     let max_x = points
         .iter()
@@ -19768,25 +20378,24 @@ where
                 body.push(' ');
             }
             if let Some(view_box) = pattern.view_box {
-                if let Some(transform) = svg_view_box_to_viewport_transform(
+                let transform = svg_view_box_to_viewport_transform(
                     view_box,
                     SvgViewport {
                         w: pattern_w,
                         h: pattern_h,
                     },
                     pattern.preserve_aspect,
-                ) {
-                    append_pdf_cm_operator(
-                        body,
-                        transform.a,
-                        transform.b,
-                        transform.c,
-                        transform.d,
-                        transform.e,
-                        transform.f,
-                    );
-                    body.push(' ');
-                }
+                );
+                append_pdf_cm_operator(
+                    body,
+                    transform.a,
+                    transform.b,
+                    transform.c,
+                    transform.d,
+                    transform.e,
+                    transform.f,
+                );
+                body.push(' ');
             } else if pattern.content_units == SvgGradientUnits::ObjectBoundingBox {
                 append_pdf_cm_operator(body, bw, 0.0, 0.0, bh, 0.0, 0.0);
                 body.push(' ');
@@ -19833,12 +20442,7 @@ fn svg_pattern_user_space_coord(length: SvgGradientLength) -> f32 {
 
 fn append_svg_stroke_style(body: &mut String, style: SvgStyle) {
     if let Some((r, g, b)) = style.stroke {
-        body.push_str(&format!(
-            "{} {} {} RG ",
-            pdf_fixed3(r),
-            pdf_fixed3(g),
-            pdf_fixed3(b)
-        ));
+        append_rgb_stroke_space_operator(body, (r, g, b));
         append_svg_stroke_options(body, style);
     }
 }
@@ -20130,9 +20734,6 @@ fn resolve_svg_radial_gradient_circle(
         }
     };
     let radius = (rx + ry) * 0.5;
-    if !rx.is_finite() || !ry.is_finite() || !radius.is_finite() {
-        return None;
-    }
     if !svg_radii_are_circular(rx, ry, radius) {
         return None;
     }
@@ -20230,7 +20831,14 @@ fn pdf_shadings_fit(existing: &[PdfShading], shadings: &[PdfShading]) -> bool {
 }
 
 fn pdf_shading_name(index: usize) -> String {
-    format!("SG{}", index + 1)
+    let mut name = String::with_capacity(4);
+    append_pdf_shading_name(&mut name, index);
+    name
+}
+
+fn append_pdf_shading_name(out: &mut String, index: usize) {
+    out.push_str("SG");
+    append_decimal_usize_string(out, index + 1);
 }
 
 fn svg_style_has_paint(style: SvgStyle) -> bool {
@@ -20679,7 +21287,7 @@ fn svg_marker_view_box_transform(marker: &SvgMarker) -> Option<SvgMarkerViewBoxT
     let viewport = marker_view_box.viewport;
     let raw_sx = viewport.w / view_box.w;
     let raw_sy = viewport.h / view_box.h;
-    if ![raw_sx, raw_sy].iter().all(|value| value.is_finite()) || raw_sx <= 0.0 || raw_sy <= 0.0 {
+    if raw_sx <= 0.0 || raw_sy <= 0.0 {
         return None;
     }
     match marker_view_box.preserve_aspect.mode {
@@ -20695,7 +21303,7 @@ fn svg_marker_view_box_transform(marker: &SvgMarker) -> Option<SvgMarkerViewBoxT
             } else {
                 raw_sx.min(raw_sy)
             };
-            if !scale.is_finite() || scale <= 0.0 {
+            if scale <= 0.0 {
                 return None;
             }
             let content_w = view_box.w * scale;
@@ -20758,18 +21366,19 @@ fn append_svg_arrowhead(
     let perp = (-uy * half, ux * half);
     let p1 = (base.0 + perp.0, base.1 + perp.1);
     let p2 = (base.0 - perp.0, base.1 - perp.1);
-    body.push_str(&format!(
-        "{r} {g} {b} rg {x1} {y1} m {tx} {ty} l {x2} {y2} l h f\n",
-        r = pdf_fixed3(color.0),
-        g = pdf_fixed3(color.1),
-        b = pdf_fixed3(color.2),
-        x1 = pdf_num(p1.0),
-        y1 = pdf_num(p1.1),
-        tx = pdf_num(tip.0),
-        ty = pdf_num(tip.1),
-        x2 = pdf_num(p2.0),
-        y2 = pdf_num(p2.1),
-    ));
+    append_rgb_fill_space_operator(body, color);
+    append_pdf_num(body, p1.0);
+    body.push(' ');
+    append_pdf_num(body, p1.1);
+    body.push_str(" m ");
+    append_pdf_num(body, tip.0);
+    body.push(' ');
+    append_pdf_num(body, tip.1);
+    body.push_str(" l ");
+    append_pdf_num(body, p2.0);
+    body.push(' ');
+    append_pdf_num(body, p2.1);
+    body.push_str(" l h f\n");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -20938,8 +21547,7 @@ fn draw_svg_text(
             }
         }
     }
-    if !text.decoration.is_empty() && width > 0.001 && width.is_finite() && matrix.size.is_finite()
-    {
+    if !text.decoration.is_empty() && width > 0.001 {
         if let Some((decoration_color, decoration_alpha)) = text
             .fill
             .map(|color| (color, fill_alpha))
@@ -20965,10 +21573,10 @@ fn svg_text_pdf_stroke_width(
     transform: SvgTransform,
     image_transform: SvgImageTransform,
 ) -> f32 {
-    if !stroke_width.is_finite() || stroke_width <= 0.001 {
+    if stroke_width <= 0.001 {
         return 0.0;
     }
-    let scale = if font_size.is_finite() && font_size > 0.001 && matrix_size.is_finite() {
+    let scale = if font_size > 0.001 {
         matrix_size / font_size
     } else {
         1.0
@@ -21075,7 +21683,7 @@ fn append_svg_text_decoration(
     width: f32,
     color: SvgColor,
 ) {
-    if decoration.is_empty() || width <= 0.001 || !width.is_finite() || !matrix.size.is_finite() {
+    if decoration.is_empty() || width <= 0.001 {
         return;
     }
     let stroke_width = (matrix.size * 0.055).clamp(0.35, 3.0);
@@ -21133,7 +21741,7 @@ fn svg_text_layout_adjustment(
     let Some(target_width) = svg_text_target_width_for_matrix(text, matrix) else {
         return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
     };
-    if target_width < 0.0 || !target_width.is_finite() || natural_width <= 0.001 {
+    if natural_width <= 0.001 {
         return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
     }
     match text.length_adjust {
@@ -21200,7 +21808,7 @@ fn svg_text_width_with_spacing(
 }
 
 fn pdf_tj_spacing_adjust(spacing: f32, font_size: f32) -> i32 {
-    if !spacing.is_finite() || !font_size.is_finite() || font_size <= 0.001 {
+    if font_size <= 0.001 {
         return 0;
     }
     let adjustment = -(spacing * 1000.0 / font_size).round();
@@ -21902,6 +22510,7 @@ fn render_tree_debug(markdown: &str, opts: &PdfOptions) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod keep_with_next_tests {
     use super::*;
 
@@ -22320,17 +22929,17 @@ fn append_page_background_rounded_rect_fill(
     append_rounded_rect_fill(out, x0, y0, x1, y1, r, c);
 }
 
-fn finish_page_content_stream(mut bg: String, body: String) -> String {
+fn finish_page_content_stream(mut bg: String, body_capacity: usize) -> String {
     if bg.is_empty() {
-        return body;
+        return String::with_capacity(body_capacity);
     }
-    bg.reserve(body.len().saturating_add(4));
+    bg.reserve(body_capacity.saturating_add(4));
     bg.push_str("EMC\n");
-    bg.push_str(&body);
     bg
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f32)) -> String {
     let mut out = String::new();
     append_rounded_rect_fill(&mut out, x0, y0, x1, y1, r, c);
@@ -22531,6 +23140,28 @@ struct PdfOutlineItemObjectParts<'a> {
     y: f32,
 }
 
+struct PdfType0FontObjectParts<'a> {
+    object_id: usize,
+    psname: &'a str,
+    cid_object_id: usize,
+    tounicode_object_id: usize,
+}
+
+struct PdfCidFontObjectParts<'a> {
+    object_id: usize,
+    psname: &'a str,
+    descriptor_object_id: usize,
+    widths: &'a str,
+}
+
+struct PdfFontDescriptorObjectParts<'a> {
+    object_id: usize,
+    psname: &'a str,
+    metrics: &'a FaceMetrics,
+    italic_angle: i32,
+    fontfile_object_id: usize,
+}
+
 struct PdfParentTreeObjectParts<'a, F>
 where
     F: Fn(usize) -> usize,
@@ -22600,6 +23231,100 @@ fn append_pdf_outline_item_object(
     out.extend_from_slice(b" /XYZ null ");
     append_pdf_num_bytes(out, parts.y);
     out.extend_from_slice(b" null] >>\nendobj\n");
+}
+
+fn append_pdf_type0_font_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfType0FontObjectParts<'_>,
+) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Type /Font /Subtype /Type0 /BaseFont /");
+    out.extend_from_slice(parts.psname.as_bytes());
+    out.extend_from_slice(b" /Encoding /Identity-H /DescendantFonts [");
+    append_pdf_object_ref_bytes(out, parts.cid_object_id);
+    out.extend_from_slice(b"] /ToUnicode ");
+    append_pdf_object_ref_bytes(out, parts.tounicode_object_id);
+    out.extend_from_slice(b" >>\nendobj\n");
+}
+
+fn append_pdf_cid_font_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfCidFontObjectParts<'_>,
+) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /");
+    out.extend_from_slice(parts.psname.as_bytes());
+    out.extend_from_slice(
+        b" /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+          /FontDescriptor ",
+    );
+    append_pdf_object_ref_bytes(out, parts.descriptor_object_id);
+    out.extend_from_slice(b" /CIDToGIDMap /Identity /DW 1000 /W [");
+    out.extend_from_slice(parts.widths.as_bytes());
+    out.extend_from_slice(b"] >>\nendobj\n");
+}
+
+fn append_pdf_font_descriptor_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    parts: PdfFontDescriptorObjectParts<'_>,
+) {
+    offsets[parts.object_id] = out.len();
+    append_pdf_object_header(out, parts.object_id);
+    out.extend_from_slice(b"<< /Type /FontDescriptor /FontName /");
+    out.extend_from_slice(parts.psname.as_bytes());
+    out.extend_from_slice(b" /Flags 4 /FontBBox [-200 ");
+    append_i32_bytes(out, parts.metrics.descent - 50);
+    out.extend_from_slice(b" 1100 ");
+    append_i32_bytes(out, parts.metrics.ascent + 50);
+    out.extend_from_slice(b"] /ItalicAngle ");
+    append_i32_bytes(out, parts.italic_angle);
+    out.extend_from_slice(b" /Ascent ");
+    append_i32_bytes(out, parts.metrics.ascent);
+    out.extend_from_slice(b" /Descent ");
+    append_i32_bytes(out, parts.metrics.descent);
+    out.extend_from_slice(b" /CapHeight ");
+    append_i32_bytes(out, parts.metrics.cap_height);
+    out.extend_from_slice(b" /StemV 80 /FontFile2 ");
+    append_pdf_object_ref_bytes(out, parts.fontfile_object_id);
+    out.extend_from_slice(b" >>\nendobj\n");
+}
+
+fn append_pdf_fontfile2_stream_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
+    compressed_font: &[u8],
+    decoded_len: usize,
+) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(b"<< /Length ");
+    append_decimal_usize(out, compressed_font.len());
+    out.extend_from_slice(b" /Length1 ");
+    append_decimal_usize(out, decoded_len);
+    out.extend_from_slice(b" /Filter /FlateDecode >>\nstream\n");
+    out.extend_from_slice(compressed_font);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+}
+
+fn append_pdf_tounicode_stream_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
+    cmap: &str,
+) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(b"<< /Length ");
+    append_decimal_usize(out, cmap.len());
+    out.extend_from_slice(b" >>\nstream\n");
+    out.extend_from_slice(cmap.as_bytes());
+    out.extend_from_slice(b"endstream\nendobj\n");
 }
 
 fn append_pdf_parent_tree_object<F>(
@@ -22716,6 +23441,13 @@ fn append_pdf_object_ref_list_bytes(out: &mut Vec<u8>, refs: impl IntoIterator<I
 fn append_pdf_object_ref_bytes(out: &mut Vec<u8>, object_id: usize) {
     append_decimal_usize(out, object_id);
     out.extend_from_slice(b" 0 R");
+}
+
+fn append_i32_bytes(out: &mut Vec<u8>, value: i32) {
+    if value < 0 {
+        out.push(b'-');
+    }
+    append_decimal_u64(out, i64::from(value).unsigned_abs());
 }
 
 fn append_decimal_u64(out: &mut Vec<u8>, value: u64) {
@@ -22871,6 +23603,7 @@ fn append_pdf_struct_element_object(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn append_struct_kid_list_string(
     out: &mut String,
     kids: &[SKid],
@@ -22998,7 +23731,10 @@ fn append_marked_content_begin(out: &mut String, tag: &str, mcid: usize) {
     out.push_str(">> BDC\n");
 }
 
-fn page_stream(stream: &str) -> PdfStream<'_> {
+fn page_stream<'a>(
+    stream: &'a str,
+    compress_scratch: &mut crate::compress::ZlibCompressScratch,
+) -> PdfStream<'a> {
     let raw = stream.as_bytes();
     if raw.len() < PAGE_STREAM_COMPRESSION_MIN {
         return PdfStream {
@@ -23008,7 +23744,7 @@ fn page_stream(stream: &str) -> PdfStream<'_> {
         };
     }
 
-    let compressed = crate::compress::zlib_compress(raw);
+    let compressed = crate::compress::zlib_compress_with_scratch(raw, compress_scratch);
     if compressed.len() + 32 < raw.len() {
         PdfStream {
             bytes: Cow::Owned(compressed),
@@ -23053,90 +23789,133 @@ fn pdf_shading_resource(shadings: &[PdfShading]) -> String {
     if shadings.is_empty() {
         return String::new();
     }
-    let entries = shadings
+
+    let capped = shadings.len().min(256);
+    let segment_count = shadings
         .iter()
         .take(256)
-        .enumerate()
-        .map(|(index, shading)| {
-            let function = pdf_shading_function(&shading.stops);
-            let extend_start = if shading.extend_start {
-                "true"
-            } else {
-                "false"
-            };
-            let extend_end = if shading.extend_end { "true" } else { "false" };
-            match shading.kind {
-                PdfShadingKind::Axial(coords) => format!(
-                    "/{} << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [{} {} {} {}] \
-                     /Function {function} /Extend [{extend_start} {extend_end}] >>",
-                    pdf_shading_name(index),
-                    pdf_num(coords[0]),
-                    pdf_num(coords[1]),
-                    pdf_num(coords[2]),
-                    pdf_num(coords[3]),
-                ),
-                PdfShadingKind::Radial(coords) => format!(
-                    "/{} << /ShadingType 3 /ColorSpace /DeviceRGB /Coords [{} {} {} {} {} {}] \
-                     /Function {function} /Extend [{extend_start} {extend_end}] >>",
-                    pdf_shading_name(index),
-                    pdf_num(coords[0]),
-                    pdf_num(coords[1]),
-                    pdf_num(coords[2]),
-                    pdf_num(coords[3]),
-                    pdf_num(coords[4]),
-                    pdf_num(coords[5]),
-                ),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(" /Shading << {entries} >>")
+        .map(|shading| shading.stops.len().saturating_sub(1).max(1))
+        .sum::<usize>();
+    let mut out = String::with_capacity(
+        16usize
+            .saturating_add(capped.saturating_mul(96))
+            .saturating_add(segment_count.saturating_mul(92)),
+    );
+    append_pdf_shading_resource(&mut out, shadings);
+    out
 }
 
-fn pdf_shading_function(stops: &[SvgGradientStop]) -> String {
+fn append_pdf_shading_resource(out: &mut String, shadings: &[PdfShading]) {
+    if shadings.is_empty() {
+        return;
+    }
+    out.push_str(" /Shading << ");
+    for (index, shading) in shadings.iter().take(256).enumerate() {
+        if index != 0 {
+            out.push(' ');
+        }
+        append_pdf_shading_entry(out, index, shading);
+    }
+    out.push_str(" >>");
+}
+
+fn append_pdf_shading_entry(out: &mut String, index: usize, shading: &PdfShading) {
+    out.push('/');
+    append_pdf_shading_name(out, index);
+    match shading.kind {
+        PdfShadingKind::Axial(coords) => {
+            out.push_str(" << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [");
+            append_pdf_num(out, coords[0]);
+            out.push(' ');
+            append_pdf_num(out, coords[1]);
+            out.push(' ');
+            append_pdf_num(out, coords[2]);
+            out.push(' ');
+            append_pdf_num(out, coords[3]);
+        }
+        PdfShadingKind::Radial(coords) => {
+            out.push_str(" << /ShadingType 3 /ColorSpace /DeviceRGB /Coords [");
+            append_pdf_num(out, coords[0]);
+            out.push(' ');
+            append_pdf_num(out, coords[1]);
+            out.push(' ');
+            append_pdf_num(out, coords[2]);
+            out.push(' ');
+            append_pdf_num(out, coords[3]);
+            out.push(' ');
+            append_pdf_num(out, coords[4]);
+            out.push(' ');
+            append_pdf_num(out, coords[5]);
+        }
+    }
+    out.push_str("] /Function ");
+    append_pdf_shading_function(out, &shading.stops);
+    out.push_str(" /Extend [");
+    append_pdf_bool(out, shading.extend_start);
+    out.push(' ');
+    append_pdf_bool(out, shading.extend_end);
+    out.push_str("] >>");
+}
+
+fn append_pdf_bool(out: &mut String, value: bool) {
+    out.push_str(if value { "true" } else { "false" });
+}
+
+fn append_pdf_shading_function(out: &mut String, stops: &[SvgGradientStop]) {
     if stops.len() <= 2 {
         let start = stops.first().map(|stop| stop.1).unwrap_or((0.0, 0.0, 0.0));
         let end = stops.last().map(|stop| stop.1).unwrap_or(start);
-        return pdf_exponential_interpolation_function(start, end);
+        append_pdf_exponential_interpolation_function(out, start, end);
+        return;
     }
 
-    let mut functions = String::new();
-    for pair in stops.windows(2) {
-        if !functions.is_empty() {
-            functions.push(' ');
+    out.push_str("<< /FunctionType 3 /Domain [0 1] /Functions [ ");
+    for (index, pair) in stops.windows(2).enumerate() {
+        if index != 0 {
+            out.push(' ');
         }
-        functions.push_str(&pdf_exponential_interpolation_function(
-            pair[0].1, pair[1].1,
-        ));
+        append_pdf_exponential_interpolation_function(out, pair[0].1, pair[1].1);
     }
 
-    let bounds = stops[1..stops.len() - 1]
-        .iter()
-        .map(|(offset, _)| pdf_num(*offset))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let encode = (0..stops.len() - 1)
-        .map(|_| "0 1")
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "<< /FunctionType 3 /Domain [0 1] /Functions [ {functions} ] /Bounds [ {bounds} ] /Encode [ {encode} ] >>"
-    )
+    out.push_str(" ] /Bounds [ ");
+    for (index, (offset, _)) in stops[1..stops.len() - 1].iter().enumerate() {
+        if index != 0 {
+            out.push(' ');
+        }
+        append_pdf_num(out, *offset);
+    }
+    out.push_str(" ] /Encode [ ");
+    for index in 0..stops.len() - 1 {
+        if index != 0 {
+            out.push(' ');
+        }
+        out.push_str("0 1");
+    }
+    out.push_str(" ] >>");
 }
 
-fn pdf_exponential_interpolation_function(start: (f32, f32, f32), end: (f32, f32, f32)) -> String {
-    format!(
-        "<< /FunctionType 2 /Domain [0 1] /C0 [{} {} {}] /C1 [{} {} {}] /N 1 >>",
-        pdf_fixed3(start.0),
-        pdf_fixed3(start.1),
-        pdf_fixed3(start.2),
-        pdf_fixed3(end.0),
-        pdf_fixed3(end.1),
-        pdf_fixed3(end.2),
-    )
+fn append_pdf_exponential_interpolation_function(
+    out: &mut String,
+    start: (f32, f32, f32),
+    end: (f32, f32, f32),
+) {
+    out.push_str("<< /FunctionType 2 /Domain [0 1] /C0 [");
+    append_pdf_fixed3(out, start.0);
+    out.push(' ');
+    append_pdf_fixed3(out, start.1);
+    out.push(' ');
+    append_pdf_fixed3(out, start.2);
+    out.push_str("] /C1 [");
+    append_pdf_fixed3(out, end.0);
+    out.push(' ');
+    append_pdf_fixed3(out, end.1);
+    out.push(' ');
+    append_pdf_fixed3(out, end.2);
+    out.push_str("] /N 1 >>");
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn collect_svg_alpha_states(stream: &[u8]) -> BTreeSet<(u16, u16)> {
     let mut states = BTreeSet::new();
     let mut pos = 0usize;
@@ -23153,6 +23932,7 @@ fn collect_svg_alpha_states(stream: &[u8]) -> BTreeSet<(u16, u16)> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn find_next_svg_alpha_state_name(stream: &[u8], mut pos: usize) -> Option<usize> {
     while pos + 4 <= stream.len() {
         let rel = stream.get(pos..)?.iter().position(|&byte| byte == b'/')?;
@@ -23166,6 +23946,7 @@ fn find_next_svg_alpha_state_name(stream: &[u8], mut pos: usize) -> Option<usize
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn parse_svg_alpha_state_name(stream: &[u8], start: usize) -> Option<(u16, u16)> {
     let name = stream.get(start..start + 12)?;
     if !name.starts_with(b"/GSa") || !name[4..12].iter().all(u8::is_ascii_digit) {
@@ -23183,6 +23964,7 @@ fn parse_svg_alpha_state_name(stream: &[u8], start: usize) -> Option<(u16, u16)>
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn parse_four_ascii_digits(bytes: &[u8]) -> Option<u16> {
     (bytes.len() == 4 && bytes.iter().all(u8::is_ascii_digit)).then(|| {
         bytes.iter().fold(0u16, |acc, byte| {
@@ -23422,13 +24204,14 @@ fn build_pdf(
         );
     }
 
+    let mut page_stream_compress_scratch = crate::compress::ZlibCompressScratch::new();
     for (i, page) in pages.iter().enumerate() {
         offsets[content_obj(i)] = buf.len();
         let stream = profiler.measure(
             "page_stream_compression",
             page.stream.len(),
             "encode page content stream and apply FlateDecode when it wins",
-            || page_stream(&page.stream),
+            || page_stream(&page.stream, &mut page_stream_compress_scratch),
             |stream| stream.bytes.len(),
         );
         append_pdf_object_header(&mut buf, content_obj(i));
@@ -23450,55 +24233,44 @@ fn build_pdf(
             |widths| widths.len(),
         );
 
-        append_pdf_object_str(
+        append_pdf_type0_font_object(
             &mut buf,
             &mut offsets,
-            type0_obj(k),
-            &format!(
-                "<< /Type /Font /Subtype /Type0 /BaseFont /{psname} /Encoding /Identity-H \
-                 /DescendantFonts [{cid} 0 R] /ToUnicode {tu} 0 R >>",
-                cid = cid_obj(k),
-                tu = touni_obj(k),
-            ),
+            PdfType0FontObjectParts {
+                object_id: type0_obj(k),
+                psname: &psname,
+                cid_object_id: cid_obj(k),
+                tounicode_object_id: touni_obj(k),
+            },
         );
-        append_pdf_object_str(
+        append_pdf_cid_font_object(
             &mut buf,
             &mut offsets,
-            cid_obj(k),
-            &format!(
-                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{psname} \
-                 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
-                 /FontDescriptor {desc} 0 R /CIDToGIDMap /Identity /DW 1000 /W [{w}] >>",
-                desc = desc_obj(k),
-                w = widths,
-            ),
+            PdfCidFontObjectParts {
+                object_id: cid_obj(k),
+                psname: &psname,
+                descriptor_object_id: desc_obj(k),
+                widths: &widths,
+            },
         );
         let italic_angle = if matches!(face.slot, F_ITALIC | F_BOLDITALIC) {
             -12
         } else {
             0
         };
-        append_pdf_object_str(
+        append_pdf_font_descriptor_object(
             &mut buf,
             &mut offsets,
-            desc_obj(k),
-            &format!(
-                "<< /Type /FontDescriptor /FontName /{psname} /Flags 4 \
-                 /FontBBox [{bx0} {by0} {bx1} {by1}] /ItalicAngle {italic_angle} \
-                 /Ascent {asc} /Descent {desc} /CapHeight {cap} /StemV 80 /FontFile2 {ff} 0 R >>",
-                bx0 = -200,
-                by0 = m.descent - 50,
-                bx1 = 1100,
-                by1 = m.ascent + 50,
-                asc = m.ascent,
-                desc = m.descent,
-                cap = m.cap_height,
-                ff = file_obj(k),
-            ),
+            PdfFontDescriptorObjectParts {
+                object_id: desc_obj(k),
+                psname: &psname,
+                metrics: &m,
+                italic_angle,
+                fontfile_object_id: file_obj(k),
+            },
         );
         // FontFile2: FlateDecode-compressed subset font program. /Length1 is the
         // UNCOMPRESSED program length per the PDF spec.
-        offsets[file_obj(k)] = buf.len();
         let font_comp = profiler.measure(
             "font_stream_compression",
             face.bytes.len(),
@@ -23506,17 +24278,13 @@ fn build_pdf(
             || crate::compress::zlib_compress(&face.bytes),
             |bytes| bytes.len(),
         );
-        buf.extend_from_slice(
-            format!(
-                "{n} 0 obj\n<< /Length {clen} /Length1 {olen} /Filter /FlateDecode >>\nstream\n",
-                n = file_obj(k),
-                clen = font_comp.len(),
-                olen = face.bytes.len(),
-            )
-            .as_bytes(),
+        append_pdf_fontfile2_stream_object(
+            &mut buf,
+            &mut offsets,
+            file_obj(k),
+            &font_comp,
+            face.bytes.len(),
         );
-        buf.extend_from_slice(&font_comp);
-        buf.extend_from_slice(b"\nendstream\nendobj\n");
         // ToUnicode CMap (left uncompressed so it stays greppable + tiny).
         let cmap = profiler.measure(
             "tounicode_generation",
@@ -23525,15 +24293,7 @@ fn build_pdf(
             || tounicode_cmap(&face.font, &face.cmap_chars, &face.lig_uni),
             |cmap| cmap.len(),
         );
-        offsets[touni_obj(k)] = buf.len();
-        buf.extend_from_slice(
-            format!(
-                "{n} 0 obj\n<< /Length {len} >>\nstream\n{cmap}endstream\nendobj\n",
-                n = touni_obj(k),
-                len = cmap.len(),
-            )
-            .as_bytes(),
-        );
+        append_pdf_tounicode_stream_object(&mut buf, &mut offsets, touni_obj(k), &cmap);
     }
 
     for (k, image) in images.iter().enumerate() {
@@ -23958,11 +24718,13 @@ fn collect_shaped_run_glyphs(
 /// sequence: each glyph is emitted as its subset id via `map`, with GPOS pair
 /// kerning (looked up on the original ids) inserted between glyphs.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
     kerned_tj_with_spacing(map, source, kern, shaped, 0, 0)
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn kerned_tj_with_spacing(
     map: &BTreeMap<u16, u16>,
     source: &Font,
@@ -24432,10 +25194,13 @@ fn finite_pdf_scalar(value: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn pdf_fixed2(value: f32) -> String {
     format!("{:.2}", finite_pdf_scalar(value))
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn pdf_fixed3(value: f32) -> String {
     format!("{:.3}", finite_pdf_scalar(value))
 }
@@ -24459,44 +25224,66 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
-        Faces, Fill, FlowKind, FlowMark, FlowSpec, HeadingIdState, LayoutCx, Line, LineTok,
-        LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem,
-        ParagraphLayoutScratch, ParagraphPolicy, PdfOutlineItemObjectParts, PdfPageObjectParts,
-        PdfParentTreeObjectParts, PdfStream, PdfStructElementObjectParts, Placed,
-        SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache,
-        SvgDashPattern, SvgLine, SvgLineCap, SvgLineJoin, SvgPathOp, SvgPoly, SvgShadow,
-        SvgShadowLayer, SvgStyle, SvgTextDecoration, SvgTextMatrix, SvgTransform,
+        FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, HeadingIdState, ImageLine,
+        LayoutCx, Line, LineTok, LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom,
+        Palette, ParagraphItem, ParagraphLayoutScratch, ParagraphPolicy, PdfCidFontObjectParts,
+        PdfFontDescriptorObjectParts, PdfImageColor, PdfImageData, PdfOutlineItemObjectParts,
+        PdfPageObjectParts, PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
+        PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
+        SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor,
+        SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement,
+        SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap,
+        SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect,
+        SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText,
+        SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
         TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin,
-        append_page_background_rounded_rect_fill, append_pdf_cm_operator, append_pdf_fixed2,
-        append_pdf_fixed3, append_pdf_num, append_pdf_num_bytes, append_pdf_object_ref_bytes,
-        append_pdf_object_ref_list_string, append_pdf_object_ref_string, append_pdf_object_str,
-        append_pdf_outline_item_object, append_pdf_page_object, append_pdf_parent_tree_object,
-        append_pdf_stream_dict, append_pdf_string_escaped, append_pdf_struct_element_object,
-        append_pdf_text_string_bytes, append_rgb_fill_operator, append_rgb_fill_space_operator,
-        append_rgb_stroke_line_operator, append_rgb_stroke_segment_operator,
-        append_rgb_stroke_space_operator, append_struct_kid_list_bytes,
-        append_struct_kid_list_string, append_svg_alpha_state, append_svg_alpha_state_name,
-        append_svg_alpha_state_resource_entry, append_svg_element_state_prefix,
-        append_svg_line_path, append_svg_line_stroke_outline, append_svg_path_ops,
-        append_svg_poly_path, append_svg_shadow_prefix, append_svg_stroke_options,
-        append_svg_style, append_svg_text_decoration, append_svg_text_operator,
-        append_svg_text_viewport_clip, append_task_checkbox_marker_operator,
-        append_text_segment_operator, append_xref_in_use_row, append_xref_offset, build_paragraph,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
+        append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        append_page_background_rounded_rect_fill, append_pdf_cid_font_object,
+        append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
+        append_pdf_font_descriptor_object, append_pdf_fontfile2_stream_object, append_pdf_num,
+        append_pdf_num_bytes, append_pdf_object_ref_bytes, append_pdf_object_ref_list_string,
+        append_pdf_object_ref_string, append_pdf_object_str, append_pdf_outline_item_object,
+        append_pdf_page_object, append_pdf_parent_tree_object, append_pdf_stream_dict,
+        append_pdf_string_escaped, append_pdf_struct_element_object, append_pdf_text_string_bytes,
+        append_pdf_tounicode_stream_object, append_pdf_type0_font_object, append_rgb_fill_operator,
+        append_rgb_fill_space_operator, append_rgb_stroke_line_operator,
+        append_rgb_stroke_segment_operator, append_rgb_stroke_space_operator,
+        append_struct_kid_list_bytes, append_struct_kid_list_string, append_svg_alpha_state,
+        append_svg_alpha_state_name, append_svg_alpha_state_resource_entry, append_svg_arrowhead,
+        append_svg_element_state_prefix, append_svg_image_transform_prefix, append_svg_line_path,
+        append_svg_line_stroke_outline, append_svg_path_ops, append_svg_poly_path,
+        append_svg_rect_path, append_svg_root_background_color, append_svg_shadow_prefix,
+        append_svg_stroke_options, append_svg_stroke_style, append_svg_style,
+        append_svg_text_decoration, append_svg_text_operator, append_svg_text_viewport_clip,
+        append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
+        append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, font_size_of,
-        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_simple_text_paragraph,
-        layout_table, layout_table_uncached, line_has_visible_content, measure_word,
-        normalize_svg_text_node, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
-        pdf_num, pdf_text_string, pdf_word_break_points, pdf_word_plain_text, pdf_word_stats,
-        push_text_tokens, rounded_rect_fill, shape_run, svg_alpha_extgstate_resource,
-        token_visible_text, tokenize,
+        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
+        layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
+        parse_svg_background_color_token, parse_svg_baseline_shift,
+        parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
+        parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
+        parse_svg_marker_body, parse_svg_path_data, parse_svg_reusable_body_elements,
+        parse_svg_root_background_image_value, parse_svg_root_background_layers,
+        parse_svg_transform, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
+        pdf_num, pdf_shading_resource, pdf_text_string, pdf_word_break_points, pdf_word_plain_text,
+        pdf_word_stats, png_paeth, push_text_tokens, rounded_rect_fill, shape_run,
+        split_svg_top_level_slash, svg_alpha_extgstate_resource, svg_background_top_level_tokens,
+        svg_clip_rect_ops, svg_color_mix_weights, svg_fill_shadings, svg_object_bbox_transform,
+        svg_stroke_shadings, svg_style_with_non_scaling_stroke, svg_text_advance,
+        svg_text_path_advance, svg_text_pdf_stroke_width, svg_uniform_stroke_scale,
+        svg_uniform_svg_transform_scale, token_visible_text, tokenize, visit_svg_path_segments,
+        wrap_cell_styled,
     };
     use crate::ast::{Align, Inline, Table};
     use crate::{PdfOptions, ThemeColors};
@@ -24522,10 +25309,9 @@ mod pdf_writer_tests {
         let mut expected = String::from("/Artifact BMC\n");
         expected.push_str(&rounded_rect_fill(1.0, 2.0, 5.0, 6.0, 0.5, (0.1, 0.2, 0.3)));
         expected.push_str("EMC\nBT\n");
-        assert_eq!(
-            finish_page_content_stream(bg, String::from("BT\n")),
-            expected
-        );
+        let mut stream = finish_page_content_stream(bg, "BT\n".len());
+        stream.push_str("BT\n");
+        assert_eq!(stream, expected);
 
         let mut degenerate = String::new();
         append_page_background_rounded_rect_fill(
@@ -24538,10 +25324,9 @@ mod pdf_writer_tests {
             (0.1, 0.2, 0.3),
         );
         assert!(degenerate.is_empty());
-        assert_eq!(
-            finish_page_content_stream(String::new(), String::from("BT\n")),
-            "BT\n"
-        );
+        let mut body_only = finish_page_content_stream(String::new(), "BT\n".len());
+        body_only.push_str("BT\n");
+        assert_eq!(body_only, "BT\n");
     }
 
     fn test_line_with_segment_texts(texts: &[&str]) -> Line {
@@ -24621,6 +25406,543 @@ mod pdf_writer_tests {
                 kind: FlowKind::Paragraph,
             },
         );
+    }
+
+    #[test]
+    fn greedy_inline_fallback_wraps_words_and_skips_leading_spaces() -> crate::Result<()> {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts)?;
+        let mut page = test_page_geom();
+        page.content_w = 42.0;
+        let toks = [
+            (" ", true),
+            ("alpha", false),
+            (" ", true),
+            ("beta", false),
+            (" ", true),
+            ("gamma", false),
+        ]
+        .into_iter()
+        .map(|(text, space)| Tok {
+            text: text.to_string(),
+            slot: F_BODY,
+            space,
+            hard_break: false,
+            link: None,
+            strike: false,
+        })
+        .collect();
+        let mut out = Vec::new();
+
+        layout_inlines_greedy(toks, 0.0, 12.0, 3.0, &faces, page, &mut out);
+
+        assert!(
+            out.len() >= 2,
+            "narrow fallback column should wrap into multiple lines"
+        );
+        let rendered = out
+            .iter()
+            .map(|line| {
+                line.segs
+                    .iter()
+                    .map(|seg| seg.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered[0], "alpha");
+        assert!(
+            rendered.iter().any(|line| line.contains("beta")),
+            "second word must not be lost by fallback wrapping: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.starts_with(' ')),
+            "leading fallback spaces should be dropped: {rendered:?}"
+        );
+        assert_eq!(out.last().map(|line| line.gap_after), Some(3.0));
+        Ok(())
+    }
+
+    #[test]
+    fn png_paeth_predictor_selects_each_neighbor_candidate() {
+        assert_eq!(png_paeth(10, 10, 10), 10, "equal distances prefer left");
+        assert_eq!(png_paeth(0, 10, 0), 10, "top neighbor can be closest");
+        assert_eq!(
+            png_paeth(10, 20, 15),
+            15,
+            "upper-left neighbor can be closest"
+        );
+    }
+
+    #[test]
+    fn svg_private_helper_edge_corpus_pins_real_parser_branches() {
+        let css_rules: &[SvgCssRule] = &[];
+        let gradients: &[SvgGradientPaint] = &[];
+        let patterns: &[SvgPatternPaint] = &[];
+        let css_vars: &[SvgCssVariable] = &[];
+        let clip_paths: &[SvgClipPath] = &[];
+        let filter_shadows: &[SvgFilterShadow] = &[];
+        let markers: &[SvgMarker] = &[];
+        let reusable_defs: &[SvgReusableDef] = &[];
+        let ancestors: &[SvgCssAncestor] = &[];
+
+        let elements = parse_svg_reusable_body_elements(
+            "<script><g><rect x='0' y='0' width='99' height='99'/></g></script>\
+             <style/>\
+             <rect x='1' y='2' width='3' height='4'/>",
+            SvgStyle::INITIAL,
+            None,
+            css_rules,
+            gradients,
+            patterns,
+            css_vars,
+            clip_paths,
+            filter_shadows,
+            markers,
+            reusable_defs,
+            ancestors,
+            0,
+        );
+        assert_eq!(
+            elements.len(),
+            1,
+            "script/style bodies are skipped while following shapes still parse"
+        );
+        assert!(
+            parse_svg_reusable_body_elements(
+                "<rect x='1' y='2' width='3' height='4'/>",
+                SvgStyle::INITIAL,
+                None,
+                css_rules,
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                filter_shadows,
+                markers,
+                reusable_defs,
+                ancestors,
+                8,
+            )
+            .is_empty()
+        );
+        assert!(
+            parse_svg_marker_body(
+                "unterminated",
+                &[],
+                "<!-- unterminated",
+                gradients,
+                patterns,
+                css_vars,
+                clip_paths,
+                css_rules,
+                filter_shadows,
+            )
+            .is_none()
+        );
+        let mut css_rule_out = Vec::new();
+        parse_svg_css_rules(
+            ".node /* trailing selector comment */ { fill: red; /* body comment */ stroke: blue }",
+            &mut css_rule_out,
+        );
+        assert_eq!(css_rule_out.len(), 1);
+
+        assert!(parse_svg_filter_shadow_body("<!-- unterminated", css_vars).is_none());
+        assert!(
+            parse_svg_filter_shadow_body(
+                "<feOffset dx='1' dy='2'/><feColorMatrix type='matrix'/>",
+                css_vars,
+            )
+            .is_none(),
+            "unsupported shadow primitive resets an in-progress primitive chain"
+        );
+        assert!(
+            parse_svg_filter_shadow_body(
+                "<feDropShadow dx='1' dy='2' stdDeviation='3' flood-color='red'/>",
+                css_vars,
+            )
+            .is_some()
+        );
+        let known_filters = [SvgFilterShadow {
+            id: "known".to_string(),
+            shadow: SvgShadow::FALLBACK,
+        }];
+        assert!(
+            parse_svg_filter_shadow("none", filter_shadows, css_vars)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            parse_svg_filter_shadow("url(#known)", &known_filters, css_vars)
+                .unwrap()
+                .unwrap()
+                .len
+                > 0
+        );
+        assert!(
+            parse_svg_filter_shadow("bogus drop-shadow token", filter_shadows, css_vars)
+                .unwrap()
+                .unwrap()
+                .len
+                > 0,
+            "malformed drop-shadow-like filters fall back to a visible shadow"
+        );
+
+        let vars = [SvgCssVariable {
+            name: "--shift".to_string(),
+            value: "25%".to_string(),
+        }];
+        assert_eq!(
+            parse_svg_baseline_shift("baseline", css_vars)
+                .unwrap()
+                .to_points(10.0),
+            0.0
+        );
+        assert_eq!(
+            parse_svg_baseline_shift("super", css_vars)
+                .unwrap()
+                .to_points(10.0),
+            6.0
+        );
+        assert_eq!(
+            parse_svg_baseline_shift("2ex", css_vars)
+                .unwrap()
+                .to_points(10.0),
+            10.0
+        );
+        assert_eq!(
+            parse_svg_baseline_shift("var(--shift)", &vars)
+                .unwrap()
+                .to_points(20.0),
+            5.0
+        );
+        assert!(parse_svg_baseline_shift("1e999", css_vars).is_none());
+
+        let mut style = SvgStyle::INITIAL;
+        style.color = (0.2, 0.4, 0.6);
+        let mut no_fill = SvgStyle::INITIAL;
+        no_fill.fill = None;
+        assert!(svg_fill_shadings(no_fill, gradients, Some((0.0, 0.0, 10.0, 10.0))).is_none());
+        let mut transparent_fill = SvgStyle::INITIAL;
+        transparent_fill.fill_opacity = 0.0;
+        assert!(
+            svg_fill_shadings(transparent_fill, gradients, Some((0.0, 0.0, 10.0, 10.0))).is_none()
+        );
+        assert!(
+            svg_stroke_shadings(SvgStyle::INITIAL, gradients, Some((0.0, 0.0, 10.0, 10.0)))
+                .is_none()
+        );
+        let mut transparent_stroke = SvgStyle::INITIAL;
+        transparent_stroke.stroke = Some((0.0, 0.0, 0.0));
+        transparent_stroke.stroke_opacity = 0.0;
+        assert!(
+            svg_stroke_shadings(transparent_stroke, gradients, Some((0.0, 0.0, 10.0, 10.0)))
+                .is_none()
+        );
+        apply_svg_paint_attr(
+            &mut style,
+            "stroke",
+            Some("currentColor"),
+            gradients,
+            patterns,
+            css_vars,
+        );
+        assert_eq!(style.stroke, Some((0.2, 0.4, 0.6)));
+        apply_svg_paint_attr(
+            &mut style,
+            "stroke",
+            Some("rgb(10 20 30 / 25%)"),
+            gradients,
+            patterns,
+            css_vars,
+        );
+        assert!((style.stroke_opacity - 0.25).abs() < f32::EPSILON);
+
+        assert_eq!(
+            split_svg_top_level_slash("rgb(1 2 3 / 0.4) / 0.5"),
+            Some(("rgb(1 2 3 / 0.4)", Some("0.5")))
+        );
+        assert_eq!(split_svg_top_level_slash("plain"), Some(("plain", None)));
+        assert!(split_svg_top_level_slash("a / b / c").is_none());
+        assert!(split_svg_top_level_slash("a)").is_none());
+        assert!(split_svg_top_level_slash("(a").is_none());
+
+        assert_eq!(
+            svg_background_top_level_tokens("url('a b'), \"quoted value\" none"),
+            vec!["url('a b')", "\"quoted value\"", "none"]
+        );
+        let bg_vars = [SvgCssVariable {
+            name: "--bg".to_string(),
+            value: "linear-gradient(red, blue)".to_string(),
+        }];
+        assert_eq!(
+            parse_svg_root_background_layers("var(--bg)", &bg_vars, (1.0, 1.0, 1.0)).len(),
+            1
+        );
+        assert!(
+            parse_svg_background_color_token("transparent", css_vars)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            parse_svg_root_background_image_value("none", css_vars),
+            Some("none".to_string())
+        );
+        assert!(parse_svg_root_background_layers("none", css_vars, (1.0, 1.0, 1.0)).is_empty());
+        assert_eq!(
+            parse_svg_css_color_mix_over_background(
+                "color-mix(in srgb, transparent 50%, transparent 50%)",
+                css_vars,
+                (0.25, 0.5, 0.75),
+                0,
+            ),
+            Some((0.25, 0.5, 0.75))
+        );
+        let attrs = parse_svg_attrs(
+            "hidden data-id=abc textLength='25' style='lengthAdjust: spacingAndGlyphs'",
+        );
+        assert!(
+            attrs
+                .iter()
+                .any(|(name, value)| name == "hidden" && value.is_empty())
+        );
+        assert!(
+            attrs
+                .iter()
+                .any(|(name, value)| name == "data-id" && value == "abc")
+        );
+        assert_eq!(
+            svg_text_path_advance("ignored", 12.0, SvgStyle::INITIAL, &attrs),
+            25.0
+        );
+        assert!(matches!(
+            parse_svg_length_adjust(&attrs, SvgLengthAdjust::Spacing),
+            SvgLengthAdjust::SpacingAndGlyphs
+        ));
+        assert!(svg_clip_rect_ops(&parse_svg_attrs("width='0' height='10'")).is_none());
+        assert!(parse_svg_css_selector("g >").is_none());
+        assert!(parse_svg_css_selector("g > > path").is_none());
+
+        assert_eq!(svg_color_mix_weights(Some(0.25), None), Some((0.25, 0.75)));
+        assert_eq!(svg_color_mix_weights(None, Some(0.25)), Some((0.75, 0.25)));
+        assert_eq!(svg_color_mix_weights(None, None), Some((0.5, 0.5)));
+        assert!(svg_color_mix_weights(Some(0.0), Some(0.0)).is_none());
+        assert!(svg_color_mix_weights(Some(1.25), None).is_none());
+
+        let matrix = parse_svg_transform("matrix(1 2 3 4 5 6)").unwrap();
+        assert_eq!(
+            (matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f),
+            (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+        );
+        assert!(
+            parse_svg_transform("translate(7 8) scale(2) rotate(45 10 20) skewX(5) skewY(6)")
+                .is_some()
+        );
+        assert!(parse_svg_transform("matrix(1 2)").is_none());
+
+        let ops = parse_svg_path_data("m 1 2 3 4 5 6").unwrap();
+        assert_eq!(ops.len(), 3);
+        assert!(matches!(ops[0], SvgPathOp::Move(1.0, 2.0)));
+        assert!(matches!(ops[1], SvgPathOp::Line(4.0, 6.0)));
+        assert!(matches!(ops[2], SvgPathOp::Line(9.0, 12.0)));
+        let mut visited = 0usize;
+        visit_svg_path_segments(
+            &[
+                SvgPathOp::Move(0.0, 0.0),
+                SvgPathOp::Quad(1.0, 2.0, 3.0, 4.0),
+            ],
+            |_, _| {
+                visited += 1;
+                false
+            },
+        );
+        assert_eq!(visited, 1);
+        let mut close_seen = false;
+        visit_svg_path_segments(
+            &[
+                SvgPathOp::Move(0.0, 0.0),
+                SvgPathOp::Line(2.0, 0.0),
+                SvgPathOp::Close,
+            ],
+            |from, to| {
+                close_seen |= from == (2.0, 0.0) && to == (0.0, 0.0);
+                true
+            },
+        );
+        assert!(close_seen);
+
+        let uniform_image = SvgImageTransform {
+            sx: 2.0,
+            sy: 2.0,
+            tx: 0.0,
+            ty: 0.0,
+            viewport_clip: None,
+        };
+        assert_eq!(svg_uniform_stroke_scale(uniform_image), Some(2.0));
+        assert!(
+            svg_uniform_stroke_scale(SvgImageTransform {
+                sx: 2.0,
+                sy: 3.0,
+                tx: 0.0,
+                ty: 0.0,
+                viewport_clip: None,
+            })
+            .is_none()
+        );
+        assert_eq!(
+            svg_uniform_svg_transform_scale(SvgTransform {
+                a: 2.0,
+                d: 2.0,
+                ..SvgTransform::IDENTITY
+            }),
+            Some(2.0)
+        );
+        assert!(
+            svg_uniform_svg_transform_scale(SvgTransform {
+                b: 1.0,
+                ..SvgTransform::IDENTITY
+            })
+            .is_none()
+        );
+        assert!(svg_object_bbox_transform(None).is_none());
+        assert!(svg_object_bbox_transform(Some((1.0, 2.0, 3.0, 4.0))).is_some());
+
+        let mut non_scaling = SvgStyle::INITIAL;
+        non_scaling.non_scaling_stroke = true;
+        non_scaling.stroke_width = 4.0;
+        assert_eq!(
+            svg_style_with_non_scaling_stroke(non_scaling, Some(2.0)).stroke_width,
+            2.0
+        );
+        assert_eq!(
+            svg_style_with_non_scaling_stroke(non_scaling, None).stroke_width,
+            4.0
+        );
+        assert_eq!(
+            svg_text_pdf_stroke_width(2.0, 10.0, 20.0, true, SvgTransform::IDENTITY, uniform_image,),
+            2.0
+        );
+
+        let make_text = |x: f32, text: &str| {
+            SvgElement::Text(SvgText {
+                x,
+                y: 0.0,
+                text: text.to_string(),
+                slot: F_BODY,
+                font_size: 12.0,
+                letter_spacing: 0.0,
+                word_spacing: 0.0,
+                text_length: None,
+                length_adjust: SvgLengthAdjust::Spacing,
+                baseline: SvgDominantBaseline::Auto,
+                baseline_shift: 0.0,
+                anchor: SvgTextAnchor::Start,
+                decoration: SvgTextDecoration::NONE,
+                fill: Some((0.0, 0.0, 0.0)),
+                fill_opacity: 1.0,
+                stroke: None,
+                stroke_width: 1.0,
+                stroke_opacity: 1.0,
+                non_scaling_stroke: false,
+                paint_order: SvgPaintOrder::NORMAL,
+                clip_path: None,
+                mask_path: None,
+                transform: SvgTransform::IDENTITY,
+                link: None,
+            })
+        };
+        let mut empty_texts = Vec::new();
+        apply_svg_parent_text_length(&mut empty_texts, Some(20.0), SvgLengthAdjust::Spacing);
+        let mut zero_texts = vec![make_text(0.0, "")];
+        apply_svg_parent_text_length(&mut zero_texts, Some(20.0), SvgLengthAdjust::Spacing);
+        assert!(matches!(
+            zero_texts.as_slice(),
+            [SvgElement::Text(text)] if text.text_length.is_none()
+        ));
+        let first_advance = svg_text_advance("a", 12.0, 0.0, 0.0);
+        let mut distributed = vec![make_text(0.0, "a"), make_text(first_advance, "b")];
+        apply_svg_parent_text_length(
+            &mut distributed,
+            Some(24.0),
+            SvgLengthAdjust::SpacingAndGlyphs,
+        );
+        assert!(matches!(
+            distributed.as_slice(),
+            [SvgElement::Text(first), SvgElement::Text(second)]
+                if first.text_length.is_some()
+                    && second.text_length.is_some()
+                    && first.length_adjust == SvgLengthAdjust::SpacingAndGlyphs
+        ));
+
+        let mut overline = String::new();
+        append_svg_text_decoration(
+            &mut overline,
+            SvgTextDecoration::NONE.with(SvgTextDecoration::OVERLINE),
+            SvgTextMatrix {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                x: 0.0,
+                y: 0.0,
+                size: 10.0,
+            },
+            12.0,
+            (0.0, 0.0, 0.0),
+        );
+        assert!(overline.contains(" RG "));
+        assert!(overline.ends_with("S\n"));
+
+        let faces = Faces::load(&PdfOptions::default()).expect("faces");
+        let width_cache = std::cell::RefCell::new(WidthCache::default());
+        let wrapped = wrap_cell_styled(
+            &[
+                Tok {
+                    text: "alpha".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                Tok {
+                    text: String::new(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: true,
+                    link: None,
+                    strike: false,
+                },
+                Tok {
+                    text: "beta".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                Tok {
+                    text: " ".to_string(),
+                    slot: F_BODY,
+                    space: true,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+                Tok {
+                    text: "gamma".to_string(),
+                    slot: F_BODY,
+                    space: false,
+                    hard_break: false,
+                    link: None,
+                    strike: false,
+                },
+            ],
+            120.0,
+            10.0,
+            &faces,
+            &width_cache,
+        );
+        assert_eq!(wrapped.len(), 2);
     }
 
     fn text_cell(text: &str) -> Vec<Inline> {
@@ -24994,10 +26316,19 @@ mod pdf_writer_tests {
         let mut different_content = base.clone();
         different_content.rows[0][0] = text_cell("Different revenue wording");
         push_cached_table(&different_content, 0.0, &mut out, &mut cx);
+        assert_eq!(cx.table_layout_cache.len(), 4);
+
+        let mut image_title_content = base.clone();
+        image_title_content.rows[0][0] = vec![Inline::Image {
+            dest: "chart.png".to_string(),
+            title: Some("Chart title".to_string()),
+            alt: "Chart alt".to_string(),
+        }];
+        push_cached_table(&image_title_content, 0.0, &mut out, &mut cx);
         assert_eq!(
             cx.table_layout_cache.len(),
-            4,
-            "indent, alignment, and content variants must occupy distinct cache entries"
+            5,
+            "indent, alignment, content, and image-title variants must occupy distinct cache entries"
         );
         Ok(())
     }
@@ -25570,6 +26901,37 @@ mod pdf_writer_tests {
         assert_eq!(no_inline_chip_estimate.quote_bars, 0);
         assert_eq!(no_inline_chip_estimate.mono_chips, 0);
         assert!(!no_inline_chip_estimate.has_mono_chips());
+
+        let mut table_line = line(
+            Vec::new(),
+            0,
+            false,
+            false,
+            vec![
+                seg(F_BODY, "left", None, false, 20.0),
+                seg(F_BODY, "", None, false, 0.0),
+                seg(F_BODY, "right", None, false, 24.0),
+            ],
+        );
+        table_line.flow.kind = FlowKind::TableRow;
+        table_line.table_cols = vec![0, 1, 2];
+        let table_placed = [Placed {
+            line: &table_line,
+            y: 620.0,
+        }];
+
+        assert_eq!(
+            estimate_page_content_capacity(&table_placed),
+            PageContentCapacityEstimate {
+                quote_bars: 0,
+                mono_chips: 0,
+                background_bytes: 0,
+                body_bytes: 294,
+                link_annotations: 0,
+                marks: 2,
+            },
+            "table capacity must reserve one structure mark per non-empty emitted cell"
+        );
     }
 
     #[test]
@@ -25997,6 +27359,278 @@ mod pdf_writer_tests {
     }
 
     #[test]
+    fn font_object_byte_writers_match_legacy_format_shape() {
+        let psname = "ABCDEF+Embedded";
+        let widths = "0 [500 333 278 ]";
+        let metrics = FaceMetrics {
+            ascent: 735,
+            descent: -210,
+            cap_height: 514,
+        };
+
+        let mut direct = b"%PDF-1.7\n".to_vec();
+        let mut direct_offsets = [0usize; 16];
+        append_pdf_type0_font_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfType0FontObjectParts {
+                object_id: 3,
+                psname,
+                cid_object_id: 4,
+                tounicode_object_id: 7,
+            },
+        );
+        append_pdf_cid_font_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfCidFontObjectParts {
+                object_id: 4,
+                psname,
+                descriptor_object_id: 5,
+                widths,
+            },
+        );
+        append_pdf_font_descriptor_object(
+            &mut direct,
+            &mut direct_offsets,
+            PdfFontDescriptorObjectParts {
+                object_id: 5,
+                psname,
+                metrics: &metrics,
+                italic_angle: -12,
+                fontfile_object_id: 6,
+            },
+        );
+
+        let mut legacy = b"%PDF-1.7\n".to_vec();
+        let mut legacy_offsets = [0usize; 16];
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            3,
+            &format!(
+                "<< /Type /Font /Subtype /Type0 /BaseFont /{psname} /Encoding /Identity-H \
+                 /DescendantFonts [4 0 R] /ToUnicode 7 0 R >>",
+            ),
+        );
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            4,
+            &format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{psname} \
+                 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                 /FontDescriptor 5 0 R /CIDToGIDMap /Identity /DW 1000 /W [{widths}] >>",
+            ),
+        );
+        append_pdf_object_str(
+            &mut legacy,
+            &mut legacy_offsets,
+            5,
+            &format!(
+                "<< /Type /FontDescriptor /FontName /{psname} /Flags 4 \
+                 /FontBBox [-200 {by0} 1100 {by1}] /ItalicAngle -12 \
+                 /Ascent {asc} /Descent {desc} /CapHeight {cap} /StemV 80 /FontFile2 6 0 R >>",
+                by0 = metrics.descent - 50,
+                by1 = metrics.ascent + 50,
+                asc = metrics.ascent,
+                desc = metrics.descent,
+                cap = metrics.cap_height,
+            ),
+        );
+
+        assert_eq!(direct_offsets[..8], legacy_offsets[..8]);
+        assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn font_stream_object_byte_writers_match_legacy_format_shape() {
+        let compressed_font = [0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let cmap = "/CIDInit /ProcSet findresource begin\nend\n";
+
+        let mut direct = b"%PDF-1.7\n".to_vec();
+        let mut direct_offsets = [0usize; 12];
+        append_pdf_fontfile2_stream_object(
+            &mut direct,
+            &mut direct_offsets,
+            6,
+            &compressed_font,
+            42,
+        );
+        append_pdf_tounicode_stream_object(&mut direct, &mut direct_offsets, 7, cmap);
+
+        let mut legacy = b"%PDF-1.7\n".to_vec();
+        let mut legacy_offsets = [0usize; 12];
+        legacy_offsets[6] = legacy.len();
+        legacy.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Length {clen} /Length1 {olen} /Filter /FlateDecode >>\nstream\n",
+                clen = compressed_font.len(),
+                olen = 42,
+            )
+            .as_bytes(),
+        );
+        legacy.extend_from_slice(&compressed_font);
+        legacy.extend_from_slice(b"\nendstream\nendobj\n");
+        legacy_offsets[7] = legacy.len();
+        legacy.extend_from_slice(
+            format!(
+                "7 0 obj\n<< /Length {len} >>\nstream\n{cmap}endstream\nendobj\n",
+                len = cmap.len(),
+            )
+            .as_bytes(),
+        );
+
+        assert_eq!(direct_offsets[..8], legacy_offsets[..8]);
+        assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn svg_direct_page_content_writers_match_legacy_format_shape() {
+        let transform = SvgImageTransform {
+            sx: 1.25,
+            sy: 2.5,
+            tx: 10.5,
+            ty: 99.25,
+            viewport_clip: Some((3.0, 4.5, 20.25, 30.75)),
+        };
+        let mut direct = String::new();
+        append_svg_image_transform_prefix(&mut direct, transform);
+        let legacy = format!(
+            "q {x} {y} {w} {h} re W n {a} 0 0 {d} {e} {f} cm\n",
+            x = pdf_num(3.0),
+            y = pdf_num(4.5),
+            w = pdf_num(20.25),
+            h = pdf_num(30.75),
+            a = pdf_num(transform.sx),
+            d = pdf_num(-transform.sy),
+            e = pdf_num(transform.tx),
+            f = pdf_num(transform.ty),
+        );
+        assert_eq!(direct, legacy);
+
+        let image = ImageLine {
+            image: PdfImageData {
+                key: "shape.png".to_string(),
+                width_px: 1,
+                height_px: 1,
+                vector: None,
+                color: PdfImageColor::Rgb,
+                data: Vec::new(),
+                png_predictor: false,
+                smask: None,
+            },
+            alt: String::new(),
+            width_pt: 320.5,
+            height_pt: 180.25,
+        };
+        let background = SvgRootBackgroundColor {
+            color: (0.125, 0.5, 1.0),
+            opacity: 0.75,
+        };
+        let mut alpha_states = BTreeSet::new();
+        let mut direct = String::new();
+        append_svg_root_background_color(
+            &mut direct,
+            background,
+            0.5,
+            &image,
+            11.25,
+            -0.5,
+            &mut alpha_states,
+        );
+        let legacy = format!(
+            "q /GSa03750375 gs {r} {g} {b} rg {x} {y} {w} {h} re f\nQ\n",
+            r = pdf_fixed3(0.125),
+            g = pdf_fixed3(0.5),
+            b = pdf_fixed3(1.0),
+            x = pdf_num(11.25),
+            y = pdf_num(-0.5),
+            w = pdf_num(image.width_pt),
+            h = pdf_num(image.height_pt),
+        );
+        assert_eq!(direct, legacy);
+        assert!(alpha_states.contains(&(375, 375)));
+
+        let rect = SvgRect {
+            x: 1.25,
+            y: 2.5,
+            w: 30.75,
+            h: 40.0,
+            rx: 0.0,
+            ry: 0.0,
+            style: SvgStyle::INITIAL,
+            link: None,
+        };
+        let mut direct = String::new();
+        append_svg_rect_path(&mut direct, &rect);
+        assert_eq!(
+            direct,
+            format!(
+                "{x} {y} {w} {h} re ",
+                x = pdf_num(rect.x),
+                y = pdf_num(rect.y),
+                w = pdf_num(rect.w),
+                h = pdf_num(rect.h),
+            )
+        );
+
+        let style = SvgStyle {
+            stroke: Some((0.2, 0.4, 0.6)),
+            stroke_width: 2.5,
+            line_cap: SvgLineCap::Round,
+            line_join: SvgLineJoin::Bevel,
+            ..SvgStyle::INITIAL
+        };
+        let mut direct = String::new();
+        append_svg_stroke_style(&mut direct, style);
+        let legacy = format!(
+            "{} {} {} RG {} w 1 J 2 j ",
+            pdf_fixed3(0.2),
+            pdf_fixed3(0.4),
+            pdf_fixed3(0.6),
+            pdf_num(2.5),
+        );
+        assert_eq!(direct, legacy);
+    }
+
+    #[test]
+    fn svg_arrowhead_direct_writer_matches_legacy_format_shape() {
+        let tip = (14.0, 9.5);
+        let tail = (2.0, 3.5);
+        let color = (0.1, 0.25, 0.9);
+        let stroke_width = 2.25;
+
+        let mut direct = String::new();
+        append_svg_arrowhead(&mut direct, tip, tail, color, stroke_width);
+
+        let dx = tip.0 - tail.0;
+        let dy = tip.1 - tail.1;
+        let len = (dx * dx + dy * dy).sqrt();
+        let ux = dx / len;
+        let uy = dy / len;
+        let size = (stroke_width.max(1.0) * 4.6).max(5.0);
+        let half = size * 0.42;
+        let base = (tip.0 - ux * size, tip.1 - uy * size);
+        let perp = (-uy * half, ux * half);
+        let p1 = (base.0 + perp.0, base.1 + perp.1);
+        let p2 = (base.0 - perp.0, base.1 - perp.1);
+        let legacy = format!(
+            "{r} {g} {b} rg {x1} {y1} m {tx} {ty} l {x2} {y2} l h f\n",
+            r = pdf_fixed3(color.0),
+            g = pdf_fixed3(color.1),
+            b = pdf_fixed3(color.2),
+            x1 = pdf_num(p1.0),
+            y1 = pdf_num(p1.1),
+            tx = pdf_num(tip.0),
+            ty = pdf_num(tip.1),
+            x2 = pdf_num(p2.0),
+            y2 = pdf_num(p2.1),
+        );
+        assert_eq!(direct, legacy);
+    }
+
+    #[test]
     fn struct_element_object_byte_writer_matches_legacy_format_shape() {
         let kids = vec![
             SKid::Node(2),
@@ -26350,6 +27984,15 @@ mod pdf_writer_tests {
         append_i32_string(&mut out, 456);
 
         assert_eq!(out, "0 12345678901 -120 0 456");
+
+        let mut bytes = Vec::new();
+        append_i32_bytes(&mut bytes, -120);
+        bytes.push(b' ');
+        append_i32_bytes(&mut bytes, 0);
+        bytes.push(b' ');
+        append_i32_bytes(&mut bytes, 456);
+
+        assert_eq!(bytes, b"-120 0 456");
     }
 
     #[test]
@@ -26684,6 +28327,48 @@ mod pdf_writer_tests {
                 "/GSa01250875 << /ca {} /CA {} >>",
                 pdf_fixed3(0.125),
                 pdf_fixed3(0.875)
+            )
+        );
+    }
+
+    #[test]
+    fn pdf_shading_resource_pins_dictionary_and_function_syntax() {
+        assert_eq!(pdf_shading_resource(&[]), "");
+
+        let shadings = [
+            PdfShading {
+                kind: PdfShadingKind::Axial([1.0, 2.5, 3.0, 4.25]),
+                stops: vec![(0.0, (1.0, 0.0, 0.25)), (1.0, (0.0, 0.5, 1.0))],
+                extend_start: true,
+                extend_end: false,
+            },
+            PdfShading {
+                kind: PdfShadingKind::Radial([5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
+                stops: vec![
+                    (0.0, (1.0, 0.0, 0.0)),
+                    (0.5, (0.0, 1.0, 0.0)),
+                    (1.0, (0.0, 0.0, 1.0)),
+                ],
+                extend_start: false,
+                extend_end: true,
+            },
+        ];
+
+        assert_eq!(
+            pdf_shading_resource(&shadings),
+            concat!(
+                " /Shading << ",
+                "/SG1 << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [1 2.5 3 4.25] ",
+                "/Function << /FunctionType 2 /Domain [0 1] /C0 [1.000 0.000 0.250] ",
+                "/C1 [0.000 0.500 1.000] /N 1 >> /Extend [true false] >> ",
+                "/SG2 << /ShadingType 3 /ColorSpace /DeviceRGB /Coords [5 6 7 8 9 10] ",
+                "/Function << /FunctionType 3 /Domain [0 1] /Functions [ ",
+                "<< /FunctionType 2 /Domain [0 1] /C0 [1.000 0.000 0.000] ",
+                "/C1 [0.000 1.000 0.000] /N 1 >> ",
+                "<< /FunctionType 2 /Domain [0 1] /C0 [0.000 1.000 0.000] ",
+                "/C1 [0.000 0.000 1.000] /N 1 >> ] /Bounds [ 0.5 ] ",
+                "/Encode [ 0 1 0 1 ] >> /Extend [false true] >>",
+                " >>",
             )
         );
     }
@@ -27031,6 +28716,7 @@ mod pdf_writer_tests {
 /// `scripts/check-determinism.sh`. Regenerate after an intentional change with
 /// `UPDATE_RENDER_TREE=1 cargo test render_tree`.
 #[cfg(all(test, target_os = "linux"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod render_tree_golden_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
     use super::*;
@@ -27303,6 +28989,7 @@ flowchart LR
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -27995,6 +29682,7 @@ mod png_decode_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod svg_text_path_tests {
     use super::*;
@@ -28043,6 +29731,7 @@ mod svg_text_path_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
     use super::{
@@ -28801,6 +30490,7 @@ mod table_wrap_tests {
 /// parsing (selectors, style patches, gradients, markers, filters, text spans),
 /// transform helpers, and block layout paths that no other suite exercises.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -28846,6 +30536,159 @@ mod coverage_gap_tests {
         let parsed = parse_svg_transform("skewX(45) skewY(45)").expect("skew list parses");
         // concat(skewX, skewY): b = d_x*b_y = 1, c = a_x*c_y + c_x*d_y = 1.
         assert!(approx(parsed.b, 1.0) && approx(parsed.c, 1.0));
+    }
+
+    #[test]
+    fn small_svg_and_layout_cache_helpers_pin_edge_branches() {
+        assert!(SvgTransform::IDENTITY.is_identity());
+        assert!(
+            !SvgTransform {
+                b: 0.01,
+                ..SvgTransform::IDENTITY
+            }
+            .is_identity()
+        );
+        assert!(
+            !SvgTransform {
+                c: 0.01,
+                ..SvgTransform::IDENTITY
+            }
+            .is_identity()
+        );
+        assert!(
+            !SvgTransform {
+                d: 1.01,
+                ..SvgTransform::IDENTITY
+            }
+            .is_identity()
+        );
+
+        assert_eq!(SvgTextSpacing::Points(f32::INFINITY).to_points(12.0), 0.0);
+        assert_eq!(SvgTextSpacing::Em(2.0).to_points(12.0), 24.0);
+        assert_eq!(SvgTextSpacing::Ex(2.0).to_points(12.0), 12.0);
+        assert_eq!(SvgTextSpacing::Percent(50.0).to_points(12.0), 6.0);
+
+        assert!(!SvgTextPositionLists::default().has_per_character_positions());
+        assert!(
+            SvgTextPositionLists {
+                x: vec![1.0, 2.0],
+                ..SvgTextPositionLists::default()
+            }
+            .has_per_character_positions()
+        );
+        assert!(
+            SvgTextPositionLists {
+                y: vec![1.0, 2.0],
+                ..SvgTextPositionLists::default()
+            }
+            .has_per_character_positions()
+        );
+        assert!(
+            SvgTextPositionLists {
+                dx: vec![1.0, 2.0],
+                ..SvgTextPositionLists::default()
+            }
+            .has_per_character_positions()
+        );
+        assert!(
+            SvgTextPositionLists {
+                dy: vec![1.0, 2.0],
+                ..SvgTextPositionLists::default()
+            }
+            .has_per_character_positions()
+        );
+
+        assert_eq!(positive_finite(3.0, 1.0), 3.0);
+        assert_eq!(positive_finite(-3.0, 1.0), 1.0);
+        assert_eq!(positive_finite(f32::INFINITY, 1.0), 1.0);
+
+        let mut shadow = SvgShadow::empty();
+        assert!(shadow.push(SvgShadowLayer::FALLBACK));
+        assert!(shadow.push(SvgShadowLayer::FALLBACK));
+        assert!(!shadow.push(SvgShadowLayer::FALLBACK));
+
+        let invisible_background = SvgRootBackground {
+            color: None,
+            opacity: 1.0,
+            layers: Vec::new(),
+        };
+        assert!(!invisible_background.is_visible());
+        assert!(invisible_background.with_opacity(0.5).is_none());
+
+        let visible_background = SvgRootBackground {
+            color: Some(SvgRootBackgroundColor {
+                color: (1.0, 0.0, 0.0),
+                opacity: 1.0,
+            }),
+            opacity: 1.0,
+            layers: Vec::new(),
+        };
+        assert!(visible_background.clone().is_visible());
+        assert!(visible_background.with_opacity(0.0).is_none());
+
+        let mut widths = WidthCache::default();
+        widths.insert_if_room(
+            (F_BODY, 12.0f32.to_bits()),
+            "same",
+            lu_from_points_f32(12.0),
+        );
+        widths.insert_if_room(
+            (F_BODY, 12.0f32.to_bits()),
+            "same",
+            lu_from_points_f32(13.0),
+        );
+        assert_eq!(widths.entry_count(), 1);
+        assert_eq!(
+            widths.get((F_BODY, 12.0f32.to_bits()), "same"),
+            Some(lu_from_points_f32(13.0))
+        );
+
+        let key = SimpleParagraphLayoutKey::new(
+            "paragraph",
+            0.0,
+            lu_from_points_f32(120.0),
+            12.0,
+            0.0,
+            FlowKind::Paragraph,
+            ParagraphPolicy::for_flow(FlowKind::Paragraph),
+        );
+        let mut paragraph_cache = SimpleParagraphLayoutCache::default();
+        paragraph_cache.insert_if_room(key.clone(), Vec::new());
+        assert_eq!(paragraph_cache.len(), 0);
+
+        let line = Line {
+            size: 12.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark::default(),
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs: Vec::new(),
+            image: None,
+        };
+        paragraph_cache.insert_if_room(key.clone(), vec![line.clone()]);
+        assert_eq!(paragraph_cache.len(), 1);
+        assert!(paragraph_cache.get(&key).is_some());
+
+        let long_key = SimpleParagraphLayoutKey::new(
+            &"x".repeat(SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES + 1),
+            0.0,
+            lu_from_points_f32(120.0),
+            12.0,
+            0.0,
+            FlowKind::Paragraph,
+            ParagraphPolicy::for_flow(FlowKind::Paragraph),
+        );
+        paragraph_cache.insert_if_room(long_key, vec![line.clone()]);
+        assert_eq!(paragraph_cache.len(), 1);
+
+        paragraph_cache
+            .insert_if_room(key, vec![line; SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_LINES + 1]);
+        assert_eq!(paragraph_cache.len(), 1);
     }
 
     // ---- accessible title/desc extraction --------------------------------

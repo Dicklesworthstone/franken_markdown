@@ -125,7 +125,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[test]
 fn color_named_and_hex_digit_forms_map_to_exact_rg() {
-    // #rgb short, #rrggbb long, named `green` (0,0.5,0), and #rgba/#rrggbbaa
+    // #rgb short, #rrggbb long, named `green` (#008000), and #rgba/#rrggbbaa
     // whose alpha becomes a fill-opacity ExtGState.
     let text = svg(
         "hex.svg",
@@ -137,7 +137,7 @@ fn color_named_and_hex_digit_forms_map_to_exact_rg() {
 </svg>"##,
     );
     assert_has(&text, "0.000 1.000 0.533 rg 0 0 8 8 re f");
-    assert_has(&text, "0.000 0.500 0.000 rg 10 0 8 8 re f");
+    assert_has(&text, "0.000 0.502 0.000 rg 10 0 8 8 re f");
     // #11223344 -> rgb 0.067 0.133 0.200, alpha 0x44/255 = 0.267 -> /ca 0.267.
     assert_has(&text, "/GSa02671000 gs 0.067 0.133 0.200 rg 20 0 8 8 re f");
     assert_has(&text, "/ca 0.267 /CA 1.000");
@@ -1623,8 +1623,8 @@ fn text_body_comment_textpath_hidden_and_non_tspan_children() {
 <text font-size="10" fill="#000000">Lead<!-- inline comment --><textPath href="#c">OnPath</textPath><tspan opacity="0">Hidden</tspan><a href="https://x">AnchorInText</a>Tail</text>
 </svg>"##,
     );
-    // The visible text and textPath produce runs; the opacity:0 tspan and the
-    // non-tspan <a> child are skipped without derailing.
+    // The visible text, textPath, and transparent text-anchor child produce
+    // runs; the opacity:0 tspan is skipped without derailing.
     assert_has(&text, "BT ");
     assert_has(&text, "] TJ ET");
 }
@@ -1836,6 +1836,23 @@ fn nested_anchor_links_keep_innermost_target() {
     // it (the is_none() guard is false); the inner URI is the one recorded.
     assert_has(&text, "/URI (https://inner.example)");
     assert_has(&text, "1.000 0.000 0.000 rg 0 0 8 8 re f");
+}
+
+#[test]
+fn unsafe_nested_anchor_in_reused_def_suppresses_outer_target() {
+    let text = svg(
+        "unsafe-reused-link.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">
+<defs>
+<g id="wrap"><a href="javascript:alert(1)"><rect x="0" y="0" width="8" height="8" fill="#ff0000"/></a></g>
+</defs>
+<a href="https://outer.example"><use href="#wrap"/></a>
+</svg>"##,
+    );
+
+    assert_has(&text, "1.000 0.000 0.000 rg 0 0 8 8 re f");
+    assert_absent(&text, "javascript:alert");
+    assert_absent(&text, "/URI (https://outer.example)");
 }
 
 // ===========================================================================
@@ -2594,7 +2611,7 @@ fn filter_shadow_flood_forms_and_stddeviation_variants() {
     );
     // Named and hex flood colours both drive shadows; a zero-offset shadow defaults
     // to black.
-    assert_has(&text, "0.000 0.500 0.000 rg"); // named green flood
+    assert_has(&text, "0.000 0.502 0.000 rg"); // named green flood
     assert_has(&text, "0.396 0.263 0.129 rg"); // hex flood
 }
 

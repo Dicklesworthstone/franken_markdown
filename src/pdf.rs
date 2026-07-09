@@ -12732,7 +12732,9 @@ fn parse_svg_number(value: &str) -> Option<f32> {
     if !parsed.is_finite() {
         return None;
     }
-    Some(parsed * svg_absolute_length_multiplier(value[end..].trim_start()).unwrap_or(1.0))
+    let converted =
+        parsed * svg_absolute_length_multiplier(value[end..].trim_start()).unwrap_or(1.0);
+    converted.is_finite().then_some(converted)
 }
 
 fn svg_absolute_length_multiplier(unit: &str) -> Option<f32> {
@@ -12808,18 +12810,36 @@ fn parse_svg_number_list(value: &str) -> Vec<f32> {
         if pos >= value.len() {
             break;
         }
-        let start = pos;
-        if read_svg_number_token(value, &mut pos).is_none() {
-            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
-            continue;
-        }
-        if let Ok(num) = value[start..pos].parse::<f32>()
-            && num.is_finite()
-        {
+        let before = pos;
+        if let Some(num) = read_svg_number_list_value(value, &mut pos) {
             nums.push(num);
+        } else if pos == before {
+            pos += value[pos..].chars().next().map_or(1, char::len_utf8);
         }
     }
     nums
+}
+
+fn read_svg_number_list_value(data: &str, pos: &mut usize) -> Option<f32> {
+    let start = *pos;
+    read_svg_number_token(data, pos)?;
+    let number_end = *pos;
+    if data[*pos..].starts_with('%') {
+        *pos += 1;
+    } else {
+        while let Some(ch) = data[*pos..].chars().next() {
+            if !ch.is_ascii_alphabetic() {
+                break;
+            }
+            *pos += ch.len_utf8();
+        }
+    }
+    let parsed = data[start..number_end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let converted = parsed * svg_absolute_length_multiplier(&data[number_end..*pos]).unwrap_or(1.0);
+    converted.is_finite().then_some(converted)
 }
 
 fn parse_svg_transform(value: &str) -> Option<SvgTransform> {
@@ -31005,6 +31025,20 @@ mod coverage_gap_tests {
         assert!(approx(parse_svg_number("20em").unwrap(), 20.0));
         assert!(approx(parse_svg_number("50%").unwrap(), 50.0));
         assert!(approx(parse_svg_number("7furlong").unwrap(), 7.0));
+        assert!(parse_svg_number("3.4e38in").is_none());
+
+        let list = parse_svg_number_list("72pt 6pc 1in 2.54cm 25.4mm 101.6q 50% 20em 7furlong");
+        assert_eq!(list.len(), 9);
+        for value in &list[..6] {
+            assert!(
+                approx(*value, 96.0),
+                "absolute list unit converted: {list:?}"
+            );
+        }
+        assert!(approx(list[6], 50.0));
+        assert!(approx(list[7], 20.0));
+        assert!(approx(list[8], 7.0));
+        assert_eq!(parse_svg_number_list("3.4e38in 5"), vec![5.0]);
 
         let gradient = parse_svg_gradient_length("72pt").expect("gradient length");
         assert!(approx(gradient.value, 96.0));

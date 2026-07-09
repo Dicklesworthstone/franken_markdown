@@ -3302,6 +3302,8 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
   <path d="M4 20 L60 20" fill="none" stroke="#00ff00" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="3" stroke-dasharray="2,3" stroke-dashoffset="1"/>
   <path d="M4 24 L60 24" fill="none" stroke="#ff00ff" stroke-width="1" stroke-dasharray="2 3 4"/>
   <path class="miter" d="M4 28 L60 28" fill="none" stroke="#123456" stroke-width="2"/>
+  <path d="M4 32 L60 32" fill="none" stroke="#777777" stroke-width="1"
+        stroke-dasharray="72pt 6pc 1in 2.54cm 25.4mm 101.6q"/>
   <path d="M4 36 L60 36" fill="none" stroke="#00ffff" stroke-width="1" stroke-dasharray="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 -1"/>
 </svg>
 "##;
@@ -3333,6 +3335,12 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
     assert!(
         text.contains("0.071 0.204 0.337 RG 2 w 0 J 0 j 2.5 M 4 28 m 60 28 l S"),
         "CSS stroke-miterlimit should emit a PDF miter-limit operator with explicit miter joins: {text}"
+    );
+    assert!(
+        text.contains(
+            "q 0.467 0.467 0.467 RG 1 w 0 J 0 j 4 M [96 96 96 96 96 96] 0 d 4 32 m 60 32 l S\nQ"
+        ),
+        "absolute-unit SVG dash arrays should convert to CSS pixels before PDF emission: {text}"
     );
     assert!(
         text.contains("0.000 1.000 1.000 RG 1 w 0 J 0 j 4 M 4 36 m 60 36 l S"),

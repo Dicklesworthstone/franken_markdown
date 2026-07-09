@@ -898,7 +898,7 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
         return None;
     }
     let delimiter_cols = validated_table_delimiter_cell_count(delimiter)?;
-    let cols = split_table_row(header).len();
+    let cols = split_table_row_cell_count(header);
     if cols == 0 || delimiter_cols != cols {
         return None;
     }
@@ -2739,10 +2739,50 @@ fn validated_table_delimiter_alignments(line: &str) -> Option<Vec<Align>> {
     Some(align)
 }
 
+#[cfg(test)]
 fn split_table_row(line: &str) -> Vec<&str> {
     let mut cells = Vec::new();
     split_table_row_into(line, &mut cells);
     cells
+}
+
+fn split_table_row_cell_count(line: &str) -> usize {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
+        return t.split('|').count();
+    }
+
+    let bytes = t.as_bytes();
+    let mut count = 1usize;
+    let mut code_ticks = 0usize;
+    let mut prev_backslash = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'`' && !prev_backslash {
+            let ticks = ascii_run_len(bytes, i, b'`');
+            if code_ticks == 0 {
+                code_ticks = ticks;
+            } else if code_ticks == ticks {
+                code_ticks = 0;
+            }
+            prev_backslash = false;
+            i += ticks;
+            continue;
+        }
+        if c == b'|' && !prev_backslash && code_ticks == 0 {
+            count += 1;
+        } else if c == b'\\' && !prev_backslash {
+            prev_backslash = true;
+            i += 1;
+            continue;
+        }
+        prev_backslash = false;
+        i += 1;
+    }
+    count
 }
 
 fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
@@ -5756,8 +5796,8 @@ mod bracket_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod table_row_split_tests {
     use super::{
-        split_table_delimiter_alignments, split_table_row, split_table_row_into,
-        table_delimiter_cell_count, validated_table_delimiter_alignments,
+        split_table_delimiter_alignments, split_table_row, split_table_row_cell_count,
+        split_table_row_into, table_delimiter_cell_count, validated_table_delimiter_alignments,
         validated_table_delimiter_cell_count,
     };
     use crate::ast::Align;
@@ -5799,6 +5839,27 @@ mod table_row_split_tests {
 
         split_table_row_into("left | right", &mut scratch);
         assert_eq!(scratch, vec!["left", "right"]);
+    }
+
+    #[test]
+    fn table_row_cell_counter_matches_allocating_splitter_shape() {
+        for line in [
+            "| alpha | beta || delta |",
+            "alpha | beta",
+            "||",
+            "|",
+            "",
+            "alpha | `a|b` | c",
+            r"alpha | a \| b | c",
+            r"| `a \` | b` | c |",
+            "alpha | ``a|b`` | c",
+        ] {
+            assert_eq!(
+                split_table_row_cell_count(line),
+                split_table_row(line).len(),
+                "row cell count drifted: {line}"
+            );
+        }
     }
 
     #[test]

@@ -183,6 +183,54 @@ fn color_rgb_function_malformed_falls_back_to_inherited_black() {
     assert_absent(&text, "0.004 0.008 0.012 rg");
 }
 
+#[test]
+fn color_hsl_function_units_alpha_vars_and_gradients() {
+    let text = svg(
+        "hslfn.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 24">
+<style>
+:root { --hue: 240deg; --sat: 100%; --lit: 50%; --fade: 25%; }
+.varfill { fill: hsl(var(--hue) var(--sat) var(--lit) / var(--fade)); }
+</style>
+<defs>
+<linearGradient id="g"><stop offset="0" stop-color="hsl(0 100% 50%)"/><stop offset="1" stop-color="hsl(240 100% 50%)"/></linearGradient>
+</defs>
+<rect x="0" y="0" width="8" height="8" fill="hsl(120 100% 50%)"/>
+<rect x="10" y="0" width="8" height="8" fill="hsl(0.5turn 100% 50%)"/>
+<rect x="20" y="0" width="8" height="8" fill="hsla(240, 100%, 50%, 0.5)"/>
+<rect x="30" y="0" width="8" height="8" fill="hsl(3.1415927rad 100% 50% / 25%)"/>
+<rect x="40" y="0" width="8" height="8" fill="hsl(200grad 100% 50%)"/>
+<rect class="varfill" x="50" y="0" width="8" height="8"/>
+<rect x="60" y="0" width="8" height="8" fill="url(#g)"/>
+</svg>"##,
+    );
+    assert_has(&text, "0.000 1.000 0.000 rg 0 0 8 8 re f");
+    assert_has(&text, "0.000 1.000 1.000 rg 10 0 8 8 re f");
+    assert_has(&text, "/GSa05001000 gs 0.000 0.000 1.000 rg 20 0 8 8 re f");
+    assert_has(&text, "/ca 0.500 /CA 1.000");
+    assert_has(&text, "/GSa02501000 gs 0.000 1.000 1.000 rg 30 0 8 8 re f");
+    assert_has(&text, "0.000 1.000 1.000 rg 40 0 8 8 re f");
+    assert_has(&text, "/GSa02501000 gs 0.000 0.000 1.000 rg 50 0 8 8 re f");
+    assert_has(&text, "/C0 [1.000 0.000 0.000] /C1 [0.000 0.000 1.000]");
+}
+
+#[test]
+fn color_hsl_function_malformed_falls_back_to_inherited_black() {
+    let text = svg(
+        "hslbad.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 20">
+<rect x="0" y="0" width="8" height="8" fill="hsl(120 100 50%)"/>
+<rect x="10" y="0" width="8" height="8" fill="hsl(120 100% 50% / 0.5 / 0.5)"/>
+<rect x="20" y="0" width="8" height="8" fill="hsl(120foo 100% 50%)"/>
+<rect x="30" y="0" width="8" height="8" fill="hsl(120, 100%)"/>
+</svg>"##,
+    );
+    for x in ["0", "10", "20", "30"] {
+        assert_has(&text, &format!("0.000 0.000 0.000 rg {x} 0 8 8 re f"));
+    }
+    assert_absent(&text, "0.000 1.000 0.000 rg 0 0 8 8 re f");
+}
+
 // ===========================================================================
 // color-mix(in srgb, ...) weighting
 // ===========================================================================

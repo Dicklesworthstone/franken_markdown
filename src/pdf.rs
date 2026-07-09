@@ -11865,6 +11865,9 @@ fn parse_svg_color_inner_with_alpha(
     if let Some(color) = parse_svg_rgb_function(value, css_vars) {
         return Some(color);
     }
+    if let Some(color) = parse_svg_hsl_function(value, css_vars) {
+        return Some(color);
+    }
     parse_svg_named_color(value).map(|rgb| SvgParsedColor { rgb, alpha: None })
 }
 
@@ -12116,6 +12119,115 @@ fn parse_svg_rgb_channel(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32
         parsed / 255.0
     };
     channel.is_finite().then_some(channel.clamp(0.0, 1.0))
+}
+
+fn parse_svg_hsl_function(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgParsedColor> {
+    let args =
+        svg_css_function_args(value, "hsl").or_else(|| svg_css_function_args(value, "hsla"))?;
+    let (channel_args, slash_alpha) = split_svg_top_level_slash(args)?;
+    let comma_parts = split_svg_top_level_commas(channel_args)?;
+    let (channels, comma_alpha) = if comma_parts.len() == 3 || comma_parts.len() == 4 {
+        (comma_parts[..3].to_vec(), comma_parts.get(3).copied())
+    } else if comma_parts.len() == 1 {
+        let space_parts = split_svg_top_level_whitespace(channel_args);
+        if space_parts.len() != 3 {
+            return None;
+        }
+        (space_parts, None)
+    } else {
+        return None;
+    };
+    let hue = parse_svg_hue_degrees(channels[0], css_vars)?;
+    let saturation = parse_svg_percentage_channel(channels[1], css_vars)?;
+    let lightness = parse_svg_percentage_channel(channels[2], css_vars)?;
+    let alpha = slash_alpha
+        .or(comma_alpha)
+        .map(|alpha| parse_svg_opacity(alpha, css_vars));
+    let alpha = match alpha {
+        Some(Some(alpha)) => Some(alpha),
+        Some(None) => return None,
+        None => None,
+    };
+    Some(SvgParsedColor {
+        rgb: svg_hsl_to_rgb(hue, saturation, lightness),
+        alpha,
+    })
+}
+
+fn parse_svg_hue_degrees(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_hue_degrees(&resolved, css_vars);
+    }
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let suffix = value[end..].trim_start();
+    let unit = svg_length_unit_token(suffix);
+    if !suffix[unit.len()..].trim().is_empty() {
+        return None;
+    }
+    let degrees = if unit.is_empty() || unit.eq_ignore_ascii_case("deg") {
+        parsed
+    } else if unit.eq_ignore_ascii_case("rad") {
+        parsed.to_degrees()
+    } else if unit.eq_ignore_ascii_case("grad") {
+        parsed * 0.9
+    } else if unit.eq_ignore_ascii_case("turn") {
+        parsed * 360.0
+    } else {
+        return None;
+    };
+    degrees.is_finite().then_some(degrees.rem_euclid(360.0))
+}
+
+fn parse_svg_percentage_channel(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_percentage_channel(&resolved, css_vars);
+    }
+    let mut end = 0usize;
+    read_svg_number_token(value, &mut end)?;
+    let parsed = value[..end].parse::<f32>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    let suffix = value[end..].trim_start();
+    if !suffix.starts_with('%') || !suffix[1..].trim().is_empty() {
+        return None;
+    }
+    let channel = parsed / 100.0;
+    channel.is_finite().then_some(channel.clamp(0.0, 1.0))
+}
+
+fn svg_hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> SvgColor {
+    let hue = hue_degrees.rem_euclid(360.0) / 60.0;
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let x = chroma * (1.0 - (hue.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = if hue < 1.0 {
+        (chroma, x, 0.0)
+    } else if hue < 2.0 {
+        (x, chroma, 0.0)
+    } else if hue < 3.0 {
+        (0.0, chroma, x)
+    } else if hue < 4.0 {
+        (0.0, x, chroma)
+    } else if hue < 5.0 {
+        (x, 0.0, chroma)
+    } else {
+        (chroma, 0.0, x)
+    };
+    let m = lightness - chroma * 0.5;
+    (
+        (r1 + m).clamp(0.0, 1.0),
+        (g1 + m).clamp(0.0, 1.0),
+        (b1 + m).clamp(0.0, 1.0),
+    )
 }
 
 fn svg_hex_pair(high: u8, low: u8) -> Option<u8> {

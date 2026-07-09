@@ -2791,6 +2791,71 @@ fn pdf_svg_treats_fully_transparent_rgba_paint_as_none() {
 }
 
 #[test]
+fn pdf_svg_color_mix_with_transparent_preserves_paint_alpha() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">
+  <rect x="2" y="2" width="20" height="12" fill="color-mix(in srgb, #2563eb 20%, transparent)" stroke="none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "color-mix-transparent.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Color mix](color-mix-transparent.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa02001000 << /ca 0.200 /CA 1.000 >>"),
+        "color-mix with transparent should preserve the mixed fill alpha in a native PDF ExtGState: {text}"
+    );
+    assert!(
+        text.contains("/GSa02001000 gs 0.145 0.388 0.922 rg 2 2 20 12 re f"),
+        "color-mix should keep the source blue hue premultiplied through transparent instead of falling back to black: {text}"
+    );
+    assert!(
+        !text.contains("0.000 0.000 0.000 rg 2 2 20 12 re f"),
+        "failed color-mix parsing must not leave the inherited black fill in place: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_opaque_color_mix_preserves_existing_fill_opacity() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16">
+  <g fill-opacity="0.35">
+    <rect x="2" y="2" width="12" height="10" fill="color-mix(in srgb, #ff0000, #0000ff)" stroke="none"/>
+  </g>
+  <rect x="20" y="2" width="12" height="10" style="fill-opacity: 0.4; fill: color-mix(in srgb, #ff0000, #0000ff)" stroke="none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "opaque-color-mix-opacity.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Color mix opacity](opaque-color-mix-opacity.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa03501000 gs 0.500 0.000 0.500 rg 2 2 12 10 re f"),
+        "opaque color-mix must not reset inherited fill-opacity to 1.0: {text}"
+    );
+    assert!(
+        text.contains("/GSa04001000 gs 0.500 0.000 0.500 rg 20 2 12 10 re f"),
+        "opaque color-mix must not reset a sibling fill-opacity declaration: {text}"
+    );
+    assert!(
+        !text.contains("/GSa10001000 gs 0.500 0.000 0.500 rg"),
+        "opaque color-mix should preserve existing alpha instead of forcing full opacity: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 58">
@@ -4944,7 +5009,7 @@ fn pdf_svg_root_css_variables_cascade_in_source_order() {
 }
 
 #[test]
-fn pdf_svg_color_mix_resolves_srgb_paints_and_keeps_fallbacks() {
+fn pdf_svg_color_mix_resolves_srgb_paints_and_transparent_alpha() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 42">
   <style>
@@ -4986,8 +5051,8 @@ fn pdf_svg_color_mix_resolves_srgb_paints_and_keeps_fallbacks() {
         "two explicit color-mix percentages should normalize by their positive sum: {text}"
     );
     assert!(
-        text.contains("0.071 0.204 0.337 rg 50 2 10 10 re f\n"),
-        "transparent color-mix components should leave earlier fallback declarations active: {text}"
+        text.contains("/GSa05001000 gs 1.000 0.000 0.000 rg 50 2 10 10 re f\n"),
+        "transparent color-mix components should preserve premultiplied source hue and native alpha instead of leaving fallback declarations active: {text}"
     );
     assert!(
         text.contains("0.250 0.000 0.750 RG 2 w 0 J 0 j 4 M 2 26 m 40 26 l S\n"),

@@ -11852,11 +11852,8 @@ fn parse_svg_color_inner_with_alpha(
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_color_inner_with_alpha(&resolved, css_vars, depth + 1);
     }
-    if let Some(color) = parse_svg_color_mix(value, css_vars, depth + 1) {
-        return Some(SvgParsedColor {
-            rgb: color,
-            alpha: None,
-        });
+    if let Some(color) = parse_svg_color_mix_with_alpha(value, css_vars, depth + 1) {
+        return Some(color);
     }
     if let Some(hex) = value.strip_prefix('#') {
         return parse_svg_hex_color_with_alpha(hex);
@@ -12130,7 +12127,11 @@ fn svg_hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn parse_svg_color_mix(value: &str, css_vars: &[SvgCssVariable], depth: usize) -> Option<SvgColor> {
+fn parse_svg_color_mix_with_alpha(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    depth: usize,
+) -> Option<SvgParsedColor> {
     if depth >= 8 {
         return None;
     }
@@ -12144,11 +12145,41 @@ fn parse_svg_color_mix(value: &str, css_vars: &[SvgCssVariable], depth: usize) -
         parse_svg_color_mix_component(parts[2], css_vars, depth + 1)?;
     let (first_weight, second_weight) =
         svg_color_mix_weights(first_weight, second_weight).filter(|(a, b)| *a > 0.0 || *b > 0.0)?;
-    Some((
-        (first_color.0 * first_weight + second_color.0 * second_weight).clamp(0.0, 1.0),
-        (first_color.1 * first_weight + second_color.1 * second_weight).clamp(0.0, 1.0),
-        (first_color.2 * first_weight + second_color.2 * second_weight).clamp(0.0, 1.0),
-    ))
+    let first_alpha = first_color.alpha.unwrap_or(1.0).clamp(0.0, 1.0);
+    let second_alpha = second_color.alpha.unwrap_or(1.0).clamp(0.0, 1.0);
+    let mixed_alpha = first_alpha.mul_add(first_weight, second_alpha * second_weight);
+    if !mixed_alpha.is_finite() {
+        return None;
+    }
+    if mixed_alpha <= 0.001 {
+        return Some(SvgParsedColor {
+            rgb: (0.0, 0.0, 0.0),
+            alpha: Some(0.0),
+        });
+    }
+    let premul = (
+        first_color.rgb.0.mul_add(
+            first_alpha * first_weight,
+            second_color.rgb.0 * second_alpha * second_weight,
+        ),
+        first_color.rgb.1.mul_add(
+            first_alpha * first_weight,
+            second_color.rgb.1 * second_alpha * second_weight,
+        ),
+        first_color.rgb.2.mul_add(
+            first_alpha * first_weight,
+            second_color.rgb.2 * second_alpha * second_weight,
+        ),
+    );
+    let mixed_alpha = mixed_alpha.clamp(0.0, 1.0);
+    Some(SvgParsedColor {
+        rgb: (
+            (premul.0 / mixed_alpha).clamp(0.0, 1.0),
+            (premul.1 / mixed_alpha).clamp(0.0, 1.0),
+            (premul.2 / mixed_alpha).clamp(0.0, 1.0),
+        ),
+        alpha: (mixed_alpha < 0.999).then_some(mixed_alpha),
+    })
 }
 
 fn svg_css_function_args<'a>(value: &'a str, name: &str) -> Option<&'a str> {
@@ -12231,13 +12262,19 @@ fn parse_svg_color_mix_component(
     component: &str,
     css_vars: &[SvgCssVariable],
     depth: usize,
-) -> Option<(SvgColor, Option<f32>)> {
+) -> Option<(SvgParsedColor, Option<f32>)> {
     let (color_src, weight) = split_svg_color_mix_component_weight(component)?;
     if svg_color_source_is_transparent(color_src, css_vars) {
-        return None;
+        return Some((
+            SvgParsedColor {
+                rgb: (0.0, 0.0, 0.0),
+                alpha: Some(0.0),
+            },
+            weight,
+        ));
     }
     Some((
-        parse_svg_color_inner(color_src, css_vars, depth + 1)?,
+        parse_svg_color_inner_with_alpha(color_src, css_vars, depth + 1)?,
         weight,
     ))
 }

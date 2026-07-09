@@ -847,6 +847,7 @@ struct SvgStyle {
     fill_context: Option<SvgContextPaint>,
     stroke: Option<(f32, f32, f32)>,
     stroke_gradient: Option<usize>,
+    stroke_pattern: Option<usize>,
     stroke_current_color: bool,
     stroke_context: Option<SvgContextPaint>,
     stroke_width: f32,
@@ -890,6 +891,7 @@ impl SvgStyle {
         fill_context: None,
         stroke: None,
         stroke_gradient: None,
+        stroke_pattern: None,
         stroke_current_color: false,
         stroke_context: None,
         stroke_width: 1.0,
@@ -940,6 +942,7 @@ struct SvgStylePatch {
     fill_context: Option<Option<SvgContextPaint>>,
     stroke: Option<Option<(f32, f32, f32)>>,
     stroke_gradient: Option<Option<usize>>,
+    stroke_pattern: Option<Option<usize>>,
     stroke_current_color: Option<bool>,
     stroke_context: Option<Option<SvgContextPaint>>,
     stroke_width: Option<f32>,
@@ -4789,6 +4792,7 @@ fn parse_svg_line(
                 fill_context: None,
                 stroke: inherited.stroke,
                 stroke_gradient: inherited.stroke_gradient,
+                stroke_pattern: inherited.stroke_pattern,
                 stroke_current_color: inherited.stroke_current_color,
                 stroke_context: inherited.stroke_context,
                 stroke_width: inherited.stroke_width,
@@ -4865,6 +4869,7 @@ fn parse_svg_poly(
             fill_context: None,
             stroke: inherited.stroke,
             stroke_gradient: inherited.stroke_gradient,
+            stroke_pattern: inherited.stroke_pattern,
             stroke_current_color: inherited.stroke_current_color,
             stroke_context: inherited.stroke_context,
             stroke_width: inherited.stroke_width,
@@ -9015,6 +9020,7 @@ fn parse_svg_style_patch(
                     patch.stroke_current_color = Some(true);
                     patch.stroke_context = Some(None);
                     patch.stroke_gradient = Some(None);
+                    patch.stroke_pattern = Some(None);
                     if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
                         patch.stroke_opacity = Some(alpha);
                     }
@@ -9023,6 +9029,7 @@ fn parse_svg_style_patch(
                     patch.stroke_current_color = Some(false);
                     patch.stroke_context = Some(Some(context));
                     patch.stroke_gradient = Some(None);
+                    patch.stroke_pattern = Some(None);
                     if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
                         patch.stroke_opacity = Some(alpha);
                     }
@@ -9043,6 +9050,8 @@ fn parse_svg_style_patch(
                         patch.stroke = Some(paint);
                         patch.stroke_gradient =
                             Some(paint.is_some().then_some(gradient_ref).flatten());
+                        patch.stroke_pattern =
+                            Some(paint.is_some().then_some(pattern_ref).flatten());
                         patch.stroke_current_color = Some(false);
                         patch.stroke_context = Some(None);
                         if let Some(alpha) = parse_svg_paint_alpha(value, css_vars) {
@@ -9314,6 +9323,7 @@ fn apply_svg_style_patch(
     if patch.stroke_current_color == Some(true) {
         style.stroke = Some(style.color);
         style.stroke_gradient = None;
+        style.stroke_pattern = None;
         style.stroke_current_color = true;
         style.stroke_context = None;
     }
@@ -9321,6 +9331,7 @@ fn apply_svg_style_patch(
         style.stroke = stroke;
         if stroke.is_none() {
             style.stroke_gradient = None;
+            style.stroke_pattern = None;
         }
         style.stroke_current_color = false;
         style.stroke_context = None;
@@ -9330,11 +9341,18 @@ fn apply_svg_style_patch(
         if stroke_context.is_some() {
             style.stroke = None;
             style.stroke_gradient = None;
+            style.stroke_pattern = None;
             style.stroke_current_color = false;
         }
     }
     if let Some(stroke_gradient) = patch.stroke_gradient {
         style.stroke_gradient = stroke_gradient;
+    }
+    if let Some(stroke_pattern) = patch.stroke_pattern {
+        style.stroke_pattern = stroke_pattern;
+        if stroke_pattern.is_some() {
+            style.stroke_gradient = None;
+        }
     }
     if let Some(stroke_width) = patch.stroke_width {
         style.stroke_width = stroke_width;
@@ -11392,6 +11410,7 @@ fn apply_svg_color(style: &mut SvgStyle, color: SvgColor) {
     if style.stroke_current_color {
         style.stroke = Some(color);
         style.stroke_gradient = None;
+        style.stroke_pattern = None;
     }
 }
 
@@ -11420,6 +11439,7 @@ fn apply_svg_paint_attr(
         } else if target == "stroke" {
             style.stroke = Some(style.color);
             style.stroke_gradient = None;
+            style.stroke_pattern = None;
             style.stroke_current_color = true;
             style.stroke_context = None;
             if let Some(alpha) = paint_alpha {
@@ -11441,6 +11461,7 @@ fn apply_svg_paint_attr(
         } else if target == "stroke" {
             style.stroke = None;
             style.stroke_gradient = None;
+            style.stroke_pattern = None;
             style.stroke_current_color = false;
             style.stroke_context = Some(context);
             if let Some(alpha) = paint_alpha {
@@ -11491,6 +11512,14 @@ fn apply_svg_paint_attr(
         } else {
             None
         };
+        style.stroke_pattern = if style.stroke.is_some() {
+            pattern_ref
+        } else {
+            None
+        };
+        if style.stroke_pattern.is_some() {
+            style.stroke_gradient = None;
+        }
         style.stroke_current_color = false;
         style.stroke_context = None;
         if let Some(alpha) = paint_alpha {
@@ -17831,6 +17860,7 @@ fn draw_svg_shape(
             body,
             line,
             resources.gradients,
+            resources.patterns,
             resources.clip_paths,
             resources.markers,
             resources.stroke_scale,
@@ -17981,10 +18011,12 @@ fn draw_svg_ellipse(
     append_svg_transform_suffix(body, transformed);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_svg_line(
     body: &mut String,
     line: &SvgLine,
     gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
     markers: &[SvgMarker],
     stroke_scale: Option<f32>,
@@ -18003,6 +18035,7 @@ fn draw_svg_line(
         fill_context: None,
         stroke: line.style.stroke,
         stroke_gradient: line.style.stroke_gradient,
+        stroke_pattern: line.style.stroke_pattern,
         stroke_current_color: line.style.stroke_current_color,
         stroke_context: line.style.stroke_context,
         stroke_width: line.style.stroke_width,
@@ -18056,7 +18089,16 @@ fn draw_svg_line(
                 SvgPaintLayer::Fill => {}
                 SvgPaintLayer::Stroke => {
                     if style.stroke.is_some() {
-                        append_svg_line_stroke_layer(body, line, style, gradients, page_resources);
+                        append_svg_line_stroke_layer(
+                            body,
+                            line,
+                            style,
+                            gradients,
+                            patterns,
+                            clip_paths,
+                            stroke_scale,
+                            page_resources,
+                        );
                     }
                 }
                 SvgPaintLayer::Markers => {
@@ -18074,7 +18116,16 @@ fn draw_svg_line(
         }
     } else {
         if style.stroke.is_some() {
-            append_svg_line_stroke_layer(body, line, style, gradients, page_resources);
+            append_svg_line_stroke_layer(
+                body,
+                line,
+                style,
+                gradients,
+                patterns,
+                clip_paths,
+                stroke_scale,
+                page_resources,
+            );
         }
         if has_markers {
             append_svg_line_markers(
@@ -18091,14 +18142,28 @@ fn draw_svg_line(
     append_svg_transform_suffix(body, transformed);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_svg_line_stroke_layer(
     body: &mut String,
     line: &SvgLine,
     style: SvgStyle,
     gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
     page_resources: &mut SvgPageResources<'_>,
 ) -> bool {
-    if !append_svg_line_gradient_stroke(body, line, style, gradients, page_resources) {
+    if !append_svg_line_pattern_stroke(
+        body,
+        line,
+        style,
+        gradients,
+        patterns,
+        clip_paths,
+        stroke_scale,
+        page_resources,
+    ) && !append_svg_line_gradient_stroke(body, line, style, gradients, page_resources)
+    {
         append_svg_style(body, style);
         append_svg_line_path(body, line);
         body.push_str("S\n");
@@ -19500,6 +19565,84 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+fn append_svg_line_pattern_stroke(
+    body: &mut String,
+    line: &SvgLine,
+    style: SvgStyle,
+    gradients: &[SvgGradientPaint],
+    patterns: &[SvgPatternPaint],
+    clip_paths: &[SvgClipPath],
+    stroke_scale: Option<f32>,
+    page_resources: &mut SvgPageResources<'_>,
+) -> bool {
+    if style.dash.len > 0 || matches!(style.line_cap, SvgLineCap::Round) {
+        return false;
+    }
+    let Some(pattern) = style.stroke_pattern.and_then(|index| patterns.get(index)) else {
+        return false;
+    };
+    let width = style.stroke_width;
+    let dx = line.x2 - line.x1;
+    let dy = line.y2 - line.y1;
+    let len = (dx.mul_add(dx, dy * dy)).sqrt();
+    if ![line.x1, line.y1, line.x2, line.y2, width, len]
+        .iter()
+        .all(|value| value.is_finite())
+        || width <= 0.001
+        || len <= 0.001
+    {
+        return false;
+    }
+
+    let half = width * 0.5;
+    let ux = dx / len;
+    let uy = dy / len;
+    let cap = match style.line_cap {
+        SvgLineCap::Butt => 0.0,
+        SvgLineCap::Square => half,
+        SvgLineCap::Round => return false,
+    };
+    let sx = line.x1 - ux * cap;
+    let sy = line.y1 - uy * cap;
+    let ex = line.x2 + ux * cap;
+    let ey = line.y2 + uy * cap;
+    let nx = -uy * half;
+    let ny = ux * half;
+    let points = [
+        (sx + nx, sy + ny),
+        (ex + nx, ey + ny),
+        (ex - nx, ey - ny),
+        (sx - nx, sy - ny),
+    ];
+    if !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        return false;
+    }
+    let min_x = points.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let stroke_alpha = quantize_svg_alpha(svg_effective_stroke_opacity(style));
+    append_svg_pattern_tiles_clipped(
+        body,
+        pattern,
+        gradients,
+        clip_paths,
+        page_resources,
+        stroke_scale,
+        (stroke_alpha < 1000).then_some((stroke_alpha, stroke_alpha)),
+        Some((min_x, min_y, max_x - min_x, max_y - min_y)),
+        SvgFillRule::NonZero,
+        &|body| append_svg_line_stroke_outline(body, points),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append_svg_pattern_fill<F>(
     body: &mut String,
     style: SvgStyle,
@@ -19520,6 +19663,36 @@ where
     let Some(pattern) = style.fill_pattern.and_then(|index| patterns.get(index)) else {
         return false;
     };
+    append_svg_pattern_tiles_clipped(
+        body,
+        pattern,
+        gradients,
+        clip_paths,
+        page_resources,
+        stroke_scale,
+        None,
+        bbox,
+        style.fill_rule,
+        append_path,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_svg_pattern_tiles_clipped<F>(
+    body: &mut String,
+    pattern: &SvgPatternPaint,
+    gradients: &[SvgGradientPaint],
+    clip_paths: &[SvgClipPath],
+    page_resources: &mut SvgPageResources<'_>,
+    stroke_scale: Option<f32>,
+    alpha_state: Option<(u16, u16)>,
+    bbox: Option<(f32, f32, f32, f32)>,
+    clip_rule: SvgFillRule,
+    append_clip_path: &F,
+) -> bool
+where
+    F: Fn(&mut String),
+{
     if pattern.elements.is_empty() {
         return false;
     }
@@ -19544,8 +19717,17 @@ where
     }
 
     body.push_str("q ");
-    append_path(body);
-    match style.fill_rule {
+    if let Some((fill_alpha, stroke_alpha)) = alpha_state {
+        append_svg_alpha_state_recorded(
+            body,
+            page_resources.alpha_states,
+            fill_alpha,
+            stroke_alpha,
+        );
+        body.push(' ');
+    }
+    append_clip_path(body);
+    match clip_rule {
         SvgFillRule::NonZero => body.push_str("W n "),
         SvgFillRule::EvenOdd => body.push_str("W* n "),
     }
@@ -20455,6 +20637,7 @@ fn svg_style_with_marker_context(mut style: SvgStyle, paint: SvgMarkerPaint) -> 
     if let Some(context) = style.stroke_context {
         style.stroke = svg_marker_context_paint(context, paint);
         style.stroke_gradient = None;
+        style.stroke_pattern = None;
         style.stroke_current_color = false;
         style.stroke_context = None;
     }

@@ -4305,7 +4305,43 @@ fn pdf_svg_user_space_patterns_tile_vector_children_under_shape_clip() {
 }
 
 #[test]
-fn pdf_svg_pattern_strokes_keep_representative_color_fallback() {
+fn pdf_svg_line_pattern_strokes_tile_vector_children_under_stroke_clip() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16">
+  <defs>
+    <pattern id="stripe" patternUnits="userSpaceOnUse" x="2" y="2" width="4" height="4">
+      <rect x="0" y="0" width="2" height="4" fill="#ff0000"/>
+      <rect x="2" y="0" width="2" height="4" fill="#0000ff"/>
+    </pattern>
+  </defs>
+  <line x1="2" y1="4" x2="18" y2="4" stroke="url(#stripe)" stroke-width="2" stroke-opacity="0.5"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("pattern-line-stroke.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Pattern line stroke](pattern-line-stroke.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("q /GSa05000500 gs 2 5 m 18 5 l 18 3 l 2 3 l h W n q 1 0 0 1 2 2 cm"),
+        "line pattern strokes should apply stroke alpha while clipping pattern tiles to the stroked outline: {text}"
+    );
+    assert!(
+        text.contains(
+            "1.000 0.000 0.000 rg 0 0 2 4 re f\n0.000 0.000 1.000 rg 2 0 2 4 re f\nQ\nq 1 0 0 1 6 2 cm"
+        ),
+        "pattern stroke tiles should repeat vector children along the line stroke bbox: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 4 m 18 4 l S\n"),
+        "straight line pattern strokes should not collapse to the representative solid-color fallback: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_path_pattern_strokes_keep_representative_color_fallback() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16">
   <style>
@@ -4317,7 +4353,6 @@ fn pdf_svg_pattern_strokes_keep_representative_color_fallback() {
       <rect x="2" y="0" width="2" height="4" fill="#0000ff"/>
     </pattern>
   </defs>
-  <line x1="2" y1="4" x2="18" y2="4" stroke="url(#stripe)" stroke-width="2"/>
   <path class="pattern-stroke" d="M2 12 L18 12"/>
 </svg>
 "##;
@@ -4329,12 +4364,8 @@ fn pdf_svg_pattern_strokes_keep_representative_color_fallback() {
     let text = as_text(&pdf);
 
     assert!(
-        text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 4 m 18 4 l S\n"),
-        "presentation-attribute pattern strokes should not disappear when falling back to the pattern representative color: {text}"
-    );
-    assert!(
         text.contains("1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 12 m 18 12 l S\n"),
-        "stylesheet pattern strokes should not disappear when falling back to the pattern representative color: {text}"
+        "arbitrary path pattern strokes should not disappear while falling back to the pattern representative color: {text}"
     );
 }
 

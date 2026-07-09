@@ -3238,7 +3238,15 @@ fn parse_svg_document(src: &str) -> Option<PdfSvgImage> {
         }
         if matches!(
             tag_lower,
-            "defs" | "style" | "script" | "foreignobject" | "iframe" | "object" | "embed"
+            "defs"
+                | "style"
+                | "script"
+                | "foreignobject"
+                | "iframe"
+                | "object"
+                | "embed"
+                | "clippath"
+                | "mask"
         ) {
             if !self_closing {
                 skip_depth = 1;
@@ -28786,5 +28794,1048 @@ mod table_wrap_tests {
         let default_width = text_width(line, CODE_FONT_SIZE, F_MONO, &faces);
         let shrunken_width = text_width(line, CODE_DIAGRAM_MIN_FONT_SIZE, F_MONO, &faces);
         assert!(default_width > shrunken_width);
+    }
+}
+
+/// Coverage-focused tests for internal helpers below the writer layer: SVG
+/// parsing (selectors, style patches, gradients, markers, filters, text spans),
+/// transform helpers, and block layout paths that no other suite exercises.
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp
+)]
+mod coverage_gap_tests {
+    use super::*;
+
+    fn approx(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 1e-4
+    }
+
+    fn assert_color(actual: SvgColor, expected: SvgColor, what: &str) {
+        assert!(
+            approx(actual.0, expected.0)
+                && approx(actual.1, expected.1)
+                && approx(actual.2, expected.2),
+            "{what}: expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    fn parsed_svg(src: &str) -> PdfSvgImage {
+        parse_svg_document(src).expect("svg fixture should parse as vector content")
+    }
+
+    // ---- SvgTransform helpers -------------------------------------------
+
+    #[test]
+    fn transform_skew_and_rotate_components() {
+        let skew_x = SvgTransform::skew_x_degrees(45.0);
+        assert!(approx(skew_x.c, 1.0), "skewX(45) shear c, got {}", skew_x.c);
+        assert!(approx(skew_x.a, 1.0) && approx(skew_x.b, 0.0) && approx(skew_x.d, 1.0));
+
+        let skew_y = SvgTransform::skew_y_degrees(45.0);
+        assert!(approx(skew_y.b, 1.0), "skewY(45) shear b, got {}", skew_y.b);
+        assert!(approx(skew_y.c, 0.0));
+
+        let rot = SvgTransform::rotate_degrees(90.0);
+        assert!(approx(rot.a, 0.0) && approx(rot.b, 1.0) && approx(rot.c, -1.0));
+
+        let parsed = parse_svg_transform("skewX(45) skewY(45)").expect("skew list parses");
+        // concat(skewX, skewY): b = d_x*b_y = 1, c = a_x*c_y + c_x*d_y = 1.
+        assert!(approx(parsed.b, 1.0) && approx(parsed.c, 1.0));
+    }
+
+    // ---- accessible title/desc extraction --------------------------------
+
+    #[test]
+    fn accessible_texts_capture_title_desc_and_skip_style_blocks() {
+        let src = r##"<svg viewBox="0 0 10 10" aria-label="Chart label">
+  <style>rect { fill: red; }</style>
+  <title>Flow &amp; Title</title>
+  <desc>Longer description</desc>
+  <rect width="4" height="4"/>
+</svg>"##;
+        let (aria, title, desc) = parse_svg_root_accessible_texts(src);
+        assert_eq!(aria.as_deref(), Some("Chart label"));
+        assert_eq!(title.as_deref(), Some("Flow & Title"));
+        assert_eq!(desc.as_deref(), Some("Longer description"));
+        // aria-label wins over <title>; desc is appended with " - ".
+        assert_eq!(
+            parse_svg_accessible_text(src).as_deref(),
+            Some("Chart label - Longer description")
+        );
+
+        // Identical name/desc collapse into a single string.
+        let same = r#"<svg viewBox="0 0 1 1"><title>Same</title><desc>Same</desc><rect width="1" height="1"/></svg>"#;
+        assert_eq!(parse_svg_accessible_text(same).as_deref(), Some("Same"));
+    }
+
+    #[test]
+    fn accessible_text_truncates_on_word_boundaries() {
+        // A single word longer than the cap cannot be emitted at all.
+        let oversized = "x".repeat(MAX_SVG_ACCESSIBLE_TEXT_CHARS + 1);
+        assert_eq!(truncate_svg_accessible_text(&oversized), None);
+
+        // Words are kept whole: the last word that would cross the cap is dropped.
+        let word = "abcdefghij"; // 10 chars, 11 with separator
+        let many = vec![word; 100].join(" ");
+        let truncated = truncate_svg_accessible_text(&many).expect("some words fit");
+        assert!(truncated.chars().count() <= MAX_SVG_ACCESSIBLE_TEXT_CHARS);
+        assert!(truncated.ends_with(word) && !truncated.ends_with(' '));
+        // 46 full words fit: 46*10 + 45 separators = 505 <= 512 < 516.
+        assert_eq!(truncated.chars().count(), 505);
+    }
+
+    // ---- shape element dispatch ------------------------------------------
+
+    #[test]
+    fn document_parses_line_polyline_polygon_path_and_use_shapes() {
+        let src = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs><rect id="tpl" width="5" height="6"/></defs>
+  <line x1="1" y1="2" x2="3" y2="4" stroke="black"/>
+  <polyline points="0,0 50,50 100,0" stroke="black"/>
+  <polygon points="0,0 10,0 10,10"/>
+  <path d="M0 0 L10 0 Z"/>
+  <image href="not-an-embeddable-uri" width="4" height="4"/>
+  <use href="#tpl"/>
+</svg>"##;
+        let image = parsed_svg(src);
+
+        let lines: Vec<&SvgLine> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Line(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.len(), 1);
+        assert!(approx(lines[0].x1, 1.0) && approx(lines[0].y1, 2.0));
+        assert!(approx(lines[0].x2, 3.0) && approx(lines[0].y2, 4.0));
+        // <line> never fills; the open-shape base style clears inherited fill.
+        assert!(lines[0].style.fill.is_none());
+        assert_color(
+            lines[0].style.stroke.unwrap(),
+            (0.0, 0.0, 0.0),
+            "line stroke",
+        );
+
+        let polylines: Vec<&SvgPoly> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Polyline(poly) => Some(poly),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(polylines.len(), 1);
+        assert_eq!(polylines[0].points.len(), 3);
+        assert!(
+            polylines[0].style.fill.is_none(),
+            "polyline must not inherit fill"
+        );
+
+        let polygons: Vec<&SvgPoly> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Polygon(poly) => Some(poly),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(polygons.len(), 1);
+        assert_color(
+            polygons[0].style.fill.unwrap(),
+            (0.0, 0.0, 0.0),
+            "polygon keeps default black fill",
+        );
+
+        let paths: Vec<&SvgPath> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Path(path) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].ops.len(), 3);
+        assert!(matches!(paths[0].ops[2], SvgPathOp::Close));
+
+        // <use href="#tpl"> materializes the defs rect; the undecodable <image>
+        // contributes nothing.
+        let rects: Vec<&SvgRect> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 1);
+        assert!(approx(rects[0].w, 5.0) && approx(rects[0].h, 6.0));
+        assert!(
+            !image
+                .elements
+                .iter()
+                .any(|el| matches!(el, SvgElement::Image(_))),
+            "undecodable image href must not produce an element"
+        );
+    }
+
+    #[test]
+    fn rect_radius_resolves_from_css_rule_and_style_attribute() {
+        let src = r##"<svg viewBox="0 0 20 20">
+  <style>rect.round { rx: 8; }</style>
+  <rect class="round" width="10" height="10" style="ry: 4"/>
+  <rect width="10" height="10" rx="3"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let rects: Vec<&SvgRect> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 2);
+        assert!(
+            approx(rects[0].rx, 8.0),
+            "rx from CSS rule, got {}",
+            rects[0].rx
+        );
+        assert!(
+            approx(rects[0].ry, 4.0),
+            "ry from style attr, got {}",
+            rects[0].ry
+        );
+        // rx-only mirrors into ry.
+        assert!(approx(rects[1].rx, 3.0) && approx(rects[1].ry, 3.0));
+    }
+
+    // ---- root background --------------------------------------------------
+
+    #[test]
+    fn root_background_parses_color_and_gradient_layers() {
+        let src = r##"<svg viewBox="0 0 10 10"
+  style="background-color: rgb(255,0,0); background-image: linear-gradient(#ff0000, #00ff00, #0000ff)">
+  <rect width="4" height="4"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let background = image.root_background.expect("styled root background");
+        assert_color(
+            background.color.expect("background color").color,
+            (1.0, 0.0, 0.0),
+            "background-color",
+        );
+        assert_eq!(background.layers.len(), 1);
+        let SvgRootBackgroundLayer::Linear(gradient) = &background.layers[0] else {
+            panic!("linear-gradient layer expected");
+        };
+        // Three colors with no offsets: ends pinned, middle interpolated to 0.5.
+        assert_eq!(gradient.stops.len(), 3);
+        assert!(approx(gradient.stops[0].0, 0.0));
+        assert!(approx(gradient.stops[1].0, 0.5));
+        assert!(approx(gradient.stops[2].0, 1.0));
+        assert_color(gradient.stops[1].1, (0.0, 1.0, 0.0), "middle stop");
+    }
+
+    #[test]
+    fn css_background_position_keywords_and_percentages() {
+        assert_eq!(parse_svg_css_background_position("top"), Some((0.5, 1.0)));
+        assert_eq!(
+            parse_svg_css_background_position("bottom"),
+            Some((0.5, 0.0))
+        );
+        assert_eq!(parse_svg_css_background_position("left"), Some((0.0, 0.5)));
+        assert_eq!(
+            parse_svg_css_background_position("center"),
+            Some((0.5, 0.5))
+        );
+        let (x, y) = parse_svg_css_background_position("25% 75%").expect("percent pair");
+        assert!(
+            approx(x, 0.25) && approx(y, 0.25),
+            "y flips to 1-0.75, got {y}"
+        );
+        assert_eq!(parse_svg_css_background_position(""), None);
+        assert_eq!(parse_svg_css_background_position("bogus"), None);
+    }
+
+    #[test]
+    fn css_gradient_stops_interpolate_missing_offsets() {
+        let red = (1.0, 0.0, 0.0);
+        let green = (0.0, 1.0, 0.0);
+        let blue = (0.0, 0.0, 1.0);
+        // Two unpositioned middle stops share the 0.2..0.8 span evenly.
+        let stops = normalize_svg_css_gradient_stops(vec![
+            (Some(0.2), red),
+            (None, green),
+            (None, blue),
+            (Some(0.8), red),
+        ])
+        .expect("normalizable stops");
+        // svg_native_gradient_stops pads 0.2/0.8 ends out to 0.0 and 1.0.
+        assert_eq!(stops.len(), 6);
+        assert!(approx(stops[0].0, 0.0) && approx(stops[1].0, 0.2));
+        assert!(
+            approx(stops[2].0, 0.4),
+            "first interpolated offset, got {}",
+            stops[2].0
+        );
+        assert!(
+            approx(stops[3].0, 0.6),
+            "second interpolated offset, got {}",
+            stops[3].0
+        );
+        assert!(approx(stops[4].0, 0.8) && approx(stops[5].0, 1.0));
+        assert_color(stops[2].1, green, "interpolated stop keeps its color");
+
+        assert!(normalize_svg_css_gradient_stops(vec![(Some(0.5), red)]).is_none());
+    }
+
+    #[test]
+    fn native_gradient_stops_dedupe_and_pad_ends() {
+        let red = (1.0, 0.0, 0.0);
+        let blue = (0.0, 0.0, 1.0);
+        // Duplicate offsets collapse to the later color; ends are padded.
+        let stops =
+            svg_native_gradient_stops(&[(0.25, red), (0.25, blue), (f32::NAN, red), (0.75, red)])
+                .expect("native stops");
+        assert_eq!(stops.len(), 4);
+        assert!(approx(stops[0].0, 0.0) && approx(stops[1].0, 0.25));
+        assert_color(stops[1].1, blue, "later duplicate wins");
+        assert!(approx(stops[3].0, 1.0));
+        assert_color(stops[3].1, red, "padded end reuses last color");
+
+        assert!(svg_native_gradient_stops(&[(0.5, red)]).is_none());
+        assert!(svg_native_gradient_stops(&[(f32::NAN, red), (f32::NAN, blue)]).is_none());
+    }
+
+    // ---- CSS selector engine ----------------------------------------------
+
+    #[test]
+    fn css_selector_child_and_descendant_combinators() {
+        let rect_attrs = parse_svg_attrs(r#"id="target" class="inner glow""#);
+        let outer = svg_css_ancestor("g", &parse_svg_attrs(r#"class="outer""#));
+        let mid = svg_css_ancestor("g", &parse_svg_attrs(r#"class="mid""#));
+
+        let child = parse_svg_css_selector("g.outer > rect#target.inner").expect("child selector");
+        // Direct child fails through an intervening <g class="mid">.
+        assert!(!svg_css_selector_matches(
+            &child,
+            "rect",
+            &rect_attrs,
+            &[outer.clone(), mid.clone()]
+        ));
+        assert!(svg_css_selector_matches(
+            &child,
+            "rect",
+            &rect_attrs,
+            &[mid.clone(), outer.clone()]
+        ));
+
+        let descendant = parse_svg_css_selector("g.outer rect.glow").expect("descendant selector");
+        assert!(svg_css_selector_matches(
+            &descendant,
+            "rect",
+            &rect_attrs,
+            &[outer.clone(), mid.clone()]
+        ));
+        assert!(!svg_css_selector_matches(
+            &descendant,
+            "rect",
+            &rect_attrs,
+            &[mid]
+        ));
+
+        // Tag, id, and class mismatches all reject.
+        assert!(!svg_css_selector_matches(
+            &child,
+            "circle",
+            &rect_attrs,
+            std::slice::from_ref(&outer)
+        ));
+        let wrong_id = parse_svg_css_selector("rect#other").expect("id selector");
+        assert!(!svg_css_selector_matches(
+            &wrong_id,
+            "rect",
+            &rect_attrs,
+            &[]
+        ));
+        let wrong_class = parse_svg_css_selector("rect.missing").expect("class selector");
+        assert!(!svg_css_selector_matches(
+            &wrong_class,
+            "rect",
+            &rect_attrs,
+            &[]
+        ));
+        let no_class_attr = parse_svg_css_selector(".anything").expect("bare class");
+        assert!(!svg_css_selector_matches(&no_class_attr, "rect", &[], &[]));
+    }
+
+    // ---- style patches ------------------------------------------------------
+
+    #[test]
+    fn style_patch_parses_and_applies_context_paint() {
+        let patch = parse_svg_style_patch(
+            "fill: context-stroke; stroke: context-fill; stroke-width: 3; opacity: 5; \
+             display: none; visibility: hidden",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        assert!(patch.fill_context == Some(Some(SvgContextPaint::Stroke)));
+        assert!(patch.stroke_context == Some(Some(SvgContextPaint::Fill)));
+
+        let mut style = SvgStyle::INITIAL;
+        style.fill_gradient = Some(2);
+        style.stroke_gradient = Some(3);
+        apply_svg_style_patch(&mut style, patch, true);
+        assert!(style.fill_context == Some(SvgContextPaint::Stroke));
+        assert!(style.fill.is_none() && style.fill_gradient.is_none());
+        assert!(style.stroke_context == Some(SvgContextPaint::Fill));
+        assert!(style.stroke.is_none() && style.stroke_gradient.is_none());
+        assert!(approx(style.stroke_width, 3.0));
+        assert!(
+            approx(style.opacity, 1.0),
+            "opacity clamps to 1.0, got {}",
+            style.opacity
+        );
+        assert!(!style.display_visible && !style.visibility_visible);
+    }
+
+    #[test]
+    fn style_patch_current_color_and_stroke_none_clear_gradients() {
+        let patch = parse_svg_style_patch(
+            "color: rgb(0,255,0); fill: currentColor; stroke: none",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        style.fill_gradient = Some(1);
+        style.stroke = Some((1.0, 1.0, 1.0));
+        style.stroke_gradient = Some(4);
+        apply_svg_style_patch(&mut style, patch, true);
+        assert_color(style.color, (0.0, 1.0, 0.0), "patched color");
+        assert!(style.fill_current_color);
+        assert_color(style.fill.unwrap(), (0.0, 1.0, 0.0), "currentColor fill");
+        assert!(style.fill_gradient.is_none());
+        assert!(style.stroke.is_none(), "stroke: none clears paint");
+        assert!(
+            style.stroke_gradient.is_none(),
+            "stroke: none clears gradient"
+        );
+    }
+
+    #[test]
+    fn style_patch_stroke_current_color_dash_and_join_details() {
+        let patch = parse_svg_style_patch(
+            "stroke: currentColor; fill-opacity: 0.5; stroke-opacity: 0.25; \
+             stroke-dasharray: 4 2; stroke-dashoffset: 1.5; stroke-linecap: round; \
+             stroke-linejoin: bevel; stroke-miterlimit: 8; fill-rule: evenodd; \
+             vector-effect: non-scaling-stroke",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        style.color = (0.0, 0.5, 1.0);
+        style.stroke_gradient = Some(9);
+        apply_svg_style_patch(&mut style, patch, true);
+        assert!(style.stroke_current_color);
+        assert_color(
+            style.stroke.unwrap(),
+            (0.0, 0.5, 1.0),
+            "currentColor stroke",
+        );
+        assert!(
+            style.stroke_gradient.is_none(),
+            "currentColor clears stroke gradient"
+        );
+        assert!(approx(style.fill_opacity, 0.5) && approx(style.stroke_opacity, 0.25));
+        assert!(
+            approx(style.dash.offset, 1.5),
+            "dash offset, got {}",
+            style.dash.offset
+        );
+        assert!(
+            style.dash.len >= 2,
+            "dasharray parsed, got len {}",
+            style.dash.len
+        );
+        assert!(matches!(style.line_cap, SvgLineCap::Round));
+        assert!(matches!(style.line_join, SvgLineJoin::Bevel));
+        assert!(approx(style.miter_limit.unwrap(), 8.0));
+        assert!(matches!(style.fill_rule, SvgFillRule::EvenOdd));
+        assert!(style.non_scaling_stroke);
+    }
+
+    #[test]
+    fn style_patch_display_composes_with_hidden_ancestor() {
+        let patch = parse_svg_style_patch("display: block", &[], &[], &[], &[], &[], 12.0);
+        let mut style = SvgStyle::INITIAL;
+        apply_svg_style_patch(&mut style, patch, false);
+        assert!(
+            !style.display_visible,
+            "display:block cannot resurrect a display:none ancestor"
+        );
+    }
+
+    // ---- gradients -----------------------------------------------------------
+
+    #[test]
+    fn gradient_href_inherits_parent_stops_and_pads_offsets() {
+        let src = r##"<svg viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="base">
+      <stop offset="0.2" stop-color="#ff0000"/>
+      <stop offset="0.8" stop-color="#0000ff"/>
+    </linearGradient>
+    <linearGradient id="child" href="#base" gradientUnits="userSpaceOnUse"
+                    x1="10" y1="0" x2="90" y2="0"/>
+  </defs>
+  <rect width="100" height="100" fill="url(#child)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let child = image
+            .gradients
+            .iter()
+            .find(|gradient| gradient.id == "child")
+            .expect("child gradient registered");
+        let linear = child.linear.as_ref().expect("linear geometry");
+        assert!(matches!(linear.units, SvgGradientUnits::UserSpaceOnUse));
+        assert!(
+            linear.x1
+                == SvgGradientLength {
+                    value: 10.0,
+                    percent: false
+                }
+        );
+        // Stops come from the href parent, padded to the 0..1 ends.
+        assert_eq!(linear.stops.len(), 4);
+        assert!(approx(linear.stops[0].0, 0.0) && approx(linear.stops[1].0, 0.2));
+        assert!(approx(linear.stops[2].0, 0.8) && approx(linear.stops[3].0, 1.0));
+        assert_color(linear.stops[0].1, (1.0, 0.0, 0.0), "padded start stop");
+        assert_color(linear.stops[3].1, (0.0, 0.0, 1.0), "padded end stop");
+    }
+
+    #[test]
+    fn radial_gradient_reads_focus_and_spread_attributes() {
+        let src = r##"<svg viewBox="0 0 100 100">
+  <radialGradient id="focus" cx="30%" cy="40%" r="60%" fx="10%" fy="20%" fr="5"
+                  spreadMethod="reflect">
+    <stop offset="0" stop-color="#ffffff"/>
+    <stop offset="1" stop-color="#000000"/>
+  </radialGradient>
+  <circle cx="50" cy="50" r="40" fill="url(#focus)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let paint = image
+            .gradients
+            .iter()
+            .find(|gradient| gradient.id == "focus")
+            .expect("radial gradient registered");
+        let radial = paint.radial.as_ref().expect("radial geometry");
+        assert!(matches!(radial.spread, SvgGradientSpread::Reflect));
+        assert!(
+            radial.fx
+                == SvgGradientLength {
+                    value: 10.0,
+                    percent: true
+                }
+        );
+        assert!(
+            radial.fy
+                == SvgGradientLength {
+                    value: 20.0,
+                    percent: true
+                }
+        );
+        assert!(
+            radial.fr
+                == SvgGradientLength {
+                    value: 5.0,
+                    percent: false
+                }
+        );
+    }
+
+    #[test]
+    fn gradient_stops_honor_css_class_rules_and_style_attributes() {
+        let src = r##"<svg viewBox="0 0 10 10">
+  <style>.warm { stop-color: #ff0000; stop-opacity: 0.5; }</style>
+  <linearGradient id="lg">
+    <stop class="warm" offset="0"/>
+    <stop offset="1" style="stop-color: rgb(0,255,0); stop-opacity: 0.25"/>
+  </linearGradient>
+  <rect width="10" height="10" fill="url(#lg)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let paint = image
+            .gradients
+            .iter()
+            .find(|gradient| gradient.id == "lg")
+            .expect("gradient registered");
+        let stops = &paint.linear.as_ref().expect("linear geometry").stops;
+        assert_eq!(stops.len(), 2);
+        // CSS class stop: red at 50% opacity composites over white.
+        assert_color(stops[0].1, (1.0, 0.5, 0.5), "css-classed stop");
+        // style attr stop: green at 25% opacity composites over white.
+        assert_color(stops[1].1, (0.75, 1.0, 0.75), "style-attr stop");
+    }
+
+    #[test]
+    fn gradient_length_and_angle_units() {
+        assert!(
+            parse_svg_gradient_length(" 25% ")
+                == Some(SvgGradientLength {
+                    value: 25.0,
+                    percent: true
+                })
+        );
+        assert!(
+            parse_svg_gradient_length("1e2")
+                == Some(SvgGradientLength {
+                    value: 100.0,
+                    percent: false
+                })
+        );
+        assert!(parse_svg_gradient_length("abc").is_none());
+
+        assert_eq!(parse_svg_angle_degrees("45"), Some(45.0));
+        assert_eq!(parse_svg_angle_degrees("45deg"), Some(45.0));
+        let rad = parse_svg_angle_degrees("3.14159265rad").expect("radians accepted");
+        assert!(approx(rad, 180.0), "pi rad = 180deg, got {rad}");
+        assert_eq!(parse_svg_angle_degrees("100grad"), Some(90.0));
+        assert_eq!(parse_svg_angle_degrees("0.5turn"), Some(180.0));
+        assert_eq!(parse_svg_angle_degrees("45furlong"), None);
+        assert_eq!(parse_svg_angle_degrees(""), None);
+    }
+
+    // ---- markers ---------------------------------------------------------------
+
+    #[test]
+    fn marker_refs_resolve_from_attribute_css_rule_and_style() {
+        let src = r##"<svg viewBox="0 0 100 100">
+  <defs>
+    <marker id="dot" markerWidth="4" markerHeight="4">
+      <circle cx="2" cy="2" r="1" fill="red"/>
+    </marker>
+  </defs>
+  <style>polyline { marker-mid: url(#dot); }</style>
+  <polyline points="0,0 50,50 100,0" stroke="black"
+            marker-start="url(#dot)" style="marker-end: url(#dot)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        assert_eq!(image.markers.len(), 1);
+        assert_eq!(image.markers[0].id, "dot");
+        let poly = image
+            .elements
+            .iter()
+            .find_map(|el| match el {
+                SvgElement::Polyline(poly) => Some(poly),
+                _ => None,
+            })
+            .expect("polyline element");
+        assert_eq!(poly.marker_start.expect("attr marker").index, Some(0));
+        assert_eq!(poly.marker_mid.expect("css marker").index, Some(0));
+        assert_eq!(poly.marker_end.expect("style marker").index, Some(0));
+    }
+
+    // ---- clip paths and masks -----------------------------------------------
+
+    #[test]
+    fn clip_path_and_mask_refs_resolve_ids_vars_and_none() {
+        let src = r##"<svg viewBox="0 0 10 10">
+  <clipPath id="c1"><rect x="1" y="2" width="4" height="4" rx="1"/></clipPath>
+  <clipPath id="c2"><rect width="6" height="6"/></clipPath>
+</svg>"##;
+        let clip_paths = parse_svg_clip_paths(src);
+        assert_eq!(clip_paths.len(), 2);
+        assert_eq!(clip_paths[0].id, "c1");
+        // The rounded clip rect expands into curve ops, not a bare 4-op box.
+        assert!(
+            clip_paths[0]
+                .ops
+                .iter()
+                .any(|op| matches!(op, SvgPathOp::Cubic(..))),
+            "rx on a clip rect must produce rounded corners"
+        );
+
+        assert_eq!(
+            parse_svg_clip_path_ref("url(#c2)", &clip_paths, &[]),
+            Some(Some(1))
+        );
+        assert_eq!(
+            parse_svg_clip_path_ref("none", &clip_paths, &[]),
+            Some(None)
+        );
+        assert_eq!(
+            parse_svg_clip_path_ref("url(#ghost)", &clip_paths, &[]),
+            Some(None)
+        );
+        assert_eq!(parse_svg_clip_path_ref("garbage", &clip_paths, &[]), None);
+
+        let vars = vec![SvgCssVariable {
+            name: "--clip".to_string(),
+            value: "url(#c1)".to_string(),
+        }];
+        assert_eq!(
+            parse_svg_clip_path_ref("var(--clip)", &clip_paths, &vars),
+            Some(Some(0))
+        );
+        assert_eq!(
+            parse_svg_mask_ref("var(--clip)", &clip_paths, &vars),
+            Some(Some(0))
+        );
+        assert_eq!(parse_svg_mask_ref("none", &clip_paths, &[]), Some(None));
+    }
+
+    #[test]
+    fn element_style_attributes_bind_clip_path_and_mask() {
+        let src = r##"<svg viewBox="0 0 10 10">
+  <defs>
+    <clipPath id="c"><rect width="4" height="4"/></clipPath>
+    <mask id="m">
+      <rect width="6" height="6" style="fill: #ffffff; opacity: 0.9; fill-opacity: 0.9"/>
+    </mask>
+  </defs>
+  <rect width="8" height="8" clip-path="url(#c)" mask="url(#m)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let rect = image
+            .elements
+            .iter()
+            .find_map(|el| match el {
+                SvgElement::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("clipped rect");
+        assert_eq!(
+            rect.style.clip_path,
+            Some(0),
+            "clip-path resolves first clip def"
+        );
+        assert_eq!(
+            rect.style.mask_path,
+            Some(image.clip_paths.len() - 1),
+            "mask resolves to the mask-converted clip entry"
+        );
+    }
+
+    // ---- display / visibility keywords ---------------------------------------
+
+    #[test]
+    fn visibility_and_display_keyword_parsing() {
+        assert_eq!(parse_svg_display_visible("none"), Some(false));
+        assert_eq!(parse_svg_display_visible("inline-flex"), Some(true));
+        assert_eq!(parse_svg_display_visible("BLOCK"), Some(true));
+        assert_eq!(parse_svg_display_visible("sideways"), None);
+
+        assert_eq!(parse_svg_visibility_visible("visible"), Some(true));
+        assert_eq!(parse_svg_visibility_visible("initial"), Some(true));
+        assert_eq!(parse_svg_visibility_visible("hidden"), Some(false));
+        assert_eq!(parse_svg_visibility_visible("collapse"), Some(false));
+        assert_eq!(parse_svg_visibility_visible("maybe"), None);
+
+        let mut style = SvgStyle::INITIAL;
+        apply_svg_visibility_attr(&mut style, "display", Some("none"), true);
+        assert!(!style.display_visible);
+        apply_svg_visibility_attr(&mut style, "visibility", Some("hidden"), true);
+        assert!(!style.visibility_visible);
+        // Unknown keyword and missing value leave the style untouched.
+        let mut untouched = SvgStyle::INITIAL;
+        apply_svg_visibility_attr(&mut untouched, "display", Some("sideways"), true);
+        apply_svg_visibility_attr(&mut untouched, "visibility", None, true);
+        assert!(untouched.display_visible && untouched.visibility_visible);
+    }
+
+    // ---- filter shadows -------------------------------------------------------
+
+    #[test]
+    fn filter_primitive_chain_yields_drop_shadow() {
+        let src = r##"<svg viewBox="0 0 20 20">
+  <!-- comment before the filter -->
+  <filter id="soft">
+    <feOffset in="SourceAlpha" dx="3" dy="4" result="off"/>
+    <feGaussianBlur in="off" stdDeviation="2" result="blur"/>
+    <feFlood flood-color="#336699" flood-opacity="0.5" result="flood"/>
+    <feComposite operator="in" in="flood" in2="blur" result="shadow"/>
+    <feMerge>
+      <feMergeNode in="shadow"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+  <rect width="10" height="10" filter="url(#soft)"/>
+</svg>"##;
+        let image = parsed_svg(src);
+        let rect = image
+            .elements
+            .iter()
+            .find_map(|el| match el {
+                SvgElement::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("filtered rect");
+        let layer = rect
+            .style
+            .shadow
+            .expect("primitive chain shadow")
+            .first()
+            .expect("one shadow layer");
+        assert!(approx(layer.dx, 3.0) && approx(layer.dy, 4.0));
+        assert_color(layer.color, (0.2, 0.4, 0.6), "flood color");
+        assert!(approx(layer.opacity, 0.5));
+    }
+
+    #[test]
+    fn incomplete_merge_resets_and_later_drop_shadow_wins() {
+        // The merge closes without a SourceGraphic node, so the chain resets;
+        // the trailing feDropShadow then provides the shadow.
+        let body = r##"<feOffset in="SourceAlpha" dx="1" dy="1" result="o"/>
+<feGaussianBlur in="o" stdDeviation="1" result="b"/>
+<feFlood flood-color="red" result="f"/>
+<feComposite operator="in" in="f" in2="b" result="s"/>
+<feMerge><feMergeNode in="s"/></feMerge>
+<feDropShadow dx="7" dy="8"/>"##;
+        let shadow = parse_svg_filter_shadow_body(body, &[]).expect("feDropShadow fallback");
+        let layer = shadow.first().expect("one layer");
+        assert!(approx(layer.dx, 7.0) && approx(layer.dy, 8.0));
+    }
+
+    // ---- text spans -------------------------------------------------------------
+
+    #[test]
+    fn text_body_spans_advance_across_tspans_and_comments() {
+        let src = r##"<svg viewBox="0 0 200 50">
+  <text x="5" y="20">lead<tspan x="60" y="22">mid</tspan><!-- note -->tail</text>
+  <text x="1" y="2" fill="none">invisible</text>
+</svg>"##;
+        let image = parsed_svg(src);
+        let texts: Vec<&SvgText> = image
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                SvgElement::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        let contents: Vec<&str> = texts.iter().map(|text| text.text.as_str()).collect();
+        assert_eq!(contents, ["lead", "mid", "tail"]);
+        assert!(approx(texts[0].x, 5.0) && approx(texts[0].y, 20.0));
+        assert!(approx(texts[1].x, 60.0) && approx(texts[1].y, 22.0));
+        // The tail resumes after the repositioned tspan advance.
+        assert!(
+            texts[2].x > 60.0,
+            "tail must advance past tspan, got {}",
+            texts[2].x
+        );
+        assert!(approx(texts[2].y, 22.0), "tail keeps the tspan baseline");
+        assert!(
+            !contents.contains(&"invisible"),
+            "fill:none text without stroke must be dropped"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_tspans_flatten_at_recursion_cap() {
+        let mut body = String::from(r#"<text x="0" y="10"><tspan x="1">"#);
+        for _ in 0..8 {
+            body.push_str("<tspan>");
+        }
+        body.push_str(r#"<tspan x="2">deep</tspan>"#);
+        for _ in 0..8 {
+            body.push_str("</tspan>");
+        }
+        body.push_str("</tspan></text>");
+        let src = format!(r#"<svg viewBox="0 0 100 100">{body}</svg>"#);
+        let image = parsed_svg(&src);
+        assert!(
+            image.elements.iter().any(|el| matches!(
+                el,
+                SvgElement::Text(text) if text.text == "deep"
+            )),
+            "text below the recursion cap is flattened, not dropped"
+        );
+    }
+
+    // ---- path data ---------------------------------------------------------------
+
+    #[test]
+    fn path_data_stops_at_unknown_command_and_caps_op_count() {
+        let ops = parse_svg_path_data("M1 2 L3 4 X9 9").expect("prefix parses");
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(ops[0], SvgPathOp::Move(x, y) if approx(x, 1.0) && approx(y, 2.0)));
+        assert!(matches!(ops[1], SvgPathOp::Line(x, y) if approx(x, 3.0) && approx(y, 4.0)));
+
+        let mut full = vec![SvgPathOp::Close; MAX_SVG_PATH_OPS];
+        assert!(push_svg_path_op(&mut full, SvgPathOp::Close).is_none());
+        assert_eq!(
+            full.len(),
+            MAX_SVG_PATH_OPS,
+            "over-cap push must not grow the vec"
+        );
+    }
+
+    // ---- block layout -------------------------------------------------------------
+
+    fn coverage_page_geom() -> PageGeom {
+        PageGeom {
+            width: 320.0,
+            height: 500.0,
+            left: 36.0,
+            right: 36.0,
+            top: 36.0,
+            bottom: 36.0,
+            content_w: 248.0,
+        }
+    }
+
+    fn coverage_layout_cx<'a>(
+        opts: &'a PdfOptions,
+        faces: &'a Faces,
+        page: PageGeom,
+    ) -> LayoutCx<'a> {
+        LayoutCx {
+            opts,
+            faces,
+            page,
+            next_bg: 0,
+            next_flow: 0,
+            list_stack: Vec::new(),
+            hyphen_cache: RefCell::new(HashMap::new()),
+            width_cache: RefCell::new(WidthCache::default()),
+            simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+            table_layout_cache: TableLayoutCache::default(),
+            paragraph_scratch: ParagraphLayoutScratch::new(),
+            line_breaks: Vec::new(),
+            line_toks: Vec::new(),
+            glue_adjustments: Vec::new(),
+            code_highlight_spans: Vec::new(),
+        }
+    }
+
+    fn first_text_line(lines: &[Line]) -> &Line {
+        lines
+            .iter()
+            .find(|line| !line.segs.is_empty())
+            .expect("layout should emit a text line")
+    }
+
+    #[test]
+    fn heading_levels_map_to_sizes_and_rules() {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).expect("bundled fonts load");
+        let expected = [24.0, 19.0, 16.0, 13.5, 12.0, 11.0];
+        for (level, size) in (1u8..=6).zip(expected) {
+            let mut cx = coverage_layout_cx(&opts, &faces, coverage_page_geom());
+            let mut out = Vec::new();
+            let block = Block::Heading {
+                level,
+                inlines: vec![Inline::Text(format!("Heading {level}"))],
+            };
+            layout_block(&block, 0.0, &mut out, &mut cx);
+            let text_line = first_text_line(&out);
+            assert!(
+                approx(text_line.size, size),
+                "level {level} should use {size}pt, got {}",
+                text_line.size
+            );
+            assert!(matches!(text_line.flow.kind, FlowKind::Heading));
+            let has_rule = out.iter().any(|line| line.rule);
+            assert_eq!(
+                has_rule,
+                level <= 2,
+                "only H1/H2 draw the hairline rule (level {level})"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_text_paragraph_reuses_cached_template() {
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).expect("bundled fonts load");
+        let mut cx = coverage_layout_cx(&opts, &faces, coverage_page_geom());
+        let block = Block::Paragraph(vec![Inline::Text(
+            "A short cacheable paragraph of plain text.".to_string(),
+        )]);
+
+        let mut first = Vec::new();
+        layout_block(&block, 0.0, &mut first, &mut cx);
+        let mut second = Vec::new();
+        layout_block(&block, 0.0, &mut second, &mut cx);
+
+        assert!(!first.is_empty());
+        assert_eq!(first.len(), second.len(), "cache replay keeps line count");
+        for (a, b) in first.iter().zip(&second) {
+            assert_eq!(
+                a.segs
+                    .iter()
+                    .map(|seg| seg.text.as_str())
+                    .collect::<Vec<_>>(),
+                b.segs
+                    .iter()
+                    .map(|seg| seg.text.as_str())
+                    .collect::<Vec<_>>(),
+                "cache replay keeps segment text"
+            );
+            assert!(approx(a.size, b.size) && approx(a.gap_after, b.gap_after));
+        }
+        // Each layout call still gets its own flow group (alloc_flow counts from 1).
+        assert_eq!(first_text_line(&first).flow.group, 1);
+        assert_eq!(first_text_line(&second).flow.group, 2);
+        assert!(matches!(
+            first_text_line(&second).flow.kind,
+            FlowKind::Paragraph
+        ));
+    }
+
+    // ---- render warnings ------------------------------------------------------
+
+    #[test]
+    fn render_warnings_report_undecodable_assets_and_missing_glyphs() {
+        let doc = crate::parse_markdown(
+            "![diagram](broken.img)\n\nEmoji the fonts cannot map: \u{1F984}\u{1F984}\n",
+        );
+        let mut opts = PdfOptions::default();
+        opts.image_assets.push(crate::PdfImageAsset {
+            destination: "broken.img".to_string(),
+            bytes: vec![0x00, 0x01, 0x02, 0x03],
+        });
+        let warnings = render_warnings(&doc, &opts);
+
+        let unsupported = warnings
+            .iter()
+            .find(|warning| matches!(warning, RenderWarning::UnsupportedImage(_)))
+            .expect("undecodable asset warning");
+        assert_eq!(unsupported.code(), "unsupported_image");
+        assert_eq!(
+            unsupported.message(),
+            "image 'broken.img' could not be decoded (unsupported image); rendered as alt text"
+        );
+
+        let missing = warnings
+            .iter()
+            .find_map(|warning| match warning {
+                RenderWarning::MissingGlyphs { count, sample } => Some((count, sample)),
+                _ => None,
+            })
+            .expect("missing glyph warning");
+        assert_eq!(*missing.0, 2, "both emoji occurrences are counted");
+        assert_eq!(missing.1, "\u{1F984}", "sample dedupes repeated chars");
     }
 }

@@ -1703,10 +1703,11 @@ mod tests {
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
-        FontCharSet, RenderState, ascii_char_mask, base64_encode, css_num, css_token, escape_attr,
-        escape_text, initial_body_capacity, inlines_to_plain, push_html_image_asset_data_uri,
-        push_u64, render, sanitize_custom_css, slug, slug_inlines,
-        svg_without_remote_style_imports,
+        FontCharSet, RenderState, ascii_char_mask, ascii_char_masks, base64_encode, css_num,
+        css_token, css_without_remote_imports, escape_attr, escape_text,
+        find_ascii_case_insensitive, html_image_asset_mime, initial_body_capacity,
+        inlines_to_plain, push_html_image_asset_data_uri, push_u64, render, sanitize_custom_css,
+        slug, slug_inlines, svg_without_remote_style_imports,
     };
 
     #[test]
@@ -2029,6 +2030,184 @@ mod tests {
         let html = super::render(&doc, &HtmlOptions::default());
 
         assert!(html.contains("<h12 id=\"odd-level\">Odd Level</h12>"));
+    }
+
+    const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    #[test]
+    fn image_asset_mime_requires_matching_extension_and_magic() {
+        // PNG: extension (case-insensitive, query/fragment stripped) AND magic.
+        assert_eq!(
+            html_image_asset_mime("chart.png", PNG_MAGIC),
+            Some("image/png")
+        );
+        assert_eq!(
+            html_image_asset_mime("a.PNG?v=1#frag", PNG_MAGIC),
+            Some("image/png")
+        );
+        assert_eq!(html_image_asset_mime("chart.png", b"not-a-png"), None);
+
+        // SVG: extension AND content that actually reads as SVG.
+        assert_eq!(
+            html_image_asset_mime("pic.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            html_image_asset_mime("pic.svg", b"\xff\xfe"),
+            None,
+            "non-UTF-8 bytes can never be SVG"
+        );
+        assert_eq!(
+            html_image_asset_mime("pic.svg", b"<?xml version='1.0'?><rect/>"),
+            None,
+            "an XML prolog without an <svg> root is not SVG"
+        );
+        assert_eq!(
+            html_image_asset_mime("pic.svg", b"plain text"),
+            None,
+            "text with neither an <svg> root nor an XML prolog is not SVG"
+        );
+
+        // No extension at all: never emitted as a data URI.
+        assert_eq!(html_image_asset_mime("logo", PNG_MAGIC), None);
+    }
+
+    #[test]
+    fn png_asset_renders_as_data_uri_and_unmatched_asset_falls_back_to_url() {
+        let doc = Document {
+            blocks: vec![Block::Paragraph(vec![
+                Inline::Image {
+                    dest: "chart.png".to_string(),
+                    title: None,
+                    alt: "Chart".to_string(),
+                },
+                Inline::Image {
+                    dest: "missing.png".to_string(),
+                    title: None,
+                    alt: "Other".to_string(),
+                },
+            ])],
+        };
+        let opts = HtmlOptions {
+            image_assets: vec![
+                // A non-matching asset first, so lookup iterates past it.
+                PdfImageAsset::new("decoy.svg", b"<svg/>".as_slice()),
+                PdfImageAsset::new("chart.png", PNG_MAGIC),
+            ],
+            ..HtmlOptions::default()
+        };
+
+        let html = render(&doc, &opts);
+
+        assert!(
+            html.contains("<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"Chart\">"),
+            "matched PNG asset must inline as a data URI: {html}"
+        );
+        assert!(
+            html.contains("<img src=\"missing.png\" alt=\"Other\">"),
+            "unmatched destination must keep the original URL: {html}"
+        );
+    }
+
+    #[test]
+    fn svg_stripper_returns_borrowed_for_non_utf8_or_no_remote_url_inputs() {
+        // Invalid UTF-8 is passed through untouched.
+        assert!(matches!(
+            svg_without_remote_style_imports(b"\xff\xfe@import http://x"),
+            Cow::Borrowed(_)
+        ));
+        // An @import with no remote URL anywhere in the SVG returns early.
+        assert!(matches!(
+            svg_without_remote_style_imports(b"<svg><style>@import url('x.css');</style></svg>"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn svg_stripper_detects_https_only_remote_imports() {
+        // No plain `http://` anywhere (the xmlns is https too): the https probe
+        // alone must trigger the strip.
+        let dirty = b"<svg xmlns=\"https://www.w3.org/2000/svg\">\
+<style>@import url('https://fonts.example/css');.a{fill:#123}</style></svg>";
+        let clean =
+            String::from_utf8_lossy(svg_without_remote_style_imports(dirty).as_ref()).into_owned();
+        assert!(!clean.contains("@import"), "{clean}");
+        assert!(!clean.contains("fonts.example"), "{clean}");
+        assert!(clean.contains(".a{fill:#123}"), "{clean}");
+    }
+
+    #[test]
+    fn svg_stripper_stops_at_unclosed_style_tags() {
+        // `<style` with no `>` at all.
+        assert!(matches!(
+            svg_without_remote_style_imports(b"<svg d='@import http://x'><style"),
+            Cow::Borrowed(_)
+        ));
+        // `<style>` opened but never closed with `</style`.
+        assert!(matches!(
+            svg_without_remote_style_imports(b"<svg d='@import http://x'><style>.a{}"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn css_import_stripping_handles_comments_quotes_parens_and_boundaries() {
+        // A comment inside the @import statement is scanned through (including a
+        // lone '*' that does not close it).
+        assert_eq!(
+            css_without_remote_imports("@import /* a*b */ url(http://x);rest").as_deref(),
+            Some("rest")
+        );
+        // A backslash-escaped quote inside the URL string does not end it.
+        assert_eq!(
+            css_without_remote_imports("@import \"a\\\"b http://x\";p{}").as_deref(),
+            Some("p{}")
+        );
+        // A ';' inside url(...) parens does not terminate the statement.
+        assert_eq!(
+            css_without_remote_imports("@import url(http://x;y);tail").as_deref(),
+            Some("tail")
+        );
+        // An unterminated @import (no ';' to EOF) is left untouched.
+        assert_eq!(css_without_remote_imports("@import url(http://x)"), None);
+        // A trailing backslash inside a quoted URL cannot escape past EOF.
+        assert_eq!(css_without_remote_imports("@import \"http://x\\"), None);
+        // `*X` (not `*/`) before @import is no comment end; `*/` with no
+        // matching `/*` earlier is not a comment either — neither is a rule
+        // boundary, so both stay untouched.
+        assert_eq!(css_without_remote_imports("**@import url(http://x);"), None);
+        assert_eq!(css_without_remote_imports("*/@import url(http://x);"), None);
+        // At-rule boundary holds across a preceding comment...
+        assert_eq!(
+            css_without_remote_imports("p{}/* note */@import url(http://x);").as_deref(),
+            Some("p{}/* note */")
+        );
+        // ...but a non-boundary "@import" (mid-declaration) is not a rule.
+        assert_eq!(css_without_remote_imports("a@import url(http://x);"), None);
+        // A local import is preserved while the remote one after it is dropped.
+        assert_eq!(
+            css_without_remote_imports("@import url(local.css);@import url(http://r);x").as_deref(),
+            Some("@import url(local.css);x")
+        );
+    }
+
+    #[test]
+    fn find_ascii_case_insensitive_empty_needle_matches_at_start() {
+        assert_eq!(find_ascii_case_insensitive("abc", ""), Some(0));
+        assert_eq!(find_ascii_case_insensitive("", ""), Some(0));
+        assert_eq!(find_ascii_case_insensitive("aBc", "bC"), Some(1));
+    }
+
+    #[test]
+    fn ascii_char_masks_builder_sets_exactly_one_bit_per_ascii_index() {
+        let masks = ascii_char_masks();
+        for (idx, mask) in masks.iter().enumerate() {
+            if idx < 128 {
+                assert_eq!(*mask, 1u128 << idx, "mask for ASCII {idx}");
+            } else {
+                assert_eq!(*mask, 0, "non-ASCII index {idx} must stay empty");
+            }
+        }
     }
 
     #[test]

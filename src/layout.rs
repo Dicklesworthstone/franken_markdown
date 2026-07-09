@@ -2230,3 +2230,168 @@ mod overfull_selectability_tests {
         assert_eq!(clamp_i64_to_i32(7), 7);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod hyphen_and_break_edge_tests {
+    use super::{
+        AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
+        FontSize, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem, Penalty, StyledText,
+        TextBox, TextStyle, append_styled_word_chunk, build_hyphen_trie,
+        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
+        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+    };
+
+    /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.
+    struct FlatMetrics;
+
+    impl AdvanceMetrics for FlatMetrics {
+        fn advance_1000(&self, _ch: char) -> u32 {
+            500
+        }
+    }
+
+    impl PairMetrics for FlatMetrics {}
+
+    #[test]
+    fn append_styled_word_chunk_is_a_no_op_for_an_empty_chunk() {
+        let mut current = StyledText::plain("hy");
+        let mut current_plain = String::from("hy");
+        let mut current_width = LayoutUnit::from_milli_points(10_000);
+
+        append_styled_word_chunk(
+            &FlatMetrics,
+            &mut current,
+            &mut current_plain,
+            &mut current_width,
+            "",
+            TextStyle::BODY,
+            FontSize::from_points(10),
+        );
+
+        assert_eq!(current_plain, "hy", "empty chunk must not change text");
+        assert_eq!(current, StyledText::plain("hy"));
+        assert_eq!(
+            current_width,
+            LayoutUnit::from_milli_points(10_000),
+            "empty chunk must not change width (no phantom kerning)"
+        );
+    }
+
+    #[test]
+    fn hyphenated_word_items_skip_duplicate_points_and_a_point_at_word_end() {
+        // At 10pt with 500/1000-em advances every char is 5000 milli-points.
+        let size = FontSize::from_points(10);
+        let hyphen_width = LayoutUnit::from_milli_points(2_500);
+        let mut out = Vec::new();
+
+        // Duplicate point (2, 2) must not emit an empty box; a final point at
+        // word end (6 == len) must suppress the trailing box.
+        push_hyphenated_word_items_from_points(
+            &mut out,
+            &FlatMetrics,
+            "hyphen",
+            size,
+            hyphen_width,
+            &[2, 2, 6],
+        );
+
+        // Two boxes and two flagged discretionary penalties, nothing else: the
+        // duplicate point emits no empty box and the terminal point emits its
+        // penalty but no trailing box.
+        let hyphen_penalty = ParagraphItem::Penalty(Penalty {
+            width: hyphen_width,
+            penalty: 50,
+            flagged: true,
+        });
+        assert_eq!(
+            out,
+            vec![
+                ParagraphItem::Box(TextBox {
+                    text: "hy".to_string(),
+                    runs: StyledText::plain("hy"),
+                    width: LayoutUnit::from_milli_points(10_000),
+                }),
+                hyphen_penalty.clone(),
+                ParagraphItem::Box(TextBox {
+                    text: "phen".to_string(),
+                    runs: StyledText::plain("phen"),
+                    width: LayoutUnit::from_milli_points(20_000),
+                }),
+                hyphen_penalty,
+            ]
+        );
+    }
+
+    #[test]
+    fn hyphen_trie_apply_skips_word_starts_without_a_root_edge() {
+        let trie = build_hyphen_trie(
+            &[HyphenPattern {
+                letters: "ab",
+                values: &[0, 9, 0],
+            }],
+            std::iter::empty::<&str>(),
+        );
+        let mut scores = [0u8; 4];
+        // 'x' has no root edge (continue); the "ab" starting at offset 1 applies
+        // its pattern values at that offset.
+        trie.apply(b"xab", &mut scores);
+        assert_eq!(scores, [0, 0, 9, 0]);
+    }
+
+    #[test]
+    fn hyphen_pattern_insertion_rejects_malformed_or_oversized_patterns() {
+        let mut nodes = vec![BuildHyphenNode::default()];
+
+        // Encoded pattern longer than the 64-letter cap: rejected outright.
+        insert_encoded_hyphen_pattern(&mut nodes, &"a".repeat(65));
+        assert_eq!(nodes.len(), 1, "oversized pattern must not grow the trie");
+
+        // Digits-only encoded pattern has no letters: rejected.
+        insert_encoded_hyphen_pattern(&mut nodes, "5");
+        assert_eq!(nodes.len(), 1, "letterless pattern must not grow the trie");
+
+        // Raw insertion guards: empty letters and a values/letters length
+        // mismatch (values must be letters.len() + 1) are both rejected.
+        insert_hyphen_pattern(&mut nodes, b"", &[0]);
+        insert_hyphen_pattern(&mut nodes, b"ab", &[0, 0]);
+        assert_eq!(nodes.len(), 1, "malformed patterns must not grow the trie");
+
+        // A well-formed pattern still inserts one node per letter.
+        insert_hyphen_pattern(&mut nodes, b"ab", &[0, 1, 0]);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[2].values, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn trailing_forced_fit_break_only_accepts_the_paragraph_final_forced_penalty() {
+        let width = LayoutUnit::from_points(100);
+        let natural = LayoutUnit::from_points(50);
+
+        // Not a forced penalty: no fast-path line.
+        let unforced = BreakCandidate {
+            item_index: 2,
+            next: 3,
+            penalty: 0,
+            penalty_width: LayoutUnit::ZERO,
+            flagged: false,
+        };
+        assert_eq!(trailing_forced_fit_break(unforced, 3, natural, width), None);
+
+        // Forced but not paragraph-final (next != item_count): no fast path.
+        let interior = BreakCandidate {
+            penalty: FORCED_BREAK_PENALTY,
+            ..unforced
+        };
+        assert_eq!(trailing_forced_fit_break(interior, 4, natural, width), None);
+
+        // Paragraph-final forced penalty that fits: one Decent zero-badness line.
+        let line = trailing_forced_fit_break(interior, 3, natural, width)
+            .expect("fitting trailing forced break yields the fast-path line");
+        assert_eq!((line.start, line.end, line.next), (0, 2, 3));
+        assert_eq!(line.natural_width, natural);
+        assert_eq!(line.badness, 0);
+        assert_eq!(line.fitness, FitnessClass::Decent);
+        assert_eq!(line.demerits, 1, "(badness 0 + 1)^2 with no penalty cost");
+    }
+}

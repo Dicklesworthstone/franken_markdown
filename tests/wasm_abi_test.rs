@@ -227,6 +227,72 @@ fn render_pdf_configured_multi_embeds_every_supplied_image() {
 }
 
 #[test]
+fn render_pdf_configured_with_assets_treats_blank_image_slot_as_no_asset() {
+    // An empty destination AND empty bytes mean "no image asset": the render
+    // must succeed with the markdown image falling back to alt text (no image
+    // XObject), not attempt to register a blank asset.
+    let out = render_pdf_configured_with_assets(
+        "![Missing](missing.png)\n\nbody",
+        None,
+        None,
+        None,
+        None,
+        Some(1_700_000_000.0),
+        false,
+        false,
+        String::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("blank image slot renders");
+    let bytes = out.bytes();
+    assert!(bytes.starts_with(b"%PDF-"));
+    let pdf = String::from_utf8_lossy(&bytes);
+    assert!(
+        !pdf.contains("/Subtype /Image"),
+        "no image XObject may appear without a supplied asset"
+    );
+}
+
+#[test]
+fn render_pdf_configured_multi_skips_fully_blank_placeholder_entries() {
+    // A fully-empty (destination "", length 0) entry is the documented "no
+    // image" placeholder; it must be skipped while the real entry after it
+    // still embeds.
+    let a = tiny_rgb_png();
+    let out = render_pdf_configured_multi(
+        "![Alpha](a.png)",
+        None,
+        None,
+        None,
+        None,
+        Some(1_700_000_000.0),
+        false,
+        false,
+        vec![String::new(), "a.png".to_string()],
+        a.clone(),
+        vec![0, a.len() as u32],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("placeholder entry is skipped");
+    let bytes = out.bytes();
+    let pdf = String::from_utf8_lossy(&bytes);
+    assert!(pdf.contains("/Subtype /Image"));
+    assert!(
+        pdf.contains("/Alt (Alpha)"),
+        "the real image after the placeholder must embed"
+    );
+}
+
+#[test]
 fn render_pdf_configured_with_assets_takes_image_and_fonts() {
     let serif = fonts::body_bytes(FontFamily::Serif, FontStyle::Regular).to_vec();
     let out = render_pdf_configured_with_assets(

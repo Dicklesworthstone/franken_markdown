@@ -1510,6 +1510,184 @@ mod line_prefix_dos_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod lexer_edge_tests {
+    use super::{
+        Span, Tok, highlight, is_list_marker, is_supported, looks_like_html_tag, push_span,
+    };
+
+    /// Slice out `(kind, text)` pairs so assertions read as expected tilings.
+    fn kinds_and_texts<'a>(code: &'a str, spans: &[Span]) -> Vec<(Tok, &'a str)> {
+        spans
+            .iter()
+            .map(|s| (s.kind, &code[s.start..s.end]))
+            .collect()
+    }
+
+    #[test]
+    fn tok_css_class_maps_every_variant_and_plain_has_none() {
+        assert_eq!(Tok::Plain.css_class(), None);
+        assert_eq!(Tok::Keyword.css_class(), Some("tok-kw"));
+        assert_eq!(Tok::Type.css_class(), Some("tok-ty"));
+        assert_eq!(Tok::Func.css_class(), Some("tok-fn"));
+        assert_eq!(Tok::Str.css_class(), Some("tok-st"));
+        assert_eq!(Tok::Number.css_class(), Some("tok-nu"));
+        assert_eq!(Tok::Comment.css_class(), Some("tok-cm"));
+        assert_eq!(Tok::Operator.css_class(), Some("tok-op"));
+        assert_eq!(Tok::Punct.css_class(), Some("tok-pn"));
+    }
+
+    #[test]
+    fn is_supported_normalizes_language_prefix_and_case() {
+        assert!(is_supported("rust"));
+        assert!(is_supported("language-RUST"));
+        assert!(is_supported("  mermaid  "));
+        assert!(!is_supported("brainfuck"));
+        assert!(!is_supported(""));
+    }
+
+    #[test]
+    fn c_hash_directive_keyword_includes_spaces_or_tab_between_hash_and_word() {
+        // Whitespace between `#` and the directive word is part of the keyword
+        // token (C allows `#  include`).
+        let spaced = "#  include <stdio.h>";
+        let spans = highlight("c", spaced);
+        assert_eq!(
+            kinds_and_texts(spaced, &spans)[0],
+            (Tok::Keyword, "#  include")
+        );
+
+        let tabbed = "#\tdefine";
+        let spans = highlight("c", tabbed);
+        // Directive runs to end of input: one Keyword token tiling everything.
+        assert_eq!(
+            kinds_and_texts(tabbed, &spans),
+            vec![(Tok::Keyword, "#\tdefine")]
+        );
+    }
+
+    #[test]
+    fn c_lone_hash_at_end_of_input_is_a_keyword_token() {
+        let spans = highlight("c", "#");
+        assert_eq!(kinds_and_texts("#", &spans), vec![(Tok::Keyword, "#")]);
+    }
+
+    #[test]
+    fn markdown_unterminated_html_comment_colors_to_end_of_input() {
+        // No `-->`: the comment runs to EOF, including its trailing newline.
+        let code = "<!-- x\n";
+        let spans = highlight("markdown", code);
+        assert_eq!(
+            kinds_and_texts(code, &spans),
+            vec![(Tok::Comment, "<!-- x\n")]
+        );
+    }
+
+    #[test]
+    fn markdown_line_start_whitespace_run_to_eof_or_newline_stays_plain() {
+        // Indentation running to EOF.
+        let eof = "x\n  ";
+        let spans = highlight("markdown", eof);
+        assert_eq!(kinds_and_texts(eof, &spans), vec![(Tok::Plain, "x\n  ")]);
+
+        // Indentation stopped by a blank line ('\n' ends the whitespace run).
+        let blank = "x\n \ny";
+        let spans = highlight("markdown", blank);
+        assert_eq!(
+            kinds_and_texts(blank, &spans),
+            vec![(Tok::Plain, "x\n \ny")]
+        );
+    }
+
+    #[test]
+    fn markdown_nbsp_indent_is_not_markdown_indent_so_hash_is_not_a_heading() {
+        // U+00A0 is whitespace but NOT Markdown indentation; the line no longer
+        // counts as line-start, so the following '#' must not become a heading.
+        let code = "x\n\u{a0}# y";
+        let spans = highlight("markdown", code);
+        // No Keyword span for '#': everything merges into one Plain span.
+        assert_eq!(kinds_and_texts(code, &spans), vec![(Tok::Plain, code)]);
+    }
+
+    #[test]
+    fn markdown_list_markers_at_end_of_input_or_line_are_operators() {
+        let dash_eof = "-";
+        let spans = highlight("markdown", dash_eof);
+        assert_eq!(
+            kinds_and_texts(dash_eof, &spans),
+            vec![(Tok::Operator, "-")]
+        );
+
+        let dash_nl = "-\ny";
+        let spans = highlight("markdown", dash_nl);
+        assert_eq!(
+            kinds_and_texts(dash_nl, &spans),
+            vec![(Tok::Operator, "-"), (Tok::Plain, "\ny")]
+        );
+
+        let ordered_eof = "1.";
+        let spans = highlight("markdown", ordered_eof);
+        assert_eq!(
+            kinds_and_texts(ordered_eof, &spans),
+            vec![(Tok::Operator, "1.")]
+        );
+
+        let ordered_nl = "1.\ny";
+        let spans = highlight("markdown", ordered_nl);
+        assert_eq!(
+            kinds_and_texts(ordered_nl, &spans),
+            vec![(Tok::Operator, "1."), (Tok::Plain, "\ny")]
+        );
+    }
+
+    #[test]
+    fn mermaid_single_quoted_strings_and_dotted_percent_numbers_classify() {
+        let code = "pie 'Pets' 42.5% x";
+        let spans = highlight("mermaid", code);
+        let tiled = kinds_and_texts(code, &spans);
+        assert!(tiled.contains(&(Tok::Keyword, "pie")), "got {tiled:?}");
+        assert!(tiled.contains(&(Tok::Str, "'Pets'")), "got {tiled:?}");
+        // '.' and '%' are mermaid number characters; the space ends the run.
+        assert!(tiled.contains(&(Tok::Number, "42.5%")), "got {tiled:?}");
+    }
+
+    #[test]
+    fn push_span_drops_empty_ranges_and_only_merges_adjacent_same_kind() {
+        let mut spans = Vec::new();
+        push_span(&mut spans, Tok::Plain, 5, 5);
+        assert!(spans.is_empty(), "empty ranges must be dropped");
+
+        push_span(&mut spans, Tok::Plain, 0, 2);
+        push_span(&mut spans, Tok::Plain, 2, 4);
+        assert_eq!(spans.len(), 1, "adjacent same-kind spans merge");
+        assert_eq!((spans[0].start, spans[0].end), (0, 4));
+
+        // Same kind but NOT adjacent: kept as a separate span.
+        push_span(&mut spans, Tok::Plain, 5, 6);
+        assert_eq!(spans.len(), 2);
+        assert_eq!((spans[1].start, spans[1].end), (5, 6));
+    }
+
+    #[test]
+    fn looks_like_html_tag_requires_open_angle_then_name_start() {
+        assert!(!looks_like_html_tag("div"));
+        assert!(!looks_like_html_tag("<"));
+        assert!(!looks_like_html_tag("</"));
+        assert!(!looks_like_html_tag("<1>"));
+        assert!(looks_like_html_tag("<a"));
+        assert!(looks_like_html_tag("</a"));
+        assert!(looks_like_html_tag("<!--"));
+        assert!(looks_like_html_tag("<?xml"));
+    }
+
+    #[test]
+    fn is_list_marker_rejects_empty_input() {
+        assert!(!is_list_marker(""));
+        assert!(is_list_marker("- x"));
+    }
+}
+
+#[cfg(test)]
 mod char_classifier_tests {
     use super::{
         is_css_operator_char, is_css_punct_char, is_generic_operator_char, is_generic_punct_char,

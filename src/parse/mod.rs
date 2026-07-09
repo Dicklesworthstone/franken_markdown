@@ -1348,7 +1348,11 @@ fn parse_blocks_with_refs_profiled(
                 }
             }
             let inner_line_count = inner.len();
-            let inner_bytes = inner.iter().map(|line| line.len()).sum();
+            let inner_bytes = if profiler.enabled {
+                inner.iter().map(|line| line.len()).sum()
+            } else {
+                0
+            };
             // Remove reference-definition lines from the blockquote body so they
             // are not rendered as literal text; they were already collected into
             // the shared `refs` map by `collect_nested_references`.
@@ -1395,8 +1399,16 @@ fn parse_blocks_with_refs_profiled(
                 profiler.record_since(
                     "table_block",
                     used,
-                    lines[i..i + used].iter().map(|line| line.len()).sum(),
-                    1 + table.head.len() + table.rows.iter().map(Vec::len).sum::<usize>(),
+                    if profiler.enabled {
+                        lines[i..i + used].iter().map(|line| line.len()).sum()
+                    } else {
+                        0
+                    },
+                    if profiler.enabled {
+                        1 + table.head.len() + table.rows.iter().map(Vec::len).sum::<usize>()
+                    } else {
+                        0
+                    },
                     "parse one pipe table block including aligned cells",
                     started,
                 );
@@ -1411,7 +1423,11 @@ fn parse_blocks_with_refs_profiled(
             profiler.record_since(
                 "list_block",
                 used,
-                lines[i..i + used].iter().map(|line| line.len()).sum(),
+                if profiler.enabled {
+                    lines[i..i + used].iter().map(|line| line.len()).sum()
+                } else {
+                    0
+                },
                 1 + list.items.len(),
                 "parse one ordered/unordered/task list block",
                 started,
@@ -2842,7 +2858,11 @@ fn parse_inlines_with_refs_profiled(
         } else {
             0
         };
-        let allocations = inline_tree_node_count(&inlines);
+        let allocations = if profiler.enabled {
+            inline_tree_node_count(&inlines)
+        } else {
+            0
+        };
         profiler.record_since(
             "inline_parse",
             char_count,

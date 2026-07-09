@@ -80,7 +80,14 @@ fmd_validate_run_id "perf-gauntlet" "$RUN_ID"
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"
-TMP_ROOT="/data/tmp/fmd-perf-$RUN_ID"
+if [ -e "$ARTIFACT_DIR" ]; then
+  echo "perf-gauntlet: refusing to reuse existing run: $ARTIFACT_DIR; pass a fresh --run-id" >&2
+  exit 64
+fi
+
+TMP_PARENT="${TMPDIR:-/data/tmp}"
+mkdir -p "$TMP_PARENT"
+TMP_ROOT="$(mktemp -d "$TMP_PARENT/fmd-perf-${RUN_ID}.XXXXXX")"
 BATCH_IN="$TMP_ROOT/batch-in"
 BATCH_OUT="$TMP_ROOT/batch-out"
 SCHEMA_VERSION="fmd-perf-artifact-v1"

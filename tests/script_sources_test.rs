@@ -181,6 +181,40 @@ fn perf_counters_summary_json_escapes_counter_names() -> TestResult {
 }
 
 #[test]
+fn perf_gauntlet_refuses_existing_run_before_building() -> TestResult {
+    let run_id = unique_run_id("perf-gauntlet-existing")?;
+    let out_dir = std::path::PathBuf::from("tests/artifacts/perf").join(&run_id);
+    fs::create_dir_all(&out_dir)?;
+    let _cleanup = TestArtifactDir {
+        path: out_dir.clone(),
+    };
+
+    let output = Command::new("bash")
+        .args(["scripts/perf-gauntlet.sh", "--run-id", &run_id])
+        .output()?;
+
+    assert_eq!(
+        output.status.code(),
+        Some(64),
+        "existing perf-gauntlet runs should fail with usage exit before build; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing to reuse existing run"),
+        "existing run should get an actionable refusal: {stderr}",
+    );
+    assert!(
+        !stdout.contains("building release-perf") && !stderr.contains("building release-perf"),
+        "refusal must happen before the expensive build starts; stdout={stdout} stderr={stderr}",
+    );
+
+    Ok(())
+}
+
+#[test]
 fn perf_counters_self_test_covers_partial_tuning_restore() -> TestResult {
     let output = Command::new("bash")
         .args(["scripts/perf-counters.sh", "--self-test"])

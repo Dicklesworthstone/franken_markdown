@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
 > x86_64, built and smoke-tested with DSR. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`. Crates.io still serves
-> `franken_markdown = "0.2.0"` as checked on July 8, 2026, so use the release
+> `franken_markdown = "0.2.0"` as checked on July 9, 2026, so use the release
 > archives or tagged source for the current `0.3.2` CLI and library until the
 > Rust crate catches up. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
@@ -380,7 +380,7 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on July 8, 2026, this
+# Or install the published crates.io package. As checked on July 9, 2026, this
 # currently installs 0.2.0 until 0.3.2 is published to crates.io.
 cargo install franken_markdown
 ```

@@ -24,10 +24,12 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > **Current status.** The `v0.3.3` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
 > x86_64, built and smoke-tested with DSR. The browser/WASM package is published
-> to npm as `@franken-suite/franken-markdown`. Crates.io still serves
-> `franken_markdown = "0.2.0"` as checked on July 9, 2026, so use the release
-> archives or tagged source for the current `0.3.3` CLI and library until the
-> Rust crate catches up. The current renderer ships shared HTML/PDF syntax
+> to npm as `@franken-suite/franken-markdown`; the npm registry latest is
+> `0.3.2` while the local package source is already versioned for `0.3.3` as
+> checked on July 9, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
+> so use the release archives or tagged source for the current `0.3.3` CLI and
+> library until the Rust crate catches up. The current renderer ships shared
+> HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, native SVG pattern strokes, text strokes, text paths, `hwb()`
@@ -99,14 +101,14 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; npm package `@franken-suite/franken-markdown`; crates.io currently lists `0.2.0` |
+| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; npm package `@franken-suite/franken-markdown` currently latest at `0.3.2`; crates.io currently lists `0.2.0` |
 
 ### Mainline Highlights
 
@@ -116,7 +118,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, and embedded PNG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -407,9 +409,11 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
-published on npm (`npm install @franken-suite/franken-markdown`). Tag pushes
-re-verify and publish new versions; the workflow skips versions that are
-already on the registry.
+published on npm (`npm install @franken-suite/franken-markdown`). As checked on
+July 9, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
+versioned at `0.3.3`, so the next successful publish will bring the browser
+package back in line with the GitHub release. The workflow skips versions that
+are already on the registry.
 
 ---
 

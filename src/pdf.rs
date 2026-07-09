@@ -4498,7 +4498,7 @@ fn parse_svg_positive_attr(attrs: &[(String, String)], name: &str) -> Option<f32
     if value[end..].trim_start().starts_with('%') {
         return None;
     }
-    let parsed = value[..end].parse::<f32>().ok()?;
+    let parsed = parse_svg_number(value)?;
     (parsed.is_finite() && parsed > 0.0).then_some(parsed)
 }
 
@@ -6410,6 +6410,8 @@ fn svg_text_length_from_number_and_unit_with_percent(
         } else {
             number
         })
+    } else if let Some(multiplier) = svg_absolute_length_multiplier(unit) {
+        Some(number * multiplier)
     } else {
         Some(number)
     }
@@ -7594,7 +7596,7 @@ fn parse_svg_gradient_length(value: &str) -> Option<SvgGradientLength> {
     let value = value.trim();
     let mut end = 0usize;
     read_svg_number_token(value, &mut end)?;
-    let parsed = value[..end].parse::<f32>().ok()?;
+    let parsed = parse_svg_number(value)?;
     parsed.is_finite().then_some(SvgGradientLength {
         value: parsed,
         percent: value[end..].trim_start().starts_with('%'),
@@ -10929,6 +10931,8 @@ fn parse_svg_filter_length(value: &str) -> Option<f32> {
         Some(number * 6.0)
     } else if unit.starts_with('%') {
         Some(number / 100.0)
+    } else if let Some(multiplier) = svg_absolute_length_multiplier(unit) {
+        Some(number * multiplier)
     } else {
         Some(number)
     }
@@ -12371,7 +12375,45 @@ fn parse_svg_number(value: &str) -> Option<f32> {
     let mut end = 0usize;
     read_svg_number_token(value, &mut end)?;
     let parsed = value[..end].parse::<f32>().ok()?;
-    parsed.is_finite().then_some(parsed)
+    if !parsed.is_finite() {
+        return None;
+    }
+    Some(parsed * svg_absolute_length_multiplier(value[end..].trim_start()).unwrap_or(1.0))
+}
+
+fn svg_absolute_length_multiplier(unit: &str) -> Option<f32> {
+    let unit = svg_length_unit_token(unit);
+    if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+        Some(1.0)
+    } else if unit.eq_ignore_ascii_case("in") {
+        Some(96.0)
+    } else if unit.eq_ignore_ascii_case("cm") {
+        Some(96.0 / 2.54)
+    } else if unit.eq_ignore_ascii_case("mm") {
+        Some(96.0 / 25.4)
+    } else if unit.eq_ignore_ascii_case("q") {
+        Some(96.0 / 101.6)
+    } else if unit.eq_ignore_ascii_case("pt") {
+        Some(96.0 / 72.0)
+    } else if unit.eq_ignore_ascii_case("pc") {
+        Some(16.0)
+    } else {
+        None
+    }
+}
+
+fn svg_length_unit_token(unit: &str) -> &str {
+    let unit = unit.trim_start();
+    if unit.starts_with('%') {
+        return "%";
+    }
+    let end = unit
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_alphabetic())
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .last()
+        .unwrap_or(0);
+    &unit[..end]
 }
 
 fn parse_svg_css_number(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
@@ -30553,6 +30595,67 @@ mod coverage_gap_tests {
 
     fn parsed_svg(src: &str) -> PdfSvgImage {
         parse_svg_document(src).expect("svg fixture should parse as vector content")
+    }
+
+    #[test]
+    fn svg_absolute_length_units_convert_to_css_pixels() {
+        assert!(approx(parse_svg_number("1in").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("2.54cm").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("25.4mm").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("101.6q").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("72pt").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("6pc").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("96px").unwrap(), 96.0));
+        assert!(approx(parse_svg_number("20em").unwrap(), 20.0));
+        assert!(approx(parse_svg_number("50%").unwrap(), 50.0));
+        assert!(approx(parse_svg_number("7furlong").unwrap(), 7.0));
+
+        let gradient = parse_svg_gradient_length("72pt").expect("gradient length");
+        assert!(approx(gradient.value, 96.0));
+        assert!(!gradient.percent);
+        let percent_gradient = parse_svg_gradient_length("25%").expect("percent gradient length");
+        assert!(approx(percent_gradient.value, 25.0));
+        assert!(percent_gradient.percent);
+
+        assert!(approx(parse_svg_filter_length("0.5in").unwrap(), 48.0));
+        assert!(approx(parse_svg_filter_length("1em").unwrap(), 12.0));
+        assert!(approx(parse_svg_filter_length("25%").unwrap(), 0.25));
+
+        assert!(approx(
+            svg_text_length_from_number_and_unit(72.0, "pt", 10.0).unwrap(),
+            96.0
+        ));
+        assert!(approx(
+            svg_text_length_from_number_and_unit(0.5, "em", 10.0).unwrap(),
+            5.0
+        ));
+    }
+
+    #[test]
+    fn svg_absolute_length_units_apply_to_document_geometry() {
+        let image = parsed_svg(
+            r##"<svg width="1in" height="25.4mm" viewBox="0 0 200 200">
+  <rect x="72pt" y="6pc" width="2.54cm" height="101.6q"
+        rx="3pt" ry="0.5in" stroke="#000000" stroke-width="0.25in"/>
+</svg>"##,
+        );
+        assert!(approx(image.viewport.w, 96.0));
+        assert!(approx(image.viewport.h, 96.0));
+        let rect = image
+            .elements
+            .iter()
+            .find_map(|el| match el {
+                SvgElement::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("absolute-unit rect");
+        assert!(approx(rect.x, 96.0));
+        assert!(approx(rect.y, 96.0));
+        assert!(approx(rect.w, 96.0));
+        assert!(approx(rect.h, 96.0));
+        assert!(approx(rect.rx, 4.0));
+        assert!(approx(rect.ry, 48.0));
+        assert!(approx(rect.style.stroke_width, 24.0));
     }
 
     // ---- SvgTransform helpers -------------------------------------------

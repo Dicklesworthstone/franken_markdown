@@ -102,7 +102,7 @@ struct RenderState<'a> {
 struct HighlightCacheEntry<'a> {
     lang: &'a str,
     code: &'a str,
-    spans: Vec<Span>,
+    rendered_html: String,
 }
 
 struct UrlCacheEntry<'a> {
@@ -157,7 +157,7 @@ impl<'a> RenderState<'a> {
             .iter()
             .find(|entry| entry.lang == lang && entry.code == code)
         {
-            emit_highlighted_spans(code, out, &entry.spans);
+            out.push_str(&entry.rendered_html);
             return;
         }
 
@@ -165,15 +165,17 @@ impl<'a> RenderState<'a> {
             push_escaped_text(code, out);
             return;
         }
-        emit_highlighted_spans(code, out, &self.highlight_spans);
-        self.remember_highlight(lang, code);
+        let mut rendered_html = String::with_capacity(code.len());
+        emit_highlighted_spans(code, &mut rendered_html, &self.highlight_spans);
+        out.push_str(&rendered_html);
+        self.remember_highlight(lang, code, rendered_html);
     }
 
-    fn remember_highlight(&mut self, lang: &'a str, code: &'a str) {
+    fn remember_highlight(&mut self, lang: &'a str, code: &'a str, rendered_html: String) {
         let entry = HighlightCacheEntry {
             lang,
             code,
-            spans: self.highlight_spans.clone(),
+            rendered_html,
         };
         if self.highlight_cache.len() < HIGHLIGHT_CACHE_MAX_ENTRIES {
             self.highlight_cache.push(entry);
@@ -1817,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_supported_code_blocks_reuse_non_consecutive_highlight_spans() {
+    fn repeated_supported_code_blocks_reuse_non_consecutive_highlight_html() {
         let mut state = RenderState::default();
         let rust = "fn main() { println!(\"hi\"); }\n";
         let python = "print('hi')\n";
@@ -1838,13 +1840,17 @@ mod tests {
             state
                 .highlight_cache
                 .iter()
-                .any(|entry| entry.lang == "rust" && entry.code == rust)
+                .any(|entry| entry.lang == "rust"
+                    && entry.code == rust
+                    && entry.rendered_html == first_rust)
         );
         assert!(
             state
                 .highlight_cache
                 .iter()
-                .any(|entry| entry.lang == "python" && entry.code == python)
+                .any(|entry| entry.lang == "python"
+                    && entry.code == python
+                    && entry.rendered_html == first_python)
         );
     }
 

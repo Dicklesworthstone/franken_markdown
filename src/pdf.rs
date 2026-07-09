@@ -10745,20 +10745,26 @@ impl SvgFilterPrimitiveShadowChain {
         if self.stage != SvgFilterPrimitiveShadowStage::Blur {
             return false;
         }
-        if let Some(color) =
-            svg_attr(attrs, "flood-color").and_then(|value| parse_svg_color(value, css_vars))
-        {
-            self.layer.color = color;
+        let mut color_alpha = 1.0;
+        let mut flood_opacity = self.layer.opacity;
+        if let Some(value) = svg_attr(attrs, "flood-color") {
+            apply_svg_shadow_flood_color(&mut self.layer, &mut color_alpha, value, css_vars);
         }
         if let Some(opacity) =
             svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
         {
-            self.layer.opacity = opacity;
+            flood_opacity = opacity;
         }
         if let Some(style) = svg_attr(attrs, "style") {
-            apply_svg_fe_drop_shadow_style(&mut self.layer, style, css_vars);
+            apply_svg_fe_drop_shadow_style(
+                &mut self.layer,
+                &mut flood_opacity,
+                &mut color_alpha,
+                style,
+                css_vars,
+            );
         }
-        self.layer.opacity = self.layer.opacity.clamp(0.0, 1.0);
+        self.layer.opacity = (flood_opacity * color_alpha).clamp(0.0, 1.0);
         self.flood_result = svg_filter_result_name(attrs);
         self.stage = SvgFilterPrimitiveShadowStage::Flood;
         true
@@ -10859,31 +10865,51 @@ fn svg_filter_input_is_shadow_merge_node(
 
 fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariable]) -> SvgShadow {
     let mut shadow = SvgShadowLayer::FALLBACK;
+    let mut color_alpha = 1.0;
+    let mut flood_opacity = shadow.opacity;
     if let Some(dx) = svg_attr(attrs, "dx").and_then(parse_svg_filter_length) {
         shadow.dx = dx;
     }
     if let Some(dy) = svg_attr(attrs, "dy").and_then(parse_svg_filter_length) {
         shadow.dy = dy;
     }
-    if let Some(color) =
-        svg_attr(attrs, "flood-color").and_then(|value| parse_svg_color(value, css_vars))
-    {
-        shadow.color = color;
+    if let Some(value) = svg_attr(attrs, "flood-color") {
+        apply_svg_shadow_flood_color(&mut shadow, &mut color_alpha, value, css_vars);
     }
     if let Some(opacity) =
         svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
     {
-        shadow.opacity = opacity;
+        flood_opacity = opacity;
     }
     if let Some(style) = svg_attr(attrs, "style") {
-        apply_svg_fe_drop_shadow_style(&mut shadow, style, css_vars);
+        apply_svg_fe_drop_shadow_style(
+            &mut shadow,
+            &mut flood_opacity,
+            &mut color_alpha,
+            style,
+            css_vars,
+        );
     }
-    shadow.opacity = shadow.opacity.clamp(0.0, 1.0);
+    shadow.opacity = (flood_opacity * color_alpha).clamp(0.0, 1.0);
     SvgShadow::single(shadow)
+}
+
+fn apply_svg_shadow_flood_color(
+    shadow: &mut SvgShadowLayer,
+    color_alpha: &mut f32,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) {
+    if let Some((color, alpha)) = parse_svg_color_state(value, css_vars) {
+        shadow.color = color;
+        *color_alpha = alpha;
+    }
 }
 
 fn apply_svg_fe_drop_shadow_style(
     shadow: &mut SvgShadowLayer,
+    flood_opacity: &mut f32,
+    color_alpha: &mut f32,
     style: &str,
     css_vars: &[SvgCssVariable],
 ) {
@@ -10894,13 +10920,11 @@ fn apply_svg_fe_drop_shadow_style(
         let value = value.trim();
         match name.trim().to_ascii_lowercase().as_str() {
             "flood-color" => {
-                if let Some(color) = parse_svg_color(value, css_vars) {
-                    shadow.color = color;
-                }
+                apply_svg_shadow_flood_color(shadow, color_alpha, value, css_vars);
             }
             "flood-opacity" => {
                 if let Some(opacity) = parse_svg_opacity(value, css_vars) {
-                    shadow.opacity = opacity;
+                    *flood_opacity = opacity;
                 }
             }
             _ => {}
@@ -10978,9 +11002,9 @@ fn parse_svg_drop_shadow_args(args: &str, css_vars: &[SvgCssVariable]) -> Option
     let mut color = None;
     let mut opacity = None;
     for part in split_svg_top_level_whitespace(args) {
-        if let Some(parsed) = parse_svg_color(part, css_vars) {
+        if let Some((parsed, alpha)) = parse_svg_color_state(part, css_vars) {
             color = Some(parsed);
-            opacity = parse_svg_paint_alpha(part, css_vars).or(opacity);
+            opacity = Some(alpha);
             continue;
         }
         if lengths.len() < 3

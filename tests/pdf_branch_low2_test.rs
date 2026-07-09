@@ -1605,6 +1605,58 @@ fn fe_drop_shadow_style_flood_color_and_opacity_apply() {
     has(&text, "/ca 0.500");
 }
 
+#[test]
+fn fe_drop_shadow_flood_color_alpha_composes_with_opacity() {
+    // Alpha embedded in `flood-color` is part of the shadow flood paint and must
+    // multiply with the independent `flood-opacity` property.
+    let text = svg(
+        "fedscoloralpha.svg",
+        &doc(
+            r##"<defs><filter id="f"><feDropShadow dx="1" dy="1" flood-color="rgb(255 0 0 / 50%)" flood-opacity="0.5"/></filter></defs>
+<rect x="20" y="20" width="20" height="20" fill="#00ff00" filter="url(#f)"/>"##,
+        ),
+    );
+    has(&text, "1.000 0.000 0.000 rg");
+    has(&text, "/ca 0.250");
+    has(&text, "0.000 1.000 0.000 rg");
+}
+
+#[test]
+fn fe_drop_shadow_style_flood_color_alpha_survives_later_opacity() {
+    // The style declaration pass must not overwrite a previously parsed colour
+    // alpha when a later `flood-opacity` declaration is applied.
+    let text = svg(
+        "fedsstylealpha.svg",
+        &doc(
+            r##"<defs><filter id="f"><feDropShadow style="flood-color:rgb(255 0 0 / 50%);flood-opacity:0.5"/></filter></defs>
+<rect x="20" y="20" width="20" height="20" fill="#00ff00" filter="url(#f)"/>"##,
+        ),
+    );
+    has(&text, "1.000 0.000 0.000 rg");
+    has(&text, "/ca 0.250");
+    has(&text, "0.000 1.000 0.000 rg");
+}
+
+#[test]
+fn filter_primitive_chain_flood_color_alpha_composes_with_opacity() {
+    // Manual shadow filter pipelines use <feFlood>, not <feDropShadow>, but
+    // they share the same flood paint semantics.
+    let text = svg(
+        "floodchainalpha.svg",
+        &doc(r##"<defs><filter id="f">
+<feOffset in="SourceAlpha" dx="1" dy="1" result="off"/>
+<feGaussianBlur in="off" stdDeviation="1" result="blur"/>
+<feFlood flood-color="rgb(255 0 0 / 50%)" flood-opacity="0.5" result="flood"/>
+<feComposite operator="in" in="flood" in2="blur" result="shadow"/>
+<feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter></defs>
+<rect x="20" y="20" width="20" height="20" fill="#00ff00" filter="url(#f)"/>"##),
+    );
+    has(&text, "1.000 0.000 0.000 rg");
+    has(&text, "/ca 0.250");
+    has(&text, "0.000 1.000 0.000 rg");
+}
+
 // ===========================================================================
 // <use> geometry: x/y translation and the url(#id) href form.
 // ===========================================================================

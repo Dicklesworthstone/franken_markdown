@@ -372,6 +372,7 @@ static PS_RANGES: &[(u32, u32)] = &[
 ];
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::is_unicode_punctuation;

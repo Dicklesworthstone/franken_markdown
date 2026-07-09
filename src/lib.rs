@@ -25,6 +25,7 @@
 //! layout; deeper page-builder polish is still being built out and tracked in
 //! beads. Nothing here is final.
 #![forbid(unsafe_code)]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(not(feature = "cli"), allow(dead_code))]
 
 pub mod ast;
@@ -409,6 +410,7 @@ pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
         FontAssetSlot, FontAssets, MAX_FONT_ASSET_BYTES, PdfOptions, VERSION, parse_markdown,

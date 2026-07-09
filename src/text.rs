@@ -1835,6 +1835,7 @@ fn parse_ligature_subst(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod dos_tests {
     use super::{MAX_COVERAGE_GLYPHS, parse_coverage_glyphs};
@@ -1875,6 +1876,7 @@ mod dos_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod subset_degradation_tests {
     use super::{
@@ -2068,6 +2070,7 @@ mod subset_degradation_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod synthetic_font_tests {
     use super::*;

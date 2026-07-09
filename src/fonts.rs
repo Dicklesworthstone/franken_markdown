@@ -198,6 +198,7 @@ pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
         FontError, FontStyle, body_bytes, body_font, body_layout_tables, load_body, load_mono,

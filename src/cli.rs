@@ -1477,6 +1477,7 @@ fn json_escape(s: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod overwrite_guard_tests {
     use super::find_input_overwrite;
@@ -1557,6 +1558,7 @@ mod overwrite_guard_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod helper_tests {
     use super::*;

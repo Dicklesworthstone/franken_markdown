@@ -2143,6 +2143,7 @@ pub(crate) fn lookup(name: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{HTML5_ENTITIES, lookup};
 

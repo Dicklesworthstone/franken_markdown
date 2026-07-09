@@ -2107,6 +2107,7 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod overfull_selectability_tests {
     //! Real bundled-font metrics (no test doubles): `Font` implements
@@ -2232,6 +2233,7 @@ mod overfull_selectability_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod hyphen_and_break_edge_tests {
     use super::{

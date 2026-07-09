@@ -110,13 +110,16 @@ json_string_array_from_csv() {
   done
 }
 
-declare -A SYSCTL_OLD=()
+# Captured originals, index-aligned with SYSCTL_KEYS. Plain indexed arrays
+# keep the script runnable under macOS's stock bash 3.2, which lacks
+# associative arrays; those broke the self-test on the macos CI runner.
+SYSCTL_OLD_VALUES=()
 TUNING_APPLIED=0
 
 capture_originals() {
-  local key
-  for key in "${SYSCTL_KEYS[@]}"; do
-    SYSCTL_OLD[$key]="$(backend_read "$key")"
+  local i
+  for i in "${!SYSCTL_KEYS[@]}"; do
+    SYSCTL_OLD_VALUES[$i]="$(backend_read "${SYSCTL_KEYS[$i]}")"
   done
 }
 
@@ -132,9 +135,10 @@ restore_originals() {
   # Idempotent: safe to call from the EXIT trap and explicitly. Only restores
   # what was actually captured, and never writes an 'unavailable' sentinel.
   [ "$TUNING_APPLIED" -eq 1 ] || return 0
-  local key val
-  for key in "${SYSCTL_KEYS[@]}"; do
-    val="${SYSCTL_OLD[$key]:-}"
+  local i key val
+  for i in "${!SYSCTL_KEYS[@]}"; do
+    key="${SYSCTL_KEYS[$i]}"
+    val="${SYSCTL_OLD_VALUES[$i]:-}"
     if [ -n "$val" ] && [ "$val" != "unavailable" ]; then
       backend_write "$key" "$val" 2>/dev/null || true
     fi
@@ -148,13 +152,23 @@ verify_restored() {
     printf 'not_tuned'
     return 0
   fi
-  local key status="restored"
-  for key in "${SYSCTL_KEYS[@]}"; do
-    if [ "$(backend_read "$key")" != "${SYSCTL_OLD[$key]}" ]; then
+  local i status="restored"
+  for i in "${!SYSCTL_KEYS[@]}"; do
+    if [ "$(backend_read "${SYSCTL_KEYS[$i]}")" != "${SYSCTL_OLD_VALUES[$i]:-}" ]; then
       status="unknown"
     fi
   done
   printf '%s' "$status"
+}
+
+# Mock-backend restore expectations for the self-test, keyed by sysctl name.
+# A case statement instead of an associative array for bash 3.2 portability.
+expected_mock_default() {
+  case "$1" in
+    kernel.perf_event_paranoid) printf '4' ;;
+    kernel.kptr_restrict) printf '1' ;;
+    kernel.nmi_watchdog) printf '1' ;;
+  esac
 }
 
 # ---- self-test: prove the restore cycle without root ------------------------
@@ -182,10 +196,9 @@ run_self_test() {
   local status; status="$(verify_restored)"
 
   local key bad=0
-  declare -A EXPECT=([kernel.perf_event_paranoid]=4 [kernel.kptr_restrict]=1 [kernel.nmi_watchdog]=1)
   for key in "${SYSCTL_KEYS[@]}"; do
-    if [ "$(backend_read "$key")" != "${EXPECT[$key]}" ]; then
-      echo "perf-counters self-test: FAIL — $key not restored to ${EXPECT[$key]}" >&2
+    if [ "$(backend_read "$key")" != "$(expected_mock_default "$key")" ]; then
+      echo "perf-counters self-test: FAIL — $key not restored to $(expected_mock_default "$key")" >&2
       bad=1
     fi
   done
@@ -226,7 +239,7 @@ run_self_test() {
   status="$(verify_restored)"
   bad=0
   for key in "${SYSCTL_KEYS[@]}"; do
-    if [ "$(backend_read "$key")" != "${EXPECT[$key]}" ]; then
+    if [ "$(backend_read "$key")" != "$(expected_mock_default "$key")" ]; then
       echo "perf-counters self-test: FAIL — partial failure left $key at $(backend_read "$key")" >&2
       bad=1
     fi
@@ -346,7 +359,7 @@ RESTORE_STATUS="$(verify_restored)"
   last=$(( ${#SYSCTL_KEYS[@]} - 1 ))
   for i in "${!SYSCTL_KEYS[@]}"; do
     key="${SYSCTL_KEYS[$i]}"
-    old="${SYSCTL_OLD[$key]:-$(backend_read "$key")}"
+    old="${SYSCTL_OLD_VALUES[$i]:-$(backend_read "$key")}"
     cur="$(backend_read "$key")"
     comma=","; [ "$i" -eq "$last" ] && comma=""
     echo "    \"$key\": {\"old\": \"$old\", \"current\": \"$cur\"}$comma"

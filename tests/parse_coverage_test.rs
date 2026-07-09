@@ -783,6 +783,15 @@ fn pipe_table_with_alignments_renders_styled_cells() {
 }
 
 #[test]
+fn empty_delimiter_cells_keep_the_existing_table_shape() {
+    let out = html("| a | b | c |\n| - || - |\n| 1 | 2 | 3 |");
+
+    assert!(out.contains("<table>"), "{out}");
+    assert!(out.contains("<tr><th>a</th><th>b</th><th>c</th></tr>"));
+    assert!(out.contains("<tr><td>1</td><td>2</td><td>3</td></tr>"));
+}
+
+#[test]
 fn table_cells_split_on_unescaped_pipes_outside_code_spans() {
     assert!(
         html("| a | b |\n| - | - |\n| `x|y` | 2 |").contains("<td><code>x|y</code></td><td>2</td>")

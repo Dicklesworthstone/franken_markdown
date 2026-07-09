@@ -50,6 +50,11 @@ fn scalar_line_scanner_is_conservative_for_markdown_starters() {
     assert!(raw_html.maybe_html);
     assert!(raw_html.maybe_autolink);
 
+    let quote = scan_markdown_line("   > quoted");
+    assert!(quote.maybe_blockquote);
+    let tab_quote = scan_markdown_line("\t> code");
+    assert!(!tab_quote.maybe_blockquote);
+
     let fence = scan_markdown_line("   ```rust");
     assert!(fence.maybe_fence);
     assert!(fence.contains_backtick);
@@ -620,6 +625,31 @@ fn profiled_parser_plain_inline_fast_path_ignores_non_url_h_and_w_words() {
 }
 
 #[test]
+fn profiled_parser_plain_multiline_fast_path_reports_joined_counts() {
+    let src = "alpha \nbeta  \ngamma";
+    let profiled = parse_markdown_profiled(src);
+    let inline_stage = profiled
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "inline_parse")
+        .expect("plain multi-line paragraph should still report inline parse");
+
+    assert_eq!(inline_stage.count, src.chars().count());
+    assert_eq!(inline_stage.bytes, src.len());
+    assert_eq!(inline_stage.allocations, 5);
+    assert_eq!(
+        profiled.document.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("alpha".to_string()),
+            Inline::SoftBreak,
+            Inline::Text("beta".to_string()),
+            Inline::HardBreak,
+            Inline::Text("gamma".to_string()),
+        ])]
+    );
+}
+
+#[test]
 fn profiled_full_inline_parse_without_emphasis_skips_resolver_state() {
     let src = "before `code` &amp; <https://example.test> user@example.test <!-- note --> after";
     let profiled = parse_markdown_profiled(src);
@@ -660,11 +690,13 @@ fn profiled_full_inline_parse_without_emphasis_skips_resolver_state() {
 
 #[test]
 fn gfm_bare_urls_autolink_with_punctuation_outside() {
-    let out = html("See https://example.com/a?b=1&c=2, then www.example.org.");
+    let out =
+        html("See https://example.com/a?b=1&c=2, then http://example.org and www.example.org.");
 
     assert!(out.contains(
         "<a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a>, then"
     ));
+    assert!(out.contains("<a href=\"http://example.org\">http://example.org</a>"));
     assert!(out.contains("<a href=\"http://www.example.org\">www.example.org</a>."));
 }
 
@@ -818,6 +850,8 @@ fn bare_email_becomes_mailto_autolink() {
 fn bare_email_autolink_is_conservative() {
     // No dot in the domain is not treated as an email.
     assert!(!html("user@localhost stays plain").contains("mailto:"));
+    assert!(!html("@example.com stays plain").contains("mailto:"));
+    assert!(!html("user@ stays plain").contains("mailto:"));
     // A trailing sentence period is not part of the address.
     let out = html("Mail a@b.com.");
     assert!(out.contains("<a href=\"mailto:a@b.com\">a@b.com</a>"));
@@ -1320,13 +1354,36 @@ fn tab_indented_lines_form_indented_code_blocks() {
 }
 
 #[test]
+fn tab_indented_block_starters_are_code_not_quote_or_html() {
+    let quote = html("\t> quoted");
+    assert!(
+        quote.contains("<pre><code>"),
+        "tab-indented quote is code: {quote}"
+    );
+    assert!(
+        !quote.contains("<blockquote>"),
+        "tab must not open quote: {quote}"
+    );
+    assert!(quote.contains("&gt; quoted"));
+
+    let script = html("\t<script>alert(1)</script>");
+    assert!(
+        script.contains("<pre><code>"),
+        "tab-indented HTML opener is code: {script}"
+    );
+    assert!(script.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+}
+
+#[test]
 fn entity_references_inside_link_destinations_decode_once() {
     // `&amp;` in a destination decodes to `&`, then the emitter escapes it once
     // — no double-escaping into `&amp;amp;`.
     let out = html("[x](http://e.com?a=1&amp;b=2)");
     assert!(out.contains("href=\"http://e.com?a=1&amp;b=2\""));
+    let angle = html("[x](<http://e.com?a=1&amp;b=2>)");
+    assert!(angle.contains("href=\"http://e.com?a=1&amp;b=2\""));
     assert!(
-        !out.contains("&amp;amp;"),
+        !out.contains("&amp;amp;") && !angle.contains("&amp;amp;"),
         "destination must not double-escape"
     );
 }

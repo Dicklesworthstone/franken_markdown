@@ -230,7 +230,7 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
         maybe_table_delimiter: contains_pipe || contains_dash || contains_colon,
         maybe_autolink: contains_open_angle || contains_at || maybe_url_prefix,
         maybe_fence: indented_as_block && matches!(first, Some(b'`' | b'~')),
-        maybe_blockquote: indented_as_block && line.trim_start().as_bytes().first() == Some(&b'>'),
+        maybe_blockquote: indented_as_block && first == Some(b'>'),
         maybe_thematic_break: indented_as_block && matches!(first, Some(b'-' | b'*' | b'_')),
         maybe_setext_underline: indented_as_block && matches!(first, Some(b'=' | b'-')),
         first_special_byte,

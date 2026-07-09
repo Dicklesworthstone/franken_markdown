@@ -168,8 +168,11 @@ fn markdown_line_scanner_is_conservative_for_parser_edges() {
 
 #[test]
 fn markdown_line_scanner_starter_flags_match_parser_block_precedence() {
-    let blockquote = scan_markdown_line(" \t> quoted");
+    let blockquote = scan_markdown_line("   > quoted");
     assert!(blockquote.maybe_blockquote);
+
+    let tab_indented_blockquote_text = scan_markdown_line(" \t> code, not quote");
+    assert!(!tab_indented_blockquote_text.maybe_blockquote);
 
     let indented_blockquote_text = scan_markdown_line("    > code, not quote");
     assert!(!indented_blockquote_text.maybe_blockquote);

@@ -124,6 +124,22 @@ pub fn highlight(lang: &str, code: &str) -> Vec<Span> {
 /// Highlight `code` for language `lang`, writing classified byte spans into
 /// `spans` after clearing it. Unknown languages yield a single `Plain` span.
 pub fn highlight_into(lang: &str, code: &str, spans: &mut Vec<Span>) {
+    if highlight_supported_into(lang, code, spans) {
+        return;
+    }
+    spans.push(Span {
+        kind: Tok::Plain,
+        start: 0,
+        end: code.len(),
+    });
+}
+
+/// Highlight `code` only when `lang` has a focused lexer.
+///
+/// Returns `false` after clearing `spans` when the language is unsupported,
+/// letting callers choose a cheaper plain-text path without paying a second
+/// lexer lookup for supported languages.
+pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<Span>) -> bool {
     spans.clear();
     match lexer(lang) {
         Some(Lexer::Generic(r)) => lex_generic_into(code, &r, spans),
@@ -131,12 +147,9 @@ pub fn highlight_into(lang: &str, code: &str, spans: &mut Vec<Span>) {
         Some(Lexer::Css) => lex_css_into(code, spans),
         Some(Lexer::Markdown) => lex_markdown_into(code, spans),
         Some(Lexer::Mermaid) => lex_mermaid_into(code, spans),
-        None => spans.push(Span {
-            kind: Tok::Plain,
-            start: 0,
-            end: code.len(),
-        }),
+        None => return false,
     }
+    true
 }
 
 fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
@@ -144,7 +157,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
     let mut pos = 0;
     while pos < len {
         let rest = &code[pos..];
-        let Some(c) = rest.chars().next() else { break };
+        let c = first_char_in_nonempty(rest);
         let clen = c.len_utf8();
 
         // Whitespace run.
@@ -230,9 +243,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             let start = pos;
             let mut p = pos + clen;
             while p < len {
-                let Some(ch) = code[p..].chars().next() else {
-                    break;
-                };
+                let ch = first_char_at(code, p);
                 let l2 = ch.len_utf8();
                 if ch == '\\' {
                     let nx = code[p + l2..].chars().next().map_or(0, char::len_utf8);
@@ -258,9 +269,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             let start = pos;
             let mut p = pos;
             while p < len {
-                let Some(ch) = code[p..].chars().next() else {
-                    break;
-                };
+                let ch = first_char_at(code, p);
                 if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' {
                     p += ch.len_utf8();
                 } else {
@@ -281,9 +290,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             let start = pos;
             let mut p = pos;
             while p < len {
-                let Some(ch) = code[p..].chars().next() else {
-                    break;
-                };
+                let ch = first_char_at(code, p);
                 if ch == '_' || ch.is_alphanumeric() {
                     p += ch.len_utf8();
                 } else {
@@ -377,9 +384,7 @@ fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
             }
 
             while pos < len {
-                let Some(ch) = code[pos..].chars().next() else {
-                    break;
-                };
+                let ch = first_char_at(code, pos);
                 let clen = ch.len_utf8();
 
                 if ch.is_whitespace() {
@@ -430,9 +435,7 @@ fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
 
     while pos < len {
         let rest = &code[pos..];
-        let Some(ch) = rest.chars().next() else {
-            break;
-        };
+        let ch = first_char_in_nonempty(rest);
         let clen = ch.len_utf8();
 
         if ch.is_whitespace() {
@@ -501,7 +504,7 @@ fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
         if rest.starts_with("<!--") {
             let end = find_after(code, pos + 4, "-->").unwrap_or(len);
             push_span(spans, Tok::Comment, pos, end);
-            line_start = end > 0 && code.as_bytes().get(end - 1).is_some_and(|b| *b == b'\n');
+            line_start = code[..end].ends_with('\n');
             if line_start {
                 line_indent_columns = 0;
             }
@@ -509,9 +512,7 @@ fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
             continue;
         }
 
-        let Some(ch) = rest.chars().next() else {
-            break;
-        };
+        let ch = first_char_in_nonempty(rest);
         let clen = ch.len_utf8();
 
         if ch == '\n' {
@@ -523,9 +524,7 @@ fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             let mut only_markdown_indent = true;
             while pos < len {
-                let Some(ws) = code[pos..].chars().next() else {
-                    break;
-                };
+                let ws = first_char_at(code, pos);
                 if ws == '\n' || !ws.is_whitespace() {
                     break;
                 }
@@ -587,9 +586,7 @@ fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
 
     while pos < len {
         let rest = &code[pos..];
-        let Some(ch) = rest.chars().next() else {
-            break;
-        };
+        let ch = first_char_in_nonempty(rest);
         let clen = ch.len_utf8();
 
         if ch.is_whitespace() {
@@ -652,11 +649,21 @@ fn push_span(spans: &mut Vec<Span>, kind: Tok, start: usize, end: usize) {
     spans.push(Span { kind, start, end });
 }
 
+#[inline]
+fn first_char_in_nonempty(text: &str) -> char {
+    debug_assert!(!text.is_empty());
+    text.chars().next().unwrap_or('\0')
+}
+
+#[inline]
+fn first_char_at(code: &str, pos: usize) -> char {
+    debug_assert!(pos < code.len());
+    first_char_in_nonempty(&code[pos..])
+}
+
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {
     while pos < code.len() {
-        let Some(ch) = code[pos..].chars().next() else {
-            break;
-        };
+        let ch = first_char_at(code, pos);
         if pred(ch) {
             pos += ch.len_utf8();
         } else {
@@ -674,9 +681,7 @@ fn find_after(code: &str, from: usize, needle: &str) -> Option<usize> {
 fn consume_quoted(code: &str, pos: usize, quote: char) -> usize {
     let mut p = pos + quote.len_utf8();
     while p < code.len() {
-        let Some(ch) = code[p..].chars().next() else {
-            break;
-        };
+        let ch = first_char_at(code, p);
         let len = ch.len_utf8();
         if ch == '\\' {
             let escaped = code[p + len..].chars().next().map_or(0, char::len_utf8);
@@ -893,7 +898,7 @@ fn is_list_marker(rest: &str) -> bool {
             }
             continue;
         }
-        if digits > 0 && matches!(ch, '.' | ')') {
+        if matches!(ch, '.' | ')') {
             let after = idx + ch.len_utf8();
             return rest[after..]
                 .chars()
@@ -935,9 +940,8 @@ fn list_marker_end(code: &str, pos: usize) -> usize {
     }
     let mut p = pos;
     p = consume_while(code, p, |c| c.is_ascii_digit());
-    if let Some(ch) = code[p..].chars().next()
-        && matches!(ch, '.' | ')')
-    {
+    let ch = first_char_at(code, p);
+    if matches!(ch, '.' | ')') {
         p += ch.len_utf8();
     }
     p
@@ -957,9 +961,7 @@ fn consume_markdown_code(code: &str, pos: usize) -> usize {
 
 fn consume_markdown_plain(code: &str, mut pos: usize) -> usize {
     while pos < code.len() {
-        let Some(ch) = code[pos..].chars().next() else {
-            break;
-        };
+        let ch = first_char_at(code, pos);
         if ch == '\n' || is_markdown_plain_stop_char(ch) {
             break;
         }
@@ -1439,6 +1441,7 @@ const SQL_TY: &[&str] = &[
 ];
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod line_prefix_dos_tests {
     use super::{Tok, highlight, line_prefix_is_blank};
@@ -1510,6 +1513,7 @@ mod line_prefix_dos_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod lexer_edge_tests {
     use super::{
@@ -1688,6 +1692,7 @@ mod lexer_edge_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod char_classifier_tests {
     use super::{
         is_css_operator_char, is_css_punct_char, is_generic_operator_char, is_generic_punct_char,

@@ -320,33 +320,13 @@ pub fn render_pdf_configured_multi(
         code_line_numbers,
     )?;
 
-    if image_destinations.len() != image_bytes_lengths.len() {
-        return Err(JsValue::from_str(
-            "image_destinations and image_bytes_lengths must have the same length",
-        ));
-    }
-    let mut offset = 0usize;
-    for (destination, &len) in image_destinations.iter().zip(image_bytes_lengths.iter()) {
-        let len = len as usize;
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| JsValue::from_str("image byte lengths overflow the flattened buffer"))?;
-        let bytes = image_bytes_flat
-            .get(offset..end)
-            .ok_or_else(|| JsValue::from_str("flattened image bytes are shorter than declared"))?;
-        offset = end;
-        // A fully-empty entry is a "no image" placeholder; skip it.
-        if destination.trim().is_empty() && bytes.is_empty() {
-            continue;
-        }
+    for (destination, bytes) in
+        split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
+            .map_err(JsValue::from_str)?
+    {
         options = options
-            .with_pdf_image_asset(destination.clone(), bytes.to_vec())
+            .with_pdf_image_asset(destination.to_string(), bytes.to_vec())
             .map_err(render_error_to_js)?;
-    }
-    if offset != image_bytes_flat.len() {
-        return Err(JsValue::from_str(
-            "flattened image bytes are longer than the declared lengths",
-        ));
     }
 
     apply_font_assets(
@@ -440,6 +420,39 @@ fn set_font_asset(
         .map_err(render_error_to_js)
 }
 
+fn split_nonempty_image_assets<'a>(
+    image_destinations: &'a [String],
+    image_bytes_flat: &'a [u8],
+    image_bytes_lengths: &[u32],
+) -> std::result::Result<Vec<(&'a str, &'a [u8])>, &'static str> {
+    if image_destinations.len() != image_bytes_lengths.len() {
+        return Err("image_destinations and image_bytes_lengths must have the same length");
+    }
+
+    let mut offset = 0usize;
+    let mut assets = Vec::new();
+    for (destination, &len) in image_destinations.iter().zip(image_bytes_lengths.iter()) {
+        let len = len as usize;
+        let end = offset
+            .checked_add(len)
+            .ok_or("image byte lengths overflow the flattened buffer")?;
+        let bytes = image_bytes_flat
+            .get(offset..end)
+            .ok_or("flattened image bytes are shorter than declared")?;
+        offset = end;
+        // A fully-empty entry is a "no image" placeholder; skip it.
+        if destination.trim().is_empty() && bytes.is_empty() {
+            continue;
+        }
+        assets.push((destination.as_str(), bytes));
+    }
+
+    if offset != image_bytes_flat.len() {
+        return Err("flattened image bytes are longer than the declared lengths");
+    }
+    Ok(assets)
+}
+
 fn empty_to_none(value: Option<String>) -> Option<String> {
     value.and_then(|s| {
         let trimmed = s.trim();
@@ -462,20 +475,20 @@ fn nonempty_verbatim(value: Option<String>) -> Option<String> {
 }
 
 fn parse_epoch(value: Option<f64>) -> std::result::Result<Option<u64>, JsValue> {
+    parse_epoch_u64(value).map_err(JsValue::from_str)
+}
+
+fn parse_epoch_u64(value: Option<f64>) -> std::result::Result<Option<u64>, &'static str> {
     const JS_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     match value {
         Some(epoch) if epoch.is_finite() && epoch >= 0.0 && epoch.fract() == 0.0 => {
             if epoch > JS_MAX_SAFE_INTEGER {
-                Err(JsValue::from_str(
-                    "metadataEpochSeconds must be <= Number.MAX_SAFE_INTEGER",
-                ))
+                Err("metadataEpochSeconds must be <= Number.MAX_SAFE_INTEGER")
             } else {
                 Ok(Some(epoch as u64))
             }
         }
-        Some(_) => Err(JsValue::from_str(
-            "metadataEpochSeconds must be a finite non-negative integer",
-        )),
+        Some(_) => Err("metadataEpochSeconds must be a finite non-negative integer"),
         None => Ok(None),
     }
 }
@@ -493,4 +506,68 @@ fn render_result(output: wasm::WasmRenderOutput) -> FmdRenderResult {
 
 fn render_error_to_js(err: crate::RenderError) -> JsValue {
     JsValue::from_str(&err.to_string())
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+    use super::{parse_epoch_u64, split_nonempty_image_assets};
+
+    #[test]
+    fn split_nonempty_image_assets_validates_parallel_arrays_without_js_values() {
+        let destinations = vec![
+            String::new(),
+            "a.png".to_string(),
+            "   ".to_string(),
+            "b.png".to_string(),
+        ];
+        let flat = b"abcde".to_vec();
+        let assets = split_nonempty_image_assets(&destinations, &flat, &[0, 2, 0, 3])
+            .expect("valid image assets");
+
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0], ("a.png", &b"ab"[..]));
+        assert_eq!(assets[1], ("b.png", &b"cde"[..]));
+
+        let mismatch = split_nonempty_image_assets(&destinations[..1], &flat, &[0, 2]);
+        assert_eq!(
+            mismatch.unwrap_err(),
+            "image_destinations and image_bytes_lengths must have the same length"
+        );
+
+        let short = split_nonempty_image_assets(&destinations[..1], &flat[..1], &[2]);
+        assert_eq!(
+            short.unwrap_err(),
+            "flattened image bytes are shorter than declared"
+        );
+
+        let long = split_nonempty_image_assets(&destinations[..1], &flat[..2], &[1]);
+        assert_eq!(
+            long.unwrap_err(),
+            "flattened image bytes are longer than the declared lengths"
+        );
+    }
+
+    #[test]
+    fn parse_epoch_u64_accepts_only_js_safe_non_negative_integer_seconds() {
+        assert_eq!(parse_epoch_u64(None).unwrap(), None);
+        assert_eq!(parse_epoch_u64(Some(0.0)).unwrap(), Some(0));
+        assert_eq!(
+            parse_epoch_u64(Some(9_007_199_254_740_991.0)).unwrap(),
+            Some(9_007_199_254_740_991)
+        );
+
+        assert_eq!(
+            parse_epoch_u64(Some(9_007_199_254_740_992.0)).unwrap_err(),
+            "metadataEpochSeconds must be <= Number.MAX_SAFE_INTEGER"
+        );
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 1.5] {
+            assert_eq!(
+                parse_epoch_u64(Some(invalid)).unwrap_err(),
+                "metadataEpochSeconds must be a finite non-negative integer"
+            );
+        }
+    }
 }

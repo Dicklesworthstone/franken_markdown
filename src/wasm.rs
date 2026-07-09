@@ -391,6 +391,7 @@ fn json_escape_into(s: &str, out: &mut String) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod render_warning_tests {
     use super::{WasmRenderOptions, render_pdf};

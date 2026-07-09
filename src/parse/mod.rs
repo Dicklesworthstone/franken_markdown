@@ -9,7 +9,7 @@
 //! tracked in beads. The design priority is correct, fast handling of the
 //! common 95% with zero dependencies and no `unwrap`/`panic`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
@@ -30,7 +30,7 @@ struct LinkReference {
     title: Option<String>,
 }
 
-type ReferenceMap = BTreeMap<String, LinkReference>;
+type ReferenceMap = HashMap<String, LinkReference>;
 type ConsumedReferenceLines = Vec<Range<usize>>;
 
 const INLINE_PARSE_NOTES: &str =
@@ -238,16 +238,17 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     let lines = profiler.measure(
         "line_split",
         "strip UTF-8 BOM if present and split source into logical lines",
-        || src.lines().collect::<Vec<&str>>(),
+        || split_logical_lines(src),
         |lines| (lines.len(), src.len(), 1),
     );
     let reference_started = profiler.checkpoint();
     let has_reference_candidate = src.contains("]:");
-    let (lines, mut refs, kept_reference_candidate) = if has_reference_candidate {
-        collect_link_references(&lines)
-    } else {
-        (lines, ReferenceMap::new(), false)
-    };
+    let (lines, mut refs, kept_reference_candidate, rebuilt_reference_lines) =
+        if has_reference_candidate {
+            collect_link_references(lines)
+        } else {
+            (lines, ReferenceMap::new(), false, false)
+        };
     // Also collect definitions nested inside blockquotes/list items, so a use
     // anywhere in the document (including a forward reference) can resolve a
     // definition that lives inside a container. CommonMark allows definitions
@@ -261,7 +262,12 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         collect_nested_references(&lines, &mut refs, 0);
     }
     let reference_allocations = if has_reference_candidate {
-        refs.len() + lines.len()
+        refs.len()
+            + if rebuilt_reference_lines {
+                lines.len()
+            } else {
+                0
+            }
     } else {
         0
     };
@@ -285,6 +291,20 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         block_started,
     );
     Document { blocks }
+}
+
+fn split_logical_lines(src: &str) -> Vec<&str> {
+    let mut lines = Vec::with_capacity(logical_line_capacity_hint(src.len()));
+    lines.extend(src.lines());
+    lines
+}
+
+fn logical_line_capacity_hint(byte_len: usize) -> usize {
+    if byte_len == 0 {
+        0
+    } else {
+        byte_len.saturating_div(24).saturating_add(1).min(65_536)
+    }
 }
 
 /// Parse a document and attach top-level source spans plus recoverable parser
@@ -409,9 +429,9 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
             continue;
         }
 
-        if line.trim_start().starts_with('>') {
+        if blockquote_marker_start(line) {
             let start = i;
-            while i < lines.len() && lines[i].text.trim_start().starts_with('>') {
+            while i < lines.len() && blockquote_marker_start(lines[i].text) {
                 i += 1;
             }
             spans.push(span_for_lines(&lines, start, i));
@@ -425,12 +445,13 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
             continue;
         }
 
-        if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1].text) {
-            if let Some(used) = table_extent_with(&lines[i..], |line| line.text) {
-                spans.push(span_for_lines(&lines, i, i + used));
-                i += used;
-                continue;
-            }
+        if i + 1 < lines.len()
+            && line.contains('|')
+            && let Some(used) = table_extent_with(&lines[i..], |line| line.text)
+        {
+            spans.push(span_for_lines(&lines, i, i + used));
+            i += used;
+            continue;
         }
 
         if list_marker(line).is_some() {
@@ -452,7 +473,7 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
                 || atx_heading(lines[i].text).is_some()
                 || open_fence(lines[i].text).is_some()
                 || indented_code_start(lines[i].text)
-                || lines[i].text.trim_start().starts_with('>')
+                || blockquote_marker_start(lines[i].text)
                 || html_block_start(lines[i].text)
                 || list_marker_interrupts_paragraph(lines[i].text)
             {
@@ -525,13 +546,18 @@ fn looks_like_reference_definition(line: &str) -> bool {
     t.starts_with('[') && t.contains("]:")
 }
 
-fn collect_link_references<'a>(lines: &[&'a str]) -> (Vec<&'a str>, ReferenceMap, bool) {
+fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
     let kept_reference_candidate =
-        collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs);
-    let kept = strip_consumed_references(lines, &consumed);
-    (kept, refs, kept_reference_candidate)
+        collect_link_reference_metadata_into(&lines, Some(&mut consumed), &mut refs);
+    let rebuilt_lines = !consumed.is_empty();
+    let kept = if rebuilt_lines {
+        strip_consumed_references(&lines, &consumed)
+    } else {
+        lines
+    };
+    (kept, refs, kept_reference_candidate, rebuilt_lines)
 }
 
 fn strip_consumed_source_lines<'a>(
@@ -570,18 +596,14 @@ fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[Range<usize>]) -
     let mut cursor = 0usize;
 
     for range in consumed {
-        for line in &lines[cursor..range.start] {
-            kept.push(*line);
-        }
+        kept.extend_from_slice(&lines[cursor..range.start]);
         if consumed_reference_run_separates_tables(lines, range) {
             kept.push("");
         }
         cursor = range.end;
     }
 
-    for line in &lines[cursor..] {
-        kept.push(*line);
-    }
+    kept.extend_from_slice(&lines[cursor..]);
     kept
 }
 
@@ -604,11 +626,7 @@ fn table_ends_at(lines: &[&str], end: usize) -> bool {
     }
 
     for start in first_pipe_row..end.saturating_sub(1) {
-        if !lines[start].contains('|')
-            || !lines
-                .get(start + 1)
-                .is_some_and(|line| is_table_delimiter(line))
-        {
+        if !lines[start].contains('|') {
             continue;
         }
         if table_extent(&lines[start..]).is_some_and(|used| start + used == end) {
@@ -695,10 +713,10 @@ fn collect_link_reference_metadata_into(
         // boundary definition and stripped, which silently deleted the line and
         // phantom-defined the label. Definitions genuinely inside the quote are
         // collected separately by `collect_nested_references`.
-        if scan.maybe_blockquote && line.trim_start().starts_with('>') {
+        if scan.maybe_blockquote && blockquote_marker_start(line) {
             let mut last_inner: Option<&str> = None;
             while i < lines.len() {
-                if lines[i].trim_start().starts_with('>') {
+                if blockquote_marker_start(lines[i]) {
                     kept_reference_candidate |= lines[i].contains("]:");
                     last_inner = Some(strip_blockquote_marker(lines[i]));
                     i += 1;
@@ -732,7 +750,6 @@ fn collect_link_reference_metadata_into(
         if !in_paragraph
             && i + 1 < lines.len()
             && scan.contains_pipe
-            && is_table_delimiter(lines[i + 1])
             && let Some(used) = table_extent(&lines[i..])
         {
             i += used;
@@ -801,6 +818,7 @@ fn push_consumed_reference_range(consumed: &mut ConsumedReferenceLines, range: R
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
     if line.trim().is_empty() {
         return Some(false);
@@ -876,11 +894,12 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     }
     let header = text(&lines[0]);
     let delimiter = text(&lines[1]);
-    if !header.contains('|') || !is_table_delimiter(delimiter) {
+    if !header.contains('|') {
         return None;
     }
+    let delimiter_cols = validated_table_delimiter_cell_count(delimiter)?;
     let cols = split_table_row(header).len();
-    if cols == 0 || table_delimiter_cell_count(delimiter) != cols {
+    if cols == 0 || delimiter_cols != cols {
         return None;
     }
     let mut i = 2;
@@ -901,6 +920,7 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
 /// with where an open paragraph actually exists and never mistakes a real block
 /// opener for paragraph text (which would wrongly suppress a valid definition).
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn line_is_paragraph_text(line: &str) -> bool {
     line_is_paragraph_text_with_scan(line, scan_markdown_line(line))
 }
@@ -918,7 +938,7 @@ fn line_is_paragraph_text_with_scan(line: &str, scan: ParserLineScan) -> bool {
         && (!scan.maybe_heading_marker || atx_heading(line).is_none())
         && (!scan.maybe_fence || open_fence(line).is_none())
         && !indented_code_start(line)
-        && (!scan.maybe_blockquote || !line.trim_start().starts_with('>'))
+        && (!scan.maybe_blockquote || !blockquote_marker_start(line))
         && (!scan.maybe_html || !html_block_start(line))
         && (!scan.maybe_list_marker || !list_marker_interrupts_paragraph(line))
 }
@@ -1004,10 +1024,10 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             in_paragraph = false;
             continue;
         }
-        if scan.maybe_blockquote && line.trim_start().starts_with('>') {
+        if scan.maybe_blockquote && blockquote_marker_start(line) {
             let mut inner: Vec<&str> = Vec::new();
             while i < lines.len() {
-                if lines[i].trim_start().starts_with('>') {
+                if blockquote_marker_start(lines[i]) {
                     inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
@@ -1031,7 +1051,6 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         if !in_paragraph
             && i + 1 < lines.len()
             && scan.contains_pipe
-            && is_table_delimiter(lines[i + 1])
             && let Some(used) = table_extent(&lines[i..])
         {
             i += used;
@@ -1134,7 +1153,6 @@ fn parse_blocks_bounded(
 struct BlockStartScan<'a> {
     line: &'a str,
     trimmed: &'a str,
-    trim_start: &'a str,
     indent: usize,
 }
 
@@ -1143,7 +1161,6 @@ impl<'a> BlockStartScan<'a> {
         Self {
             line,
             trimmed,
-            trim_start: line.trim_start(),
             indent: leading_spaces(line),
         }
     }
@@ -1160,27 +1177,25 @@ impl<'a> BlockStartScan<'a> {
     fn first_trimmed(self) -> Option<u8> {
         self.trimmed.as_bytes().first().copied()
     }
-
-    fn first_trim_start(self) -> Option<u8> {
-        self.trim_start.as_bytes().first().copied()
-    }
 }
 
 fn scanned_thematic_break(scan: BlockStartScan<'_>) -> bool {
     scan.indent <= 3
         && matches!(scan.first_trimmed(), Some(b'-' | b'*' | b'_'))
-        && is_thematic_break(scan.line)
+        && thematic_break_trimmed(scan.trimmed)
 }
 
 fn scanned_atx_heading(scan: BlockStartScan<'_>) -> Option<(u8, &str)> {
-    (scan.after_indent_first() == Some(b'#'))
-        .then(|| atx_heading(scan.line))
+    let tail = scan.after_indent()?;
+    (tail.as_bytes().first() == Some(&b'#'))
+        .then(|| atx_heading_after_indent(tail))
         .flatten()
 }
 
 fn scanned_open_fence(scan: BlockStartScan<'_>) -> Option<(char, usize, &str)> {
-    matches!(scan.after_indent_first(), Some(b'`' | b'~'))
-        .then(|| open_fence(scan.line))
+    let tail = scan.after_indent()?;
+    matches!(tail.as_bytes().first(), Some(b'`' | b'~'))
+        .then(|| open_fence_after_indent(tail))
         .flatten()
 }
 
@@ -1189,13 +1204,13 @@ fn scanned_indented_code_start(scan: BlockStartScan<'_>) -> bool {
 }
 
 fn scanned_blockquote_start(scan: BlockStartScan<'_>) -> bool {
-    scan.first_trim_start() == Some(b'>')
+    scan.after_indent_first() == Some(b'>')
 }
 
 fn scanned_html_block_kind(scan: BlockStartScan<'_>) -> Option<HtmlBlockEnd> {
-    (scan.first_trim_start() == Some(b'<'))
-        .then(|| html_block_kind(scan.line))
-        .flatten()
+    scan.after_indent()
+        .filter(|tail| tail.as_bytes().first() == Some(&b'<'))
+        .and_then(html_block_kind_from_block_start)
 }
 
 fn scanned_html_block_start(scan: BlockStartScan<'_>) -> bool {
@@ -1217,7 +1232,7 @@ fn scanned_list_marker_interrupts_paragraph(scan: BlockStartScan<'_>) -> bool {
 
 fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
     (scan.indent <= 3 && matches!(scan.first_trimmed(), Some(b'=' | b'-')))
-        .then(|| setext_underline(scan.line))
+        .then(|| setext_underline_trimmed(scan.trimmed))
         .flatten()
 }
 
@@ -1319,7 +1334,7 @@ fn parse_blocks_with_refs_profiled(
             let started = profiler.checkpoint();
             let mut inner = Vec::new();
             while i < lines.len() {
-                if lines[i].trim_start().starts_with('>') {
+                if blockquote_marker_start(lines[i]) {
                     inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
@@ -1371,9 +1386,12 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::HtmlBlock(html));
             continue;
         }
-        if i + 1 < lines.len() && line.contains('|') && is_table_delimiter(lines[i + 1]) {
+        if i + 1 < lines.len()
+            && line.contains('|')
+            && let Some(align) = validated_table_delimiter_alignments(lines[i + 1])
+        {
             let started = profiler.checkpoint();
-            if let Some((table, used)) = parse_table_profiled(&lines[i..], refs, profiler) {
+            if let Some((table, used)) = parse_table_profiled(&lines[i..], refs, profiler, align) {
                 profiler.record_since(
                     "table_block",
                     used,
@@ -1472,48 +1490,67 @@ fn parse_lines_as_inlines(
         ),
         _ => {
             let started = profiler.checkpoint();
-            let len = inline_lines_byte_len(lines);
-            if let Some(inlines) = plain_multiline_inline_fast_path(lines) {
-                let char_count = if profiler.enabled {
-                    inline_lines_char_len(lines)
-                } else {
-                    0
-                };
+            let scan = scan_multiline_inline_lines(lines);
+            if !scan.needs_full_parse {
+                let (inlines, char_count) =
+                    plain_multiline_inline_fast_path(lines, profiler.enabled);
                 profiler.record_since(
                     "inline_parse",
                     char_count,
-                    len,
+                    scan.byte_len,
                     inlines.len(),
                     INLINE_PARSE_NOTES,
                     started,
                 );
-                return (inlines, len, 0);
+                return (inlines, scan.byte_len, 0);
             }
-            let chars = collect_inline_chars_from_lines(lines, len);
+            let chars = collect_inline_chars_from_lines(lines, scan.byte_len);
             (
-                parse_inlines_chars_with_refs_profiled(chars, len, refs, profiler, started),
-                len,
+                parse_inlines_chars_with_refs_profiled(
+                    chars,
+                    scan.byte_len,
+                    refs,
+                    profiler,
+                    started,
+                ),
+                scan.byte_len,
                 0,
             )
         }
     }
 }
 
-fn inline_lines_byte_len(lines: &[&str]) -> usize {
-    lines.iter().map(|line| line.len()).sum::<usize>() + lines.len().saturating_sub(1)
+struct MultilineInlineScan {
+    byte_len: usize,
+    needs_full_parse: bool,
 }
 
-fn inline_lines_char_len(lines: &[&str]) -> usize {
-    lines.iter().map(|line| line.chars().count()).sum::<usize>() + lines.len().saturating_sub(1)
-}
-
-fn plain_multiline_inline_fast_path(lines: &[&str]) -> Option<Vec<Inline>> {
-    if lines.len() < 2 || lines.iter().any(|line| inline_text_needs_full_parse(line)) {
-        return None;
+fn scan_multiline_inline_lines(lines: &[&str]) -> MultilineInlineScan {
+    let mut byte_len = lines.len().saturating_sub(1);
+    let mut needs_full_parse = false;
+    for line in lines {
+        byte_len += line.len();
+        if !needs_full_parse && inline_text_needs_full_parse(line) {
+            needs_full_parse = true;
+        }
     }
+    MultilineInlineScan {
+        byte_len,
+        needs_full_parse,
+    }
+}
 
+fn plain_multiline_inline_fast_path(lines: &[&str], count_chars: bool) -> (Vec<Inline>, usize) {
     let mut out = Vec::with_capacity(lines.len().saturating_mul(2).saturating_sub(1));
+    let mut char_count = if count_chars {
+        lines.len().saturating_sub(1)
+    } else {
+        0
+    };
     for (idx, line) in lines.iter().enumerate() {
+        if count_chars {
+            char_count += line.chars().count();
+        }
         let is_last = idx + 1 == lines.len();
         let text = if is_last {
             *line
@@ -1529,7 +1566,7 @@ fn plain_multiline_inline_fast_path(lines: &[&str]) -> Option<Vec<Inline>> {
             });
         }
     }
-    Some(out)
+    (out, char_count)
 }
 
 fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char> {
@@ -1544,6 +1581,10 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
+    if let Some(reference) = parse_simple_ascii_reference_definition(line) {
+        return Some(reference);
+    }
+
     if leading_spaces(line) > 3 {
         return None;
     }
@@ -1617,6 +1658,10 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
 }
 
 fn parse_reference_title_line(line: &str) -> Option<String> {
+    if let Some(title) = parse_simple_ascii_reference_title_line(line) {
+        return Some(title);
+    }
+
     if leading_spaces(line) > 3 {
         return None;
     }
@@ -1631,6 +1676,153 @@ fn parse_reference_title_line(line: &str) -> Option<String> {
     (i == chars.len()).then_some(title)
 }
 
+fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkReference)> {
+    if leading_spaces(line) > 3 || !line.is_ascii() {
+        return None;
+    }
+    let t = line.trim_start();
+    let bytes = t.as_bytes();
+    if bytes.first() != Some(&b'[') {
+        return None;
+    }
+
+    let close = bytes.iter().position(|&byte| byte == b']')?;
+    let label = normalize_simple_ascii_reference_label(&t[1..close])?;
+    if bytes.get(close + 1) != Some(&b':') {
+        return None;
+    }
+    let mut i = close + 2;
+    skip_ascii_spaces(bytes, &mut i);
+    if i >= bytes.len() {
+        return None;
+    }
+
+    let dest = if bytes[i] == b'<' {
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != b'>' {
+            i += 1;
+        }
+        if i >= bytes.len() || i == start {
+            return None;
+        }
+        let dest = t[start..i].to_string();
+        i += 1;
+        dest
+    } else {
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+        t[start..i].to_string()
+    };
+
+    skip_ascii_spaces(bytes, &mut i);
+    let title = if i >= bytes.len() {
+        None
+    } else {
+        let close_ch = match bytes[i] {
+            b'"' => b'"',
+            b'\'' => b'\'',
+            b'(' => b')',
+            _ => return None,
+        };
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != close_ch {
+            if bytes[i] == b'\\' {
+                return None;
+            }
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return None;
+        }
+        let title = t[start..i].to_string();
+        i += 1;
+        skip_ascii_spaces(bytes, &mut i);
+        if i != bytes.len() {
+            return None;
+        }
+        Some(title)
+    };
+
+    Some((label, LinkReference { dest, title }))
+}
+
+fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
+    if leading_spaces(line) > 3 || !line.is_ascii() {
+        return None;
+    }
+    let t = line.trim_start();
+    if t.is_empty() {
+        return None;
+    }
+    let bytes = t.as_bytes();
+    let close_ch = match bytes.first().copied()? {
+        b'"' => b'"',
+        b'\'' => b'\'',
+        b'(' => b')',
+        _ => return None,
+    };
+    let mut i = 1usize;
+    let start = i;
+    while i < bytes.len() && bytes[i] != close_ch {
+        if bytes[i] == b'\\' {
+            return None;
+        }
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let title = t[start..i].to_string();
+    i += 1;
+    skip_ascii_spaces(bytes, &mut i);
+    (i == bytes.len()).then_some(title)
+}
+
+fn normalize_simple_ascii_reference_label(label: &str) -> Option<String> {
+    if label.as_bytes().iter().any(|&byte| {
+        matches!(byte, b'[' | b']' | b'\\')
+            || !byte.is_ascii()
+            || (byte.is_ascii_whitespace() && !matches!(byte, b' ' | b'\t'))
+    }) {
+        return None;
+    }
+    let trimmed = label.trim_matches(|ch| matches!(ch, ' ' | '\t'));
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut out = String::with_capacity(trimmed.len());
+    let mut pending_space = false;
+    for byte in trimmed.bytes() {
+        if matches!(byte, b' ' | b'\t') {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        out.push(char::from(byte.to_ascii_lowercase()));
+        pending_space = false;
+    }
+    Some(out)
+}
+
+fn skip_ascii_spaces(bytes: &[u8], i: &mut usize) {
+    while bytes
+        .get(*i)
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        *i += 1;
+    }
+}
+
 // ---- block detectors --------------------------------------------------------
 
 fn atx_heading(line: &str) -> Option<(u8, &str)> {
@@ -1638,7 +1830,10 @@ fn atx_heading(line: &str) -> Option<(u8, &str)> {
     if indent > 3 {
         return None;
     }
-    let t = &line[indent..];
+    atx_heading_after_indent(&line[indent..])
+}
+
+fn atx_heading_after_indent(t: &str) -> Option<(u8, &str)> {
     let hashes = t.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > 6 {
         return None;
@@ -1670,7 +1865,10 @@ fn setext_underline(line: &str) -> Option<u8> {
     if leading_spaces(line) > 3 {
         return None;
     }
-    let t = line.trim();
+    setext_underline_trimmed(line.trim())
+}
+
+fn setext_underline_trimmed(t: &str) -> Option<u8> {
     let first = t.chars().next()?;
     let level = match first {
         '=' => 1,
@@ -1689,7 +1887,10 @@ fn is_thematic_break(line: &str) -> bool {
     if leading_spaces(line) > 3 {
         return false;
     }
-    let t = line.trim();
+    thematic_break_trimmed(line.trim())
+}
+
+fn thematic_break_trimmed(t: &str) -> bool {
     if t.len() < 3 {
         return false;
     }
@@ -1706,19 +1907,24 @@ fn open_fence(line: &str) -> Option<(char, usize, &str)> {
     if indent > 3 {
         return None;
     }
-    let t = &line[indent..];
-    for ch in ['`', '~'] {
-        let n = t.chars().take_while(|&c| c == ch).count();
-        if n >= 3 {
-            let info = &t[n..];
-            // A ``` info string must not itself contain a backtick.
-            if ch == '`' && info.contains('`') {
-                return None;
-            }
-            return Some((ch, n, info));
-        }
+    open_fence_after_indent(&line[indent..])
+}
+
+fn open_fence_after_indent(t: &str) -> Option<(char, usize, &str)> {
+    let marker = match t.as_bytes().first().copied()? {
+        b'`' => b'`',
+        b'~' => b'~',
+        _ => return None,
+    };
+    let n = t.bytes().take_while(|&byte| byte == marker).count();
+    if n < 3 {
+        return None;
     }
-    None
+    let info = &t[n..];
+    if marker == b'`' && info.contains('`') {
+        return None;
+    }
+    Some((marker as char, n, info))
 }
 
 fn is_close_fence(line: &str, ch: char, len: usize) -> bool {
@@ -1775,9 +1981,20 @@ fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
 /// The content of a `>`-quoted line with the marker and one optional following
 /// space removed, borrowed from the input (no allocation).
 fn strip_blockquote_marker(line: &str) -> &str {
-    let t = line.trim_start();
-    let rest = t.strip_prefix('>').unwrap_or(t);
+    let Some(marker) = blockquote_marker_offset(line) else {
+        return line;
+    };
+    let rest = &line[marker + 1..];
     rest.strip_prefix(' ').unwrap_or(rest)
+}
+
+fn blockquote_marker_offset(line: &str) -> Option<usize> {
+    let indent = leading_spaces(line);
+    (indent <= 3 && line.as_bytes().get(indent) == Some(&b'>')).then_some(indent)
+}
+
+fn blockquote_marker_start(line: &str) -> bool {
+    blockquote_marker_offset(line).is_some()
 }
 
 /// True when `line` lazily continues an open paragraph inside a block quote.
@@ -1799,7 +2016,7 @@ fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
             && open_fence(p).is_none()
             && list_marker(p).is_none()
             && !html_block_start(p)
-            && !p.trim_start().starts_with('>')
+            && !blockquote_marker_start(p)
     });
     if !prev_is_open_paragraph {
         return false;
@@ -1830,7 +2047,17 @@ enum HtmlBlockEnd {
 /// line. The previous implementation blank-terminated *every* type, which split
 /// `<pre>`/comment blocks at the first blank line and emitted unterminated tags.
 fn html_block_kind(line: &str) -> Option<HtmlBlockEnd> {
-    let t = line.trim_start();
+    let indent = leading_spaces(line);
+    if indent > 3 {
+        return None;
+    }
+    html_block_kind_from_block_start(&line[indent..])
+}
+
+fn html_block_kind_from_block_start(t: &str) -> Option<HtmlBlockEnd> {
+    if !t.starts_with('<') {
+        return None;
+    }
     // Type 2: comment.
     if t.starts_with("<!--") {
         return Some(HtmlBlockEnd::Marker(&["-->"]));
@@ -2053,10 +2280,13 @@ fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod html_block_classifier_tests {
     use super::{
-        HtmlBlockEnd, contains_ascii_ignore_case, html_block_end, html_block_kind,
-        html_raw_text_end_markers, is_html_block_tag, strip_ascii_prefix_ignore_case,
+        BlockStartScan, HtmlBlockEnd, atx_heading, contains_ascii_ignore_case, html_block_end,
+        html_block_kind, html_raw_text_end_markers, is_html_block_tag, is_thematic_break,
+        open_fence, scanned_atx_heading, scanned_open_fence, scanned_setext_underline,
+        scanned_thematic_break, setext_underline, strip_ascii_prefix_ignore_case,
     };
 
     fn raw_marker(line: &str) -> Option<&'static [&'static str]> {
@@ -2114,6 +2344,45 @@ mod html_block_classifier_tests {
             strip_ascii_prefix_ignore_case("scripture", "script"),
             Some("ure")
         );
+    }
+
+    #[test]
+    fn scanned_block_start_helpers_match_standalone_detectors() {
+        for line in [
+            "# title",
+            "### title ###",
+            "####### not heading",
+            "  ## indented",
+            "    # code",
+            "```rust",
+            "   ~~~ info",
+            "`` bad ` info",
+            "==",
+            "===",
+            "  ---",
+            " - - - ",
+            " * * * ",
+            " _ _ _ ",
+            "    ---",
+            "plain paragraph",
+            "\t``` code",
+            "\t===",
+        ] {
+            let scan = BlockStartScan::new(line, line.trim());
+
+            assert_eq!(scanned_atx_heading(scan), atx_heading(line), "{line:?}");
+            assert_eq!(scanned_open_fence(scan), open_fence(line), "{line:?}");
+            assert_eq!(
+                scanned_setext_underline(scan),
+                setext_underline(line),
+                "{line:?}"
+            );
+            assert_eq!(
+                scanned_thematic_break(scan),
+                is_thematic_break(line),
+                "{line:?}"
+            );
+        }
     }
 }
 
@@ -2223,18 +2492,6 @@ fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
     let mut tight = true;
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].trim().is_empty() {
-            let mut j = i + 1;
-            while j < lines.len() && lines[j].trim().is_empty() {
-                j += 1;
-            }
-            if j < lines.len() && list_marker(lines[j]).is_some_and(|m| m.ordered == ordered) {
-                tight = false;
-                i = j;
-                continue;
-            }
-            break;
-        }
         let Some(m) = list_marker(lines[i]).filter(|m| m.ordered == ordered) else {
             break;
         };
@@ -2391,31 +2648,63 @@ fn split_task_marker(text: &str) -> (Option<bool>, &str) {
 
 // ---- tables -----------------------------------------------------------------
 
-fn is_table_delimiter(line: &str) -> bool {
+fn scan_table_delimiter<F>(line: &str, mut push_align: F) -> Option<usize>
+where
+    F: FnMut(Align),
+{
     let t = line.trim();
-    if !t.contains('-') {
-        return false;
+    if !t.as_bytes().contains(&b'-') {
+        return None;
     }
-    t.split('|')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .all(|cell| {
+    let mut count = 0usize;
+    for cell in table_delimiter_row_inner_from_trimmed(t).split('|') {
+        let cell = cell.trim();
+        if !cell.is_empty() {
             let core = cell.trim_start_matches(':').trim_end_matches(':');
-            !core.is_empty() && core.chars().all(|c| c == '-')
-        })
-        && t.chars().any(|c| c == '|' || c == '-')
+            if core.is_empty() || !core.as_bytes().iter().all(|byte| *byte == b'-') {
+                return None;
+            }
+        }
+        let left = cell.starts_with(':');
+        let right = cell.ends_with(':');
+        push_align(match (left, right) {
+            (true, true) => Align::Center,
+            (true, false) => Align::Left,
+            (false, true) => Align::Right,
+            (false, false) => Align::None,
+        });
+        count += 1;
+    }
+    Some(count)
+}
+
+fn validated_table_delimiter_cell_count(line: &str) -> Option<usize> {
+    scan_table_delimiter(line, |_| {})
+}
+
+fn validated_table_delimiter_alignments(line: &str) -> Option<Vec<Align>> {
+    let mut align = Vec::new();
+    scan_table_delimiter(line, |cell_align| align.push(cell_align))?;
+    Some(align)
 }
 
 fn split_table_row(line: &str) -> Vec<&str> {
+    let mut cells = Vec::new();
+    split_table_row_into(line, &mut cells);
+    cells
+}
+
+fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
+    cells.clear();
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
-        return t.split('|').map(str::trim).collect();
+        cells.extend(t.split('|').map(str::trim));
+        return;
     }
     // Split on unescaped `|` outside inline code spans.
     let bytes = t.as_bytes();
-    let mut cells = Vec::new();
     let mut cell_start = 0usize;
     let mut code_ticks = 0usize;
     let mut prev_backslash = false;
@@ -2447,19 +2736,27 @@ fn split_table_row(line: &str) -> Vec<&str> {
         i += 1;
     }
     cells.push(t[cell_start..].trim());
-    cells
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn table_delimiter_row_inner(line: &str) -> &str {
-    let t = line.trim();
+    table_delimiter_row_inner_from_trimmed(line.trim())
+}
+
+fn table_delimiter_row_inner_from_trimmed(t: &str) -> &str {
     let t = t.strip_prefix('|').unwrap_or(t);
     t.strip_suffix('|').unwrap_or(t)
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn table_delimiter_cell_count(line: &str) -> usize {
     table_delimiter_row_inner(line).split('|').count()
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn split_table_delimiter_alignments(line: &str) -> Vec<Align> {
     table_delimiter_row_inner(line)
         .split('|')
@@ -2488,9 +2785,10 @@ fn parse_table_profiled(
     lines: &[&str],
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
+    align: Vec<Align>,
 ) -> Option<(Table, usize)> {
-    let header = split_table_row(lines[0]);
-    let align = split_table_delimiter_alignments(lines[1]);
+    let mut header = Vec::new();
+    split_table_row_into(lines[0], &mut header);
     let cols = header.len();
     if cols == 0 || align.len() != cols {
         return None;
@@ -2500,14 +2798,16 @@ fn parse_table_profiled(
         .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
         .collect();
     let mut rows = Vec::new();
+    let mut row_cells = Vec::with_capacity(cols);
     let mut i = 2;
     while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
-        let mut cells: Vec<Vec<Inline>> = split_table_row(lines[i])
+        split_table_row_into(lines[i], &mut row_cells);
+        let mut cells: Vec<Vec<Inline>> = row_cells
             .iter()
+            .take(cols)
             .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
             .collect();
         cells.resize_with(cols, Vec::new);
-        cells.truncate(cols);
         rows.push(cells);
         i += 1;
     }
@@ -4127,6 +4427,7 @@ fn is_ascii_punct(c: char) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod inline_autolink_candidate_tests {
     use super::{inline_char_maybe_bare_email_start, inline_chars_maybe_bare_url_start};
 
@@ -4153,6 +4454,7 @@ mod inline_autolink_candidate_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod emphasis_dos_tests {
     use super::{MAX_INLINE_NESTING_DEPTH, parse_inlines};
     use crate::ast::Inline;
@@ -4234,6 +4536,7 @@ mod emphasis_dos_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod char_ref_dos_tests {
     use super::{MAX_CHAR_REF_BODY_LEN, parse_character_reference, parse_inlines};
@@ -4296,12 +4599,16 @@ mod char_ref_dos_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
     use super::{
-        collect_link_references, line_is_paragraph_text, parse_document,
+        collect_link_references, contains_reference_colon, line_is_paragraph_text, parse_document,
+        parse_simple_ascii_reference_definition, parse_simple_ascii_reference_title_line,
+        push_consumed_reference_range, reference_collector_needs_block_scan_after_indent,
         reference_collector_plain_line_fast_path,
-        reference_collector_plain_nonblank_line_fast_path, table_ends_at, table_extent,
+        reference_collector_plain_nonblank_line_fast_path, source_lines, span_for_lines,
+        table_body_row_starts_at, table_ends_at, table_extent,
     };
     use crate::{
         HtmlOptions,
@@ -4325,6 +4632,45 @@ mod refdef_paragraph_tests {
         assert!(
             !out.contains("href=\"/url\""),
             "a ref-def that interrupts a paragraph must not define a link"
+        );
+    }
+
+    #[test]
+    fn simple_ascii_reference_fast_path_covers_common_shape_and_defers_edges() {
+        let (label, reference) =
+            parse_simple_ascii_reference_definition(" [ Mixed\tCASE Label ]: <u v> \"Title\"")
+                .expect("simple ASCII reference definition should fast-path");
+        assert_eq!(label, "mixed case label");
+        assert_eq!(reference.dest, "u v");
+        assert_eq!(reference.title.as_deref(), Some("Title"));
+
+        let (label, reference) =
+            parse_simple_ascii_reference_definition("[home]: https://example.com 'Home'")
+                .expect("simple bare destination should fast-path");
+        assert_eq!(label, "home");
+        assert_eq!(reference.dest, "https://example.com");
+        assert_eq!(reference.title.as_deref(), Some("Home"));
+
+        assert_eq!(
+            parse_simple_ascii_reference_title_line("  (Two word title)").as_deref(),
+            Some("Two word title")
+        );
+
+        for deferred in [
+            "[a[b]c]: /u",
+            "[a\\]b]: /u",
+            "[é]: /u",
+            "[a]: /u \"escaped \\\" title\"",
+            "[a]: /u trailing",
+        ] {
+            assert!(
+                parse_simple_ascii_reference_definition(deferred).is_none(),
+                "complex or malformed shape should use the general parser: {deferred}"
+            );
+        }
+        assert!(
+            parse_simple_ascii_reference_title_line("\"escaped \\\" title\"").is_none(),
+            "escaped titles stay on the general title parser"
         );
     }
 
@@ -4356,8 +4702,8 @@ mod refdef_paragraph_tests {
     fn collect_removes_only_boundary_definitions() {
         // Leading definition consumed; the one after paragraph text is left in
         // the stream (it is a lazy continuation, not a definition).
-        let (kept, refs, kept_reference_candidate) =
-            collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+            collect_link_references(vec!["[a]: /x", "text", "[b]: /y"]);
         assert!(refs.contains_key("a"), "leading definition collected");
         assert!(
             !refs.contains_key("b"),
@@ -4372,12 +4718,16 @@ mod refdef_paragraph_tests {
             vec!["text", "[b]: /y"],
             "only the leading def line removed"
         );
+        assert!(
+            rebuilt_lines,
+            "consumed definition lines require a rebuilt line vector"
+        );
     }
 
     #[test]
     fn collect_reports_no_candidate_when_all_definitions_are_removed() {
-        let (kept, refs, kept_reference_candidate) =
-            collect_link_references(&["[a]: /x", "[b]: /y", "", "text"]);
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+            collect_link_references(vec!["[a]: /x", "[b]: /y", "", "text"]);
         assert!(
             refs.contains_key("a"),
             "first boundary definition collected"
@@ -4391,34 +4741,78 @@ mod refdef_paragraph_tests {
             !kept_reference_candidate,
             "consumed definitions must not force the nested-reference walk"
         );
+        assert!(
+            rebuilt_lines,
+            "consumed definition lines require a rebuilt line vector"
+        );
     }
 
     #[test]
     fn collect_candidate_tracking_ignores_plain_inline_colons_but_keeps_container_refs() {
-        let (kept, refs, kept_reference_candidate) =
-            collect_link_references(&["See [text]: not a boundary definition"]);
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+            collect_link_references(vec!["See [text]: not a boundary definition"]);
         assert!(refs.is_empty());
         assert_eq!(kept, vec!["See [text]: not a boundary definition"]);
         assert!(
             !kept_reference_candidate,
             "plain inline-looking text must not force the nested-reference walk"
         );
+        assert!(
+            !rebuilt_lines,
+            "no consumed lines means the original line vector can be reused"
+        );
 
-        let (kept, refs, kept_reference_candidate) = collect_link_references(&["> [a]: /x"]);
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+            collect_link_references(vec!["> [a]: /x"]);
         assert!(refs.is_empty(), "top-level quote body is collected later");
         assert_eq!(kept, vec!["> [a]: /x"]);
         assert!(
             kept_reference_candidate,
             "blockquote definitions must still trigger nested reference collection"
         );
+        assert!(
+            !rebuilt_lines,
+            "unconsumed container references should keep the original vector"
+        );
 
-        let (kept, refs, kept_reference_candidate) =
-            collect_link_references(&["[a]: /x", "text", "[b]: /y"]);
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+            collect_link_references(vec!["[a]: /x", "text", "[b]: /y"]);
         assert!(refs.contains_key("a"));
         assert_eq!(kept, vec!["text", "[b]: /y"]);
         assert!(
             kept_reference_candidate,
             "unconsumed reference-shaped continuations must stay conservative"
+        );
+        assert!(
+            rebuilt_lines,
+            "the leading consumed definition rebuilds lines"
+        );
+    }
+
+    #[test]
+    fn collect_reuses_original_line_vector_when_no_definitions_are_consumed() {
+        let mut lines = Vec::with_capacity(8);
+        lines.extend(["intro paragraph", "[ghost]: /kept as text"]);
+        let original_ptr = lines.as_ptr();
+        let original_capacity = lines.capacity();
+
+        let (kept, refs, kept_reference_candidate, rebuilt_lines) = collect_link_references(lines);
+
+        assert!(refs.is_empty(), "lazy continuation must not define a link");
+        assert!(
+            kept_reference_candidate,
+            "the unconsumed reference-shaped line still needs nested scrutiny"
+        );
+        assert!(
+            !rebuilt_lines,
+            "no consumed definitions means no replacement line vector is allocated"
+        );
+        assert_eq!(kept, vec!["intro paragraph", "[ghost]: /kept as text"]);
+        assert_eq!(kept.as_ptr(), original_ptr, "original Vec buffer reused");
+        assert_eq!(
+            kept.capacity(),
+            original_capacity,
+            "original Vec capacity preserved"
         );
     }
 
@@ -4493,6 +4887,56 @@ mod refdef_paragraph_tests {
                 "nonblank fast path must preserve wrapper classification for {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn private_reference_and_table_helpers_cover_boundary_edges() {
+        assert!(contains_reference_colon(b"[a]: /url"));
+        assert!(!contains_reference_colon(b"[a] : /url"));
+
+        assert!(!reference_collector_needs_block_scan_after_indent("   ", 3));
+        assert!(reference_collector_needs_block_scan_after_indent(
+            "1. item", 0
+        ));
+        assert!(!reference_collector_needs_block_scan_after_indent(
+            "1234567890. item",
+            0
+        ));
+
+        let lines = source_lines("alpha\nbeta");
+        assert_eq!(span_for_lines(&[], 0, 1).len(), 0);
+        assert_eq!(span_for_lines(&lines, 0, 0), span_for_lines(&lines, 0, 1));
+        assert_eq!(span_for_lines(&lines, 1, 2).len(), "beta".len());
+
+        let mut consumed = Vec::new();
+        push_consumed_reference_range(&mut consumed, 2..2);
+        assert!(consumed.is_empty());
+        push_consumed_reference_range(&mut consumed, 1..2);
+        push_consumed_reference_range(&mut consumed, 2..4);
+        push_consumed_reference_range(&mut consumed, 6..7);
+        assert_eq!(consumed, vec![1..4, 6..7]);
+
+        assert!(!table_body_row_starts_at(&["| h |"], 1));
+        assert!(!table_body_row_starts_at(&["| h |", ""], 1));
+        assert!(!table_body_row_starts_at(&["| h |", "plain"], 1));
+        assert!(table_body_row_starts_at(&["| h |", "| c |"], 1));
+
+        assert!(table_extent(&["| h |"]).is_none());
+        assert!(table_extent(&["plain", "| --- |"]).is_none());
+        assert!(table_extent(&["| h |", "not delimiter"]).is_none());
+        assert!(table_extent(&["| h | h2 |", "| --- |"]).is_none());
+        assert_eq!(
+            table_extent(&["| h |", "| --- |", "| c |", "after"]),
+            Some(3)
+        );
+        assert!(table_ends_at(&["| h |", "| --- |", "| c |"], 3));
+        assert!(!table_ends_at(&["| h |"], 2));
+
+        assert!(line_is_paragraph_text(" indented paragraph"));
+        assert!(!line_is_paragraph_text("    indented code"));
+        assert!(!line_is_paragraph_text("<div>"));
+        assert!(!line_is_paragraph_text("1. list item"));
+        assert!(line_is_paragraph_text("2. lazy ordered marker"));
     }
 
     #[test]
@@ -4946,6 +5390,127 @@ mod refdef_paragraph_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod line_split_tests {
+    use super::{logical_line_capacity_hint, split_logical_lines};
+
+    #[test]
+    fn split_logical_lines_matches_std_lines_for_edge_shapes() {
+        for src in [
+            "",
+            "\n",
+            "alpha",
+            "alpha\n",
+            "alpha\nbeta",
+            "alpha\r\nbeta\r\n",
+            "\u{feff}alpha\nbeta",
+            "alpha\n\nbeta\r\ngamma",
+        ] {
+            assert_eq!(split_logical_lines(src), src.lines().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn logical_line_capacity_hint_is_bounded_and_nonzero_for_nonempty_inputs() {
+        assert_eq!(logical_line_capacity_hint(0), 0);
+        assert_eq!(logical_line_capacity_hint(1), 1);
+        assert_eq!(logical_line_capacity_hint(24), 2);
+        assert_eq!(logical_line_capacity_hint(usize::MAX), 65_536);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod inline_helper_branch_tests {
+    use super::{
+        INLINE_PARSE_CACHE_MAX_ENTRIES, INLINE_PARSE_CACHE_MAX_KEY_BYTES,
+        INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache,
+        inline_cache_size_allows, inline_http_scheme_before_colon, is_email_autolink,
+        is_intraword_underscore_run, parse_angle_link_destination, parse_bare_url_autolink,
+        reference_collector_ordered_marker_candidate,
+    };
+    use crate::ast::Inline;
+
+    #[test]
+    fn private_inline_helpers_cover_rejection_and_decoding_edges() {
+        assert!(reference_collector_ordered_marker_candidate(
+            b"123456789. item"
+        ));
+        assert!(!reference_collector_ordered_marker_candidate(b""));
+        assert!(!reference_collector_ordered_marker_candidate(
+            b"1234567890. item"
+        ));
+
+        assert!(inline_http_scheme_before_colon(b"http://example", 4));
+        assert!(inline_http_scheme_before_colon(b"https://example", 5));
+        assert!(!inline_http_scheme_before_colon(b"ftp://example", 3));
+
+        let chars = "a_b".chars().collect::<Vec<_>>();
+        assert!(is_intraword_underscore_run(&chars, 1, 1));
+        assert!(!is_intraword_underscore_run(&chars, 0, 1));
+
+        assert!(is_email_autolink("a@b.com"));
+        assert!(!is_email_autolink("@b.com"));
+        assert!(!is_email_autolink("a@"));
+
+        let mut pos = 0usize;
+        let decoded = parse_angle_link_destination(
+            &"<http://e.test?a=1&amp;b=2>".chars().collect::<Vec<_>>(),
+            &mut pos,
+        )
+        .expect("angle destination");
+        assert_eq!(decoded, "http://e.test?a=1&b=2");
+
+        let url_chars = "see http://example.test<x".chars().collect::<Vec<_>>();
+        let found = parse_bare_url_autolink(&url_chars, 4).expect("bare url before angle");
+        assert_eq!(found.0, "http://example.test");
+        assert_eq!(found.2, "http://example.test".len() + 4);
+    }
+
+    #[test]
+    fn inline_parse_cache_bounds_and_duplicate_inserts_are_explicit() {
+        assert!(!inline_cache_size_allows(""));
+        assert!(!inline_cache_size_allows(
+            &"x".repeat(INLINE_PARSE_CACHE_MIN_BYTES - 1)
+        ));
+        assert!(inline_cache_size_allows(
+            &"x".repeat(INLINE_PARSE_CACHE_MIN_BYTES)
+        ));
+        assert!(inline_cache_size_allows(
+            &"x".repeat(INLINE_PARSE_CACHE_MAX_KEY_BYTES)
+        ));
+        assert!(!inline_cache_size_allows(
+            &"x".repeat(INLINE_PARSE_CACHE_MAX_KEY_BYTES + 1)
+        ));
+
+        let mut cache = InlineParseCache::default();
+        let key = "0123456789abcdef";
+        cache.insert(key, &[Inline::Text("first".to_string())]);
+        cache.insert(key, &[Inline::Text("second".to_string())]);
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(
+            cache.get(key),
+            Some(vec![Inline::Text("first".to_string())])
+        );
+
+        cache.total_key_bytes = INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES - 1;
+        cache.insert("another-sixteen", &[Inline::Text("ignored".to_string())]);
+        assert_eq!(cache.entries.len(), 1);
+
+        let mut full = InlineParseCache::default();
+        for idx in 0..INLINE_PARSE_CACHE_MAX_ENTRIES {
+            let key = format!("cache-key-{idx:04}");
+            full.insert(&key, &[Inline::Text(key.clone())]);
+        }
+        assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
+        full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())]);
+        assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod unicode_flanking_tests {
     use crate::{HtmlOptions, render_html};
@@ -4972,6 +5537,7 @@ mod unicode_flanking_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fenced_indent_tests {
     use super::strip_fence_indent;
@@ -5008,6 +5574,7 @@ mod fenced_indent_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod bracket_tests {
     use super::{compute_bracket_pairs, normalize_reference_label_chars};
     use crate::{HtmlOptions, render_html};
@@ -5131,8 +5698,13 @@ mod bracket_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod table_row_split_tests {
-    use super::{split_table_delimiter_alignments, split_table_row, table_delimiter_cell_count};
+    use super::{
+        split_table_delimiter_alignments, split_table_row, split_table_row_into,
+        table_delimiter_cell_count, validated_table_delimiter_alignments,
+        validated_table_delimiter_cell_count,
+    };
     use crate::ast::Align;
 
     #[test]
@@ -5155,6 +5727,23 @@ mod table_row_split_tests {
             split_table_row(r"alpha | a \| b | c"),
             vec!["alpha", r"a \| b", "c"]
         );
+    }
+
+    #[test]
+    fn reusable_table_row_splitter_matches_allocating_helper_and_clears_scratch() {
+        let mut scratch = vec!["stale"];
+        for line in [
+            "| alpha | beta || delta |",
+            "alpha | `a|b` | c",
+            r"alpha | a \| b | c",
+            "||",
+        ] {
+            split_table_row_into(line, &mut scratch);
+            assert_eq!(scratch, split_table_row(line), "row shape drifted: {line}");
+        }
+
+        split_table_row_into("left | right", &mut scratch);
+        assert_eq!(scratch, vec!["left", "right"]);
     }
 
     #[test]
@@ -5187,6 +5776,45 @@ mod table_row_split_tests {
             assert_eq!(
                 split_table_delimiter_alignments(line),
                 align_from_splitter(line)
+            );
+        }
+    }
+
+    #[test]
+    fn validated_delimiter_alignments_preserve_legacy_shape_and_rejections() {
+        for line in [
+            "| --- | :--- | ---: | :---: |",
+            "---|:---:|---:",
+            "|---||---|",
+            "| ::---:: |",
+        ] {
+            let expected_align = split_table_delimiter_alignments(line);
+            assert_eq!(
+                validated_table_delimiter_alignments(line),
+                Some(expected_align),
+                "valid delimiter shape drifted: {line}"
+            );
+            assert_eq!(
+                validated_table_delimiter_cell_count(line),
+                Some(table_delimiter_cell_count(line)),
+                "valid delimiter count drifted: {line}"
+            );
+        }
+
+        for line in [
+            "| : |",
+            "| - | : |",
+            "| --- | :-x |",
+            "alpha | beta",
+            "| --- | ---+ |",
+        ] {
+            assert!(
+                validated_table_delimiter_alignments(line).is_none(),
+                "invalid delimiter was accepted: {line}"
+            );
+            assert!(
+                validated_table_delimiter_cell_count(line).is_none(),
+                "invalid delimiter count was accepted: {line}"
             );
         }
     }

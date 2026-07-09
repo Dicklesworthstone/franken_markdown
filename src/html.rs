@@ -5,11 +5,11 @@
 //! blockquotes, and code blocks ready for syntax highlighting.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
-use crate::highlight::{Span, highlight_into};
+use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 use crate::{FontAssets, HtmlOptions};
@@ -88,7 +88,7 @@ fn first_heading_text(doc: &Document) -> Option<String> {
 struct RenderState<'a> {
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
-    heading_id_suffixes: BTreeMap<String, usize>,
+    heading_id_suffixes: HashMap<String, usize>,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
     /// Bounded per-render cache for repeated non-consecutive code blocks.
@@ -151,7 +151,10 @@ impl<'a> RenderState<'a> {
             return;
         }
 
-        highlight_into(lang, code, &mut self.highlight_spans);
+        if !highlight_supported_into(lang, code, &mut self.highlight_spans) {
+            push_escaped_text(code, out);
+            return;
+        }
         emit_highlighted_spans(code, out, &self.highlight_spans);
         self.remember_highlight(lang, code);
     }
@@ -214,7 +217,7 @@ fn render_block<'a>(
             out.push_str("<pre><code");
             if let Some(l) = lang.as_deref() {
                 out.push_str(" class=\"language-");
-                out.push_str(&escape_attr(l));
+                push_escaped_attr(l, out);
                 out.push('"');
             }
             out.push('>');
@@ -368,11 +371,11 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
             } => {
                 if let Some(href) = safe_url(dest, UrlContext::Link) {
                     out.push_str("<a href=\"");
-                    out.push_str(&escape_attr(href));
+                    push_escaped_attr(href, out);
                     out.push('"');
                     if let Some(title) = title.as_deref() {
                         out.push_str(" title=\"");
-                        out.push_str(&escape_attr(title));
+                        push_escaped_attr(title, out);
                         out.push('"');
                     }
                     out.push('>');
@@ -388,14 +391,14 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                     if opts.image_assets.is_empty()
                         || !push_html_image_asset_data_uri(src, opts, out)
                     {
-                        out.push_str(&escape_attr(src));
+                        push_escaped_attr(src, out);
                     }
                     out.push_str("\" alt=\"");
-                    out.push_str(&escape_attr(alt));
+                    push_escaped_attr(alt, out);
                     out.push('"');
                     if let Some(title) = title.as_deref() {
                         out.push_str(" title=\"");
-                        out.push_str(&escape_attr(title));
+                        push_escaped_attr(title, out);
                         out.push('"');
                     }
                     out.push('>');
@@ -611,7 +614,7 @@ fn css_import_statement_end(css: &str, import_start: usize) -> Option<usize> {
         }
     }
 
-    None
+    (quote.is_none() && paren_depth == 0).then_some(bytes.len())
 }
 
 fn css_import_at_rule_boundary(css: &str, import_start: usize) -> bool {
@@ -727,6 +730,7 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn slug(text: &str) -> String {
     let mut s = String::new();
     let mut pending_dash = false;
@@ -826,6 +830,8 @@ fn escape_text(s: &str) -> Cow<'_, str> {
     Cow::Owned(o)
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn escape_attr(s: &str) -> Cow<'_, str> {
     // The attribute escape set (`& < > "`) is exactly the scanner's
     // `find_html_escape` set, so bulk-copy clean runs and escape each special.
@@ -835,21 +841,26 @@ fn escape_attr(s: &str) -> Cow<'_, str> {
         return Cow::Borrowed(s);
     }
     let mut o = String::with_capacity(s.len());
+    push_escaped_attr(s, &mut o);
+    Cow::Owned(o)
+}
+
+fn push_escaped_attr(s: &str, out: &mut String) {
+    let bytes = s.as_bytes();
     let mut start = 0;
     while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {
         let pos = start + rel;
-        o.push_str(&s[start..pos]);
+        out.push_str(&s[start..pos]);
         match bytes[pos] {
-            b'&' => o.push_str("&amp;"),
-            b'<' => o.push_str("&lt;"),
-            b'>' => o.push_str("&gt;"),
-            b'"' => o.push_str("&quot;"),
+            b'&' => out.push_str("&amp;"),
+            b'<' => out.push_str("&lt;"),
+            b'>' => out.push_str("&gt;"),
+            b'"' => out.push_str("&quot;"),
             _ => {}
         }
         start = pos + 1;
     }
-    o.push_str(&s[start..]);
-    Cow::Owned(o)
+    out.push_str(&s[start..]);
 }
 
 #[derive(Clone, Copy)]
@@ -1048,6 +1059,7 @@ fn push_dark_mode_css(css: &mut String, colors: &ThemeColors) {
 const CSS_TOKEN_FALLBACK: &str = "initial";
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn css_token(s: &str) -> String {
     let mut out = String::with_capacity(css_token_capacity(s));
     push_css_token(&mut out, s);
@@ -1469,6 +1481,7 @@ fn font_face_css_capacity(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(base64_encoded_len(bytes.len()));
     push_base64_encoded(&mut out, bytes);
@@ -1695,6 +1708,7 @@ strong { font-weight: 680; }
 "#;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeSet;
@@ -1706,8 +1720,8 @@ mod tests {
         FontCharSet, RenderState, ascii_char_mask, ascii_char_masks, base64_encode, css_num,
         css_token, css_without_remote_imports, escape_attr, escape_text,
         find_ascii_case_insensitive, html_image_asset_mime, initial_body_capacity,
-        inlines_to_plain, push_html_image_asset_data_uri, push_u64, render, sanitize_custom_css,
-        slug, slug_inlines, svg_without_remote_style_imports,
+        inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri, push_u64, render,
+        sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
     };
 
     #[test]
@@ -1760,6 +1774,38 @@ mod tests {
                 .highlight_cache
                 .iter()
                 .any(|entry| entry.lang == "python" && entry.code == python)
+        );
+    }
+
+    #[test]
+    fn unknown_code_blocks_emit_plain_text_without_cache_entry() {
+        let mut state = RenderState::default();
+        let rust = "fn main() {}\n";
+        let unknown = "1 < 2 && 3\n";
+
+        let mut rust_out = String::new();
+        state.highlight_code("rust", rust, &mut rust_out);
+        assert_eq!(state.highlight_cache.len(), 1);
+        assert!(!state.highlight_spans.is_empty());
+
+        let mut unknown_out = String::new();
+        state.highlight_code("not-a-language", unknown, &mut unknown_out);
+
+        assert_eq!(unknown_out, "1 &lt; 2 &amp;&amp; 3\n");
+        assert_eq!(
+            state.highlight_cache.len(),
+            1,
+            "unsupported languages must not evict supported highlight entries"
+        );
+        assert!(
+            state
+                .highlight_cache
+                .iter()
+                .any(|entry| entry.lang == "rust" && entry.code == rust)
+        );
+        assert!(
+            state.highlight_spans.is_empty(),
+            "unsupported languages should leave no stale reusable spans"
         );
     }
 
@@ -1913,6 +1959,36 @@ mod tests {
     }
 
     #[test]
+    fn svg_asset_data_uri_strips_remote_import_at_style_eof_without_semicolon() {
+        let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>@import url('https://fonts.example.test/fmd.css')</style>
+<style>.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let clean = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style></style>
+<style>.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new("diagram.svg", dirty.as_slice())],
+            ..HtmlOptions::default()
+        };
+        let mut out = String::new();
+
+        assert!(push_html_image_asset_data_uri(
+            "diagram.svg",
+            &opts,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            format!(
+                "data:image/svg+xml;base64,{}",
+                base64_encode(clean.as_slice())
+            )
+        );
+    }
+
+    #[test]
     fn checked_in_showcase_svg_drops_google_fonts_import_without_residue() {
         let clean =
             svg_without_remote_style_imports(include_bytes!("../examples/showcase-mermaid.svg"));
@@ -1976,9 +2052,12 @@ mod tests {
 
         assert_eq!(escape_text("a < b & c").as_ref(), "a &lt; b &amp; c");
         assert!(matches!(escape_text("a < b"), Cow::Owned(_)));
+        let mut attr = String::from("prefix:");
+        push_escaped_attr("say \"hi\" & go", &mut attr);
+        assert_eq!(attr, "prefix:say &quot;hi&quot; &amp; go");
         assert_eq!(
             escape_attr("say \"hi\" & go").as_ref(),
-            "say &quot;hi&quot; &amp; go"
+            &attr["prefix:".len()..]
         );
         assert!(matches!(escape_attr("say \"hi\""), Cow::Owned(_)));
     }
@@ -2168,8 +2247,13 @@ mod tests {
             css_without_remote_imports("@import url(http://x;y);tail").as_deref(),
             Some("tail")
         );
-        // An unterminated @import (no ';' to EOF) is left untouched.
-        assert_eq!(css_without_remote_imports("@import url(http://x)"), None);
+        // Style-block EOF is a valid at-rule boundary, even without ';'.
+        assert_eq!(
+            css_without_remote_imports("@import url(http://x)").as_deref(),
+            Some("")
+        );
+        // A structurally incomplete url(...) is still left untouched.
+        assert_eq!(css_without_remote_imports("@import url(http://x"), None);
         // A trailing backslash inside a quoted URL cannot escape past EOF.
         assert_eq!(css_without_remote_imports("@import \"http://x\\"), None);
         // `*X` (not `*/`) before @import is no comment end; `*/` with no

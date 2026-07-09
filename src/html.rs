@@ -94,6 +94,9 @@ struct RenderState<'a> {
     /// Bounded per-render cache for repeated non-consecutive code blocks.
     highlight_cache: Vec<HighlightCacheEntry<'a>>,
     highlight_cache_next: usize,
+    /// Bounded per-render cache for repeated link/image destinations.
+    url_cache: Vec<UrlCacheEntry<'a>>,
+    url_cache_next: usize,
 }
 
 struct HighlightCacheEntry<'a> {
@@ -102,7 +105,14 @@ struct HighlightCacheEntry<'a> {
     spans: Vec<Span>,
 }
 
+struct UrlCacheEntry<'a> {
+    context: UrlContext,
+    raw_url: &'a str,
+    safe_url: Option<&'a str>,
+}
+
 const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
+const URL_CACHE_MAX_ENTRIES: usize = 32;
 
 impl<'a> RenderState<'a> {
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
@@ -173,6 +183,30 @@ impl<'a> RenderState<'a> {
         self.highlight_cache[self.highlight_cache_next] = entry;
         self.highlight_cache_next = (self.highlight_cache_next + 1) % HIGHLIGHT_CACHE_MAX_ENTRIES;
     }
+
+    fn safe_url_cached(&mut self, url: &'a str, context: UrlContext) -> Option<&'a str> {
+        if let Some(entry) = self
+            .url_cache
+            .iter()
+            .find(|entry| entry.context == context && entry.raw_url == url)
+        {
+            return entry.safe_url;
+        }
+
+        let safe = safe_url(url, context);
+        let entry = UrlCacheEntry {
+            context,
+            raw_url: url,
+            safe_url: safe,
+        };
+        if self.url_cache.len() < URL_CACHE_MAX_ENTRIES {
+            self.url_cache.push(entry);
+        } else {
+            self.url_cache[self.url_cache_next] = entry;
+            self.url_cache_next = (self.url_cache_next + 1) % URL_CACHE_MAX_ENTRIES;
+        }
+        safe
+    }
 }
 
 fn render_blocks<'a>(
@@ -203,14 +237,14 @@ fn render_block<'a>(
             out.push_str(" id=\"");
             state.push_heading_id_from_inlines(inlines, out);
             out.push_str("\">");
-            render_inlines(inlines, out, opts);
+            render_inlines(inlines, out, opts, state);
             out.push_str("</h");
             push_u64(out, u64::from(*level));
             out.push_str(">\n");
         }
         Block::Paragraph(inlines) => {
             out.push_str("<p>");
-            render_inlines(inlines, out, opts);
+            render_inlines(inlines, out, opts, state);
             out.push_str("</p>\n");
         }
         Block::CodeBlock { lang, code } => {
@@ -235,7 +269,7 @@ fn render_block<'a>(
             out.push_str("</blockquote>\n");
         }
         Block::List(list) => render_list(list, out, opts, state),
-        Block::Table(table) => render_table(table, out, opts),
+        Block::Table(table) => render_table(table, out, opts, state),
         Block::ThematicBreak => out.push_str("<hr>\n"),
         Block::HtmlBlock(html) => {
             if opts.allow_raw_html {
@@ -287,7 +321,7 @@ fn render_list<'a>(
         for (idx, block) in item.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph(inlines) if list.tight => {
-                    render_inlines(inlines, out, opts);
+                    render_inlines(inlines, out, opts, state);
                     if idx + 1 < item.blocks.len() {
                         out.push('\n');
                     }
@@ -302,29 +336,35 @@ fn render_list<'a>(
     out.push_str(">\n");
 }
 
-fn render_table(table: &crate::ast::Table, out: &mut String, opts: &HtmlOptions) {
+fn render_table<'a>(
+    table: &'a crate::ast::Table,
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     out.push_str(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
     );
     out.push_str("<table>\n<thead>\n<tr>");
-    render_table_cells(&table.head, &table.align, "<th", "</th>", out, opts);
+    render_table_cells(&table.head, &table.align, "<th", "</th>", out, opts, state);
     out.push_str("</tr>\n</thead>\n<tbody>\n");
     for row in &table.rows {
         out.push_str("<tr>");
-        render_table_cells(row, &table.align, "<td", "</td>", out, opts);
+        render_table_cells(row, &table.align, "<td", "</td>", out, opts, state);
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody>\n</table>\n");
     out.push_str("</div>\n");
 }
 
-fn render_table_cells(
-    cells: &[Vec<Inline>],
+fn render_table_cells<'a>(
+    cells: &'a [Vec<Inline>],
     align: &[Align],
     open: &str,
     close: &str,
     out: &mut String,
     opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
 ) {
     let aligned_len = cells.len().min(align.len());
     let (aligned_cells, unaligned_cells) = cells.split_at(aligned_len);
@@ -332,13 +372,13 @@ fn render_table_cells(
         out.push_str(open);
         out.push_str(align_attr(*align));
         out.push('>');
-        render_inlines(cell, out, opts);
+        render_inlines(cell, out, opts, state);
         out.push_str(close);
     }
     for cell in unaligned_cells {
         out.push_str(open);
         out.push('>');
-        render_inlines(cell, out, opts);
+        render_inlines(cell, out, opts, state);
         out.push_str(close);
     }
 }
@@ -352,13 +392,18 @@ fn align_attr(a: Align) -> &'static str {
     }
 }
 
-fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
+fn render_inlines<'a>(
+    inlines: &'a [Inline],
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     for inl in inlines {
         match inl {
             Inline::Text(t) => push_escaped_text(t, out),
-            Inline::Emphasis(c) => wrap(out, "em", c, opts),
-            Inline::Strong(c) => wrap(out, "strong", c, opts),
-            Inline::Strikethrough(c) => wrap(out, "del", c, opts),
+            Inline::Emphasis(c) => wrap(out, "em", c, opts, state),
+            Inline::Strong(c) => wrap(out, "strong", c, opts, state),
+            Inline::Strikethrough(c) => wrap(out, "del", c, opts, state),
             Inline::Code(t) => {
                 out.push_str("<code>");
                 push_escaped_text(t, out);
@@ -369,7 +414,7 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                 title,
                 content,
             } => {
-                if let Some(href) = safe_url(dest, UrlContext::Link) {
+                if let Some(href) = state.safe_url_cached(dest, UrlContext::Link) {
                     out.push_str("<a href=\"");
                     push_escaped_attr(href, out);
                     out.push('"');
@@ -379,14 +424,14 @@ fn render_inlines(inlines: &[Inline], out: &mut String, opts: &HtmlOptions) {
                         out.push('"');
                     }
                     out.push('>');
-                    render_inlines(content, out, opts);
+                    render_inlines(content, out, opts, state);
                     out.push_str("</a>");
                 } else {
-                    render_inlines(content, out, opts);
+                    render_inlines(content, out, opts, state);
                 }
             }
             Inline::Image { dest, title, alt } => {
-                if let Some(src) = safe_url(dest, UrlContext::Image) {
+                if let Some(src) = state.safe_url_cached(dest, UrlContext::Image) {
                     out.push_str("<img src=\"");
                     if opts.image_assets.is_empty()
                         || !push_html_image_asset_data_uri(src, opts, out)
@@ -659,11 +704,17 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-fn wrap(out: &mut String, tag: &str, content: &[Inline], opts: &HtmlOptions) {
+fn wrap<'a>(
+    out: &mut String,
+    tag: &str,
+    content: &'a [Inline],
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
     out.push('<');
     out.push_str(tag);
     out.push('>');
-    render_inlines(content, out, opts);
+    render_inlines(content, out, opts, state);
     out.push_str("</");
     out.push_str(tag);
     out.push('>');
@@ -871,7 +922,7 @@ fn push_escaped_attr(s: &str, out: &mut String) {
     out.push_str(&s[start..]);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum UrlContext {
     Link,
     Image,
@@ -1736,9 +1787,9 @@ mod tests {
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
-        FontCharSet, HTML_FONT_SEED, RenderState, ascii_char_mask, ascii_char_masks, base64_encode,
-        css_num, css_token, css_without_remote_imports, emit_highlighted_spans, escape_attr,
-        escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
+        FontCharSet, HTML_FONT_SEED, RenderState, UrlContext, ascii_char_mask, ascii_char_masks,
+        base64_encode, css_num, css_token, css_without_remote_imports, emit_highlighted_spans,
+        escape_attr, escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
         html_image_asset_mime, initial_body_capacity, inlines_to_plain, push_escaped_attr,
         push_html_image_asset_data_uri, push_u64, render, sanitize_custom_css, slug, slug_inlines,
         svg_without_remote_style_imports,
@@ -1826,6 +1877,49 @@ mod tests {
         assert!(
             state.highlight_spans.is_empty(),
             "unsupported languages should leave no stale reusable spans"
+        );
+    }
+
+    #[test]
+    fn url_cache_memoizes_safe_and_rejected_destinations_by_context() {
+        let mut state = RenderState::default();
+        let link = " https://example.com/path?a=1 ";
+        let unsafe_link = "java script:alert(1)";
+        let mailto = "mailto:team@example.com";
+
+        assert_eq!(
+            state.safe_url_cached(link, UrlContext::Link),
+            Some("https://example.com/path?a=1")
+        );
+        assert_eq!(state.url_cache.len(), 1);
+        assert_eq!(
+            state.safe_url_cached(link, UrlContext::Link),
+            Some("https://example.com/path?a=1")
+        );
+        assert_eq!(
+            state.url_cache.len(),
+            1,
+            "repeated safe URLs should reuse the cached decision"
+        );
+
+        assert_eq!(state.safe_url_cached(unsafe_link, UrlContext::Link), None);
+        assert_eq!(state.url_cache.len(), 2);
+        assert_eq!(state.safe_url_cached(unsafe_link, UrlContext::Link), None);
+        assert_eq!(
+            state.url_cache.len(),
+            2,
+            "repeated rejected URLs should reuse the cached decision"
+        );
+
+        assert_eq!(
+            state.safe_url_cached(mailto, UrlContext::Link),
+            Some(mailto)
+        );
+        assert_eq!(state.safe_url_cached(mailto, UrlContext::Image), None);
+        assert_eq!(
+            state.url_cache.len(),
+            4,
+            "the same raw URL has distinct safety decisions by render context"
         );
     }
 

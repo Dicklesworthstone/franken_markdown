@@ -1192,17 +1192,34 @@ fn clip_path_object_bounding_box_units_still_clip() {
 }
 
 #[test]
-fn clip_path_zero_dimension_rect_yields_no_clip_shape() {
+fn clip_path_zero_dimension_rect_hides_instead_of_failing_open() {
     // A clip rect with width 0 (line 8270 `w <= 0.0`) produces no ops; the
-    // clipPath is empty so the shape renders unclipped.
+    // referenced clipPath is still valid, so it becomes an empty hard clip
+    // rather than silently disabling clipping.
     let text = svg(
         "clipzero.svg",
         &doc(
             r##"<defs><clipPath id="c"><rect x="0" y="0" width="0" height="10"/></clipPath></defs>
-<rect x="0" y="0" width="20" height="20" fill="#00ff00" clip-path="url(#c)"/>"##,
+<rect x="0" y="0" width="20" height="20" fill="#00ff00" clip-path="url(#c)"/>
+<rect x="30" y="30" width="4" height="4" fill="#0000ff"/>"##,
         ),
     );
-    has(&text, "0.000 1.000 0.000 rg");
+    has(&text, "0 0 0 0 re W n 0.000 1.000 0.000 rg 0 0 20 20 re f");
+    has(&text, "0.000 0.000 1.000 rg 30 30 4 4 re f");
+}
+
+#[test]
+fn self_closing_clip_path_hides_instead_of_failing_open() {
+    // A self-closing clipPath is a valid empty clipping resource and must not
+    // degrade into no clip-path when referenced.
+    let text = svg(
+        "clipselfclosing.svg",
+        &doc(r##"<defs><clipPath id="c"/></defs>
+<rect x="0" y="0" width="20" height="20" fill="#ff0000" clip-path="url(#c)"/>
+<text x="0" y="35" font-size="10" fill="#00ff00" clip-path="url(#c)">Hidden</text>"##),
+    );
+    has(&text, "0 0 0 0 re W n 1.000 0.000 0.000 rg 0 0 20 20 re f");
+    has(&text, "0 0 0 0 re W n\n");
 }
 
 #[test]

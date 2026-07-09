@@ -1225,7 +1225,7 @@ struct SvgClipPath {
     ops: Vec<SvgPathOp>,
     fill_rule: SvgFillRule,
     units: SvgClipPathUnits,
-    empty_mask: bool,
+    empty_clip: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8146,6 +8146,22 @@ fn parse_svg_clip_paths(src: &str) -> Vec<SvgClipPath> {
             continue;
         };
         if self_closing {
+            let clip_path = SvgClipPath {
+                id: id.to_string(),
+                ops: Vec::new(),
+                fill_rule: parse_svg_clip_rule(&attrs).unwrap_or(SvgFillRule::NonZero),
+                units: parse_svg_clip_path_units(&attrs, "clippathunits"),
+                empty_clip: true,
+            };
+            if !clip_paths
+                .iter()
+                .any(|existing: &SvgClipPath| existing.id == clip_path.id)
+            {
+                clip_paths.push(clip_path);
+            }
+            if clip_paths.len() >= 128 {
+                break;
+            }
             continue;
         }
         let needle = format!("</{tag_lower}");
@@ -8220,12 +8236,13 @@ fn parse_svg_clip_path_body(
             return None;
         }
     }
-    (!ops.is_empty()).then_some(SvgClipPath {
+    let empty_clip = ops.is_empty();
+    Some(SvgClipPath {
         id: id.to_string(),
         ops,
         fill_rule,
         units,
-        empty_mask: false,
+        empty_clip,
     })
 }
 
@@ -8266,7 +8283,7 @@ fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
                 ops: Vec::new(),
                 fill_rule: SvgFillRule::NonZero,
                 units: parse_svg_clip_path_units(&attrs, "maskcontentunits"),
-                empty_mask: true,
+                empty_clip: true,
             };
             if !masks
                 .iter()
@@ -8355,13 +8372,13 @@ fn parse_svg_mask_body(
             return None;
         }
     }
-    let empty_mask = ops.is_empty();
+    let empty_clip = ops.is_empty();
     Some(SvgClipPath {
         id: id.to_string(),
         ops,
         fill_rule,
         units,
-        empty_mask,
+        empty_clip,
     })
 }
 
@@ -20134,7 +20151,7 @@ fn svg_clip_path_applicable(
     element_bbox: Option<(f32, f32, f32, f32)>,
 ) -> bool {
     if clip_path.ops.is_empty() {
-        return clip_path.empty_mask;
+        return clip_path.empty_clip;
     }
     match clip_path.units {
         SvgClipPathUnits::UserSpaceOnUse => true,
@@ -31811,9 +31828,10 @@ mod coverage_gap_tests {
         let src = r##"<svg viewBox="0 0 10 10">
   <clipPath id="c1"><rect x="1" y="2" width="4" height="4" rx="1"/></clipPath>
   <clipPath id="c2"><rect width="6" height="6"/></clipPath>
+  <clipPath id="empty"/>
 </svg>"##;
         let clip_paths = parse_svg_clip_paths(src);
-        assert_eq!(clip_paths.len(), 2);
+        assert_eq!(clip_paths.len(), 3);
         assert_eq!(clip_paths[0].id, "c1");
         // The rounded clip rect expands into curve ops, not a bare 4-op box.
         assert!(
@@ -31827,6 +31845,14 @@ mod coverage_gap_tests {
         assert_eq!(
             parse_svg_clip_path_ref("url(#c2)", &clip_paths, &[]),
             Some(Some(1))
+        );
+        assert!(
+            clip_paths[2].empty_clip && clip_paths[2].ops.is_empty(),
+            "self-closing clipPath should remain a fail-closed empty clip resource"
+        );
+        assert_eq!(
+            parse_svg_clip_path_ref("url(#empty)", &clip_paths, &[]),
+            Some(Some(2))
         );
         assert_eq!(
             parse_svg_clip_path_ref("none", &clip_paths, &[]),

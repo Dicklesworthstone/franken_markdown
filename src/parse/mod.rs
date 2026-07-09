@@ -1060,12 +1060,14 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // does (shared `split_list_items`) and collect each item's definitions.
         // A marker that cannot interrupt an open paragraph is a lazy continuation
         // of that paragraph, not a list, so skip it without harvesting.
-        if scan.maybe_list_marker && list_marker(line).is_some() {
-            if in_paragraph && !list_marker_interrupts_paragraph(line) {
+        if scan.maybe_list_marker
+            && let Some(marker) = list_marker(line)
+        {
+            if in_paragraph && !marker_interrupts_paragraph(marker) {
                 i += 1;
                 continue;
             }
-            let split = split_list_items(&lines[i..]);
+            let split = split_list_items_with_first_marker(&lines[i..], marker);
             for (_, body) in &split.items {
                 collect_link_reference_metadata_into(body, None, refs);
                 collect_nested_references(body, refs, depth + 1);
@@ -1417,9 +1419,10 @@ fn parse_blocks_with_refs_profiled(
                 continue;
             }
         }
-        if scanned_list_marker(scan).is_some() {
+        if let Some(marker) = scanned_list_marker(scan) {
             let started = profiler.checkpoint();
-            let (list, used) = parse_list_profiled(&lines[i..], refs, profiler);
+            let (list, used) =
+                parse_list_profiled_with_first_marker(&lines[i..], refs, profiler, marker);
             profiler.record_since(
                 "list_block",
                 used,
@@ -2404,6 +2407,7 @@ mod html_block_classifier_tests {
 
 // ---- lists ------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 struct Marker<'a> {
     indent: usize,
     ordered: bool,
@@ -2467,7 +2471,11 @@ fn marker_padding(after_marker: &str) -> Option<(&str, usize)> {
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {
-    list_marker(line).is_some_and(|m| !m.ordered || m.start == 1)
+    list_marker(line).is_some_and(marker_interrupts_paragraph)
+}
+
+fn marker_interrupts_paragraph(marker: Marker<'_>) -> bool {
+    !marker.ordered || marker.start == 1
 }
 
 fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
@@ -2502,13 +2510,22 @@ fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
             used: 1,
         };
     };
+    split_list_items_with_first_marker(lines, first)
+}
+
+fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) -> ListSplit<'a> {
     let ordered = first.ordered;
     let start = first.start;
     let mut items: Vec<(Option<bool>, Vec<&str>)> = Vec::new();
     let mut tight = true;
     let mut i = 0;
     while i < lines.len() {
-        let Some(m) = list_marker(lines[i]).filter(|m| m.ordered == ordered) else {
+        let marker = if i == 0 {
+            Some(first)
+        } else {
+            list_marker(lines[i])
+        };
+        let Some(m) = marker.filter(|m| m.ordered == ordered) else {
             break;
         };
         let mut item_lines = vec![m.rest];
@@ -2608,6 +2625,24 @@ fn parse_list_profiled(
     profiler: &mut ParseProfiler,
 ) -> (List, usize) {
     let split = split_list_items(lines);
+    parse_list_split(split, refs, profiler)
+}
+
+fn parse_list_profiled_with_first_marker(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+    first: Marker<'_>,
+) -> (List, usize) {
+    let split = split_list_items_with_first_marker(lines, first);
+    parse_list_split(split, refs, profiler)
+}
+
+fn parse_list_split(
+    split: ListSplit<'_>,
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> (List, usize) {
     let mut items = Vec::with_capacity(split.items.len());
     for (task, body) in split.items {
         // Remove reference-definition lines from the item body so they are not

@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
-use crate::highlight::{Span, highlight_supported_into};
+use crate::highlight::{Span, Tok, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 use crate::{FontAssets, HtmlOptions};
@@ -781,8 +781,8 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
     }
 }
 
-/// Emit highlighted code: one `<span class="tok-...">` per classified token,
-/// always HTML-escaped; plain tokens are escaped text with no wrapping span.
+/// Emit highlighted code: one `<span class="tok-...">` per classified token;
+/// plain and potentially symbolic tokens are escaped text with no wrapping span.
 fn emit_highlighted_spans(code: &str, out: &mut String, spans: &[Span]) {
     for span in spans.iter().copied() {
         let text = code.get(span.start..span.end).unwrap_or("");
@@ -791,12 +791,20 @@ fn emit_highlighted_spans(code: &str, out: &mut String, spans: &[Span]) {
                 out.push_str("<span class=\"");
                 out.push_str(cls);
                 out.push_str("\">");
-                push_escaped_text(text, out);
+                if highlighted_span_kind_is_html_safe(span.kind) {
+                    out.push_str(text);
+                } else {
+                    push_escaped_text(text, out);
+                }
                 out.push_str("</span>");
             }
             None => push_escaped_text(text, out),
         }
     }
+}
+
+fn highlighted_span_kind_is_html_safe(kind: Tok) -> bool {
+    matches!(kind, Tok::Keyword | Tok::Type | Tok::Func | Tok::Number)
 }
 
 fn push_escaped_text(s: &str, out: &mut String) {
@@ -1724,14 +1732,16 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::ast::{Block, Document, Inline};
+    use crate::highlight::{Span, Tok};
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
         FontCharSet, HTML_FONT_SEED, RenderState, ascii_char_mask, ascii_char_masks, base64_encode,
-        css_num, css_token, css_without_remote_imports, escape_attr, escape_text,
-        find_ascii_case_insensitive, html_image_asset_mime, initial_body_capacity,
-        inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri, push_u64, render,
-        sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
+        css_num, css_token, css_without_remote_imports, emit_highlighted_spans, escape_attr,
+        escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
+        html_image_asset_mime, initial_body_capacity, inlines_to_plain, push_escaped_attr,
+        push_html_image_asset_data_uri, push_u64, render, sanitize_custom_css, slug, slug_inlines,
+        svg_without_remote_style_imports,
     };
 
     #[test]
@@ -1816,6 +1826,58 @@ mod tests {
         assert!(
             state.highlight_spans.is_empty(),
             "unsupported languages should leave no stale reusable spans"
+        );
+    }
+
+    #[test]
+    fn highlighted_safe_token_kinds_bypass_escape_scan_but_unsafe_tokens_escape() {
+        for kind in [Tok::Keyword, Tok::Type, Tok::Func, Tok::Number] {
+            assert!(highlighted_span_kind_is_html_safe(kind), "{kind:?}");
+        }
+        for kind in [
+            Tok::Plain,
+            Tok::Str,
+            Tok::Comment,
+            Tok::Operator,
+            Tok::Punct,
+        ] {
+            assert!(!highlighted_span_kind_is_html_safe(kind), "{kind:?}");
+        }
+
+        let code = "fn < &";
+        let spans = [
+            Span {
+                kind: Tok::Keyword,
+                start: 0,
+                end: 2,
+            },
+            Span {
+                kind: Tok::Plain,
+                start: 2,
+                end: 3,
+            },
+            Span {
+                kind: Tok::Operator,
+                start: 3,
+                end: 4,
+            },
+            Span {
+                kind: Tok::Plain,
+                start: 4,
+                end: 5,
+            },
+            Span {
+                kind: Tok::Punct,
+                start: 5,
+                end: 6,
+            },
+        ];
+        let mut out = String::new();
+        emit_highlighted_spans(code, &mut out, &spans);
+
+        assert_eq!(
+            out,
+            "<span class=\"tok-kw\">fn</span> <span class=\"tok-op\">&lt;</span> <span class=\"tok-pn\">&amp;</span>"
         );
     }
 

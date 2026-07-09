@@ -16,22 +16,24 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.2 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.3 franken_markdown
 ```
 
 </div>
 
-> **Current status.** The `v0.3.2` GitHub release ships checksum-verified `fmd`
+> **Current status.** The `v0.3.3` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
 > x86_64, built and smoke-tested with DSR. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`. Crates.io still serves
 > `franken_markdown = "0.2.0"` as checked on July 9, 2026, so use the release
-> archives or tagged source for the current `0.3.2` CLI and library until the
+> archives or tagged source for the current `0.3.3` CLI and library until the
 > Rust crate catches up. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
-> as PDF vectors, staged native writes, optional Asupersync batch rendering,
-> browser/WASM package sources, and a long set of measured scalar optimizations.
+> as PDF vectors, native SVG pattern strokes, text strokes, text paths,
+> `color-mix()` transparency, staged native writes, optional Asupersync batch
+> rendering, browser/WASM package sources, and a long set of measured scalar
+> optimizations.
 > SIMD and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
@@ -97,7 +99,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift handling, transforms, gradients, spread modes, patterns, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `color-mix()` transparency, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
@@ -114,7 +116,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, drop shadows, baseline-shift text, `paint-order`, and embedded PNG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `color-mix()` alpha, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -381,7 +383,7 @@ cargo install --path .
 fmd --help
 
 # Or install the published crates.io package. As checked on July 9, 2026, this
-# currently installs 0.2.0 until 0.3.2 is published to crates.io.
+# currently installs 0.2.0 until 0.3.3 is published to crates.io.
 cargo install franken_markdown
 ```
 
@@ -390,7 +392,7 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The `v0.3.2` release includes a `fmd` archive per platform: Linux
+The `v0.3.3` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
 Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
 Native archives are built and smoke-tested with DSR on the release fleet before

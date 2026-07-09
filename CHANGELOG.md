@@ -15,10 +15,10 @@ starting with `0.2.0`, and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-07), the
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-09), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.2` PDF reading-quality release (checkboxes, token wrapping, shrink semantics).**
+- Version state: **`0.3.3` DSR all-platform renderer fidelity and performance patch.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -34,6 +34,64 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-03 | Crates.io + hardening release | `0.2.0` enables the crates.io package, trims package contents, hardens staged native writes, validates zlib/PNG payloads more strictly, and tightens public JSON escaping |
 | 2026-07-07 | SVG/PDF fidelity + speed release | `0.3.0` expands vector SVG PDF drawing, Mermaid/MMD highlighting, local PDF assets, safer staged writes, optional batch receipts, and a measured optimization wave across parser, HTML, layout, PDF, highlighting, and compression |
 | 2026-07-07 | DSR patch release | `0.3.1` is the DSR-built publication tag for the same renderer wave, with the late HTML base64 and PDF empty-segment drawing passes included and the rejected PDF decimal-string trial left out of the shipped source |
+| 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
+| 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
+
+## 0.3.3 - 2026-07-09
+
+All-platform DSR patch release for the renderer work that landed after
+`0.3.2`. The release preserves the clean-room, std-only core contract while
+expanding SVG/PDF fidelity: local SVG assets are embedded in self-contained
+HTML, PDF SVG drawing now covers native pattern strokes, text strokes,
+`textPath`, coordinate-list text placement, vector-effect non-scaling stroke on
+text, CSS-variable URL resources, chained drop shadows, object-bounding-box
+patterns, currentColor gradient stops, pattern viewBox transforms, nested SVG
+data URIs, mixed-case SVG roots, and `color-mix(..., transparent)` alpha
+preservation instead of falling back to opaque black.
+
+The patch also carries a measured optimization wave across the parser, HTML
+emitter, PDF writer/layout path, font cache, compression path, and SVG
+operators. Rejected micro-trials are recorded in the performance artifacts
+rather than represented as wins, and the current optimization ledger ranks
+recommendations by total stage cost.
+
+Testing and release confidence improved with broad PDF/SVG branch coverage,
+font/subsetter edge tests, compression and staged-write tests, CLI and batch
+error-contract tests, source-shape artifact-safety tests, and a repository
+corpus soak that renders real Markdown to deterministic HTML and PDF.
+The generated WASM module remains byte-identical to native output over the
+package corpus; the raw `.wasm` budget is consciously raised from 3,300,000 to
+3,400,000 bytes for the expanded vector-SVG/PDF surface, while the gzip budget
+stays at 1,600,000 bytes.
+
+Representative commits include local SVG HTML embedding
+[`b863967`](https://github.com/Dicklesworthstone/franken_markdown/commit/b863967),
+expanded SVG rendering and page stream reuse
+[`18520f9`](https://github.com/Dicklesworthstone/franken_markdown/commit/18520f9),
+native stroked SVG text
+[`288c796`](https://github.com/Dicklesworthstone/franken_markdown/commit/288c796),
+non-scaling SVG text stroke
+[`2465bf0`](https://github.com/Dicklesworthstone/franken_markdown/commit/2465bf0),
+straight SVG pattern strokes
+[`9403319`](https://github.com/Dicklesworthstone/franken_markdown/commit/9403319),
+drop-shadow panic prevention
+[`f21485a`](https://github.com/Dicklesworthstone/franken_markdown/commit/f21485a),
+configured batch image-byte limits
+[`d9d2546`](https://github.com/Dicklesworthstone/franken_markdown/commit/d9d2546),
+parser/HTML hot-path tightening
+[`b284095`](https://github.com/Dicklesworthstone/franken_markdown/commit/b284095),
+and the latest HTML/parser performance passes
+[`05359d6`](https://github.com/Dicklesworthstone/franken_markdown/commit/05359d6)
+and [`dfe840f`](https://github.com/Dicklesworthstone/franken_markdown/commit/dfe840f),
+plus SVG `color-mix()` alpha preservation
+[`7aca35e`](https://github.com/Dicklesworthstone/franken_markdown/commit/7aca35e).
+
+Release verification for the source tree included `cargo fmt --check`, `cargo
+check --all-targets`, `cargo clippy --all-targets -- -D warnings`, the
+`pdf_svg_color_mix_with_transparent_preserves_paint_alpha` regression test,
+WASM package generation with native/WASM byte parity, the full test suite with
+the long corpus soak isolated, and DSR build/release verification for the four
+configured platform targets.
 
 ## 0.3.2 - 2026-07-08
 

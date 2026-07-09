@@ -11868,6 +11868,9 @@ fn parse_svg_color_inner_with_alpha(
     if let Some(color) = parse_svg_hsl_function(value, css_vars) {
         return Some(color);
     }
+    if let Some(color) = parse_svg_hwb_function(value, css_vars) {
+        return Some(color);
+    }
     parse_svg_named_color(value).map(|rgb| SvgParsedColor { rgb, alpha: None })
 }
 
@@ -12227,6 +12230,57 @@ fn svg_hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> SvgColor
         (r1 + m).clamp(0.0, 1.0),
         (g1 + m).clamp(0.0, 1.0),
         (b1 + m).clamp(0.0, 1.0),
+    )
+}
+
+fn parse_svg_hwb_function(value: &str, css_vars: &[SvgCssVariable]) -> Option<SvgParsedColor> {
+    let args = svg_css_function_args(value, "hwb")?;
+    let (channel_args, slash_alpha) = split_svg_top_level_slash(args)?;
+    let comma_parts = split_svg_top_level_commas(channel_args)?;
+    let (channels, comma_alpha) = if comma_parts.len() == 3 || comma_parts.len() == 4 {
+        (comma_parts[..3].to_vec(), comma_parts.get(3).copied())
+    } else if comma_parts.len() == 1 {
+        let space_parts = split_svg_top_level_whitespace(channel_args);
+        if space_parts.len() != 3 {
+            return None;
+        }
+        (space_parts, None)
+    } else {
+        return None;
+    };
+    let hue = parse_svg_hue_degrees(channels[0], css_vars)?;
+    let whiteness = parse_svg_percentage_channel(channels[1], css_vars)?;
+    let blackness = parse_svg_percentage_channel(channels[2], css_vars)?;
+    let alpha = slash_alpha
+        .or(comma_alpha)
+        .map(|alpha| parse_svg_opacity(alpha, css_vars));
+    let alpha = match alpha {
+        Some(Some(alpha)) => Some(alpha),
+        Some(None) => return None,
+        None => None,
+    };
+    Some(SvgParsedColor {
+        rgb: svg_hwb_to_rgb(hue, whiteness, blackness),
+        alpha,
+    })
+}
+
+fn svg_hwb_to_rgb(hue_degrees: f32, whiteness: f32, blackness: f32) -> SvgColor {
+    let total = whiteness + blackness;
+    if total >= 1.0 {
+        let gray = if total > f32::EPSILON {
+            whiteness / total
+        } else {
+            0.0
+        };
+        return (gray, gray, gray);
+    }
+    let base = svg_hsl_to_rgb(hue_degrees, 1.0, 0.5);
+    let factor = 1.0 - total;
+    (
+        base.0.mul_add(factor, whiteness).clamp(0.0, 1.0),
+        base.1.mul_add(factor, whiteness).clamp(0.0, 1.0),
+        base.2.mul_add(factor, whiteness).clamp(0.0, 1.0),
     )
 }
 
@@ -23193,16 +23247,20 @@ struct PdfStream<'a> {
     flate_decode: bool,
 }
 
+struct PdfBufferCapacityCounts {
+    outline: usize,
+    annots: usize,
+    marks: usize,
+    total_objs: usize,
+}
+
 fn estimated_pdf_buffer_capacity(
+    page_stream_bytes: usize,
     pages: &[PageContent],
     faces: &[EmbeddedFace],
     images: &[PdfImageData],
-    outline_count: usize,
-    annot_count: usize,
-    mark_count: usize,
-    total_objs: usize,
+    counts: PdfBufferCapacityCounts,
 ) -> usize {
-    let page_stream_bytes = pages.iter().map(|page| page.stream.len()).sum::<usize>();
     let page_mark_bytes = pages
         .iter()
         .flat_map(|page| page.marks.iter())
@@ -23246,11 +23304,11 @@ fn estimated_pdf_buffer_capacity(
         .saturating_add(alpha_resource_bytes)
         .saturating_add(page_mark_bytes.saturating_mul(2))
         .saturating_add(page_annot_bytes.saturating_mul(2))
-        .saturating_add(total_objs.saturating_mul(192))
+        .saturating_add(counts.total_objs.saturating_mul(192))
         .saturating_add(pages.len().saturating_mul(256))
-        .saturating_add(outline_count.saturating_mul(192))
-        .saturating_add(annot_count.saturating_mul(192))
-        .saturating_add(mark_count.saturating_mul(192))
+        .saturating_add(counts.outline.saturating_mul(192))
+        .saturating_add(counts.annots.saturating_mul(192))
+        .saturating_add(counts.marks.saturating_mul(192))
         .saturating_add(4096)
 }
 
@@ -24305,14 +24363,33 @@ fn build_pdf(
         String::new()
     };
 
+    let mut page_stream_compress_scratch = crate::compress::ZlibCompressScratch::new();
+    let mut page_streams = Vec::with_capacity(pages.len());
+    for page in pages {
+        page_streams.push(profiler.measure(
+            "page_stream_compression",
+            page.stream.len(),
+            "encode page content stream and apply FlateDecode when it wins",
+            || page_stream(&page.stream, &mut page_stream_compress_scratch),
+            |stream| stream.bytes.len(),
+        ));
+    }
+    let page_stream_bytes = page_streams
+        .iter()
+        .map(|stream| stream.bytes.len())
+        .sum::<usize>();
+
     let pdf_buffer_capacity = estimated_pdf_buffer_capacity(
+        page_stream_bytes,
         pages,
         faces,
         images,
-        outline_count,
-        total_annots,
-        total_marks,
-        total_objs,
+        PdfBufferCapacityCounts {
+            outline: outline_count,
+            annots: total_annots,
+            marks: total_marks,
+            total_objs,
+        },
     );
     profiler.record_since(
         "pdf_buffer_preallocation",
@@ -24395,18 +24472,10 @@ fn build_pdf(
         );
     }
 
-    let mut page_stream_compress_scratch = crate::compress::ZlibCompressScratch::new();
-    for (i, page) in pages.iter().enumerate() {
+    for (i, stream) in page_streams.iter().enumerate() {
         offsets[content_obj(i)] = buf.len();
-        let stream = profiler.measure(
-            "page_stream_compression",
-            page.stream.len(),
-            "encode page content stream and apply FlateDecode when it wins",
-            || page_stream(&page.stream, &mut page_stream_compress_scratch),
-            |stream| stream.bytes.len(),
-        );
         append_pdf_object_header(&mut buf, content_obj(i));
-        append_pdf_stream_dict(&mut buf, &stream);
+        append_pdf_stream_dict(&mut buf, stream);
         buf.extend_from_slice(b"\nstream\n");
         buf.extend_from_slice(stream.bytes.as_ref());
         buf.extend_from_slice(b"\nendstream\nendobj\n");

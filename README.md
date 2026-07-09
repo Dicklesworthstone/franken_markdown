@@ -30,10 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > Rust crate catches up. The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
-> as PDF vectors, native SVG pattern strokes, text strokes, text paths,
-> `color-mix()` transparency, staged native writes, optional Asupersync batch
-> rendering, browser/WASM package sources, and a long set of measured scalar
-> optimizations.
+> as PDF vectors, native SVG pattern strokes, text strokes, text paths, `hwb()`
+> colors and `color-mix()` transparency, staged native writes, optional
+> Asupersync batch rendering, browser/WASM package sources, and a long set of
+> measured scalar optimizations.
 > SIMD and deeper pagination remain roadmap items until they have proof.
 
 ## Contents
@@ -99,7 +99,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `color-mix()` transparency, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
@@ -116,7 +116,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `color-mix()` alpha, and embedded PNG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -244,7 +244,7 @@ portability is not required.
 | HTML heading anchors | Repeated heading-id collisions write exact-capacity decimal suffixes directly into the output candidate instead of allocating `format!` temporaries | Large generated documents with repeated headings keep byte-identical anchors while reducing allocator traffic in the HTML hot path |
 | PDF shaping and layout | Render-local shaped-width caches avoid recomputing font shaping, kerning, ligatures, and repeated word widths. Table-cell inline tokens are reused for measurement and final layout | Repeated table, code, and body tokens reuse nearby cache entries instead of re-entering shaping loops |
 | PDF glyph collection | Cached shaped runs are collected with a single shape-cache lookup on hits | Cuts deterministic map traffic during subset glyph collection without changing PDF bytes |
-| PDF content streams | Text segment operators, `TJ` arrays, decimal tokens, object references, and common structure tokens stream directly into page buffers | Reduces temporary string traffic in text-heavy PDF pages and lowers allocator pressure |
+| PDF content streams | Text segment operators, `TJ` arrays, decimal tokens, object references, and common structure tokens stream directly into page buffers. Encoded page streams are staged once before final PDF allocation, and the final byte buffer is sized from compressed stream bytes instead of raw page text | Reduces temporary string traffic in text-heavy PDF pages, lowers allocator pressure, and avoids over-reserving large PDF buffers without changing output bytes |
 | PDF table allocation | Columns use measured min/max widths and a constrained wrapping-badness solver | Width goes to columns that can reduce wrapping, so dense tables look better and avoid wasted layout work |
 | Compression | The hand-rolled zlib/DEFLATE path precomputes fixed-Huffman codes and match symbols, accumulates Adler-32 during emission, and compares equal LZ77 match prefixes in 8-byte chunks before the exact scalar tail | Removes repeated bit-prep work, avoids a second full scan over page/font streams, and reduces byte-by-byte compare work on repeated runs |
 | SVG rendering | Common frankenmermaid/SVG constructs become native PDF drawing operators. Default fill+stroke stays compact; custom `paint-order` expands only affected shapes or marker children | Supported diagrams remain vector and local without a browser/rasterizer, while ordinary SVG shapes stay on a compact path |

@@ -1555,3 +1555,361 @@ mod overwrite_guard_tests {
         assert!(find_input_overwrite(Some("/no/such/fmd/input/doc.md"), &outputs).is_none());
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod helper_tests {
+    use super::*;
+
+    /// Create a fresh, unique temp directory for one test. Process id plus a
+    /// monotonic counter keeps concurrent tests from sharing a directory.
+    fn fresh_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("fmd-cli-helper-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fail_prints_to_stderr_and_maps_the_exit_code() {
+        assert_eq!(fail(74, "writing help to stdout"), ExitCode::from(74));
+    }
+
+    #[test]
+    fn fail_render_maps_every_render_error_to_exit_70() {
+        let human = fail_render(RenderError::InvalidInput("bad input".to_string()), false);
+        assert_eq!(human, ExitCode::from(70));
+        let json = fail_render(RenderError::InvalidInput("bad \"input\"".to_string()), true);
+        assert_eq!(json, ExitCode::from(70));
+    }
+
+    #[test]
+    fn json_escape_replaces_bare_control_chars_with_a_space() {
+        // \n \r \t get their own escapes; other control chars become a space so
+        // the envelope stays valid single-line JSON.
+        assert_eq!(json_escape("a\u{1}b"), "a b");
+        assert_eq!(json_escape("plain"), "plain");
+        assert_eq!(json_escape("q\"w\\e\nr\rt\ty"), "q\\\"w\\\\e\\nr\\rt\\ty");
+    }
+
+    #[test]
+    fn auto_pdf_image_path_accepts_only_safe_relative_supported_destinations() {
+        let base = Path::new("/base");
+        // Accepted: relative, PNG/SVG extension, no escape components.
+        assert_eq!(
+            auto_pdf_image_path("img.png", base),
+            Some(PathBuf::from("/base/img.png"))
+        );
+        assert_eq!(
+            auto_pdf_image_path("./img.png", base),
+            Some(base.join("./img.png"))
+        );
+        assert_eq!(
+            auto_pdf_image_path("a/b.SVG", base),
+            Some(PathBuf::from("/base/a/b.SVG"))
+        );
+        // Query and fragment suffixes are stripped before resolution.
+        assert_eq!(
+            auto_pdf_image_path("img.png?x=1#f", base),
+            Some(PathBuf::from("/base/img.png"))
+        );
+        // Rejected shapes.
+        for dest in [
+            "",                   // empty
+            "   ",                // blank
+            "//cdn/x.png",        // protocol-relative
+            "a\\b.png",           // backslash path
+            "https://e/x.png",    // URI scheme
+            "mailto:someone.png", // URI scheme, no slash
+            "/abs/x.png",         // absolute
+            "x.jpg",              // unsupported extension
+            "noext",              // no extension
+            "../up.png",          // parent-dir escape
+            "a/../up.png",        // embedded parent-dir escape
+            ".",                  // no file component
+        ] {
+            assert_eq!(auto_pdf_image_path(dest, base), None, "dest: {dest:?}");
+        }
+    }
+
+    #[test]
+    fn has_uri_scheme_matches_scheme_shapes_only() {
+        assert!(has_uri_scheme("https://e/x.png"));
+        assert!(has_uri_scheme("mailto:x"));
+        assert!(has_uri_scheme("a+b-c.d:rest"));
+        assert!(!has_uri_scheme("1abc:/x")); // scheme must start alphabetic
+        assert!(!has_uri_scheme(":x")); // empty scheme
+        assert!(!has_uri_scheme("no-colon/path.png"));
+        assert!(!has_uri_scheme("dir/with:colon.png")); // colon after separator
+    }
+
+    #[test]
+    fn split_pdf_image_spec_prefers_hint_then_existing_path_then_first_split() {
+        // A document-destination hint always wins, wherever its `=` sits.
+        assert_eq!(split_pdf_image_spec("a=b=c", &["a=b"]), Some(("a=b", "c")));
+        assert_eq!(split_pdf_image_spec("a=b=c", &["a"]), Some(("a", "b=c")));
+        // Without hints, a split whose PATH names an existing file wins.
+        let dir = fresh_dir("spec-existing");
+        let file = dir.join("real.png");
+        std::fs::write(&file, b"png").unwrap();
+        let spec = format!("x=y={}", file.display());
+        let (dest, path) = split_pdf_image_spec(&spec, &[]).unwrap();
+        assert_eq!(dest, "x=y");
+        assert_eq!(path, file.display().to_string());
+        // Otherwise the first non-blank split wins.
+        assert_eq!(
+            split_pdf_image_spec("x=y=nothing-here", &[]),
+            Some(("x", "y=nothing-here"))
+        );
+        // A blank destination is surfaced (and rejected) by the parser.
+        let err = parse_pdf_image_spec("=path.png", &[]).unwrap_err();
+        assert!(err.contains("MARKDOWN_DEST must not be blank"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_image_destinations_walks_nested_containers_in_document_order() {
+        let doc = parse_markdown(
+            "# H ![h](h.png)\n\n![p](p.png)\n\n> ![q](q.png)\n\n- ![l](l.png)\n\n\
+             | ![t1](t1.png) |\n| --- |\n| ![t2](t2.png) |\n\n\
+             *![e](e.png)* **![s](s.png)** ~~![k](k.png)~~ [![n](n.png)](https://x/)\n",
+        );
+        let mut dests = Vec::new();
+        collect_image_destinations(&doc.blocks, &mut dests);
+        assert_eq!(
+            dests,
+            vec![
+                "h.png", "p.png", "q.png", "l.png", "t1.png", "t2.png", "e.png", "s.png", "k.png",
+                "n.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn append_auto_image_assets_loads_safe_files_once_and_skips_the_rest() {
+        let dir = fresh_dir("auto-assets");
+        std::fs::write(dir.join("pic.png"), b"not-a-real-png-but-loaded").unwrap();
+        std::fs::create_dir_all(dir.join("imgdir.png")).unwrap();
+        let doc = parse_markdown(
+            "![a](pic.png)\n\n![dup](pic.png)\n\n![u](https://e/x.png)\n\n\
+             ![m](missing.png)\n\n![d](imgdir.png)\n\n![e]()\n",
+        );
+
+        let mut assets = Vec::new();
+        append_auto_image_assets(&doc, &dir, &mut assets, 1024, "PDF").unwrap();
+        assert_eq!(assets.len(), 1, "only pic.png resolves to a loadable file");
+        assert_eq!(assets[0].destination, "pic.png");
+        assert_eq!(assets[0].bytes, b"not-a-real-png-but-loaded");
+
+        // A base directory that cannot be canonicalized disables auto-loading
+        // without failing the render.
+        let mut none = Vec::new();
+        append_auto_image_assets(
+            &doc,
+            Path::new("/no/such/fmd/base/dir"),
+            &mut none,
+            1024,
+            "PDF",
+        )
+        .unwrap();
+        assert!(none.is_empty());
+
+        // An over-limit file is an error naming the flag, not a silent skip.
+        let mut over = Vec::new();
+        let err = append_auto_image_assets(&doc, &dir, &mut over, 1, "PDF").unwrap_err();
+        assert!(err.contains("exceeds --max-pdf-image-bytes 1"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Exit-code contract tests for `run_batch`. These live in-file (not in the
+/// integration suite) because the batch feature's coverage pass runs `--lib`
+/// only: the `fmd` binary spawned by integration tests is built without
+/// `--features batch` there, so binary-spawn tests can never instrument this
+/// code. Everything below is hermetic: `no_config` is always true (the
+/// developer's real config file is never read) and all I/O stays inside a
+/// unique per-test temp directory.
+#[cfg(all(test, feature = "batch"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod run_batch_exit_code_tests {
+    use super::*;
+
+    /// Create a fresh, unique temp directory for one test.
+    fn fresh_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "fmd-cli-run-batch-{tag}-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Baseline batch args: HTML output, automatic sizing, human diagnostics.
+    fn args(inputs: Vec<PathBuf>) -> BatchArgs {
+        BatchArgs {
+            inputs,
+            to: Target::Html,
+            out_dir: None,
+            workers: None,
+            batch_mode: BatchModeArg::Interactive,
+            mem_budget: None,
+            timeout: None,
+            max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
+            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
+            continue_on_error: false,
+            font: None,
+            css: None,
+            json: false,
+        }
+    }
+
+    #[test]
+    fn workers_zero_is_a_usage_error() {
+        let dir = fresh_dir("workers0");
+        std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+        let mut a = args(vec![dir.join("a.md")]);
+        a.workers = Some(0);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(64));
+        assert!(!dir.join("a.html").exists(), "nothing may render");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn out_dir_dash_is_a_usage_error() {
+        let dir = fresh_dir("outdir-dash");
+        std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+        let mut a = args(vec![dir.join("a.md")]);
+        a.out_dir = Some(PathBuf::from("-"));
+        assert_eq!(run_batch(a, true, true), ExitCode::from(64));
+        assert!(!dir.join("a.html").exists(), "nothing may render");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_stylesheet_is_an_input_error() {
+        let dir = fresh_dir("missing-css");
+        std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+        let mut a = args(vec![dir.join("a.md")]);
+        a.css = Some(dir.join("missing.css"));
+        assert_eq!(run_batch(a, false, true), ExitCode::from(66));
+        assert!(!dir.join("a.html").exists(), "nothing may render");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strict_mode_aborts_on_an_unexpandable_input() {
+        let dir = fresh_dir("strict-expand");
+        let a = args(vec![dir.join("nope.md")]);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(66));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expanding_to_no_inputs_is_an_input_error() {
+        // A directory with no Markdown files expands to nothing.
+        let dir = fresh_dir("empty-expand");
+        let a = args(vec![dir.clone()]);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(66));
+        // With --continue-on-error and only unexpandable paths there is still
+        // nothing to render (the "no readable Markdown inputs" message branch).
+        let mut b = args(vec![dir.join("nope.md")]);
+        b.continue_on_error = true;
+        assert_eq!(run_batch(b, false, true), ExitCode::from(66));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn html_batch_renders_every_input_with_custom_css_and_font() {
+        let dir = fresh_dir("html-ok");
+        std::fs::write(dir.join("a.md"), "# Alpha\n\nBody.\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# Beta\n\nBody.\n").unwrap();
+        let css = dir.join("custom.css");
+        std::fs::write(&css, "body{background:#123456}").unwrap();
+        let out_dir = dir.join("out");
+
+        let mut a = args(vec![dir.join("a.md"), dir.join("b.md")]);
+        a.out_dir = Some(out_dir.clone());
+        a.workers = Some(2);
+        a.batch_mode = BatchModeArg::Throughput;
+        a.mem_budget = Some(1 << 30);
+        a.timeout = Some(600);
+        a.font = Some(FontArg::Serif);
+        a.css = Some(css);
+
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        let a_html = std::fs::read_to_string(out_dir.join("a.html")).unwrap();
+        assert!(a_html.contains("background:#123456"), "custom CSS applied");
+        assert!(a_html.contains("Alpha"));
+        assert!(out_dir.join("b.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pdf_batch_writes_outputs_alongside_inputs() {
+        let dir = fresh_dir("pdf-ok");
+        std::fs::write(dir.join("c.md"), "# C\n\nBody.\n").unwrap();
+        let mut a = args(vec![dir.join("c.md")]);
+        a.to = Target::Pdf;
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        let pdf = std::fs::read(dir.join("c.pdf")).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_batch_with_json_emits_the_receipt_and_succeeds() {
+        let dir = fresh_dir("both-json");
+        std::fs::write(dir.join("d.md"), "# D\n\nBody.\n").unwrap();
+        let mut a = args(vec![dir.join("d.md")]);
+        a.to = Target::Both;
+        a.json = true; // receipt JSON goes to real stdout (data, not diagnostics)
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        assert!(dir.join("d.html").exists());
+        let pdf = std::fs::read(dir.join("d.pdf")).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continue_on_error_records_expansion_failures_and_still_succeeds() {
+        let dir = fresh_dir("continue-expand");
+        std::fs::write(dir.join("good.md"), "# Good\n\nBody.\n").unwrap();
+        let mut a = args(vec![dir.join("good.md"), dir.join("nope.md")]);
+        a.continue_on_error = true;
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        assert!(dir.join("good.html").exists(), "the valid input renders");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strict_oversized_input_exits_with_the_input_error_code() {
+        let dir = fresh_dir("oversized");
+        std::fs::write(dir.join("a.md"), "# A body larger than the tiny cap\n").unwrap();
+        let mut a = args(vec![dir.join("a.md")]);
+        a.max_input_bytes = 8;
+        assert_eq!(run_batch(a, false, true), ExitCode::from(66));
+        assert!(!dir.join("a.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unwritable_out_dir_exits_with_the_output_error_code() {
+        let dir = fresh_dir("unwritable-out");
+        std::fs::write(dir.join("a.md"), "# A\n\nBody.\n").unwrap();
+        // A regular file where a directory component is needed makes every
+        // output write fail with an output-kind error.
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let mut a = args(vec![dir.join("a.md")]);
+        a.out_dir = Some(blocker.join("sub"));
+        assert_eq!(run_batch(a, false, true), ExitCode::from(73));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

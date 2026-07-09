@@ -5157,6 +5157,45 @@ fn pdf_svg_clip_and_mask_child_transforms_affect_clip_geometry() {
 }
 
 #[test]
+fn pdf_svg_top_level_clip_path_and_mask_bodies_do_not_paint() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 12">
+  <clipPath id="floating-clip">
+    <rect x="1" y="1" width="6" height="6" fill="#ff0000"/>
+  </clipPath>
+  <mask id="floating-mask">
+    <rect x="10" y="1" width="6" height="6" fill="#ffffff"/>
+  </mask>
+  <rect x="1" y="1" width="8" height="8" fill="#0000ff" clip-path="url(#floating-clip)"/>
+  <rect x="10" y="1" width="8" height="8" fill="#00ff00" mask="url(#floating-mask)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("floating-defs.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Floating defs](floating-defs.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg 1 1 6 6 re f"),
+        "top-level clipPath children are definitions and must not paint red geometry: {text}"
+    );
+    assert!(
+        !text.contains("1.000 1.000 1.000 rg 10 1 6 6 re f"),
+        "top-level mask children are definitions and must not paint white geometry: {text}"
+    );
+    assert!(
+        text.contains("q 1 1 m 7 1 l 7 7 l 1 7 l h W n 0.000 0.000 1.000 rg 1 1 8 8 re f\nQ"),
+        "top-level clipPath definitions should still be consumed through clip-path references: {text}"
+    );
+    assert!(
+        text.contains("q 10 1 m 16 1 l 16 7 l 10 7 l h W n 0.000 1.000 0.000 rg 10 1 8 8 re f\nQ"),
+        "top-level mask definitions should still be consumed through mask references: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_filter_drop_shadow_gets_vector_shadow_fallback() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 28">

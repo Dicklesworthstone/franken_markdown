@@ -2584,6 +2584,10 @@ fn drop_shadow_with_fewer_than_two_lengths_renders_without_shadow() {
             ),
         );
         has(&text, "0.125 0.251 0.376 rg");
+        assert!(
+            !text.contains("0.890 0.900 0.920 rg"),
+            "{name}: malformed drop-shadow() must not synthesize the gray fallback shadow"
+        );
         assert_eq!(
             text.matches("0.125 0.251 0.376 rg").count(),
             1,

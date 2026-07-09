@@ -10826,7 +10826,7 @@ fn parse_svg_filter_shadow(
             .map(|filter| filter.shadow);
         return Some(shadow);
     }
-    if value.to_ascii_lowercase().contains("drop-shadow") {
+    if value.eq_ignore_ascii_case("drop-shadow") {
         return Some(Some(SvgShadow::FALLBACK));
     }
     None
@@ -25658,12 +25658,16 @@ mod pdf_writer_tests {
                 > 0
         );
         assert!(
-            parse_svg_filter_shadow("bogus drop-shadow token", filter_shadows, css_vars)
+            parse_svg_filter_shadow("drop-shadow", filter_shadows, css_vars)
                 .unwrap()
                 .unwrap()
                 .len
                 > 0,
-            "malformed drop-shadow-like filters fall back to a visible shadow"
+            "the legacy bare drop-shadow token falls back to a visible shadow"
+        );
+        assert!(
+            parse_svg_filter_shadow("bogus drop-shadow token", filter_shadows, css_vars).is_none(),
+            "malformed drop-shadow-like filters must not synthesize fallback shadows"
         );
 
         let vars = [SvgCssVariable {

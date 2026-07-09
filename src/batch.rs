@@ -2335,4 +2335,553 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // -----------------------------------------------------------------------
+    // Receipt selectors and error-kind plumbing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn file_error_kind_selectors_are_stable() {
+        // These strings are the machine-readable `error_kind` values in the
+        // receipt JSON; changing any of them is a schema break.
+        assert_eq!(FileErrorKind::Input.as_str(), "input");
+        assert_eq!(FileErrorKind::Output.as_str(), "output");
+        assert_eq!(FileErrorKind::Render.as_str(), "render");
+    }
+
+    #[test]
+    fn first_failure_kind_picks_first_failed_entry_in_receipt_order() {
+        let mut receipt = BatchReceipt {
+            format: OutputFormat::Html,
+            mode: BatchMode::Throughput,
+            workers: 1,
+            queue_depth: 2,
+            files: vec![
+                FileEntry::skipped(Path::new("skipped.md")),
+                failed(
+                    Path::new("out.md"),
+                    FileErrorKind::Output,
+                    "write html failed: denied".to_string(),
+                ),
+                failed(
+                    Path::new("render.md"),
+                    FileErrorKind::Render,
+                    "render html failed: boom".to_string(),
+                ),
+            ],
+            cancelled: false,
+        };
+        assert_eq!(
+            receipt.first_failure_kind(),
+            Some(FileErrorKind::Output),
+            "the FIRST failure in receipt order decides the strict-mode exit code"
+        );
+
+        receipt.files.remove(1);
+        assert_eq!(receipt.first_failure_kind(), Some(FileErrorKind::Render));
+
+        receipt.files.retain(|f| f.status != FileStatus::Failed);
+        assert_eq!(
+            receipt.first_failure_kind(),
+            None,
+            "a receipt without failures has no failure kind"
+        );
+
+        // A failed entry without a recorded kind yields no kind (the strict
+        // caller then falls back to the generic render exit code).
+        receipt.files.push(FileEntry {
+            input: PathBuf::from("legacy.md"),
+            status: FileStatus::Failed,
+            outputs: Vec::new(),
+            error: Some("unclassified".to_string()),
+            error_kind: None,
+        });
+        assert_eq!(receipt.first_failure_kind(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Output-key and lexical-path edges
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn output_key_handles_bare_and_root_parent_inputs() {
+        // A bare file name has an empty parent identity: the key is just the
+        // stem, with no separator prefixed.
+        assert_eq!(output_key(Path::new("doc.md"), None).0, "doc");
+        // A root-parent input's directory identity already ends with '/', so
+        // no second separator is inserted before the stem.
+        assert_eq!(output_key(Path::new("/doc.md"), None).0, "/doc");
+    }
+
+    #[test]
+    fn normalize_lexical_path_cannot_escape_the_root() {
+        // `..` applied to the filesystem root stays at the root instead of
+        // accumulating phantom parent components.
+        assert_eq!(
+            normalize_lexical_path(Path::new("/../out")),
+            PathBuf::from("/out")
+        );
+        assert_eq!(
+            normalize_lexical_path(Path::new("/a/../../out")),
+            PathBuf::from("/out")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto image-asset destination filtering
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_pdf_image_path_accepts_only_safe_relative_supported_images() {
+        let base = Path::new("/base");
+        // Accepted: relative png/svg destinations, with any query/fragment
+        // stripped and `./` segments tolerated.
+        assert_eq!(
+            auto_pdf_image_path("img.png", base),
+            Some(PathBuf::from("/base/img.png"))
+        );
+        assert_eq!(
+            auto_pdf_image_path("./sub/pic.svg?width=2#frag", base),
+            Some(PathBuf::from("/base/sub/pic.svg"))
+        );
+        // Rejected: empty (or fragment-only), protocol-relative, backslashed,
+        // schemed, absolute, unsupported-extension, and parent-escaping
+        // destinations never map to a local file.
+        assert_eq!(auto_pdf_image_path("", base), None);
+        assert_eq!(auto_pdf_image_path("   ", base), None);
+        assert_eq!(auto_pdf_image_path("#fragment-only", base), None);
+        assert_eq!(auto_pdf_image_path("//cdn.example.com/img.png", base), None);
+        assert_eq!(auto_pdf_image_path("dir\\img.png", base), None);
+        assert_eq!(
+            auto_pdf_image_path("https://example.com/img.png", base),
+            None
+        );
+        assert_eq!(auto_pdf_image_path("/etc/img.png", base), None);
+        assert_eq!(auto_pdf_image_path("photo.jpg", base), None);
+        assert_eq!(auto_pdf_image_path("../escape.png", base), None);
+    }
+
+    #[test]
+    fn has_uri_scheme_detects_schemes_only_before_the_first_separator() {
+        assert!(has_uri_scheme("https://example.com/a.png"));
+        assert!(has_uri_scheme("mailto:someone@example.com"));
+        assert!(has_uri_scheme("a+b-c.d:rest"));
+        // A colon after the first path separator is not a scheme.
+        assert!(!has_uri_scheme("dir/with:colon.png"));
+        assert!(!has_uri_scheme("no-scheme.png"));
+        // Schemes must start with an ASCII letter and stay alphanumeric/+/-/.
+        assert!(!has_uri_scheme("1http://example.com"));
+        assert!(!has_uri_scheme(":no-scheme"));
+        assert!(!has_uri_scheme("we!rd:thing"));
+        assert!(!has_uri_scheme(""));
+    }
+
+    #[test]
+    fn supported_pdf_image_extensions_are_png_and_svg_case_insensitive() {
+        assert!(has_supported_pdf_image_extension(Path::new("a.png")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.PNG")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.Svg")));
+        assert!(!has_supported_pdf_image_extension(Path::new("a.jpg")));
+        assert!(!has_supported_pdf_image_extension(Path::new("noext")));
+    }
+
+    #[test]
+    fn auto_image_assets_skip_inputs_whose_parent_cannot_canonicalize() {
+        // The input's parent directory does not exist, so base-dir
+        // canonicalization fails and asset loading is skipped wholesale
+        // (returning Ok so the render itself still proceeds without assets).
+        let doc = parse_markdown("![x](pic.svg)\n");
+        let mut assets = Vec::new();
+        let input = Path::new("/fmd-batch-test-does-not-exist/doc.md");
+        append_auto_image_assets_for_input(input, &doc, &mut assets, "HTML", 1024).unwrap();
+        assert!(
+            assets.is_empty(),
+            "no asset can be loaded without a base dir"
+        );
+    }
+
+    #[test]
+    fn batch_html_embeds_local_svg_and_ignores_unsafe_destinations() {
+        let dir = fresh_dir("auto-image");
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"></svg>";
+        std::fs::write(dir.join("pic.svg"), svg).unwrap();
+        // A directory carrying an image extension: resolvable on disk, but not
+        // a regular file, so it must not be loaded.
+        std::fs::create_dir_all(dir.join("imgdir.png")).unwrap();
+        let md = concat!(
+            "![empty]()\n\n",
+            "*![em](pic.svg)*\n\n",
+            "**![inline](pic.svg)**\n\n",
+            "~~![st](pic.svg)~~\n\n",
+            "[![badge](pic.svg)](https://example.com)\n\n",
+            "![remote](https://example.com/x.png)\n\n",
+            "![missing](nope.svg)\n\n",
+            "![notafile](imgdir.png)\n",
+        );
+        std::fs::write(dir.join("doc.md"), md).unwrap();
+
+        let out = dir.join("out");
+        let plan = BatchPlan {
+            inputs: vec![dir.join("doc.md")],
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.ok_count(), 1, "render failed: {:?}", r.files[0].error);
+        assert_eq!(r.files[0].outputs.len(), 1);
+
+        let html = std::fs::read_to_string(out.join("doc.html")).unwrap();
+        assert_eq!(
+            html.matches("data:image/svg+xml;base64,").count(),
+            4,
+            "every pic.svg reference (inside emphasis, strong, strikethrough, \
+             and a link) embeds the single auto-loaded asset"
+        );
+        assert!(
+            html.contains("src=\"https://example.com/x.png\""),
+            "remote destinations stay untouched"
+        );
+        assert!(
+            html.contains("src=\"nope.svg\""),
+            "missing local files stay untouched"
+        );
+        assert!(
+            html.contains("src=\"imgdir.png\""),
+            "a directory named like an image stays untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_html_refuses_symlinked_image_that_escapes_the_input_dir() {
+        let root = fresh_dir("image-escape");
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        std::fs::write(root.join("outside.svg"), svg).unwrap();
+        // In-tree name, out-of-tree target: the canonicalized path escapes the
+        // input's directory, so the asset must NOT be auto-loaded.
+        std::os::unix::fs::symlink(root.join("outside.svg"), docs.join("alias.svg")).unwrap();
+        std::fs::write(docs.join("doc.md"), "![a](alias.svg)\n").unwrap();
+
+        let out = root.join("out");
+        let plan = BatchPlan {
+            inputs: vec![docs.join("doc.md")],
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        assert_eq!(r.ok_count(), 1, "render failed: {:?}", r.files[0].error);
+        let html = std::fs::read_to_string(out.join("doc.html")).unwrap();
+        assert!(
+            !html.contains("data:image/"),
+            "an asset escaping the input dir must not be embedded"
+        );
+        assert!(
+            html.contains("src=\"alias.svg\""),
+            "the destination is left exactly as written"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn batch_html_fails_input_when_auto_image_asset_exceeds_limit() {
+        let dir = fresh_dir("oversize-image-html");
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"></svg>";
+        std::fs::write(dir.join("pic.svg"), svg).unwrap();
+        std::fs::write(dir.join("doc.md"), "![p](pic.svg)\n").unwrap();
+
+        let out = dir.join("out");
+        let plan = BatchPlan {
+            inputs: vec![dir.join("doc.md")],
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let opts = BatchOptions {
+            max_pdf_image_bytes: 8,
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert_eq!(r.files[0].error_kind, Some(FileErrorKind::Input));
+        let err = r.files[0].error.as_deref().unwrap();
+        assert!(
+            err.starts_with("auto HTML image asset pic.svg"),
+            "got {err:?}"
+        );
+        assert!(
+            err.contains("exceeds --max-pdf-image-bytes 8"),
+            "got {err:?}"
+        );
+        assert!(
+            !out.join("doc.html").exists(),
+            "a refused asset must fail the file before any output is written"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_pdf_fails_input_when_auto_image_asset_exceeds_limit() {
+        let dir = fresh_dir("oversize-image-pdf");
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"></svg>";
+        std::fs::write(dir.join("pic.svg"), svg).unwrap();
+        std::fs::write(dir.join("doc.md"), "![p](pic.svg)\n").unwrap();
+
+        let out = dir.join("out");
+        let plan = BatchPlan {
+            inputs: vec![dir.join("doc.md")],
+            format: OutputFormat::Pdf,
+            out_dir: Some(out.clone()),
+        };
+        let opts = BatchOptions {
+            max_pdf_image_bytes: 8,
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert_eq!(r.failed_count(), 1);
+        assert_eq!(r.files[0].error_kind, Some(FileErrorKind::Input));
+        let err = r.files[0].error.as_deref().unwrap();
+        assert!(
+            err.starts_with("auto PDF image asset pic.svg"),
+            "got {err:?}"
+        );
+        assert!(
+            err.contains("exceeds --max-pdf-image-bytes 8"),
+            "got {err:?}"
+        );
+        assert!(
+            !out.join("doc.pdf").exists(),
+            "a refused asset must fail the file before any output is written"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Expansion and write failure arms
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn expand_inputs_records_unreadable_subdirectory_and_keeps_siblings() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fresh_dir("expand-unreadable");
+        std::fs::write(dir.join("ok.md"), "# ok").unwrap();
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("hidden.md"), "# hidden").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root bypasses permission bits; pin whichever behavior this process
+        // can actually observe (CI runs unprivileged, hitting the error arm).
+        let unreadable = std::fs::read_dir(&locked).is_err();
+
+        let got = expand_inputs(std::slice::from_ref(&dir));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        if unreadable {
+            assert_eq!(got.inputs, vec![dir.join("ok.md")], "siblings still expand");
+            assert_eq!(got.errors.len(), 1, "one error for the unreadable dir");
+            assert_eq!(got.errors[0].path, locked);
+            assert!(
+                got.errors[0].message.starts_with("cannot read directory:"),
+                "got {:?}",
+                got.errors[0].message
+            );
+        } else {
+            assert_eq!(
+                got.inputs.len(),
+                2,
+                "a privileged run reads through the permission bits"
+            );
+            assert!(got.errors.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_records_staged_write_failure_in_readonly_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fresh_dir("readonly-out");
+        let input = dir.join("doc.md");
+        std::fs::write(&input, "# Doc").unwrap();
+        // Drop the directory write bit AFTER the input exists: the render and
+        // the is-dir/same-file preflights succeed, and the failure surfaces
+        // from `write_outputs_staged` when it cannot create its temp file.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let readonly = std::fs::write(dir.join(".probe"), b"x").is_err();
+        if !readonly {
+            let _ = std::fs::remove_file(dir.join(".probe"));
+        }
+
+        let plan = BatchPlan {
+            inputs: vec![input.clone()],
+            format: OutputFormat::Html,
+            out_dir: None,
+        };
+        let r = run_batch_blocking(plan, &throughput_opts()).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        if readonly {
+            assert_eq!(r.failed_count(), 1);
+            assert_eq!(r.files[0].error_kind, Some(FileErrorKind::Output));
+            assert!(r.files[0].outputs.is_empty());
+            let err = r.files[0].error.as_deref().unwrap();
+            assert!(err.starts_with("write html failed:"), "got {err:?}");
+            assert!(
+                !dir.join("doc.html").exists(),
+                "the failed staged write must leave no output file"
+            );
+        } else {
+            // A privileged run cannot be blocked by permission bits.
+            assert_eq!(r.ok_count(), 1);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Watchdog and runtime-boundary arms
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_timeout_zero_is_disabled_not_instant_cancellation() {
+        let dir = fresh_dir("timeout-zero");
+        std::fs::write(dir.join("a.md"), "# a").unwrap();
+        let plan = BatchPlan {
+            inputs: vec![dir.join("a.md")],
+            format: OutputFormat::Html,
+            out_dir: Some(dir.join("out")),
+        };
+        let opts = BatchOptions {
+            timeout_secs: Some(0),
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        assert!(
+            !r.cancelled,
+            "--timeout 0 disables the watchdog rather than cancelling at once"
+        );
+        assert_eq!(r.ok_count(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_timeout_fires_mid_run_and_skips_remaining_inputs() {
+        // Deterministic --timeout firing without a sleep race: the first input
+        // is a FIFO, so its read blocks until the writer thread completes it
+        // WELL AFTER the 1 s deadline. The watchdog is therefore guaranteed to
+        // fire while file 1 is mid-render; file 1 still runs to completion
+        // (cancellation is per-file cooperative) and every later file is
+        // skipped, which is exactly the documented best-effort contract.
+        let dir = fresh_dir("timeout-fires");
+        let fifo = dir.join("a_slow.md");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("spawn mkfifo");
+        assert!(status.success(), "mkfifo must succeed");
+        std::fs::write(dir.join("b.md"), "# b").unwrap();
+        std::fs::write(dir.join("c.md"), "# c").unwrap();
+
+        let writer = std::thread::spawn({
+            let fifo = fifo.clone();
+            move || {
+                // Complete the blocked read only after the deadline has long
+                // passed (deadline 1000 ms, checked every 50 ms on a monotonic
+                // clock; 1400 ms leaves a wide margin).
+                std::thread::sleep(std::time::Duration::from_millis(1400));
+                std::fs::write(&fifo, "# slow\n").unwrap();
+            }
+        });
+
+        let out = dir.join("out");
+        let plan = BatchPlan {
+            inputs: vec![fifo.clone(), dir.join("b.md"), dir.join("c.md")],
+            format: OutputFormat::Html,
+            out_dir: Some(out.clone()),
+        };
+        let opts = BatchOptions {
+            timeout_secs: Some(1),
+            ..throughput_opts()
+        };
+        let r = run_batch_blocking(plan, &opts).unwrap();
+        writer.join().unwrap();
+
+        assert!(
+            r.cancelled,
+            "the fired deadline must mark the run cancelled"
+        );
+        assert_eq!(
+            r.files[0].status,
+            FileStatus::Ok,
+            "the in-flight file runs to completion: {:?}",
+            r.files[0].error
+        );
+        assert_eq!(r.files[1].status, FileStatus::Skipped);
+        assert_eq!(r.files[2].status, FileStatus::Skipped);
+        assert_eq!(r.ok_count(), 1);
+        assert_eq!(r.skipped_count(), 2);
+        assert_eq!(r.failed_count(), 0);
+        assert!(
+            out.join("a_slow.html").exists(),
+            "the completed file's output is committed"
+        );
+        assert!(
+            !out.join("b.html").exists() && !out.join("c.html").exists(),
+            "skipped inputs must not be rendered"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_batch_reports_no_context_without_a_runtime_handle() {
+        // A live Cx moved to a plain OS thread passes the boundary checkpoint,
+        // but `Runtime::current_handle()` is thread-local, so the spawn path
+        // must refuse with BatchError::NoContext instead of panicking or
+        // hanging. The refusal happens on the first poll (before any worker
+        // exists), so one manual poll with a no-op waker drives it
+        // deterministically.
+        use std::future::Future as _;
+        let runtime = RuntimeBuilder::current_thread().build().unwrap();
+        let err = runtime.block_on(async {
+            let cx = Cx::current().expect("block_on installs a root Cx");
+            std::thread::spawn(move || {
+                let plan = BatchPlan {
+                    inputs: vec![PathBuf::from("never-read.md")],
+                    format: OutputFormat::Html,
+                    out_dir: None,
+                };
+                let opts = throughput_opts();
+                let budget = WorkerBudget {
+                    workers: 1,
+                    queue_depth: 2,
+                };
+                let mut fut = Box::pin(render_batch(&cx, plan, &opts, budget));
+                let mut task_cx = std::task::Context::from_waker(std::task::Waker::noop());
+                match fut.as_mut().poll(&mut task_cx) {
+                    std::task::Poll::Ready(Outcome::Err(e)) => e,
+                    std::task::Poll::Ready(_) => panic!("expected Err(NoContext) outcome"),
+                    std::task::Poll::Pending => panic!("NoContext must be immediate, not pending"),
+                }
+            })
+            .join()
+            .expect("off-runtime poll thread must not panic")
+        });
+        assert!(
+            matches!(err, BatchError::NoContext),
+            "got {err:?} instead of NoContext"
+        );
+        assert_eq!(err.to_string(), "runtime did not provide a root context");
+    }
 }

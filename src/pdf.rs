@@ -25499,6 +25499,31 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in chunks.by_ref() {
+        fnv1a64_update_byte(hash, chunk[0]);
+        fnv1a64_update_byte(hash, chunk[1]);
+        fnv1a64_update_byte(hash, chunk[2]);
+        fnv1a64_update_byte(hash, chunk[3]);
+        fnv1a64_update_byte(hash, chunk[4]);
+        fnv1a64_update_byte(hash, chunk[5]);
+        fnv1a64_update_byte(hash, chunk[6]);
+        fnv1a64_update_byte(hash, chunk[7]);
+    }
+    for &byte in chunks.remainder() {
+        fnv1a64_update_byte(hash, byte);
+    }
+}
+
+#[inline]
+fn fnv1a64_update_byte(hash: &mut u64, byte: u8) {
+    *hash ^= u64::from(byte);
+    *hash = hash.wrapping_mul(FNV_PRIME);
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn fnv1a64_update_bytewise_reference(hash: &mut u64, bytes: &[u8]) {
     for &byte in bytes {
         *hash ^= u64::from(byte);
         *hash = hash.wrapping_mul(FNV_PRIME);
@@ -26182,23 +26207,24 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod pdf_writer_tests {
     use super::{
-        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FORCED_BREAK_CHUNK, FORCED_BREAK_PENALTY,
-        FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, HeadingIdState, ImageLine,
-        LayoutCx, Line, LineTok, LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom,
-        Palette, ParagraphItem, ParagraphLayoutScratch, ParagraphPolicy, PdfCidFontObjectParts,
-        PdfFontDescriptorObjectParts, PdfImageColor, PdfImageData, PdfOutlineItemObjectParts,
-        PdfPageObjectParts, PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
-        PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
-        SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor,
-        SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement,
-        SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect,
-        SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText,
-        SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
-        TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
-        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
-        append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
+        FORCED_BREAK_PENALTY, FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec,
+        HeadingIdState, ImageLine, LayoutCx, Line, LineTok, LinkTarget, ListMark,
+        PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem, ParagraphLayoutScratch,
+        ParagraphPolicy, PdfCidFontObjectParts, PdfFontDescriptorObjectParts, PdfImageColor,
+        PdfImageData, PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts,
+        PdfShading, PdfShadingKind, PdfStream, PdfStructElementObjectParts,
+        PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg,
+        SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor, SvgCssRule, SvgCssVariable,
+        SvgDashPattern, SvgDominantBaseline, SvgElement, SvgFilterShadow, SvgGradientPaint,
+        SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap, SvgLineJoin, SvgMarker,
+        SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
+        SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText, SvgTextAnchor,
+        SvgTextDecoration, SvgTextMatrix, SvgTransform, TABLE_LAYOUT_CACHE_MAX_INLINE_NODES,
+        TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
+        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_bytes, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin,
         append_page_background_rounded_rect_fill, append_pdf_cid_font_object,
         append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
         append_pdf_font_descriptor_object, append_pdf_fontfile2_stream_object, append_pdf_num,
@@ -26220,11 +26246,11 @@ mod pdf_writer_tests {
         append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
-        finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, font_size_of,
-        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
-        layout_simple_text_paragraph, layout_table, layout_table_uncached,
-        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
-        parse_svg_background_color_token, parse_svg_baseline_shift,
+        finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
+        fnv1a64_update_bytewise_reference, font_size_of, kerned_tj, kerned_tj_with_spacing,
+        layout_inlines, layout_inlines_greedy, layout_simple_text_paragraph, layout_table,
+        layout_table_uncached, line_has_visible_content, measure_word, normalize_svg_text_node,
+        parse_svg_attrs, parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
         parse_svg_marker_body, parse_svg_path_data, parse_svg_reusable_body_elements,
@@ -28219,6 +28245,22 @@ mod pdf_writer_tests {
             let mut string = String::new();
             append_decimal_u64_string(&mut string, value);
             assert_eq!(bytes, string.as_bytes(), "value {value}");
+        }
+    }
+
+    #[test]
+    fn fnv_updater_matches_bytewise_reference_across_chunk_boundaries() {
+        let mut data = Vec::new();
+        for i in 0..257 {
+            data.push(((i * 37 + 11) % 251) as u8);
+        }
+
+        for len in 0..=data.len() {
+            let mut unrolled = FNV_OFFSET ^ 0x1234_5678_9abc_def0;
+            let mut reference = unrolled;
+            fnv1a64_update(&mut unrolled, &data[..len]);
+            fnv1a64_update_bytewise_reference(&mut reference, &data[..len]);
+            assert_eq!(unrolled, reference, "len {len}");
         }
     }
 

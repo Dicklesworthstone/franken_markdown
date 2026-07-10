@@ -1443,7 +1443,7 @@ fn parse_blocks_with_refs_profiled(
         let start = i;
         while i < lines.len() {
             let line = lines[i];
-            if no_indent_ascii_letter_line(line) {
+            if no_indent_paragraph_loop_fast_path(line, i > start) {
                 i += 1;
                 continue;
             }
@@ -1491,8 +1491,41 @@ fn parse_blocks_with_refs_profiled(
     blocks
 }
 
-fn no_indent_ascii_letter_line(line: &str) -> bool {
-    line.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+fn no_indent_paragraph_loop_fast_path(line: &str, open_paragraph: bool) -> bool {
+    let Some((&first, bytes)) = line.as_bytes().split_first() else {
+        return false;
+    };
+
+    match first {
+        b' ' | b'\t' | b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => false,
+        b'0'..=b'9' => open_paragraph && !no_indent_ordered_list_interrupt_candidate(first, bytes),
+        _ => true,
+    }
+}
+
+fn no_indent_ordered_list_interrupt_candidate(first_digit: u8, rest: &[u8]) -> bool {
+    let mut digits = 1usize;
+    let mut start = u64::from(first_digit - b'0');
+    while let Some(&byte) = rest.get(digits - 1)
+        && byte.is_ascii_digit()
+    {
+        digits += 1;
+        if digits > 9 {
+            return false;
+        }
+        start = start * 10 + u64::from(byte - b'0');
+    }
+    if start != 1 {
+        return false;
+    }
+    let Some((&marker, after_marker)) = rest.get(digits - 1..).and_then(|tail| tail.split_first())
+    else {
+        return false;
+    };
+    matches!(marker, b'.' | b')')
+        && after_marker
+            .first()
+            .is_none_or(|byte| matches!(byte, b' ' | b'\t'))
 }
 
 fn parse_lines_as_inlines(
@@ -4704,7 +4737,8 @@ mod char_ref_dos_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
     use super::{
-        collect_link_references, contains_reference_colon, line_is_paragraph_text, parse_document,
+        collect_link_references, contains_reference_colon, line_is_paragraph_text,
+        no_indent_paragraph_loop_fast_path, parse_document,
         parse_simple_ascii_reference_definition, parse_simple_ascii_reference_title_line,
         push_consumed_reference_range, reference_collector_needs_block_scan_after_indent,
         reference_collector_plain_line_fast_path,
@@ -4930,6 +4964,80 @@ mod refdef_paragraph_tests {
         assert!(!line_is_paragraph_text("> quote"));
         assert!(!line_is_paragraph_text("---"));
         assert!(!line_is_paragraph_text("```"));
+    }
+
+    #[test]
+    fn paragraph_loop_fast_path_keeps_possible_block_starters_slow() {
+        for line in [
+            "",
+            " indented paragraph",
+            "\tindented paragraph",
+            "# heading",
+            "> quote",
+            "<div>",
+            "```rust",
+            "~~~",
+            "===",
+            "---",
+            "- item",
+            "* item",
+            "_ _ _",
+            "+ item",
+            "1. item",
+            "01) item",
+            "1.",
+        ] {
+            assert!(
+                !no_indent_paragraph_loop_fast_path(line, true),
+                "{line:?} must stay on the full paragraph-interrupt classifier"
+            );
+        }
+
+        for line in [
+            "plain words",
+            "(parenthetical continuation)",
+            "[looks like a ref]: but is already inside a paragraph",
+            "| table-looking | continuation |",
+            "2. lazy ordered continuation",
+            "1986. lazy ordered continuation",
+            "1.not a list marker",
+            "éclair continuation",
+        ] {
+            assert!(
+                no_indent_paragraph_loop_fast_path(line, true),
+                "{line:?} should bypass the block-start checks inside an open paragraph"
+            );
+        }
+
+        assert!(
+            !no_indent_paragraph_loop_fast_path("2. boundary ordered list", false),
+            "digit-led boundary lines must not be classified as obvious paragraph starts"
+        );
+        assert!(
+            no_indent_paragraph_loop_fast_path("(boundary paragraph)", false),
+            "non-block-start punctuation can still use the first-line fast path"
+        );
+    }
+
+    #[test]
+    fn paragraph_loop_fast_path_preserves_ordered_list_boundaries() {
+        let interrupt = html("Intro\n1. item");
+        assert!(
+            interrupt.contains("<p>Intro</p>") && interrupt.contains("<ol>"),
+            "a start-1 marker must still interrupt a paragraph: {interrupt}"
+        );
+
+        let lazy = html("Intro\n2. lazy continuation");
+        assert!(
+            lazy.contains("<p>Intro\n2. lazy continuation</p>") && !lazy.contains("<ol"),
+            "a non-1 marker cannot interrupt an open paragraph: {lazy}"
+        );
+
+        let boundary = html("2. boundary ordered list");
+        assert!(
+            boundary.contains("<ol start=\"2\">"),
+            "a non-1 marker at a block boundary must still start a list: {boundary}"
+        );
     }
 
     #[test]

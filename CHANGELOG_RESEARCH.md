@@ -58,9 +58,14 @@ metadata bump. The dominant tracks are:
   compares the JSON-escaped path form (`ad86a92`), fixing the windows-latest
   test failure that predated this release line.
 
-The WASM package gate holds under the `0.3.3`-era budgets (raw 3,400,000 /
-gzip 1,600,000 bytes) with native/WASM parity across the package corpus, and
-the full suite stands at 1706 tests at release prep.
+The WASM package gate keeps native/WASM byte parity across the package corpus.
+The raw `.wasm` budget is consciously raised from 3,400,000 to 3,500,000 bytes
+for the bundled math fallback face and JPEG `/DCTDecode` surface (measured raw
+3,447,897 / gzip 1,557,945 bytes; the gzip budget stays at 1,600,000), and the
+full suite stands at 1706 tests at release prep. Post-tag CI on windows-latest
+surfaced three more contract tests asserting raw Windows paths against
+JSON-escaped envelopes plus one platform-dependent `io::ErrorKind` assumption;
+all four are fixed on `main` alongside the budget bump.
 
 ## 0.3.3 Research Notes
 

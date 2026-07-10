@@ -3595,7 +3595,7 @@ fn apply_svg_root_background_decls(
     decls: &str,
     css_vars: &[SvgCssVariable],
 ) {
-    for declaration in decls.split(';') {
+    for declaration in split_svg_css_declarations(decls) {
         let Some((name, value)) = declaration.split_once(':') else {
             continue;
         };
@@ -4198,6 +4198,109 @@ fn split_svg_css_top_level_commas(value: &str) -> Vec<&str> {
     parts
 }
 
+struct SvgCssDeclarations<'a> {
+    value: &'a str,
+    pos: usize,
+}
+
+fn split_svg_css_declarations(value: &str) -> SvgCssDeclarations<'_> {
+    SvgCssDeclarations { value, pos: 0 }
+}
+
+impl<'a> Iterator for SvgCssDeclarations<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        'next_part: while self.pos <= self.value.len() {
+            let start = skip_svg_css_ws_comments(self.value, self.pos);
+            self.pos = start;
+            if start >= self.value.len() {
+                self.pos = self.value.len().saturating_add(1);
+                return None;
+            }
+            let mut depth = 0usize;
+            let mut quote = None;
+            let mut escaped = false;
+            let mut in_comment = false;
+            for (rel_idx, ch) in self.value[start..].char_indices() {
+                let idx = start + rel_idx;
+                if in_comment {
+                    if self.value[idx..].starts_with("*/") {
+                        in_comment = false;
+                    }
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if let Some(quote_ch) = quote {
+                    if ch == quote_ch {
+                        quote = None;
+                    }
+                    continue;
+                }
+                if self.value[idx..].starts_with("/*") {
+                    in_comment = true;
+                    continue;
+                }
+                match ch {
+                    '"' | '\'' => quote = Some(ch),
+                    '(' => depth = depth.saturating_add(1),
+                    ')' => depth = depth.saturating_sub(1),
+                    ';' if depth == 0 => {
+                        self.pos = idx + ch.len_utf8();
+                        let part = trim_svg_css_declaration_part(&self.value[start..idx]);
+                        if !part.is_empty() {
+                            return Some(part);
+                        }
+                        continue 'next_part;
+                    }
+                    _ => {}
+                }
+            }
+            self.pos = self.value.len().saturating_add(1);
+            let part = trim_svg_css_declaration_part(&self.value[start..]);
+            if !part.is_empty() {
+                return Some(part);
+            }
+        }
+        None
+    }
+}
+
+fn skip_svg_css_ws_comments(value: &str, mut pos: usize) -> usize {
+    loop {
+        let Some(rest) = value.get(pos..) else {
+            return value.len();
+        };
+        let trimmed = rest.trim_start();
+        pos += rest.len() - trimmed.len();
+        let Some(after_open) = value.get(pos..).and_then(|s| s.strip_prefix("/*")) else {
+            return pos;
+        };
+        let Some(close_rel) = after_open.find("*/") else {
+            return value.len();
+        };
+        pos += 2 + close_rel + 2;
+    }
+}
+
+fn trim_svg_css_declaration_part(mut part: &str) -> &str {
+    part = part.trim();
+    while let Some(before_comment) = part
+        .strip_suffix("*/")
+        .and_then(|prefix| prefix.rfind("/*").map(|start| &prefix[..start]))
+    {
+        part = before_comment.trim_end();
+    }
+    part
+}
+
 fn parse_svg_accessible_text(src: &str) -> Option<String> {
     let (aria_label, title, desc) = parse_svg_root_accessible_texts(src);
     let name = aria_label.or(title);
@@ -4673,7 +4776,7 @@ fn apply_svg_rect_radius_decls(
     decls: &str,
     css_vars: &[SvgCssVariable],
 ) {
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -6287,7 +6390,7 @@ fn parse_svg_length_adjust(
         .and_then(parse_svg_length_adjust_value)
         .unwrap_or(inherited);
     if let Some(style) = svg_attr(attrs, "style") {
-        for decl in style.split(';') {
+        for decl in split_svg_css_declarations(style) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -6553,7 +6656,7 @@ fn parse_svg_css_variables_from_css(css: &str, out: &mut Vec<SvgCssVariable>) {
 }
 
 fn parse_svg_css_variable_decls(decls: &str, out: &mut Vec<SvgCssVariable>) {
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -6573,7 +6676,7 @@ fn parse_svg_css_variable_decls(decls: &str, out: &mut Vec<SvgCssVariable>) {
 }
 
 fn parse_svg_css_variable_decls_override(decls: &str, out: &mut Vec<SvgCssVariable>) {
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -7325,7 +7428,7 @@ fn parse_svg_gradient_stop_css_rules_from_css(
 
 fn parse_svg_gradient_stop_patch(decls: &str, css_vars: &[SvgCssVariable]) -> SvgGradientStopPatch {
     let mut patch = SvgGradientStopPatch::default();
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -7643,7 +7746,7 @@ fn parse_svg_gradient_inherited_color(
         css_rules,
     );
     if let Some(style) = svg_attr(attrs, "style") {
-        for decl in style.split(';') {
+        for decl in split_svg_css_declarations(style) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -7669,7 +7772,7 @@ fn apply_svg_gradient_color_css(
     css_rules: &[SvgCssRule],
 ) {
     for rule in svg_matching_css_rules(tag, attrs, css_rules, &[]) {
-        for decl in rule.decls.split(';') {
+        for decl in split_svg_css_declarations(&rule.decls) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -7716,7 +7819,7 @@ fn parse_svg_gradient_stop(
     }
 
     if let Some(style) = svg_attr(attrs, "style") {
-        for decl in style.split(';') {
+        for decl in split_svg_css_declarations(style) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -8399,7 +8502,7 @@ fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable
         .and_then(|value| parse_svg_opacity(value, css_vars))
         .unwrap_or(1.0);
     if let Some(style) = svg_attr(attrs, "style") {
-        for decl in style.split(';') {
+        for decl in split_svg_css_declarations(style) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -8458,17 +8561,19 @@ fn parse_svg_clip_rule(attrs: &[(String, String)]) -> Option<SvgFillRule> {
         .and_then(parse_svg_fill_rule)
         .or_else(|| {
             svg_attr(attrs, "style").and_then(|style| {
-                style.split(';').find_map(|decl| {
-                    let (name, value) = decl.split_once(':')?;
-                    let name = name.trim();
-                    if name.eq_ignore_ascii_case("clip-rule")
-                        || name.eq_ignore_ascii_case("fill-rule")
-                    {
-                        parse_svg_fill_rule(value)
-                    } else {
-                        None
-                    }
-                })
+                split_svg_css_declarations(style)
+                    .into_iter()
+                    .find_map(|decl| {
+                        let (name, value) = decl.split_once(':')?;
+                        let name = name.trim();
+                        if name.eq_ignore_ascii_case("clip-rule")
+                            || name.eq_ignore_ascii_case("fill-rule")
+                        {
+                            parse_svg_fill_rule(value)
+                        } else {
+                            None
+                        }
+                    })
             })
         })
 }
@@ -8551,7 +8656,7 @@ fn parse_svg_geometry_transform(attrs: &[(String, String)]) -> SvgTransform {
         transform = transform.concat(parsed);
     }
     if let Some(style) = svg_attr(attrs, "style") {
-        for decl in style.split(';') {
+        for decl in split_svg_css_declarations(style) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -8822,7 +8927,7 @@ fn parse_svg_style_with_ancestors(
     );
 
     if let Some(style_attr) = svg_attr(attrs, "style") {
-        for decl in style_attr.split(';') {
+        for decl in split_svg_css_declarations(style_attr) {
             let Some((name, value)) = decl.split_once(':') else {
                 continue;
             };
@@ -9185,7 +9290,7 @@ fn parse_svg_style_patch(
     inherited_font_size: f32,
 ) -> SvgStylePatch {
     let mut patch = SvgStylePatch::default();
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -9893,7 +9998,7 @@ fn apply_svg_marker_declarations(
     markers: &[SvgMarker],
     css_vars: &[SvgCssVariable],
 ) {
-    for decl in decls.split(';') {
+    for decl in split_svg_css_declarations(decls) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -10940,7 +11045,7 @@ fn apply_svg_fe_drop_shadow_style(
     style: &str,
     css_vars: &[SvgCssVariable],
 ) {
-    for decl in style.split(';') {
+    for decl in split_svg_css_declarations(style) {
         let Some((name, value)) = decl.split_once(':') else {
             continue;
         };
@@ -31657,6 +31762,26 @@ mod coverage_gap_tests {
         assert!(!svg_css_selector_matches(&no_class_attr, "rect", &[], &[]));
     }
 
+    #[test]
+    fn css_declaration_splitter_ignores_quoted_and_function_semicolons() {
+        let declarations: Vec<&str> = split_svg_css_declarations(
+            "/* leading; comment */ font-family: Fancy\\;Name, 'Display; Debug', monospace; \
+             fill: var(--paint, url(data:image/svg+xml;utf8,<svg></svg>) #00ff00); \
+             /* middle; comment */ stroke: #0000ff /* trailing; comment */",
+        )
+        .collect();
+        assert_eq!(declarations.len(), 3);
+        assert_eq!(
+            declarations[0],
+            "font-family: Fancy\\;Name, 'Display; Debug', monospace"
+        );
+        assert_eq!(
+            declarations[1],
+            "fill: var(--paint, url(data:image/svg+xml;utf8,<svg></svg>) #00ff00)"
+        );
+        assert_eq!(declarations[2], "stroke: #0000ff");
+    }
+
     // ---- style patches ------------------------------------------------------
 
     #[test]
@@ -31689,6 +31814,26 @@ mod coverage_gap_tests {
             style.opacity
         );
         assert!(!style.display_visible && !style.visibility_visible);
+    }
+
+    #[test]
+    fn style_patch_keeps_declarations_after_css_comments() {
+        let patch = parse_svg_style_patch(
+            "/* lead; */ fill: #ff0000; /* body; */ stroke: #0000ff /* tail; */; \
+             stroke-width: 2",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        apply_svg_style_patch(&mut style, patch, true);
+
+        assert_color(style.fill.unwrap(), (1.0, 0.0, 0.0), "commented fill");
+        assert_color(style.stroke.unwrap(), (0.0, 0.0, 1.0), "commented stroke");
+        assert!(approx(style.stroke_width, 2.0));
     }
 
     #[test]

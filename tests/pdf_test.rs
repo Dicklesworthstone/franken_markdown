@@ -2187,10 +2187,14 @@ fn pdf_svg_nested_tspan_children_apply_their_own_style() {
 #[test]
 fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 88">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 120">
   <style>
-    :root { --code-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
+    :root {
+      --code-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      --semi-code-family: 'Display; Debug', monospace;
+    }
     .code { font-family: var(--code-family); }
+    .semi-var { font-family: var(--semi-code-family); }
     .body { font-family: Inter, sans-serif; }
   </style>
   <text x="4" y="14" font-size="10" fill="#000000" font-family="ui-monospace, monospace">Attr mono</text>
@@ -2201,6 +2205,8 @@ fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
     <tspan x="120" y="62" style="font-family: Inter, sans-serif">Body override</tspan>
   </text>
   <text x="4" y="78" font-size="10" fill="#111111" font-family="Inter, monospace">Primary body</text>
+  <text x="4" y="94" font-size="10" fill="#222222" class="semi-var">CSS quoted mono</text>
+  <text x="4" y="110" font-size="10" fill="#333333" style="font-family: 'Inline; Debug', monospace">Inline quoted mono</text>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -2212,8 +2218,8 @@ fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
 
     assert_eq!(
         text.matches("BT /F4 ").count(),
-        3,
-        "only direct, stylesheet-variable, and inherited monospace SVG text should render with the bundled mono face; a recognized primary body family must not fall through to a later monospace fallback: {text}"
+        5,
+        "direct, stylesheet-variable, inherited, quoted-variable, and quoted-inline monospace SVG text should render with the bundled mono face; declaration splitting must not break on semicolons inside quoted family names, and a recognized primary body family must not fall through to a later monospace fallback: {text}"
     );
     assert!(
         text.matches("BT /F1 ").count() >= 3,

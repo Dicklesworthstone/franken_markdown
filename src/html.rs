@@ -525,10 +525,7 @@ fn svg_without_remote_style_imports(bytes: &[u8]) -> Cow<'_, [u8]> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Cow::Borrowed(bytes);
     };
-    if !contains_ascii_case_insensitive(text, "@import")
-        || !(contains_ascii_case_insensitive(text, "http://")
-            || contains_ascii_case_insensitive(text, "https://"))
-    {
+    if !contains_ascii_case_insensitive(text, "@import") {
         return Cow::Borrowed(bytes);
     }
 
@@ -575,8 +572,7 @@ fn css_without_remote_imports(css: &str) -> Option<String> {
         };
         let statement = &css[import_start..statement_end];
         if css_import_at_rule_boundary(css, import_start)
-            && (contains_ascii_case_insensitive(statement, "http://")
-                || contains_ascii_case_insensitive(statement, "https://"))
+            && css_import_statement_is_remote(statement)
         {
             out.push_str(&css[last..import_start]);
             let mut next = statement_end;
@@ -600,6 +596,68 @@ fn css_without_remote_imports(css: &str) -> Option<String> {
         Some(out)
     } else {
         None
+    }
+}
+
+fn css_import_statement_is_remote(statement: &str) -> bool {
+    contains_ascii_case_insensitive(statement, "http://")
+        || contains_ascii_case_insensitive(statement, "https://")
+        || css_import_url_value(statement).is_some_and(|url| url.starts_with("//"))
+}
+
+fn css_import_url_value(statement: &str) -> Option<&str> {
+    let mut value = statement.trim_start();
+    if !starts_with_ascii_case_insensitive(value, "@import") {
+        return None;
+    }
+    value = trim_css_ws_and_comments_start(&value["@import".len()..]);
+    if starts_with_ascii_case_insensitive(value, "url") {
+        let mut args = trim_css_ws_and_comments_start(&value[3..]);
+        args = args.strip_prefix('(')?;
+        let end = args.rfind(')')?;
+        return Some(unquote_css_url(args[..end].trim()));
+    }
+    let quote = value.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let mut idx = 1usize;
+    while idx < value.len() {
+        let byte = value.as_bytes()[idx];
+        if byte == b'\\' {
+            idx = (idx + 2).min(value.len());
+            continue;
+        }
+        if byte == quote {
+            return value.get(1..idx);
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn trim_css_ws_and_comments_start(mut value: &str) -> &str {
+    loop {
+        value = value.trim_start();
+        let Some(rest) = value.strip_prefix("/*") else {
+            return value;
+        };
+        let Some(end) = rest.find("*/") else {
+            return value;
+        };
+        value = &rest[end + 2..];
+    }
+}
+
+fn unquote_css_url(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes.first(), Some(b'\'' | b'"'))
+        && bytes.last() == bytes.first()
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
     }
 }
 
@@ -2154,6 +2212,37 @@ mod tests {
     }
 
     #[test]
+    fn svg_asset_data_uri_strips_protocol_relative_remote_style_imports() {
+        let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>@import url(//cdn.example.test/fmd.css);
+@import "//fonts.example.test/fmd.css";
+@IMPORT /* remote */ URL("//cdn.example.test/upper.css");
+.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let clean = br#"<svg xmlns="http://www.w3.org/2000/svg">
+<style>.node{fill:#123456}</style>
+<rect class="node" width="10" height="10"/></svg>"#;
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new("diagram.svg", dirty.as_slice())],
+            ..HtmlOptions::default()
+        };
+        let mut out = String::new();
+
+        assert!(push_html_image_asset_data_uri(
+            "diagram.svg",
+            &opts,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            format!(
+                "data:image/svg+xml;base64,{}",
+                base64_encode(clean.as_slice())
+            )
+        );
+    }
+
+    #[test]
     fn svg_asset_data_uri_strips_remote_import_at_style_eof_without_semicolon() {
         let dirty = br#"<svg xmlns="http://www.w3.org/2000/svg">
 <style>@import url('https://fonts.example.test/fmd.css')</style>
@@ -2204,6 +2293,7 @@ mod tests {
     fn svg_asset_data_uri_leaves_non_remote_imports_unchanged() {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg">
 <style>@import url('diagram.css');
+@import url('/assets//diagram.css');
 .node{fill:#123456}</style>
 <rect class="node" width="10" height="10"/></svg>"#;
 

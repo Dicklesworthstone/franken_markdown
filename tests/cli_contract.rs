@@ -1005,8 +1005,12 @@ fn pdf_image_spec_uses_document_destination_when_missing_path_contains_equals() 
         stderr.contains("reading PDF image asset images/local.png"),
         "stderr: {stderr}"
     );
+    // The JSON error envelope escapes backslashes, so compare against the
+    // JSON-escaped form of the path (a no-op on Unix, load-bearing for the
+    // Windows path separator).
+    let json_escaped_path = missing_with_equals.replace('\\', "\\\\");
     assert!(
-        stderr.contains(&missing_with_equals),
+        stderr.contains(&json_escaped_path),
         "stderr should name the full intended path, not the decoy suffix: {stderr}"
     );
     assert!(

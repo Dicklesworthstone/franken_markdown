@@ -184,9 +184,18 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
     let mut has_reference_colon = false;
     let mut maybe_url_prefix = false;
     let mut first_special_byte = None;
+    let mut leading_spaces = 0usize;
+    let mut in_leading_spaces = true;
     let mut previous = 0u8;
 
     for (idx, &byte) in bytes.iter().enumerate() {
+        if in_leading_spaces {
+            if byte == b' ' {
+                leading_spaces += 1;
+            } else {
+                in_leading_spaces = false;
+            }
+        }
         match byte {
             b'|' => contains_pipe = true,
             b'`' => contains_backtick = true,
@@ -210,7 +219,6 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
         previous = byte;
     }
 
-    let leading_spaces = leading_spaces_bytes(bytes);
     let first = bytes.get(leading_spaces).copied();
     let indented_as_block = leading_spaces <= 3;
     let marker_tail = bytes.get(leading_spaces..).unwrap_or(&[]);
@@ -347,15 +355,10 @@ const fn is_pdf_escape_byte(byte: u8) -> bool {
     matches!(byte, b'(' | b')' | b'\\' | b'\r' | b'\n')
 }
 
-fn leading_spaces_bytes(bytes: &[u8]) -> usize {
-    bytes.iter().take_while(|&&byte| byte == b' ').count()
-}
-
 fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {
     match byte {
         b'w' => bytes[idx..].starts_with(b"www."),
-        b'h' => bytes[idx..].starts_with(b"http"),
-        b':' => bytes[idx..].starts_with(b"://"),
+        b'h' => bytes[idx..].starts_with(b"http://") || bytes[idx..].starts_with(b"https://"),
         _ => false,
     }
 }

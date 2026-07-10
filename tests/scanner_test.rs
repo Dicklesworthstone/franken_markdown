@@ -167,6 +167,24 @@ fn markdown_line_scanner_is_conservative_for_parser_edges() {
 }
 
 #[test]
+fn markdown_line_scanner_autolink_prefixes_are_exact_candidates() {
+    assert!(scan_markdown_line("see http://example.test").maybe_autolink);
+    assert!(scan_markdown_line("see https://example.test").maybe_autolink);
+    assert!(scan_markdown_line("see www.example.test").maybe_autolink);
+    assert!(scan_markdown_line("email user@example.test").maybe_autolink);
+    assert!(scan_markdown_line("raw <span>html</span>").maybe_autolink);
+
+    assert!(
+        !scan_markdown_line("httpish words without URL syntax").maybe_autolink,
+        "plain h/http substrings must not force the autolink candidate flag"
+    );
+    assert!(
+        !scan_markdown_line("colon:// without a recognized scheme").maybe_autolink,
+        ":// alone is not enough for the inline autolink parser"
+    );
+}
+
+#[test]
 fn markdown_line_scanner_starter_flags_match_parser_block_precedence() {
     let blockquote = scan_markdown_line("   > quoted");
     assert!(blockquote.maybe_blockquote);

@@ -3090,6 +3090,53 @@ fn pdf_svg_unset_opacity_uses_css_inheritance_rules() {
 }
 
 #[test]
+fn pdf_svg_inherit_opacity_uses_parent_opacity_as_local_value() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 18">
+  <g opacity="0.5" fill-opacity="0.8" stroke-opacity="0.6">
+    <rect x="2" y="2" width="10" height="10" fill="#ff0000" stroke="none"
+          style="opacity: 0.4; opacity: inherit"/>
+    <rect x="18" y="2" width="10" height="10" fill="#00ff00" stroke="none"
+          opacity="inherit"/>
+    <path d="M36 7 L50 7" fill="none" stroke="#0000ff" stroke-width="2"
+          style="--same: inherit; opacity: var(--same); stroke-opacity: 0.4; stroke-opacity: inherit"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("inherit-opacity.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Inherit opacity](inherit-opacity.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa02001000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "opacity: inherit should override the earlier same-style numeric opacity and then compose with the parent group opacity: {text}"
+    );
+    assert!(
+        text.contains("/GSa02001000 gs 0.000 1.000 0.000 rg 18 2 10 10 re f"),
+        "presentation opacity=\"inherit\" should use the parent opacity as the local opacity value: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000150 gs 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 36 7 m 50 7 l S"),
+        "CSS-variable opacity inherit and stroke-opacity inherit should both override earlier local declarations: {text}"
+    );
+    assert!(
+        !text.contains("/GSa01601000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "opacity: inherit must not leave the earlier 0.4 local opacity active: {text}"
+    );
+    assert!(
+        !text.contains("/GSa04001000 gs 0.000 1.000 0.000 rg 18 2 10 10 re f"),
+        "opacity=\"inherit\" must not be ignored as if the child had local opacity 1: {text}"
+    );
+    assert!(
+        !text.contains("/GSa10000200 gs 0.000 0.000 1.000 RG"),
+        "stroke-opacity: inherit must not leave the earlier 0.4 stroke opacity active: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">

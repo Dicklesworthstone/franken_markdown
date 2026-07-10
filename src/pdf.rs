@@ -8952,18 +8952,21 @@ fn parse_svg_style_with_ancestors(
         "opacity",
         svg_attr(attrs, "opacity"),
         &scoped_css_vars,
+        inherited_style,
     );
     apply_svg_opacity_attr(
         &mut style,
         "fill-opacity",
         svg_attr(attrs, "fill-opacity"),
         &scoped_css_vars,
+        inherited_style,
     );
     apply_svg_opacity_attr(
         &mut style,
         "stroke-opacity",
         svg_attr(attrs, "stroke-opacity"),
         &scoped_css_vars,
+        inherited_style,
     );
 
     apply_svg_css_styles(
@@ -9946,6 +9949,7 @@ fn apply_svg_opacity_attr(
     name: &str,
     value: Option<&str>,
     css_vars: &[SvgCssVariable],
+    inherited_style: SvgStyle,
 ) {
     let inherited_property = matches!(name, "fill-opacity" | "stroke-opacity");
     let Some(opacity) =
@@ -9953,15 +9957,18 @@ fn apply_svg_opacity_attr(
     else {
         return;
     };
-    let SvgOpacityPatch::Value(opacity) = opacity else {
-        return;
-    };
     match name {
-        "opacity" => {
-            style.opacity = opacity;
-        }
-        "fill-opacity" => style.fill_opacity = opacity,
-        "stroke-opacity" => style.stroke_opacity = opacity,
+        "opacity" => apply_svg_opacity_patch(&mut style.opacity, inherited_style.opacity, opacity),
+        "fill-opacity" => apply_svg_opacity_patch(
+            &mut style.fill_opacity,
+            inherited_style.fill_opacity,
+            opacity,
+        ),
+        "stroke-opacity" => apply_svg_opacity_patch(
+            &mut style.stroke_opacity,
+            inherited_style.stroke_opacity,
+            opacity,
+        ),
         _ => {}
     }
 }
@@ -13313,15 +13320,18 @@ fn parse_svg_opacity_declaration(
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
         return parse_svg_opacity_declaration(&resolved, css_vars, inherited_property);
     }
-    if value.eq_ignore_ascii_case("initial")
-        || (!inherited_property && value.eq_ignore_ascii_case("unset"))
-    {
+    if value.eq_ignore_ascii_case("initial") {
         return Some(SvgOpacityPatch::Value(1.0));
     }
-    if inherited_property
-        && (value.eq_ignore_ascii_case("inherit") || value.eq_ignore_ascii_case("unset"))
-    {
+    if value.eq_ignore_ascii_case("inherit") {
         return Some(SvgOpacityPatch::Inherit);
+    }
+    if value.eq_ignore_ascii_case("unset") {
+        return Some(if inherited_property {
+            SvgOpacityPatch::Inherit
+        } else {
+            SvgOpacityPatch::Value(1.0)
+        });
     }
     parse_svg_opacity(value, css_vars).map(SvgOpacityPatch::Value)
 }
@@ -32564,6 +32574,49 @@ mod coverage_gap_tests {
         assert!(
             parse_svg_color_with_alpha("rgb(255 0 0 / unset)", &[]).is_none(),
             "global keywords inside color-function alpha are not opacity properties"
+        );
+    }
+
+    #[test]
+    fn style_patch_inherit_opacity_overrides_prior_same_rule_value() {
+        let inherited = SvgStyle {
+            opacity: 0.45,
+            fill_opacity: 0.6,
+            stroke_opacity: 0.7,
+            ..SvgStyle::INITIAL
+        };
+        let patch = parse_svg_style_patch(
+            "opacity: 0.2; opacity: var(--inherit); \
+             fill-opacity: 0.3; fill-opacity: inherit; \
+             stroke-opacity: 0.4; stroke-opacity: inherit",
+            &[],
+            &[],
+            &[SvgCssVariable {
+                name: "--inherit".to_string(),
+                value: "inherit".to_string(),
+            }],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = inherited;
+
+        apply_svg_style_patch(&mut style, patch, inherited, true);
+
+        assert!(
+            approx(style.opacity, 0.45),
+            "opacity inherit restores inherited value, got {}",
+            style.opacity
+        );
+        assert!(
+            approx(style.fill_opacity, 0.6),
+            "fill-opacity inherit restores inherited value, got {}",
+            style.fill_opacity
+        );
+        assert!(
+            approx(style.stroke_opacity, 0.7),
+            "stroke-opacity inherit restores inherited value, got {}",
+            style.stroke_opacity
         );
     }
 

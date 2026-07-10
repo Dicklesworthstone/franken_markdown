@@ -2867,11 +2867,11 @@ fn pdf_svg_css_important_paint_and_color_values_are_normalized() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 58">
   <style>
-    .sheet-paint { fill: #00ff00 !important; stroke: #0000ff !important; stroke-width: 2; }
-    .sheet-color { color: rgb(0 128 255 / 50%) !important; fill: currentColor !important; }
+    .sheet-paint { fill: #00ff00 ! important; stroke: #0000ff ! /* stroke */ important; stroke-width: 2; }
+    .sheet-color { color: rgb(0 128 255 / 50%) ! /* color */ important; fill: currentColor !important; }
   </style>
   <rect class="sheet-paint" x="2" y="2" width="24" height="12" fill="#ff0000" stroke="#ff0000"/>
-  <rect x="32" y="2" width="24" height="12" style="fill: #ff00ff !IMPORTANT; stroke: #00ffff !important; stroke-width: 2"/>
+  <rect x="32" y="2" width="24" height="12" style="fill: #ff00ff ! /* inline */ IMPORTANT; stroke: #00ffff ! important; stroke-width: 2"/>
   <text class="sheet-color" x="2" y="32" font-size="10">Sheet</text>
   <text x="2" y="48" font-size="10" style="fill: rgb(0 128 255 / 50%) !important">Inline</text>
 </svg>

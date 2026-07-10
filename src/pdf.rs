@@ -11786,17 +11786,62 @@ fn parse_svg_dominant_baseline(
 }
 
 fn clean_svg_css_keyword_value(value: &str) -> &str {
-    const IMPORTANT: &[u8] = b"!important";
-
     let value = value.trim();
-    let bytes = value.as_bytes();
-    if bytes.len() >= IMPORTANT.len() {
-        let suffix_start = bytes.len() - IMPORTANT.len();
-        if bytes[suffix_start..].eq_ignore_ascii_case(IMPORTANT) {
-            return value[..suffix_start].trim_end();
+    strip_svg_css_important_suffix(value).unwrap_or(value)
+}
+
+fn strip_svg_css_important_suffix(value: &str) -> Option<&str> {
+    const IMPORTANT: &[u8] = b"important";
+
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut in_comment = false;
+    let mut bang = None;
+    for (idx, ch) in value.char_indices() {
+        if in_comment {
+            if value[idx..].starts_with("*/") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        if value[idx..].starts_with("/*") {
+            in_comment = true;
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            '!' if depth == 0 => bang = Some(idx),
+            _ => {}
         }
     }
-    value
+
+    let bang = bang?;
+    let important_start = skip_svg_css_ws_comments(value, bang + 1);
+    let important_end = important_start.checked_add(IMPORTANT.len())?;
+    if important_end > value.len()
+        || !value.as_bytes()[important_start..important_end].eq_ignore_ascii_case(IMPORTANT)
+    {
+        return None;
+    }
+    (skip_svg_css_ws_comments(value, important_end) == value.len())
+        .then(|| value[..bang].trim_end())
 }
 
 fn apply_svg_color_attr(style: &mut SvgStyle, value: Option<&str>, css_vars: &[SvgCssVariable]) {
@@ -31890,6 +31935,35 @@ mod coverage_gap_tests {
         assert_eq!(families[1], "Inter /*,*/");
         assert_eq!(families[2], "url(data:image/svg+xml;utf8,<svg></svg>)");
         assert_eq!(families[3], "monospace");
+    }
+
+    #[test]
+    fn css_important_cleanup_respects_css_structure() {
+        assert_eq!(
+            clean_svg_css_keyword_value("#00ff00 ! important"),
+            "#00ff00"
+        );
+        assert_eq!(
+            clean_svg_css_keyword_value("#0000ff ! /* cascade */ IMPORTANT /* trailing */"),
+            "#0000ff"
+        );
+        assert_eq!(
+            clean_svg_css_keyword_value("var(--paint, #ff0000) !important"),
+            "var(--paint, #ff0000)"
+        );
+        assert_eq!(
+            clean_svg_css_keyword_value("'Display !important'"),
+            "'Display !important'"
+        );
+        assert_eq!(
+            clean_svg_css_keyword_value("var(--family, 'Display !important')"),
+            "var(--family, 'Display !important')"
+        );
+        assert_eq!(clean_svg_css_keyword_value(r"\!important"), r"\!important");
+        assert_eq!(
+            clean_svg_css_keyword_value("url(#marker!important)"),
+            "url(#marker!important)"
+        );
     }
 
     #[test]

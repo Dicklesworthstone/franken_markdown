@@ -3053,6 +3053,43 @@ fn pdf_svg_initial_opacity_properties_reset_inherited_alpha() {
 }
 
 #[test]
+fn pdf_svg_unset_opacity_uses_css_inheritance_rules() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 18">
+  <g opacity="0.5" fill-opacity="0.2" stroke-opacity="0.3">
+    <rect x="2" y="2" width="10" height="10" fill="#ff0000" stroke="none"
+          style="--reset: unset; --inherit: inherit; opacity: 0.4; opacity: var(--reset); fill-opacity: 0.4; fill-opacity: var(--inherit)"/>
+    <path d="M18 7 L30 7" fill="none" stroke="#0000ff" stroke-width="2"
+          style="stroke-opacity: 0.4; stroke-opacity: unset"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("unset-opacity.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Unset opacity](unset-opacity.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa01001000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "opacity: unset should reset local opacity while fill-opacity inherits the group value: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000150 gs 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 18 7 m 30 7 l S"),
+        "stroke-opacity: unset should inherit the group stroke alpha before group opacity is applied: {text}"
+    );
+    assert!(
+        !text.contains("/GSa00401000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "opacity/fill-opacity unset must not leave the earlier same-style 0.4 declarations active: {text}"
+    );
+    assert!(
+        !text.contains("/GSa10000200 gs 0.000 0.000 1.000 RG"),
+        "stroke-opacity unset must not keep the earlier same-style 0.4 declaration: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">

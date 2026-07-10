@@ -957,9 +957,9 @@ struct SvgStylePatch {
     stroke_context: Option<Option<SvgContextPaint>>,
     stroke_width: Option<f32>,
     non_scaling_stroke: Option<bool>,
-    opacity: Option<f32>,
-    fill_opacity: Option<f32>,
-    stroke_opacity: Option<f32>,
+    opacity: Option<SvgOpacityPatch>,
+    fill_opacity: Option<SvgOpacityPatch>,
+    stroke_opacity: Option<SvgOpacityPatch>,
     display_visible: Option<bool>,
     visibility_visible: Option<bool>,
     shadow: Option<Option<SvgShadow>>,
@@ -984,6 +984,12 @@ struct SvgStylePatch {
     word_spacing: Option<SvgTextSpacing>,
     white_space: Option<SvgWhiteSpace>,
     text_decoration: Option<SvgTextDecoration>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SvgOpacityPatch {
+    Value(f32),
+    Inherit,
 }
 
 #[derive(Clone)]
@@ -8821,6 +8827,7 @@ fn parse_svg_style_with_ancestors(
     // separate so same-element CSS/attribute declarations override each other
     // normally before we compose with the parent.
     let inherited_opacity = style.opacity;
+    let inherited_style = style;
     style.opacity = 1.0;
     let inherited_font_size = style.font_size;
     let inherited_display_visible = style.display_visible;
@@ -8970,6 +8977,7 @@ fn parse_svg_style_with_ancestors(
         patterns,
         clip_paths,
         filter_shadows,
+        inherited_style,
         inherited_font_size,
         inherited_display_visible,
     );
@@ -8990,6 +8998,7 @@ fn parse_svg_style_with_ancestors(
                 &scoped_css_vars,
                 clip_paths,
                 filter_shadows,
+                inherited_style,
                 inherited_font_size,
                 inherited_display_visible,
             );
@@ -9489,10 +9498,14 @@ fn parse_svg_style_patch(
                 patch.dominant_baseline = parse_svg_dominant_baseline(value, css_vars);
             }
             "baseline-shift" => patch.baseline_shift = parse_svg_baseline_shift(value, css_vars),
-            "opacity" => patch.opacity = parse_svg_opacity_property(value, css_vars),
-            "fill-opacity" => patch.fill_opacity = parse_svg_opacity_property(value, css_vars),
+            "opacity" => {
+                patch.opacity = parse_svg_opacity_declaration(value, css_vars, false);
+            }
+            "fill-opacity" => {
+                patch.fill_opacity = parse_svg_opacity_declaration(value, css_vars, true);
+            }
             "stroke-opacity" => {
-                patch.stroke_opacity = parse_svg_opacity_property(value, css_vars);
+                patch.stroke_opacity = parse_svg_opacity_declaration(value, css_vars, true);
             }
             _ => {}
         }
@@ -9512,6 +9525,7 @@ fn apply_svg_css_styles(
     patterns: &[SvgPatternPaint],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    inherited_style: SvgStyle,
     inherited_font_size: f32,
     inherited_display_visible: bool,
 ) {
@@ -9529,7 +9543,7 @@ fn apply_svg_css_styles(
             filter_shadows,
             inherited_font_size,
         );
-        apply_svg_style_patch(style, patch, inherited_display_visible);
+        apply_svg_style_patch(style, patch, inherited_style, inherited_display_visible);
     }
 }
 
@@ -9679,6 +9693,7 @@ fn svg_css_ancestor(tag: &str, attrs: &[(String, String)]) -> SvgCssAncestor {
 fn apply_svg_style_patch(
     style: &mut SvgStyle,
     patch: SvgStylePatch,
+    inherited_style: SvgStyle,
     inherited_display_visible: bool,
 ) {
     if let Some(color) = patch.color {
@@ -9761,13 +9776,21 @@ fn apply_svg_style_patch(
         style.non_scaling_stroke = non_scaling_stroke;
     }
     if let Some(opacity) = patch.opacity {
-        style.opacity = opacity.clamp(0.0, 1.0);
+        apply_svg_opacity_patch(&mut style.opacity, inherited_style.opacity, opacity);
     }
     if let Some(fill_opacity) = patch.fill_opacity {
-        style.fill_opacity = fill_opacity;
+        apply_svg_opacity_patch(
+            &mut style.fill_opacity,
+            inherited_style.fill_opacity,
+            fill_opacity,
+        );
     }
     if let Some(stroke_opacity) = patch.stroke_opacity {
-        style.stroke_opacity = stroke_opacity;
+        apply_svg_opacity_patch(
+            &mut style.stroke_opacity,
+            inherited_style.stroke_opacity,
+            stroke_opacity,
+        );
     }
     if let Some(display_visible) = patch.display_visible {
         style.display_visible = inherited_display_visible && display_visible;
@@ -9843,6 +9866,13 @@ fn apply_svg_style_patch(
     }
 }
 
+fn apply_svg_opacity_patch(target: &mut f32, inherited: f32, patch: SvgOpacityPatch) {
+    match patch {
+        SvgOpacityPatch::Value(value) => *target = value.clamp(0.0, 1.0),
+        SvgOpacityPatch::Inherit => *target = inherited,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_svg_style_declaration(
     style: &mut SvgStyle,
@@ -9853,6 +9883,7 @@ fn apply_svg_style_declaration(
     css_vars: &[SvgCssVariable],
     clip_paths: &[SvgClipPath],
     filter_shadows: &[SvgFilterShadow],
+    inherited_style: SvgStyle,
     inherited_font_size: f32,
     inherited_display_visible: bool,
 ) {
@@ -9904,7 +9935,7 @@ fn apply_svg_style_declaration(
         }
         "baseline-shift" => apply_svg_baseline_shift_attr(style, Some(value), css_vars),
         "opacity" | "fill-opacity" | "stroke-opacity" => {
-            apply_svg_opacity_attr(style, name, Some(value), css_vars);
+            apply_svg_opacity_declaration(style, name, value, css_vars, inherited_style);
         }
         _ => {}
     }
@@ -9916,7 +9947,13 @@ fn apply_svg_opacity_attr(
     value: Option<&str>,
     css_vars: &[SvgCssVariable],
 ) {
-    let Some(opacity) = value.and_then(|value| parse_svg_opacity_property(value, css_vars)) else {
+    let inherited_property = matches!(name, "fill-opacity" | "stroke-opacity");
+    let Some(opacity) =
+        value.and_then(|value| parse_svg_opacity_declaration(value, css_vars, inherited_property))
+    else {
+        return;
+    };
+    let SvgOpacityPatch::Value(opacity) = opacity else {
         return;
     };
     match name {
@@ -9925,6 +9962,33 @@ fn apply_svg_opacity_attr(
         }
         "fill-opacity" => style.fill_opacity = opacity,
         "stroke-opacity" => style.stroke_opacity = opacity,
+        _ => {}
+    }
+}
+
+fn apply_svg_opacity_declaration(
+    style: &mut SvgStyle,
+    name: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    inherited_style: SvgStyle,
+) {
+    let inherited_property = matches!(name, "fill-opacity" | "stroke-opacity");
+    let Some(opacity) = parse_svg_opacity_declaration(value, css_vars, inherited_property) else {
+        return;
+    };
+    match name {
+        "opacity" => apply_svg_opacity_patch(&mut style.opacity, inherited_style.opacity, opacity),
+        "fill-opacity" => apply_svg_opacity_patch(
+            &mut style.fill_opacity,
+            inherited_style.fill_opacity,
+            opacity,
+        ),
+        "stroke-opacity" => apply_svg_opacity_patch(
+            &mut style.stroke_opacity,
+            inherited_style.stroke_opacity,
+            opacity,
+        ),
         _ => {}
     }
 }
@@ -13233,15 +13297,33 @@ fn parse_svg_opacity(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
 }
 
 fn parse_svg_opacity_property(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    match parse_svg_opacity_declaration(value, css_vars, false)? {
+        SvgOpacityPatch::Value(opacity) => Some(opacity),
+        SvgOpacityPatch::Inherit => None,
+    }
+}
+
+fn parse_svg_opacity_declaration(
+    value: &str,
+    css_vars: &[SvgCssVariable],
+    inherited_property: bool,
+) -> Option<SvgOpacityPatch> {
     let value = clean_svg_css_keyword_value(value);
     if value.starts_with("var(") {
         let resolved = resolve_svg_css_value(value, css_vars, 0)?;
-        return parse_svg_opacity_property(&resolved, css_vars);
+        return parse_svg_opacity_declaration(&resolved, css_vars, inherited_property);
     }
-    if value.eq_ignore_ascii_case("initial") {
-        return Some(1.0);
+    if value.eq_ignore_ascii_case("initial")
+        || (!inherited_property && value.eq_ignore_ascii_case("unset"))
+    {
+        return Some(SvgOpacityPatch::Value(1.0));
     }
-    parse_svg_opacity(value, css_vars)
+    if inherited_property
+        && (value.eq_ignore_ascii_case("inherit") || value.eq_ignore_ascii_case("unset"))
+    {
+        return Some(SvgOpacityPatch::Inherit);
+    }
+    parse_svg_opacity(value, css_vars).map(SvgOpacityPatch::Value)
 }
 
 fn parse_svg_number_list(value: &str) -> Vec<f32> {
@@ -32265,7 +32347,7 @@ mod coverage_gap_tests {
         let mut style = SvgStyle::INITIAL;
         style.fill_gradient = Some(2);
         style.stroke_gradient = Some(3);
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
         assert!(style.fill_context == Some(SvgContextPaint::Stroke));
         assert!(style.fill.is_none() && style.fill_gradient.is_none());
         assert!(style.stroke_context == Some(SvgContextPaint::Fill));
@@ -32292,7 +32374,7 @@ mod coverage_gap_tests {
             12.0,
         );
         let mut style = SvgStyle::INITIAL;
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
 
         assert_color(style.fill.unwrap(), (1.0, 0.0, 0.0), "commented fill");
         assert_color(style.stroke.unwrap(), (0.0, 0.0, 1.0), "commented stroke");
@@ -32314,7 +32396,7 @@ mod coverage_gap_tests {
         style.fill_gradient = Some(1);
         style.stroke = Some((1.0, 1.0, 1.0));
         style.stroke_gradient = Some(4);
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
         assert_color(style.color, (0.0, 1.0, 0.0), "patched color");
         assert!(style.fill_current_color);
         assert_color(style.fill.unwrap(), (0.0, 1.0, 0.0), "currentColor fill");
@@ -32352,7 +32434,7 @@ mod coverage_gap_tests {
         style.stroke_current_color = true;
         style.stroke_context = Some(SvgContextPaint::Fill);
 
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
 
         assert_color(style.fill.unwrap(), (0.0, 0.0, 0.0), "initial fill");
         assert!(style.fill_gradient.is_none());
@@ -32379,7 +32461,7 @@ mod coverage_gap_tests {
             12.0,
         );
         let mut style = SvgStyle::INITIAL;
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
 
         assert_color(style.fill.unwrap(), (1.0, 0.0, 0.0), "fill paint");
         assert!(approx(style.fill_color_alpha, 0.5));
@@ -32401,7 +32483,7 @@ mod coverage_gap_tests {
         );
         let mut style = SvgStyle::INITIAL;
         style.fill_color_alpha = 0.25;
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
 
         assert!(style.fill_current_color);
         assert_color(style.fill.unwrap(), (0.0, 1.0, 0.0), "currentColor fill");
@@ -32429,13 +32511,58 @@ mod coverage_gap_tests {
         style.fill_opacity = 0.3;
         style.stroke_opacity = 0.4;
 
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
 
         assert!(approx(style.opacity, 1.0), "opacity reset");
         assert!(approx(style.fill_opacity, 1.0), "fill-opacity reset");
         assert!(approx(style.stroke_opacity, 1.0), "stroke-opacity reset");
         assert!(
             parse_svg_color_with_alpha("rgb(255 0 0 / initial)", &[]).is_none(),
+            "global keywords inside color-function alpha are not opacity properties"
+        );
+    }
+
+    #[test]
+    fn style_patch_unset_opacity_uses_property_inheritance_rules() {
+        let inherited = SvgStyle {
+            fill_opacity: 0.6,
+            stroke_opacity: 0.7,
+            ..SvgStyle::INITIAL
+        };
+        let patch = parse_svg_style_patch(
+            "opacity: 0.2; opacity: unset; \
+             fill-opacity: 0.3; fill-opacity: var(--inherit); \
+             stroke-opacity: 0.4; stroke-opacity: unset",
+            &[],
+            &[],
+            &[SvgCssVariable {
+                name: "--inherit".to_string(),
+                value: "inherit".to_string(),
+            }],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = inherited;
+
+        apply_svg_style_patch(&mut style, patch, inherited, true);
+
+        assert!(
+            approx(style.opacity, 1.0),
+            "unset opacity resets to initial"
+        );
+        assert!(
+            approx(style.fill_opacity, 0.6),
+            "fill-opacity inherit restores inherited value, got {}",
+            style.fill_opacity
+        );
+        assert!(
+            approx(style.stroke_opacity, 0.7),
+            "stroke-opacity unset restores inherited value, got {}",
+            style.stroke_opacity
+        );
+        assert!(
+            parse_svg_color_with_alpha("rgb(255 0 0 / unset)", &[]).is_none(),
             "global keywords inside color-function alpha are not opacity properties"
         );
     }
@@ -32457,7 +32584,7 @@ mod coverage_gap_tests {
         let mut style = SvgStyle::INITIAL;
         style.color = (0.0, 0.5, 1.0);
         style.stroke_gradient = Some(9);
-        apply_svg_style_patch(&mut style, patch, true);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, true);
         assert!(style.stroke_current_color);
         assert_color(
             style.stroke.unwrap(),
@@ -32490,7 +32617,7 @@ mod coverage_gap_tests {
     fn style_patch_display_composes_with_hidden_ancestor() {
         let patch = parse_svg_style_patch("display: block", &[], &[], &[], &[], &[], 12.0);
         let mut style = SvgStyle::INITIAL;
-        apply_svg_style_patch(&mut style, patch, false);
+        apply_svg_style_patch(&mut style, patch, SvgStyle::INITIAL, false);
         assert!(
             !style.display_visible,
             "display:block cannot resurrect a display:none ancestor"

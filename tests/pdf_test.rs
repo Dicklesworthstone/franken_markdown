@@ -5854,7 +5854,7 @@ fn pdf_svg_css_chained_drop_shadows_emit_vector_shadow_layers() {
   </defs>
   <style>
     .fm-node rect {
-      filter: drop-shadow(4px 1px 2px rgba(12, 34, 56, 0.25)) drop-shadow(-2px 3px 1px rgba(200, 10, 30, 0.40));
+      filter: drop-shadow(4px 1px 2px rgba(12 /* red */, 34, 56, 0.25)) drop-shadow(-2px 3px 1px rgb(200 10 30 /* alpha follows */ / 0.40));
     }
   </style>
   <g class="fm-node">

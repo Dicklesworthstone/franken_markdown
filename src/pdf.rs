@@ -11177,20 +11177,69 @@ fn split_svg_top_level_whitespace(value: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = None;
     let mut depth = 0usize;
-    for (idx, ch) in value.char_indices() {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let Some(ch) = value[pos..].chars().next() else {
+            break;
+        };
+        if escaped {
+            escaped = false;
+            start.get_or_insert(pos);
+            pos += ch.len_utf8();
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            start.get_or_insert(pos);
+            pos += ch.len_utf8();
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            start.get_or_insert(pos);
+            if ch == quote_ch {
+                quote = None;
+            }
+            pos += ch.len_utf8();
+            continue;
+        }
+        if value[pos..].starts_with("/*") {
+            if depth == 0
+                && let Some(part_start) = start.take()
+            {
+                if part_start < pos {
+                    parts.push(value[part_start..pos].trim());
+                    if parts.len() >= 16 {
+                        return parts;
+                    }
+                }
+            } else if depth > 0 {
+                start.get_or_insert(pos);
+            }
+            let Some(close_rel) = value[pos + 2..].find("*/") else {
+                break;
+            };
+            pos += 2 + close_rel + 2;
+            continue;
+        }
         match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                start.get_or_insert(pos);
+            }
             '(' => {
                 depth += 1;
-                start.get_or_insert(idx);
+                start.get_or_insert(pos);
             }
             ')' => {
                 depth = depth.saturating_sub(1);
-                start.get_or_insert(idx);
+                start.get_or_insert(pos);
             }
             _ if ch.is_ascii_whitespace() && depth == 0 => {
                 if let Some(part_start) = start.take() {
-                    if part_start < idx {
-                        parts.push(value[part_start..idx].trim());
+                    if part_start < pos {
+                        parts.push(value[part_start..pos].trim());
                     }
                     if parts.len() >= 16 {
                         return parts;
@@ -11198,9 +11247,10 @@ fn split_svg_top_level_whitespace(value: &str) -> Vec<&str> {
                 }
             }
             _ => {
-                start.get_or_insert(idx);
+                start.get_or_insert(pos);
             }
         }
+        pos += ch.len_utf8();
     }
     if let Some(part_start) = start
         && part_start < value.len()
@@ -12862,8 +12912,37 @@ fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
-    for (idx, ch) in value.char_indices() {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let Some(ch) = value[pos..].chars().next() else {
+            break;
+        };
+        if escaped {
+            escaped = false;
+            pos += ch.len_utf8();
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            pos += ch.len_utf8();
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            pos += ch.len_utf8();
+            continue;
+        }
+        if value[pos..].starts_with("/*") {
+            let close_rel = value[pos + 2..].find("*/")?;
+            pos += 2 + close_rel + 2;
+            continue;
+        }
         match ch {
+            '"' | '\'' => quote = Some(ch),
             '(' => depth += 1,
             ')' => {
                 if depth == 0 {
@@ -12872,11 +12951,12 @@ fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
                 depth -= 1;
             }
             ',' if depth == 0 => {
-                parts.push(value[start..idx].trim());
-                start = idx + ch.len_utf8();
+                parts.push(value[start..pos].trim());
+                start = pos + ch.len_utf8();
             }
             _ => {}
         }
+        pos += ch.len_utf8();
     }
     if depth != 0 {
         return None;
@@ -12888,8 +12968,37 @@ fn split_svg_top_level_commas(value: &str) -> Option<Vec<&str>> {
 fn split_svg_top_level_slash(value: &str) -> Option<(&str, Option<&str>)> {
     let mut depth = 0usize;
     let mut slash = None;
-    for (idx, ch) in value.char_indices() {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let Some(ch) = value[pos..].chars().next() else {
+            break;
+        };
+        if escaped {
+            escaped = false;
+            pos += ch.len_utf8();
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            pos += ch.len_utf8();
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            pos += ch.len_utf8();
+            continue;
+        }
+        if value[pos..].starts_with("/*") {
+            let close_rel = value[pos + 2..].find("*/")?;
+            pos += 2 + close_rel + 2;
+            continue;
+        }
         match ch {
+            '"' | '\'' => quote = Some(ch),
             '(' => depth += 1,
             ')' => {
                 if depth == 0 {
@@ -12898,9 +13007,10 @@ fn split_svg_top_level_slash(value: &str) -> Option<(&str, Option<&str>)> {
                 depth -= 1;
             }
             '/' if depth == 0 && slash.is_some() => return None,
-            '/' if depth == 0 => slash = Some(idx),
+            '/' if depth == 0 => slash = Some(pos),
             _ => {}
         }
+        pos += ch.len_utf8();
     }
     if depth != 0 {
         return None;
@@ -31935,6 +32045,36 @@ mod coverage_gap_tests {
         assert_eq!(families[1], "Inter /*,*/");
         assert_eq!(families[2], "url(data:image/svg+xml;utf8,<svg></svg>)");
         assert_eq!(families[3], "monospace");
+    }
+
+    #[test]
+    fn css_top_level_splitters_ignore_comments_quotes_and_escapes() {
+        assert_eq!(
+            split_svg_top_level_whitespace(
+                r#"2px /* offset */ 3px rgb(255 /* red */ 0 0 / 50%) "quoted token" escaped\ token"#,
+            ),
+            vec![
+                "2px",
+                "3px",
+                "rgb(255 /* red */ 0 0 / 50%)",
+                "\"quoted token\"",
+                r"escaped\ token"
+            ]
+        );
+        assert_eq!(
+            split_svg_top_level_slash("rgb(1 2 3 / 0.4) /* not a divider */ / 0.5"),
+            Some(("rgb(1 2 3 / 0.4) /* not a divider */", Some("0.5")))
+        );
+        assert_eq!(
+            split_svg_top_level_commas(r#"rgb(1, 2, 3), "literal, comma", url(data:image/svg+xml;utf8,<svg></svg>) /*,*/, blue"#)
+                .expect("comma split"),
+            vec![
+                "rgb(1, 2, 3)",
+                "\"literal, comma\"",
+                "url(data:image/svg+xml;utf8,<svg></svg>) /*,*/",
+                "blue"
+            ]
+        );
     }
 
     #[test]

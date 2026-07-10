@@ -821,18 +821,17 @@ impl Hyphenator {
                     self.exceptions
                 ));
 
+                if opts == HyphenationOptions::default() {
+                    return points.to_vec();
+                }
+
                 let len = word.len();
-                let legal_count = points
-                    .iter()
-                    .filter(|&&point| legal_hyphen_point(point, len, opts))
-                    .count();
-                let mut out = Vec::with_capacity(legal_count);
-                out.extend(
-                    points
-                        .iter()
-                        .copied()
-                        .filter(|&point| legal_hyphen_point(point, len, opts)),
-                );
+                let mut out = Vec::with_capacity(points.len());
+                for &point in points {
+                    if legal_hyphen_point(point, len, opts) {
+                        out.push(point);
+                    }
+                }
                 return out;
             }
         }

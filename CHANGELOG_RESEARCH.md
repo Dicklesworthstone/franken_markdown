@@ -1,6 +1,6 @@
 # CHANGELOG Research Notes
 
-Scope: full repository history through the current `0.3.3` DSR release preparation.
+Scope: full repository history through the current `0.3.4` release preparation.
 
 ## Evidence Sources
 
@@ -26,6 +26,41 @@ Scope: full repository history through the current `0.3.3` DSR release preparati
 | DSR publication patch | 2026-07-07 | tag `v0.3.1` | DSR-built artifact line aligned to the release manifest after canceling the stuck Actions binary workflow; includes the late HTML base64 and PDF empty-segment drawing passes and leaves the rejected PDF decimal-string trial out of shipped source |
 | PDF reading-quality release | 2026-07-08 | tag `v0.3.2` | Vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, SVG text fidelity, npm package publication, and performance passes |
 | DSR all-platform patch | 2026-07-09 | release prep for `v0.3.3` | 90 post-`v0.3.2` commits including the color-mix transparency fix: SVG/PDF fidelity, HTML local SVG embedding, measured speedups, coverage expansion, and DSR target coverage for Linux, macOS Intel, macOS Apple Silicon, and Windows |
+| Issue-driven PDF fidelity patch | 2026-07-10 | release prep for `v0.3.4` | 46 post-`v0.3.3` commits closing GitHub issues #2 (remote images + JPEG `/DCTDecode` embedding, `5b1e6cc`) and #3 (Noto Sans Math symbol fallback face, `e63e463`), plus an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, measured perf passes, and a Windows CLI contract-test assertion fix |
+
+## 0.3.4 Research Notes
+
+The `v0.3.3..HEAD` log contains 46 non-merge commits before the release-prep
+metadata bump. The dominant tracks are:
+
+- User-filed issue closures: hotlinked images fetched by the CLI at render
+  time with JPEG `/DCTDecode` embedding in the PDF writer (`5b1e6cc`, fixes
+  #2), and a bundled ~56 KiB Noto Sans Math subset as a per-character symbol
+  fallback face for math/arrow glyphs (`e63e463`, fixes #3). Both fixes were
+  verified against the exact issue repros, rasterized and inspected, with new
+  end-to-end suites in `tests/remote_image_test.rs` and
+  `tests/symbol_fallback_test.rs`.
+- SVG CSS structural parsing: declaration splitting (`09ee111`), quoted value
+  delimiters (`4a9b604`), `!important` markers (`0e3a6e0`), top-level
+  separators (`b17c3c0`), and trailing `var()` tokens (`f1c79a4`).
+- SVG opacity/paint cascade: `initial` resets (`1c58704`), `unset` (`fb9af2c`),
+  `inherit` (`3c4c296`), inherited paint keywords (`c2fd4b7`), `initial` paint
+  (`f3cde82`), paint alpha composed with opacity (`add6c6b`), missing-paint
+  fallback alpha (`fafd4dd`), gradient stop alpha (`3b651d7`), mask and
+  currentColor alpha (`c70f9ab`), filter shadow flood alpha (`febeb4b`),
+  fail-closed empty clip paths (`f9d8059`), `hsl()` (`1408a5f`) and HWB colors
+  (`d8e3234`), and absolute length units (`d3d9080`, `fd8dbf4`).
+- Measured speed work with rejected trials recorded: parser line scanner and
+  paragraph continuation fast paths, HTML highlight-fragment caching and safe
+  URL memoization, PDF file-ID FNV unrolling, hyphenation exception
+  streamlining, and compression trials rejected on the data.
+- CI repair: the Windows-only `cli_contract` equals-mapping assertion now
+  compares the JSON-escaped path form (`ad86a92`), fixing the windows-latest
+  test failure that predated this release line.
+
+The WASM package gate holds under the `0.3.3`-era budgets (raw 3,400,000 /
+gzip 1,600,000 bytes) with native/WASM parity across the package corpus, and
+the full suite stands at 1706 tests at release prep.
 
 ## 0.3.3 Research Notes
 

@@ -15,10 +15,10 @@ starting with `0.2.0`, and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-09), the
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-10), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.3` DSR all-platform renderer fidelity and performance patch.**
+- Version state: **`0.3.4` remote-image, JPEG, and math-glyph PDF fidelity patch.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -36,6 +36,63 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-07 | DSR patch release | `0.3.1` is the DSR-built publication tag for the same renderer wave, with the late HTML base64 and PDF empty-segment drawing passes included and the rejected PDF decimal-string trial left out of the shipped source |
 | 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
 | 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
+| 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
+
+## 0.3.4 - 2026-07-10
+
+Issue-driven PDF fidelity patch closing the repository's first two user-filed
+issues while preserving the clean-room, network-free core contract.
+
+Hotlinked images now render in PDF output
+([#2](https://github.com/Dicklesworthstone/franken_markdown/issues/2)). The
+CLI downloads remote http(s) image destinations for PDF renders before
+invoking the renderer, via the system `curl` (preferred) or `wget`, with an
+HTTP(S)-only protocol allowlist across redirects, a per-image timeout
+(`--remote-image-timeout-secs`, default 20 s), the existing
+`--max-pdf-image-bytes` cap enforced on the received body, and an opt-out
+(`--no-remote-images`). Every fetch failure is non-fatal: a structured warning
+is reported and the destination falls back to alt text, so offline renders
+keep working. Fetched bytes enter the render core as ordinary caller-supplied
+assets — the engine itself still performs no I/O. The PDF writer gains JPEG
+support: baseline/extended/progressive Huffman JPEGs embed losslessly as
+`/DCTDecode` XObjects, while lossless/arithmetic/hierarchical flavors and
+4-component Adobe CMYK fail closed to alt text. Local `.jpg`/`.jpeg` files
+auto-load next to the Markdown file exactly like PNG/SVG, and the HTML
+renderer embeds supplied JPEG assets as data URIs
+([`5b1e6cc`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b1e6cc)).
+
+Common math and arrow glyphs no longer render as .notdef boxes
+([#3](https://github.com/Dicklesworthstone/franken_markdown/issues/3)). A
+curated ~56 KiB subset of Noto Sans Math (SIL OFL 1.1) is bundled as a sixth
+font slot covering arrows, mathematical operators, letterlike symbols, misc
+technical, geometric markers, and long arrows, regenerated reproducibly with
+the project's own clean-room subsetter. Text runs split by glyph coverage
+before width measurement so line breaking, justification, table allocation,
+and code fitting agree on the fallback face's real advances; the face is
+embedded only when a run actually uses it, so ASCII-only documents keep
+byte-identical output, and fallback glyphs stay selectable through ToUnicode
+CMap entries
+([`e63e463`](https://github.com/Dicklesworthstone/franken_markdown/commit/e63e463)).
+
+The patch also carries an SVG fidelity wave — structural SVG CSS parsing
+(declaration splitting, quoted value delimiters, `!important` markers,
+top-level separators, trailing `var()` tokens), the SVG opacity
+`initial`/`unset`/`inherit` cascade, inherited and `initial` paint keywords,
+paint alpha composed with opacity properties, alpha preserved on missing paint
+fallbacks, gradient stop/mask/currentColor/filter-shadow alpha, `hsl()` and
+`hwb()` colors, absolute length units, fail-closed empty clip paths, and
+protocol-relative SVG stylesheet import stripping in HTML — plus measured
+parser/HTML/PDF/compression optimization passes with rejected trials recorded
+in the performance artifacts, and a Windows-only CLI contract-test assertion
+fix that compares JSON-escaped path separators.
+
+Release verification for the source tree included `cargo fmt --check`,
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, the
+clean-room policy and WASM core gates, and the full test suite (1706 tests),
+with the issue repros rasterized and inspected. New end-to-end coverage
+exercises the real binary against a loopback HTTP server
+(`tests/remote_image_test.rs`) and the symbol fallback chain
+(`tests/symbol_fallback_test.rs`).
 
 ## 0.3.3 - 2026-07-09
 

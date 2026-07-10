@@ -16,24 +16,26 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.3 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.4 franken_markdown
 ```
 
 </div>
 
-> **Current status.** The `v0.3.3` GitHub release ships checksum-verified `fmd`
+> **Current status.** The `v0.3.4` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
-> x86_64, built and smoke-tested with DSR. The browser/WASM package is published
+> x86_64. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`; the npm registry latest is
-> `0.3.2` while the local package source is already versioned for `0.3.3` as
-> checked on July 9, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
-> so use the release archives or tagged source for the current `0.3.3` CLI and
+> `0.3.2` while the local package source is already versioned for `0.3.4` as
+> checked on July 10, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
+> so use the release archives or tagged source for the current `0.3.4` CLI and
 > library until the Rust crate catches up. The current renderer ships shared
 > HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, native SVG pattern strokes, text strokes, text paths, `hwb()`
-> colors and `color-mix()` transparency, staged native writes, optional
+> colors and `color-mix()` transparency, remote-image fetching with JPEG
+> `/DCTDecode` embedding for PDF, a Noto Sans Math symbol fallback face for
+> math/arrow glyphs, staged native writes, optional
 > Asupersync batch rendering, browser/WASM package sources, and a long set of
 > measured scalar optimizations.
 > SIMD and deeper pagination remain roadmap items until they have proof.
@@ -384,8 +386,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on July 9, 2026, this
-# currently installs 0.2.0 until 0.3.3 is published to crates.io.
+# Or install the published crates.io package. As checked on July 10, 2026, this
+# currently installs 0.2.0 until 0.3.4 is published to crates.io.
 cargo install franken_markdown
 ```
 
@@ -394,11 +396,11 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The `v0.3.3` release includes a `fmd` archive per platform: Linux
+The `v0.3.4` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
 Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
-Native archives are built and smoke-tested with DSR on the release fleet before
-they are attached to the GitHub release. Each archive includes a `.sha256`
+Native archives are built and smoke-tested per platform before they are
+attached to the GitHub release. Each archive includes a `.sha256`
 sidecar and the release also includes a combined `SHA256SUMS`. Download the
 archive for your platform and verify it before unpacking (Linux example):
 
@@ -410,8 +412,8 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
 published on npm (`npm install @franken-suite/franken-markdown`). As checked on
-July 9, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
-versioned at `0.3.3`, so the next successful publish will bring the browser
+July 10, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
+versioned at `0.3.4`, so the next successful publish will bring the browser
 package back in line with the GitHub release. The workflow skips versions that
 are already on the registry.
 

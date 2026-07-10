@@ -206,14 +206,10 @@ struct PdfImageData {
     height_px: u32,
     vector: Option<PdfSvgImage>,
     color: PdfImageColor,
-    /// FlateDecode stream of the image samples.
+    /// Encoded stream of the image samples; interpretation per `filter`.
     data: Vec<u8>,
-    /// When true, `data` is the raw PNG IDAT and the XObject applies the PNG
-    /// adaptive predictor (`/Predictor 15`); the simple, proven zero-decode path
-    /// for 8-bit grayscale/RGB PNGs. When false, `data` is our own zlib of
-    /// already-unfiltered 8-bit samples (no predictor) — used for formats that
-    /// must be decoded (palette, alpha, 16-bit, interlaced).
-    png_predictor: bool,
+    /// How `data` is encoded / which PDF stream filter the XObject declares.
+    filter: PdfImageStreamFilter,
     /// Optional 8-bit grayscale soft mask (FlateDecode), one sample per pixel,
     /// carrying the source image's alpha channel as a PDF `/SMask`.
     smask: Option<Vec<u8>>,
@@ -1291,6 +1287,20 @@ impl PdfImageColor {
             Self::Rgb => 3,
         }
     }
+}
+
+/// Stream encoding of a raster [`PdfImageData`] payload.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PdfImageStreamFilter {
+    /// Our own zlib of already-unfiltered 8-bit samples (`/FlateDecode`).
+    Flate,
+    /// The raw PNG IDAT with the PNG adaptive predictor declared via
+    /// `/DecodeParms << /Predictor 15 … >>` — the zero-decode fast path for
+    /// 8-bit grayscale/RGB PNGs.
+    FlatePngPredictor,
+    /// A raw baseline/extended/progressive JPEG stream (`/DCTDecode`); the PDF
+    /// reader decodes the JPEG directly, so the bytes pass through untouched.
+    Dct,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3120,7 +3130,114 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
 }
 
 fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
-    parse_png_image_asset(key, bytes).or_else(|| parse_svg_image_asset(key, bytes))
+    parse_png_image_asset(key, bytes)
+        .or_else(|| parse_jpeg_image_asset(key, bytes))
+        .or_else(|| parse_svg_image_asset(key, bytes))
+}
+
+/// Frame header of a JPEG the PDF `/DCTDecode` filter can carry unchanged.
+struct JpegHeader {
+    width: u32,
+    height: u32,
+    color: PdfImageColor,
+}
+
+/// Walk the JPEG marker segments up to start-of-scan and validate that the
+/// stream is a PDF-embeddable Huffman baseline/extended/progressive JPEG
+/// (SOF0/SOF1/SOF2) with 8-bit precision and 1 (gray) or 3 (YCbCr) components.
+/// Anything else — lossless, arithmetic-coded, hierarchical, or 4-component
+/// Adobe CMYK/YCCK with its inverted-polarity ambiguity — fails closed so the
+/// image degrades to alt text instead of embedding bytes readers mis-render.
+fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut pos = 2usize;
+    let mut header: Option<JpegHeader> = None;
+    loop {
+        // Marker alignment: skip fill bytes (0xFF padding before a marker).
+        if *bytes.get(pos)? != 0xFF {
+            return None;
+        }
+        while *bytes.get(pos)? == 0xFF {
+            pos += 1;
+        }
+        let marker = *bytes.get(pos)?;
+        pos += 1;
+        match marker {
+            // Standalone markers (no length): TEM, RSTn. SOI must not repeat.
+            0x01 | 0xD0..=0xD7 => continue,
+            // EOI before any scan: no image data.
+            0xD9 => return None,
+            // SOS: entropy-coded data follows; the frame header must exist.
+            0xDA => return header,
+            _ => {}
+        }
+        let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
+        if len < 2 {
+            return None;
+        }
+        let seg_start = pos + 2;
+        let seg_end = pos.checked_add(len)?;
+        if seg_end > bytes.len() {
+            return None;
+        }
+        match marker {
+            // Huffman baseline / extended sequential / progressive frames.
+            0xC0..=0xC2 => {
+                if header.is_some() {
+                    return None; // multiple frames (hierarchical) — refuse.
+                }
+                let seg = bytes.get(seg_start..seg_end)?;
+                let [precision, h_hi, h_lo, w_hi, w_lo, ncomp, ..] = *seg else {
+                    return None;
+                };
+                let height = u32::from(u16::from_be_bytes([h_hi, h_lo]));
+                let width = u32::from(u16::from_be_bytes([w_hi, w_lo]));
+                if precision != 8 || width == 0 || height == 0 {
+                    return None;
+                }
+                let color = match ncomp {
+                    1 => PdfImageColor::Gray,
+                    3 => PdfImageColor::Rgb,
+                    _ => return None,
+                };
+                header = Some(JpegHeader {
+                    width,
+                    height,
+                    color,
+                });
+            }
+            // Any other SOF flavor (lossless, arithmetic, differential, JPEG-LS)
+            // is outside what /DCTDecode guarantees: refuse.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xF7 => return None,
+            _ => {}
+        }
+        pos = seg_end;
+    }
+}
+
+/// A JPEG asset embeds as a `/DCTDecode` XObject with the original bytes
+/// untouched: zero re-encoding, deterministic output, and the reader's own
+/// JPEG decoder does the sample reconstruction.
+fn parse_jpeg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+        return None;
+    }
+    let header = parse_jpeg_header(bytes)?;
+    if u64::from(header.width).saturating_mul(u64::from(header.height)) > MAX_PDF_IMAGE_PIXELS {
+        return None;
+    }
+    Some(PdfImageData {
+        key: key.to_string(),
+        width_px: header.width,
+        height_px: header.height,
+        vector: None,
+        color: header.color,
+        data: bytes.to_vec(),
+        filter: PdfImageStreamFilter::Dct,
+        smask: None,
+    })
 }
 
 /// Raw chunks of a PNG, gathered before the format is interpreted.
@@ -3176,7 +3293,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
             vector: None,
             color,
             data: png.idat,
-            png_predictor: true,
+            filter: PdfImageStreamFilter::FlatePngPredictor,
             smask: None,
         });
     }
@@ -3194,7 +3311,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: None,
         color: decoded.color,
         data,
-        png_predictor: false,
+        filter: PdfImageStreamFilter::Flate,
         smask,
     })
 }
@@ -3223,7 +3340,7 @@ fn parse_svg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: Some(vector),
         color: PdfImageColor::Rgb,
         data: Vec::new(),
-        png_predictor: false,
+        filter: PdfImageStreamFilter::Flate,
         smask: None,
     })
 }
@@ -18657,7 +18774,7 @@ mod font_slot_text_refs_tests {
                 }),
                 color: PdfImageColor::Rgb,
                 data: Vec::new(),
-                png_predictor: false,
+                filter: PdfImageStreamFilter::Flate,
                 smask: None,
             },
             alt: String::new(),
@@ -25602,7 +25719,11 @@ fn build_pdf(
         // The zero-decode fast path embeds the raw PNG IDAT and runs the PNG
         // adaptive predictor; the full-decode path embeds our own zlib of the
         // unfiltered samples and needs no predictor.
-        let decode_parms = if image.png_predictor {
+        let filter_name = match image.filter {
+            PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
+            PdfImageStreamFilter::Dct => "/DCTDecode",
+        };
+        let decode_parms = if image.filter == PdfImageStreamFilter::FlatePngPredictor {
             format!(
                 " /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >>",
                 w = image.width_px,
@@ -25617,7 +25738,7 @@ fn build_pdf(
         buf.extend_from_slice(
             format!(
                 "{n} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter /FlateDecode\
+                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter {filter_name}\
                  {decode_parms}{smask_ref} /Length {len} >>\nstream\n",
                 n = image_obj(k),
                 w = image.width_px,
@@ -26557,19 +26678,19 @@ mod pdf_writer_tests {
         HeadingIdState, ImageLine, LayoutCx, Line, LineTok, LinkTarget, ListMark,
         PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem, ParagraphLayoutScratch,
         ParagraphPolicy, PdfCidFontObjectParts, PdfFontDescriptorObjectParts, PdfImageColor,
-        PdfImageData, PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts,
-        PdfShading, PdfShadingKind, PdfStream, PdfStructElementObjectParts,
-        PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg,
-        SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor, SvgCssRule, SvgCssVariable,
-        SvgDashPattern, SvgDominantBaseline, SvgElement, SvgFilterShadow, SvgGradientPaint,
-        SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap, SvgLineJoin, SvgMarker,
-        SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
-        SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText, SvgTextAnchor,
-        SvgTextDecoration, SvgTextMatrix, SvgTransform, TABLE_LAYOUT_CACHE_MAX_INLINE_NODES,
-        TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
-        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_bytes, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin,
+        PdfImageData, PdfImageStreamFilter, PdfOutlineItemObjectParts, PdfPageObjectParts,
+        PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
+        PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
+        SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor,
+        SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement,
+        SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap,
+        SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect,
+        SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText,
+        SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
+        TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
+        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
+        append_i32_string, append_image_xobject_do, append_marked_content_begin,
         append_page_background_rounded_rect_fill, append_pdf_cid_font_object,
         append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
         append_pdf_font_descriptor_object, append_pdf_fontfile2_stream_object, append_pdf_num,
@@ -28863,7 +28984,7 @@ mod pdf_writer_tests {
                 vector: None,
                 color: PdfImageColor::Rgb,
                 data: Vec::new(),
-                png_predictor: false,
+                filter: PdfImageStreamFilter::Flate,
                 smask: None,
             },
             alt: String::new(),
@@ -30346,8 +30467,8 @@ flowchart LR
 )]
 mod png_decode_tests {
     use super::{
-        DecodedPng, PNG_ADAM7, PdfImageColor, PngChunks, decode_png_full, parse_png_chunks,
-        parse_png_image_asset, png_paeth, png_pass_count,
+        DecodedPng, PNG_ADAM7, PdfImageColor, PdfImageStreamFilter, PngChunks, decode_png_full,
+        parse_png_chunks, parse_png_image_asset, png_paeth, png_pass_count,
     };
     use crate::compress::zlib_compress;
 
@@ -30939,8 +31060,9 @@ mod png_decode_tests {
         push_chunk(&mut bytes, b"IDAT", &png.idat);
         push_chunk(&mut bytes, b"IEND", &[]);
         let data = parse_png_image_asset("k", &bytes).unwrap();
-        assert!(
-            data.png_predictor,
+        assert_eq!(
+            data.filter,
+            PdfImageStreamFilter::FlatePngPredictor,
             "8-bit RGB stays on the predictor fast path"
         );
         assert!(data.smask.is_none());

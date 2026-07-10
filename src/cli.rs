@@ -17,6 +17,7 @@ use crate::{
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS: u64 = 20;
 
 /// franken_markdown — Markdown to beautiful all-in-one HTML & tiny PDF.
 #[derive(Parser)]
@@ -97,7 +98,7 @@ struct BatchArgs {
     /// recording it as a failed entry, so a large tree cannot exhaust memory.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
-    /// Maximum bytes accepted for each auto-loaded local PNG/SVG image asset.
+    /// Maximum bytes accepted for each auto-loaded local PNG/SVG/JPEG image asset.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
     /// Record per-file failures in the receipt instead of failing the run.
@@ -165,8 +166,10 @@ struct RenderArgs {
     #[arg(long)]
     pdf_line_numbers: bool,
     /// Provide or override a local PDF image asset as MARKDOWN_DEST=PATH.
-    /// File-based HTML/PDF renders also auto-load relative local PNG/SVG image
-    /// destinations; the render core itself never fetches or reads files.
+    /// File-based HTML/PDF renders also auto-load relative local PNG/SVG/JPEG
+    /// image destinations, and PDF renders fetch remote http(s) destinations
+    /// unless --no-remote-images is set; the render core itself never fetches
+    /// or reads files.
     /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
@@ -174,6 +177,17 @@ struct RenderArgs {
     /// HTML/PDF image file before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
+    /// Do not fetch remote http(s) image destinations for PDF output. By
+    /// default the CLI downloads each hotlinked image (via the system `curl`
+    /// or `wget`) with a timeout and the `--max-pdf-image-bytes` size cap so
+    /// PDFs match the HTML preview; a failed or disabled fetch degrades to the
+    /// image's alt text with a warning. The render core itself never touches
+    /// the network.
+    #[arg(long)]
+    no_remote_images: bool,
+    /// Per-image timeout in seconds for remote PDF image fetches.
+    #[arg(long, default_value_t = DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS)]
+    remote_image_timeout_secs: u64,
     /// Maximum Markdown input bytes accepted before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
@@ -435,6 +449,15 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             )
         {
             return fail_json(66, "input_error", &e, json);
+        }
+        if !args.no_remote_images {
+            append_remote_image_assets(
+                &image_destinations,
+                &mut assets,
+                args.max_pdf_image_bytes,
+                args.remote_image_timeout_secs,
+                json,
+            );
         }
         assets
     } else {
@@ -1135,7 +1158,166 @@ fn has_uri_scheme(value: &str) -> bool {
 fn has_supported_pdf_image_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "svg"))
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "svg" | "jpg" | "jpeg"
+            )
+        })
+}
+
+/// The trimmed destination when it is a remote image URL the CLI may fetch.
+/// Only literal `http://` / `https://` destinations qualify; every other
+/// scheme (or scheme-less path) is left to the local-asset machinery.
+fn remote_image_url(destination: &str) -> Option<&str> {
+    let dest = destination.trim();
+    for prefix in ["https://", "http://"] {
+        if dest.len() > prefix.len()
+            && dest
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            return Some(dest);
+        }
+    }
+    None
+}
+
+/// Fetch remote http(s) image destinations that no explicit `--pdf-image`
+/// mapping or auto-loaded local file already resolved, so hotlinked images
+/// render in PDFs just like they do in the HTML preview (GH issue #2).
+///
+/// Every failure is non-fatal: a warning is reported and the destination
+/// degrades to alt text through the renderer's existing unresolved-image
+/// path, which keeps offline renders working. The render core itself never
+/// performs network I/O — fetched bytes enter it as ordinary caller-supplied
+/// assets, and a fixed set of bytes still renders byte-identically.
+fn append_remote_image_assets(
+    destinations: &[&str],
+    assets: &mut Vec<PdfImageAsset>,
+    max_bytes: u64,
+    timeout_secs: u64,
+    json: bool,
+) {
+    let mut attempted: Vec<&str> = Vec::new();
+    for destination in destinations {
+        let Some(url) = remote_image_url(destination) else {
+            continue;
+        };
+        if attempted.contains(&url) || assets.iter().any(|asset| asset.destination.trim() == url) {
+            continue;
+        }
+        attempted.push(url);
+        match fetch_remote_image(url, max_bytes, timeout_secs) {
+            Ok(bytes) => assets.push(PdfImageAsset::new(url, bytes)),
+            Err(reason) => report_remote_image_warning(url, &reason, json),
+        }
+    }
+}
+
+/// Download one remote image via the system `curl` (preferred) or `wget`,
+/// with a hard timeout, an HTTP(S)-only protocol allowlist, bounded
+/// redirects, and the caller's byte cap enforced on the received body.
+fn fetch_remote_image(
+    url: &str,
+    max_bytes: u64,
+    timeout_secs: u64,
+) -> std::result::Result<Vec<u8>, String> {
+    let timeout = timeout_secs.max(1).to_string();
+    let user_agent = format!("fmd/{}", crate::VERSION);
+    let curl = std::process::Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--max-redirs",
+            "5",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
+            "--max-time",
+            &timeout,
+            "--max-filesize",
+            &max_bytes.to_string(),
+            "--user-agent",
+            &user_agent,
+            "--output",
+            "-",
+            "--",
+            url,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output();
+    match curl {
+        Ok(output) => return finish_remote_image_fetch("curl", &output, max_bytes),
+        Err(e) if e.kind() == IoErrorKind::NotFound => {}
+        Err(e) => return Err(format!("running curl: {e}")),
+    }
+    let wget = std::process::Command::new("wget")
+        .args([
+            "--quiet",
+            "--tries=1",
+            &format!("--timeout={timeout}"),
+            "--max-redirect=5",
+            &format!("--user-agent={user_agent}"),
+            "--output-document=-",
+            "--",
+            url,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output();
+    match wget {
+        Ok(output) => finish_remote_image_fetch("wget", &output, max_bytes),
+        Err(e) if e.kind() == IoErrorKind::NotFound => Err(
+            "neither curl nor wget is available; pass --pdf-image 'URL=PATH' or use \
+             --no-remote-images"
+                .to_string(),
+        ),
+        Err(e) => Err(format!("running wget: {e}")),
+    }
+}
+
+fn finish_remote_image_fetch(
+    tool: &str,
+    output: &std::process::Output,
+    max_bytes: u64,
+) -> std::result::Result<Vec<u8>, String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.lines().next().unwrap_or_default().trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("{tool} exited with {}", output.status)
+        } else {
+            format!("{tool}: {detail}")
+        });
+    }
+    if output.stdout.is_empty() {
+        return Err(format!("{tool} returned an empty body"));
+    }
+    let received = output.stdout.len();
+    if received as u64 > max_bytes {
+        return Err(format!(
+            "body is {received} bytes, over the --max-pdf-image-bytes cap ({max_bytes})"
+        ));
+    }
+    Ok(output.stdout.clone())
+}
+
+fn report_remote_image_warning(url: &str, reason: &str, json: bool) {
+    let message = format!(
+        "fetching remote image '{url}': {reason}; rendered as alt text \
+         (map it with --pdf-image '{url}=PATH' or silence fetching with --no-remote-images)"
+    );
+    if json {
+        eprintln!(
+            "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"remote_image_fetch_failed\",\"detail\":\"{}\"}}",
+            json_escape(&message)
+        );
+    } else {
+        eprintln!("fmd: warning: {message}");
+    }
 }
 
 fn parse_pdf_image_spec(
@@ -1401,7 +1583,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG image assets via auto file-input loading or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
     )
 }
 
@@ -1613,6 +1795,14 @@ mod helper_tests {
             auto_pdf_image_path("a/b.SVG", base),
             Some(PathBuf::from("/base/a/b.SVG"))
         );
+        assert_eq!(
+            auto_pdf_image_path("photo.jpg", base),
+            Some(PathBuf::from("/base/photo.jpg"))
+        );
+        assert_eq!(
+            auto_pdf_image_path("photo.JPEG", base),
+            Some(PathBuf::from("/base/photo.JPEG"))
+        );
         // Query and fragment suffixes are stripped before resolution.
         assert_eq!(
             auto_pdf_image_path("img.png?x=1#f", base),
@@ -1627,13 +1817,37 @@ mod helper_tests {
             "https://e/x.png",    // URI scheme
             "mailto:someone.png", // URI scheme, no slash
             "/abs/x.png",         // absolute
-            "x.jpg",              // unsupported extension
+            "x.gif",              // unsupported extension
             "noext",              // no extension
             "../up.png",          // parent-dir escape
             "a/../up.png",        // embedded parent-dir escape
             ".",                  // no file component
         ] {
             assert_eq!(auto_pdf_image_path(dest, base), None, "dest: {dest:?}");
+        }
+    }
+
+    #[test]
+    fn remote_image_url_accepts_only_http_and_https_destinations() {
+        assert_eq!(
+            remote_image_url("https://cdn.example/x.png"),
+            Some("https://cdn.example/x.png")
+        );
+        assert_eq!(
+            remote_image_url("  HTTP://cdn.example/x  "),
+            Some("HTTP://cdn.example/x")
+        );
+        for dest in [
+            "",
+            "https://",           // scheme only, no host
+            "http://",            // scheme only, no host
+            "ftp://cdn/x.png",    // non-HTTP scheme
+            "file:///etc/passwd", // local scheme must never be fetched
+            "//cdn/x.png",        // protocol-relative
+            "images/local.png",   // relative local path
+            "httpsx://e/x.png",   // near-miss scheme
+        ] {
+            assert_eq!(remote_image_url(dest), None, "dest: {dest:?}");
         }
     }
 

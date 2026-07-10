@@ -94,13 +94,13 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Area | Current functionality |
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
-| PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
+| PNG, SVG, and JPEG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
 | Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
@@ -503,8 +503,10 @@ fmd --text '<markdown>' --out out.html
 | `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML in the source through instead of escaping it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
-| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG image destinations. The render core never reads files or fetches network resources itself |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering (default `33554432`, 32 MiB) |
+| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG image destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
+| `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
+| `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
 
@@ -606,7 +608,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG image asset for HTML and PDF batch renders |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css` | Shared theme overrides, as in `render` |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |

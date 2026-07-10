@@ -846,11 +846,13 @@ struct SvgStyle {
     fill_gradient: Option<usize>,
     fill_pattern: Option<usize>,
     fill_current_color: bool,
+    fill_color_alpha: f32,
     fill_context: Option<SvgContextPaint>,
     stroke: Option<(f32, f32, f32)>,
     stroke_gradient: Option<usize>,
     stroke_pattern: Option<usize>,
     stroke_current_color: bool,
+    stroke_color_alpha: f32,
     stroke_context: Option<SvgContextPaint>,
     stroke_width: f32,
     non_scaling_stroke: bool,
@@ -891,11 +893,13 @@ impl SvgStyle {
         fill_gradient: None,
         fill_pattern: None,
         fill_current_color: false,
+        fill_color_alpha: 1.0,
         fill_context: None,
         stroke: None,
         stroke_gradient: None,
         stroke_pattern: None,
         stroke_current_color: false,
+        stroke_color_alpha: 1.0,
         stroke_context: None,
         stroke_width: 1.0,
         non_scaling_stroke: false,
@@ -943,11 +947,13 @@ struct SvgStylePatch {
     fill_gradient: Option<Option<usize>>,
     fill_pattern: Option<Option<usize>>,
     fill_current_color: Option<bool>,
+    fill_color_alpha: Option<f32>,
     fill_context: Option<Option<SvgContextPaint>>,
     stroke: Option<Option<(f32, f32, f32)>>,
     stroke_gradient: Option<Option<usize>>,
     stroke_pattern: Option<Option<usize>>,
     stroke_current_color: Option<bool>,
+    stroke_color_alpha: Option<f32>,
     stroke_context: Option<Option<SvgContextPaint>>,
     stroke_width: Option<f32>,
     non_scaling_stroke: Option<bool>,
@@ -1197,8 +1203,26 @@ struct SvgPlacedMarker {
 #[derive(Clone, Copy)]
 struct SvgMarkerPaint {
     fill: Option<SvgColor>,
+    fill_alpha: f32,
     stroke: Option<SvgColor>,
+    stroke_alpha: f32,
     stroke_width: f32,
+}
+
+fn svg_marker_paint(
+    fill: Option<SvgColor>,
+    fill_alpha: f32,
+    stroke: Option<SvgColor>,
+    stroke_alpha: f32,
+    stroke_width: f32,
+) -> SvgMarkerPaint {
+    SvgMarkerPaint {
+        fill,
+        fill_alpha: fill_alpha.clamp(0.0, 1.0),
+        stroke,
+        stroke_alpha: stroke_alpha.clamp(0.0, 1.0),
+        stroke_width,
+    }
 }
 
 #[derive(Clone)]
@@ -4932,11 +4956,13 @@ fn parse_svg_line(
                 fill_gradient: None,
                 fill_pattern: None,
                 fill_current_color: false,
+                fill_color_alpha: inherited.fill_color_alpha,
                 fill_context: None,
                 stroke: inherited.stroke,
                 stroke_gradient: inherited.stroke_gradient,
                 stroke_pattern: inherited.stroke_pattern,
                 stroke_current_color: inherited.stroke_current_color,
+                stroke_color_alpha: inherited.stroke_color_alpha,
                 stroke_context: inherited.stroke_context,
                 stroke_width: inherited.stroke_width,
                 non_scaling_stroke: inherited.non_scaling_stroke,
@@ -5010,11 +5036,13 @@ fn parse_svg_poly(
             fill_gradient: None,
             fill_pattern: None,
             fill_current_color: false,
+            fill_color_alpha: inherited.fill_color_alpha,
             fill_context: None,
             stroke: inherited.stroke,
             stroke_gradient: inherited.stroke_gradient,
             stroke_pattern: inherited.stroke_pattern,
             stroke_current_color: inherited.stroke_current_color,
+            stroke_color_alpha: inherited.stroke_color_alpha,
             stroke_context: inherited.stroke_context,
             stroke_width: inherited.stroke_width,
             non_scaling_stroke: inherited.non_scaling_stroke,
@@ -9339,22 +9367,18 @@ fn parse_svg_style_patch(
                     parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.fill_current_color = Some(true);
+                    patch.fill_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.fill_context = Some(None);
                     patch.fill_gradient = Some(None);
                     patch.fill_pattern = Some(None);
-                    if let Some(alpha) = paint_alpha {
-                        patch.fill_opacity = Some(alpha);
-                    }
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
                 {
                     patch.fill = Some(None);
                     patch.fill_current_color = Some(false);
+                    patch.fill_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.fill_context = Some(Some(context));
                     patch.fill_gradient = Some(None);
                     patch.fill_pattern = Some(None);
-                    if let Some(alpha) = paint_alpha {
-                        patch.fill_opacity = Some(alpha);
-                    }
                 } else {
                     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
                         if paint.is_some() {
@@ -9373,9 +9397,7 @@ fn parse_svg_style_patch(
                         patch.fill_gradient =
                             Some(paint.is_some().then_some(gradient_ref).flatten());
                         patch.fill_pattern = Some(paint.is_some().then_some(pattern_ref).flatten());
-                        if let Some(alpha) = paint_alpha {
-                            patch.fill_opacity = Some(alpha);
-                        }
+                        patch.fill_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     }
                 }
             }
@@ -9395,22 +9417,18 @@ fn parse_svg_style_patch(
                     parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
                     patch.stroke_current_color = Some(true);
+                    patch.stroke_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.stroke_context = Some(None);
                     patch.stroke_gradient = Some(None);
                     patch.stroke_pattern = Some(None);
-                    if let Some(alpha) = paint_alpha {
-                        patch.stroke_opacity = Some(alpha);
-                    }
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
                 {
                     patch.stroke = Some(None);
                     patch.stroke_current_color = Some(false);
+                    patch.stroke_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.stroke_context = Some(Some(context));
                     patch.stroke_gradient = Some(None);
                     patch.stroke_pattern = Some(None);
-                    if let Some(alpha) = paint_alpha {
-                        patch.stroke_opacity = Some(alpha);
-                    }
                 } else {
                     let paint = parse_svg_paint(value, gradients, css_vars).and_then(|paint| {
                         if paint.is_some() {
@@ -9430,9 +9448,7 @@ fn parse_svg_style_patch(
                             Some(paint.is_some().then_some(pattern_ref).flatten());
                         patch.stroke_current_color = Some(false);
                         patch.stroke_context = Some(None);
-                        if let Some(alpha) = paint_alpha {
-                            patch.stroke_opacity = Some(alpha);
-                        }
+                        patch.stroke_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     }
                 }
             }
@@ -9673,6 +9689,9 @@ fn apply_svg_style_patch(
         style.fill_current_color = true;
         style.fill_context = None;
     }
+    if let Some(fill_color_alpha) = patch.fill_color_alpha {
+        style.fill_color_alpha = fill_color_alpha.clamp(0.0, 1.0);
+    }
     if let Some(fill) = patch.fill {
         style.fill = fill;
         style.fill_current_color = false;
@@ -9702,6 +9721,9 @@ fn apply_svg_style_patch(
         style.stroke_pattern = None;
         style.stroke_current_color = true;
         style.stroke_context = None;
+    }
+    if let Some(stroke_color_alpha) = patch.stroke_color_alpha {
+        style.stroke_color_alpha = stroke_color_alpha.clamp(0.0, 1.0);
     }
     if let Some(stroke) = patch.stroke {
         style.stroke = stroke;
@@ -11930,12 +11952,14 @@ fn apply_svg_paint_attr(
         if target == "fill" {
             style.fill = paint;
             style.fill_current_color = false;
+            style.fill_color_alpha = 1.0;
             style.fill_context = None;
             style.fill_gradient = None;
             style.fill_pattern = None;
         } else if target == "stroke" {
             style.stroke = paint;
             style.stroke_current_color = false;
+            style.stroke_color_alpha = 1.0;
             style.stroke_context = None;
             style.stroke_gradient = None;
             style.stroke_pattern = None;
@@ -11958,18 +11982,14 @@ fn apply_svg_paint_attr(
             style.fill_pattern = None;
             style.fill_current_color = true;
             style.fill_context = None;
-            if let Some(alpha) = paint_alpha {
-                style.fill_opacity = alpha;
-            }
+            style.fill_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
         } else if target == "stroke" {
             style.stroke = Some(style.color);
             style.stroke_gradient = None;
             style.stroke_pattern = None;
             style.stroke_current_color = true;
             style.stroke_context = None;
-            if let Some(alpha) = paint_alpha {
-                style.stroke_opacity = alpha;
-            }
+            style.stroke_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
         }
         return;
     }
@@ -11980,18 +12000,14 @@ fn apply_svg_paint_attr(
             style.fill_pattern = None;
             style.fill_current_color = false;
             style.fill_context = Some(context);
-            if let Some(alpha) = paint_alpha {
-                style.fill_opacity = alpha;
-            }
+            style.fill_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
         } else if target == "stroke" {
             style.stroke = None;
             style.stroke_gradient = None;
             style.stroke_pattern = None;
             style.stroke_current_color = false;
             style.stroke_context = Some(context);
-            if let Some(alpha) = paint_alpha {
-                style.stroke_opacity = alpha;
-            }
+            style.stroke_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
         }
         return;
     }
@@ -12025,9 +12041,7 @@ fn apply_svg_paint_attr(
         if style.fill_pattern.is_some() {
             style.fill_gradient = None;
         }
-        if let Some(alpha) = paint_alpha {
-            style.fill_opacity = alpha;
-        }
+        style.fill_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
     } else if target == "stroke" {
         style.stroke = paint;
         style.stroke_gradient = if style.stroke.is_some() {
@@ -12045,9 +12059,7 @@ fn apply_svg_paint_attr(
         }
         style.stroke_current_color = false;
         style.stroke_context = None;
-        if let Some(alpha) = paint_alpha {
-            style.stroke_opacity = alpha;
-        }
+        style.stroke_color_alpha = paint_alpha.unwrap_or(1.0).clamp(0.0, 1.0);
     }
 }
 
@@ -12063,12 +12075,14 @@ fn apply_svg_initial_paint_patch(
     if target == "fill" {
         patch.fill = Some(paint);
         patch.fill_current_color = Some(false);
+        patch.fill_color_alpha = Some(1.0);
         patch.fill_context = Some(None);
         patch.fill_gradient = Some(None);
         patch.fill_pattern = Some(None);
     } else if target == "stroke" {
         patch.stroke = Some(paint);
         patch.stroke_current_color = Some(false);
+        patch.stroke_color_alpha = Some(1.0);
         patch.stroke_context = Some(None);
         patch.stroke_gradient = Some(None);
         patch.stroke_pattern = Some(None);
@@ -19172,11 +19186,13 @@ fn draw_svg_line(
         fill_gradient: None,
         fill_pattern: None,
         fill_current_color: false,
+        fill_color_alpha: line.style.fill_color_alpha,
         fill_context: None,
         stroke: line.style.stroke,
         stroke_gradient: line.style.stroke_gradient,
         stroke_pattern: line.style.stroke_pattern,
         stroke_current_color: line.style.stroke_current_color,
+        stroke_color_alpha: line.style.stroke_color_alpha,
         stroke_context: line.style.stroke_context,
         stroke_width: line.style.stroke_width,
         non_scaling_stroke: line.style.non_scaling_stroke,
@@ -19246,9 +19262,13 @@ fn draw_svg_line(
                         body,
                         line,
                         markers,
-                        style.stroke,
-                        line.style.fill,
-                        style.stroke_width,
+                        svg_marker_paint(
+                            line.style.fill,
+                            svg_fill_paint_alpha(line.style),
+                            style.stroke,
+                            svg_stroke_paint_alpha(style),
+                            style.stroke_width,
+                        ),
                         page_resources.alpha_states,
                     );
                 }
@@ -19272,9 +19292,13 @@ fn draw_svg_line(
                 body,
                 line,
                 markers,
-                style.stroke,
-                line.style.fill,
-                style.stroke_width,
+                svg_marker_paint(
+                    line.style.fill,
+                    svg_fill_paint_alpha(line.style),
+                    style.stroke,
+                    svg_stroke_paint_alpha(style),
+                    style.stroke_width,
+                ),
                 page_resources.alpha_states,
             );
         }
@@ -19477,16 +19501,9 @@ fn append_svg_line_markers(
     body: &mut String,
     line: &SvgLine,
     markers: &[SvgMarker],
-    stroke: Option<(f32, f32, f32)>,
-    fill: Option<(f32, f32, f32)>,
-    stroke_width: f32,
+    paint: SvgMarkerPaint,
     alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
-    let paint = SvgMarkerPaint {
-        fill,
-        stroke,
-        stroke_width,
-    };
     if let Some(marker_ref) = line.marker_start {
         append_svg_marker_or_arrowhead(
             body,
@@ -19589,9 +19606,13 @@ fn draw_svg_poly(
                 body,
                 poly,
                 markers,
-                style.stroke,
-                style.fill,
-                style.stroke_width,
+                svg_marker_paint(
+                    style.fill,
+                    svg_fill_paint_alpha(style),
+                    style.stroke,
+                    svg_stroke_paint_alpha(style),
+                    style.stroke_width,
+                ),
                 page_resources.alpha_states,
             );
         }
@@ -19630,9 +19651,13 @@ fn draw_svg_poly(
                 body,
                 poly,
                 markers,
-                style.stroke,
-                style.fill,
-                style.stroke_width,
+                svg_marker_paint(
+                    style.fill,
+                    svg_fill_paint_alpha(style),
+                    style.stroke,
+                    svg_stroke_paint_alpha(style),
+                    style.stroke_width,
+                ),
                 page_resources.alpha_states,
             );
         }
@@ -19687,9 +19712,13 @@ fn append_svg_ordered_poly_painted_shape(
                     body,
                     poly,
                     markers,
-                    style.stroke,
-                    style.fill,
-                    style.stroke_width,
+                    svg_marker_paint(
+                        style.fill,
+                        svg_fill_paint_alpha(style),
+                        style.stroke,
+                        svg_stroke_paint_alpha(style),
+                        style.stroke_width,
+                    ),
                     page_resources.alpha_states,
                 );
             }
@@ -19789,19 +19818,12 @@ fn append_svg_poly_markers(
     body: &mut String,
     poly: &SvgPoly,
     markers: &[SvgMarker],
-    stroke: Option<(f32, f32, f32)>,
-    fill: Option<(f32, f32, f32)>,
-    stroke_width: f32,
+    paint: SvgMarkerPaint,
     alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
     if poly.points.len() < 2 {
         return;
     }
-    let paint = SvgMarkerPaint {
-        fill,
-        stroke,
-        stroke_width,
-    };
     if let Some(marker_ref) = poly.marker_start {
         append_svg_marker_or_arrowhead(
             body,
@@ -19954,9 +19976,13 @@ fn draw_svg_path(
                 body,
                 path,
                 markers,
-                style.stroke,
-                style.fill,
-                style.stroke_width,
+                svg_marker_paint(
+                    style.fill,
+                    svg_fill_paint_alpha(style),
+                    style.stroke,
+                    svg_stroke_paint_alpha(style),
+                    style.stroke_width,
+                ),
                 page_resources.alpha_states,
             );
         }
@@ -19994,9 +20020,13 @@ fn draw_svg_path(
                 body,
                 path,
                 markers,
-                style.stroke,
-                style.fill,
-                style.stroke_width,
+                svg_marker_paint(
+                    style.fill,
+                    svg_fill_paint_alpha(style),
+                    style.stroke,
+                    svg_stroke_paint_alpha(style),
+                    style.stroke_width,
+                ),
                 page_resources.alpha_states,
             );
         }
@@ -20049,9 +20079,13 @@ fn append_svg_ordered_path_painted_shape(
                     body,
                     path,
                     markers,
-                    style.stroke,
-                    style.fill,
-                    style.stroke_width,
+                    svg_marker_paint(
+                        style.fill,
+                        svg_fill_paint_alpha(style),
+                        style.stroke,
+                        svg_stroke_paint_alpha(style),
+                        style.stroke_width,
+                    ),
                     page_resources.alpha_states,
                 );
             }
@@ -20147,16 +20181,9 @@ fn append_svg_path_markers(
     body: &mut String,
     path: &SvgPath,
     markers: &[SvgMarker],
-    stroke: Option<(f32, f32, f32)>,
-    fill: Option<(f32, f32, f32)>,
-    stroke_width: f32,
+    marker_paint: SvgMarkerPaint,
     alpha_states: &mut BTreeSet<(u16, u16)>,
 ) {
-    let marker_paint = SvgMarkerPaint {
-        fill,
-        stroke,
-        stroke_width,
-    };
     if let Some(marker_ref) = path.marker_end
         && let Some((tip, tail)) = svg_path_end_tangent(&path.ops)
     {
@@ -21727,21 +21754,27 @@ fn svg_style_has_marker_paint(style: SvgStyle) -> bool {
 }
 
 fn svg_effective_fill_opacity(style: SvgStyle) -> f32 {
-    let color_alpha = if style.fill_current_color {
-        style.color_alpha
-    } else {
-        1.0
-    };
-    (style.opacity * style.fill_opacity * color_alpha).clamp(0.0, 1.0)
+    (style.opacity * style.fill_opacity * svg_fill_paint_alpha(style)).clamp(0.0, 1.0)
 }
 
 fn svg_effective_stroke_opacity(style: SvgStyle) -> f32 {
-    let color_alpha = if style.stroke_current_color {
+    (style.opacity * style.stroke_opacity * svg_stroke_paint_alpha(style)).clamp(0.0, 1.0)
+}
+
+fn svg_fill_paint_alpha(style: SvgStyle) -> f32 {
+    if style.fill_current_color {
         style.color_alpha
     } else {
-        1.0
-    };
-    (style.opacity * style.stroke_opacity * color_alpha).clamp(0.0, 1.0)
+        style.fill_color_alpha
+    }
+}
+
+fn svg_stroke_paint_alpha(style: SvgStyle) -> f32 {
+    if style.stroke_current_color {
+        style.color_alpha
+    } else {
+        style.stroke_color_alpha
+    }
 }
 
 fn svg_style_alpha_values(style: SvgStyle) -> Option<(u16, u16)> {
@@ -22030,6 +22063,15 @@ fn append_svg_marker_or_arrowhead(
         return;
     }
     if let Some(stroke) = paint.stroke {
+        let fill_alpha = quantize_svg_alpha(paint.stroke_alpha);
+        if fill_alpha < 1000 {
+            body.push_str("q ");
+            append_svg_alpha_state_recorded(body, alpha_states, fill_alpha, 1000);
+            body.push(' ');
+            append_svg_arrowhead(body, placed.tip, placed.tail, stroke, paint.stroke_width);
+            body.push_str("Q\n");
+            return;
+        }
         append_svg_arrowhead(body, placed.tip, placed.tail, stroke, paint.stroke_width);
     }
 }
@@ -22126,26 +22168,33 @@ fn append_svg_marker_shape_paint(body: &mut String, style: SvgStyle, ops: &[SvgP
 
 fn svg_style_with_marker_context(mut style: SvgStyle, paint: SvgMarkerPaint) -> SvgStyle {
     if let Some(context) = style.fill_context {
-        style.fill = svg_marker_context_paint(context, paint);
+        let context_paint = svg_marker_context_paint(context, paint);
+        style.fill = context_paint.0;
         style.fill_gradient = None;
         style.fill_pattern = None;
         style.fill_current_color = false;
+        style.fill_color_alpha = context_paint.1;
         style.fill_context = None;
     }
     if let Some(context) = style.stroke_context {
-        style.stroke = svg_marker_context_paint(context, paint);
+        let context_paint = svg_marker_context_paint(context, paint);
+        style.stroke = context_paint.0;
         style.stroke_gradient = None;
         style.stroke_pattern = None;
         style.stroke_current_color = false;
+        style.stroke_color_alpha = context_paint.1;
         style.stroke_context = None;
     }
     style
 }
 
-fn svg_marker_context_paint(context: SvgContextPaint, paint: SvgMarkerPaint) -> Option<SvgColor> {
+fn svg_marker_context_paint(
+    context: SvgContextPaint,
+    paint: SvgMarkerPaint,
+) -> (Option<SvgColor>, f32) {
     match context {
-        SvgContextPaint::Fill => paint.fill,
-        SvgContextPaint::Stroke => paint.stroke,
+        SvgContextPaint::Fill => (paint.fill, paint.fill_alpha),
+        SvgContextPaint::Stroke => (paint.stroke, paint.stroke_alpha),
     }
 }
 
@@ -26564,7 +26613,8 @@ mod pdf_writer_tests {
             patterns,
             css_vars,
         );
-        assert!((style.stroke_opacity - 0.25).abs() < f32::EPSILON);
+        assert!((style.stroke_color_alpha - 0.25).abs() < f32::EPSILON);
+        assert!((style.stroke_opacity - 1.0).abs() < f32::EPSILON);
 
         assert_eq!(
             split_svg_top_level_slash("rgb(1 2 3 / 0.4) / 0.5"),
@@ -32258,6 +32308,50 @@ mod coverage_gap_tests {
         assert!(style.stroke_pattern.is_none());
         assert!(!style.stroke_current_color);
         assert!(style.stroke_context.is_none());
+    }
+
+    #[test]
+    fn style_patch_paint_alpha_composes_with_opacity_properties() {
+        let patch = parse_svg_style_patch(
+            "fill: rgba(255,0,0,0.5); fill-opacity: 0.5; \
+             stroke-opacity: 0.25; stroke: rgba(0,0,255,0.4)",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        apply_svg_style_patch(&mut style, patch, true);
+
+        assert_color(style.fill.unwrap(), (1.0, 0.0, 0.0), "fill paint");
+        assert!(approx(style.fill_color_alpha, 0.5));
+        assert!(approx(style.fill_opacity, 0.5));
+        assert!(approx(svg_effective_fill_opacity(style), 0.25));
+        assert_color(style.stroke.unwrap(), (0.0, 0.0, 1.0), "stroke paint");
+        assert!(approx(style.stroke_color_alpha, 0.4));
+        assert!(approx(style.stroke_opacity, 0.25));
+        assert!(approx(svg_effective_stroke_opacity(style), 0.1));
+
+        let patch = parse_svg_style_patch(
+            "color: rgb(0 255 0 / 50%); fill: currentColor; fill-opacity: 0.5",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        style.fill_color_alpha = 0.25;
+        apply_svg_style_patch(&mut style, patch, true);
+
+        assert!(style.fill_current_color);
+        assert_color(style.fill.unwrap(), (0.0, 1.0, 0.0), "currentColor fill");
+        assert!(approx(style.fill_color_alpha, 1.0));
+        assert!(approx(style.fill_opacity, 0.5));
+        assert!(approx(svg_effective_fill_opacity(style), 0.25));
     }
 
     #[test]

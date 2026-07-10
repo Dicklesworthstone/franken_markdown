@@ -914,6 +914,74 @@ fn pdf_svg_marker_context_paint_inherits_referencing_shape_fill_and_stroke() {
 }
 
 #[test]
+fn pdf_svg_marker_context_paint_preserves_referencing_paint_alpha() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 18">
+  <defs>
+    <marker id="ctx-alpha" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="context-stroke" fill-opacity="0.5" stroke="context-fill" stroke-opacity="0.25"/>
+    </marker>
+  </defs>
+  <line x1="4" y1="9" x2="32" y2="9" fill="rgba(0,255,0,0.4)" stroke="rgba(255,0,0,0.5)" stroke-width="2" marker-end="url(#ctx-alpha)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("marker-context-alpha.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Marker context paint alpha](marker-context-alpha.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa02500100 << /ca 0.250 /CA 0.100 >>"),
+        "marker context paint should preserve referencing paint alpha before child opacity is applied: {text}"
+    );
+    assert!(
+        text.contains("/GSa02500100 gs 1.000 0.000 0.000 rg 0.000 1.000 0.000 RG 1 w"),
+        "marker child fill=context-stroke and stroke=context-fill should use composed alpha with resolved context colors: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_marker_arrowhead_fallback_preserves_stroke_paint_alpha() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 18">
+  <line x1="4" y1="9" x2="32" y2="9" stroke="rgba(255,0,0,0.5)" stroke-width="2" marker-end="url(#missing)"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "marker-fallback-alpha.svg",
+            svg.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(
+        "![Marker arrowhead fallback alpha](marker-fallback-alpha.svg)",
+        &opts,
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa10000500 << /ca 1.000 /CA 0.500 >>"),
+        "translucent marker-bearing line stroke should keep alpha on the stroking side: {text}"
+    );
+    assert!(
+        text.contains("/GSa05001000 << /ca 0.500 /CA 1.000 >>"),
+        "fallback arrowhead is a filled triangle and should keep the stroke paint alpha on the non-stroking side: {text}"
+    );
+    assert!(
+        text.contains("q /GSa05001000 gs 1.000 0.000 0.000 rg"),
+        "fallback arrowhead alpha should be scoped before the filled triangle paint: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_markers_render_on_unstroked_referencing_shapes_when_marker_has_own_paint() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 42">
@@ -2976,6 +3044,58 @@ fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
     assert!(
         !text.contains("Ghost"),
         "color:transparent used through currentColor should make text fully transparent: {text}"
+    );
+}
+
+#[test]
+fn pdf_svg_paint_alpha_composes_with_opacity_properties() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 18">
+  <rect x="2" y="2" width="10" height="10" fill="rgba(255,0,0,0.5)" fill-opacity="0.5" stroke="none"/>
+  <path d="M18 7 L32 7" fill="none" stroke="rgba(255,0,0,0.5)" stroke-opacity="0.5" stroke-width="2"/>
+  <rect x="38" y="2" width="10" height="10" style="fill: rgb(0 0 255 / 25%); fill-opacity: 0.4; stroke: rgba(255,0,0,0.5); stroke-opacity: 0.5; stroke-width: 2"/>
+  <rect x="56" y="2" width="10" height="10" style="fill-opacity: 0.4; fill: rgb(0 255 0 / 25%); stroke-opacity: 0.5; stroke: rgba(255,0,255,0.5); stroke-width: 2"/>
+  <rect x="74" y="2" width="10" height="10" style="color: rgb(255 0 0 / 50%); fill: currentColor; fill-opacity: 0.5; stroke: none"/>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("paint-alpha-opacity.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Paint alpha opacity](paint-alpha-opacity.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa02501000 << /ca 0.250 /CA 1.000 >>"),
+        "fill paint alpha should multiply with fill-opacity instead of being overwritten: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000250 << /ca 1.000 /CA 0.250 >>"),
+        "stroke paint alpha should multiply with stroke-opacity instead of being overwritten: {text}"
+    );
+    assert!(
+        text.contains("/GSa01000250 << /ca 0.100 /CA 0.250 >>"),
+        "inline style paint alpha and opacity properties should compose independent of declaration order: {text}"
+    );
+    assert!(
+        text.contains("/GSa02501000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "attribute fill alpha should compose with fill-opacity at paint time: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000250 gs 1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 18 7 m 32 7 l S"),
+        "attribute stroke alpha should compose with stroke-opacity at paint time: {text}"
+    );
+    assert!(
+        text.contains("/GSa01000250 gs 0.000 0.000 1.000 rg 1.000 0.000 0.000 RG 2 w"),
+        "style fill-before-opacity and stroke-before-opacity should keep both alpha factors: {text}"
+    );
+    assert!(
+        text.contains("/GSa01000250 gs 0.000 1.000 0.000 rg 1.000 0.000 1.000 RG 2 w"),
+        "style opacity-before-fill and opacity-before-stroke should keep both alpha factors: {text}"
+    );
+    assert!(
+        text.contains("/GSa02501000 gs 1.000 0.000 0.000 rg 74 2 10 10 re f"),
+        "currentColor alpha should still compose through fill-opacity without stale fill paint alpha: {text}"
     );
 }
 

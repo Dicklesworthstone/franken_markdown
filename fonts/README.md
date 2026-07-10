@@ -13,8 +13,23 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Sans (default) | IBM Plex Sans   | `ibm-plex-sans/IBMPlexSans-{Regular,Bold,Italic,BoldItalic}.ttf` |
 | Serif (LaTeX)  | Computer Modern | `computer-modern/cmun{rm,bx,ti,bi}.ttf` (Roman / Bold / Italic / BoldItalic) |
 | Mono (code)    | CM Typewriter   | `computer-modern/cmuntt.ttf` |
+| Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
 
 `cmunrm` is the classic Computer Modern Roman — the canonical LaTeX body face.
+
+The symbol fallback face backs PDF text runs whose primary face has no glyph for
+a character — arrows, math operators, geometric markers, and friends — so `⇒`
+or `≠` render as real glyphs instead of `.notdef` boxes. It is a curated
+~56 KiB subset of Noto Sans Math produced deterministically by the project's
+own subsetter:
+
+```bash
+cargo run --example gen_symbol_fallback_font -- \
+    /path/to/NotoSansMath-Regular.ttf fonts/noto-sans-math/NotoSansMathSymbols.ttf
+```
+
+The curated codepoint ranges live in `examples/gen_symbol_fallback_font.rs` and
+are the single source of truth for the fallback repertoire.
 
 ## Sources
 
@@ -23,6 +38,10 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 - **Computer Modern Unicode** — the CMU project, packaged as web fonts
   (<https://checkmyworking.com/cm-web-fonts/>), SIL OFL 1.1. License:
   `computer-modern/OFL.txt`.
+- **Noto Sans Math** — <https://github.com/google/fonts/tree/main/ofl/notosansmath>
+  (© The Noto Project Authors), SIL OFL 1.1. License: `noto-sans-math/OFL.txt`.
+  Committed as the curated `NotoSansMathSymbols.ttf` subset described above, not
+  the full face.
 
 ## Notes
 

@@ -90,13 +90,18 @@ const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
 const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-// Font slots referenced in page Resources as /F1../F5.
+// Font slots referenced in page Resources as /F1../F6.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
 const F_MONO: u8 = 4;
 const F_BOLDITALIC: u8 = 5;
-const SLOTS: [u8; 5] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC];
+/// The bundled symbol fallback face (curated Noto Sans Math subset). Layout
+/// routes a character here only when its style slot's face has no glyph for it
+/// but the fallback does, so common math/arrow symbols render as real glyphs
+/// instead of `.notdef` boxes.
+const F_SYMBOL: u8 = 6;
+const SLOTS: [u8; 6] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC, F_SYMBOL];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.
@@ -1344,6 +1349,27 @@ impl Face {
         Ok(Self { font, kern, lig })
     }
 
+    /// Load the bundled symbol fallback face. It has no caller-override slot
+    /// (the fallback repertoire is a renderer guarantee, not a theme choice),
+    /// so it is built straight from the registry's cached parse.
+    fn load_bundled_symbol() -> Result<Self> {
+        let font = fonts::symbol_font().map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled symbol fallback font is not a supported TrueType font: {err}"
+            ))
+        })?;
+        let layout = fonts::symbol_layout_tables().map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled symbol fallback font layout tables failed to parse: {err}"
+            ))
+        })?;
+        Ok(Self {
+            font: Cow::Borrowed(font),
+            kern: Cow::Borrowed(&layout.kern),
+            lig: Cow::Borrowed(&layout.lig),
+        })
+    }
+
     fn glyph_advance_1000(&self, glyph: u16) -> u32 {
         if self.font.units_per_em == 0 {
             return 0;
@@ -1389,6 +1415,9 @@ struct Faces {
     italic: Face,
     bolditalic: Face,
     mono: Face,
+    /// Bundled symbol fallback face; never caller-overridable, always loaded so
+    /// coverage checks are total. Embedded in the PDF only when actually used.
+    symbol: Face,
 }
 
 /// Sanitized page geometry derived from the shared theme model.
@@ -1487,6 +1516,7 @@ impl Faces {
                 FontAssetSlot::MonoRegular,
                 mono_font_face(&opts.font_assets, FontStyle::Regular),
             )?,
+            symbol: Face::load_bundled_symbol()?,
         })
     }
 
@@ -1496,7 +1526,22 @@ impl Faces {
             F_ITALIC => &self.italic,
             F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
+            F_SYMBOL => &self.symbol,
             _ => &self.body,
+        }
+    }
+
+    /// The slot that should carry `c` when the requested style slot renders it:
+    /// the style slot itself when its face maps the character (or when nothing
+    /// does), otherwise the bundled symbol fallback face.
+    fn fallback_slot(&self, slot: u8, c: char) -> u8 {
+        if slot == F_SYMBOL
+            || self.face(slot).glyph_index(c) != 0
+            || self.symbol.glyph_index(c) == 0
+        {
+            slot
+        } else {
+            F_SYMBOL
         }
     }
 
@@ -1882,26 +1927,33 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     if let Ok(faces) = Faces::load(opts) {
         let mut text = String::new();
         collect_text(&doc.blocks, &mut text);
-        text.push_str(&image_text);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
-        for c in text.chars() {
-            if c.is_whitespace() || c.is_control() {
-                continue;
-            }
-            let mapped = faces.body.glyph_index(c) != 0
-                || faces.bold.glyph_index(c) != 0
-                || faces.italic.glyph_index(c) != 0
-                || faces.bolditalic.glyph_index(c) != 0
-                || faces.mono.glyph_index(c) != 0;
-            if !mapped {
-                missing += 1;
-                if seen.insert(c) && sample.chars().count() < 8 {
-                    sample.push(c);
+        let mut scan = |chars: &str, allow_symbol_fallback: bool| {
+            for c in chars.chars() {
+                if c.is_whitespace() || c.is_control() {
+                    continue;
+                }
+                let mapped = faces.body.glyph_index(c) != 0
+                    || faces.bold.glyph_index(c) != 0
+                    || faces.italic.glyph_index(c) != 0
+                    || faces.bolditalic.glyph_index(c) != 0
+                    || faces.mono.glyph_index(c) != 0
+                    // Markdown text runs fall back to the bundled symbol face
+                    // (see `apply_symbol_fallback`); embedded SVG text does
+                    // not, so its coverage is judged on the primary faces only.
+                    || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0);
+                if !mapped {
+                    missing += 1;
+                    if seen.insert(c) && sample.chars().count() < 8 {
+                        sample.push(c);
+                    }
                 }
             }
-        }
+        };
+        scan(&text, true);
+        scan(&image_text, false);
         if missing > 0 {
             warnings.push(RenderWarning::MissingGlyphs {
                 count: missing,
@@ -2683,6 +2735,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             // Headings render bold; inner emphasis becomes bold-italic.
             let mut toks = Vec::new();
             tokenize(inlines, true, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             // H1/H2 get a subtle full-measure hairline rule beneath the text.
             let ruled = matches!(level, 1 | 2);
@@ -2719,6 +2772,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
             let mut toks = Vec::new();
             tokenize(inlines, false, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -2890,6 +2944,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             // actual tag passthrough when callers opt into that behavior.
             let mut toks = Vec::new();
             push_text_tokens(html, F_BODY, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -2939,6 +2994,7 @@ fn layout_simple_text_paragraph(
         let start = out.len();
         let mut toks = Vec::new();
         push_text_tokens(text, F_BODY, false, None, &mut toks);
+        apply_symbol_fallback(&mut toks, cx.faces);
         layout_inlines(toks, indent, size, gap_after, out, cx, flow);
         let lines = out[start..].to_vec();
         cx.simple_paragraph_cache.insert_if_room(key, lines);
@@ -2947,6 +3003,7 @@ fn layout_simple_text_paragraph(
 
     let mut toks = Vec::new();
     push_text_tokens(text, F_BODY, false, None, &mut toks);
+    apply_symbol_fallback(&mut toks, cx.faces);
     layout_inlines(toks, indent, size, gap_after, out, cx, flow);
 }
 
@@ -14713,9 +14770,10 @@ struct CellWrapLine {
 /// Tokenize a cell's inlines into styled tokens, inheriting a bold base style for
 /// header cells (so `**x**`/`*x*`/`` `x` ``/links inside cells keep their faces,
 /// strikethrough, and clickable destinations instead of being flattened).
-fn cell_tokens(inlines: &[Inline], header: bool) -> Vec<Tok> {
+fn cell_tokens(inlines: &[Inline], header: bool, faces: &Faces) -> Vec<Tok> {
     let mut toks = Vec::new();
     tokenize(inlines, header, false, false, None, &mut toks);
+    apply_symbol_fallback(&mut toks, faces);
     toks
 }
 
@@ -15278,12 +15336,16 @@ fn layout_table_uncached(
     let head_toks: Vec<Vec<Tok>> = table
         .head
         .iter()
-        .map(|cell| cell_tokens(cell, true))
+        .map(|cell| cell_tokens(cell, true, faces))
         .collect();
     let row_toks: Vec<Vec<Vec<Tok>>> = table
         .rows
         .iter()
-        .map(|row| row.iter().map(|cell| cell_tokens(cell, false)).collect())
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell_tokens(cell, false, faces))
+                .collect()
+        })
         .collect();
 
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
@@ -15509,6 +15571,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                 tokenize(inl, false, false, false, None, &mut toks);
             }
         }
+        apply_symbol_fallback(&mut toks, cx.faces);
         let group = cx.alloc_flow();
         let item_start_line = out.len();
         if let Some(top) = cx.list_stack.last_mut() {
@@ -15660,6 +15723,55 @@ fn push_text_tokens(
             link: link.cloned(),
             strike,
         });
+    }
+}
+
+/// Rewrite `toks` so every character a token's own face cannot map (glyph 0)
+/// but the bundled symbol fallback face can is carried by an [`F_SYMBOL`]
+/// token. This runs before any width measurement, so line breaking,
+/// justification, and the content stream all agree on the fallback face's real
+/// advances. Word identity is preserved: split pieces are adjacent non-space
+/// tokens, which the paragraph builder already measures as one unbreakable
+/// word with per-slot shaping.
+fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = &toks[i];
+        // Space tokens and pure-ASCII words never split: the curated fallback
+        // face carries no ASCII repertoire, so `fallback_slot` is the identity
+        // for them. This keeps the common path allocation-free.
+        if tok.space || tok.text.is_ascii() {
+            i += 1;
+            continue;
+        }
+        let slot = tok.slot;
+        let mut runs: Vec<(u8, String)> = Vec::new();
+        for c in tok.text.chars() {
+            let target = faces.fallback_slot(slot, c);
+            match runs.last_mut() {
+                Some((run_slot, buf)) if *run_slot == target => buf.push(c),
+                _ => runs.push((target, c.to_string())),
+            }
+        }
+        if runs.len() <= 1 && runs.first().is_none_or(|(s, _)| *s == slot) {
+            i += 1;
+            continue;
+        }
+        let link = tok.link.clone();
+        let strike = tok.strike;
+        let replaced = runs.len();
+        toks.splice(
+            i..=i,
+            runs.into_iter().map(|(run_slot, text)| Tok {
+                text,
+                slot: run_slot,
+                space: false,
+                hard_break: false,
+                link: link.clone(),
+                strike,
+            }),
+        );
+        i += replaced;
     }
 }
 
@@ -16876,21 +16988,9 @@ fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
         .map(|line| {
             if line.contains('\t') {
                 let expanded = expand_code_tabs(line);
-                text_width_cached(
-                    &expanded,
-                    spec.default_size,
-                    F_MONO,
-                    spec.faces,
-                    spec.width_cache,
-                )
+                code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache)
             } else {
-                text_width_cached(
-                    line,
-                    spec.default_size,
-                    F_MONO,
-                    spec.faces,
-                    spec.width_cache,
-                )
+                code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache)
             }
         })
         .fold(0.0f32, f32::max);
@@ -17084,7 +17184,7 @@ fn wrap_code_fragments(
 
     for frag in frags {
         for ch in frag.text.chars() {
-            let cw = char_width(ch, size, F_MONO, faces);
+            let cw = char_width(ch, size, faces.fallback_slot(F_MONO, ch), faces);
             let limit = if lines.is_empty() {
                 first_width
             } else {
@@ -17118,6 +17218,45 @@ fn push_code_frag_char(frags: &mut Vec<CodeFrag>, ch: char, fill: Fill) {
     });
 }
 
+/// Split one run of code text into `(slot, text)` pieces per the symbol
+/// fallback rule (see [`Faces::fallback_slot`]): characters CM Typewriter
+/// cannot map but the bundled symbol face can are carried by [`F_SYMBOL`]
+/// runs. Pure-ASCII text takes an allocation-free fast path.
+fn split_code_slot_runs<'a>(text: &'a str, faces: &Faces) -> Vec<(u8, Cow<'a, str>)> {
+    if text.is_ascii() {
+        return vec![(F_MONO, Cow::Borrowed(text))];
+    }
+    let mut runs: Vec<(u8, String)> = Vec::new();
+    for c in text.chars() {
+        let target = faces.fallback_slot(F_MONO, c);
+        match runs.last_mut() {
+            Some((slot, buf)) if *slot == target => buf.push(c),
+            _ => runs.push((target, c.to_string())),
+        }
+    }
+    runs.into_iter()
+        .map(|(slot, run)| (slot, Cow::Owned(run)))
+        .collect()
+}
+
+/// Width of one code line measured with the same per-slot fallback splitting
+/// the seg builder uses, so font-size fitting and wrapping agree with what the
+/// content stream will actually draw.
+fn code_text_width_cached(
+    text: &str,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> f32 {
+    if text.is_ascii() {
+        return text_width_cached(text, size, F_MONO, faces, width_cache);
+    }
+    split_code_slot_runs(text, faces)
+        .iter()
+        .map(|(slot, run)| text_width_cached(run, size, *slot, faces, width_cache))
+        .sum()
+}
+
 fn code_frags_to_segs(
     frags: &[CodeFrag],
     x0: f32,
@@ -17131,18 +17270,20 @@ fn code_frags_to_segs(
         if frag.text.is_empty() {
             continue;
         }
-        let width = text_width_cached(&frag.text, size, F_MONO, faces, width_cache);
-        segs.push(Seg {
-            x,
-            slot: F_MONO,
-            text: frag.text.clone(),
-            link: None,
-            fill: frag.fill,
-            strike: false,
-            task: None,
-            width,
-        });
-        x += width;
+        for (slot, run) in split_code_slot_runs(&frag.text, faces) {
+            let width = text_width_cached(&run, size, slot, faces, width_cache);
+            segs.push(Seg {
+                x,
+                slot,
+                text: run.into_owned(),
+                link: None,
+                fill: frag.fill,
+                strike: false,
+                task: None,
+                width,
+            });
+            x += width;
+        }
     }
     segs
 }
@@ -18416,6 +18557,7 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
         F_ITALIC => Some(2),
         F_MONO => Some(3),
         F_BOLDITALIC => Some(4),
+        F_SYMBOL => Some(5),
         _ => None,
     }
 }
@@ -30984,7 +31126,7 @@ mod table_wrap_tests {
         faces: &Faces,
         width_cache: &std::cell::RefCell<super::WidthCache>,
     ) {
-        let toks = cell_tokens(cell, header);
+        let toks = cell_tokens(cell, header, faces);
         column.push(table_cell_measure(
             &toks,
             TABLE_FONT_SIZE,
@@ -31020,7 +31162,7 @@ mod table_wrap_tests {
 
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
         let width_cache = width_cache();
-        let toks = cell_tokens(cell, header);
+        let toks = cell_tokens(cell, header, faces);
         table_cell_measure(&toks, TABLE_FONT_SIZE, faces, &width_cache, header).max_content
     }
 
@@ -31097,7 +31239,7 @@ mod table_wrap_tests {
         let width_cache = width_cache();
         // A single 200-character word with no break opportunities.
         let cell = vec![Inline::Text("X".repeat(200))];
-        let toks = cell_tokens(&cell, false);
+        let toks = cell_tokens(&cell, false, &faces);
         let max_width = 100.0;
         let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces, &width_cache);
         assert!(
@@ -31124,7 +31266,7 @@ mod table_wrap_tests {
             Inline::Strong(vec![Inline::Text("repeat".to_string())]),
             Inline::Text(" repeat".to_string()),
         ]);
-        let toks = cell_tokens(&cell, false);
+        let toks = cell_tokens(&cell, false, &faces);
         let uncached = table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &width_cache(), false);
         let measured =
             table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &shared_width_cache, false);

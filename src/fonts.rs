@@ -10,6 +10,8 @@
 //! * [`FontFamily::Sans`] → IBM Plex Sans (the default body face)
 //! * [`FontFamily::Serif`] → Computer Modern (the classic LaTeX serif)
 //! * monospace / code → CM Typewriter
+//! * symbol fallback → Noto Sans Math (curated subset; backs characters the
+//!   primary faces cannot map, e.g. `⇒`, `≠`, `∑`)
 
 use crate::text::{Font, FontError, Kerning, Ligatures};
 use crate::theme::FontFamily;
@@ -52,6 +54,11 @@ const CM_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/computer-modern/cmunbi.tt
 // CM Typewriter — monospace / code face. SIL OFL 1.1.
 const MONO_REGULAR: &[u8] = include_bytes!("../fonts/computer-modern/cmuntt.ttf");
 
+// Noto Sans Math (curated subset) — symbol fallback face for characters the
+// primary body/mono faces cannot map (arrows, math operators, …). SIL OFL 1.1.
+// Regenerated via `cargo run --example gen_symbol_fallback_font`.
+const SYMBOL_REGULAR: &[u8] = include_bytes!("../fonts/noto-sans-math/NotoSansMathSymbols.ttf");
+
 static PLEX_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static PLEX_BOLD_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static PLEX_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
@@ -61,6 +68,7 @@ static CM_BOLD_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_BOLD_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static MONO_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
+static SYMBOL_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static PLEX_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static PLEX_BOLD_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static PLEX_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
@@ -70,6 +78,7 @@ static CM_BOLD_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static CM_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static CM_BOLD_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static MONO_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+static SYMBOL_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 
 /// Parsed OpenType layout tables for a bundled face.
 pub(crate) struct OpenTypeLayoutTables {
@@ -125,6 +134,31 @@ pub(crate) fn body_font(family: FontFamily, style: FontStyle) -> Result<&'static
 /// See [`body_font`].
 pub(crate) fn mono_font(_style: FontStyle) -> Result<&'static Font, FontError> {
     cached_font(&MONO_REGULAR_FONT, MONO_REGULAR)
+}
+
+/// Raw TTF bytes for the symbol fallback face (single regular weight).
+#[must_use]
+pub fn symbol_bytes() -> &'static [u8] {
+    SYMBOL_REGULAR
+}
+
+/// Parsed bundled symbol fallback font.
+///
+/// # Errors
+/// See [`body_font`].
+pub(crate) fn symbol_font() -> Result<&'static Font, FontError> {
+    cached_font(&SYMBOL_REGULAR_FONT, SYMBOL_REGULAR)
+}
+
+/// Cached GPOS/GSUB tables for the bundled symbol fallback font. The curated
+/// subset carries no GPOS/GSUB, so these tables are empty; keeping the same
+/// shape as the other faces lets the PDF writer treat every slot uniformly.
+///
+/// # Errors
+/// See [`body_layout_tables`].
+pub(crate) fn symbol_layout_tables() -> Result<&'static OpenTypeLayoutTables, FontError> {
+    let font = symbol_font()?;
+    Ok(cached_layout_tables(&SYMBOL_REGULAR_LAYOUT, font))
 }
 
 /// Cached GPOS/GSUB tables for a bundled proportional body font.
@@ -195,6 +229,14 @@ pub fn load_body(family: FontFamily, style: FontStyle) -> Result<Font, FontError
 /// See [`load_body`].
 pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
     mono_font(style).cloned()
+}
+
+/// Parse the bundled symbol fallback font (curated Noto Sans Math subset).
+///
+/// # Errors
+/// See [`load_body`].
+pub fn load_symbol() -> Result<Font, FontError> {
+    symbol_font().cloned()
 }
 
 #[cfg(test)]

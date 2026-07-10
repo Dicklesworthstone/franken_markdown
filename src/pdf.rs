@@ -7510,7 +7510,7 @@ fn apply_svg_gradient_stop_patch_declaration(
             }
         }
         "stop-opacity" => {
-            if let Some(opacity) = parse_svg_opacity(value, css_vars) {
+            if let Some(opacity) = parse_svg_opacity_property(value, css_vars) {
                 patch.opacity = Some(opacity.clamp(0.0, 1.0));
             }
         }
@@ -7860,8 +7860,8 @@ fn parse_svg_gradient_stop(
     if let Some(value) = svg_attr(attrs, "stop-color") {
         apply_svg_gradient_stop_color(&mut stop_color, &mut stop_color_alpha, value, css_vars);
     }
-    if let Some(parsed) =
-        svg_attr(attrs, "stop-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+    if let Some(parsed) = svg_attr(attrs, "stop-opacity")
+        .and_then(|value| parse_svg_opacity_property(value, css_vars))
     {
         stop_opacity = parsed.clamp(0.0, 1.0);
     }
@@ -7889,7 +7889,7 @@ fn parse_svg_gradient_stop(
                     );
                 }
                 "stop-opacity" => {
-                    if let Some(parsed) = parse_svg_opacity(value.trim(), css_vars) {
+                    if let Some(parsed) = parse_svg_opacity_property(value.trim(), css_vars) {
                         stop_opacity = parsed.clamp(0.0, 1.0);
                     }
                 }
@@ -8544,10 +8544,10 @@ fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable
     let mut fill =
         svg_attr(attrs, "fill").and_then(|value| parse_svg_mask_fill(value, css_vars).flatten());
     let mut opacity = svg_attr(attrs, "opacity")
-        .and_then(|value| parse_svg_opacity(value, css_vars))
+        .and_then(|value| parse_svg_opacity_property(value, css_vars))
         .unwrap_or(1.0);
     let mut fill_opacity = svg_attr(attrs, "fill-opacity")
-        .and_then(|value| parse_svg_opacity(value, css_vars))
+        .and_then(|value| parse_svg_opacity_property(value, css_vars))
         .unwrap_or(1.0);
     if let Some(style) = svg_attr(attrs, "style") {
         for decl in split_svg_css_declarations(style) {
@@ -8561,11 +8561,11 @@ fn svg_mask_shape_reveals(attrs: &[(String, String)], css_vars: &[SvgCssVariable
                     fill = parsed;
                 }
             } else if name.eq_ignore_ascii_case("opacity") {
-                if let Some(parsed) = parse_svg_opacity(value, css_vars) {
+                if let Some(parsed) = parse_svg_opacity_property(value, css_vars) {
                     opacity = parsed;
                 }
             } else if name.eq_ignore_ascii_case("fill-opacity")
-                && let Some(parsed) = parse_svg_opacity(value, css_vars)
+                && let Some(parsed) = parse_svg_opacity_property(value, css_vars)
             {
                 fill_opacity = parsed;
             }
@@ -9489,9 +9489,11 @@ fn parse_svg_style_patch(
                 patch.dominant_baseline = parse_svg_dominant_baseline(value, css_vars);
             }
             "baseline-shift" => patch.baseline_shift = parse_svg_baseline_shift(value, css_vars),
-            "opacity" => patch.opacity = parse_svg_opacity(value, css_vars),
-            "fill-opacity" => patch.fill_opacity = parse_svg_opacity(value, css_vars),
-            "stroke-opacity" => patch.stroke_opacity = parse_svg_opacity(value, css_vars),
+            "opacity" => patch.opacity = parse_svg_opacity_property(value, css_vars),
+            "fill-opacity" => patch.fill_opacity = parse_svg_opacity_property(value, css_vars),
+            "stroke-opacity" => {
+                patch.stroke_opacity = parse_svg_opacity_property(value, css_vars);
+            }
             _ => {}
         }
     }
@@ -9914,7 +9916,7 @@ fn apply_svg_opacity_attr(
     value: Option<&str>,
     css_vars: &[SvgCssVariable],
 ) {
-    let Some(opacity) = value.and_then(|value| parse_svg_opacity(value, css_vars)) else {
+    let Some(opacity) = value.and_then(|value| parse_svg_opacity_property(value, css_vars)) else {
         return;
     };
     match name {
@@ -10924,8 +10926,8 @@ impl SvgFilterPrimitiveShadowChain {
         if let Some(value) = svg_attr(attrs, "flood-color") {
             apply_svg_shadow_flood_color(&mut self.layer, &mut color_alpha, value, css_vars);
         }
-        if let Some(opacity) =
-            svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+        if let Some(opacity) = svg_attr(attrs, "flood-opacity")
+            .and_then(|value| parse_svg_opacity_property(value, css_vars))
         {
             flood_opacity = opacity;
         }
@@ -11050,8 +11052,8 @@ fn parse_svg_fe_drop_shadow(attrs: &[(String, String)], css_vars: &[SvgCssVariab
     if let Some(value) = svg_attr(attrs, "flood-color") {
         apply_svg_shadow_flood_color(&mut shadow, &mut color_alpha, value, css_vars);
     }
-    if let Some(opacity) =
-        svg_attr(attrs, "flood-opacity").and_then(|value| parse_svg_opacity(value, css_vars))
+    if let Some(opacity) = svg_attr(attrs, "flood-opacity")
+        .and_then(|value| parse_svg_opacity_property(value, css_vars))
     {
         flood_opacity = opacity;
     }
@@ -11097,7 +11099,7 @@ fn apply_svg_fe_drop_shadow_style(
                 apply_svg_shadow_flood_color(shadow, color_alpha, value, css_vars);
             }
             "flood-opacity" => {
-                if let Some(opacity) = parse_svg_opacity(value, css_vars) {
+                if let Some(opacity) = parse_svg_opacity_property(value, css_vars) {
                     *flood_opacity = opacity;
                 }
             }
@@ -13228,6 +13230,18 @@ fn parse_svg_opacity(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
         parsed
     };
     opacity.is_finite().then_some(opacity.clamp(0.0, 1.0))
+}
+
+fn parse_svg_opacity_property(value: &str, css_vars: &[SvgCssVariable]) -> Option<f32> {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        let resolved = resolve_svg_css_value(value, css_vars, 0)?;
+        return parse_svg_opacity_property(&resolved, css_vars);
+    }
+    if value.eq_ignore_ascii_case("initial") {
+        return Some(1.0);
+    }
+    parse_svg_opacity(value, css_vars)
 }
 
 fn parse_svg_number_list(value: &str) -> Vec<f32> {
@@ -32394,6 +32408,36 @@ mod coverage_gap_tests {
         assert!(approx(style.fill_color_alpha, 1.0));
         assert!(approx(style.fill_opacity, 0.5));
         assert!(approx(svg_effective_fill_opacity(style), 0.25));
+    }
+
+    #[test]
+    fn style_patch_initial_opacity_resets_inherited_alpha_factors() {
+        let patch = parse_svg_style_patch(
+            "opacity: initial; fill-opacity: var(--reset); stroke-opacity: initial",
+            &[],
+            &[],
+            &[SvgCssVariable {
+                name: "--reset".to_string(),
+                value: "initial".to_string(),
+            }],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = SvgStyle::INITIAL;
+        style.opacity = 0.2;
+        style.fill_opacity = 0.3;
+        style.stroke_opacity = 0.4;
+
+        apply_svg_style_patch(&mut style, patch, true);
+
+        assert!(approx(style.opacity, 1.0), "opacity reset");
+        assert!(approx(style.fill_opacity, 1.0), "fill-opacity reset");
+        assert!(approx(style.stroke_opacity, 1.0), "stroke-opacity reset");
+        assert!(
+            parse_svg_color_with_alpha("rgb(255 0 0 / initial)", &[]).is_none(),
+            "global keywords inside color-function alpha are not opacity properties"
+        );
     }
 
     #[test]

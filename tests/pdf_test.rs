@@ -3010,6 +3010,49 @@ fn pdf_svg_initial_fill_and_stroke_reset_inherited_paint() {
 }
 
 #[test]
+fn pdf_svg_initial_opacity_properties_reset_inherited_alpha() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 18">
+  <g opacity="0.25" fill-opacity="0.2" stroke-opacity="0.3">
+    <rect x="2" y="2" width="10" height="10" fill="#ff0000" stroke="none"
+          opacity="initial" fill-opacity="initial"/>
+    <path d="M18 7 L30 7" fill="none" stroke="#0000ff" stroke-width="2"
+          stroke-opacity="initial"/>
+    <rect x="36" y="2" width="10" height="10" fill="#00ff00" stroke="none"
+          style="--reset: initial; opacity: var(--reset); fill-opacity: initial"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("initial-opacity.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Initial opacity](initial-opacity.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("/GSa02501000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "opacity/fill-opacity initial should reset local alpha before ancestor group opacity is applied: {text}"
+    );
+    assert!(
+        text.contains("/GSa10000250 gs 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 18 7 m 30 7 l S"),
+        "stroke-opacity initial should reset inherited stroke alpha before group opacity is applied: {text}"
+    );
+    assert!(
+        text.contains("/GSa02501000 gs 0.000 1.000 0.000 rg 36 2 10 10 re f"),
+        "CSS variable resolving to initial should reset property opacity without changing color alpha parsing: {text}"
+    );
+    assert!(
+        !text.contains("/GSa00501000 gs 1.000 0.000 0.000 rg 2 2 10 10 re f"),
+        "fill-opacity initial must not keep the inherited 0.2 fill opacity: {text}"
+    );
+    assert!(
+        !text.contains("/GSa10000075 gs 0.000 0.000 1.000 RG"),
+        "stroke-opacity initial must not keep the inherited 0.3 stroke opacity: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_current_color_preserves_color_alpha_for_fill_stroke_text_and_vars() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 24">

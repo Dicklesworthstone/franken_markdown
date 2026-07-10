@@ -3010,6 +3010,39 @@ fn pdf_svg_initial_fill_and_stroke_reset_inherited_paint() {
 }
 
 #[test]
+fn pdf_svg_inherit_and_unset_fill_stroke_restore_inherited_paint() {
+    let svg = br##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 20">
+  <g fill="#00ff00" stroke="#0000ff" stroke-width="2">
+    <rect x="2" y="2" width="10" height="8"
+          style="--parent: inherit; fill: #ff0000; fill: var(--parent); stroke: #ff0000; stroke: unset"/>
+    <rect x="18" y="2" width="10" height="8"
+          style="fill: inherit; fill: #00ffff; stroke: unset; stroke: #ff00ff"/>
+  </g>
+</svg>
+"##;
+    let opts = PdfOptions {
+        image_assets: vec![PdfImageAsset::new("inherit-paint.svg", svg.to_vec())],
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf("![Inherit paint](inherit-paint.svg)", &opts).unwrap();
+    let text = as_text(&pdf);
+
+    assert!(
+        text.contains("0.000 1.000 0.000 rg 0.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 2 2 10 8 re B"),
+        "later fill: inherit and stroke: unset declarations should restore the group paint instead of keeping earlier red paint: {text}"
+    );
+    assert!(
+        text.contains("0.000 1.000 1.000 rg 1.000 0.000 1.000 RG 2 w 0 J 0 j 4 M 18 2 10 8 re B"),
+        "a later concrete fill/stroke declaration should still override an earlier inherit/unset declaration: {text}"
+    );
+    assert!(
+        !text.contains("1.000 0.000 0.000 rg 1.000 0.000 0.000 RG 2 w 0 J 0 j 4 M 2 2 10 8 re B"),
+        "inherit/unset paint declarations must not leave the earlier same-style red paint active: {text}"
+    );
+}
+
+#[test]
 fn pdf_svg_initial_opacity_properties_reset_inherited_alpha() {
     let svg = br##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 18">

@@ -949,12 +949,14 @@ struct SvgStylePatch {
     fill_current_color: Option<bool>,
     fill_color_alpha: Option<f32>,
     fill_context: Option<Option<SvgContextPaint>>,
+    fill_inherit: bool,
     stroke: Option<Option<(f32, f32, f32)>>,
     stroke_gradient: Option<Option<usize>>,
     stroke_pattern: Option<Option<usize>>,
     stroke_current_color: Option<bool>,
     stroke_color_alpha: Option<f32>,
     stroke_context: Option<Option<SvgContextPaint>>,
+    stroke_inherit: bool,
     stroke_width: Option<f32>,
     non_scaling_stroke: Option<bool>,
     opacity: Option<SvgOpacityPatch>,
@@ -9364,6 +9366,9 @@ fn parse_svg_style_patch(
                 }
             }
             "fill" => {
+                if apply_svg_inherited_paint_patch(&mut patch, "fill", value, css_vars) {
+                    continue;
+                }
                 if apply_svg_initial_paint_patch(&mut patch, "fill", value, css_vars) {
                     continue;
                 }
@@ -9378,6 +9383,7 @@ fn parse_svg_style_patch(
                 let paint_alpha =
                     parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
+                    patch.fill_inherit = false;
                     patch.fill_current_color = Some(true);
                     patch.fill_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.fill_context = Some(None);
@@ -9385,6 +9391,7 @@ fn parse_svg_style_patch(
                     patch.fill_pattern = Some(None);
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
                 {
+                    patch.fill_inherit = false;
                     patch.fill = Some(None);
                     patch.fill_current_color = Some(false);
                     patch.fill_color_alpha = Some(paint_alpha.unwrap_or(1.0));
@@ -9403,6 +9410,7 @@ fn parse_svg_style_patch(
                         }
                     });
                     if let Some(paint) = paint {
+                        patch.fill_inherit = false;
                         patch.fill = Some(paint);
                         patch.fill_current_color = Some(false);
                         patch.fill_context = Some(None);
@@ -9414,6 +9422,9 @@ fn parse_svg_style_patch(
                 }
             }
             "stroke" => {
+                if apply_svg_inherited_paint_patch(&mut patch, "stroke", value, css_vars) {
+                    continue;
+                }
                 if apply_svg_initial_paint_patch(&mut patch, "stroke", value, css_vars) {
                     continue;
                 }
@@ -9428,6 +9439,7 @@ fn parse_svg_style_patch(
                 let paint_alpha =
                     parse_svg_effective_paint_alpha(value, fallback.as_deref(), css_vars);
                 if parse_svg_current_color_paint(paint_control_value, css_vars) {
+                    patch.stroke_inherit = false;
                     patch.stroke_current_color = Some(true);
                     patch.stroke_color_alpha = Some(paint_alpha.unwrap_or(1.0));
                     patch.stroke_context = Some(None);
@@ -9435,6 +9447,7 @@ fn parse_svg_style_patch(
                     patch.stroke_pattern = Some(None);
                 } else if let Some(context) = parse_svg_context_paint(paint_control_value, css_vars)
                 {
+                    patch.stroke_inherit = false;
                     patch.stroke = Some(None);
                     patch.stroke_current_color = Some(false);
                     patch.stroke_color_alpha = Some(paint_alpha.unwrap_or(1.0));
@@ -9453,6 +9466,7 @@ fn parse_svg_style_patch(
                         }
                     });
                     if let Some(paint) = paint {
+                        patch.stroke_inherit = false;
                         patch.stroke = Some(paint);
                         patch.stroke_gradient =
                             Some(paint.is_some().then_some(gradient_ref).flatten());
@@ -9702,6 +9716,9 @@ fn apply_svg_style_patch(
     if let Some(color) = patch.color {
         apply_svg_color(style, color, patch.color_alpha.unwrap_or(1.0));
     }
+    if patch.fill_inherit {
+        apply_svg_inherited_paint(style, "fill", inherited_style);
+    }
     if patch.fill_current_color == Some(true) {
         style.fill = Some(style.color);
         style.fill_gradient = None;
@@ -9734,6 +9751,9 @@ fn apply_svg_style_patch(
         if fill_pattern.is_some() {
             style.fill_gradient = None;
         }
+    }
+    if patch.stroke_inherit {
+        apply_svg_inherited_paint(style, "stroke", inherited_style);
     }
     if patch.stroke_current_color == Some(true) {
         style.stroke = Some(style.color);
@@ -9894,7 +9914,11 @@ fn apply_svg_style_declaration(
     match name {
         "color" => apply_svg_color_attr(style, Some(value), css_vars),
         "fill" | "stroke" => {
-            apply_svg_paint_attr(style, name, Some(value), gradients, patterns, css_vars);
+            if parse_svg_inherited_paint(name, value, css_vars) {
+                apply_svg_inherited_paint(style, name, inherited_style);
+            } else {
+                apply_svg_paint_attr(style, name, Some(value), gradients, patterns, css_vars);
+            }
         }
         "display" | "visibility" => {
             apply_svg_visibility_attr(style, name, Some(value), inherited_display_visible)
@@ -12146,6 +12170,7 @@ fn apply_svg_initial_paint_patch(
         return false;
     };
     if target == "fill" {
+        patch.fill_inherit = false;
         patch.fill = Some(paint);
         patch.fill_current_color = Some(false);
         patch.fill_color_alpha = Some(1.0);
@@ -12153,6 +12178,7 @@ fn apply_svg_initial_paint_patch(
         patch.fill_gradient = Some(None);
         patch.fill_pattern = Some(None);
     } else if target == "stroke" {
+        patch.stroke_inherit = false;
         patch.stroke = Some(paint);
         patch.stroke_current_color = Some(false);
         patch.stroke_color_alpha = Some(1.0);
@@ -12161,6 +12187,77 @@ fn apply_svg_initial_paint_patch(
         patch.stroke_pattern = Some(None);
     }
     true
+}
+
+fn apply_svg_inherited_paint_patch(
+    patch: &mut SvgStylePatch,
+    target: &str,
+    value: &str,
+    css_vars: &[SvgCssVariable],
+) -> bool {
+    if !parse_svg_inherited_paint(target, value, css_vars) {
+        return false;
+    }
+    if target == "fill" {
+        patch.fill_inherit = true;
+        patch.fill = None;
+        patch.fill_current_color = None;
+        patch.fill_color_alpha = None;
+        patch.fill_context = None;
+        patch.fill_gradient = None;
+        patch.fill_pattern = None;
+    } else if target == "stroke" {
+        patch.stroke_inherit = true;
+        patch.stroke = None;
+        patch.stroke_current_color = None;
+        patch.stroke_color_alpha = None;
+        patch.stroke_context = None;
+        patch.stroke_gradient = None;
+        patch.stroke_pattern = None;
+    }
+    true
+}
+
+fn apply_svg_inherited_paint(style: &mut SvgStyle, target: &str, inherited: SvgStyle) {
+    if target == "fill" {
+        style.fill_current_color = inherited.fill_current_color;
+        style.fill_color_alpha = inherited.fill_color_alpha;
+        style.fill_context = inherited.fill_context;
+        if inherited.fill_current_color {
+            style.fill = Some(style.color);
+            style.fill_gradient = None;
+            style.fill_pattern = None;
+            style.fill_context = None;
+        } else {
+            style.fill = inherited.fill;
+            style.fill_gradient = inherited.fill_gradient;
+            style.fill_pattern = inherited.fill_pattern;
+        }
+    } else if target == "stroke" {
+        style.stroke_current_color = inherited.stroke_current_color;
+        style.stroke_color_alpha = inherited.stroke_color_alpha;
+        style.stroke_context = inherited.stroke_context;
+        if inherited.stroke_current_color {
+            style.stroke = Some(style.color);
+            style.stroke_gradient = None;
+            style.stroke_pattern = None;
+            style.stroke_context = None;
+        } else {
+            style.stroke = inherited.stroke;
+            style.stroke_gradient = inherited.stroke_gradient;
+            style.stroke_pattern = inherited.stroke_pattern;
+        }
+    }
+}
+
+fn parse_svg_inherited_paint(target: &str, value: &str, css_vars: &[SvgCssVariable]) -> bool {
+    let value = clean_svg_css_keyword_value(value);
+    if value.starts_with("var(") {
+        return resolve_svg_css_value(value, css_vars, 0)
+            .is_some_and(|resolved| parse_svg_inherited_paint(target, &resolved, css_vars));
+    }
+    matches!(target, "fill" | "stroke")
+        && (value.eq_ignore_ascii_case("inherit") || value.eq_ignore_ascii_case("unset"))
 }
 
 fn parse_svg_initial_paint(
@@ -32456,6 +32553,61 @@ mod coverage_gap_tests {
         assert!(style.stroke_pattern.is_none());
         assert!(!style.stroke_current_color);
         assert!(style.stroke_context.is_none());
+    }
+
+    #[test]
+    fn style_patch_inherit_and_unset_restore_inherited_paint() {
+        let inherited = SvgStyle {
+            fill: Some((0.0, 1.0, 0.0)),
+            fill_color_alpha: 0.75,
+            stroke: Some((0.0, 0.0, 1.0)),
+            stroke_color_alpha: 0.5,
+            ..SvgStyle::INITIAL
+        };
+        let patch = parse_svg_style_patch(
+            "fill: #ff0000; fill: var(--inherited); stroke: #ff0000; stroke: unset",
+            &[],
+            &[],
+            &[SvgCssVariable {
+                name: "--inherited".to_string(),
+                value: "inherit".to_string(),
+            }],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = inherited;
+
+        apply_svg_style_patch(&mut style, patch, inherited, true);
+
+        assert_color(style.fill.unwrap(), (0.0, 1.0, 0.0), "inherited fill");
+        assert!(approx(style.fill_color_alpha, 0.75));
+        assert_color(style.stroke.unwrap(), (0.0, 0.0, 1.0), "inherited stroke");
+        assert!(approx(style.stroke_color_alpha, 0.5));
+
+        let patch = parse_svg_style_patch(
+            "fill: inherit; fill: #00ffff; stroke: unset; stroke: #ff00ff",
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            12.0,
+        );
+        let mut style = inherited;
+
+        apply_svg_style_patch(&mut style, patch, inherited, true);
+
+        assert_color(
+            style.fill.unwrap(),
+            (0.0, 1.0, 1.0),
+            "later fill overrides inherit",
+        );
+        assert_color(
+            style.stroke.unwrap(),
+            (1.0, 0.0, 1.0),
+            "later stroke overrides unset",
+        );
     }
 
     #[test]

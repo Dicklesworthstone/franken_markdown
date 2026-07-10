@@ -3391,7 +3391,7 @@ fn pdf_svg_css_class_stroke_styles_apply_to_vector_shapes() {
 #[test]
 fn pdf_svg_css_variables_drive_stroke_geometry_declarations() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 36">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 60">
   <style>
     .rule {
       --w: 4px;
@@ -3405,6 +3405,17 @@ fn pdf_svg_css_variables_drive_stroke_geometry_declarations() {
       stroke-miterlimit: var(--miter);
       stroke-dasharray: var(--dash);
       stroke-dashoffset: var(--offset);
+    }
+    .trailing {
+      --dash-head: 5;
+      fill: none;
+      stroke: #00ffff;
+      stroke-dasharray: var(--dash-head) 2;
+    }
+    .fallback-trailing {
+      fill: none;
+      stroke: #777777;
+      stroke-dasharray: var(--missing-dash, 6) 3;
     }
     .attr {
       --attr-w: 6px;
@@ -3424,6 +3435,8 @@ fn pdf_svg_css_variables_drive_stroke_geometry_declarations() {
         stroke-miterlimit="var(--attr-miter)"
         stroke-dasharray="var(--attr-dash)"
         stroke-dashoffset="var(--attr-offset)"/>
+  <path class="trailing" d="M4 42 L70 42" stroke-width="1"/>
+  <path class="fallback-trailing" d="M4 54 L70 54" stroke-width="1"/>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -3444,6 +3457,14 @@ fn pdf_svg_css_variables_drive_stroke_geometry_declarations() {
     assert!(
         text.contains("q 1.000 0.000 0.000 RG 6 w 0 J 0 j 8 M [4 2] 3 d 4 30 m 70 30 l S\nQ"),
         "presentation stroke geometry attributes should resolve selector-scoped custom properties: {text}"
+    );
+    assert!(
+        text.contains("q 0.000 1.000 1.000 RG 1 w 0 J 0 j 4 M [5 2] 0 d 4 42 m 70 42 l S\nQ"),
+        "custom property substitution should preserve trailing tokens after var() in dash arrays: {text}"
+    );
+    assert!(
+        text.contains("q 0.467 0.467 0.467 RG 1 w 0 J 0 j 4 M [6 3] 0 d 4 54 m 70 54 l S\nQ"),
+        "custom property fallback substitution should preserve trailing tokens after var() in dash arrays: {text}"
     );
 }
 

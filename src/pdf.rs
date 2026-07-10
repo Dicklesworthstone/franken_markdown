@@ -12120,15 +12120,26 @@ fn resolve_svg_css_value(value: &str, css_vars: &[SvgCssVariable], depth: usize)
     };
     let close = find_svg_css_function_close(rest)?;
     let args = rest[..close].trim();
+    let trailing = rest[close + 1..].trim_end();
     let (name, fallback) = split_svg_css_var_args(args);
     let name = name.trim();
+    let append_trailing = |mut resolved: String| {
+        if !trailing.is_empty() {
+            resolved.push_str(trailing);
+        }
+        resolved
+    };
     if !name.starts_with("--") {
-        return fallback.and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1));
+        return fallback
+            .and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1))
+            .map(append_trailing);
     }
     if let Some(var) = css_vars.iter().find(|var| var.name == name) {
-        return resolve_svg_css_value(var.value.as_str(), css_vars, depth + 1);
+        return resolve_svg_css_value(var.value.as_str(), css_vars, depth + 1).map(append_trailing);
     }
-    fallback.and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1))
+    fallback
+        .and_then(|fallback| resolve_svg_css_value(fallback, css_vars, depth + 1))
+        .map(append_trailing)
 }
 
 fn split_svg_css_var_args(args: &str) -> (&str, Option<&str>) {
@@ -31780,6 +31791,39 @@ mod coverage_gap_tests {
             "fill: var(--paint, url(data:image/svg+xml;utf8,<svg></svg>) #00ff00)"
         );
         assert_eq!(declarations[2], "stroke: #0000ff");
+    }
+
+    #[test]
+    fn css_var_resolution_preserves_trailing_value_tokens() {
+        let vars = [
+            SvgCssVariable {
+                name: "--dash-head".to_string(),
+                value: "4".to_string(),
+            },
+            SvgCssVariable {
+                name: "--dash-nested".to_string(),
+                value: "var(--dash-head) 2".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_svg_css_value("var(--dash-head) 2", &vars, 0).as_deref(),
+            Some("4 2")
+        );
+        assert_eq!(
+            resolve_svg_css_value("var(--dash-nested) 3", &vars, 0).as_deref(),
+            Some("4 2 3")
+        );
+        assert_eq!(
+            resolve_svg_css_value("var(--missing-dash, 6) 3", &vars, 0).as_deref(),
+            Some("6 3")
+        );
+        assert!(resolve_svg_css_value("var(--missing-dash) 3", &vars, 0).is_none());
+
+        let dash = parse_svg_css_dash_array("var(--dash-head) 2", &vars).expect("dash");
+        assert_eq!(dash.len, 2);
+        assert!(approx(dash.values[0], 4.0));
+        assert!(approx(dash.values[1], 2.0));
     }
 
     // ---- style patches ------------------------------------------------------

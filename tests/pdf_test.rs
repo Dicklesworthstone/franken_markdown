@@ -2187,7 +2187,7 @@ fn pdf_svg_nested_tspan_children_apply_their_own_style() {
 #[test]
 fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
     let svg = br##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 120">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 136">
   <style>
     :root {
       --code-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -2207,6 +2207,7 @@ fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
   <text x="4" y="78" font-size="10" fill="#111111" font-family="Inter, monospace">Primary body</text>
   <text x="4" y="94" font-size="10" fill="#222222" class="semi-var">CSS quoted mono</text>
   <text x="4" y="110" font-size="10" fill="#333333" style="font-family: 'Inline; Debug', monospace">Inline quoted mono</text>
+  <text x="4" y="126" font-size="10" fill="#444444" style="font-family: var(--missing-family, 'Display) Debug', monospace)">Fallback paren mono</text>
 </svg>
 "##;
     let opts = PdfOptions {
@@ -2218,8 +2219,8 @@ fn pdf_svg_text_font_family_monospace_selects_mono_slot() {
 
     assert_eq!(
         text.matches("BT /F4 ").count(),
-        5,
-        "direct, stylesheet-variable, inherited, quoted-variable, and quoted-inline monospace SVG text should render with the bundled mono face; declaration splitting must not break on semicolons inside quoted family names, and a recognized primary body family must not fall through to a later monospace fallback: {text}"
+        6,
+        "direct, stylesheet-variable, inherited, quoted-variable, quoted-inline, and var-fallback monospace SVG text should render with the bundled mono face; declaration splitting must not break on semicolons inside quoted family names, CSS function scanning must not break on quoted parentheses, and a recognized primary body family must not fall through to a later monospace fallback: {text}"
     );
     assert!(
         text.matches("BT /F1 ").count() >= 3,

@@ -4170,11 +4170,31 @@ fn split_svg_css_top_level_commas(value: &str) -> Vec<&str> {
     let mut depth = 0usize;
     let mut start = 0usize;
     let mut quote = None;
+    let mut escaped = false;
+    let mut in_comment = false;
     for (idx, ch) in value.char_indices() {
+        if in_comment {
+            if value[idx..].starts_with("*/") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
         if let Some(quote_ch) = quote {
             if ch == quote_ch {
                 quote = None;
             }
+            continue;
+        }
+        if value[idx..].starts_with("/*") {
+            in_comment = true;
             continue;
         }
         match ch {
@@ -12144,8 +12164,36 @@ fn resolve_svg_css_value(value: &str, css_vars: &[SvgCssVariable], depth: usize)
 
 fn split_svg_css_var_args(args: &str) -> (&str, Option<&str>) {
     let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut in_comment = false;
     for (idx, ch) in args.char_indices() {
+        if in_comment {
+            if args[idx..].starts_with("*/") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        if args[idx..].starts_with("/*") {
+            in_comment = true;
+            continue;
+        }
         match ch {
+            '"' | '\'' => quote = Some(ch),
             '(' => depth += 1,
             ')' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => return (&args[..idx], Some(args[idx + 1..].trim())),
@@ -12157,8 +12205,36 @@ fn split_svg_css_var_args(args: &str) -> (&str, Option<&str>) {
 
 fn find_svg_css_function_close(rest: &str) -> Option<usize> {
     let mut depth = 1usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut in_comment = false;
     for (idx, ch) in rest.char_indices() {
+        if in_comment {
+            if rest[idx..].starts_with("*/") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        if rest[idx..].starts_with("/*") {
+            in_comment = true;
+            continue;
+        }
         match ch {
+            '"' | '\'' => quote = Some(ch),
             '(' => depth += 1,
             ')' => {
                 depth = depth.saturating_sub(1);
@@ -31791,6 +31867,29 @@ mod coverage_gap_tests {
             "fill: var(--paint, url(data:image/svg+xml;utf8,<svg></svg>) #00ff00)"
         );
         assert_eq!(declarations[2], "stroke: #0000ff");
+    }
+
+    #[test]
+    fn css_value_scanners_ignore_quoted_escaped_and_commented_separators() {
+        let value = "var(--missing-family, 'Display) Debug', monospace)";
+        let args = svg_css_function_args(value, "var").expect("var args");
+        assert_eq!(args, "--missing-family, 'Display) Debug', monospace");
+        let (name, fallback) = split_svg_css_var_args(args);
+        assert_eq!(name.trim(), "--missing-family");
+        assert_eq!(fallback, Some("'Display) Debug', monospace"));
+        assert_eq!(
+            resolve_svg_css_value(value, &[], 0).as_deref(),
+            Some("'Display) Debug', monospace")
+        );
+
+        let families = split_svg_font_family_list(
+            r#""Escaped \"Quote, Family", Inter /*,*/, url(data:image/svg+xml;utf8,<svg></svg>), monospace"#,
+        );
+        assert_eq!(families.len(), 4);
+        assert_eq!(families[0], r#"Escaped \"Quote, Family"#);
+        assert_eq!(families[1], "Inter /*,*/");
+        assert_eq!(families[2], "url(data:image/svg+xml;utf8,<svg></svg>)");
+        assert_eq!(families[3], "monospace");
     }
 
     #[test]

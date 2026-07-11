@@ -1,4 +1,11 @@
 //! Source-shape checks for repo helper scripts.
+//!
+//! Unix-only: several checks execute the scripts under `bash` (and parse
+//! helper output with `python3`), and on windows-latest a bare `bash`
+//! resolves to the WSL launcher stub. The scripts themselves are POSIX repo
+//! tooling exercised by the Linux/macOS CI jobs, so this test crate is
+//! compiled out on Windows.
+#![cfg(unix)]
 
 use std::fs;
 use std::io;

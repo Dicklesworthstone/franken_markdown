@@ -1,4 +1,10 @@
 //! No-network behavioral tests for installer checksum parsing.
+//!
+//! Unix-only: the subject under test is the POSIX `install.sh` run via
+//! `bash`, and on windows-latest a bare `bash` resolves to the WSL launcher
+//! stub (which fails with "no installed distributions"). Windows installs use
+//! `install.ps1` instead, so this test crate is compiled out there.
+#![cfg(unix)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

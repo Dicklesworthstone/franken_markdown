@@ -9,6 +9,11 @@ on:
   push:
     tags:
       - "v*"
+  # Allow a manual run from a branch: the gate + publish read the checked-out
+  # source, so a dispatch from main can publish a version whose tag-time run
+  # failed on a since-fixed gate (the publish step already skips versions that
+  # are on the registry, so re-dispatching is idempotent).
+  workflow_dispatch: {}
 
 permissions:
   contents: read

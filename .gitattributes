@@ -1,0 +1,8 @@
+# Byte-exact repository: golden snapshots, corpus fixtures, and rendered
+# outputs are compared byte-for-byte in tests, so no file may be EOL-converted
+# on checkout. Without this, Git for Windows' default core.autocrlf=true turns
+# committed LF golden files into CRLF in the working tree and breaks
+# byte-identity on windows-latest CI even though the rendered content is
+# identical. The index is already normalized (everything LF except the
+# upstream fonts/ibm-plex-sans/OFL.txt, which stays byte-exact too).
+* -text

@@ -29,6 +29,7 @@ use crate::layout::{
     ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
     advance_to_layout_units, break_paragraph_into, default_interword_glue, is_breakable_whitespace,
 };
+use crate::line_break::line_break_opportunities;
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
@@ -16127,6 +16128,38 @@ struct PdfBreakPoint {
     hyphen: bool,
 }
 
+fn word_contains_cjk(word: &[Tok]) -> bool {
+    word.iter()
+        .flat_map(|tok| tok.text.chars())
+        .any(|c| crate::line_break::line_break_class(c).is_cjk())
+}
+
+fn cjk_break_points(text: &str) -> Vec<PdfBreakPoint> {
+    let mut points = Vec::new();
+    let mut char_pos = 0usize;
+    let mut byte_pos = 0usize;
+
+    for byte_break in line_break_opportunities(text) {
+        while byte_pos < byte_break {
+            let c = text[byte_pos..].chars().next();
+            if let Some(ch) = c {
+                byte_pos += ch.len_utf8();
+                char_pos += 1;
+            } else {
+                break;
+            }
+        }
+        if char_pos >= 2 && text.chars().count() - char_pos >= 2 {
+            points.push(PdfBreakPoint {
+                at: char_pos,
+                penalty: 50,
+                hyphen: false,
+            });
+        }
+    }
+    points
+}
+
 /// Characters after which a long token may break without a hyphen: URL and
 /// path punctuation plus common identifier separators.
 fn pdf_separator_break_char(c: char) -> bool {
@@ -16235,7 +16268,8 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && stats.ascii_alphabetic;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
-    if !needs_dictionary && !needs_synthetic_breaks {
+    let needs_cjk_breaks = word_contains_cjk(word);
+    if !needs_dictionary && !needs_synthetic_breaks && !needs_cjk_breaks {
         push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
     }
@@ -16277,6 +16311,9 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
 
     let points = if needs_dictionary {
         pdf_ascii_alphabetic_word_break_points(stats.char_len, &dict_points)
+    } else if needs_cjk_breaks {
+        let plain = pdf_word_plain_text(word, stats.byte_len);
+        cjk_break_points(plain.as_ref())
     } else {
         let chars = pdf_word_chars(word, stats.char_len);
         pdf_word_break_points(&chars, &dict_points)

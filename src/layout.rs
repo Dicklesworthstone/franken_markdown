@@ -22,6 +22,7 @@
 //!   expansion hooks once the baseline layout is proven.
 
 use crate::ast::Inline;
+use crate::line_break::{line_break_class, line_break_opportunities};
 use crate::text::Font;
 use std::sync::OnceLock;
 
@@ -623,22 +624,26 @@ pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
     let space = measure_text_with_pairs(metrics, " ", size);
     let hyphen_width = measure_text_with_pairs(metrics, "-", size);
     while let Some(word) = words.next() {
-        hyphenator.hyphenation_points_into_scratch(
-            word,
-            HyphenationOptions::default(),
-            &mut scratch.hyphen_points,
-            &mut scratch.hyphen_lower,
-            &mut scratch.hyphen_dotted,
-            &mut scratch.hyphen_scores,
-        );
-        push_hyphenated_word_items_from_points(
-            out,
-            metrics,
-            word,
-            size,
-            hyphen_width,
-            &scratch.hyphen_points,
-        );
+        if word_contains_cjk(word) {
+            push_cjk_word_items(out, metrics, word, size);
+        } else {
+            hyphenator.hyphenation_points_into_scratch(
+                word,
+                HyphenationOptions::default(),
+                &mut scratch.hyphen_points,
+                &mut scratch.hyphen_lower,
+                &mut scratch.hyphen_dotted,
+                &mut scratch.hyphen_scores,
+            );
+            push_hyphenated_word_items_from_points(
+                out,
+                metrics,
+                word,
+                size,
+                hyphen_width,
+                &scratch.hyphen_points,
+            );
+        }
         if words.peek().is_some() {
             out.push(ParagraphItem::Glue(default_interword_glue(space)));
         }
@@ -698,6 +703,53 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
     }
 }
 
+fn push_cjk_word_items<M: PairMetrics>(
+    out: &mut Vec<ParagraphItem>,
+    metrics: &M,
+    word: &str,
+    size: FontSize,
+) {
+    let break_points: Vec<usize> = line_break_opportunities(word).collect();
+    if break_points.is_empty() {
+        out.push(ParagraphItem::Box(TextBox {
+            text: word.to_string(),
+            runs: StyledText::plain(word),
+            width: measure_text_with_pairs(metrics, word, size),
+        }));
+        return;
+    }
+
+    let mut start = 0usize;
+    for point in break_points {
+        if point <= start {
+            continue;
+        }
+        let part = &word[start..point];
+        if part.is_empty() {
+            continue;
+        }
+        out.push(ParagraphItem::Box(TextBox {
+            text: part.to_string(),
+            runs: StyledText::plain(part),
+            width: measure_text_with_pairs(metrics, part, size),
+        }));
+        out.push(ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: 50,
+            flagged: false,
+        }));
+        start = point;
+    }
+    if start < word.len() {
+        let part = &word[start..];
+        out.push(ParagraphItem::Box(TextBox {
+            text: part.to_string(),
+            runs: StyledText::plain(part),
+            width: measure_text_with_pairs(metrics, part, size),
+        }));
+    }
+}
+
 /// True for whitespace where normal Markdown/PDF text layout may break a line.
 ///
 /// Unicode no-break spaces are intentionally treated as word characters. They
@@ -742,6 +794,10 @@ impl<'a> Iterator for BreakableWords<'a> {
         }
         self.text.get(start..self.pos)
     }
+}
+
+fn word_contains_cjk(word: &str) -> bool {
+    word.chars().any(|c| line_break_class(c).is_cjk())
 }
 
 /// Default TeX-like interword glue for the first paragraph builder.

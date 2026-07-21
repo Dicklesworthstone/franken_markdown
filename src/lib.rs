@@ -35,6 +35,7 @@ pub mod fonts;
 pub mod highlight;
 pub mod html;
 pub mod layout;
+pub(crate) mod line_break;
 pub mod parse;
 pub mod pdf;
 pub mod scanner;

@@ -10,8 +10,8 @@ fn load(path: &str) -> Font {
 #[test]
 fn plex_and_cm_ligate_fi() {
     for path in [
-        "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
-        "fonts/computer-modern/cmunrm.ttf",
+        "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+        "fmd-font/fonts/computer-modern/cmunrm.ttf",
     ] {
         let f = load(path);
         let lig = f.gsub_ligatures();
@@ -31,7 +31,7 @@ fn plex_and_cm_ligate_fi() {
 
 #[test]
 fn cm_ligates_fl_ff_and_collapses_ffi() {
-    let f = load("fonts/computer-modern/cmunrm.ttf");
+    let f = load("fmd-font/fonts/computer-modern/cmunrm.ttf");
     let lig = f.gsub_ligatures();
     assert_eq!(
         lig.substitute(&[f.glyph_index('f'), f.glyph_index('l')])
@@ -53,7 +53,7 @@ fn cm_ligates_fl_ff_and_collapses_ffi() {
 #[test]
 fn subset_font_has_no_ligatures() {
     // Font::subset drops GSUB, so a subset font has no ligatures.
-    let f = load("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+    let f = load("fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
     assert!(!f.gsub_ligatures().is_empty());
     let sub = Font::parse(f.subset(&['f', 'i', 'l']).unwrap()).unwrap();
     assert!(sub.gsub_ligatures().is_empty(), "subset carries no GSUB");

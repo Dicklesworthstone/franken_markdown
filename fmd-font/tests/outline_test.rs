@@ -8,7 +8,7 @@ use fmd_font::outline::{OutlineError, Segment};
 use fmd_font::{Font, FontError};
 
 fn load(rel: &str) -> Font {
-    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../fonts/");
+    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/");
     let bytes = std::fs::read(format!("{base}{rel}")).expect("read bundled face");
     Font::parse(bytes).expect("parse bundled face")
 }
@@ -395,7 +395,7 @@ fn hostile_mutations_never_panic() {
     // must error gracefully or succeed, never panic, never hang. (An LCG
     // stands in for a fuzzer's mutations so the sweep is reproducible;
     // continuous coverage-guided fuzzing is tracked as follow-up work.)
-    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../fonts/");
+    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/");
     let bytes = std::fs::read(format!("{base}computer-modern/cmunrm.ttf")).unwrap();
     let mut state = 0x1234_5678u64;
     let mut lcg = move || {
@@ -425,7 +425,7 @@ fn hostile_mutations_never_panic() {
 
 #[test]
 fn truncation_sweep_never_panics() {
-    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../fonts/");
+    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/");
     let bytes = std::fs::read(format!("{base}computer-modern/cmunrm.ttf")).unwrap();
     // Sweep truncation points across the whole file at a coarse stride plus
     // the first kilobyte densely (the header/table-directory hot zone).

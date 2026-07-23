@@ -198,10 +198,16 @@ fn reads_dejavu_glyf_outlines_when_available() {
 #[test]
 fn parses_bundled_plex_and_cm_fonts() {
     for (path, name) in [
-        ("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf", "Plex Sans"),
-        ("fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf", "Plex Sans Bold"),
-        ("fonts/computer-modern/cmunrm.ttf", "CM Roman"),
-        ("fonts/computer-modern/cmuntt.ttf", "CM Typewriter"),
+        (
+            "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+            "Plex Sans",
+        ),
+        (
+            "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+            "Plex Sans Bold",
+        ),
+        ("fmd-font/fonts/computer-modern/cmunrm.ttf", "CM Roman"),
+        ("fmd-font/fonts/computer-modern/cmuntt.ttf", "CM Typewriter"),
     ] {
         let bytes = std::fs::read(path).unwrap_or_else(|_| panic!("missing bundled font {path}"));
         let font = Font::parse(bytes).unwrap_or_else(|_| panic!("{name} should parse"));
@@ -220,7 +226,8 @@ fn parses_bundled_plex_and_cm_fonts() {
         assert!(font.advance_1000('A') > 0, "{name} 'A' advance");
     }
     // CM Typewriter is a monospaced typewriter face: every advance is equal.
-    let mono = Font::parse(std::fs::read("fonts/computer-modern/cmuntt.ttf").unwrap()).unwrap();
+    let mono =
+        Font::parse(std::fs::read("fmd-font/fonts/computer-modern/cmuntt.ttf").unwrap()).unwrap();
     assert_eq!(
         mono.advance_1000('i'),
         mono.advance_1000('M'),
@@ -228,7 +235,8 @@ fn parses_bundled_plex_and_cm_fonts() {
     );
     // Plex Sans is proportional: 'i' is narrower than 'M'.
     let sans =
-        Font::parse(std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap()).unwrap();
+        Font::parse(std::fs::read("fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap())
+            .unwrap();
     assert!(
         sans.advance_1000('i') < sans.advance_1000('M'),
         "Plex Sans is proportional"
@@ -240,7 +248,7 @@ fn parses_bundled_plex_and_cm_fonts() {
 /// characters mapping to `.notdef`.
 #[test]
 fn subsets_plex_sans_and_reparses() {
-    let orig = std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
+    let orig = std::fs::read("fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
     let font = Font::parse(orig.clone()).unwrap();
     let keep = ['H', 'e', 'l', 'o', ' ', 'W', 'r', 'd', 'A', 'g', 'é'];
     let sub = font.subset(&keep).expect("subset produced");
@@ -283,7 +291,7 @@ fn subsets_plex_sans_and_reparses() {
 
 #[test]
 fn subset_glyphs_ignores_out_of_range_seed_glyph_ids() {
-    let orig = std::fs::read("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
+    let orig = std::fs::read("fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").unwrap();
     let font = Font::parse(orig).unwrap();
 
     let invalid_at_count = font.num_glyphs;
@@ -636,7 +644,7 @@ fn build_synthetic_kern_table() -> Vec<u8> {
 // real font, possibly mutated by hand.
 // ===========================================================================
 
-const PLEX_REGULAR_PATH: &str = "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf";
+const PLEX_REGULAR_PATH: &str = "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf";
 const DEJAVU_PATH: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
 fn plex_regular_bytes() -> Vec<u8> {

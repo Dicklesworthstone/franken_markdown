@@ -21,6 +21,8 @@
 //! phantom-point-correct metrics.
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "bundled-faces")]
+pub mod bundled;
 pub mod outline;
 
 /// Hard ceiling on how many glyphs a single OpenType layout structure may
@@ -1893,19 +1895,18 @@ mod subset_degradation_tests {
         Font, MISSING_GLYPH_REMAP, be_i16, be_u16, find_table_full, strip_simple_glyph_instructions,
     };
 
-    // The bundled faces live in the workspace root's `fonts/`, one level up
-    // from this crate's manifest.
+    // The bundled faces ship in-crate under `fmd-font/fonts/`.
     fn cm_regular() -> Font {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../fonts/computer-modern/cmunrm.ttf"
+            "/fonts/computer-modern/cmunrm.ttf"
         ))
         .expect("read bundled font");
         Font::parse(bytes).expect("parse bundled font")
     }
 
     fn all_faces() -> Vec<Font> {
-        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+        let base = env!("CARGO_MANIFEST_DIR");
         [
             "/fonts/computer-modern/cmunrm.ttf",
             "/fonts/computer-modern/cmunbx.ttf",

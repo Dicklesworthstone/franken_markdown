@@ -19,6 +19,13 @@ path = "src/lib.rs"
 [dependencies]
 # None, ever: the engine philosophy. Pure std.
 
+[features]
+# Ship the four OFL families (~2 MB) compiled in as `bundled::*` byte
+# constants — the sovereign default set downstream consumers (franken_manim)
+# build on. Default-off so lean builds that bring their own fonts pay
+# nothing.
+bundled-faces = []
+
 [lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }

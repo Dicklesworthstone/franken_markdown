@@ -12,6 +12,15 @@
 #   * `asupersync` is the orchestration/cancellation/budget foundation for batch
 #     and streaming renders, added by its owning bead (kept out of the v0 hot
 #     path so the core stays trivially auditable).
+# The workspace: the root package plus the factored `fmd-font` crate (the
+# font subsystem, split out so the wider Franken suite can consume it
+# directly — franken_manim's fm-ydw is the factoring bead). default-members
+# keeps plain `cargo test`/`check` in the root covering both crates, so the
+# AGENTS.md verification gate still sees the whole tree.
+[workspace]
+members = [".", "fmd-font"]
+default-members = [".", "fmd-font"]
+
 [package]
 name = "franken_markdown"
 version = "0.3.4"
@@ -79,6 +88,10 @@ wasm-bindgen = ["dep:wasm-bindgen"]
 batch = ["cli", "dep:asupersync"]
 
 [dependencies]
+# First-party: the factored font subsystem (this repo's own workspace crate;
+# zero third-party dependencies of its own). `crate::text` re-exports it, so
+# the engine surface is unchanged.
+fmd-font = { path = "fmd-font", version = "0.1.0" }
 # The ONLY third-party crate in the default build, and only for the CLI argument
 # parser. The library target (the renderer itself) compiles with zero external
 # dependencies.

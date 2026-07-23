@@ -1,0 +1,31 @@
+# fmd-font — the factored font subsystem (clean-room sfnt reader + glyf
+# outline decoder). Zero dependencies, pure std, forbid(unsafe_code): the
+# same engine philosophy as the root crate, now consumable on its own by
+# the wider Franken suite (franken_manim's Scribe subsystem is the first
+# external consumer; see the franken_manim UPSTREAM_LEDGER).
+[package]
+name = "fmd-font"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license-file = "../LICENSE"
+description = "Clean-room TrueType/OpenType font reader and glyf outline decoder (franken_markdown's font subsystem)"
+repository = "https://github.com/Dicklesworthstone/franken_markdown"
+
+[lib]
+name = "fmd_font"
+path = "src/lib.rs"
+
+[dependencies]
+# None, ever: the engine philosophy. Pure std.
+
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"

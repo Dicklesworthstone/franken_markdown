@@ -27,7 +27,8 @@ use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit, LineBreak,
     ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph_into, default_interword_glue, is_breakable_whitespace,
+    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
+    cjk_break_prohibited, default_interword_glue, is_breakable_whitespace, is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -15078,10 +15079,35 @@ fn wrap_cell_styled(
             let mut buf = [0u8; 4];
             let mut chunk = String::new();
             let mut chunk_w = 0.0;
+            let mut carry = String::new();
             for ch in t.text.chars() {
                 let cw =
                     text_width_cached(ch.encode_utf8(&mut buf), size, t.slot, faces, width_cache);
                 if !chunk.is_empty() && chunk_w + cw > max_width {
+                    // Never split a pair UAX #14 forbids breaking: the
+                    // characters that must travel with `ch` (a closing bracket,
+                    // `。`, a small kana) move down to the next line with it.
+                    // Non-CJK pairs are never prohibited, so ASCII/Latin
+                    // splitting is byte-for-byte what it was.
+                    carry.clear();
+                    let mut head = ch;
+                    while let Some(prev) = chunk.chars().next_back() {
+                        if !cjk_break_prohibited(prev, head) {
+                            break;
+                        }
+                        chunk.pop();
+                        carry.push(prev);
+                        head = prev;
+                        if chunk.is_empty() {
+                            break;
+                        }
+                    }
+                    if chunk.is_empty() {
+                        // Every position was prohibited; hard-split anyway
+                        // rather than emit an empty line forever.
+                        chunk.extend(carry.chars().rev());
+                        carry.clear();
+                    }
                     let tok = Tok {
                         text: std::mem::take(&mut chunk),
                         slot: t.slot,
@@ -15097,6 +15123,16 @@ fn wrap_cell_styled(
                         width_cache,
                     ));
                     chunk_w = 0.0;
+                    for ch in carry.chars().rev() {
+                        chunk.push(ch);
+                        chunk_w += text_width_cached(
+                            ch.encode_utf8(&mut buf),
+                            size,
+                            t.slot,
+                            faces,
+                            width_cache,
+                        );
+                    }
                 }
                 chunk.push(ch);
                 chunk_w += cw;
@@ -16120,11 +16156,18 @@ const EMERGENCY_BREAK_PENALTY: i32 = 2_000;
 /// dictionary hyphenation points, which render a `-` at the break;
 /// separator/emergency points render nothing (a URL or identifier must
 /// never gain characters it does not have).
+///
+/// `cjk` marks a UAX #14 break between two CJK characters. Those are *natural*
+/// breaks, not damage control, so they become zero-width stretchable glue
+/// (see [`crate::layout::cjk_break_glue`]) instead of a penalty: the optimizer
+/// may then justify a CJK line by opening its inter-character gaps a little,
+/// exactly as it opens interword spaces in Latin text.
 #[derive(Debug)]
 struct PdfBreakPoint {
     at: usize,
     penalty: i32,
     hyphen: bool,
+    cjk: bool,
 }
 
 /// Characters after which a long token may break without a hyphen: URL and
@@ -16145,6 +16188,21 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
     let len = chars.len();
     let mut points = pdf_dictionary_break_points(len, dict);
 
+    // CJK runs carry no spaces, so without these the only break opportunity in
+    // a whole Chinese/Japanese/Korean paragraph is the 14-character emergency
+    // chunk below — which is coarse enough to leave a third of the measure
+    // empty and, in a column narrower than one chunk, to overrun the margin.
+    // A single ideograph is allowed to stand alone on a line (unlike the
+    // 2-character margins the Latin points keep), because that is what a
+    // narrow CJK measure needs.
+    let cjk = pdf_cjk_break_points(chars);
+    let has_cjk = !cjk.is_empty();
+    points.extend(cjk);
+    if has_cjk {
+        points.sort_by_key(|point| point.at);
+        points.dedup_by_key(|point| point.at);
+    }
+
     if len >= FORCED_BREAK_MIN_WORD {
         for (i, &c) in chars.iter().enumerate() {
             let at = i + 1;
@@ -16161,6 +16219,7 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
                     at,
                     penalty: SEPARATOR_BREAK_PENALTY,
                     hyphen: false,
+                    cjk: false,
                 });
             }
         }
@@ -16191,10 +16250,31 @@ fn pdf_dictionary_break_points(len: usize, dict: &[usize]) -> Vec<PdfBreakPoint>
             at,
             penalty: 50,
             hyphen: true,
+            cjk: false,
         })
         .collect();
     points.sort_by_key(|point| point.at);
     points.dedup_by_key(|point| point.at);
+    points
+}
+
+/// Every position inside `chars` where UAX #14 permits a break because one of
+/// the two neighbouring characters is CJK.
+///
+/// Empty for any word without CJK, which is what keeps Latin and ASCII words
+/// on exactly the item stream they had before.
+fn pdf_cjk_break_points(chars: &[char]) -> Vec<PdfBreakPoint> {
+    let mut points = Vec::new();
+    for (at, pair) in chars.windows(2).enumerate() {
+        if cjk_break_allowed(pair[0], pair[1]) {
+            points.push(PdfBreakPoint {
+                at: at + 1,
+                penalty: 0,
+                hyphen: false,
+                cjk: true,
+            });
+        }
+    }
     points
 }
 
@@ -16208,6 +16288,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
                 at,
                 penalty: EMERGENCY_BREAK_PENALTY,
                 hyphen: false,
+                cjk: false,
             });
             at += FORCED_BREAK_CHUNK;
         }
@@ -16221,6 +16302,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
             at,
             penalty: EMERGENCY_BREAK_PENALTY,
             hyphen: false,
+            cjk: false,
         });
         at += FORCED_BREAK_CHUNK;
     }
@@ -16235,7 +16317,10 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && stats.ascii_alphabetic;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
-    if !needs_dictionary && !needs_synthetic_breaks {
+    // A CJK run has to be examined at any length: five ideographs in a narrow
+    // table column still need somewhere to break, and the length-gated
+    // long-token machinery below would never look at them.
+    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk {
         push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
     }
@@ -16286,10 +16371,20 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         return;
     }
 
-    let mut start = 0usize;
+    let mut splitter = PdfWordSplitter::new(word);
     for point in points {
-        let part = split_pdf_word_tokens(word, start, point.at);
+        let part = splitter.take_to(point.at);
         if !part.is_empty() {
+            if point.cjk {
+                // A natural inter-character break: zero-width stretchable glue,
+                // nothing drawn, and no token group so the justifier charges its
+                // share to the ideograph on its left.
+                push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
+                built.items.push(ParagraphItem::Glue(cjk_break_glue(cx.fs)));
+                built.item_toks.push(TokGroup::empty());
+                built.break_toks.push(None);
+                continue;
+            }
             let (break_tok, penalty_width) = if point.hyphen {
                 let hyphen_tok = part.last().map(|tok| Tok {
                     text: "-".to_string(),
@@ -16315,10 +16410,9 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
             built.item_toks.push(TokGroup::empty());
             built.break_toks.push(break_tok);
         }
-        start = point.at;
     }
 
-    let tail = split_pdf_word_tokens(word, start, stats.char_len);
+    let tail = splitter.take_to(stats.char_len);
     if !tail.is_empty() {
         push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
     }
@@ -16330,6 +16424,9 @@ struct PdfWordStats {
     char_len: usize,
     byte_len: usize,
     ascii_alphabetic: bool,
+    /// The word holds at least one CJK character, so it may carry UAX #14
+    /// break opportunities regardless of its length.
+    cjk: bool,
 }
 
 fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
@@ -16337,6 +16434,7 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         char_len: 0,
         byte_len: 0,
         ascii_alphabetic: true,
+        cjk: false,
     };
     for tok in word {
         let bytes = tok.text.as_bytes();
@@ -16357,6 +16455,7 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         } else {
             stats.char_len += tok.text.chars().count();
             stats.ascii_alphabetic = false;
+            stats.cjk |= tok.text.chars().any(is_cjk_char);
         }
     }
     stats
@@ -16430,36 +16529,77 @@ fn push_pdf_word_box_from_vec(
     built.has_boxes = true;
 }
 
-fn split_pdf_word_tokens(word: &[Tok], start_char: usize, end_char: usize) -> Vec<Tok> {
-    if start_char >= end_char {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    for tok in word {
-        let tok_len = tok.text.chars().count();
-        let tok_start = cursor;
-        let tok_end = tok_start.saturating_add(tok_len);
-        cursor = tok_end;
-        if end_char <= tok_start || start_char >= tok_end {
-            continue;
+/// Cuts a word's tokens into consecutive character ranges in one forward pass.
+///
+/// [`flush_pdf_word`] consumes strictly increasing ranges, so a resumable
+/// cursor replaces what used to be a rescan from the front of the word for
+/// every break point. That rescan was quadratic in the number of break points —
+/// harmless when only a long URL had a handful of them, a real cost once CJK
+/// makes nearly every character a break opportunity (a single-paragraph Chinese
+/// chapter has tens of thousands).
+struct PdfWordSplitter<'a> {
+    word: &'a [Tok],
+    /// Index of the token holding the cursor.
+    tok_idx: usize,
+    /// Byte offset of the cursor inside `word[tok_idx].text`.
+    byte: usize,
+    /// Character index of the cursor within the whole word.
+    cursor: usize,
+}
+
+impl<'a> PdfWordSplitter<'a> {
+    fn new(word: &'a [Tok]) -> Self {
+        Self {
+            word,
+            tok_idx: 0,
+            byte: 0,
+            cursor: 0,
         }
-        let take_start = start_char.saturating_sub(tok_start);
-        let take_end = end_char.min(tok_end).saturating_sub(tok_start);
-        let text: String = tok
-            .text
-            .chars()
-            .skip(take_start)
-            .take(take_end.saturating_sub(take_start))
-            .collect();
-        if text.is_empty() {
-            continue;
-        }
-        let mut part = tok.clone();
-        part.text = text;
-        out.push(part);
     }
-    out
+
+    /// Take everything from the cursor up to character `end_char`, preserving
+    /// each source token's style. Returns empty when the cursor already passed
+    /// `end_char` (duplicate break points).
+    fn take_to(&mut self, end_char: usize) -> Vec<Tok> {
+        let mut out = Vec::new();
+        while self.cursor < end_char {
+            let Some(tok) = self.word.get(self.tok_idx) else {
+                break;
+            };
+            let Some(rest) = tok.text.get(self.byte..) else {
+                break;
+            };
+            if rest.is_empty() {
+                self.tok_idx += 1;
+                self.byte = 0;
+                continue;
+            }
+            let want = end_char - self.cursor;
+            let mut taken_chars = 0usize;
+            let mut taken_bytes = 0usize;
+            for ch in rest.chars() {
+                if taken_chars == want {
+                    break;
+                }
+                taken_chars += 1;
+                taken_bytes += ch.len_utf8();
+            }
+            if let Some(text) = rest.get(..taken_bytes)
+                && !text.is_empty()
+            {
+                let mut part = tok.clone();
+                part.text = text.to_string();
+                out.push(part);
+            }
+            self.cursor += taken_chars;
+            self.byte += taken_bytes;
+            if self.byte >= tok.text.len() {
+                self.tok_idx += 1;
+                self.byte = 0;
+            }
+        }
+        out
+    }
 }
 
 /// Optimal-break (Knuth-Plass) styled tokens into baseline lines of positioned
@@ -16846,6 +16986,16 @@ fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -
 }
 
 fn glue_flex(glue: Glue, delta: i64) -> i64 {
+    // A zero-width glue is the CJK inter-character break: it puts no space
+    // token on the page, so there is nothing to widen. It lends the optimizer
+    // stretch so a CJK line can be *chosen* without being declared infeasible,
+    // and then stays out of the justification, which the real interword spaces
+    // absorb exactly as they did before. A justified CJK line therefore ends up
+    // to one character short of the measure instead of spreading a gap that no
+    // glyph would fill.
+    if glue.width == LayoutUnit::ZERO {
+        return 0;
+    }
     if delta > 0 {
         glue.stretch.milli_points() as i64
     } else {

@@ -25,8 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
 > x86_64. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`; the npm registry latest is
-> `0.3.2` while the local package source is already versioned for `0.3.4` as
-> checked on July 10, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
+> `0.3.2` while the local package source is already versioned for `0.3.5` as
+> checked on July 23, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
 > so use the release archives or tagged source for the current `0.3.4` CLI and
 > library until the Rust crate catches up. The current renderer ships shared
 > HTML/PDF syntax
@@ -97,7 +97,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
-| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
+| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
@@ -386,8 +386,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on July 10, 2026, this
-# currently installs 0.2.0 until 0.3.4 is published to crates.io.
+# Or install the published crates.io package. As checked on July 23, 2026, this
+# currently installs 0.2.0 until 0.3.5 is published to crates.io.
 cargo install franken_markdown
 ```
 
@@ -412,8 +412,8 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
 published on npm (`npm install @franken-suite/franken-markdown`). As checked on
-July 10, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
-versioned at `0.3.4`, so the next successful publish will bring the browser
+July 23, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
+versioned at `0.3.5`, so the next successful publish will bring the browser
 package back in line with the GitHub release. The workflow skips versions that
 are already on the registry.
 
@@ -763,7 +763,7 @@ Core modules:
 | `highlight` | Clean-room syntax highlighter for common documentation languages |
 | `html` | All-in-one HTML emitter with inlined CSS and dark-mode support |
 | `text` | Clean-room TrueType reader: metrics, cmap, glyf/loca outlines, subsetter, GPOS kerning, GSUB ligatures |
-| `layout` | Knuth-Plass line breaking and Liang/TeX hyphenation; richer pagination is roadmap |
+| `layout` | Knuth-Plass line breaking, Liang/TeX hyphenation, and UAX #14 CJK break opportunities; richer pagination is roadmap |
 | `pdf` | Deterministic PDF writer: embedded subset fonts, tables, lists, code, tagged structure, compressed streams |
 | `compress` | Hand-rolled FlateDecode/zlib for font programs and page streams |
 | `fonts` | Bundled font registry (IBM Plex Sans + Computer Modern, OFL) |

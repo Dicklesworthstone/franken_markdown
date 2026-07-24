@@ -23,7 +23,7 @@ default-members = [".", "fmd-font"]
 
 [package]
 name = "franken_markdown"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.85"
 default-run = "fmd"

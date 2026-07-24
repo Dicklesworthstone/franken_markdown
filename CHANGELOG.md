@@ -18,7 +18,7 @@ ratcheted floors enforced in CI, not aspirational targets.
 - Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-10), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.4` remote-image, JPEG, and math-glyph PDF fidelity patch.**
+- Version state: **`0.3.5` CJK (UAX #14) line-breaking patch.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -37,6 +37,66 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
 | 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
 | 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
+| 2026-07-23 | CJK line breaking | `0.3.5` gives Chinese/Japanese/Korean text real break opportunities: UAX #14 inter-ideograph breaks with the closing/opening/non-starter and Hangul-cluster prohibitions, carried as zero-width stretchable glue so the Knuth-Plass optimizer fills the measure instead of overrunning it in narrow columns; Latin output is byte-identical and the break-point splitter is no longer quadratic |
+
+## 0.3.5 - 2026-07-23
+
+CJK line breaking. Chinese, Japanese, and Korean text is written without
+interword spaces, so the whitespace-driven paragraph builder found *no* break
+opportunity inside a run of ideographs and handed the optimizer one unbreakable
+box. What kept such a paragraph on the page at all was the generic long-token
+machinery meant for bare URLs: an emergency break every 14 characters, at a
+2000 penalty. That is coarse enough to leave a third of a narrow measure empty,
+it ignores every CJK punctuation rule, and in any column narrower than one
+14-character chunk — a nested list or blockquote, a multi-column table cell, a
+small page — it produced no usable break at all and the line ran past the right
+margin
+([#4](https://github.com/Dicklesworthstone/franken_markdown/issues/4)).
+
+Line breaking is now guided by UAX #14 for the classes CJK typesetting actually
+needs. A break is allowed between adjacent ideographs, kana, and Hangul
+syllables, and at a CJK ↔ Latin script boundary. It is forbidden before a
+closing bracket, sentence punctuation, or a non-starter (`）】、。，！？；：」』`,
+small kana, `々`, `ー`), forbidden after an opening bracket (`（【「『`),
+forbidden before a combining mark, and forbidden inside a conjoining Hangul
+jamo cluster (LB26). ASCII closing/opening punctuation carries the same rule
+when it sits next to CJK, so `中文,` never orphans the comma.
+
+Each permitted break becomes zero-width, slightly stretchable glue — the
+`\CJKglue` model — rather than a penalty. Zero natural width keeps the
+character grid intact, and the stretch gives the Knuth-Plass optimizer the
+budget it needs to *choose* a CJK line instead of declaring every non-exact
+line infeasible and falling back to greedy first-fit. The glue never takes a
+share of the justification (there is no space token on the page to widen), so a
+justified CJK line ends up to one character short of the measure instead of
+opening a gap no glyph would fill. Table cells hard-split over-wide runs with
+the same prohibition table, so a closing `。` is never orphaned at the head of a
+cell line.
+
+Non-CJK text is untouched by construction: a break is only ever added when one
+of the two characters around it belongs to a CJK script or to CJK punctuation.
+A 176 KB Latin document renders byte-for-byte identically before and after the
+change.
+
+Measured effect on the same documents: a body paragraph in a 20-deep blockquote
+went from 14 to 20 characters per line (67% → 96% of the measure), a heading
+from 28 to 40 (68% → 97%), and the narrow-measure overflow is gone. The word
+splitter that feeds break points was rewritten as a single forward pass, since
+rescanning the word per break point is quadratic once nearly every character is
+a break opportunity: a 76,800-character single-paragraph Chinese document went
+from 205 s to 2.3 s (debug build) with byte-identical output.
+
+New public API in `franken_markdown::layout`: `cjk_break_allowed`,
+`cjk_break_prohibited`, `is_cjk_char`, and `cjk_break_glue`. No third-party
+dependency was added — the classification is a small explicit range table over
+`char`, in the same style as `parse/unicode_punct.rs`.
+
+Verification: `cargo fmt --check`, `cargo check --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, and the full test suite green,
+including 15 new cases in `tests/cjk_line_break_test.rs` that assert on laid-out
+line geometry read back out of the PDF content stream (a splitter unit test can
+pass while the real layout path still overflows) plus recorded pre-change
+baselines for Latin wrapping.
 
 ## 0.3.4 - 2026-07-10
 

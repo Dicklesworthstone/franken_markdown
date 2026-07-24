@@ -305,8 +305,8 @@ pub enum NodeKind {
         sub: Option<Box<Node>>,
         /// Superscript (primes precede it visually).
         sup: Option<Box<Node>>,
-        /// Number of `'` primes.
-        primes: u8,
+        /// The `'` primes, one source span each.
+        primes: Vec<Span>,
     },
     /// A generalized fraction: `\frac`-family, `\binom`/`\choose`, or an
     /// infix `\over` that split its enclosing list.
@@ -356,8 +356,16 @@ pub enum NodeKind {
         /// Text-mode body.
         body: Vec<Node>,
     },
-    /// A literal run of text-mode characters.
-    TextRun(String),
+    /// A literal run of text-mode characters, with one source span per
+    /// character (decoded characters and source bytes are not linear:
+    /// escapes decode two bytes to one character, whitespace collapses) —
+    /// the provenance `Text[3:7]`-style slicing consumes.
+    TextRun {
+        /// The decoded text.
+        text: String,
+        /// One span per `char` of `text`, in order.
+        char_spans: Vec<Span>,
+    },
     /// A `\textbf`/`\emph`/`\underline` styling island (text mode, or the
     /// LaTeX text-in-math form).
     TextStyled {

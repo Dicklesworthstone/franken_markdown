@@ -253,7 +253,7 @@ where
         | NodeKind::BigOp { .. }
         | NodeKind::OpName { .. }
         | NodeKind::SizedDelim { .. }
-        | NodeKind::TextRun(_)
+        | NodeKind::TextRun { .. }
         | NodeKind::StyleChange(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)

@@ -746,7 +746,13 @@ impl<'s> Parser<'s> {
             TokKind::Char(c) => {
                 self.pos += 1;
                 Ok((
-                    vec![Node::new(NodeKind::TextRun(c.to_string()), tok.span)],
+                    vec![Node::new(
+                        NodeKind::TextRun {
+                            text: c.to_string(),
+                            char_spans: vec![tok.span],
+                        },
+                        tok.span,
+                    )],
                     tok.span,
                 ))
             }
@@ -967,7 +973,7 @@ impl<'s> Parser<'s> {
         };
         let mut sup: Option<Box<Node>> = None;
         let mut sub: Option<Box<Node>> = None;
-        let mut primes: u8 = 0;
+        let mut primes: Vec<Span> = Vec::new();
         let start_span = base.as_deref().map_or_else(
             || self.peek().map_or(Span::new(0, 0), |t| t.span),
             |b| b.span,
@@ -980,7 +986,7 @@ impl<'s> Parser<'s> {
             };
             match tok.kind {
                 TokKind::Sup => {
-                    if sup.is_some() || primes > 0 {
+                    if sup.is_some() || !primes.is_empty() {
                         return Err(MathError::Malformed {
                             what: "double superscript".to_owned(),
                             at: tok.span.start,
@@ -1012,7 +1018,7 @@ impl<'s> Parser<'s> {
                         });
                     }
                     self.pos += 1;
-                    primes = primes.saturating_add(1);
+                    primes.push(tok.span);
                     end_span = end_span.union(tok.span);
                 }
                 _ => break,
@@ -1037,7 +1043,7 @@ impl<'s> Parser<'s> {
     fn text_list(&mut self) -> Result<(Vec<Node>, Reason), MathError> {
         let mut items: Vec<Node> = Vec::new();
         let mut run = String::new();
-        let mut run_span: Option<Span> = None;
+        let mut run_spans: Vec<Span> = Vec::new();
         let reason = loop {
             let Some(tok) = self.peek().cloned() else {
                 break Reason::EndOfInput;
@@ -1046,23 +1052,23 @@ impl<'s> Parser<'s> {
                 TokKind::Char(c) => {
                     self.pos += 1;
                     run.push(c);
-                    run_span = Some(run_span.map_or(tok.span, |s| s.union(tok.span)));
+                    run_spans.push(tok.span);
                 }
                 TokKind::Space => {
                     self.pos += 1;
                     if !run.is_empty() {
                         run.push(' ');
-                        run_span = Some(run_span.map_or(tok.span, |s| s.union(tok.span)));
+                        run_spans.push(tok.span);
                     }
                 }
                 TokKind::Tie => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     items.push(Node::new(NodeKind::Tie, tok.span));
                 }
                 TokKind::MathShift => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     // An immediately adjacent second '$' opens display
                     // mathematics ($$…$$).
                     let display = matches!(self.peek().map(|t| t.kind), Some(TokKind::MathShift));
@@ -1117,7 +1123,7 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::BeginGroup => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     let (body, reason) = self.descend(tok.span.start, |p| p.text_list())?;
                     match reason {
                         Reason::EndGroup(close) => {
@@ -1134,7 +1140,7 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::EndGroup => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     break Reason::EndGroup(tok.span);
                 }
                 TokKind::AlignTab => {
@@ -1148,7 +1154,7 @@ impl<'s> Parser<'s> {
                     // LaTeX recovers by inserting the missing '$'; keep the
                     // behavior as an explicit implicit island with an empty
                     // script base.
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     let mut cluster: Vec<Node> = Vec::new();
                     self.script_cluster(&mut cluster)?;
                     if let Some(node) = cluster.pop() {
@@ -1164,13 +1170,19 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::ControlSymbol(c) => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_span);
                     match c {
-                        '\\' => items.push(Node::new(NodeKind::Linebreak, tok.span)),
+                        // Escapes join the surrounding run (per-char spans
+                        // keep the two-byte provenance exact).
                         '$' | '%' | '&' | '#' | '_' | '{' | '}' => {
                             run.push(c);
-                            run_span = Some(tok.span);
+                            run_spans.push(tok.span);
+                            continue;
                         }
+                        _ => {}
+                    }
+                    flush_run(&mut items, &mut run, &mut run_spans);
+                    match c {
+                        '\\' => items.push(Node::new(NodeKind::Linebreak, tok.span)),
                         ',' => items.push(Node::new(NodeKind::Space(SpaceKind::Thin), tok.span)),
                         ':' => items.push(Node::new(NodeKind::Space(SpaceKind::Med), tok.span)),
                         ';' => {
@@ -1192,13 +1204,13 @@ impl<'s> Parser<'s> {
                     }
                 }
                 TokKind::ControlWord(name) => {
-                    flush_run(&mut items, &mut run, &mut run_span);
+                    flush_run(&mut items, &mut run, &mut run_spans);
                     let node = self.text_control_word(name, tok.span)?;
                     items.push(node);
                 }
             }
         };
-        flush_run(&mut items, &mut run, &mut run_span);
+        flush_run(&mut items, &mut run, &mut run_spans);
         Ok((items, reason))
     }
 
@@ -1318,13 +1330,23 @@ fn set_limits(last: Option<&mut Node>, mode: Limits) -> bool {
 }
 
 /// Flush the pending text run into the item list.
-fn flush_run(items: &mut Vec<Node>, run: &mut String, run_span: &mut Option<Span>) {
+fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>) {
     if run.is_empty() {
-        *run_span = None;
+        run_spans.clear();
         return;
     }
-    let span = run_span.take().unwrap_or(Span::new(0, 0));
-    items.push(Node::new(NodeKind::TextRun(std::mem::take(run)), span));
+    let char_spans = std::mem::take(run_spans);
+    let span = match (char_spans.first(), char_spans.last()) {
+        (Some(first), Some(last)) => first.union(*last),
+        _ => Span::new(0, 0),
+    };
+    items.push(Node::new(
+        NodeKind::TextRun {
+            text: std::mem::take(run),
+            char_spans,
+        },
+        span,
+    ));
 }
 
 /// The current list was closed by the wrong closer.

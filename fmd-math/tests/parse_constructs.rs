@@ -277,7 +277,7 @@ fn script_cluster_structure() {
     assert!(base.is_some());
     assert!(sub.is_some());
     assert!(sup.is_some());
-    assert_eq!(*primes, 0);
+    assert!(primes.is_empty());
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn primes_count_and_combine_with_subscripts() {
     else {
         panic!("scripts");
     };
-    assert_eq!(*primes, 2);
+    assert_eq!(primes.len(), 2);
     assert!(sub.is_some());
     assert!(sup.is_none());
 }
@@ -463,7 +463,7 @@ fn text_island_in_math_and_math_island_in_text() {
     assert!(
         items
             .iter()
-            .any(|n| matches!(&n.kind, NodeKind::TextRun(t) if t.contains("value")))
+            .any(|n| matches!(&n.kind, NodeKind::TextRun { text, .. } if text.contains("value")))
     );
 }
 

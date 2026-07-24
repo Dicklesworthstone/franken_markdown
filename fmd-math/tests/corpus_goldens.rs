@@ -83,9 +83,25 @@ fn corpus_parse_outcomes_match_the_tiers() {
                         engine.typeset(&entry.text, fmd_math::Style::Display)
                     };
                     match laid_result {
-                        Ok(_) => {
+                        Ok(layout) => {
                             laid += 1;
                             occ_laid += entry.count;
+                            // §11.3 provenance property: every primitive's
+                            // span is non-empty and inside the source.
+                            let len = entry.text.len();
+                            let bad = layout
+                                .glyphs
+                                .iter()
+                                .map(|g| g.span)
+                                .chain(layout.rules.iter().map(|r| r.span))
+                                .chain(layout.paths.iter().map(|p| p.span))
+                                .any(|s| s.end > len || s.start >= s.end);
+                            if bad {
+                                failures.push(format!(
+                                    "line {}: a primitive span is empty or out of source",
+                                    lineno + 1
+                                ));
+                            }
                         }
                         Err(fmd_math::MathError::UnsupportedCommand { name, .. }) => {
                             *layout_fail_tally.entry(name).or_insert(0) += entry.count;

@@ -233,7 +233,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::Accent { .. }
         | NodeKind::List(_)
         | NodeKind::Text { .. }
-        | NodeKind::TextRun(_)
+        | NodeKind::TextRun { .. }
         | NodeKind::TextStyled { .. }
         | NodeKind::MathIsland { .. }
         | NodeKind::Environment { .. } => Some(AtomClass::Ord),

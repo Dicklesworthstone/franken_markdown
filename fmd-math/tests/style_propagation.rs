@@ -10,7 +10,7 @@ fn leaf_styles(src: &str, root: &Node, initial: StyleCtx) -> Vec<(String, Style,
     let mut out = Vec::new();
     style_walk(root, initial, &mut |node, ctx| match &node.kind {
         NodeKind::Symbol { ch, .. } => out.push((ch.to_string(), ctx.style, ctx.cramped)),
-        NodeKind::TextRun(t) => out.push((t.clone(), ctx.style, ctx.cramped)),
+        NodeKind::TextRun { text, .. } => out.push((text.clone(), ctx.style, ctx.cramped)),
         _ => {
             let _ = src;
         }

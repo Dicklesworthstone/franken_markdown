@@ -329,8 +329,12 @@ impl Engine {
                 };
                 self.op_glyph(*ch, node.span, ctx, scale)
             }
-            NodeKind::OpName { name, .. } => self.word_box(name, node.span, ctx, FACE_REGULAR),
-            NodeKind::TextRun(text) => self.word_box(text, node.span, ctx, text_face(ctx)),
+            NodeKind::OpName { name, .. } => {
+                self.word_box(name, node.span, None, ctx, FACE_REGULAR)
+            }
+            NodeKind::TextRun { text, char_spans } => {
+                self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx))
+            }
             NodeKind::Text { body } => Ok(Laid {
                 boxx: self.hlist(
                     body,
@@ -398,13 +402,7 @@ impl Engine {
                 sub,
                 sup,
                 primes,
-            } => self.scripts(
-                base.as_deref(),
-                sub.as_deref(),
-                sup.as_deref(),
-                *primes,
-                ctx,
-            ),
+            } => self.scripts(base.as_deref(), sub.as_deref(), sup.as_deref(), primes, ctx),
             NodeKind::Frac { num, den, spec } => self.fraction(num, den, *spec, ctx, node.span),
             NodeKind::Radical { index, radicand } => {
                 self.radical(index.as_deref(), radicand, ctx, node.span)
@@ -555,11 +553,15 @@ impl Engine {
     }
 
     /// A run of text glyphs from one preferred face (operator names, text
-    /// runs), with kerning and interword spaces.
+    /// runs), with kerning and interword spaces. `char_spans` carries one
+    /// source span per character when the run has exact provenance (text
+    /// runs); operator names fall back to the command's span, which is the
+    /// documented synthetic-span policy.
     fn word_box(
         &self,
         text: &str,
         span: Span,
+        char_spans: Option<&[Span]>,
         ctx: LayCtx,
         prefer: FaceId,
     ) -> Result<Laid, MathError> {
@@ -570,7 +572,11 @@ impl Engine {
         let mut depth = 0.0_f64;
         let mut prev: Option<(FaceId, u16)> = None;
         let mut last_italic = 0.0;
-        for ch in text.chars() {
+        for (i, ch) in text.chars().enumerate() {
+            let ch_span = char_spans
+                .and_then(|spans| spans.get(i))
+                .copied()
+                .unwrap_or(span);
             if ch == ' ' {
                 x += self.space_width(ctx);
                 prev = None;
@@ -582,7 +588,10 @@ impl Engine {
                 None => ch,
             };
             let Some((face, gid)) = self.faces.resolve(mapped, &chain) else {
-                return Err(MathError::UnmappedChar { ch: mapped, span });
+                return Err(MathError::UnmappedChar {
+                    ch: mapped,
+                    span: ch_span,
+                });
             };
             if let Some((pf, pg)) = prev {
                 if pf == face {
@@ -600,7 +609,7 @@ impl Engine {
                     gid,
                     ch: mapped,
                     size,
-                    span,
+                    span: ch_span,
                 },
             });
             x += m.advance * size;
@@ -656,7 +665,7 @@ impl Engine {
         base: Option<&Node>,
         sub: Option<&Node>,
         sup: Option<&Node>,
-        primes: u8,
+        primes: &[Span],
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
         // Big operators with active limits route to rule 13a instead.
@@ -701,13 +710,13 @@ impl Engine {
             )
         };
         // The superscript material: an explicit box, or a prime run.
-        let sup_box = if primes > 0 {
-            Some(self.prime_run(primes, ctx)?)
-        } else {
+        let sup_box = if primes.is_empty() {
             match sup {
                 Some(node) => Some(self.lay_node(node, ctx.map(StyleCtx::sup))?.boxx),
                 None => None,
             }
+        } else {
+            Some(self.prime_run(primes, ctx)?)
         };
         let sub_box = match sub {
             Some(node) => Some(self.lay_node(node, ctx.map(StyleCtx::sub))?.boxx),
@@ -809,18 +818,22 @@ impl Engine {
         }
     }
 
-    /// A run of prime marks as superscript material.
-    fn prime_run(&self, primes: u8, ctx: LayCtx) -> Result<MBox, MathError> {
+    /// A run of prime marks as superscript material, each carrying its own
+    /// `'` token's span.
+    fn prime_run(&self, primes: &[Span], ctx: LayCtx) -> Result<MBox, MathError> {
         let sup_ctx = ctx.map(StyleCtx::sup);
         let size = sup_ctx.size();
-        let span = Span::new(0, 0);
+        let fallback = primes.first().copied().unwrap_or(Span::new(0, 0));
         let Some((face, gid)) = self.faces.resolve('′', &[FACE_REGULAR, FACE_SYMBOLS]) else {
-            return Err(MathError::UnmappedChar { ch: '′', span });
+            return Err(MathError::UnmappedChar {
+                ch: '′',
+                span: fallback,
+            });
         };
         let m = self.metrics_of(face, gid);
         let mut children = Vec::new();
         let mut x = 0.0;
-        for _ in 0..primes {
+        for span in primes {
             children.push(Positioned {
                 dx: x,
                 dy: 0.0,
@@ -829,7 +842,7 @@ impl Engine {
                     gid,
                     ch: '′',
                     size,
-                    span,
+                    span: *span,
                 },
             });
             x += m.advance * size;

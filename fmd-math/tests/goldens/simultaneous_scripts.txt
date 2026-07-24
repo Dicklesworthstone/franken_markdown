@@ -4,7 +4,7 @@ glyph face 0 gid 21 ch U+0032 x 0.518066 y 0.412892 size 0.700000 span 4..5
 glyph face 1 gid 76 ch U+0069 x 0.462891 y -0.247217 size 0.700000 span 2..3
 glyph face 0 gid 14 ch U+002B x 1.090289 y 0.000000 size 1.000000 span 6..7
 glyph face 1 gid 73 ch U+0066 x 2.090343 y 0.000000 size 1.000000 span 8..9
-glyph face 6 gid 82 ch U+2032 x 2.542491 y 0.412892 size 0.700000 span 0..0
+glyph face 6 gid 82 ch U+2032 x 2.542491 y 0.412892 size 0.700000 span 9..10
 contour 0 start 0.053223 0.050781
   quad 0.053223 0.074707 0.068115 0.089844
   quad 0.083008 0.104980 0.103027 0.104980

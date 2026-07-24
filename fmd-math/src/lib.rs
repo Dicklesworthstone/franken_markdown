@@ -56,6 +56,17 @@
 //! the mainland becomes an explicit implicit [`NodeKind::MathIsland`],
 //! and `$$…$$` display mathematics is recognized.
 //!
+//! ## The span map (§11.3)
+//!
+//! Every output primitive carries its source byte span, exactly: text-run
+//! characters per character, primes per `'` token, command-produced
+//! glyphs the producing command's span (the expansion site). The
+//! [`spanmap`] module turns that provenance into the consumption surface:
+//! [`spanmap::find_occurrences`] + [`Layout::select`] (containment
+//! semantics) is the native replacement for the Reference's
+//! render-twice-and-align hack — `isolate`, `tex_to_color_map`, substring
+//! slicing, and `TransformMatchingTex` match by source identity.
+//!
 //! ## The error contract (the coverage ratchet's unit)
 //!
 //! There is deliberately no fallback typesetter, so coverage discipline
@@ -78,6 +89,7 @@ pub mod metrics;
 pub mod node;
 mod parse;
 pub mod paths;
+pub mod spanmap;
 pub mod style;
 mod token;
 
@@ -91,6 +103,7 @@ pub use layout::Engine;
 pub use mbox::{FaceId, Layout, PathContour, PathSeg, PlacedGlyph, PlacedPath, PlacedRule};
 pub use metrics::MathConstants;
 pub use node::{Node, NodeKind, Span};
+pub use spanmap::{Selection, find_occurrences};
 pub use style::{Style, StyleCtx, style_walk};
 
 /// Parse a whole source string as mathematics (the `Tex` surface). The

@@ -21,6 +21,10 @@ pub const TIER2_TRACKING: &str = "franken_manim fm-j5t (the tier-2 construct pro
 /// Where unknown (untiered) constructs should be reported.
 pub const UNTIERED_TRACKING: &str = "https://github.com/Dicklesworthstone/franken_manim/issues";
 
+/// Where parse-supported constructs whose layout has not landed yet are
+/// tracked (environments, drawn/stretchy constructions, macro packs).
+pub const LAYOUT_PENDING_TRACKING: &str = "franken_manim fm-kg9 (the fmd-math extensions bead)";
+
 /// Construct tiers, per the G0-4 harvest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {

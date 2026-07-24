@@ -71,15 +71,25 @@
 pub mod atom;
 pub mod commands;
 mod error;
+pub mod faces;
+mod layout;
 mod mbox;
+pub mod metrics;
 pub mod node;
 mod parse;
+pub mod paths;
 pub mod style;
 mod token;
 
-pub use commands::{ConstructStatus, TIER2_TRACKING, Tier, UNTIERED_TRACKING, construct_status};
+pub use commands::{
+    ConstructStatus, LAYOUT_PENDING_TRACKING, TIER2_TRACKING, Tier, UNTIERED_TRACKING,
+    construct_status,
+};
 pub use error::MathError;
+pub use faces::FaceSet;
+pub use layout::Engine;
 pub use mbox::{FaceId, Layout, PathContour, PathSeg, PlacedGlyph, PlacedPath, PlacedRule};
+pub use metrics::MathConstants;
 pub use node::{Node, NodeKind, Span};
 pub use style::{Style, StyleCtx, style_walk};
 

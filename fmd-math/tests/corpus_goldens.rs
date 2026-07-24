@@ -35,10 +35,21 @@ fn corpus_parse_outcomes_match_the_tiers() {
     };
     let data = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read corpus at {path}: {e}"));
+    #[cfg(feature = "bundled-faces")]
+    let engine = match fmd_math::Engine::bundled() {
+        Ok(e) => Some(e),
+        Err(e) => panic!("bundled faces: {e}"),
+    };
+    #[cfg(not(feature = "bundled-faces"))]
+    let engine: Option<fmd_math::Engine> = None;
     let mut total = 0_u64;
     let mut parsed = 0_u64;
     let mut occurrences = 0_u64;
     let mut occ_parsed = 0_u64;
+    let mut laid = 0_u64;
+    let mut occ_laid = 0_u64;
+    let mut layout_fail_tally: std::collections::BTreeMap<String, u64> =
+        std::collections::BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
     for (lineno, line) in data.lines().enumerate() {
         if line.trim().is_empty() {
@@ -61,6 +72,35 @@ fn corpus_parse_outcomes_match_the_tiers() {
             (true, Ok(_)) => {
                 parsed += 1;
                 occ_parsed += entry.count;
+                // The layout plane: parse-covered strings must either lay
+                // out or fail with a precise named error (a layout-pending
+                // construct or an unmapped character) — never panic, never
+                // a structural fault appearing only at layout time.
+                if let Some(engine) = engine.as_ref() {
+                    let laid_result = if entry.mode == "text" {
+                        engine.typeset_text(&entry.text)
+                    } else {
+                        engine.typeset(&entry.text, fmd_math::Style::Display)
+                    };
+                    match laid_result {
+                        Ok(_) => {
+                            laid += 1;
+                            occ_laid += entry.count;
+                        }
+                        Err(fmd_math::MathError::UnsupportedCommand { name, .. }) => {
+                            *layout_fail_tally.entry(name).or_insert(0) += entry.count;
+                        }
+                        Err(fmd_math::MathError::UnmappedChar { ch, .. }) => {
+                            *layout_fail_tally
+                                .entry(format!("char:U+{:04X}", ch as u32))
+                                .or_insert(0) += entry.count;
+                        }
+                        Err(other) => failures.push(format!(
+                            "line {}: parse-covered string failed layout structurally: {other}",
+                            lineno + 1
+                        )),
+                    }
+                }
             }
             (true, Err(e)) => failures.push(format!(
                 "line {}: expected parse, got: {e}\n  mode={} constructs={:?}",
@@ -113,6 +153,19 @@ fn corpus_parse_outcomes_match_the_tiers() {
         100.0 * parsed as f64 / total as f64,
         100.0 * occ_parsed as f64 / occurrences as f64,
     );
+    if engine.is_some() {
+        eprintln!(
+            "layout coverage: {laid} laid out ({:.3}% unique-string / {:.3}% \
+             occurrence-weighted)",
+            100.0 * laid as f64 / total as f64,
+            100.0 * occ_laid as f64 / occurrences as f64,
+        );
+        let mut ranked: Vec<(&String, &u64)> = layout_fail_tally.iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        for (name, count) in ranked.iter().take(20) {
+            eprintln!("  layout-pending {name}: {count} occurrences");
+        }
+    }
     assert!(
         failures.is_empty(),
         "{} corpus mismatches:\n{}",

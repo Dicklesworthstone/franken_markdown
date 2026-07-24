@@ -14,7 +14,9 @@
 //! - unmapped:  `` character 'x' (U+0078) has no glyph in the bundled math
 //!   faces … ``
 
-use crate::commands::{ConstructStatus, TIER2_TRACKING, UNTIERED_TRACKING, construct_status};
+use crate::commands::{
+    ConstructStatus, LAYOUT_PENDING_TRACKING, TIER2_TRACKING, UNTIERED_TRACKING, construct_status,
+};
 use crate::node::Span;
 
 /// Why a source string failed to parse (or, later, to lay out).
@@ -82,7 +84,13 @@ impl core::fmt::Display for MathError {
                      (bytes {}..{})",
                     span.start, span.end
                 ),
-                _ => write!(
+                ConstructStatus::Supported => write!(
+                    f,
+                    "`{name}` parses, but its layout is not yet implemented; tracked at \
+                     {LAYOUT_PENDING_TRACKING} (bytes {}..{})",
+                    span.start, span.end
+                ),
+                ConstructStatus::Unknown => write!(
                     f,
                     "`{name}` is not supported; untiered (not observed in the G0-4 corpus), \
                      report at {UNTIERED_TRACKING} (bytes {}..{})",

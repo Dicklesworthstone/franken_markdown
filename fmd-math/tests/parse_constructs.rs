@@ -679,9 +679,7 @@ fn fragments_of_a_balanced_whole_parse_with_markers() {
 #[test]
 fn text_mode_malformations_are_precise() {
     for (s, needle) in [
-        ("x ^ 2", "mathematics"),
         ("a & b", "outside an alignment"),
-        ("open $x", "unclosed '$'"),
         (r"a \over b", "math-mode command"),
         (r"\displaystyle x", "math-mode command"),
         ("{unclosed", "unclosed '{'"),

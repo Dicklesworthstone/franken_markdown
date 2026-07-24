@@ -24,8 +24,10 @@ use crate::token::{Tok, TokKind, lex};
 /// Nesting depth bound: groups, arguments, `\left…\right`, environments,
 /// and islands all descend one level. Real formulas in the G0-4 corpus stay
 /// in single digits; the bound exists so hostile input errors cleanly
-/// instead of exhausting the stack.
-pub(crate) const MAX_DEPTH: usize = 96;
+/// instead of exhausting the stack (64 keeps an ample margin against the
+/// 2 MiB test-thread stack even in unoptimized builds, where the parser's
+/// frames are largest).
+pub(crate) const MAX_DEPTH: usize = 64;
 
 /// Parse a whole source string as mathematics.
 pub(crate) fn parse_math(source: &str) -> Result<Node, MathError> {

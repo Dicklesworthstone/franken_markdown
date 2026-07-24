@@ -508,6 +508,11 @@ fn html_image_asset_mime(destination: &str, bytes: &[u8]) -> Option<&'static str
     if ext.eq_ignore_ascii_case("svg") && looks_like_svg(bytes) {
         return Some("image/svg+xml");
     }
+    if (ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"))
+        && bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+    {
+        return Some("image/jpeg");
+    }
     None
 }
 

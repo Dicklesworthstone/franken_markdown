@@ -19,18 +19,26 @@ if [ "$root_name" != "franken_markdown" ]; then
 fi
 
 echo "fmd policy check: no-default core dependency graph"
+# Since the fm-ydw workspace conversion, `cargo tree` at the root prints one
+# tree per default member (root, fmd-font, fmd-math), so the old "exactly one
+# line" assertion is wrong in shape while the intent stands: the core graph may
+# contain FIRST-PARTY workspace crates only — any third-party package is a
+# policy failure.
+first_party='^(franken_markdown|fmd-font|fmd-math) v'
 core_tree="$(cargo tree --no-default-features --prefix none --edges normal)"
-core_lines="$(printf '%s\n' "$core_tree" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
-if [ "$core_lines" != "1" ]; then
+core_offenders="$(printf '%s\n' "$core_tree" \
+  | sed -e '/^[[:space:]]*$/d' -e 's/ (\*)$//' \
+  | grep -Ev "$first_party" || true)"
+if [ -n "$core_offenders" ]; then
   printf '%s\n' "$core_tree" >&2
-  fail "the --no-default-features core must have zero third-party normal dependencies"
+  fail "the --no-default-features core must have zero third-party normal dependencies (offending: $(printf '%s' "$core_offenders" | tr '\n' ' '))"
 fi
 
 case "$core_tree" in
-  franken_markdown\ v*) ;;
+  *franken_markdown\ v*) ;;
   *)
     printf '%s\n' "$core_tree" >&2
-    fail "unexpected --no-default-features cargo tree root"
+    fail "the --no-default-features cargo tree must include the franken_markdown root"
     ;;
 esac
 
@@ -88,15 +96,22 @@ if ! printf '%s\n' "$batch_crates" | grep -Fxq asupersync; then
 fi
 
 echo "fmd policy check: no native build script"
-if [ -e build.rs ]; then
-  fail "build.rs is not allowed without an explicit architecture decision"
-fi
+for crate_dir in . fmd-font fmd-math; do
+  if [ -e "$crate_dir/build.rs" ]; then
+    fail "$crate_dir/build.rs is not allowed without an explicit architecture decision"
+  fi
+done
 
 echo "fmd policy check: unsafe policy is enforced by Rust lints"
 grep -q 'unsafe_code = "forbid"' Cargo.toml \
   || fail 'Cargo.toml must keep [lints.rust] unsafe_code = "forbid"'
 grep -q '#!\[forbid(unsafe_code)\]' src/lib.rs \
   || fail 'src/lib.rs must keep #![forbid(unsafe_code)]'
+for member in fmd-font fmd-math; do
+  [ -d "$member" ] || continue
+  grep -q 'unsafe_code = "forbid"' "$member/Cargo.toml" \
+    || fail "$member/Cargo.toml must keep [lints.rust] unsafe_code = \"forbid\""
+done
 
 cargo check --no-default-features --lib >/dev/null
 

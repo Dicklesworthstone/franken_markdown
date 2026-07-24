@@ -15,10 +15,10 @@ starting with `0.2.0`, and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-09), the
+- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-10), the
   working tree, `.beads/issues.jsonl`, `docs/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.3` DSR all-platform renderer fidelity and performance patch.**
+- Version state: **`0.3.5` CJK (UAX #14) line-breaking patch.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -36,6 +36,123 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-07 | DSR patch release | `0.3.1` is the DSR-built publication tag for the same renderer wave, with the late HTML base64 and PDF empty-segment drawing passes included and the rejected PDF decimal-string trial left out of the shipped source |
 | 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
 | 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
+| 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
+| 2026-07-23 | CJK line breaking | `0.3.5` gives Chinese/Japanese/Korean text real break opportunities: UAX #14 inter-ideograph breaks with the closing/opening/non-starter and Hangul-cluster prohibitions, carried as zero-width stretchable glue so the Knuth-Plass optimizer fills the measure instead of overrunning it in narrow columns; Latin output is byte-identical and the break-point splitter is no longer quadratic |
+
+## 0.3.5 - 2026-07-23
+
+CJK line breaking. Chinese, Japanese, and Korean text is written without
+interword spaces, so the whitespace-driven paragraph builder found *no* break
+opportunity inside a run of ideographs and handed the optimizer one unbreakable
+box. What kept such a paragraph on the page at all was the generic long-token
+machinery meant for bare URLs: an emergency break every 14 characters, at a
+2000 penalty. That is coarse enough to leave a third of a narrow measure empty,
+it ignores every CJK punctuation rule, and in any column narrower than one
+14-character chunk — a nested list or blockquote, a multi-column table cell, a
+small page — it produced no usable break at all and the line ran past the right
+margin
+([#4](https://github.com/Dicklesworthstone/franken_markdown/issues/4)).
+
+Line breaking is now guided by UAX #14 for the classes CJK typesetting actually
+needs. A break is allowed between adjacent ideographs, kana, and Hangul
+syllables, and at a CJK ↔ Latin script boundary. It is forbidden before a
+closing bracket, sentence punctuation, or a non-starter (`）】、。，！？；：」』`,
+small kana, `々`, `ー`), forbidden after an opening bracket (`（【「『`),
+forbidden before a combining mark, and forbidden inside a conjoining Hangul
+jamo cluster (LB26). ASCII closing/opening punctuation carries the same rule
+when it sits next to CJK, so `中文,` never orphans the comma.
+
+Each permitted break becomes zero-width, slightly stretchable glue — the
+`\CJKglue` model — rather than a penalty. Zero natural width keeps the
+character grid intact, and the stretch gives the Knuth-Plass optimizer the
+budget it needs to *choose* a CJK line instead of declaring every non-exact
+line infeasible and falling back to greedy first-fit. The glue never takes a
+share of the justification (there is no space token on the page to widen), so a
+justified CJK line ends up to one character short of the measure instead of
+opening a gap no glyph would fill. Table cells hard-split over-wide runs with
+the same prohibition table, so a closing `。` is never orphaned at the head of a
+cell line.
+
+Non-CJK text is untouched by construction: a break is only ever added when one
+of the two characters around it belongs to a CJK script or to CJK punctuation.
+A 176 KB Latin document renders byte-for-byte identically before and after the
+change.
+
+Measured effect on the same documents: a body paragraph in a 20-deep blockquote
+went from 14 to 20 characters per line (67% → 96% of the measure), a heading
+from 28 to 40 (68% → 97%), and the narrow-measure overflow is gone. The word
+splitter that feeds break points was rewritten as a single forward pass, since
+rescanning the word per break point is quadratic once nearly every character is
+a break opportunity: a 76,800-character single-paragraph Chinese document went
+from 205 s to 2.3 s (debug build) with byte-identical output.
+
+New public API in `franken_markdown::layout`: `cjk_break_allowed`,
+`cjk_break_prohibited`, `is_cjk_char`, and `cjk_break_glue`. No third-party
+dependency was added — the classification is a small explicit range table over
+`char`, in the same style as `parse/unicode_punct.rs`.
+
+Verification: `cargo fmt --check`, `cargo check --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, and the full test suite green,
+including 15 new cases in `tests/cjk_line_break_test.rs` that assert on laid-out
+line geometry read back out of the PDF content stream (a splitter unit test can
+pass while the real layout path still overflows) plus recorded pre-change
+baselines for Latin wrapping.
+
+## 0.3.4 - 2026-07-10
+
+Issue-driven PDF fidelity patch closing the repository's first two user-filed
+issues while preserving the clean-room, network-free core contract.
+
+Hotlinked images now render in PDF output
+([#2](https://github.com/Dicklesworthstone/franken_markdown/issues/2)). The
+CLI downloads remote http(s) image destinations for PDF renders before
+invoking the renderer, via the system `curl` (preferred) or `wget`, with an
+HTTP(S)-only protocol allowlist across redirects, a per-image timeout
+(`--remote-image-timeout-secs`, default 20 s), the existing
+`--max-pdf-image-bytes` cap enforced on the received body, and an opt-out
+(`--no-remote-images`). Every fetch failure is non-fatal: a structured warning
+is reported and the destination falls back to alt text, so offline renders
+keep working. Fetched bytes enter the render core as ordinary caller-supplied
+assets — the engine itself still performs no I/O. The PDF writer gains JPEG
+support: baseline/extended/progressive Huffman JPEGs embed losslessly as
+`/DCTDecode` XObjects, while lossless/arithmetic/hierarchical flavors and
+4-component Adobe CMYK fail closed to alt text. Local `.jpg`/`.jpeg` files
+auto-load next to the Markdown file exactly like PNG/SVG, and the HTML
+renderer embeds supplied JPEG assets as data URIs
+([`5b1e6cc`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b1e6cc)).
+
+Common math and arrow glyphs no longer render as .notdef boxes
+([#3](https://github.com/Dicklesworthstone/franken_markdown/issues/3)). A
+curated ~56 KiB subset of Noto Sans Math (SIL OFL 1.1) is bundled as a sixth
+font slot covering arrows, mathematical operators, letterlike symbols, misc
+technical, geometric markers, and long arrows, regenerated reproducibly with
+the project's own clean-room subsetter. Text runs split by glyph coverage
+before width measurement so line breaking, justification, table allocation,
+and code fitting agree on the fallback face's real advances; the face is
+embedded only when a run actually uses it, so ASCII-only documents keep
+byte-identical output, and fallback glyphs stay selectable through ToUnicode
+CMap entries
+([`e63e463`](https://github.com/Dicklesworthstone/franken_markdown/commit/e63e463)).
+
+The patch also carries an SVG fidelity wave — structural SVG CSS parsing
+(declaration splitting, quoted value delimiters, `!important` markers,
+top-level separators, trailing `var()` tokens), the SVG opacity
+`initial`/`unset`/`inherit` cascade, inherited and `initial` paint keywords,
+paint alpha composed with opacity properties, alpha preserved on missing paint
+fallbacks, gradient stop/mask/currentColor/filter-shadow alpha, `hsl()` and
+`hwb()` colors, absolute length units, fail-closed empty clip paths, and
+protocol-relative SVG stylesheet import stripping in HTML — plus measured
+parser/HTML/PDF/compression optimization passes with rejected trials recorded
+in the performance artifacts, and a Windows-only CLI contract-test assertion
+fix that compares JSON-escaped path separators.
+
+Release verification for the source tree included `cargo fmt --check`,
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, the
+clean-room policy and WASM core gates, and the full test suite (1706 tests),
+with the issue repros rasterized and inspected. New end-to-end coverage
+exercises the real binary against a loopback HTTP server
+(`tests/remote_image_test.rs`) and the symbol fallback chain
+(`tests/symbol_fallback_test.rs`).
 
 ## 0.3.3 - 2026-07-09
 

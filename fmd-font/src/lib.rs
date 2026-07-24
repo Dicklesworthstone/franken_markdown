@@ -12,6 +12,18 @@
 //! increments. The current module is enough for bundled TrueType fonts, real
 //! PDF metrics, deterministic subset embedding, kerning, ligatures, and
 //! selectable `ToUnicode` output.
+//!
+//! Factored out of `franken_markdown`'s `src/text.rs` into this standalone
+//! `fmd-font` workspace crate so the wider Franken suite can consume the
+//! font subsystem directly (franken_manim's Scribe is the first external
+//! consumer). The [`outline`] module is the piece added with the factoring:
+//! a decoder from `glyf` point data to quadratic-Bézier contours with
+//! phantom-point-correct metrics.
+#![forbid(unsafe_code)]
+
+#[cfg(feature = "bundled-faces")]
+pub mod bundled;
+pub mod outline;
 
 /// Hard ceiling on how many glyphs a single OpenType layout structure may
 /// enumerate. A font cannot contain more than 65 536 glyphs, so a well-formed
@@ -96,11 +108,11 @@ impl core::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
-fn be_u16(d: &[u8], o: usize) -> Option<u16> {
+pub(crate) fn be_u16(d: &[u8], o: usize) -> Option<u16> {
     let bytes = d.get(o..o.checked_add(2)?)?;
     Some(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
-fn be_i16(d: &[u8], o: usize) -> Option<i16> {
+pub(crate) fn be_i16(d: &[u8], o: usize) -> Option<i16> {
     be_u16(d, o).map(|v| v as i16)
 }
 fn be_u32(d: &[u8], o: usize) -> Option<u32> {
@@ -1883,6 +1895,7 @@ mod subset_degradation_tests {
         Font, MISSING_GLYPH_REMAP, be_i16, be_u16, find_table_full, strip_simple_glyph_instructions,
     };
 
+    // The bundled faces ship in-crate under `fmd-font/fonts/`.
     fn cm_regular() -> Font {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),

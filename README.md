@@ -16,24 +16,26 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.3 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.4 franken_markdown
 ```
 
 </div>
 
-> **Current status.** The `v0.3.3` GitHub release ships checksum-verified `fmd`
+> **Current status.** The `v0.3.4` GitHub release ships checksum-verified `fmd`
 > archives for Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows
-> x86_64, built and smoke-tested with DSR. The browser/WASM package is published
+> x86_64. The browser/WASM package is published
 > to npm as `@franken-suite/franken-markdown`; the npm registry latest is
-> `0.3.2` while the local package source is already versioned for `0.3.3` as
-> checked on July 9, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
-> so use the release archives or tagged source for the current `0.3.3` CLI and
+> `0.3.2` while the local package source is already versioned for `0.3.5` as
+> checked on July 23, 2026. Crates.io still serves `franken_markdown = "0.2.0"`,
+> so use the release archives or tagged source for the current `0.3.4` CLI and
 > library until the Rust crate catches up. The current renderer ships shared
 > HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
 > as PDF vectors, native SVG pattern strokes, text strokes, text paths, `hwb()`
-> colors and `color-mix()` transparency, staged native writes, optional
+> colors and `color-mix()` transparency, remote-image fetching with JPEG
+> `/DCTDecode` embedding for PDF, a Noto Sans Math symbol fallback face for
+> math/arrow glyphs, staged native writes, optional
 > Asupersync batch rendering, browser/WASM package sources, and a long set of
 > measured scalar optimizations.
 > SIMD and deeper pagination remain roadmap items until they have proof.
@@ -94,13 +96,13 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Area | Current functionality |
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
-| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
+| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
-| PNG and SVG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG destinations. HTML embeds supported assets as data URIs; PDF draws supported assets directly. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
+| PNG, SVG, and JPEG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
 | Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
@@ -384,8 +386,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on July 9, 2026, this
-# currently installs 0.2.0 until 0.3.3 is published to crates.io.
+# Or install the published crates.io package. As checked on July 23, 2026, this
+# currently installs 0.2.0 until 0.3.5 is published to crates.io.
 cargo install franken_markdown
 ```
 
@@ -394,11 +396,11 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The `v0.3.3` release includes a `fmd` archive per platform: Linux
+The `v0.3.4` release includes a `fmd` archive per platform: Linux
 (`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), macOS Apple
 Silicon (`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`).
-Native archives are built and smoke-tested with DSR on the release fleet before
-they are attached to the GitHub release. Each archive includes a `.sha256`
+Native archives are built and smoke-tested per platform before they are
+attached to the GitHub release. Each archive includes a `.sha256`
 sidecar and the release also includes a combined `SHA256SUMS`. Download the
 archive for your platform and verify it before unpacking (Linux example):
 
@@ -410,8 +412,8 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
 published on npm (`npm install @franken-suite/franken-markdown`). As checked on
-July 9, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
-versioned at `0.3.3`, so the next successful publish will bring the browser
+July 23, 2026, the registry latest is `0.3.2`; `wasm/package.json` is already
+versioned at `0.3.5`, so the next successful publish will bring the browser
 package back in line with the GitHub release. The workflow skips versions that
 are already on the registry.
 
@@ -503,8 +505,10 @@ fmd --text '<markdown>' --out out.html
 | `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML in the source through instead of escaping it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
-| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG image destinations. The render core never reads files or fetches network resources itself |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering (default `33554432`, 32 MiB) |
+| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG image destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
+| `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
+| `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
 
@@ -606,7 +610,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG image asset for HTML and PDF batch renders |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css` | Shared theme overrides, as in `render` |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |
@@ -759,7 +763,7 @@ Core modules:
 | `highlight` | Clean-room syntax highlighter for common documentation languages |
 | `html` | All-in-one HTML emitter with inlined CSS and dark-mode support |
 | `text` | Clean-room TrueType reader: metrics, cmap, glyf/loca outlines, subsetter, GPOS kerning, GSUB ligatures |
-| `layout` | Knuth-Plass line breaking and Liang/TeX hyphenation; richer pagination is roadmap |
+| `layout` | Knuth-Plass line breaking, Liang/TeX hyphenation, and UAX #14 CJK break opportunities; richer pagination is roadmap |
 | `pdf` | Deterministic PDF writer: embedded subset fonts, tables, lists, code, tagged structure, compressed streams |
 | `compress` | Hand-rolled FlateDecode/zlib for font programs and page streams |
 | `fonts` | Bundled font registry (IBM Plex Sans + Computer Modern, OFL) |

@@ -28,8 +28,8 @@ fn plex_and_cm_kern_common_pairs_via_gpos() {
         ('V', 'o'),
     ];
     for path in [
-        "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
-        "fonts/computer-modern/cmunrm.ttf",
+        "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+        "fmd-font/fonts/computer-modern/cmunrm.ttf",
     ] {
         let font = load(path);
         let kern = font.gpos_kerning();
@@ -50,7 +50,7 @@ fn plex_and_cm_kern_common_pairs_via_gpos() {
 fn subset_font_has_no_gpos_kerning() {
     // Font::subset emits no GPOS, so a subset font kerns nothing — confirms both
     // the empty-Kerning path and that subsetting drops layout tables.
-    let font = load("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+    let font = load("fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
     // The full face kerns A/V; the subset must not (no GPOS in the subset).
     assert!(
         font.gpos_kerning()

@@ -27,7 +27,8 @@ use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit, LineBreak,
     ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph_into, default_interword_glue, is_breakable_whitespace,
+    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
+    cjk_break_prohibited, default_interword_glue, is_breakable_whitespace, is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -90,13 +91,18 @@ const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
 const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-// Font slots referenced in page Resources as /F1../F5.
+// Font slots referenced in page Resources as /F1../F6.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
 const F_MONO: u8 = 4;
 const F_BOLDITALIC: u8 = 5;
-const SLOTS: [u8; 5] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC];
+/// The bundled symbol fallback face (curated Noto Sans Math subset). Layout
+/// routes a character here only when its style slot's face has no glyph for it
+/// but the fallback does, so common math/arrow symbols render as real glyphs
+/// instead of `.notdef` boxes.
+const F_SYMBOL: u8 = 6;
+const SLOTS: [u8; 6] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC, F_SYMBOL];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.
@@ -201,14 +207,10 @@ struct PdfImageData {
     height_px: u32,
     vector: Option<PdfSvgImage>,
     color: PdfImageColor,
-    /// FlateDecode stream of the image samples.
+    /// Encoded stream of the image samples; interpretation per `filter`.
     data: Vec<u8>,
-    /// When true, `data` is the raw PNG IDAT and the XObject applies the PNG
-    /// adaptive predictor (`/Predictor 15`); the simple, proven zero-decode path
-    /// for 8-bit grayscale/RGB PNGs. When false, `data` is our own zlib of
-    /// already-unfiltered 8-bit samples (no predictor) — used for formats that
-    /// must be decoded (palette, alpha, 16-bit, interlaced).
-    png_predictor: bool,
+    /// How `data` is encoded / which PDF stream filter the XObject declares.
+    filter: PdfImageStreamFilter,
     /// Optional 8-bit grayscale soft mask (FlateDecode), one sample per pixel,
     /// carrying the source image's alpha channel as a PDF `/SMask`.
     smask: Option<Vec<u8>>,
@@ -1288,6 +1290,20 @@ impl PdfImageColor {
     }
 }
 
+/// Stream encoding of a raster [`PdfImageData`] payload.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PdfImageStreamFilter {
+    /// Our own zlib of already-unfiltered 8-bit samples (`/FlateDecode`).
+    Flate,
+    /// The raw PNG IDAT with the PNG adaptive predictor declared via
+    /// `/DecodeParms << /Predictor 15 … >>` — the zero-decode fast path for
+    /// 8-bit grayscale/RGB PNGs.
+    FlatePngPredictor,
+    /// A raw baseline/extended/progressive JPEG stream (`/DCTDecode`); the PDF
+    /// reader decodes the JPEG directly, so the bytes pass through untouched.
+    Dct,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FlowKind {
     Paragraph,
@@ -1344,6 +1360,27 @@ impl Face {
         Ok(Self { font, kern, lig })
     }
 
+    /// Load the bundled symbol fallback face. It has no caller-override slot
+    /// (the fallback repertoire is a renderer guarantee, not a theme choice),
+    /// so it is built straight from the registry's cached parse.
+    fn load_bundled_symbol() -> Result<Self> {
+        let font = fonts::symbol_font().map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled symbol fallback font is not a supported TrueType font: {err}"
+            ))
+        })?;
+        let layout = fonts::symbol_layout_tables().map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled symbol fallback font layout tables failed to parse: {err}"
+            ))
+        })?;
+        Ok(Self {
+            font: Cow::Borrowed(font),
+            kern: Cow::Borrowed(&layout.kern),
+            lig: Cow::Borrowed(&layout.lig),
+        })
+    }
+
     fn glyph_advance_1000(&self, glyph: u16) -> u32 {
         if self.font.units_per_em == 0 {
             return 0;
@@ -1389,6 +1426,9 @@ struct Faces {
     italic: Face,
     bolditalic: Face,
     mono: Face,
+    /// Bundled symbol fallback face; never caller-overridable, always loaded so
+    /// coverage checks are total. Embedded in the PDF only when actually used.
+    symbol: Face,
 }
 
 /// Sanitized page geometry derived from the shared theme model.
@@ -1487,6 +1527,7 @@ impl Faces {
                 FontAssetSlot::MonoRegular,
                 mono_font_face(&opts.font_assets, FontStyle::Regular),
             )?,
+            symbol: Face::load_bundled_symbol()?,
         })
     }
 
@@ -1496,7 +1537,22 @@ impl Faces {
             F_ITALIC => &self.italic,
             F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
+            F_SYMBOL => &self.symbol,
             _ => &self.body,
+        }
+    }
+
+    /// The slot that should carry `c` when the requested style slot renders it:
+    /// the style slot itself when its face maps the character (or when nothing
+    /// does), otherwise the bundled symbol fallback face.
+    fn fallback_slot(&self, slot: u8, c: char) -> u8 {
+        if slot == F_SYMBOL
+            || self.face(slot).glyph_index(c) != 0
+            || self.symbol.glyph_index(c) == 0
+        {
+            slot
+        } else {
+            F_SYMBOL
         }
     }
 
@@ -1882,26 +1938,33 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     if let Ok(faces) = Faces::load(opts) {
         let mut text = String::new();
         collect_text(&doc.blocks, &mut text);
-        text.push_str(&image_text);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
-        for c in text.chars() {
-            if c.is_whitespace() || c.is_control() {
-                continue;
-            }
-            let mapped = faces.body.glyph_index(c) != 0
-                || faces.bold.glyph_index(c) != 0
-                || faces.italic.glyph_index(c) != 0
-                || faces.bolditalic.glyph_index(c) != 0
-                || faces.mono.glyph_index(c) != 0;
-            if !mapped {
-                missing += 1;
-                if seen.insert(c) && sample.chars().count() < 8 {
-                    sample.push(c);
+        let mut scan = |chars: &str, allow_symbol_fallback: bool| {
+            for c in chars.chars() {
+                if c.is_whitespace() || c.is_control() {
+                    continue;
+                }
+                let mapped = faces.body.glyph_index(c) != 0
+                    || faces.bold.glyph_index(c) != 0
+                    || faces.italic.glyph_index(c) != 0
+                    || faces.bolditalic.glyph_index(c) != 0
+                    || faces.mono.glyph_index(c) != 0
+                    // Markdown text runs fall back to the bundled symbol face
+                    // (see `apply_symbol_fallback`); embedded SVG text does
+                    // not, so its coverage is judged on the primary faces only.
+                    || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0);
+                if !mapped {
+                    missing += 1;
+                    if seen.insert(c) && sample.chars().count() < 8 {
+                        sample.push(c);
+                    }
                 }
             }
-        }
+        };
+        scan(&text, true);
+        scan(&image_text, false);
         if missing > 0 {
             warnings.push(RenderWarning::MissingGlyphs {
                 count: missing,
@@ -2683,6 +2746,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             // Headings render bold; inner emphasis becomes bold-italic.
             let mut toks = Vec::new();
             tokenize(inlines, true, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             // H1/H2 get a subtle full-measure hairline rule beneath the text.
             let ruled = matches!(level, 1 | 2);
@@ -2719,6 +2783,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
             let mut toks = Vec::new();
             tokenize(inlines, false, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -2890,6 +2955,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             // actual tag passthrough when callers opt into that behavior.
             let mut toks = Vec::new();
             push_text_tokens(html, F_BODY, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -2939,6 +3005,7 @@ fn layout_simple_text_paragraph(
         let start = out.len();
         let mut toks = Vec::new();
         push_text_tokens(text, F_BODY, false, None, &mut toks);
+        apply_symbol_fallback(&mut toks, cx.faces);
         layout_inlines(toks, indent, size, gap_after, out, cx, flow);
         let lines = out[start..].to_vec();
         cx.simple_paragraph_cache.insert_if_room(key, lines);
@@ -2947,6 +3014,7 @@ fn layout_simple_text_paragraph(
 
     let mut toks = Vec::new();
     push_text_tokens(text, F_BODY, false, None, &mut toks);
+    apply_symbol_fallback(&mut toks, cx.faces);
     layout_inlines(toks, indent, size, gap_after, out, cx, flow);
 }
 
@@ -3063,7 +3131,114 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
 }
 
 fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
-    parse_png_image_asset(key, bytes).or_else(|| parse_svg_image_asset(key, bytes))
+    parse_png_image_asset(key, bytes)
+        .or_else(|| parse_jpeg_image_asset(key, bytes))
+        .or_else(|| parse_svg_image_asset(key, bytes))
+}
+
+/// Frame header of a JPEG the PDF `/DCTDecode` filter can carry unchanged.
+struct JpegHeader {
+    width: u32,
+    height: u32,
+    color: PdfImageColor,
+}
+
+/// Walk the JPEG marker segments up to start-of-scan and validate that the
+/// stream is a PDF-embeddable Huffman baseline/extended/progressive JPEG
+/// (SOF0/SOF1/SOF2) with 8-bit precision and 1 (gray) or 3 (YCbCr) components.
+/// Anything else — lossless, arithmetic-coded, hierarchical, or 4-component
+/// Adobe CMYK/YCCK with its inverted-polarity ambiguity — fails closed so the
+/// image degrades to alt text instead of embedding bytes readers mis-render.
+fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut pos = 2usize;
+    let mut header: Option<JpegHeader> = None;
+    loop {
+        // Marker alignment: skip fill bytes (0xFF padding before a marker).
+        if *bytes.get(pos)? != 0xFF {
+            return None;
+        }
+        while *bytes.get(pos)? == 0xFF {
+            pos += 1;
+        }
+        let marker = *bytes.get(pos)?;
+        pos += 1;
+        match marker {
+            // Standalone markers (no length): TEM, RSTn. SOI must not repeat.
+            0x01 | 0xD0..=0xD7 => continue,
+            // EOI before any scan: no image data.
+            0xD9 => return None,
+            // SOS: entropy-coded data follows; the frame header must exist.
+            0xDA => return header,
+            _ => {}
+        }
+        let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
+        if len < 2 {
+            return None;
+        }
+        let seg_start = pos + 2;
+        let seg_end = pos.checked_add(len)?;
+        if seg_end > bytes.len() {
+            return None;
+        }
+        match marker {
+            // Huffman baseline / extended sequential / progressive frames.
+            0xC0..=0xC2 => {
+                if header.is_some() {
+                    return None; // multiple frames (hierarchical) — refuse.
+                }
+                let seg = bytes.get(seg_start..seg_end)?;
+                let [precision, h_hi, h_lo, w_hi, w_lo, ncomp, ..] = *seg else {
+                    return None;
+                };
+                let height = u32::from(u16::from_be_bytes([h_hi, h_lo]));
+                let width = u32::from(u16::from_be_bytes([w_hi, w_lo]));
+                if precision != 8 || width == 0 || height == 0 {
+                    return None;
+                }
+                let color = match ncomp {
+                    1 => PdfImageColor::Gray,
+                    3 => PdfImageColor::Rgb,
+                    _ => return None,
+                };
+                header = Some(JpegHeader {
+                    width,
+                    height,
+                    color,
+                });
+            }
+            // Any other SOF flavor (lossless, arithmetic, differential, JPEG-LS)
+            // is outside what /DCTDecode guarantees: refuse.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xF7 => return None,
+            _ => {}
+        }
+        pos = seg_end;
+    }
+}
+
+/// A JPEG asset embeds as a `/DCTDecode` XObject with the original bytes
+/// untouched: zero re-encoding, deterministic output, and the reader's own
+/// JPEG decoder does the sample reconstruction.
+fn parse_jpeg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES {
+        return None;
+    }
+    let header = parse_jpeg_header(bytes)?;
+    if u64::from(header.width).saturating_mul(u64::from(header.height)) > MAX_PDF_IMAGE_PIXELS {
+        return None;
+    }
+    Some(PdfImageData {
+        key: key.to_string(),
+        width_px: header.width,
+        height_px: header.height,
+        vector: None,
+        color: header.color,
+        data: bytes.to_vec(),
+        filter: PdfImageStreamFilter::Dct,
+        smask: None,
+    })
 }
 
 /// Raw chunks of a PNG, gathered before the format is interpreted.
@@ -3119,7 +3294,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
             vector: None,
             color,
             data: png.idat,
-            png_predictor: true,
+            filter: PdfImageStreamFilter::FlatePngPredictor,
             smask: None,
         });
     }
@@ -3137,7 +3312,7 @@ fn parse_png_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: None,
         color: decoded.color,
         data,
-        png_predictor: false,
+        filter: PdfImageStreamFilter::Flate,
         smask,
     })
 }
@@ -3166,7 +3341,7 @@ fn parse_svg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: Some(vector),
         color: PdfImageColor::Rgb,
         data: Vec::new(),
-        png_predictor: false,
+        filter: PdfImageStreamFilter::Flate,
         smask: None,
     })
 }
@@ -14713,9 +14888,10 @@ struct CellWrapLine {
 /// Tokenize a cell's inlines into styled tokens, inheriting a bold base style for
 /// header cells (so `**x**`/`*x*`/`` `x` ``/links inside cells keep their faces,
 /// strikethrough, and clickable destinations instead of being flattened).
-fn cell_tokens(inlines: &[Inline], header: bool) -> Vec<Tok> {
+fn cell_tokens(inlines: &[Inline], header: bool, faces: &Faces) -> Vec<Tok> {
     let mut toks = Vec::new();
     tokenize(inlines, header, false, false, None, &mut toks);
+    apply_symbol_fallback(&mut toks, faces);
     toks
 }
 
@@ -14903,10 +15079,35 @@ fn wrap_cell_styled(
             let mut buf = [0u8; 4];
             let mut chunk = String::new();
             let mut chunk_w = 0.0;
+            let mut carry = String::new();
             for ch in t.text.chars() {
                 let cw =
                     text_width_cached(ch.encode_utf8(&mut buf), size, t.slot, faces, width_cache);
                 if !chunk.is_empty() && chunk_w + cw > max_width {
+                    // Never split a pair UAX #14 forbids breaking: the
+                    // characters that must travel with `ch` (a closing bracket,
+                    // `。`, a small kana) move down to the next line with it.
+                    // Non-CJK pairs are never prohibited, so ASCII/Latin
+                    // splitting is byte-for-byte what it was.
+                    carry.clear();
+                    let mut head = ch;
+                    while let Some(prev) = chunk.chars().next_back() {
+                        if !cjk_break_prohibited(prev, head) {
+                            break;
+                        }
+                        chunk.pop();
+                        carry.push(prev);
+                        head = prev;
+                        if chunk.is_empty() {
+                            break;
+                        }
+                    }
+                    if chunk.is_empty() {
+                        // Every position was prohibited; hard-split anyway
+                        // rather than emit an empty line forever.
+                        chunk.extend(carry.chars().rev());
+                        carry.clear();
+                    }
                     let tok = Tok {
                         text: std::mem::take(&mut chunk),
                         slot: t.slot,
@@ -14922,6 +15123,16 @@ fn wrap_cell_styled(
                         width_cache,
                     ));
                     chunk_w = 0.0;
+                    for ch in carry.chars().rev() {
+                        chunk.push(ch);
+                        chunk_w += text_width_cached(
+                            ch.encode_utf8(&mut buf),
+                            size,
+                            t.slot,
+                            faces,
+                            width_cache,
+                        );
+                    }
                 }
                 chunk.push(ch);
                 chunk_w += cw;
@@ -15278,12 +15489,16 @@ fn layout_table_uncached(
     let head_toks: Vec<Vec<Tok>> = table
         .head
         .iter()
-        .map(|cell| cell_tokens(cell, true))
+        .map(|cell| cell_tokens(cell, true, faces))
         .collect();
     let row_toks: Vec<Vec<Vec<Tok>>> = table
         .rows
         .iter()
-        .map(|row| row.iter().map(|cell| cell_tokens(cell, false)).collect())
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell_tokens(cell, false, faces))
+                .collect()
+        })
         .collect();
 
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
@@ -15509,6 +15724,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                 tokenize(inl, false, false, false, None, &mut toks);
             }
         }
+        apply_symbol_fallback(&mut toks, cx.faces);
         let group = cx.alloc_flow();
         let item_start_line = out.len();
         if let Some(top) = cx.list_stack.last_mut() {
@@ -15660,6 +15876,55 @@ fn push_text_tokens(
             link: link.cloned(),
             strike,
         });
+    }
+}
+
+/// Rewrite `toks` so every character a token's own face cannot map (glyph 0)
+/// but the bundled symbol fallback face can is carried by an [`F_SYMBOL`]
+/// token. This runs before any width measurement, so line breaking,
+/// justification, and the content stream all agree on the fallback face's real
+/// advances. Word identity is preserved: split pieces are adjacent non-space
+/// tokens, which the paragraph builder already measures as one unbreakable
+/// word with per-slot shaping.
+fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = &toks[i];
+        // Space tokens and pure-ASCII words never split: the curated fallback
+        // face carries no ASCII repertoire, so `fallback_slot` is the identity
+        // for them. This keeps the common path allocation-free.
+        if tok.space || tok.text.is_ascii() {
+            i += 1;
+            continue;
+        }
+        let slot = tok.slot;
+        let mut runs: Vec<(u8, String)> = Vec::new();
+        for c in tok.text.chars() {
+            let target = faces.fallback_slot(slot, c);
+            match runs.last_mut() {
+                Some((run_slot, buf)) if *run_slot == target => buf.push(c),
+                _ => runs.push((target, c.to_string())),
+            }
+        }
+        if runs.len() <= 1 && runs.first().is_none_or(|(s, _)| *s == slot) {
+            i += 1;
+            continue;
+        }
+        let link = tok.link.clone();
+        let strike = tok.strike;
+        let replaced = runs.len();
+        toks.splice(
+            i..=i,
+            runs.into_iter().map(|(run_slot, text)| Tok {
+                text,
+                slot: run_slot,
+                space: false,
+                hard_break: false,
+                link: link.clone(),
+                strike,
+            }),
+        );
+        i += replaced;
     }
 }
 
@@ -15891,11 +16156,18 @@ const EMERGENCY_BREAK_PENALTY: i32 = 2_000;
 /// dictionary hyphenation points, which render a `-` at the break;
 /// separator/emergency points render nothing (a URL or identifier must
 /// never gain characters it does not have).
+///
+/// `cjk` marks a UAX #14 break between two CJK characters. Those are *natural*
+/// breaks, not damage control, so they become zero-width stretchable glue
+/// (see [`crate::layout::cjk_break_glue`]) instead of a penalty: the optimizer
+/// may then justify a CJK line by opening its inter-character gaps a little,
+/// exactly as it opens interword spaces in Latin text.
 #[derive(Debug)]
 struct PdfBreakPoint {
     at: usize,
     penalty: i32,
     hyphen: bool,
+    cjk: bool,
 }
 
 /// Characters after which a long token may break without a hyphen: URL and
@@ -15916,6 +16188,21 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
     let len = chars.len();
     let mut points = pdf_dictionary_break_points(len, dict);
 
+    // CJK runs carry no spaces, so without these the only break opportunity in
+    // a whole Chinese/Japanese/Korean paragraph is the 14-character emergency
+    // chunk below — which is coarse enough to leave a third of the measure
+    // empty and, in a column narrower than one chunk, to overrun the margin.
+    // A single ideograph is allowed to stand alone on a line (unlike the
+    // 2-character margins the Latin points keep), because that is what a
+    // narrow CJK measure needs.
+    let cjk = pdf_cjk_break_points(chars);
+    let has_cjk = !cjk.is_empty();
+    points.extend(cjk);
+    if has_cjk {
+        points.sort_by_key(|point| point.at);
+        points.dedup_by_key(|point| point.at);
+    }
+
     if len >= FORCED_BREAK_MIN_WORD {
         for (i, &c) in chars.iter().enumerate() {
             let at = i + 1;
@@ -15932,6 +16219,7 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
                     at,
                     penalty: SEPARATOR_BREAK_PENALTY,
                     hyphen: false,
+                    cjk: false,
                 });
             }
         }
@@ -15962,10 +16250,31 @@ fn pdf_dictionary_break_points(len: usize, dict: &[usize]) -> Vec<PdfBreakPoint>
             at,
             penalty: 50,
             hyphen: true,
+            cjk: false,
         })
         .collect();
     points.sort_by_key(|point| point.at);
     points.dedup_by_key(|point| point.at);
+    points
+}
+
+/// Every position inside `chars` where UAX #14 permits a break because one of
+/// the two neighbouring characters is CJK.
+///
+/// Empty for any word without CJK, which is what keeps Latin and ASCII words
+/// on exactly the item stream they had before.
+fn pdf_cjk_break_points(chars: &[char]) -> Vec<PdfBreakPoint> {
+    let mut points = Vec::new();
+    for (at, pair) in chars.windows(2).enumerate() {
+        if cjk_break_allowed(pair[0], pair[1]) {
+            points.push(PdfBreakPoint {
+                at: at + 1,
+                penalty: 0,
+                hyphen: false,
+                cjk: true,
+            });
+        }
+    }
     points
 }
 
@@ -15979,6 +16288,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
                 at,
                 penalty: EMERGENCY_BREAK_PENALTY,
                 hyphen: false,
+                cjk: false,
             });
             at += FORCED_BREAK_CHUNK;
         }
@@ -15992,6 +16302,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
             at,
             penalty: EMERGENCY_BREAK_PENALTY,
             hyphen: false,
+            cjk: false,
         });
         at += FORCED_BREAK_CHUNK;
     }
@@ -16006,7 +16317,10 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && stats.ascii_alphabetic;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
-    if !needs_dictionary && !needs_synthetic_breaks {
+    // A CJK run has to be examined at any length: five ideographs in a narrow
+    // table column still need somewhere to break, and the length-gated
+    // long-token machinery below would never look at them.
+    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk {
         push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
         return;
     }
@@ -16057,10 +16371,20 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         return;
     }
 
-    let mut start = 0usize;
+    let mut splitter = PdfWordSplitter::new(word);
     for point in points {
-        let part = split_pdf_word_tokens(word, start, point.at);
+        let part = splitter.take_to(point.at);
         if !part.is_empty() {
+            if point.cjk {
+                // A natural inter-character break: zero-width stretchable glue,
+                // nothing drawn, and no token group so the justifier charges its
+                // share to the ideograph on its left.
+                push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
+                built.items.push(ParagraphItem::Glue(cjk_break_glue(cx.fs)));
+                built.item_toks.push(TokGroup::empty());
+                built.break_toks.push(None);
+                continue;
+            }
             let (break_tok, penalty_width) = if point.hyphen {
                 let hyphen_tok = part.last().map(|tok| Tok {
                     text: "-".to_string(),
@@ -16086,10 +16410,9 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
             built.item_toks.push(TokGroup::empty());
             built.break_toks.push(break_tok);
         }
-        start = point.at;
     }
 
-    let tail = split_pdf_word_tokens(word, start, stats.char_len);
+    let tail = splitter.take_to(stats.char_len);
     if !tail.is_empty() {
         push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
     }
@@ -16101,6 +16424,9 @@ struct PdfWordStats {
     char_len: usize,
     byte_len: usize,
     ascii_alphabetic: bool,
+    /// The word holds at least one CJK character, so it may carry UAX #14
+    /// break opportunities regardless of its length.
+    cjk: bool,
 }
 
 fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
@@ -16108,6 +16434,7 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         char_len: 0,
         byte_len: 0,
         ascii_alphabetic: true,
+        cjk: false,
     };
     for tok in word {
         let bytes = tok.text.as_bytes();
@@ -16128,6 +16455,7 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         } else {
             stats.char_len += tok.text.chars().count();
             stats.ascii_alphabetic = false;
+            stats.cjk |= tok.text.chars().any(is_cjk_char);
         }
     }
     stats
@@ -16201,36 +16529,77 @@ fn push_pdf_word_box_from_vec(
     built.has_boxes = true;
 }
 
-fn split_pdf_word_tokens(word: &[Tok], start_char: usize, end_char: usize) -> Vec<Tok> {
-    if start_char >= end_char {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    for tok in word {
-        let tok_len = tok.text.chars().count();
-        let tok_start = cursor;
-        let tok_end = tok_start.saturating_add(tok_len);
-        cursor = tok_end;
-        if end_char <= tok_start || start_char >= tok_end {
-            continue;
+/// Cuts a word's tokens into consecutive character ranges in one forward pass.
+///
+/// [`flush_pdf_word`] consumes strictly increasing ranges, so a resumable
+/// cursor replaces what used to be a rescan from the front of the word for
+/// every break point. That rescan was quadratic in the number of break points —
+/// harmless when only a long URL had a handful of them, a real cost once CJK
+/// makes nearly every character a break opportunity (a single-paragraph Chinese
+/// chapter has tens of thousands).
+struct PdfWordSplitter<'a> {
+    word: &'a [Tok],
+    /// Index of the token holding the cursor.
+    tok_idx: usize,
+    /// Byte offset of the cursor inside `word[tok_idx].text`.
+    byte: usize,
+    /// Character index of the cursor within the whole word.
+    cursor: usize,
+}
+
+impl<'a> PdfWordSplitter<'a> {
+    fn new(word: &'a [Tok]) -> Self {
+        Self {
+            word,
+            tok_idx: 0,
+            byte: 0,
+            cursor: 0,
         }
-        let take_start = start_char.saturating_sub(tok_start);
-        let take_end = end_char.min(tok_end).saturating_sub(tok_start);
-        let text: String = tok
-            .text
-            .chars()
-            .skip(take_start)
-            .take(take_end.saturating_sub(take_start))
-            .collect();
-        if text.is_empty() {
-            continue;
-        }
-        let mut part = tok.clone();
-        part.text = text;
-        out.push(part);
     }
-    out
+
+    /// Take everything from the cursor up to character `end_char`, preserving
+    /// each source token's style. Returns empty when the cursor already passed
+    /// `end_char` (duplicate break points).
+    fn take_to(&mut self, end_char: usize) -> Vec<Tok> {
+        let mut out = Vec::new();
+        while self.cursor < end_char {
+            let Some(tok) = self.word.get(self.tok_idx) else {
+                break;
+            };
+            let Some(rest) = tok.text.get(self.byte..) else {
+                break;
+            };
+            if rest.is_empty() {
+                self.tok_idx += 1;
+                self.byte = 0;
+                continue;
+            }
+            let want = end_char - self.cursor;
+            let mut taken_chars = 0usize;
+            let mut taken_bytes = 0usize;
+            for ch in rest.chars() {
+                if taken_chars == want {
+                    break;
+                }
+                taken_chars += 1;
+                taken_bytes += ch.len_utf8();
+            }
+            if let Some(text) = rest.get(..taken_bytes)
+                && !text.is_empty()
+            {
+                let mut part = tok.clone();
+                part.text = text.to_string();
+                out.push(part);
+            }
+            self.cursor += taken_chars;
+            self.byte += taken_bytes;
+            if self.byte >= tok.text.len() {
+                self.tok_idx += 1;
+                self.byte = 0;
+            }
+        }
+        out
+    }
 }
 
 /// Optimal-break (Knuth-Plass) styled tokens into baseline lines of positioned
@@ -16617,6 +16986,16 @@ fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -
 }
 
 fn glue_flex(glue: Glue, delta: i64) -> i64 {
+    // A zero-width glue is the CJK inter-character break: it puts no space
+    // token on the page, so there is nothing to widen. It lends the optimizer
+    // stretch so a CJK line can be *chosen* without being declared infeasible,
+    // and then stays out of the justification, which the real interword spaces
+    // absorb exactly as they did before. A justified CJK line therefore ends up
+    // to one character short of the measure instead of spreading a gap that no
+    // glyph would fill.
+    if glue.width == LayoutUnit::ZERO {
+        return 0;
+    }
     if delta > 0 {
         glue.stretch.milli_points() as i64
     } else {
@@ -16876,21 +17255,9 @@ fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
         .map(|line| {
             if line.contains('\t') {
                 let expanded = expand_code_tabs(line);
-                text_width_cached(
-                    &expanded,
-                    spec.default_size,
-                    F_MONO,
-                    spec.faces,
-                    spec.width_cache,
-                )
+                code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache)
             } else {
-                text_width_cached(
-                    line,
-                    spec.default_size,
-                    F_MONO,
-                    spec.faces,
-                    spec.width_cache,
-                )
+                code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache)
             }
         })
         .fold(0.0f32, f32::max);
@@ -17084,7 +17451,7 @@ fn wrap_code_fragments(
 
     for frag in frags {
         for ch in frag.text.chars() {
-            let cw = char_width(ch, size, F_MONO, faces);
+            let cw = char_width(ch, size, faces.fallback_slot(F_MONO, ch), faces);
             let limit = if lines.is_empty() {
                 first_width
             } else {
@@ -17118,6 +17485,45 @@ fn push_code_frag_char(frags: &mut Vec<CodeFrag>, ch: char, fill: Fill) {
     });
 }
 
+/// Split one run of code text into `(slot, text)` pieces per the symbol
+/// fallback rule (see [`Faces::fallback_slot`]): characters CM Typewriter
+/// cannot map but the bundled symbol face can are carried by [`F_SYMBOL`]
+/// runs. Pure-ASCII text takes an allocation-free fast path.
+fn split_code_slot_runs<'a>(text: &'a str, faces: &Faces) -> Vec<(u8, Cow<'a, str>)> {
+    if text.is_ascii() {
+        return vec![(F_MONO, Cow::Borrowed(text))];
+    }
+    let mut runs: Vec<(u8, String)> = Vec::new();
+    for c in text.chars() {
+        let target = faces.fallback_slot(F_MONO, c);
+        match runs.last_mut() {
+            Some((slot, buf)) if *slot == target => buf.push(c),
+            _ => runs.push((target, c.to_string())),
+        }
+    }
+    runs.into_iter()
+        .map(|(slot, run)| (slot, Cow::Owned(run)))
+        .collect()
+}
+
+/// Width of one code line measured with the same per-slot fallback splitting
+/// the seg builder uses, so font-size fitting and wrapping agree with what the
+/// content stream will actually draw.
+fn code_text_width_cached(
+    text: &str,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> f32 {
+    if text.is_ascii() {
+        return text_width_cached(text, size, F_MONO, faces, width_cache);
+    }
+    split_code_slot_runs(text, faces)
+        .iter()
+        .map(|(slot, run)| text_width_cached(run, size, *slot, faces, width_cache))
+        .sum()
+}
+
 fn code_frags_to_segs(
     frags: &[CodeFrag],
     x0: f32,
@@ -17131,18 +17537,20 @@ fn code_frags_to_segs(
         if frag.text.is_empty() {
             continue;
         }
-        let width = text_width_cached(&frag.text, size, F_MONO, faces, width_cache);
-        segs.push(Seg {
-            x,
-            slot: F_MONO,
-            text: frag.text.clone(),
-            link: None,
-            fill: frag.fill,
-            strike: false,
-            task: None,
-            width,
-        });
-        x += width;
+        for (slot, run) in split_code_slot_runs(&frag.text, faces) {
+            let width = text_width_cached(&run, size, slot, faces, width_cache);
+            segs.push(Seg {
+                x,
+                slot,
+                text: run.into_owned(),
+                link: None,
+                fill: frag.fill,
+                strike: false,
+                task: None,
+                width,
+            });
+            x += width;
+        }
     }
     segs
 }
@@ -18416,6 +18824,7 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
         F_ITALIC => Some(2),
         F_MONO => Some(3),
         F_BOLDITALIC => Some(4),
+        F_SYMBOL => Some(5),
         _ => None,
     }
 }
@@ -18515,7 +18924,7 @@ mod font_slot_text_refs_tests {
                 }),
                 color: PdfImageColor::Rgb,
                 data: Vec::new(),
-                png_predictor: false,
+                filter: PdfImageStreamFilter::Flate,
                 smask: None,
             },
             alt: String::new(),
@@ -25460,7 +25869,11 @@ fn build_pdf(
         // The zero-decode fast path embeds the raw PNG IDAT and runs the PNG
         // adaptive predictor; the full-decode path embeds our own zlib of the
         // unfiltered samples and needs no predictor.
-        let decode_parms = if image.png_predictor {
+        let filter_name = match image.filter {
+            PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
+            PdfImageStreamFilter::Dct => "/DCTDecode",
+        };
+        let decode_parms = if image.filter == PdfImageStreamFilter::FlatePngPredictor {
             format!(
                 " /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >>",
                 w = image.width_px,
@@ -25475,7 +25888,7 @@ fn build_pdf(
         buf.extend_from_slice(
             format!(
                 "{n} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter /FlateDecode\
+                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter {filter_name}\
                  {decode_parms}{smask_ref} /Length {len} >>\nstream\n",
                 n = image_obj(k),
                 w = image.width_px,
@@ -26415,19 +26828,19 @@ mod pdf_writer_tests {
         HeadingIdState, ImageLine, LayoutCx, Line, LineTok, LinkTarget, ListMark,
         PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem, ParagraphLayoutScratch,
         ParagraphPolicy, PdfCidFontObjectParts, PdfFontDescriptorObjectParts, PdfImageColor,
-        PdfImageData, PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts,
-        PdfShading, PdfShadingKind, PdfStream, PdfStructElementObjectParts,
-        PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SNode, Seg,
-        SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor, SvgCssRule, SvgCssVariable,
-        SvgDashPattern, SvgDominantBaseline, SvgElement, SvgFilterShadow, SvgGradientPaint,
-        SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap, SvgLineJoin, SvgMarker,
-        SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
-        SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText, SvgTextAnchor,
-        SvgTextDecoration, SvgTextMatrix, SvgTransform, TABLE_LAYOUT_CACHE_MAX_INLINE_NODES,
-        TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
-        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
-        append_decimal_usize_string, append_hex_u16, append_i32_bytes, append_i32_string,
-        append_image_xobject_do, append_marked_content_begin,
+        PdfImageData, PdfImageStreamFilter, PdfOutlineItemObjectParts, PdfPageObjectParts,
+        PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
+        PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
+        SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor,
+        SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement,
+        SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap,
+        SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect,
+        SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText,
+        SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
+        TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
+        WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
+        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
+        append_i32_string, append_image_xobject_do, append_marked_content_begin,
         append_page_background_rounded_rect_fill, append_pdf_cid_font_object,
         append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
         append_pdf_font_descriptor_object, append_pdf_fontfile2_stream_object, append_pdf_num,
@@ -28721,7 +29134,7 @@ mod pdf_writer_tests {
                 vector: None,
                 color: PdfImageColor::Rgb,
                 data: Vec::new(),
-                png_predictor: false,
+                filter: PdfImageStreamFilter::Flate,
                 smask: None,
             },
             alt: String::new(),
@@ -30204,8 +30617,8 @@ flowchart LR
 )]
 mod png_decode_tests {
     use super::{
-        DecodedPng, PNG_ADAM7, PdfImageColor, PngChunks, decode_png_full, parse_png_chunks,
-        parse_png_image_asset, png_paeth, png_pass_count,
+        DecodedPng, PNG_ADAM7, PdfImageColor, PdfImageStreamFilter, PngChunks, decode_png_full,
+        parse_png_chunks, parse_png_image_asset, png_paeth, png_pass_count,
     };
     use crate::compress::zlib_compress;
 
@@ -30797,8 +31210,9 @@ mod png_decode_tests {
         push_chunk(&mut bytes, b"IDAT", &png.idat);
         push_chunk(&mut bytes, b"IEND", &[]);
         let data = parse_png_image_asset("k", &bytes).unwrap();
-        assert!(
-            data.png_predictor,
+        assert_eq!(
+            data.filter,
+            PdfImageStreamFilter::FlatePngPredictor,
             "8-bit RGB stays on the predictor fast path"
         );
         assert!(data.smask.is_none());
@@ -30984,7 +31398,7 @@ mod table_wrap_tests {
         faces: &Faces,
         width_cache: &std::cell::RefCell<super::WidthCache>,
     ) {
-        let toks = cell_tokens(cell, header);
+        let toks = cell_tokens(cell, header, faces);
         column.push(table_cell_measure(
             &toks,
             TABLE_FONT_SIZE,
@@ -31020,7 +31434,7 @@ mod table_wrap_tests {
 
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
         let width_cache = width_cache();
-        let toks = cell_tokens(cell, header);
+        let toks = cell_tokens(cell, header, faces);
         table_cell_measure(&toks, TABLE_FONT_SIZE, faces, &width_cache, header).max_content
     }
 
@@ -31097,7 +31511,7 @@ mod table_wrap_tests {
         let width_cache = width_cache();
         // A single 200-character word with no break opportunities.
         let cell = vec![Inline::Text("X".repeat(200))];
-        let toks = cell_tokens(&cell, false);
+        let toks = cell_tokens(&cell, false, &faces);
         let max_width = 100.0;
         let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces, &width_cache);
         assert!(
@@ -31124,7 +31538,7 @@ mod table_wrap_tests {
             Inline::Strong(vec![Inline::Text("repeat".to_string())]),
             Inline::Text(" repeat".to_string()),
         ]);
-        let toks = cell_tokens(&cell, false);
+        let toks = cell_tokens(&cell, false, &faces);
         let uncached = table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &width_cache(), false);
         let measured =
             table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &shared_width_cache, false);

@@ -778,7 +778,12 @@ fn has_uri_scheme(value: &str) -> bool {
 fn has_supported_pdf_image_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "svg"))
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "svg" | "jpg" | "jpeg"
+            )
+        })
 }
 
 fn render_one(
@@ -2460,8 +2465,13 @@ mod tests {
             None
         );
         assert_eq!(auto_pdf_image_path("/etc/img.png", base), None);
-        assert_eq!(auto_pdf_image_path("photo.jpg", base), None);
+        assert_eq!(auto_pdf_image_path("photo.gif", base), None);
         assert_eq!(auto_pdf_image_path("../escape.png", base), None);
+        // JPEGs are supported local assets (embedded via /DCTDecode).
+        assert_eq!(
+            auto_pdf_image_path("photo.jpg", base),
+            Some(base.join("photo.jpg"))
+        );
     }
 
     #[test]
@@ -2480,11 +2490,13 @@ mod tests {
     }
 
     #[test]
-    fn supported_pdf_image_extensions_are_png_and_svg_case_insensitive() {
+    fn supported_pdf_image_extensions_are_png_svg_jpeg_case_insensitive() {
         assert!(has_supported_pdf_image_extension(Path::new("a.png")));
         assert!(has_supported_pdf_image_extension(Path::new("a.PNG")));
         assert!(has_supported_pdf_image_extension(Path::new("a.Svg")));
-        assert!(!has_supported_pdf_image_extension(Path::new("a.jpg")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.jpg")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.JPEG")));
+        assert!(!has_supported_pdf_image_extension(Path::new("a.gif")));
         assert!(!has_supported_pdf_image_extension(Path::new("noext")));
     }
 

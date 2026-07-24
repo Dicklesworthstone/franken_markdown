@@ -23,6 +23,13 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// JSON string escaping for a path expected inside a JSON envelope: the
+/// envelope escapes backslashes, so raw `contains` checks fail on Windows
+/// path separators. A no-op on Unix.
+fn json_escaped(s: &str) -> String {
+    s.replace('\\', "\\\\")
+}
+
 fn temp_file(name: &str, ext: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -49,7 +56,7 @@ fn config_show_json_uses_defaults_and_env_path_when_missing() {
     assert!(stdout.contains("\"ok\":true"));
     assert!(stdout.contains("\"font\":\"sans\""));
     assert!(stdout.contains("\"theme\""));
-    assert!(stdout.contains(&config.display().to_string()));
+    assert!(stdout.contains(&json_escaped(&config.display().to_string())));
 }
 
 #[test]
@@ -230,11 +237,13 @@ fn fmd_env(args: &[&str], envs: &[(&str, Option<&str>)]) -> Output {
 
 #[test]
 fn config_error_displays_io_and_parse_variants() {
-    // A real, non-synthetic IO error: reading a directory as a file fails with
-    // something other than NotFound on every supported platform.
+    // A real, non-synthetic IO error: reading a directory as a file fails on
+    // every supported platform. The error KIND is platform-dependent (Unix
+    // reports IsADirectory; Windows maps the CreateFile failure to NotFound),
+    // and this test's subject is the conversion/Display contract, not the
+    // kind, so no kind is asserted.
     let dir = std::env::temp_dir();
     let io_err = fs::read_to_string(&dir).expect_err("reading a directory as a file must fail");
-    assert_ne!(io_err.kind(), std::io::ErrorKind::NotFound);
     let expected = io_err.to_string();
     // `From<std::io::Error>` conversion.
     let converted: ConfigError = io_err.into();
@@ -608,7 +617,7 @@ fn config_path_resolves_xdg_config_home_when_no_override() {
         ],
     );
     assert!(out.status.success());
-    let expected = xdg.join("fmd").join("config").display().to_string();
+    let expected = json_escaped(&xdg.join("fmd").join("config").display().to_string());
     let stdout = text(&out.stdout);
     assert!(
         stdout.contains(&expected),
@@ -630,12 +639,14 @@ fn config_path_falls_back_to_home_dot_config_when_xdg_absent() {
         ],
     );
     assert!(out.status.success());
-    let expected = home
-        .join(".config")
-        .join("fmd")
-        .join("config")
-        .display()
-        .to_string();
+    let expected = json_escaped(
+        &home
+            .join(".config")
+            .join("fmd")
+            .join("config")
+            .display()
+            .to_string(),
+    );
     let stdout = text(&out.stdout);
     assert!(
         stdout.contains(&expected),

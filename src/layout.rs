@@ -464,6 +464,7 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
             if is_breakable_whitespace(ch) {
                 if let Some(start) = chunk_start.take() {
                     append_styled_word_chunk(
+                        &mut items,
                         metrics,
                         &mut current,
                         &mut current_plain,
@@ -494,6 +495,7 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
         }
         if let Some(start) = chunk_start {
             append_styled_word_chunk(
+                &mut items,
                 metrics,
                 &mut current,
                 &mut current_plain,
@@ -520,7 +522,58 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
     items
 }
 
+/// Append one whitespace-free chunk to the word being built, splitting it into
+/// separate boxes wherever CJK rules permit a line break.
+///
+/// A Latin chunk contains no CJK break opportunity, so it is appended whole and
+/// the emitted item stream is exactly what it was before CJK support.
+#[allow(clippy::too_many_arguments)]
 fn append_styled_word_chunk<M: PairMetrics>(
+    items: &mut Vec<ParagraphItem>,
+    metrics: &M,
+    current: &mut StyledText,
+    current_plain: &mut String,
+    current_width: &mut LayoutUnit,
+    chunk: &str,
+    style: TextStyle,
+    size: FontSize,
+) {
+    let mut prev = current
+        .runs
+        .last()
+        .and_then(|last| last.text.chars().next_back());
+    let mut segment_start = 0usize;
+    for (idx, ch) in chunk.char_indices() {
+        if prev.is_some_and(|left| cjk_break_allowed(left, ch)) {
+            append_styled_chunk_text(
+                metrics,
+                current,
+                current_plain,
+                current_width,
+                &chunk[segment_start..idx],
+                style,
+                size,
+            );
+            if !current.is_empty() {
+                push_styled_word_box(items, current, current_plain, current_width);
+                items.push(ParagraphItem::Glue(cjk_break_glue(size)));
+            }
+            segment_start = idx;
+        }
+        prev = Some(ch);
+    }
+    append_styled_chunk_text(
+        metrics,
+        current,
+        current_plain,
+        current_width,
+        &chunk[segment_start..],
+        style,
+        size,
+    );
+}
+
+fn append_styled_chunk_text<M: PairMetrics>(
     metrics: &M,
     current: &mut StyledText,
     current_plain: &mut String,
@@ -658,7 +711,23 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
     hyphen_width: LayoutUnit,
     points: &[usize],
 ) {
-    if points.is_empty() {
+    // Byte offsets where the word may break: dictionary hyphens (which render a
+    // `-`) merged with CJK opportunities (which render nothing). A word cannot
+    // hold both — the hyphenator only answers for ASCII-alphabetic words — but
+    // merging keeps the two sources independent.
+    let mut splits: Vec<(usize, bool)> = points
+        .iter()
+        .filter(|&&point| point > 0)
+        .map(|&point| (point.min(word.len()), true))
+        .collect();
+    let mut prev: Option<char> = None;
+    for (idx, ch) in word.char_indices() {
+        if prev.is_some_and(|left| cjk_break_allowed(left, ch)) {
+            splits.push((idx, false));
+        }
+        prev = Some(ch);
+    }
+    if splits.is_empty() {
         out.push(ParagraphItem::Box(TextBox {
             text: word.to_string(),
             runs: StyledText::plain(word),
@@ -666,13 +735,12 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
         }));
         return;
     }
+    splits.sort_by_key(|split| split.0);
+    splits.dedup_by_key(|split| split.0);
 
     let mut start = 0usize;
-    for &point in points {
-        // Hyphenation points are emitted only for ASCII alphabetic words. For
-        // those words, the character offset is also the byte offset; non-ASCII
-        // words return no points before this function is called.
-        let end = point.min(word.len());
+    for (offset, hyphen) in splits {
+        let end = offset.min(word.len());
         if end > start {
             let part = &word[start..end];
             out.push(ParagraphItem::Box(TextBox {
@@ -680,11 +748,15 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
                 runs: StyledText::plain(part),
                 width: measure_text_with_pairs(metrics, part, size),
             }));
-            out.push(ParagraphItem::Penalty(Penalty {
-                width: hyphen_width,
-                penalty: 50,
-                flagged: true,
-            }));
+            if hyphen {
+                out.push(ParagraphItem::Penalty(Penalty {
+                    width: hyphen_width,
+                    penalty: 50,
+                    flagged: true,
+                }));
+            } else {
+                out.push(ParagraphItem::Glue(cjk_break_glue(size)));
+            }
         }
         start = end;
     }
@@ -752,6 +824,218 @@ pub fn default_interword_glue(space: LayoutUnit) -> Glue {
         stretch: LayoutUnit::from_milli_points(space.milli_points() / 2),
         shrink: LayoutUnit::from_milli_points(space.milli_points() / 3),
     }
+}
+
+// ---------------------------------------------------------------------------
+// CJK line breaking (UAX #14, reduced to the rules CJK typesetting needs)
+// ---------------------------------------------------------------------------
+
+/// Stretch of one inter-ideograph break, in 1/1000 em.
+///
+/// Chinese, Japanese, and Korean text is written without interword spaces, so a
+/// whitespace-only breaker finds no break opportunity at all inside a run of
+/// ideographs and the whole run becomes one unbreakable box that overruns the
+/// measure. The fix is the one traditional CJK typesetters use: a *breakable,
+/// zero-width, slightly stretchable* gap between adjacent ideographs
+/// (TeX's `\CJKglue`). Zero natural width keeps the character grid intact, the
+/// stretch lets the optimizer justify a line by opening the inter-character
+/// gaps by a fraction of an em instead of declaring the line infeasible, and
+/// there is deliberately no shrink — CJK glyphs must never be crowded.
+const CJK_BREAK_STRETCH_1000: u32 = 125;
+
+/// The glue inserted at a permitted break between two CJK characters.
+///
+/// See [`CJK_BREAK_STRETCH_1000`]. The glue carries no width, so a paragraph
+/// that never breaks there measures exactly as it did before.
+#[must_use]
+pub fn cjk_break_glue(size: FontSize) -> Glue {
+    Glue {
+        width: LayoutUnit::ZERO,
+        stretch: advance_to_layout_units(CJK_BREAK_STRETCH_1000, size),
+        shrink: LayoutUnit::ZERO,
+    }
+}
+
+/// The UAX #14 line-break classes that CJK layout actually distinguishes.
+///
+/// Everything a Latin-only breaker already handles collapses into
+/// [`CjkClass::Other`], which is how ASCII behaviour is kept bit-for-bit
+/// identical: a break is only ever *added* when one of the two characters
+/// around it belongs to a CJK script or to CJK punctuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CjkClass {
+    /// Not CJK-relevant: Latin letters, digits, symbols, everything else.
+    Other,
+    /// `ID` — ideographs, kana, bopomofo, and the fullwidth forms that behave
+    /// like them. A break is allowed on both sides.
+    Ideographic,
+    /// `H2` — a precomposed Hangul LV syllable.
+    HangulLv,
+    /// `H3` — a precomposed Hangul LVT syllable.
+    HangulLvt,
+    /// `JL` — conjoining Hangul leading consonant.
+    JamoLeading,
+    /// `JV` — conjoining Hangul vowel.
+    JamoVowel,
+    /// `JT` — conjoining Hangul trailing consonant.
+    JamoTrailing,
+    /// `OP`/`PR` — opening bracket or prefix. Never break *after* it (LB14),
+    /// so `（` can never be stranded alone at the end of a line.
+    Open,
+    /// `CL`/`CP`/`EX`/`IS`/`NS`/`PO` — closing bracket, sentence punctuation,
+    /// small kana, iteration marks. Never break *before* it (LB13/16/25), so a
+    /// line can never start with `。`, `）`, or `ゃ`.
+    Close,
+    /// `CM`/`ZWJ` — attaches to the preceding character (LB9), never break
+    /// before it.
+    Combining,
+}
+
+/// A classified character plus whether the character itself is CJK.
+///
+/// The `cjk` flag is what keeps Latin untouched: ASCII `)` classifies as
+/// [`CjkClass::Close`] so it is never orphaned after an ideograph, but a pair
+/// of ASCII characters never gains a break because neither side is CJK.
+#[derive(Debug, Clone, Copy)]
+struct CjkInfo {
+    class: CjkClass,
+    cjk: bool,
+}
+
+/// Classify one character. The arms are grouped by UAX #14 class (several map
+/// to the same class) so the table stays auditable against `LineBreak.txt`.
+fn cjk_info(ch: char) -> CjkInfo {
+    if ch.is_ascii() {
+        let class = match ch {
+            '(' | '[' | '{' => CjkClass::Open,
+            ')' | ']' | '}' | ',' | '.' | ';' | ':' | '!' | '?' | '%' => CjkClass::Close,
+            _ => CjkClass::Other,
+        };
+        return CjkInfo { class, cjk: false };
+    }
+
+    let cp = ch as u32;
+    let (class, cjk) = match cp {
+        // LB9 / LB8a: combining marks and joiners bind to the previous glyph.
+        0x200D
+        | 0x0300..=0x036F
+        | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF
+        | 0x20D0..=0x20F0
+        | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F
+        | 0xE0100..=0xE01EF => (CjkClass::Combining, false),
+        // Combining kana voicing marks are CJK but still bind leftwards.
+        0x3099..=0x309A => (CjkClass::Combining, true),
+        // LB26: conjoining Hangul jamo compose one syllable.
+        0x1100..=0x115F | 0xA960..=0xA97C => (CjkClass::JamoLeading, true),
+        0x1160..=0x11A7 | 0xD7B0..=0xD7C6 => (CjkClass::JamoVowel, true),
+        0x11A8..=0x11FF | 0xD7CB..=0xD7FB => (CjkClass::JamoTrailing, true),
+        0xAC00..=0xD7A3 => {
+            if (cp - 0xAC00) % 28 == 0 {
+                (CjkClass::HangulLv, true)
+            } else {
+                (CjkClass::HangulLvt, true)
+            }
+        }
+        // LB14 (`OP`) plus the fullwidth currency prefixes (`PR`).
+        0x3008 | 0x300A | 0x300C | 0x300E | 0x3010 | 0x3014 | 0x3016 | 0x3018 | 0x301A | 0x301D => {
+            (CjkClass::Open, true)
+        }
+        0xFE35 | 0xFE37 | 0xFE39 | 0xFE3B | 0xFE3D | 0xFE3F | 0xFE41 | 0xFE43 | 0xFE47 | 0xFE59
+        | 0xFE5B | 0xFE5D => (CjkClass::Open, true),
+        0xFF08 | 0xFF3B | 0xFF5B | 0xFF5F | 0xFF62 => (CjkClass::Open, true),
+        0xFF04 | 0xFFE1 | 0xFFE5 | 0xFFE6 => (CjkClass::Open, true),
+        // LB13 / LB16: closing brackets and sentence punctuation.
+        0x3001 | 0x3002 | 0x3009 | 0x300B | 0x300D | 0x300F | 0x3011 | 0x3015 | 0x3017 | 0x3019
+        | 0x301B | 0x301E | 0x301F => (CjkClass::Close, true),
+        0xFE50..=0xFE58 | 0xFE5A | 0xFE5C | 0xFE5E => (CjkClass::Close, true),
+        0xFF01 | 0xFF05 | 0xFF09 | 0xFF0C | 0xFF0E | 0xFF1A | 0xFF1B | 0xFF1F | 0xFF3D | 0xFF5D
+        | 0xFF60 | 0xFF61 | 0xFF63 | 0xFF64 | 0xFFE0 => (CjkClass::Close, true),
+        // LB25 (`NS`): small kana, iteration marks, the prolonged sound mark.
+        0x3005 | 0x303B | 0x309B..=0x309E | 0x30FB | 0x30FC..=0x30FE | 0x31F0..=0x31FF => {
+            (CjkClass::Close, true)
+        }
+        0x3041 | 0x3043 | 0x3045 | 0x3047 | 0x3049 | 0x3063 | 0x3083 | 0x3085 | 0x3087 | 0x308E
+        | 0x3095 | 0x3096 => (CjkClass::Close, true),
+        0x30A1 | 0x30A3 | 0x30A5 | 0x30A7 | 0x30A9 | 0x30C3 | 0x30E3 | 0x30E5 | 0x30E7 | 0x30EE
+        | 0x30F5 | 0x30F6 => (CjkClass::Close, true),
+        0xFF65 | 0xFF67..=0xFF70 | 0xFF9E..=0xFF9F => (CjkClass::Close, true),
+        // `ID`: everything else in the CJK, kana, and (half/full)width blocks.
+        0x2E80..=0x303F
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xF900..=0xFAFF
+        | 0xFE10..=0xFE19
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFF9F
+        | 0x17000..=0x18AFF
+        | 0x1B000..=0x1B2FF
+        | 0x1F200..=0x1F2FF
+        | 0x20000..=0x3FFFD => (CjkClass::Ideographic, true),
+        _ => (CjkClass::Other, false),
+    };
+    CjkInfo { class, cjk }
+}
+
+/// The UAX #14 pair rules that forbid a break between two classified
+/// characters. Only the rules that can fire around CJK text are modelled.
+fn cjk_pair_prohibited(left: CjkClass, right: CjkClass) -> bool {
+    // LB9/LB8a, LB13/LB16/LB25: never start a line with a mark, a closer, or a
+    // non-starter. LB14: never end a line with an opening bracket.
+    if matches!(right, CjkClass::Combining | CjkClass::Close) || left == CjkClass::Open {
+        return true;
+    }
+    // LB26: a Hangul syllable is written as one conjoining jamo cluster.
+    matches!(
+        (left, right),
+        (
+            CjkClass::JamoLeading,
+            CjkClass::JamoLeading | CjkClass::JamoVowel | CjkClass::HangulLv | CjkClass::HangulLvt
+        ) | (
+            CjkClass::JamoVowel | CjkClass::HangulLv,
+            CjkClass::JamoVowel | CjkClass::JamoTrailing
+        ) | (
+            CjkClass::JamoTrailing | CjkClass::HangulLvt,
+            CjkClass::JamoTrailing
+        )
+    )
+}
+
+/// True for characters that belong to a CJK script or to CJK punctuation.
+///
+/// This is the gate that keeps non-CJK text on its original code path: a run
+/// without a single such character can never gain a CJK break opportunity.
+#[must_use]
+pub fn is_cjk_char(ch: char) -> bool {
+    cjk_info(ch).cjk
+}
+
+/// True when a line may break between `left` and `right` *because* one of them
+/// is CJK.
+///
+/// This never reports a break for a pair of non-CJK characters, so Latin text
+/// keeps breaking only at spaces and hyphenation points. A CJK ↔ Latin boundary
+/// *is* a break opportunity (UAX #14 has no rule joining the two scripts).
+#[must_use]
+pub fn cjk_break_allowed(left: char, right: char) -> bool {
+    let (l, r) = (cjk_info(left), cjk_info(right));
+    (l.cjk || r.cjk) && !cjk_pair_prohibited(l.class, r.class)
+}
+
+/// True when a pair that involves CJK must *not* be broken.
+///
+/// Character-cell wrappers (table cells) hard-split over-wide runs one
+/// character at a time; they use this to avoid orphaning `。` or `）` at the
+/// head of a line, or stranding `「` at the tail. It is deliberately false for
+/// pairs with no CJK character on either side, so non-CJK splitting is
+/// unchanged.
+#[must_use]
+pub fn cjk_break_prohibited(left: char, right: char) -> bool {
+    let (l, r) = (cjk_info(left), cjk_info(right));
+    (l.cjk || r.cjk) && cjk_pair_prohibited(l.class, r.class)
 }
 
 /// Hyphenation controls.
@@ -2256,11 +2540,13 @@ mod hyphen_and_break_edge_tests {
 
     #[test]
     fn append_styled_word_chunk_is_a_no_op_for_an_empty_chunk() {
+        let mut items = Vec::new();
         let mut current = StyledText::plain("hy");
         let mut current_plain = String::from("hy");
         let mut current_width = LayoutUnit::from_milli_points(10_000);
 
         append_styled_word_chunk(
+            &mut items,
             &FlatMetrics,
             &mut current,
             &mut current_plain,
@@ -2270,6 +2556,7 @@ mod hyphen_and_break_edge_tests {
             FontSize::from_points(10),
         );
 
+        assert!(items.is_empty(), "empty chunk must not emit items");
         assert_eq!(current_plain, "hy", "empty chunk must not change text");
         assert_eq!(current, StyledText::plain("hy"));
         assert_eq!(

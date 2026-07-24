@@ -26,4 +26,12 @@ cargo check --no-default-features --lib
 echo "fmd wasm-core check: $target std-only library"
 cargo check --target "$target" --no-default-features --lib
 
+# fmd-math has no in-repo consumer yet, so the root check does not reach
+# it; hold it to the same WASM-clean bar directly.
+echo "fmd wasm-core check: fmd-math std-only library"
+cargo check -p fmd-math --lib
+
+echo "fmd wasm-core check: $target fmd-math std-only library"
+cargo check -p fmd-math --target "$target" --lib
+
 echo "fmd wasm-core check: ok"

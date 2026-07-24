@@ -81,9 +81,11 @@
 
 pub mod atom;
 pub mod commands;
+mod drawn;
 mod error;
 pub mod faces;
 mod layout;
+pub mod macros;
 mod mbox;
 pub mod metrics;
 pub mod node;
@@ -100,6 +102,7 @@ pub use commands::{
 pub use error::MathError;
 pub use faces::FaceSet;
 pub use layout::Engine;
+pub use macros::MacroSet;
 pub use mbox::{FaceId, Layout, PathContour, PathSeg, PlacedGlyph, PlacedPath, PlacedRule};
 pub use metrics::MathConstants;
 pub use node::{Node, NodeKind, Span};
@@ -130,4 +133,26 @@ pub fn parse(source: &str) -> Result<Node, MathError> {
 /// telling the caller to wrap it in `$…$`.
 pub fn parse_text(source: &str) -> Result<Node, MathError> {
     parse::parse_text_mode(source)
+}
+
+/// [`parse`], against a macro set (a preamble pack and/or caller
+/// definitions): calls expand at the token level before the grammar runs,
+/// with body-produced tokens carrying their call site's span (see
+/// [`macros`]).
+///
+/// # Errors
+///
+/// As [`parse`], plus the macro-expansion errors ([`macros`]): recursion
+/// refusal, budget overruns, malformed definitions — every one precise.
+pub fn parse_with_macros(source: &str, macros: &MacroSet) -> Result<Node, MathError> {
+    parse::parse_math_with(source, macros)
+}
+
+/// [`parse_text`], against a macro set.
+///
+/// # Errors
+///
+/// As [`parse_with_macros`].
+pub fn parse_text_with_macros(source: &str, macros: &MacroSet) -> Result<Node, MathError> {
+    parse::parse_text_mode_with(source, macros)
 }

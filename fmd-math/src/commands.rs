@@ -789,6 +789,11 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
                 };
             }
         }
+        // The macro-definition commands are consumed by the token-level
+        // expansion pass before the grammar ever runs.
+        if matches!(name, "newcommand" | "renewcommand") {
+            return ConstructStatus::Supported;
+        }
         return match lookup(name) {
             Some(Cmd::UnsupportedT2) => ConstructStatus::UnsupportedT2,
             Some(_) => ConstructStatus::Supported,

@@ -29,9 +29,26 @@ use crate::token::{Tok, TokKind, lex};
 /// frames are largest).
 pub(crate) const MAX_DEPTH: usize = 64;
 
+/// The shared empty macro set (the plain entry points still run the
+/// expansion pass, so inline `\newcommand` definitions work everywhere).
+fn empty_macros() -> &'static crate::macros::MacroSet {
+    static EMPTY: std::sync::OnceLock<crate::macros::MacroSet> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(crate::macros::MacroSet::new)
+}
+
 /// Parse a whole source string as mathematics.
 pub(crate) fn parse_math(source: &str) -> Result<Node, MathError> {
-    let mut parser = Parser::new(source);
+    parse_math_with(source, empty_macros())
+}
+
+/// Parse mathematics against a macro set (a preamble pack and/or caller
+/// definitions), expanding at the token level before the grammar runs.
+pub(crate) fn parse_math_with<'s>(
+    source: &'s str,
+    macros: &'s crate::macros::MacroSet,
+) -> Result<Node, MathError> {
+    let toks = crate::macros::expand(lex(source), macros, source.len())?;
+    let mut parser = Parser::with_tokens(source, toks);
     let (items, reason) = parser.math_list(Stops {
         top: true,
         ..Stops::default()
@@ -65,7 +82,16 @@ pub(crate) fn parse_math(source: &str) -> Result<Node, MathError> {
 
 /// Parse a whole source string under the TexText contract.
 pub(crate) fn parse_text_mode(source: &str) -> Result<Node, MathError> {
-    let mut parser = Parser::new(source);
+    parse_text_mode_with(source, empty_macros())
+}
+
+/// Parse a TexText-contract string against a macro set.
+pub(crate) fn parse_text_mode_with<'s>(
+    source: &'s str,
+    macros: &'s crate::macros::MacroSet,
+) -> Result<Node, MathError> {
+    let toks = crate::macros::expand(lex(source), macros, source.len())?;
+    let mut parser = Parser::with_tokens(source, toks);
     let (items, reason) = parser.text_list()?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
@@ -151,10 +177,11 @@ struct Parser<'s> {
 }
 
 impl<'s> Parser<'s> {
-    fn new(src: &'s str) -> Self {
+    /// A parser over an already-lexed (and macro-expanded) token stream.
+    fn with_tokens(src: &'s str, toks: Vec<Tok<'s>>) -> Self {
         Self {
             src,
-            toks: lex(src),
+            toks,
             pos: 0,
             depth: 0,
         }

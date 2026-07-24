@@ -197,14 +197,25 @@ fn left_right_delimiters_cover_the_rule_19_target() {
     let inner = e.typeset(r"\frac{a}{x}", Style::Display).unwrap();
     let delta = (inner.height - CM.axis_height).max(inner.depth + CM.axis_height);
     let target = (2.0 * delta * CM.delimiter_factor).max(2.0 * delta - CM.delimiter_shortfall);
-    // Both parens must have scaled to at least the target extent.
-    let paren = l
-        .glyphs
-        .iter()
-        .find(|g| g.ch == '(')
-        .unwrap_or_else(|| panic!("("));
-    assert!(paren.size > 1.0, "paren scaled: {}", paren.size);
+    // A display fraction pushes the parens past the 1.25× uniform-scale
+    // ceiling, so the ADR-0005 drawn mainline serves them: two drawn
+    // contours (one per paren), no paren glyphs, and the construct still
+    // covers the rule-19 target.
+    assert!(
+        l.glyphs.iter().all(|g| g.ch != '(' && g.ch != ')'),
+        "parens should be drawn constructions past the ceiling"
+    );
+    assert_eq!(l.paths.len(), 2, "one drawn path per paren");
     assert!(l.height + l.depth >= target - 1e-6);
+
+    // Below the ceiling the authored glyph is kept: an inline \left(x\right)
+    // needs no scaling at all.
+    let small = e.typeset(r"\left( x \right)", Style::Text).unwrap();
+    assert!(
+        small.glyphs.iter().any(|g| g.ch == '('),
+        "natural glyph kept"
+    );
+    assert!(small.paths.is_empty());
 }
 
 #[test]
@@ -261,17 +272,28 @@ fn every_glyph_carries_its_span_and_face() {
 }
 
 #[test]
-fn layout_pending_constructs_fail_named() {
+fn formerly_pending_constructs_now_lay_out() {
+    // The fm-kg9 frontier, crossed: environments and the stretchy
+    // constructions produce real layouts (their dedicated fixtures live in
+    // extensions.rs); the named-error contract still holds for what remains
+    // outside the tier — precise, tier-tagged, never silent.
     let e = engine();
+    let m = e
+        .typeset(
+            r"\begin{matrix} a & b \\ c & d \end{matrix}",
+            Style::Display,
+        )
+        .unwrap();
+    assert_eq!(m.glyphs.len(), 4);
+    let b = e.typeset(r"\overbrace{x+y}", Style::Display).unwrap();
+    assert_eq!(b.paths.len(), 1, "the drawn brace band");
+
+    // Tier-2 parse vocabulary still refuses by name (the ratchet's shape).
+    let err = e.typeset(r"\substack{a \\ b}", Style::Display).unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\substack"));
+    assert!(err.to_string().contains("tier T2"), "{err}");
     let err = e
-        .typeset(r"\begin{matrix} a \end{matrix}", Style::Display)
+        .typeset(r"\begin{center} x \end{center}", Style::Display)
         .unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some("env:matrix"));
-    assert!(
-        err.to_string().contains("layout is not yet implemented"),
-        "{err}"
-    );
-    let err = e.typeset(r"\overbrace{x+y}", Style::Display).unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\overbrace"));
-    assert!(err.to_string().contains("fm-kg9"), "{err}");
+    assert_eq!(err.unsupported_construct(), Some("env:center"));
 }

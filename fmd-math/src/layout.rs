@@ -15,17 +15,19 @@
 //! is ever called — so the same string and face set produce bit-identical
 //! layouts on every platform.
 //!
-//! **Delimiter mechanism (ADR-0005).** Natural glyph when it covers the
-//! rule-19 target; uniform scaling above; the drawn-path mainline beyond
-//! the `1.25×` ceiling lands with the extensions bead (fm-kg9) — until
-//! then the engine keeps scaling uniformly past the ceiling, which is
-//! geometrically exact and aesthetically interim (stroke weight thins; the
-//! Look Gallery adjudicates when the drawn constructions arrive).
-//!
-//! **Not yet laid out** (precise, named errors; the extensions bead's
-//! program): environments, the stretchy over/under constructions
+//! **Delimiter mechanism (ADR-0005), complete.** Natural glyph when it
+//! covers the rule-19 target; uniform scaling up to the `1.25×` ceiling;
+//! the parametric drawn-path construction beyond ([`crate::drawn`], the
+//! mainline) — no requested size can fail, by construction. The same
+//! module serves the drawn surd and the stretchy over/under constructions
 //! (`\overbrace`, `\underbrace`, `\overrightarrow`, `\overleftarrow`,
 //! `\widehat`, `\widetilde`).
+//!
+//! **Environments** (the matrix family, `cases`, `array` with column
+//! specs, the `align*` class) lay out through the grid engine: shared
+//! column measurement, per-column alignment, `\baselineskip`/`\lineskip`
+//! row stacking (`\jot`-opened for `align`), `\vcenter` axis centering,
+//! and the rule-19 delimiter wrap for the delimited matrices.
 
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
@@ -98,6 +100,36 @@ impl Engine {
     /// As [`Engine::typeset`].
     pub fn typeset_text(&self, source: &str) -> Result<Layout, MathError> {
         let root = crate::parse_text(source)?;
+        self.finish(&root, StyleCtx::new(Style::Text))
+    }
+
+    /// [`Engine::typeset`], against a macro set (a preamble pack and/or
+    /// caller definitions).
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::typeset`], plus the macro-expansion errors.
+    pub fn typeset_with_macros(
+        &self,
+        source: &str,
+        style: Style,
+        macros: &crate::macros::MacroSet,
+    ) -> Result<Layout, MathError> {
+        let root = crate::parse_with_macros(source, macros)?;
+        self.finish(&root, StyleCtx::new(style))
+    }
+
+    /// [`Engine::typeset_text`], against a macro set.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::typeset_with_macros`].
+    pub fn typeset_text_with_macros(
+        &self,
+        source: &str,
+        macros: &crate::macros::MacroSet,
+    ) -> Result<Layout, MathError> {
+        let root = crate::parse_text_with_macros(source, macros)?;
         self.finish(&root, StyleCtx::new(Style::Text))
     }
 
@@ -469,10 +501,9 @@ impl Engine {
                     })
                 }
             }
-            NodeKind::Environment { name, .. } => Err(MathError::UnsupportedCommand {
-                name: format!("env:{name}"),
-                span: node.span,
-            }),
+            NodeKind::Environment { name, spec, rows } => {
+                self.environment(name, spec.as_deref(), rows, ctx, node.span)
+            }
             NodeKind::Fragment(_)
             | NodeKind::StyleChange(_)
             | NodeKind::ColorChange(_)
@@ -814,6 +845,12 @@ impl Engine {
                 Limits::Default => ctx.style.style == Style::Display && !integral,
             },
             NodeKind::OpName { limits, .. } => *limits && ctx.style.style == Style::Display,
+            // `\overbrace`/`\underbrace` are `\mathop…\limits` in both plain
+            // TeX and amsmath: their scripts center above/below in every
+            // style (`\overbrace{x+y}^{n}` puts the n over the brace).
+            NodeKind::Accent { accent, .. } => {
+                matches!(accent, AccentKind::OverBrace | AccentKind::UnderBrace)
+            }
             _ => false,
         }
     }
@@ -1174,10 +1211,7 @@ impl Engine {
             | AccentKind::OverRightArrow
             | AccentKind::OverLeftArrow
             | AccentKind::WideHat
-            | AccentKind::WideTilde => Err(MathError::UnsupportedCommand {
-                name: format!("\\{}", stretchy_name(kind)),
-                span,
-            }),
+            | AccentKind::WideTilde => self.stretchy_accent(kind, base, ctx, span),
             _ => {
                 let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);
@@ -1247,6 +1281,321 @@ impl Engine {
         }
     }
 
+    /// Environment layout: the matrix family, `cases`, `array` with column
+    /// specs, and the `align*` class — column measurement, per-column
+    /// alignment, and inter-row spacing per the published rules
+    /// (`\arraycolsep`-derived column separation, `\baselineskip` with
+    /// `\lineskip` growth between rows, `\jot` opening the `align` rows,
+    /// `\vcenter` axis centering), with the matrix family wrapped by the
+    /// rule-19 delimiter mechanism.
+    fn environment(
+        &self,
+        name: &str,
+        spec: Option<&str>,
+        rows: &[Vec<Node>],
+        ctx: LayCtx,
+        span: Span,
+    ) -> Result<Laid, MathError> {
+        // amsmath sets matrix/cases cells in text style (script styles keep
+        // their size); align-class cells are display style.
+        let text_cells = ctx.map(|s| StyleCtx {
+            style: if s.style == Style::Display {
+                Style::Text
+            } else {
+                s.style
+            },
+            cramped: s.cramped,
+        });
+        let boxx = match name {
+            "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" => {
+                let grid = self.grid(rows, text_cells, &Grid::centered(1.0), span)?;
+                match name {
+                    // A bare matrix has no delimiters at all (not even the
+                    // null-delimiter kerns a `\left.` would add).
+                    "matrix" => grid,
+                    "pmatrix" => self.wrap_delims(grid, Some('('), Some(')'), ctx, span)?,
+                    "bmatrix" => self.wrap_delims(grid, Some('['), Some(']'), ctx, span)?,
+                    "Bmatrix" => self.wrap_delims(grid, Some('{'), Some('}'), ctx, span)?,
+                    "vmatrix" => self.wrap_delims(grid, Some('|'), Some('|'), ctx, span)?,
+                    _ => self.wrap_delims(grid, Some('‖'), Some('‖'), ctx, span)?,
+                }
+            }
+            "smallmatrix" => {
+                // The inline matrix: script-size cells, tightened columns
+                // and rows (amsmath's 0.7-factor feel).
+                let cells = ctx.map(StyleCtx::sup);
+                self.grid(
+                    rows,
+                    cells,
+                    &Grid {
+                        col_sep: 0.35,
+                        row_factor: 0.7,
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?
+            }
+            "cases" => {
+                // Text-style cells, left-aligned value and condition
+                // columns a quad apart, behind a stretched `{`.
+                let grid = self.grid(
+                    rows,
+                    text_cells,
+                    &Grid {
+                        align: AlignRule::AllLeft,
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?;
+                self.wrap_delims(grid, Some('{'), None, ctx, span)?
+            }
+            "array" => {
+                let plan = parse_array_spec(spec.unwrap_or(""), span)?;
+                self.grid(
+                    rows,
+                    text_cells,
+                    &Grid {
+                        align: AlignRule::Columns(plan.aligns),
+                        vrules: plan.vrules,
+                        outer_pad: 0.5,
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?
+            }
+            "align" | "align*" | "aligned" => {
+                // Display-style cells; r,l alternation with the alignment
+                // point closed up; \minalignsep between pairs; \jot opens
+                // the rows.
+                let cells = ctx.map(|s| StyleCtx {
+                    style: Style::Display,
+                    cramped: s.cramped,
+                });
+                self.grid(
+                    rows,
+                    cells,
+                    &Grid {
+                        align: AlignRule::AlignPairs,
+                        col_sep: 1.0,
+                        jot: 0.3,
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?
+            }
+            other => {
+                // Parse admits only known environments; a new name landing
+                // here is a construct the layout tier does not cover yet.
+                return Err(MathError::UnsupportedCommand {
+                    name: format!("env:{other}"),
+                    span,
+                });
+            }
+        };
+        Ok(Laid {
+            boxx,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// Measure and assemble a cell grid: shared column widths, per-row
+    /// height/depth, baseline stacking, and `\vcenter` axis centering.
+    fn grid(
+        &self,
+        rows: &[Vec<Node>],
+        cell_ctx: LayCtx,
+        grid: &Grid,
+        span: Span,
+    ) -> Result<MBox, MathError> {
+        let size = cell_ctx.size();
+        let c = &self.consts;
+        // 1. Lay every cell.
+        let mut cells: Vec<Vec<MBox>> = Vec::new();
+        for row in rows {
+            let mut out = Vec::new();
+            for cell in row {
+                out.push(self.lay_node(cell, cell_ctx)?.boxx);
+            }
+            cells.push(out);
+        }
+        let ncols = cells.iter().map(Vec::len).max().unwrap_or(0);
+        // 2. Column widths and row metrics.
+        let mut col_w = vec![0.0_f64; ncols];
+        for row in &cells {
+            for (j, cell) in row.iter().enumerate() {
+                col_w[j] = col_w[j].max(cell.width);
+            }
+        }
+        let row_h: Vec<f64> = cells
+            .iter()
+            .map(|r| r.iter().map(|b| b.height).fold(0.0, f64::max))
+            .collect();
+        let row_d: Vec<f64> = cells
+            .iter()
+            .map(|r| r.iter().map(|b| b.depth).fold(0.0, f64::max))
+            .collect();
+        // 3. Column x positions.
+        let mut col_x = vec![0.0_f64; ncols];
+        let mut x = grid.outer_pad * size;
+        for (j, w) in col_w.iter().enumerate() {
+            if j > 0 {
+                x += grid.sep_before(j) * size;
+            }
+            col_x[j] = x;
+            x += w;
+        }
+        let total_width = x + grid.outer_pad * size;
+        // 4. Row baselines: \baselineskip (+\jot) grown by \lineskip when
+        // boxes would touch — the same stacking rule multi-line hlists use.
+        let mut baselines = vec![0.0_f64; cells.len()];
+        for i in 1..cells.len() {
+            let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
+            let min_gap = row_d[i - 1] + row_h[i] + c.line_skip * size;
+            baselines[i] = baselines[i - 1] - natural.max(min_gap);
+        }
+        // 5. Assemble, then axis-center the whole grid (\vcenter).
+        let top = row_h.first().copied().unwrap_or(0.0);
+        let bottom =
+            baselines.last().copied().unwrap_or(0.0) - row_d.last().copied().unwrap_or(0.0);
+        let total = top - bottom;
+        let axis = c.axis_height * cell_ctx.size();
+        let height = total / 2.0 + axis;
+        let shift = height - top; // added to every child dy
+        let depth = (total / 2.0 - axis).max(0.0);
+        let mut children = Vec::new();
+        for (i, row) in cells.into_iter().enumerate() {
+            for (j, cell) in row.into_iter().enumerate() {
+                let slack = col_w[j] - cell.width;
+                let dx = col_x[j] + grid.align.factor(j) * slack;
+                children.push(Positioned {
+                    dx,
+                    dy: baselines[i] + shift,
+                    node: MNode::Box(cell),
+                });
+            }
+        }
+        // 6. Vertical rules from an `array` spec span the full grid.
+        for &before_col in &grid.vrules {
+            let theta = c.rule_thickness * size;
+            let rule_x = if before_col == 0 {
+                (grid.outer_pad * size - theta).max(0.0) / 2.0
+            } else if before_col < ncols {
+                col_x[before_col] - grid.sep_before(before_col) * size / 2.0 - theta / 2.0
+            } else {
+                total_width - (grid.outer_pad * size - theta).max(0.0) / 2.0 - theta
+            };
+            children.push(Positioned {
+                dx: rule_x,
+                dy: -depth,
+                node: MNode::Rule {
+                    width: theta,
+                    height: height + depth,
+                    span,
+                },
+            });
+        }
+        Ok(MBox {
+            kind: BoxKind::Vertical,
+            width: total_width,
+            height,
+            depth,
+            children,
+        })
+    }
+
+    /// Wrap a box in rule-19-sized delimiters (the matrix family, `cases`).
+    fn wrap_delims(
+        &self,
+        inner: MBox,
+        left: Option<char>,
+        right: Option<char>,
+        ctx: LayCtx,
+        span: Span,
+    ) -> Result<MBox, MathError> {
+        let c = &self.consts;
+        let size = ctx.size();
+        let axis = c.axis_height * size;
+        let delta = (inner.height - axis).max(inner.depth + axis);
+        let target =
+            (2.0 * delta * c.delimiter_factor).max(2.0 * delta - c.delimiter_shortfall * size);
+        let left_box = self.delimiter_box(&Delim { ch: left, span }, target, ctx)?;
+        let right_box = self.delimiter_box(&Delim { ch: right, span }, target, ctx)?;
+        Ok(hcat(vec![left_box, inner, right_box]))
+    }
+
+    /// The stretchy over/under constructions (`\widehat`, `\widetilde`,
+    /// `\overbrace`, `\underbrace`, `\overrightarrow`, `\overleftarrow`):
+    /// a drawn band spanning the base's width, placed with a small
+    /// rule-thickness clearance (hats and tildes ride close, the way the
+    /// authored accents do; braces and arrows take a little more air).
+    /// Any width draws — the constructions are total.
+    fn stretchy_accent(
+        &self,
+        kind: AccentKind,
+        base: &Node,
+        ctx: LayCtx,
+        span: Span,
+    ) -> Result<Laid, MathError> {
+        let size = ctx.size();
+        let theta = self.consts.rule_thickness * size;
+        let under = matches!(kind, AccentKind::UnderBrace);
+        // Over-accents cramp their base (rule 12 / overline's rule 9);
+        // under-constructions do not (underline's rule 10).
+        let inner = if under {
+            self.lay_node(base, ctx)?.boxx
+        } else {
+            self.lay_node(base, ctx.map(StyleCtx::cramp))?.boxx
+        };
+        let stretch_kind = match kind {
+            AccentKind::WideHat => crate::drawn::Stretch::Hat,
+            AccentKind::WideTilde => crate::drawn::Stretch::Tilde,
+            AccentKind::OverBrace => crate::drawn::Stretch::OverBrace,
+            AccentKind::UnderBrace => crate::drawn::Stretch::UnderBrace,
+            AccentKind::OverRightArrow => crate::drawn::Stretch::RightArrow,
+            _ => crate::drawn::Stretch::LeftArrow,
+        };
+        let width = inner.width.max(0.25 * size);
+        let band = crate::drawn::stretch(stretch_kind, width, size);
+        let gap = match kind {
+            AccentKind::WideHat | AccentKind::WideTilde => theta,
+            _ => 2.0 * theta,
+        };
+        let (band_dy, height, depth) = if under {
+            let dy = -(inner.depth + gap + band.height);
+            (dy, inner.height, inner.depth + gap + band.height)
+        } else {
+            let dy = inner.height + gap;
+            (dy, inner.height + gap + band.height, inner.depth)
+        };
+        let inner_width = inner.width;
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: inner_width.max(width),
+                height,
+                depth,
+                children: vec![
+                    Positioned {
+                        dx: 0.0,
+                        dy: band_dy,
+                        node: MNode::Path {
+                            contours: band.contours,
+                            span,
+                        },
+                    },
+                    Positioned {
+                        dx: 0.0,
+                        dy: 0.0,
+                        node: MNode::Box(inner),
+                    },
+                ],
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
     fn underline_box(&self, inner: MBox, ctx: LayCtx, span: Span) -> MBox {
         let theta = self.consts.rule_thickness * ctx.size();
         let rule_y = -(inner.depth + 3.0 * theta) - theta;
@@ -1299,10 +1648,14 @@ impl Engine {
         })
     }
 
-    /// The ADR-0005 delimiter mechanism: natural glyph if it covers the
-    /// target, uniform scaling above (drawn-path construction beyond the
-    /// ceiling arrives with the extensions bead), axis-centered either
-    /// way; the null delimiter is a `nulldelimiterspace` kern.
+    /// The ADR-0005 delimiter mechanism, complete: natural glyph if it
+    /// covers the target; uniform scaling up to the `1.25×` ceiling; the
+    /// parametric drawn-path construction beyond (the mainline — stroke
+    /// weights calibrated against the authored glyphs so the threshold
+    /// seam is invisible at a glance, and no requested size can fail).
+    /// Axis-centered every way; the null delimiter is a
+    /// `nulldelimiterspace` kern. Characters without a drawn construction
+    /// keep uniform scaling — nothing regresses past the ceiling.
     fn delimiter_box(
         &self,
         delim: &Delim,
@@ -1316,6 +1669,30 @@ impl Engine {
             .faces
             .resolve(ch, &[FACE_REGULAR, FACE_SYMBOLS, FACE_ITALIC])
         else {
+            // No authored glyph at all (e.g. `‖` on a face without it): the
+            // drawn construction serves every size, floored at a text-ish
+            // height so an empty body still gets a visible delimiter.
+            if let Some(d) =
+                crate::drawn::delimiter(ch, target_total.max(0.7 * ctx.size()), ctx.size())
+            {
+                let total = target_total.max(0.7 * ctx.size());
+                let axis = self.consts.axis_height * ctx.size();
+                let dy = axis - total / 2.0;
+                return Ok(MBox {
+                    kind: BoxKind::Horizontal,
+                    width: d.width,
+                    height: total + dy,
+                    depth: (-dy).max(0.0),
+                    children: vec![Positioned {
+                        dx: 0.0,
+                        dy,
+                        node: MNode::Path {
+                            contours: d.contours,
+                            span: delim.span,
+                        },
+                    }],
+                });
+            }
             return Err(MathError::UnmappedChar {
                 ch,
                 span: delim.span,
@@ -1328,6 +1705,28 @@ impl Engine {
         } else {
             target_total / natural_total
         };
+        if scale > self.consts.delimiter_scale_ceiling
+            && let Some(d) = crate::drawn::delimiter(ch, target_total, ctx.size())
+        {
+            // The drawn mainline: contours span y ∈ [0, target]; center
+            // the construction on the axis exactly as a glyph would be.
+            let axis = self.consts.axis_height * ctx.size();
+            let dy = axis - target_total / 2.0;
+            return Ok(MBox {
+                kind: BoxKind::Horizontal,
+                width: d.width,
+                height: target_total + dy,
+                depth: (-dy).max(0.0),
+                children: vec![Positioned {
+                    dx: 0.0,
+                    dy,
+                    node: MNode::Path {
+                        contours: d.contours,
+                        span: delim.span,
+                    },
+                }],
+            });
+        }
         let size = ctx.size() * scale;
         let gh = m.height * size;
         let gd = m.depth * size;
@@ -1400,15 +1799,123 @@ const fn accent_char(kind: AccentKind) -> char {
     }
 }
 
-const fn stretchy_name(kind: AccentKind) -> &'static str {
-    match kind {
-        AccentKind::OverBrace => "overbrace",
-        AccentKind::UnderBrace => "underbrace",
-        AccentKind::OverRightArrow => "overrightarrow",
-        AccentKind::OverLeftArrow => "overleftarrow",
-        AccentKind::WideHat => "widehat",
-        _ => "widetilde",
+/// Grid parameters for one environment family (ems, of the cell size).
+struct Grid {
+    /// Per-column horizontal alignment.
+    align: AlignRule,
+    /// Space between adjacent columns (`2\arraycolsep`-derived; the
+    /// `align` rule reads it as the between-pairs `\minalignsep`).
+    col_sep: f64,
+    /// Padding at the grid's outer edges (`array`'s `\arraycolsep`).
+    outer_pad: f64,
+    /// Extra opening of the natural row skip (`align`'s `\jot`).
+    jot: f64,
+    /// Multiplier on the natural row skip (`smallmatrix` tightening).
+    row_factor: f64,
+    /// Vertical rules before these column indices (an `array` spec's `|`;
+    /// `ncols` means after the last column).
+    vrules: Vec<usize>,
+}
+
+impl Grid {
+    /// All-centered columns with the given separation — the matrix baseline.
+    fn centered(col_sep: f64) -> Self {
+        Self {
+            align: AlignRule::AllCenter,
+            col_sep,
+            outer_pad: 0.0,
+            jot: 0.0,
+            row_factor: 1.0,
+            vrules: Vec::new(),
+        }
     }
+
+    /// The separation inserted before column `j` (j ≥ 1). The `align` rule
+    /// closes up the r,l pair around its alignment point and separates
+    /// *pairs* by `col_sep`.
+    fn sep_before(&self, j: usize) -> f64 {
+        if matches!(self.align, AlignRule::AlignPairs) && j % 2 == 1 {
+            0.0
+        } else {
+            self.col_sep
+        }
+    }
+}
+
+/// How a grid aligns cells within their columns.
+enum AlignRule {
+    /// Every column centered (the matrix family).
+    AllCenter,
+    /// Every column left (`cases`).
+    AllLeft,
+    /// Per-column from an `array` spec; columns past the spec center.
+    Columns(Vec<CellAlign>),
+    /// `align`-class r,l alternation.
+    AlignPairs,
+}
+
+impl AlignRule {
+    /// The slack fraction placed left of a cell in column `j`.
+    fn factor(&self, j: usize) -> f64 {
+        match self {
+            Self::AllCenter => 0.5,
+            Self::AllLeft => 0.0,
+            Self::Columns(cols) => match cols.get(j) {
+                Some(CellAlign::Left) => 0.0,
+                Some(CellAlign::Right) => 1.0,
+                Some(CellAlign::Center) | None => 0.5,
+            },
+            Self::AlignPairs => {
+                if j % 2 == 0 {
+                    1.0 // the left column of a pair sets right, toward the point
+                } else {
+                    0.0 // the right column sets left, away from it
+                }
+            }
+        }
+    }
+}
+
+/// One `array` column's alignment.
+enum CellAlign {
+    /// `l`.
+    Left,
+    /// `c`.
+    Center,
+    /// `r`.
+    Right,
+}
+
+/// A parsed `array` column spec: alignments plus vertical-rule positions.
+struct ArrayPlan {
+    aligns: Vec<CellAlign>,
+    vrules: Vec<usize>,
+}
+
+/// Parse an `array` column spec. The tier-1 surface covers `l`, `c`, `r`,
+/// and `|`; anything else is a precise refusal naming the character.
+fn parse_array_spec(spec: &str, span: Span) -> Result<ArrayPlan, MathError> {
+    let mut aligns = Vec::new();
+    let mut vrules = Vec::new();
+    for ch in spec.chars() {
+        match ch {
+            'l' => aligns.push(CellAlign::Left),
+            'c' => aligns.push(CellAlign::Center),
+            'r' => aligns.push(CellAlign::Right),
+            '|' => vrules.push(aligns.len()),
+            c if c.is_whitespace() => {}
+            other => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "unsupported array column-spec character {other:?} \
+                         (the tier-1 surface covers l, c, r, |)"
+                    ),
+                    at: span.start,
+                });
+            }
+        }
+    }
+    Ok(ArrayPlan { aligns, vrules })
 }
 
 /// A zero-height horizontal kern box.

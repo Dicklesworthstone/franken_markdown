@@ -39,28 +39,33 @@ impl FontStyle {
     }
 }
 
+// The bundled faces come from the `fmd-font` crate rather than `include_bytes!`
+// on a `../fmd-font/fonts/...` path. Those relative paths reach OUTSIDE this
+// package, so the font files were absent from the published tarball and
+// `cargo publish` failed verification with 10 "couldn't read ... No such file"
+// errors — which is why releases stalled at 0.2.0. `fmd-font` ships the same
+// files itself and re-exports them, so consuming them through the crate keeps
+// the packaged build self-contained. Byte-for-byte identical assets.
+
 // IBM Plex Sans — default sans body face. SIL OFL 1.1, © IBM Corp.
-const PLEX_REGULAR: &[u8] =
-    include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
-const PLEX_BOLD: &[u8] = include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf");
-const PLEX_ITALIC: &[u8] = include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");
-const PLEX_BOLD_ITALIC: &[u8] =
-    include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf");
+const PLEX_REGULAR: &[u8] = fmd_font::bundled::PLEX_REGULAR;
+const PLEX_BOLD: &[u8] = fmd_font::bundled::PLEX_BOLD;
+const PLEX_ITALIC: &[u8] = fmd_font::bundled::PLEX_ITALIC;
+const PLEX_BOLD_ITALIC: &[u8] = fmd_font::bundled::PLEX_BOLD_ITALIC;
 
 // Computer Modern — the classic LaTeX serif body face. SIL OFL 1.1.
-const CM_REGULAR: &[u8] = include_bytes!("../fmd-font/fonts/computer-modern/cmunrm.ttf");
-const CM_BOLD: &[u8] = include_bytes!("../fmd-font/fonts/computer-modern/cmunbx.ttf");
-const CM_ITALIC: &[u8] = include_bytes!("../fmd-font/fonts/computer-modern/cmunti.ttf");
-const CM_BOLD_ITALIC: &[u8] = include_bytes!("../fmd-font/fonts/computer-modern/cmunbi.ttf");
+const CM_REGULAR: &[u8] = fmd_font::bundled::CM_REGULAR;
+const CM_BOLD: &[u8] = fmd_font::bundled::CM_BOLD;
+const CM_ITALIC: &[u8] = fmd_font::bundled::CM_ITALIC;
+const CM_BOLD_ITALIC: &[u8] = fmd_font::bundled::CM_BOLD_ITALIC;
 
 // CM Typewriter — monospace / code face. SIL OFL 1.1.
-const MONO_REGULAR: &[u8] = include_bytes!("../fmd-font/fonts/computer-modern/cmuntt.ttf");
+const MONO_REGULAR: &[u8] = fmd_font::bundled::CM_TYPEWRITER;
 
 // Noto Sans Math (curated subset) — symbol fallback face for characters the
 // primary body/mono faces cannot map (arrows, math operators, …). SIL OFL 1.1.
 // Regenerated via `cargo run --example gen_symbol_fallback_font`.
-const SYMBOL_REGULAR: &[u8] =
-    include_bytes!("../fmd-font/fonts/noto-sans-math/NotoSansMathSymbols.ttf");
+const SYMBOL_REGULAR: &[u8] = fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS;
 
 static PLEX_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static PLEX_BOLD_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();

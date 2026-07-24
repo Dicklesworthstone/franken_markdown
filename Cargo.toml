@@ -91,7 +91,7 @@ batch = ["cli", "dep:asupersync"]
 # First-party: the factored font subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own). `crate::text` re-exports it, so
 # the engine surface is unchanged.
-fmd-font = { path = "fmd-font", version = "0.1.0" }
+fmd-font = { path = "fmd-font", version = "0.1.0", features = ["bundled-faces"] }
 # The ONLY third-party crate in the default build, and only for the CLI argument
 # parser. The library target (the renderer itself) compiles with zero external
 # dependencies.

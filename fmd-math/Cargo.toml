@@ -1,0 +1,33 @@
+# fmd-math — the clean-room TeX-mathematics layout engine (parser, atom
+# engine, style machinery; layout lands by its owning beads). Zero
+# dependencies, pure std, forbid(unsafe_code): the same engine philosophy
+# as the root crate and fmd-font. Contributed by the franken_manim program
+# (its Scribe subsystem is the first external consumer; see that repo's
+# UPSTREAM_LEDGER row 2 and the G0-3 ratification note the public API is
+# frozen to), and consumed by fmd itself for native `$…$` mathematics.
+[package]
+name = "fmd-math"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license-file = "../LICENSE"
+description = "Clean-room TeX-mathematics layout engine: TeX-math grammar, the eight atom classes, the inter-atom spacing table, and TeX style propagation (franken_markdown's math subsystem)"
+repository = "https://github.com/Dicklesworthstone/franken_markdown"
+
+[lib]
+name = "fmd_math"
+path = "src/lib.rs"
+
+[dependencies]
+# None, ever: the engine philosophy. Pure std.
+
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"

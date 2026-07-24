@@ -14,12 +14,14 @@
 #     path so the core stays trivially auditable).
 # The workspace: the root package plus the factored `fmd-font` crate (the
 # font subsystem, split out so the wider Franken suite can consume it
-# directly — franken_manim's fm-ydw is the factoring bead). default-members
-# keeps plain `cargo test`/`check` in the root covering both crates, so the
+# directly — franken_manim's fm-ydw is the factoring bead) and `fmd-math`
+# (the clean-room TeX-mathematics layout engine — franken_manim's fm-wgl
+# lands its core; see that repo's UPSTREAM_LEDGER row 2). default-members
+# keeps plain `cargo test`/`check` in the root covering every crate, so the
 # AGENTS.md verification gate still sees the whole tree.
 [workspace]
-members = [".", "fmd-font"]
-default-members = [".", "fmd-font"]
+members = [".", "fmd-font", "fmd-math"]
+default-members = [".", "fmd-font", "fmd-math"]
 
 [package]
 name = "franken_markdown"

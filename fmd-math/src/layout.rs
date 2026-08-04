@@ -144,6 +144,7 @@ impl Engine {
                 style: ctx,
                 alphabet: None,
                 text_mode: false,
+                decl_size: 1.0,
             },
         )?;
         let mut layout = Layout {
@@ -164,11 +165,15 @@ struct LayCtx {
     alphabet: Option<MathFont>,
     /// Laying text (islands, `\text` bodies): letters stay upright.
     text_mode: bool,
+    /// The size-declaration factor (`\small` …), group-scoped: multiplies
+    /// the style's own factor, exactly like LaTeX's current size setting
+    /// the design size every fontdimen is read from.
+    decl_size: f64,
 }
 
 impl LayCtx {
     fn size(&self) -> f64 {
-        self.style.size_factor()
+        self.style.size_factor() * self.decl_size
     }
     fn map(self, f: impl FnOnce(StyleCtx) -> StyleCtx) -> Self {
         Self {
@@ -197,29 +202,36 @@ impl Engine {
     /// Lay out a horizontal list: split at `\\` into stacked lines; within
     /// a line, walk atoms with their effective classes, inserting the
     /// inter-atom glue of the spacing table and font kerns between
-    /// adjacent same-face character glyphs.
+    /// adjacent same-face character glyphs. Declarations (style switches,
+    /// size changes) persist across the line split: `\\` does not end the
+    /// enclosing group.
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
-        let mut lines: Vec<MBox> = Vec::new();
+        let mut lines: Vec<(MBox, f64)> = Vec::new();
+        let mut ctx = ctx;
         for line in items.split(|n| matches!(n.kind, NodeKind::Linebreak)) {
-            lines.push(self.line(line, ctx)?);
+            let (boxx, after) = self.line(line, ctx)?;
+            ctx = after;
+            lines.push((boxx, ctx.size()));
         }
         if lines.len() == 1 {
-            return lines.pop().ok_or(MathError::Malformed {
-                what: "internal: empty line vector".to_owned(),
-                at: 0,
-            });
+            return lines
+                .pop()
+                .map(|(boxx, _)| boxx)
+                .ok_or(MathError::Malformed {
+                    what: "internal: empty line vector".to_owned(),
+                    at: 0,
+                });
         }
         // Stack lines: baseline-to-baseline is \baselineskip (grown when
-        // boxes would come closer than \lineskip). The box baseline is the
-        // first line's.
-        let size = ctx.size();
+        // boxes would come closer than \lineskip), read at each line's own
+        // size. The box baseline is the first line's.
         let mut children = Vec::new();
         let mut baseline = 0.0_f64;
         let mut prev_depth = 0.0_f64;
         let mut width = 0.0_f64;
         let mut depth = 0.0_f64;
         let mut height = 0.0_f64;
-        for (i, line) in lines.into_iter().enumerate() {
+        for (i, (line, size)) in lines.into_iter().enumerate() {
             if i == 0 {
                 height = line.height;
             } else {
@@ -245,8 +257,9 @@ impl Engine {
         })
     }
 
-    /// One line of a horizontal list.
-    fn line(&self, items: &[Node], outer: LayCtx) -> Result<MBox, MathError> {
+    /// One line of a horizontal list; also returns the context after the
+    /// line's declarations, so `\\`-separated lines inherit them.
+    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
@@ -257,6 +270,9 @@ impl Engine {
                         style: *style,
                         cramped: s.cramped,
                     });
+                }
+                NodeKind::SizeChange(factor) => {
+                    ctx.decl_size = *factor;
                 }
                 NodeKind::ColorChange(_)
                 | NodeKind::AlignTab
@@ -334,13 +350,16 @@ impl Engine {
                 }
             }
         }
-        Ok(MBox {
-            kind: BoxKind::Horizontal,
-            width: x,
-            height,
-            depth,
-            children,
-        })
+        Ok((
+            MBox {
+                kind: BoxKind::Horizontal,
+                width: x,
+                height,
+                depth,
+                children,
+            },
+            ctx,
+        ))
     }
 
     /// Lay one node into an atom box.
@@ -416,6 +435,7 @@ impl Engine {
                             style: StyleCtx::new(style),
                             alphabet: None,
                             text_mode: false,
+                            ..ctx
                         },
                     )?,
                     italic: 0.0,
@@ -506,6 +526,7 @@ impl Engine {
             }
             NodeKind::Fragment(_)
             | NodeKind::StyleChange(_)
+            | NodeKind::SizeChange(_)
             | NodeKind::ColorChange(_)
             | NodeKind::Space(_)
             | NodeKind::Tie
@@ -539,7 +560,42 @@ impl Engine {
 
     /// A single-character atom.
     fn char_atom(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
-        let (face, gid, mapped) = self.resolve_math_char(ch, span, ctx)?;
+        let (face, gid, mapped) = match self.resolve_math_char(ch, span, ctx) {
+            Ok(hit) => hit,
+            Err(err) => {
+                // The drawn-symbol mainline (fm-j5t.4, the
+                // Checkmark/Exmark drawn-mark precedent): characters no
+                // bundled face maps but the engine has a calibrated
+                // construction for — the wasysym astronomy/biology
+                // symbols ♀ ♂ ♁ — are DRAWN as paths in the same unit
+                // box, never silently substituted with a different
+                // glyph. Miss-only, exactly like the documented glyph
+                // alternates: the moment a face gains the exact
+                // codepoint, the authored glyph wins. Everything else
+                // keeps the precise UnmappedChar refusal.
+                if let Some(d) = crate::drawn::symbol(ch, ctx.size()) {
+                    return Ok(Laid {
+                        boxx: MBox {
+                            kind: BoxKind::Horizontal,
+                            width: d.width,
+                            height: d.height,
+                            depth: d.depth,
+                            children: vec![Positioned {
+                                dx: 0.0,
+                                dy: 0.0,
+                                node: MNode::Path {
+                                    contours: d.contours,
+                                    span,
+                                },
+                            }],
+                        },
+                        italic: 0.0,
+                        char_glyph: None,
+                    });
+                }
+                return Err(err);
+            }
+        };
         let metrics = self.metrics_of(face, gid);
         let size = ctx.size();
         Ok(Laid {
@@ -1282,7 +1338,8 @@ impl Engine {
     }
 
     /// Environment layout: the matrix family, `cases`, `array` with column
-    /// specs, and the `align*` class — column measurement, per-column
+    /// specs, the `align*` class, and `substack` (amsmath's single-column
+    /// script-style stack) — column measurement, per-column
     /// alignment, and inter-row spacing per the published rules
     /// (`\arraycolsep`-derived column separation, `\baselineskip` with
     /// `\lineskip` growth between rows, `\jot` opening the `align` rows,
@@ -1382,6 +1439,16 @@ impl Engine {
                     },
                     span,
                 )?
+            }
+            "substack" => {
+                // amsmath's \subarray{c}: every line set in \scriptstyle
+                // (forced, whatever the ambient style — that is what makes
+                // \substack usable in base position too), centered in one
+                // column, \vcenter'd on the axis: the grid engine's
+                // single-column case, rows on the shared
+                // \baselineskip/\lineskip rule at script size.
+                let cells = ctx.map(|_| StyleCtx::new(Style::Script));
+                self.grid(rows, cells, &Grid::centered(1.0), span)?
             }
             other => {
                 // Parse admits only known environments; a new name landing

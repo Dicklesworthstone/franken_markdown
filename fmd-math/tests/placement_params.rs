@@ -289,9 +289,6 @@ fn formerly_pending_constructs_now_lay_out() {
     assert_eq!(b.paths.len(), 1, "the drawn brace band");
 
     // Tier-2 parse vocabulary still refuses by name (the ratchet's shape).
-    let err = e.typeset(r"\substack{a \\ b}", Style::Display).unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\substack"));
-    assert!(err.to_string().contains("tier T2"), "{err}");
     let err = e
         .typeset(r"\begin{center} x \end{center}", Style::Display)
         .unwrap_err();

@@ -514,6 +514,206 @@ fn arrow(w: f64, em: f64, left: bool) -> DrawnBand {
     }
 }
 
+// ── Drawn symbols (fm-j5t.4) ────────────────────────────────────────────
+
+/// A drawn symbol in a unit box: contours plus the box metrics. The
+/// contours are baseline-relative (`y ∈ [-depth, height]`), so the caller
+/// places them with `dy = 0`.
+pub(crate) struct DrawnSym {
+    /// Advance width, ems.
+    pub(crate) width: f64,
+    /// Ink extent above the baseline, ems.
+    pub(crate) height: f64,
+    /// Ink extent below the baseline, positive, ems.
+    pub(crate) depth: f64,
+    /// Closed contours, baseline-relative.
+    pub(crate) contours: Vec<PathContour>,
+}
+
+/// The drawn construction for a symbol character no bundled face maps
+/// (fm-j5t.4): the wasysym astronomy/biology glyphs `\female` (♀,
+/// U+2640), `\male`/`\mars` (♂, U+2642), and `\earth` (♁, U+2641).
+/// The G0-3 probe found all three unmapped in every bundled face, so —
+/// per the Checkmark/Exmark drawn-mark precedent — they are **drawn** in
+/// the same unit box, strokes calibrated to the CM-authored weights
+/// (`0.055 em`, the brace stroke). This is a miss-only fallback in the
+/// caller: the moment a bundled face gains the exact codepoint, the
+/// authored glyph wins and this construction stops firing. `None` for
+/// anything else — those keep the precise `UnmappedChar` refusal.
+pub(crate) fn symbol(ch: char, em: f64) -> Option<DrawnSym> {
+    match ch {
+        '\u{2640}' => Some(female(em)),
+        '\u{2642}' => Some(male(em)),
+        '\u{2641}' => Some(earth(em)),
+        _ => None,
+    }
+}
+
+/// √2/2 (cos 45°), a compile-time constant: the determinism doctrine
+/// keeps the arithmetic to add/sub/mul/div over fixed constants.
+const COS45: f64 = 0.707_106_781_186_547_6;
+/// √2−1 (tan 22.5°): the quad circle control offset.
+const TAN22: f64 = 0.414_213_562_373_095_1;
+
+/// The eight quad control/endpoint pairs of a circle of radius `r` about
+/// `(cx, cy)`, walked counterclockwise from the east point: each 45° arc
+/// is one quadratic with its control on the bisector at radius
+/// `r·sec(π/8)` — the `(r, r·tan(π/8))` construction — for a worst-case
+/// radial error of about 0.03 %.
+fn circle_quads(cx: f64, cy: f64, r: f64) -> Vec<PathSeg> {
+    let b = COS45 * r;
+    let a = TAN22 * r;
+    vec![
+        quad((cx + r, cy + a), (cx + b, cy + b)), // E → NE
+        quad((cx + a, cy + r), (cx, cy + r)),     // NE → N
+        quad((cx - a, cy + r), (cx - b, cy + b)), // N → NW
+        quad((cx - r, cy + a), (cx - r, cy)),     // NW → W
+        quad((cx - r, cy - a), (cx - b, cy - b)), // W → SW
+        quad((cx - a, cy - r), (cx, cy - r)),     // SW → S
+        quad((cx + a, cy - r), (cx + b, cy - b)), // S → SE
+        quad((cx + r, cy - a), (cx + r, cy)),     // SE → E
+    ]
+}
+
+/// A stroked circle (a ring) as ONE contour: the outer circle walked
+/// counterclockwise, a radial step inward, the inner circle walked back
+/// clockwise, and the return step closing the spur. The reversed inner
+/// walk punches the hole under the nonzero rule; the two radial steps
+/// are coincident zero-width spurs, invisible under any fill rule.
+fn ring(cx: f64, cy: f64, r_out: f64, r_in: f64) -> PathContour {
+    let start = (cx + r_out, cy);
+    let mut segments = circle_quads(cx, cy, r_out);
+    let inner_start = (cx + r_in, cy);
+    segments.push(line(inner_start));
+    // The inner circle walks the same arcs clockwise: the forward quads
+    // in reverse order, each ending at its own start point (a quadratic
+    // is symmetric in its endpoints, so the control point carries over).
+    let fwd = circle_quads(cx, cy, r_in);
+    let mut pts = vec![inner_start];
+    for s in &fwd {
+        match s {
+            PathSeg::Quad { to, .. } | PathSeg::Line { to } => pts.push(*to),
+        }
+    }
+    for (i, s) in fwd.iter().enumerate().rev() {
+        match s {
+            PathSeg::Quad { ctrl, .. } => segments.push(quad(*ctrl, pts[i])),
+            PathSeg::Line { .. } => segments.push(line(pts[i])),
+        }
+    }
+    segments.push(line(start));
+    contour(start, segments)
+}
+
+/// A plus-sign (a cross) as one contour, walked counterclockwise from the
+/// bottom-left of the vertical arm: `hx`/`hy` are the horizontal/vertical
+/// half-lengths, `t` the stroke. One contour — two overlapping
+/// rectangles would punch a hole at the crossing under even-odd fills.
+fn plus(cx: f64, cy: f64, hx: f64, hy: f64, t: f64) -> PathContour {
+    let h = t / 2.0;
+    let pts = [
+        (cx - h, cy - hy),
+        (cx + h, cy - hy),
+        (cx + h, cy - h),
+        (cx + hx, cy - h),
+        (cx + hx, cy + h),
+        (cx + h, cy + h),
+        (cx + h, cy + hy),
+        (cx - h, cy + hy),
+        (cx - h, cy + h),
+        (cx - hx, cy + h),
+        (cx - hx, cy - h),
+        (cx - h, cy - h),
+    ];
+    contour(
+        pts[0],
+        pts[1..]
+            .iter()
+            .copied()
+            .map(line)
+            .chain(core::iter::once(line(pts[0])))
+            .collect(),
+    )
+}
+
+/// ♀ (`\female`, wasysym's Venus): a ring riding to cap height with a
+/// cross hanging below, its foot reaching a small depth past the
+/// baseline — the wasysym proportions.
+fn female(em: f64) -> DrawnSym {
+    let t = 0.055 * em;
+    let r = 0.27 * em;
+    let cx = 0.32 * em;
+    let cy = 0.41 * em; // ring top at 0.68 em, the CM cap height
+    let foot = -0.10 * em;
+    let join = cy - r + t / 2.0; // the vertical arm overlaps into the ring
+    let cross = plus(cx, (foot + join) / 2.0, 0.13 * em, (join - foot) / 2.0, t);
+    DrawnSym {
+        width: 0.64 * em,
+        height: cy + r,
+        depth: -foot,
+        contours: vec![ring(cx, cy, r, r - t), cross],
+    }
+}
+
+/// ♂ (`\male`/`\mars`): a ring near the baseline with a 45° arrow out of
+/// the northeast — shaft plus triangular head.
+fn male(em: f64) -> DrawnSym {
+    let t = 0.055 * em;
+    let r = 0.24 * em;
+    let cx = 0.30 * em;
+    let cy = 0.26 * em; // ring bottom a hair above the baseline
+    let b = COS45;
+    // Shaft: from just inside the ring edge out along the 45° diagonal.
+    let s0 = r - t / 2.0;
+    let s1 = r + 0.26 * em;
+    let p0 = (cx + s0 * b, cy + s0 * b);
+    let p1 = (cx + s1 * b, cy + s1 * b);
+    let hw = t / 2.0;
+    let shaft = contour(
+        (p0.0 - hw * b, p0.1 + hw * b),
+        vec![
+            line((p1.0 - hw * b, p1.1 + hw * b)),
+            line((p1.0 + hw * b, p1.1 - hw * b)),
+            line((p0.0 + hw * b, p0.1 - hw * b)),
+            line((p0.0 - hw * b, p0.1 + hw * b)),
+        ],
+    );
+    // Head: a triangle whose tip continues the shaft line.
+    let hl = 0.15 * em;
+    let hb = 0.10 * em;
+    let head = contour(
+        (p1.0 + hl * b, p1.1 + hl * b),
+        vec![
+            line((p1.0 - hb * b, p1.1 + hb * b)),
+            line((p1.0 + hb * b, p1.1 - hb * b)),
+            line((p1.0 + hl * b, p1.1 + hl * b)),
+        ],
+    );
+    let extent = s1 + hl;
+    DrawnSym {
+        width: cx + extent * b + 0.03 * em,
+        height: cy + extent * b,
+        depth: 0.0,
+        contours: vec![ring(cx, cy, r, r - t), shaft, head],
+    }
+}
+
+/// ♁ (`\earth`): a ring with the inscribed cross — the globe-and-cross
+/// mark, bars joining the ring's inner edge.
+fn earth(em: f64) -> DrawnSym {
+    let t = 0.055 * em;
+    let r = 0.29 * em;
+    let cx = 0.32 * em;
+    let cy = 0.34 * em; // ring spans 0.05..0.63 em
+    let reach = r - t / 2.0; // the bars join the ring's radial mid
+    DrawnSym {
+        width: 0.64 * em,
+        height: cy + r,
+        depth: 0.0,
+        contours: vec![ring(cx, cy, r, r - t), plus(cx, cy, reach, reach, t)],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -627,5 +827,42 @@ mod tests {
         let x = stretch(Stretch::Tilde, 3.7, 1.0);
         let y = stretch(Stretch::Tilde, 3.7, 1.0);
         assert_eq!(x.contours, y.contours);
+        for ch in ['\u{2640}', '\u{2642}', '\u{2641}'] {
+            let s1 = symbol(ch, 1.0).unwrap();
+            let s2 = symbol(ch, 1.0).unwrap();
+            assert_eq!(s1.contours, s2.contours, "{ch:?}");
+        }
+    }
+
+    #[test]
+    fn every_drawn_symbol_is_closed_and_in_box() {
+        for ch in ['\u{2640}', '\u{2642}', '\u{2641}'] {
+            for em in [0.5, 1.0, 2.4] {
+                let d = symbol(ch, em).unwrap_or_else(|| panic!("no symbol for {ch:?}"));
+                assert!(d.width > 0.0, "{ch:?} zero width");
+                assert!(!d.contours.is_empty());
+                assert_closed(&d.contours);
+                assert_y_range(&d.contours, -d.depth, d.height);
+                // The ink stays inside the advance (plus the quad-control
+                // slack of the circle approximation).
+                for c in &d.contours {
+                    let mut xs = vec![c.start.0];
+                    xs.extend(c.segments.iter().map(|s| match s {
+                        PathSeg::Line { to } | PathSeg::Quad { to, .. } => to.0,
+                    }));
+                    for x in xs {
+                        assert!(x >= -1e-9 && x <= d.width + 1e-9, "{ch:?} x {x}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unmapped_symbol_chars_have_no_construction() {
+        // Everything else keeps the precise UnmappedChar refusal.
+        assert!(symbol('x', 1.0).is_none());
+        assert!(symbol('\u{2643}', 1.0).is_none()); // Jupiter: not landed
+        assert!(symbol('\u{00A9}', 1.0).is_none()); // copyright: a real glyph
     }
 }

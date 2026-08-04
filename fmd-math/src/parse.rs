@@ -17,7 +17,8 @@ use crate::atom::{char_class, intrinsic_class};
 use crate::commands::{self, Cmd};
 use crate::error::MathError;
 use crate::node::{
-    AccentKind, Delim, FracSpec, FragmentKind, Limits, Node, NodeKind, SpaceKind, Span, TextStyle,
+    AccentKind, Delim, FracSpec, FragmentKind, Limits, LineAlign, Node, NodeKind, SpaceKind, Span,
+    TextStyle,
 };
 use crate::token::{Tok, TokKind, lex};
 
@@ -92,7 +93,7 @@ pub(crate) fn parse_text_mode_with<'s>(
 ) -> Result<Node, MathError> {
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
-    let (items, reason) = parser.text_list()?;
+    let (items, reason) = parser.text_list(false)?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
         Reason::EndGroup(span) => Err(MathError::Malformed {
@@ -472,6 +473,18 @@ impl<'s> Parser<'s> {
             Cmd::StyleSwitch(style) => {
                 items.push(Node::new(NodeKind::StyleChange(style), span));
             }
+            Cmd::SizeChange(factor) => {
+                items.push(Node::new(NodeKind::SizeChange(factor), span));
+            }
+            Cmd::AlignDecl(_) => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "\\{name} is a text-mode line-alignment declaration; \
+                         it cannot appear inside mathematics"
+                    ),
+                    at: span.start,
+                });
+            }
             Cmd::Spacing(kind) => items.push(Node::new(NodeKind::Space(kind), span)),
             other => {
                 let node = self.command_node(name, span, other)?;
@@ -626,11 +639,40 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
+            Cmd::Substack => self.substack(span),
             Cmd::Color => {
                 let (raw, raw_span) = self.raw_group("argument of \\color")?;
                 Ok(Node::new(
                     NodeKind::ColorChange(raw.trim().to_owned()),
                     span.union(raw_span),
+                ))
+            }
+            Cmd::Ding => {
+                // The pifont escape (fm-j5t.4): a braced decimal code. The
+                // implemented codes live in `commands::ding_char`; anything
+                // else fails precisely, by full name.
+                let (raw, raw_span) = self.raw_group("argument of \\ding")?;
+                let span = span.union(raw_span);
+                let Ok(code) = raw.parse::<u32>() else {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "the argument of \\ding must be a pifont number, got '{raw}'"
+                        ),
+                        at: raw_span.start,
+                    });
+                };
+                let Some(ch) = commands::ding_char(code) else {
+                    return Err(MathError::UnsupportedCommand {
+                        name: format!("\\ding{{{code}}}"),
+                        span,
+                    });
+                };
+                Ok(Node::new(
+                    NodeKind::Symbol {
+                        ch,
+                        class: crate::atom::AtomClass::Ord,
+                    },
+                    span,
                 ))
             }
             Cmd::SizedDelim { size, class } => {
@@ -674,7 +716,7 @@ impl<'s> Parser<'s> {
                 let span = span.union(right.span);
                 Ok(Node::new(NodeKind::LeftRight { left, right, body }, span))
             }
-            Cmd::Begin => self.environment(span),
+            Cmd::Begin => self.environment(span, false),
             Cmd::UnsupportedT2 => Err(MathError::UnsupportedCommand {
                 name: format!("\\{name}"),
                 span,
@@ -685,6 +727,8 @@ impl<'s> Parser<'s> {
             | Cmd::Limits
             | Cmd::NoLimits
             | Cmd::StyleSwitch(_)
+            | Cmd::SizeChange(_)
+            | Cmd::AlignDecl(_)
             | Cmd::Spacing(_) => Err(MathError::Malformed {
                 what: format!("\\{name} cannot be used in argument position"),
                 at: span.start,
@@ -760,7 +804,7 @@ impl<'s> Parser<'s> {
         match tok.kind {
             TokKind::BeginGroup => {
                 self.pos += 1;
-                let (items, reason) = self.descend(tok.span.start, |p| p.text_list())?;
+                let (items, reason) = self.descend(tok.span.start, |p| p.text_list(false))?;
                 match reason {
                     Reason::EndGroup(close) => Ok((items, tok.span.union(close))),
                     Reason::EndOfInput => Err(MathError::Malformed {
@@ -907,14 +951,23 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// `\begin{name}…\end{name}`.
-    fn environment(&mut self, begin_span: Span) -> Result<Node, MathError> {
+    /// `\begin{name}…\end{name}`. The line-alignment environments
+    /// (`flushleft` / `center` / `flushright`) are text-mode constructs:
+    /// they dispatch to [`Self::line_align_environment`] and are a precise
+    /// error inside mathematics.
+    fn environment(&mut self, begin_span: Span, text_mode: bool) -> Result<Node, MathError> {
         let (name, name_span) = self.raw_group("environment name after \\begin")?;
-        if commands::env_is_t2(&name) {
-            return Err(MathError::UnsupportedCommand {
-                name: format!("env:{name}"),
-                span: begin_span.union(name_span),
-            });
+        if let Some(align) = commands::line_align_env(&name) {
+            if !text_mode {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "env:{name} is a text-mode line-alignment environment; \
+                         it cannot appear inside mathematics"
+                    ),
+                    at: begin_span.start,
+                });
+            }
+            return self.line_align_environment(&name, align, begin_span, name_span);
         }
         let Some(def) = commands::lookup_env(&name) else {
             return Err(MathError::UnsupportedCommand {
@@ -941,7 +994,16 @@ impl<'s> Parser<'s> {
             let cell_span = list_span(&cell_items, cell_fallback);
             row.push(Node::new(NodeKind::List(cell_items), cell_span));
             match reason {
-                Reason::CellTab(_) => {}
+                Reason::CellTab(tab) => {
+                    if name == "substack" {
+                        return Err(MathError::Malformed {
+                            what: "'&' in the substack environment (it stacks a single \
+                                   centered column)"
+                                .to_owned(),
+                            at: tab.start,
+                        });
+                    }
+                }
                 Reason::CellBreak(_) => {
                     rows.push(std::mem::take(&mut row));
                 }
@@ -988,6 +1050,149 @@ impl<'s> Parser<'s> {
         Ok(Node::new(
             NodeKind::Environment { name, spec, rows },
             begin_span.union(end_span).union(full_end),
+        ))
+    }
+
+    /// A line-alignment environment (`flushleft` / `center` / `flushright`):
+    /// the body is text-mode content split into lines at top-level `\\`,
+    /// each line a [`NodeKind::List`]. As in the grid environments, LaTeX
+    /// ignores the empty line a trailing `\\` would create; the `\begin`/
+    /// `\end` tokens themselves produce no nodes (and no glyphs).
+    fn line_align_environment(
+        &mut self,
+        name: &str,
+        align: LineAlign,
+        begin_span: Span,
+        name_span: Span,
+    ) -> Result<Node, MathError> {
+        let mut lines: Vec<Node> = Vec::new();
+        let end_span = loop {
+            let line_fallback = self.here();
+            let (items, reason) = self.descend(begin_span.start, |p| p.text_list(true))?;
+            let line_span = list_span(&items, line_fallback);
+            lines.push(Node::new(NodeKind::List(items), line_span));
+            match reason {
+                Reason::CellBreak(_) => {}
+                Reason::EnvEnd {
+                    name: end_name,
+                    span,
+                } => {
+                    if end_name != name {
+                        return Err(MathError::Malformed {
+                            what: format!("\\begin{{{name}}} closed by \\end{{{end_name}}}"),
+                            at: span.start,
+                        });
+                    }
+                    break span;
+                }
+                Reason::EndOfInput => {
+                    return Err(MathError::Malformed {
+                        what: format!("unclosed \\begin{{{name}}}"),
+                        at: self.src.len(),
+                    });
+                }
+                other => {
+                    return Err(MathError::Malformed {
+                        what: format!("\\begin{{{name}}} interrupted before its \\end"),
+                        at: other.span().start,
+                    });
+                }
+            }
+        };
+        // LaTeX ignores the empty line a trailing \\ would create.
+        if let Some(last) = lines.last() {
+            if matches!(&last.kind, NodeKind::List(items) if items.is_empty()) {
+                lines.pop();
+            }
+        }
+        let full_end = self
+            .toks
+            .get(self.pos.saturating_sub(1))
+            .map_or(end_span, |t| t.span);
+        Ok(Node::new(
+            NodeKind::AlignBlock { align, lines },
+            begin_span.union(name_span).union(end_span).union(full_end),
+        ))
+    }
+
+    /// `\substack{line1 \\ line2 …}` — amsmath's multi-line subscript:
+    /// the braced argument splits into rows on top-level `\\`, producing
+    /// the same single-column centered grid the `substack` environment
+    /// parses to (both forms share the node and the layout). A single
+    /// unbraced token is a one-line stack, per TeX's argument rule; a
+    /// `&` is a precise error (substack stacks one column). Fragment
+    /// tolerance mirrors a group's own: end of input inside (or before)
+    /// the argument closes the stack with what it has, because the
+    /// closer can live in a later piece of the balanced whole.
+    fn substack(&mut self, span: Span) -> Result<Node, MathError> {
+        self.skip_spaces();
+        let mut rows: Vec<Vec<Node>> = Vec::new();
+        let mut arg_span = Span::new(span.end, span.end);
+        match self.peek().map(|t| t.kind) {
+            Some(TokKind::BeginGroup) => {
+                let open = self.peek().map_or(span, |t| t.span);
+                self.pos += 1;
+                let mut row: Vec<Node> = Vec::new();
+                let close = loop {
+                    let cell_fallback = self.here();
+                    let (items, reason) = self.descend(open.start, |p| {
+                        p.math_list(Stops {
+                            env: true,
+                            ..Stops::default()
+                        })
+                    })?;
+                    let cell_span = list_span(&items, cell_fallback);
+                    row.push(Node::new(NodeKind::List(items), cell_span));
+                    match reason {
+                        Reason::CellBreak(_) => rows.push(std::mem::take(&mut row)),
+                        Reason::CellTab(tab) => {
+                            return Err(MathError::Malformed {
+                                what: "'&' in \\substack (it stacks a single centered column)"
+                                    .to_owned(),
+                                at: tab.start,
+                            });
+                        }
+                        Reason::EndGroup(close) => {
+                            rows.push(std::mem::take(&mut row));
+                            break close;
+                        }
+                        // The group's closer lives in a later piece:
+                        // fragment-close with what the stack has.
+                        Reason::EndOfInput => {
+                            rows.push(std::mem::take(&mut row));
+                            break Span::new(self.src.len(), self.src.len());
+                        }
+                        other => return Err(unexpected_close(&other, '{', open)),
+                    }
+                };
+                arg_span = open.union(close);
+                // LaTeX ignores the empty row a trailing \\ would create.
+                if let Some(last) = rows.last() {
+                    if last.len() == 1
+                        && matches!(&last[0].kind, NodeKind::List(items) if items.is_empty())
+                    {
+                        rows.pop();
+                    }
+                }
+            }
+            // End of input: the argument lives in a later piece (fragment
+            // semantics, as `argument` rules) — an empty stack stands in.
+            None => {}
+            // An unbraced single-token argument: a one-line stack.
+            Some(_) => {
+                let arg = self.argument("argument of \\substack")?;
+                let at = arg.span;
+                arg_span = at;
+                rows.push(vec![Node::new(NodeKind::List(vec![arg]), at)]);
+            }
+        }
+        Ok(Node::new(
+            NodeKind::Environment {
+                name: "substack".to_owned(),
+                spec: None,
+                rows,
+            },
+            span.union(arg_span),
         ))
     }
 
@@ -1065,9 +1270,12 @@ impl<'s> Parser<'s> {
 
     // ── Text mode (the TexText contract) ────────────────────────────────
 
-    /// Parse a text-mode list until a stop token.
+    /// Parse a text-mode list until a stop token. With `env` set the list
+    /// is one line of a line-alignment environment: a top-level `\\` ends
+    /// the line ([`Reason::CellBreak`]) and `\end{name}` ends the body
+    /// ([`Reason::EnvEnd`]).
     #[allow(clippy::too_many_lines)]
-    fn text_list(&mut self) -> Result<(Vec<Node>, Reason), MathError> {
+    fn text_list(&mut self, env: bool) -> Result<(Vec<Node>, Reason), MathError> {
         let mut items: Vec<Node> = Vec::new();
         let mut run = String::new();
         let mut run_spans: Vec<Span> = Vec::new();
@@ -1151,7 +1359,7 @@ impl<'s> Parser<'s> {
                 TokKind::BeginGroup => {
                     self.pos += 1;
                     flush_run(&mut items, &mut run, &mut run_spans);
-                    let (body, reason) = self.descend(tok.span.start, |p| p.text_list())?;
+                    let (body, reason) = self.descend(tok.span.start, |p| p.text_list(false))?;
                     match reason {
                         Reason::EndGroup(close) => {
                             items.push(Node::new(NodeKind::List(body), tok.span.union(close)));
@@ -1209,7 +1417,12 @@ impl<'s> Parser<'s> {
                     }
                     flush_run(&mut items, &mut run, &mut run_spans);
                     match c {
-                        '\\' => items.push(Node::new(NodeKind::Linebreak, tok.span)),
+                        '\\' => {
+                            if env {
+                                break Reason::CellBreak(tok.span);
+                            }
+                            items.push(Node::new(NodeKind::Linebreak, tok.span));
+                        }
                         ',' => items.push(Node::new(NodeKind::Space(SpaceKind::Thin), tok.span)),
                         ':' => items.push(Node::new(NodeKind::Space(SpaceKind::Med), tok.span)),
                         ';' => {
@@ -1232,6 +1445,14 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::ControlWord(name) => {
                     flush_run(&mut items, &mut run, &mut run_spans);
+                    if env && name == "end" {
+                        self.pos += 1;
+                        let (env_name, _) = self.raw_group("environment name after \\end")?;
+                        break Reason::EnvEnd {
+                            name: env_name,
+                            span: tok.span,
+                        };
+                    }
                     let node = self.text_control_word(name, tok.span)?;
                     items.push(node);
                 }
@@ -1279,7 +1500,13 @@ impl<'s> Parser<'s> {
                 Ok(Node::new(NodeKind::List(body), span.union(body_span)))
             }
             Cmd::Spacing(kind) => Ok(Node::new(NodeKind::Space(kind), span)),
-            Cmd::Begin => self.environment(span),
+            // Size declarations are text-mode commands in LaTeX; they mark
+            // the rest of the enclosing group, exactly as in math mode.
+            Cmd::SizeChange(factor) => Ok(Node::new(NodeKind::SizeChange(factor), span)),
+            // Line-alignment declarations (`\centering`): the marker the
+            // layout engine reads when stacking `\\`-split lines.
+            Cmd::AlignDecl(align) => Ok(Node::new(NodeKind::AlignChange(align), span)),
+            Cmd::Begin => self.environment(span, true),
             Cmd::End => {
                 let (env_name, _) = self.raw_group("environment name after \\end")?;
                 Err(MathError::Malformed {

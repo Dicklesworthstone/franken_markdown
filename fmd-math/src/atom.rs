@@ -236,6 +236,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::TextRun { .. }
         | NodeKind::TextStyled { .. }
         | NodeKind::MathIsland { .. }
+        | NodeKind::AlignBlock { .. }
         | NodeKind::Environment { .. } => Some(AtomClass::Ord),
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => intrinsic_class(body),
         NodeKind::Stack { kind, base, .. } => match kind {
@@ -248,6 +249,8 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
             crate::node::FragmentKind::StrayRight(_) => Some(AtomClass::Close),
         },
         NodeKind::StyleChange(_)
+        | NodeKind::SizeChange(_)
+        | NodeKind::AlignChange(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Tie

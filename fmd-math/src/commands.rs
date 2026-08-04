@@ -11,7 +11,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, DelimSize, FracSpec, MathFont, PhantomKind, SpaceKind, StackKind, TextStyle,
+    AccentKind, DelimSize, FracSpec, LineAlign, MathFont, PhantomKind, SpaceKind, StackKind,
+    TextStyle,
 };
 use crate::style::Style;
 
@@ -86,12 +87,21 @@ pub(crate) enum Cmd {
     Alphabet(MathFont),
     /// A style primitive (`\displaystyle` …).
     StyleSwitch(Style),
+    /// A line-alignment declaration (`\centering`), text mode only.
+    AlignDecl(LineAlign),
+    /// A size declaration (`\small` …): sets the current size factor for
+    /// the rest of the enclosing group.
+    SizeChange(f64),
     /// A named spacing command (`\quad` …).
     Spacing(SpaceKind),
     /// A phantom command.
     Phantom(PhantomKind),
     /// `\stackrel`/`\overset`/`\underset`.
     Stack(StackKind),
+    /// `\substack{…}` — amsmath's multi-line subscript: one braced
+    /// argument of `\\`-separated lines, stacked centered in script
+    /// style (the same grid the `substack` environment produces).
+    Substack,
     /// `\color{…}`.
     Color,
     /// A `\big`-family fixed-size delimiter command; `class` is imposed by
@@ -112,6 +122,9 @@ pub(crate) enum Cmd {
     Begin,
     /// `\end`.
     End,
+    /// `\ding{NN}` — the pifont escape (fm-j5t.4); the implemented codes
+    /// live in [`ding_char`].
+    Ding,
     /// Known tier-2 vocabulary: fail precisely.
     UnsupportedT2,
 }
@@ -207,6 +220,16 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "angle" => sym('∠', Ord),
         "triangle" => sym('△', Ord),
         "checkmark" => sym('✓', Ord),
+        // ── Astronomy and misc symbols (fm-j5t.4) ───────────────────────
+        // © is an authored CM glyph; ♀ ♂ ♁ are unmapped in every bundled
+        // face and draw through the drawn-symbol fallback in layout (the
+        // Checkmark/Exmark drawn-mark precedent) — never a silent
+        // substitute glyph.
+        "copyright" => sym('©', Ord),
+        "female" => sym('\u{2640}', Ord),
+        "male" | "mars" => sym('\u{2642}', Ord),
+        "earth" => sym('\u{2641}', Ord),
+        "ding" => Cmd::Ding,
         "top" => sym('⊤', Ord),
         "bot" => sym('⊥', Ord),
         "flat" => sym('♭', Ord),
@@ -613,6 +636,15 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "textstyle" => Cmd::StyleSwitch(Style::Text),
         "scriptstyle" => Cmd::StyleSwitch(Style::Script),
         "scriptscriptstyle" => Cmd::StyleSwitch(Style::ScriptScript),
+        // Size declarations: group-scoped factors of the current size,
+        // LaTeX's 10 pt ladder (`size10.clo`: tiny 5, footnotesize 8,
+        // small 9, large 12, Large 14.4, huge 20.74 pt).
+        "tiny" => Cmd::SizeChange(0.5),
+        "footnotesize" => Cmd::SizeChange(0.8),
+        "small" => Cmd::SizeChange(0.9),
+        "large" => Cmd::SizeChange(1.2),
+        "Large" => Cmd::SizeChange(1.44),
+        "huge" => Cmd::SizeChange(2.074),
         "quad" => Cmd::Spacing(SpaceKind::Quad),
         "qquad" => Cmd::Spacing(SpaceKind::Qquad),
         "phantom" => Cmd::Phantom(PhantomKind::Full),
@@ -621,6 +653,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "stackrel" => Cmd::Stack(StackKind::Stackrel),
         "overset" => Cmd::Stack(StackKind::Overset),
         "underset" => Cmd::Stack(StackKind::Underset),
+        "substack" => Cmd::Substack,
         "color" => Cmd::Color,
         // ── Sized delimiters ────────────────────────────────────────────
         "big" => Cmd::SizedDelim {
@@ -694,13 +727,27 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "nolimits" => Cmd::NoLimits,
         "begin" => Cmd::Begin,
         "end" => Cmd::End,
+        // Line-alignment declarations (text mode; the declaration form of
+        // the `center` environment).
+        "centering" => Cmd::AlignDecl(LineAlign::Center),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
-        "centering" | "female" | "male" | "earth" | "mars" | "small" | "Large" | "large"
-        | "huge" | "tiny" | "footnotesize" | "doublespacing" | "substack" | "i" | "j" | "ding"
-        | "nmid" | "dx" | "copyright" | "oiint" | "xmapsto" | "xrightarrow"
-        | "circlearrowright" | "circlearrowleft" | "dddot" | "ddddot" => Cmd::UnsupportedT2,
+        "centering" | "doublespacing" | "i" | "j" | "nmid" | "dx" | "oiint" | "xmapsto"
+        | "xrightarrow" | "circlearrowright" | "circlearrowleft" | "dddot" | "ddddot" => {
+            Cmd::UnsupportedT2
+        }
         _ => return None,
     })
+}
+
+/// The implemented slice of the pifont `\ding` table (fm-j5t.4). The
+/// G0-4 corpus uses only code 51 — the checkmark, whose glyph resolves
+/// through the symbol faces as U+2713 (the `\checkmark` codepoint, which
+/// those faces carry). Any other code fails precisely, by name.
+pub(crate) fn ding_char(code: u32) -> Option<char> {
+    match code {
+        51 => Some('✓'),
+        _ => None,
+    }
 }
 
 /// Look up an environment name.
@@ -708,14 +755,21 @@ pub(crate) fn lookup_env(name: &str) -> Option<EnvDef> {
     match name {
         "array" => Some(EnvDef { has_spec: true }),
         "align" | "align*" | "aligned" | "cases" | "matrix" | "pmatrix" | "bmatrix" | "Bmatrix"
-        | "vmatrix" | "Vmatrix" | "smallmatrix" => Some(EnvDef { has_spec: false }),
+        | "vmatrix" | "Vmatrix" | "smallmatrix" | "substack" => Some(EnvDef { has_spec: false }),
         _ => None,
     }
 }
 
-/// True when the environment is known tier-2 vocabulary.
-pub(crate) fn env_is_t2(name: &str) -> bool {
-    matches!(name, "flushleft" | "flushright" | "center")
+/// The line-alignment environments (`flushleft`, `center`, `flushright`):
+/// text-mode blocks aligning their `\\`-split lines within the widest
+/// line's width.
+pub(crate) fn line_align_env(name: &str) -> Option<LineAlign> {
+    match name {
+        "flushleft" => Some(LineAlign::Left),
+        "center" => Some(LineAlign::Center),
+        "flushright" => Some(LineAlign::Right),
+        _ => None,
+    }
 }
 
 /// True when the control *symbol* is known tier-2 vocabulary (the text
@@ -749,11 +803,8 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
         return ConstructStatus::Supported;
     }
     if let Some(env) = construct.strip_prefix("env:") {
-        if lookup_env(env).is_some() {
+        if lookup_env(env).is_some() || line_align_env(env).is_some() {
             return ConstructStatus::Supported;
-        }
-        if env_is_t2(env) {
-            return ConstructStatus::UnsupportedT2;
         }
         return ConstructStatus::Unknown;
     }
@@ -825,10 +876,12 @@ mod tests {
             r"\textbf",
             r"\emph",
             r"\big",
+            r"\substack",
             r"\,",
             r"\\",
             r"\{",
             "env:array",
+            "env:substack",
             "env:align*",
             "env:cases",
             "env:aligned",
@@ -849,11 +902,6 @@ mod tests {
     #[test]
     fn t2_vocabulary_is_tiered() {
         for c in [
-            r"\substack",
-            r"\centering",
-            r"\small",
-            r"\Large",
-            r"\ding",
             r"\nmid",
             r"\dx",
             r"\oiint",
@@ -861,12 +909,65 @@ mod tests {
             r"\i",
             r"\j",
             r"\'",
-            "env:flushleft",
         ] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
                 "expected {c} tier-2"
+            );
+        }
+    }
+
+    #[test]
+    fn astronomy_and_misc_symbols_are_supported() {
+        // fm-j5t.4: the astronomy/biology symbols, \copyright, and the
+        // pifont \ding escape left the tier-2 vocabulary.
+        for c in [
+            r"\female",
+            r"\male",
+            r"\mars",
+            r"\earth",
+            r"\copyright",
+            r"\ding",
+        ] {
+            assert_eq!(
+                construct_status(c),
+                ConstructStatus::Supported,
+                "expected {c} supported"
+            );
+        }
+    }
+
+    #[test]
+    fn line_alignment_constructs_are_supported() {
+        for c in [
+            r"\centering",
+            "env:flushleft",
+            "env:center",
+            "env:flushright",
+        ] {
+            assert_eq!(
+                construct_status(c),
+                ConstructStatus::Supported,
+                "expected {c} supported"
+            );
+        }
+    }
+
+    #[test]
+    fn size_declarations_are_supported() {
+        for c in [
+            r"\tiny",
+            r"\footnotesize",
+            r"\small",
+            r"\large",
+            r"\Large",
+            r"\huge",
+        ] {
+            assert_eq!(
+                construct_status(c),
+                ConstructStatus::Supported,
+                "expected {c} supported"
             );
         }
     }

@@ -386,6 +386,15 @@ pub enum NodeKind {
     /// A style-switch marker (`\displaystyle` …) applying to the remainder
     /// of the enclosing list.
     StyleChange(Style),
+    /// A line-alignment declaration (`\centering`): applies to the
+    /// remainder of the enclosing list, exiting at group end, exactly like
+    /// LaTeX's paragraph declarations. Produces no glyphs of its own.
+    AlignChange(LineAlign),
+    /// A size declaration (`\small`, `\Large`, …): sets the current size
+    /// factor for the remainder of the enclosing list, exiting at group
+    /// end, and composing multiplicatively with the script styles (the
+    /// LaTeX 10 pt ladder of `size10.clo`).
+    SizeChange(f64),
     /// A `\color{…}` marker applying to the remainder of the enclosing
     /// group. The argument is kept verbatim.
     ColorChange(String),
@@ -425,6 +434,15 @@ pub enum NodeKind {
     /// a node at the top level because the Tex surface wraps whole strings
     /// in an `align*`-class environment.
     AlignTab,
+    /// A line-alignment environment (`flushleft`, `center`, `flushright`):
+    /// a text-mode block whose `\\`-split lines are aligned within the
+    /// widest line's width. Lines are [`NodeKind::List`] nodes.
+    AlignBlock {
+        /// The line alignment.
+        align: LineAlign,
+        /// The lines, in order.
+        lines: Vec<Node>,
+    },
     /// A `\begin{name} … \end{name}` environment. Cells are
     /// [`NodeKind::List`] nodes.
     Environment {
@@ -441,6 +459,32 @@ pub enum NodeKind {
     /// grammar accepts these at the top level and marks them explicitly —
     /// never silently.
     Fragment(FragmentKind),
+}
+
+/// How the lines of a multi-line block are aligned horizontally within
+/// the block's width (the widest line's width).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LineAlign {
+    /// `flushleft` (and the default): every line flush left.
+    #[default]
+    Left,
+    /// `center` / `\centering`: every line centered.
+    Center,
+    /// `flushright`: every line flush right.
+    Right,
+}
+
+impl LineAlign {
+    /// The fraction of a line's slack placed to its left: `0` flush left,
+    /// `1/2` centered, `1` flush right.
+    #[must_use]
+    pub fn slack_factor(self) -> f64 {
+        match self {
+            Self::Left => 0.0,
+            Self::Center => 0.5,
+            Self::Right => 1.0,
+        }
+    }
 }
 
 /// The structural fragments the top level tolerates (per-argument

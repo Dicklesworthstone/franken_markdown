@@ -164,7 +164,8 @@ impl StyleCtx {
 ///   style, uncramped;
 /// - environment cells enter at text style (`array`/`matrix`-class and
 ///   `cases` set `\textstyle`), except the `align`-class environments,
-///   whose cells keep the ambient context;
+///   whose cells keep the ambient context, and `substack`, whose lines
+///   are always set in script style (amsmath's `\subarray`);
 /// - everything else (groups, phantoms, math-font arguments, `\left…\right`
 ///   bodies, `\text` islands) inherits the current context.
 pub fn style_walk<'a, F>(node: &'a Node, ctx: StyleCtx, visit: &mut F)
@@ -237,8 +238,18 @@ where
             style_walk(annotation, ann_ctx, visit);
             style_walk(base, ctx, visit);
         }
+        NodeKind::AlignBlock { lines, .. } => {
+            // Text-mode lines in the ambient style (like a `\text` body).
+            for line in lines {
+                style_walk(line, ctx, visit);
+            }
+        }
         NodeKind::Environment { name, rows, .. } => {
-            let cell_ctx = if name.starts_with("align") {
+            let cell_ctx = if name == "substack" {
+                // amsmath's subarray: lines always in \scriptstyle,
+                // whatever the ambient style.
+                StyleCtx::new(Style::Script)
+            } else if name.starts_with("align") {
                 ctx
             } else {
                 StyleCtx::new(Style::Text)
@@ -255,6 +266,8 @@ where
         | NodeKind::SizedDelim { .. }
         | NodeKind::TextRun { .. }
         | NodeKind::StyleChange(_)
+        | NodeKind::SizeChange(_)
+        | NodeKind::AlignChange(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Tie

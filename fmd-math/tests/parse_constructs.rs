@@ -695,7 +695,6 @@ fn text_mode_malformations_are_precise() {
 #[test]
 fn t2_commands_fail_named_and_tiered() {
     for (s, construct) in [
-        (r"\substack{a \\ b}", r"\substack"),
         (r"a \nmid b", r"\nmid"),
         (r"\xrightarrow{f}", r"\xrightarrow"),
         (r"\dddot x", r"\dddot"),
@@ -706,11 +705,7 @@ fn t2_commands_fail_named_and_tiered() {
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
     }
     // Text-mode T2: sizes and the text accents.
-    for (s, construct) in [
-        (r"\Large text", r"\Large"),
-        (r"na\'ive", r"\'"),
-        (r"\male", r"\male"),
-    ] {
+    for (s, construct) in [(r"\Large text", r"\Large"), (r"na\'ive", r"\'")] {
         let err = parse_text(s).unwrap_err();
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
@@ -738,4 +733,139 @@ fn deep_nesting_errors_cleanly() {
         matches!(&err, MathError::Malformed { what, .. } if what.contains("depth limit")),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// fm-j5t.4: astronomy and misc symbols (\female \male \earth \mars
+// \copyright \ding) — real corpus strings, node shapes, spans, and the
+// precise refusals for the unimplemented pifont codes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn astronomy_symbols_parse_as_ord_symbols() {
+    // Corpus: "P(\female)" (eop/independence.py), "\male"
+    // (eop/independence.py), "\earth \mars" (cosmic_distance/planets.py).
+    let items = parse_items(r"P(\female)");
+    let NodeKind::Symbol { ch, class } = &items[2].kind else {
+        panic!("female symbol, got {:?}", items[2].kind);
+    };
+    assert_eq!(*ch, '\u{2640}');
+    assert_eq!(*class, fmd_math::atom::AtomClass::Ord);
+    assert_eq!(items[2].span, fmd_math::Span::new(2, 9));
+
+    let items = parse_items(r"\male");
+    assert!(matches!(
+        &items[0].kind,
+        NodeKind::Symbol { ch: '\u{2642}', .. }
+    ));
+    assert_eq!(items[0].span, fmd_math::Span::new(0, 5));
+
+    let items = parse_items(r"\earth \mars");
+    assert!(matches!(
+        &items[0].kind,
+        NodeKind::Symbol { ch: '\u{2641}', .. }
+    ));
+    assert!(matches!(
+        &items[1].kind,
+        NodeKind::Symbol { ch: '\u{2642}', .. }
+    ));
+}
+
+#[test]
+fn astronomy_symbols_in_text_become_implicit_islands() {
+    // Corpus: "$\female$", "$\male$" (math islands in TexText mainlands);
+    // the bare "\female" form is the implicit-island contract.
+    let root = parse_text(r"$\female$").unwrap();
+    let NodeKind::List(items) = &root.kind else {
+        panic!("list");
+    };
+    let NodeKind::MathIsland { body, .. } = &items[0].kind else {
+        panic!("island, got {:?}", items[0].kind);
+    };
+    assert!(matches!(
+        &body[0].kind,
+        NodeKind::Symbol { ch: '\u{2640}', .. }
+    ));
+
+    let root = parse_text(r"\male").unwrap();
+    let NodeKind::List(items) = &root.kind else {
+        panic!("list");
+    };
+    assert!(matches!(&items[0].kind, NodeKind::MathIsland { .. }));
+}
+
+#[test]
+fn copyright_parses_in_both_modes() {
+    // © is an authored CM glyph (U+00A9), an Ord symbol.
+    let items = parse_items(r"\copyright");
+    assert!(matches!(
+        &items[0].kind,
+        NodeKind::Symbol { ch: '\u{00A9}', .. }
+    ));
+
+    // Corpus: "\copyright {} Copyright 2019\\" (moduli.py) — text mode,
+    // implicit island.
+    let root = parse_text(r"\copyright {} Copyright 2019\\").unwrap();
+    let NodeKind::List(items) = &root.kind else {
+        panic!("list");
+    };
+    let NodeKind::MathIsland { body, .. } = &items[0].kind else {
+        panic!("island, got {:?}", items[0].kind);
+    };
+    assert!(matches!(
+        &body[0].kind,
+        NodeKind::Symbol { ch: '\u{00A9}', .. }
+    ));
+}
+
+#[test]
+fn ding_parses_the_corpus_code() {
+    // Corpus: "Convex \ding{51}" (shadows.py) and "\ding{51} Valid if
+    // $\omega = \sqrt{k / m}$" (laplace/shm.py) — code 51 only.
+    let items = parse_items(r"\ding{51}");
+    let NodeKind::Symbol { ch, class } = &items[0].kind else {
+        panic!("checkmark symbol, got {:?}", items[0].kind);
+    };
+    assert_eq!(*ch, '\u{2713}');
+    assert_eq!(*class, fmd_math::atom::AtomClass::Ord);
+    // The span covers the whole command, braces included.
+    assert_eq!(items[0].span, fmd_math::Span::new(0, 9));
+
+    let root = parse_text(r"Convex \ding{51}").unwrap();
+    let NodeKind::List(items) = &root.kind else {
+        panic!("list");
+    };
+    let NodeKind::MathIsland { body, .. } = &items[1].kind else {
+        panic!("island, got {:?}", items[1].kind);
+    };
+    assert!(matches!(
+        &body[0].kind,
+        NodeKind::Symbol { ch: '\u{2713}', .. }
+    ));
+
+    let root = parse_text(r"\ding{51} Valid if $\omega = \sqrt{k / m}$").unwrap();
+    assert!(matches!(&root.kind, NodeKind::List(_)));
+}
+
+#[test]
+fn ding_refusals_are_precise() {
+    // An unimplemented pifont code: named, in full, span at the command.
+    let err = parse(r"\ding{55}").unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\ding{55}"));
+    assert_eq!(err.span(), fmd_math::Span::new(0, 9));
+
+    // A non-numeric argument is malformed, not unsupported.
+    let err = parse(r"\ding{ab}").unwrap_err();
+    assert!(
+        matches!(&err, MathError::Malformed { what, .. } if what.contains("pifont number")),
+        "{err}"
+    );
+
+    // Missing braces / unclosed group stay precise.
+    let err = parse(r"\ding 51").unwrap_err();
+    assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
+    let err = parse(r"\ding{51").unwrap_err();
+    assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
+    let err = parse(r"\ding").unwrap_err();
+    assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
 }

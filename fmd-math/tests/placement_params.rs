@@ -350,6 +350,22 @@ fn formerly_pending_constructs_now_lay_out() {
     let g = below.glyphs.iter().find(|gl| gl.ch == 'g').unwrap();
     assert!(g.y < 0.0, "below-label rides under the band");
 
+    // \doublespacing (fm-j5t): the declaration stretches subsequent
+    // stacked baselines by setspace's 1.667.
+    let single = e.typeset_text("a \\\\ b").unwrap();
+    let double = e.typeset_text("\\doublespacing a \\\\ b").unwrap();
+    let gap = |l: &fmd_math::Layout| {
+        let a = l.glyphs.iter().find(|g| g.ch == 'a').unwrap().y;
+        let b = l.glyphs.iter().find(|g| g.ch == 'b').unwrap().y;
+        a - b
+    };
+    assert!(
+        (gap(&double) / gap(&single) - 1.667).abs() < 1e-6,
+        "stretched skip: {} vs {}",
+        gap(&double),
+        gap(&single)
+    );
+
     // A construct still outside the tier keeps the named-error contract:
     // precise, tier-tagged, never silent.
     let err = e.typeset(r"\dx", Style::Display).unwrap_err();

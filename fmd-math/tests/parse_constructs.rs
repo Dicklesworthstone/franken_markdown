@@ -740,7 +740,10 @@ fn t2_commands_fail_named_and_tiered() {
     );
     // Inside mathematics the declaration names its text-mode home.
     let err = parse(r"\doublespacing x").unwrap_err();
-    assert!(err.to_string().contains("line-spacing declaration"), "{err}");
+    assert!(
+        err.to_string().contains("line-spacing declaration"),
+        "{err}"
+    );
 }
 
 #[test]

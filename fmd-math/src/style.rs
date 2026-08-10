@@ -275,7 +275,8 @@ where
         | NodeKind::TextRun { .. }
         | NodeKind::StyleChange(_)
         | NodeKind::SizeChange(_)
-        | NodeKind::AlignChange(_) | NodeKind::LineSpacing(_)
+        | NodeKind::AlignChange(_)
+        | NodeKind::LineSpacing(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Tie

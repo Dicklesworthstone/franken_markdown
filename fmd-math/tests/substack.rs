@@ -186,10 +186,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
     let styles = collect(r"\substack{a \\ b}");
     assert_eq!(
         styles,
-        vec![
-            ('a', Style::Script, false),
-            ('b', Style::Script, false)
-        ]
+        vec![('a', Style::Script, false), ('b', Style::Script, false)]
     );
     // In a superscript (scriptstyle, uncramped ambient): the lines stay
     // script — forced, not stepped to scriptscript.
@@ -200,10 +197,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
         .collect();
     assert_eq!(
         lines,
-        vec![
-            &('c', Style::Script, false),
-            &('d', Style::Script, false)
-        ]
+        vec![&('c', Style::Script, false), &('d', Style::Script, false)]
     );
     // In a subscript (cramped ambient): the lines are script, uncramped —
     // the stack opens a fresh, uncramped line context.
@@ -214,10 +208,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
         .collect();
     assert_eq!(
         lines,
-        vec![
-            &('e', Style::Script, false),
-            &('f', Style::Script, false)
-        ]
+        vec![&('e', Style::Script, false), &('f', Style::Script, false)]
     );
 }
 
@@ -292,7 +283,10 @@ mod layout {
             .iter()
             .filter(|g| g.span.start >= stack_start && g.span.end <= src.find("} p_r").unwrap())
             .collect();
-        assert!(stack_glyphs.len() >= 6, "r, s, r, +, s, =, k: {stack_glyphs:?}");
+        assert!(
+            stack_glyphs.len() >= 6,
+            "r, s, r, +, s, =, k: {stack_glyphs:?}"
+        );
         assert!(
             stack_glyphs.iter().all(|g| (g.size - 0.7).abs() < 1e-9),
             "forced script size in limits: {:?}",
@@ -303,7 +297,8 @@ mod layout {
     #[test]
     fn corpus_shape_2_in_base_position_between_delimiters() {
         let e = engine();
-        let src = r"\left(\substack{\text{things asymptotically} \\ \text{smaller than $M^2$}}\right)";
+        let src =
+            r"\left(\substack{\text{things asymptotically} \\ \text{smaller than $M^2$}}\right)";
         let l = e.typeset(src, Style::Display).unwrap();
         assert!(spans_cover(&l, src.len()));
         // The delimiters stretch over the two-line stack…

@@ -7,7 +7,10 @@ fn main() {
         ("CM_BOLD_ITALIC", fmd_font::bundled::CM_BOLD_ITALIC),
         ("CM_TYPEWRITER", fmd_font::bundled::CM_TYPEWRITER),
         ("PLEX_REGULAR", fmd_font::bundled::PLEX_REGULAR),
-        ("NOTO_SANS_MATH_SYMBOLS", fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS),
+        (
+            "NOTO_SANS_MATH_SYMBOLS",
+            fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS,
+        ),
     ];
     let chars = [
         ('\u{2640}', "FEMALE"),

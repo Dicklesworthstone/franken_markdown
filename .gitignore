@@ -81,3 +81,18 @@ tests/artifacts/visual/
 
 # Stray render output written to a file literally named "-" (a `--out -` accident)
 /-
+
+# === multi-repo ephemeral patterns 2026-08-10 ===
+# Claude Code local session state (nothing tracked in this repo)
+.claude/
+# Eidetic Engine / NTM / Wrangler local runtime
+.ee/
+.ntm/
+.wrangler/
+# br fsqlite-ns VFS sidecars + stale write-lock snapshots
+.beads/beads.db-fsqlite-ns-*
+.beads/.write.lock.stale-*
+# Skill-loop / repo-janitor scratch
+.skill-loop-progress.md
+.skill-loop-progress-*.md
+.repo_janitor_workspace/

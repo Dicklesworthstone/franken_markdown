@@ -253,7 +253,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         },
         NodeKind::StyleChange(_)
         | NodeKind::SizeChange(_)
-        | NodeKind::AlignChange(_)
+        | NodeKind::AlignChange(_) | NodeKind::LineSpacing(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Tie

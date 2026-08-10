@@ -494,6 +494,15 @@ impl<'s> Parser<'s> {
                     at: span.start,
                 });
             }
+            Cmd::LineSpacing(_) => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "\\{name} is a text-mode line-spacing declaration; \
+                         it cannot appear inside mathematics"
+                    ),
+                    at: span.start,
+                });
+            }
             Cmd::Spacing(kind) => items.push(Node::new(NodeKind::Space(kind), span)),
             other => {
                 let node = self.command_node(name, span, other)?;
@@ -788,6 +797,7 @@ impl<'s> Parser<'s> {
             | Cmd::StyleSwitch(_)
             | Cmd::SizeChange(_)
             | Cmd::AlignDecl(_)
+            | Cmd::LineSpacing(_)
             | Cmd::Spacing(_) => Err(MathError::Malformed {
                 what: format!("\\{name} cannot be used in argument position"),
                 at: span.start,
@@ -1623,6 +1633,9 @@ impl<'s> Parser<'s> {
             // Line-alignment declarations (`\centering`): the marker the
             // layout engine reads when stacking `\\`-split lines.
             Cmd::AlignDecl(align) => Ok(Node::new(NodeKind::AlignChange(align), span)),
+            // Line-spacing declarations (`\doublespacing`): the marker the
+            // multi-line stacker reads.
+            Cmd::LineSpacing(stretch) => Ok(Node::new(NodeKind::LineSpacing(stretch), span)),
             Cmd::Begin => self.environment(span, true),
             Cmd::End => {
                 let (env_name, _) = self.raw_group("environment name after \\end")?;

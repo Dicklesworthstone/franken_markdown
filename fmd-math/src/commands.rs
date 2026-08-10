@@ -89,6 +89,8 @@ pub(crate) enum Cmd {
     StyleSwitch(Style),
     /// A line-alignment declaration (`\centering`), text mode only.
     AlignDecl(LineAlign),
+    /// A line-spacing declaration (`\doublespacing`), text mode only.
+    LineSpacing(f64),
     /// A size declaration (`\small` …): sets the current size factor for
     /// the rest of the enclosing group.
     SizeChange(f64),
@@ -746,9 +748,11 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // Line-alignment declarations (text mode; the declaration form of
         // the `center` environment).
         "centering" => Cmd::AlignDecl(LineAlign::Center),
+        // setspace's declaration form; 1.667 is its 10 pt ladder value.
+        "doublespacing" => Cmd::LineSpacing(1.667),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
         // (`\centering` graduated to a real AlignDecl above.)
-        "doublespacing" | "dx" => Cmd::UnsupportedT2,
+        "dx" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }
@@ -954,7 +958,7 @@ mod tests {
     fn t2_vocabulary_is_tiered() {
         // Still pending. (The symbol shelf and the text accents graduated
         // in the fm-j5t tranches.)
-        for c in [r"\dx", r"\doublespacing"] {
+        for c in [r"\dx"] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
@@ -971,6 +975,7 @@ mod tests {
             r"\ddddot",
             r"\xrightarrow",
             r"\xmapsto",
+            r"\doublespacing",
             r"\'",
             "\\\"",
         ] {

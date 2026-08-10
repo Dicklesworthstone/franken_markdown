@@ -145,6 +145,7 @@ impl Engine {
                 alphabet: None,
                 text_mode: false,
                 decl_size: 1.0,
+                line_stretch: 1.0,
             },
         )?;
         let mut layout = Layout {
@@ -169,6 +170,8 @@ struct LayCtx {
     /// the style's own factor, exactly like LaTeX's current size setting
     /// the design size every fontdimen is read from.
     decl_size: f64,
+    /// \baselinestretch for subsequent stacked lines (\doublespacing).
+    line_stretch: f64,
 }
 
 impl LayCtx {
@@ -206,17 +209,17 @@ impl Engine {
     /// size changes) persist across the line split: `\\` does not end the
     /// enclosing group.
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
-        let mut lines: Vec<(MBox, f64)> = Vec::new();
+        let mut lines: Vec<(MBox, f64, f64)> = Vec::new();
         let mut ctx = ctx;
         for line in items.split(|n| matches!(n.kind, NodeKind::Linebreak)) {
             let (boxx, after) = self.line(line, ctx)?;
             ctx = after;
-            lines.push((boxx, ctx.size()));
+            lines.push((boxx, ctx.size(), ctx.line_stretch));
         }
         if lines.len() == 1 {
             return lines
                 .pop()
-                .map(|(boxx, _)| boxx)
+                .map(|(boxx, _, _)| boxx)
                 .ok_or(MathError::Malformed {
                     what: "internal: empty line vector".to_owned(),
                     at: 0,
@@ -231,11 +234,13 @@ impl Engine {
         let mut width = 0.0_f64;
         let mut depth = 0.0_f64;
         let mut height = 0.0_f64;
-        for (i, (line, size)) in lines.into_iter().enumerate() {
+        for (i, (line, size, stretch)) in lines.into_iter().enumerate() {
             if i == 0 {
                 height = line.height;
             } else {
-                let natural = self.consts.baseline_skip * size;
+                // setspace's \baselinestretch scales the natural skip; the
+                // \lineskip floor still applies unstretched.
+                let natural = self.consts.baseline_skip * size * stretch;
                 let min_gap = prev_depth + line.height + self.consts.line_skip * size;
                 baseline -= natural.max(min_gap);
             }
@@ -273,6 +278,9 @@ impl Engine {
                 }
                 NodeKind::SizeChange(factor) => {
                     ctx.decl_size = *factor;
+                }
+                NodeKind::LineSpacing(stretch) => {
+                    ctx.line_stretch = *stretch;
                 }
                 // `\centering` and friends produce no glyphs; a line's
                 // alignment is applied where lines are stacked
@@ -631,6 +639,7 @@ impl Engine {
             | NodeKind::SizeChange(_)
             | NodeKind::ColorChange(_)
             | NodeKind::AlignChange(_)
+            | NodeKind::LineSpacing(_)
             | NodeKind::Space(_)
             | NodeKind::Tie
             | NodeKind::Linebreak

@@ -729,11 +729,18 @@ fn t2_commands_fail_named_and_tiered() {
     let err = parse(r"\dx").unwrap_err();
     assert_eq!(err.unsupported_construct(), Some(r"\dx"));
     assert!(err.to_string().contains("tier T2"), "{err}");
-    // Text-mode T2 (the size ladder and the text accents graduated;
-    // `\doublespacing` remains pending).
-    let err = parse_text(r"\doublespacing text").unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\doublespacing"));
-    assert!(err.to_string().contains("tier T2"), "{err}");
+    // Every text-mode T2 construct has graduated.
+    let root = parse_text(r"\doublespacing a \\ b").unwrap();
+    let NodeKind::List(items) = &root.kind else {
+        panic!("text root is a list");
+    };
+    assert!(
+        matches!(items[0].kind, NodeKind::LineSpacing(f) if (f - 1.667).abs() < 1e-9),
+        "the declaration marks the list: {items:?}"
+    );
+    // Inside mathematics the declaration names its text-mode home.
+    let err = parse(r"\doublespacing x").unwrap_err();
+    assert!(err.to_string().contains("line-spacing declaration"), "{err}");
 }
 
 #[test]

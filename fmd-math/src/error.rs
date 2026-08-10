@@ -120,14 +120,16 @@ mod tests {
     fn tier2_message_format_is_stable() {
         // The example must stay a construct the T2 vocabulary still names
         // as pending (`\substack` and `\dddot` graduated).
+        // `\dx` is the last pending construct — a 3b1b preamble macro
+        // awaiting the corpus preamble evidence.
         let err = MathError::UnsupportedCommand {
-            name: r"\doublespacing".to_owned(),
-            span: Span::new(3, 17),
+            name: r"\dx".to_owned(),
+            span: Span::new(3, 6),
         };
         assert_eq!(
             err.to_string(),
-            "`\\doublespacing` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
-             (the tier-2 construct program) (bytes 3..17)"
+            "`\\dx` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
+             (the tier-2 construct program) (bytes 3..6)"
         );
     }
 

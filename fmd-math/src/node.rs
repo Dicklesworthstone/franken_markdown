@@ -403,6 +403,12 @@ pub enum NodeKind {
     /// A `\color{…}` marker applying to the remainder of the enclosing
     /// group. The argument is kept verbatim.
     ColorChange(String),
+    /// A line-spacing declaration (`\doublespacing`): multiplies the
+    /// \baselineskip of subsequent `\\`-stacked lines in the enclosing
+    /// multi-line list (setspace's \baselinestretch, 10 pt ladder value).
+    /// Produces no glyphs; inert inside grids, whose row rule is the
+    /// environment's own.
+    LineSpacing(f64),
     /// A math-alphabet command applied to one argument.
     MathFont {
         /// Which alphabet.

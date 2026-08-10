@@ -38,8 +38,8 @@ use crate::faces::{
 use crate::mbox::{BoxKind, FaceId, GlueSpec, Layout, MBox, MNode, Positioned};
 use crate::metrics::MathConstants;
 use crate::node::{
-    AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, MathFont, Node, NodeKind,
-    PhantomKind, Span, StackKind, TextStyle,
+    AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, LineAlign, MathFont, Node,
+    NodeKind, PhantomKind, Span, StackKind, TextStyle,
 };
 use crate::style::{Style, StyleCtx};
 
@@ -274,7 +274,12 @@ impl Engine {
                 NodeKind::SizeChange(factor) => {
                     ctx.decl_size = *factor;
                 }
+                // `\centering` and friends produce no glyphs; a line's
+                // alignment is applied where lines are stacked
+                // ([`NodeKind::AlignBlock`]), so mid-list the declaration
+                // is inert, exactly like a color declaration.
                 NodeKind::ColorChange(_)
+                | NodeKind::AlignChange(_)
                 | NodeKind::AlignTab
                 | NodeKind::Fragment(
                     FragmentKind::UnmatchedClose | FragmentKind::RedundantMathShift,
@@ -423,16 +428,30 @@ impl Engine {
                 }
             }
             NodeKind::MathIsland { body, display } => {
-                let style = if *display {
+                // amsmath's `\text` property: an inner math island resumes
+                // the SURROUNDING mathematics — script-size text (a
+                // `\substack` line, a script position) gets script-size
+                // islands. The nominal island style (`$…$` text,
+                // `$$…$$` display) applies only when the surroundings are
+                // not already smaller: an island never enlarges its text.
+                let nominal = if *display {
                     Style::Display
                 } else {
                     Style::Text
+                };
+                let style = if ctx.style.style.size_factor() < nominal.size_factor() {
+                    ctx.style.style
+                } else {
+                    nominal
                 };
                 Ok(Laid {
                     boxx: self.hlist(
                         body,
                         LayCtx {
-                            style: StyleCtx::new(style),
+                            style: StyleCtx {
+                                style,
+                                cramped: ctx.style.cramped,
+                            },
                             alphabet: None,
                             text_mode: false,
                             ..ctx
@@ -524,10 +543,40 @@ impl Engine {
             NodeKind::Environment { name, spec, rows } => {
                 self.environment(name, spec.as_deref(), rows, ctx, node.span)
             }
+            NodeKind::AlignBlock { align, lines } => {
+                // `flushleft` / `center` / `flushright`: a single-column
+                // grid whose one column takes the block's line alignment.
+                // The grid engine supplies the shared \baselineskip /
+                // \lineskip stacking and the \vcenter axis centering the
+                // matrix family uses; only the column rule differs.
+                let cell_align = match align {
+                    LineAlign::Left => CellAlign::Left,
+                    LineAlign::Center => CellAlign::Center,
+                    LineAlign::Right => CellAlign::Right,
+                };
+                // Each line is one single-cell row (cells are `List` nodes,
+                // the same shape the environments feed the grid).
+                let rows: Vec<Vec<Node>> = lines.iter().map(|line| vec![line.clone()]).collect();
+                let boxx = self.grid(
+                    &rows,
+                    ctx,
+                    &Grid {
+                        align: AlignRule::Columns(vec![cell_align]),
+                        ..Grid::centered(1.0)
+                    },
+                    node.span,
+                )?;
+                Ok(Laid {
+                    boxx,
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
             NodeKind::Fragment(_)
             | NodeKind::StyleChange(_)
             | NodeKind::SizeChange(_)
             | NodeKind::ColorChange(_)
+            | NodeKind::AlignChange(_)
             | NodeKind::Space(_)
             | NodeKind::Tie
             | NodeKind::Linebreak

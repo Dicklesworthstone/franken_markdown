@@ -118,14 +118,17 @@ mod tests {
 
     #[test]
     fn tier2_message_format_is_stable() {
+        // `\substack` was this test's example until it graduated to
+        // Supported; the example must stay a construct the T2 vocabulary
+        // still names as pending.
         let err = MathError::UnsupportedCommand {
-            name: r"\substack".to_owned(),
-            span: Span::new(3, 12),
+            name: r"\dddot".to_owned(),
+            span: Span::new(3, 9),
         };
         assert_eq!(
             err.to_string(),
-            "`\\substack` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
-             (the tier-2 construct program) (bytes 3..12)"
+            "`\\dddot` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
+             (the tier-2 construct program) (bytes 3..9)"
         );
     }
 

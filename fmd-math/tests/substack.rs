@@ -25,7 +25,7 @@ fn parse_items(src: &str) -> Vec<Node> {
 }
 
 /// The single environment node a bare `\substack` parse produces.
-fn as_substack(node: &Node, src: &str) -> &[Vec<Node>] {
+fn as_substack<'node>(node: &'node Node, src: &str) -> &'node [Vec<Node>] {
     match &node.kind {
         NodeKind::Environment { name, rows, spec } => {
             assert_eq!(name, "substack", "`{src}`");
@@ -47,13 +47,27 @@ fn the_registry_counts_both_forms_as_supported() {
 #[test]
 fn the_command_form_splits_lines_into_rows() {
     // Corpus shape 1: a two-line stack under a \sum.
-    let items = parse_items(r"(p * q)_k = \sum_{\substack{r, s \\ r + s = k}} p_r \cdot q_s");
-    let NodeKind::Scripts { sub: Some(sub), .. } = &items[4].kind else {
-        panic!("the \\sum should carry the subscript: {items:?}");
-    };
-    let NodeKind::List(sub_items) = &sub.kind else {
-        panic!("the subscript is a group: {sub:?}");
-    };
+    let src = r"(p * q)_k = \sum_{\substack{r, s \\ r + s = k}} p_r \cdot q_s";
+    let items = parse_items(src);
+    // TeX gives `(p * q)_k` its subscript on the `)` — parens are not a
+    // group — so locate the \sum's script node structurally: it is the one
+    // whose subscript list holds the substack environment.
+    let sub_items = items
+        .iter()
+        .find_map(|item| {
+            let NodeKind::Scripts { sub: Some(sub), .. } = &item.kind else {
+                return None;
+            };
+            let NodeKind::List(sub_items) = &sub.kind else {
+                return None;
+            };
+            matches!(
+                sub_items.first().map(|n| &n.kind),
+                Some(NodeKind::Environment { .. })
+            )
+            .then_some(sub_items)
+        })
+        .expect(r"the \sum carries the substack subscript");
     let rows = as_substack(&sub_items[0], "subscript");
     assert_eq!(rows.len(), 2, "two \\\\-separated lines, two rows");
     for row in rows {
@@ -66,7 +80,11 @@ fn the_command_form_splits_lines_into_rows() {
     // Every cell carries a span inside the source, and the grid node's
     // span covers the whole construct.
     let node = &sub_items[0];
-    assert_eq!(node.span, Span::new(22, 51));
+    let start = src.find(r"\substack").expect("literal present");
+    // The first `}` of the `}}` run closes the substack argument; the
+    // second closes the enclosing `_{…}` group.
+    let end = src.find("}}").expect("argument closer") + 1;
+    assert_eq!(node.span, Span::new(start, end));
     for row in rows {
         let cell = &row[0];
         assert!(cell.span.start >= node.span.start && cell.span.end <= node.span.end);
@@ -186,10 +204,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
     let styles = collect(r"\substack{a \\ b}");
     assert_eq!(
         styles,
-        vec![
-            ('a', Style::Script, false),
-            ('b', Style::Script, false)
-        ]
+        vec![('a', Style::Script, false), ('b', Style::Script, false)]
     );
     // In a superscript (scriptstyle, uncramped ambient): the lines stay
     // script — forced, not stepped to scriptscript.
@@ -200,10 +215,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
         .collect();
     assert_eq!(
         lines,
-        vec![
-            &('c', Style::Script, false),
-            &('d', Style::Script, false)
-        ]
+        vec![&('c', Style::Script, false), &('d', Style::Script, false)]
     );
     // In a subscript (cramped ambient): the lines are script, uncramped —
     // the stack opens a fresh, uncramped line context.
@@ -214,10 +226,7 @@ fn lines_are_script_style_wherever_the_stack_sits() {
         .collect();
     assert_eq!(
         lines,
-        vec![
-            &('e', Style::Script, false),
-            &('f', Style::Script, false)
-        ]
+        vec![&('e', Style::Script, false), &('f', Style::Script, false)]
     );
 }
 
@@ -271,7 +280,12 @@ mod layout {
         let b_center = b.x + 0.5 * glyph_advance(&e, b);
         assert!(
             (b_center - center).abs() < 1e-9,
-            "b center {b_center} vs grid center {center}"
+            "b center {b_center} vs grid center {center}; width {}; glyphs {:?}",
+            l.width,
+            l.glyphs
+                .iter()
+                .map(|g| (g.ch, g.x, g.y, g.size))
+                .collect::<Vec<_>>()
         );
         // The stack is \vcenter'd: it extends both above and below the
         // axis, hence below the baseline for two tall-ish lines.
@@ -292,7 +306,10 @@ mod layout {
             .iter()
             .filter(|g| g.span.start >= stack_start && g.span.end <= src.find("} p_r").unwrap())
             .collect();
-        assert!(stack_glyphs.len() >= 6, "r, s, r, +, s, =, k: {stack_glyphs:?}");
+        assert!(
+            stack_glyphs.len() >= 6,
+            "r, s, r, +, s, =, k: {stack_glyphs:?}"
+        );
         assert!(
             stack_glyphs.iter().all(|g| (g.size - 0.7).abs() < 1e-9),
             "forced script size in limits: {:?}",
@@ -303,7 +320,8 @@ mod layout {
     #[test]
     fn corpus_shape_2_in_base_position_between_delimiters() {
         let e = engine();
-        let src = r"\left(\substack{\text{things asymptotically} \\ \text{smaller than $M^2$}}\right)";
+        let src =
+            r"\left(\substack{\text{things asymptotically} \\ \text{smaller than $M^2$}}\right)";
         let l = e.typeset(src, Style::Display).unwrap();
         assert!(spans_cover(&l, src.len()));
         // The delimiters stretch over the two-line stack…
@@ -326,7 +344,8 @@ mod layout {
                 .iter()
                 .filter(|g| g.ch.is_ascii_alphabetic() || g.ch == 'M')
                 .all(|g| (g.size - 0.7).abs() < 1e-9 || (g.size - 0.35).abs() < 1e-9),
-            "script-size words (the $M^2$ island's sup goes smaller)"
+            "script-size words (the $M^2$ island's sup goes smaller): {:?}",
+            l.glyphs.iter().map(|g| (g.ch, g.size)).collect::<Vec<_>>()
         );
     }
 
@@ -410,11 +429,12 @@ mod layout {
 
     /// A glyph's advance width in ems (for centering arithmetic).
     fn glyph_advance(e: &Engine, g: &fmd_math::PlacedGlyph) -> f64 {
-        let _ = e;
-        let _ = g;
-        // The centering assertion only needs the b's own width; read it
-        // back out of the one-glyph layout so the check compares the
-        // engine's own measurements.
-        0.0
+        // The centering assertion only needs the glyph's own width; read it
+        // back out of a one-glyph layout so the check compares the engine's
+        // own measurements, scaled to the placed size.
+        let solo = e
+            .typeset(&g.ch.to_string(), Style::Display)
+            .expect("solo glyph lays out");
+        solo.width * g.size
     }
 }

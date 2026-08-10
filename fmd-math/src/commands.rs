@@ -731,10 +731,9 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // the `center` environment).
         "centering" => Cmd::AlignDecl(LineAlign::Center),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
-        "centering" | "doublespacing" | "i" | "j" | "nmid" | "dx" | "oiint" | "xmapsto"
-        | "xrightarrow" | "circlearrowright" | "circlearrowleft" | "dddot" | "ddddot" => {
-            Cmd::UnsupportedT2
-        }
+        // (`\centering` graduated to a real AlignDecl above.)
+        "doublespacing" | "i" | "j" | "nmid" | "dx" | "oiint" | "xmapsto" | "xrightarrow"
+        | "circlearrowright" | "circlearrowleft" | "dddot" | "ddddot" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }

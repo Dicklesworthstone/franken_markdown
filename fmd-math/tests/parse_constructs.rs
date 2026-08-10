@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use fmd_math::node::{AccentKind, DelimSize, Limits, PhantomKind, StackKind, TextStyle};
+use fmd_math::node::{AccentKind, DelimSize, Limits, LineAlign, PhantomKind, StackKind, TextStyle};
 use fmd_math::{MathError, Node, NodeKind, parse, parse_text};
 
 fn root_items(node: &Node) -> &[Node] {
@@ -436,10 +436,39 @@ fn unknown_environment_is_named() {
 }
 
 #[test]
-fn t2_environment_is_tier_tagged() {
-    let err = parse_text(r"\begin{flushleft} x \end{flushleft}").unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some("env:flushleft"));
-    assert!(err.to_string().contains("tier T2"));
+fn line_align_environments_parse_into_align_blocks() {
+    // Graduated from the T2 vocabulary: flushleft/center/flushright parse
+    // into `AlignBlock` with the declared alignment, one `List` per line.
+    for (src, align) in [
+        (
+            r"\begin{flushleft} a \\ bb \end{flushleft}",
+            LineAlign::Left,
+        ),
+        (r"\begin{center} a \\ bb \end{center}", LineAlign::Center),
+        (
+            r"\begin{flushright} a \\ bb \end{flushright}",
+            LineAlign::Right,
+        ),
+    ] {
+        let node = parse_text(src).expect(src);
+        let NodeKind::List(items) = &node.kind else {
+            panic!("`{src}`: text parse wraps in a list");
+        };
+        let [only] = items.as_slice() else {
+            panic!("`{src}`: one block, got {items:?}");
+        };
+        let NodeKind::AlignBlock { align: got, lines } = &only.kind else {
+            panic!("`{src}`: expected AlignBlock, got {:?}", only.kind);
+        };
+        assert_eq!(*got, align, "`{src}`");
+        assert_eq!(lines.len(), 2, "`{src}`: two lines");
+        assert!(
+            lines
+                .iter()
+                .all(|line| matches!(&line.kind, NodeKind::List(_))),
+            "`{src}`: every line is a List cell"
+        );
+    }
 }
 
 #[test]
@@ -704,8 +733,12 @@ fn t2_commands_fail_named_and_tiered() {
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
     }
-    // Text-mode T2: sizes and the text accents.
-    for (s, construct) in [(r"\Large text", r"\Large"), (r"na\'ive", r"\'")] {
+    // Text-mode T2 (the size ladder graduated; `\doublespacing` and the
+    // text accents remain pending).
+    for (s, construct) in [
+        (r"\doublespacing text", r"\doublespacing"),
+        (r"na\'ive", r"\'"),
+    ] {
         let err = parse_text(s).unwrap_err();
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");

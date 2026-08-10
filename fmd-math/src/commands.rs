@@ -945,16 +945,24 @@ mod tests {
 
     #[test]
     fn t2_vocabulary_is_tiered() {
-        // Still pending. (\nmid, \oiint, \i, \j, and the circle
-        // arrows graduated to real symbols in the fm-j5t symbol tranche.)
-        for c in [r"\dx", r"\xrightarrow", r"\dddot", r"\'"] {
+        // Still pending. (The symbol shelf and the text accents graduated
+        // in the fm-j5t tranches.)
+        for c in [r"\dx", r"\xrightarrow", r"\dddot", r"\doublespacing"] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
                 "expected {c} tier-2"
             );
         }
-        for c in [r"\nmid", r"\oiint", r"\i", r"\j", r"\circlearrowright"] {
+        for c in [
+            r"\nmid",
+            r"\oiint",
+            r"\i",
+            r"\j",
+            r"\circlearrowright",
+            r"\'",
+            "\\\"",
+        ] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::Supported,

@@ -732,16 +732,49 @@ fn t2_commands_fail_named_and_tiered() {
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
     }
-    // Text-mode T2 (the size ladder graduated; `\doublespacing` and the
-    // text accents remain pending).
-    for (s, construct) in [
-        (r"\doublespacing text", r"\doublespacing"),
-        (r"na\'ive", r"\'"),
-    ] {
+    // Text-mode T2 (the size ladder and the text accents graduated;
+    // `\doublespacing` remains pending).
+    for (s, construct) in [(r"\doublespacing text", r"\doublespacing")] {
         let err = parse_text(s).unwrap_err();
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
         assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
     }
+}
+
+#[test]
+fn text_accents_compose_to_precomposed_characters() {
+    // Both argument forms, joining the surrounding word as one run.
+    for (src, expected) in [
+        ("na\\\"ive", "naïve"),
+        ("na\\\"{i}ve", "naïve"),
+        (r"caf\'e", "café"),
+        (r"POINCAR\'E", "POINCARÉ"),
+    ] {
+        let root = parse_text(src).unwrap_or_else(|e| panic!("`{src}`: {e}"));
+        let NodeKind::List(items) = &root.kind else {
+            panic!("`{src}`: text root is a list");
+        };
+        let [only] = items.as_slice() else {
+            panic!("`{src}`: one uninterrupted run, got {items:?}");
+        };
+        let NodeKind::TextRun { text, char_spans } = &only.kind else {
+            panic!("`{src}`: expected a text run, got {:?}", only.kind);
+        };
+        assert_eq!(text, expected, "`{src}`");
+        // Provenance: one span per char, the composed char covering the
+        // accent and base bytes together.
+        assert_eq!(char_spans.len(), expected.chars().count(), "`{src}`");
+    }
+
+    // A base outside the composition table is a precise refusal.
+    let err = parse_text(r"\'x").unwrap_err();
+    assert!(err.to_string().contains("no composition over 'x'"), "{err}");
+    // Inside mathematics the accent names its text-mode home.
+    let err = parse(r"a \' b").unwrap_err();
+    assert!(err.to_string().contains("text-mode accent"), "{err}");
+    // A missing argument is located precisely.
+    let err = parse_text(r"tail\'").unwrap_err();
+    assert!(err.to_string().contains("missing argument"), "{err}");
 }
 
 #[test]

@@ -427,6 +427,16 @@ pub enum NodeKind {
         /// The base.
         base: Box<Node>,
     },
+    /// `\xrightarrow[below]{above}` / `\xmapsto[below]{above}`: a drawn
+    /// arrow stretched to its script-style labels, spaced as a relation.
+    XArrow {
+        /// True for `\xmapsto` (the origin-bar band).
+        mapsto: bool,
+        /// The mandatory above-label (a `List` node).
+        above: Box<Node>,
+        /// The optional below-label (a `List` node).
+        below: Option<Box<Node>>,
+    },
     /// An explicit spacing command.
     Space(SpaceKind),
     /// `~` — a tie (non-breaking interword space).

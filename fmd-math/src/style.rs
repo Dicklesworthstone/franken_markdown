@@ -238,6 +238,14 @@ where
             style_walk(annotation, ann_ctx, visit);
             style_walk(base, ctx, visit);
         }
+        NodeKind::XArrow { above, below, .. } => {
+            // amsmath sets both labels in script(-of-current) style, the
+            // above-label uncramped, the below-label cramped like a sub.
+            style_walk(above, ctx.sup(), visit);
+            if let Some(below) = below {
+                style_walk(below, ctx.sub(), visit);
+            }
+        }
         NodeKind::AlignBlock { lines, .. } => {
             // Text-mode lines in the ambient style (like a `\text` body).
             for line in lines {

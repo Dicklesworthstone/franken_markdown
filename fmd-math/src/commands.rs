@@ -125,6 +125,11 @@ pub(crate) enum Cmd {
     /// `\ding{NN}` — the pifont escape (fm-j5t.4); the implemented codes
     /// live in [`ding_char`].
     Ding,
+    /// `\xrightarrow`/`\xmapsto`: optional `[below]` then `{above}`.
+    XArrow {
+        /// True for `\xmapsto`.
+        mapsto: bool,
+    },
     /// Known tier-2 vocabulary: fail precisely.
     UnsupportedT2,
 }
@@ -230,6 +235,8 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "male" | "mars" => sym('\u{2642}', Ord),
         "earth" => sym('\u{2641}', Ord),
         "ding" => Cmd::Ding,
+        "xrightarrow" => Cmd::XArrow { mapsto: false },
+        "xmapsto" => Cmd::XArrow { mapsto: true },
         "top" => sym('⊤', Ord),
         "bot" => sym('⊥', Ord),
         "flat" => sym('♭', Ord),
@@ -741,7 +748,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "centering" => Cmd::AlignDecl(LineAlign::Center),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
         // (`\centering` graduated to a real AlignDecl above.)
-        "doublespacing" | "dx" | "xmapsto" | "xrightarrow" => Cmd::UnsupportedT2,
+        "doublespacing" | "dx" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }
@@ -947,7 +954,7 @@ mod tests {
     fn t2_vocabulary_is_tiered() {
         // Still pending. (The symbol shelf and the text accents graduated
         // in the fm-j5t tranches.)
-        for c in [r"\dx", r"\xrightarrow", r"\xmapsto", r"\doublespacing"] {
+        for c in [r"\dx", r"\doublespacing"] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
@@ -962,6 +969,8 @@ mod tests {
             r"\circlearrowright",
             r"\dddot",
             r"\ddddot",
+            r"\xrightarrow",
+            r"\xmapsto",
             r"\'",
             "\\\"",
         ] {

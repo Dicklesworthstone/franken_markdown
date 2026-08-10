@@ -121,13 +121,13 @@ mod tests {
         // The example must stay a construct the T2 vocabulary still names
         // as pending (`\substack` and `\dddot` graduated).
         let err = MathError::UnsupportedCommand {
-            name: r"\xrightarrow".to_owned(),
-            span: Span::new(3, 15),
+            name: r"\doublespacing".to_owned(),
+            span: Span::new(3, 17),
         };
         assert_eq!(
             err.to_string(),
-            "`\\xrightarrow` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
-             (the tier-2 construct program) (bytes 3..15)"
+            "`\\doublespacing` is not yet supported; tier T2, tracked at franken_manim fm-j5t \
+             (the tier-2 construct program) (bytes 3..17)"
         );
     }
 

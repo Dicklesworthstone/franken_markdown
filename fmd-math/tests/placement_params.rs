@@ -332,8 +332,26 @@ fn formerly_pending_constructs_now_lay_out() {
         "dots sit above the base"
     );
 
+    // The labeled extensible arrows (fm-j5t): a drawn band stretched to
+    // its script-style label, label riding above as a limit; \xmapsto
+    // adds the origin bar (a second closed contour).
+    let arrow = e.typeset(r"\xrightarrow{f} x", Style::Display).unwrap();
+    assert_eq!(arrow.paths.len(), 1, "one drawn arrow band");
+    let f = arrow.glyphs.iter().find(|g| g.ch == 'f').unwrap();
+    assert!((f.size - 0.7).abs() < 1e-9, "script-size label");
+    assert!(f.y > 0.2, "label rides above the axis band");
+    let mapsto = e.typeset(r"\xmapsto{f}", Style::Display).unwrap();
+    assert_eq!(
+        mapsto.paths[0].contours.len(),
+        2,
+        "arrow plus the origin bar"
+    );
+    let below = e.typeset(r"\xrightarrow[g]{f} x", Style::Display).unwrap();
+    let g = below.glyphs.iter().find(|gl| gl.ch == 'g').unwrap();
+    assert!(g.y < 0.0, "below-label rides under the band");
+
     // A construct still outside the tier keeps the named-error contract:
     // precise, tier-tagged, never silent.
-    let err = e.typeset(r"\xrightarrow{f}", Style::Display).unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\xrightarrow"));
+    let err = e.typeset(r"\dx", Style::Display).unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\dx"));
 }

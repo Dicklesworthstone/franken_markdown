@@ -648,6 +648,56 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
+            Cmd::XArrow { mapsto } => {
+                // amsmath's shape: an optional bracketed below-label, then
+                // the mandatory braced above-label.
+                self.skip_spaces();
+                let below = if matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
+                    let open = self.here();
+                    self.pos += 1;
+                    let (items, reason) = self.descend(open, |p| {
+                        p.math_list(Stops {
+                            bracket: true,
+                            ..Stops::default()
+                        })
+                    })?;
+                    match reason {
+                        Reason::BracketClose(close) => Some(Box::new(Node::new(
+                            NodeKind::List(items),
+                            Span::new(open, close.end),
+                        ))),
+                        Reason::EndOfInput => {
+                            return Err(MathError::Malformed {
+                                what: format!(
+                                    "unclosed '[' in the \\{name} below-label opened at byte {open}"
+                                ),
+                                at: self.src.len(),
+                            });
+                        }
+                        other => {
+                            return Err(MathError::Malformed {
+                                what: format!(
+                                    "the \\{name} below-label opened at byte {open} is not \
+                                     closed by ']'"
+                                ),
+                                at: other.span().start,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let above = self.argument(&format!("argument of \\{name}"))?;
+                let span = span.union(above.span);
+                Ok(Node::new(
+                    NodeKind::XArrow {
+                        mapsto,
+                        above: Box::new(above),
+                        below,
+                    },
+                    span,
+                ))
+            }
             Cmd::Substack => self.substack(span),
             Cmd::Color => {
                 let (raw, raw_span) = self.raw_group("argument of \\color")?;

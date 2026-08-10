@@ -529,6 +529,60 @@ impl Engine {
                     char_glyph: None,
                 })
             }
+            NodeKind::XArrow {
+                mapsto,
+                above,
+                below,
+            } => {
+                // amsmath's labeled extensible arrows: the drawn band
+                // stretches to its widest script-style label plus padding
+                // (a bare label still gets a healthy minimum arrow), sits
+                // on the math axis, and takes the labels as limits.
+                let size = ctx.size();
+                let above_laid = self.lay_node(above, ctx.map(StyleCtx::sup))?;
+                let below_laid = below
+                    .as_deref()
+                    .map(|b| self.lay_node(b, ctx.map(StyleCtx::sub)))
+                    .transpose()?;
+                let label_w = above_laid
+                    .boxx
+                    .width
+                    .max(below_laid.as_ref().map_or(0.0, |b| b.boxx.width));
+                let width = (label_w + 0.8 * size).max(1.2 * size);
+                let stretch_kind = if *mapsto {
+                    crate::drawn::Stretch::MapstoArrow
+                } else {
+                    crate::drawn::Stretch::RightArrow
+                };
+                let band = crate::drawn::stretch(stretch_kind, width, size);
+                let axis = self.consts.axis_height * size;
+                let band_dy = axis - band.height / 2.0;
+                let band_box = MBox {
+                    kind: BoxKind::Horizontal,
+                    width,
+                    height: axis + band.height / 2.0,
+                    depth: (band.height / 2.0 - axis).max(0.0),
+                    children: vec![Positioned {
+                        dx: 0.0,
+                        dy: band_dy,
+                        node: MNode::Path {
+                            contours: band.contours,
+                            span: node.span,
+                        },
+                    }],
+                };
+                Ok(Laid {
+                    boxx: self.with_limits(
+                        band_box,
+                        Some(above_laid.boxx),
+                        below_laid.map(|b| b.boxx),
+                        ctx,
+                        0.0,
+                    ),
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
             NodeKind::Fragment(FragmentKind::StrayRight(delim)) => {
                 if let Some(ch) = delim.ch {
                     self.char_atom(ch, delim.span, ctx)

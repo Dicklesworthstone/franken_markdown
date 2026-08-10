@@ -54,6 +54,8 @@ pub(crate) enum Stretch {
     UnderBrace,
     /// `\overrightarrow` — shaft + right arrowhead.
     RightArrow,
+    /// `\xmapsto`'s band — the right arrow with the origin bar.
+    MapstoArrow,
     /// `\overleftarrow` — shaft + left arrowhead.
     LeftArrow,
 }
@@ -386,6 +388,7 @@ pub(crate) fn stretch(kind: Stretch, width: f64, em: f64) -> DrawnBand {
         Stretch::UnderBrace => hbrace(width, em, true),
         Stretch::RightArrow => arrow(width, em, false),
         Stretch::LeftArrow => arrow(width, em, true),
+        Stretch::MapstoArrow => mapsto_arrow(width, em),
     }
 }
 
@@ -511,6 +514,29 @@ fn arrow(w: f64, em: f64, left: bool) -> DrawnBand {
     DrawnBand {
         height: h,
         contours: vec![c],
+    }
+}
+
+/// `\xmapsto`: the right arrow with `↦`'s origin bar — a vertical stroke
+/// the full band height at the left end, the same stroke thickness as the
+/// shaft.
+fn mapsto_arrow(w: f64, em: f64) -> DrawnBand {
+    let t = 0.048 * em;
+    let band = arrow(w, em, false);
+    let bar = contour(
+        (0.0, 0.0),
+        vec![
+            line((t, 0.0)),
+            line((t, band.height)),
+            line((0.0, band.height)),
+            line((0.0, 0.0)),
+        ],
+    );
+    let mut contours = band.contours;
+    contours.push(bar);
+    DrawnBand {
+        height: band.height,
+        contours,
     }
 }
 
@@ -796,6 +822,7 @@ mod tests {
             Stretch::UnderBrace,
             Stretch::RightArrow,
             Stretch::LeftArrow,
+            Stretch::MapstoArrow,
         ] {
             for w in [0.2, 1.0, 4.0, 25.0] {
                 let b = stretch(kind, w, 1.0);

@@ -723,15 +723,12 @@ fn text_mode_malformations_are_precise() {
 
 #[test]
 fn t2_commands_fail_named_and_tiered() {
-    // (The symbol shelf and the dot accents graduated under fm-j5t.)
-    for (s, construct) in [
-        (r"\xrightarrow{f}", r"\xrightarrow"),
-        (r"\xmapsto{f}", r"\xmapsto"),
-    ] {
-        let err = parse(s).unwrap_err();
-        assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
-        assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
-    }
+    // The math-mode T2 command vocabulary is empty: everything the G0-4
+    // harvest observed in mathematics has graduated. `\dx` remains the
+    // one pending math construct (a corpus preamble macro).
+    let err = parse(r"\dx").unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\dx"));
+    assert!(err.to_string().contains("tier T2"), "{err}");
     // Text-mode T2 (the size ladder and the text accents graduated;
     // `\doublespacing` remains pending).
     let err = parse_text(r"\doublespacing text").unwrap_err();

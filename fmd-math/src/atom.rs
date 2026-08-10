@@ -243,6 +243,9 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
             StackKind::Stackrel => Some(AtomClass::Rel),
             StackKind::Overset | StackKind::Underset => intrinsic_class(base),
         },
+        // The labeled extensible arrows space as relations, like the plain
+        // arrows they stretch.
+        NodeKind::XArrow { .. } => Some(AtomClass::Rel),
         NodeKind::Fragment(kind) => match kind {
             crate::node::FragmentKind::UnmatchedClose
             | crate::node::FragmentKind::RedundantMathShift => None,

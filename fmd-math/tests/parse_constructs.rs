@@ -734,11 +734,9 @@ fn t2_commands_fail_named_and_tiered() {
     }
     // Text-mode T2 (the size ladder and the text accents graduated;
     // `\doublespacing` remains pending).
-    for (s, construct) in [(r"\doublespacing text", r"\doublespacing")] {
-        let err = parse_text(s).unwrap_err();
-        assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");
-        assert!(err.to_string().contains("tier T2"), "`{s}`: {err}");
-    }
+    let err = parse_text(r"\doublespacing text").unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\doublespacing"));
+    assert!(err.to_string().contains("tier T2"), "{err}");
 }
 
 #[test]

@@ -288,9 +288,21 @@ fn formerly_pending_constructs_now_lay_out() {
     let b = e.typeset(r"\overbrace{x+y}", Style::Display).unwrap();
     assert_eq!(b.paths.len(), 1, "the drawn brace band");
 
-    // Tier-2 parse vocabulary still refuses by name (the ratchet's shape).
+    // `center` graduated from the tier-2 vocabulary: inside mathematics it
+    // is now the *precise* text-mode-only refusal rather than a pending
+    // construct, and the ratchet no longer counts it.
     let err = e
         .typeset(r"\begin{center} x \end{center}", Style::Display)
         .unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some("env:center"));
+    assert_eq!(err.unsupported_construct(), None);
+    assert!(
+        err.to_string()
+            .contains("text-mode line-alignment environment"),
+        "{err}"
+    );
+
+    // A construct still outside the tier keeps the named-error contract:
+    // precise, tier-tagged, never silent.
+    let err = e.typeset(r"\dddot x", Style::Display).unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\dddot"));
 }

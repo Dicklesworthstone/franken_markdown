@@ -550,8 +550,9 @@ pub(crate) fn symbol(ch: char, em: f64) -> Option<DrawnSym> {
 }
 
 /// √2/2 (cos 45°), a compile-time constant: the determinism doctrine
-/// keeps the arithmetic to add/sub/mul/div over fixed constants.
-const COS45: f64 = 0.707_106_781_186_547_6;
+/// keeps the arithmetic to add/sub/mul/div over fixed constants. The std
+/// constant is the same bit pattern, spelled canonically.
+const COS45: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// √2−1 (tan 22.5°): the quad circle control offset.
 const TAN22: f64 = 0.414_213_562_373_095_1;
 

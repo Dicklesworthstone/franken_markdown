@@ -723,10 +723,10 @@ fn text_mode_malformations_are_precise() {
 
 #[test]
 fn t2_commands_fail_named_and_tiered() {
-    // (\nmid and \oiint graduated in the fm-j5t symbol tranche.)
+    // (The symbol shelf and the dot accents graduated under fm-j5t.)
     for (s, construct) in [
         (r"\xrightarrow{f}", r"\xrightarrow"),
-        (r"\dddot x", r"\dddot"),
+        (r"\xmapsto{f}", r"\xmapsto"),
     ] {
         let err = parse(s).unwrap_err();
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");

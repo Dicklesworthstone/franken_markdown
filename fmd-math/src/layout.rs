@@ -1317,6 +1317,82 @@ impl Engine {
             | AccentKind::OverLeftArrow
             | AccentKind::WideHat
             | AccentKind::WideTilde => self.stretchy_accent(kind, base, ctx, span),
+            AccentKind::Dddot | AccentKind::Ddddot => {
+                // amsmath builds `\dddot`/`\ddddot` from a row of dots (no
+                // face carries U+20DB/U+20DC): resolve the single dot mark
+                // once and place n copies contiguously by ink width,
+                // centered over the base with rule 12's raise and skew.
+                let n: u8 = if matches!(kind, AccentKind::Dddot) {
+                    3
+                } else {
+                    4
+                };
+                let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
+                let combining = accent_char(AccentKind::Dot);
+                let Some((face, gid)) = self
+                    .faces
+                    .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                    .or_else(|| {
+                        accent_spacing_fallback(combining)
+                            .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS]))
+                    })
+                else {
+                    return Err(MathError::UnmappedChar {
+                        ch: combining,
+                        span,
+                    });
+                };
+                let Some(font) = self.faces.font(face) else {
+                    return Err(MathError::UnmappedChar {
+                        ch: combining,
+                        span,
+                    });
+                };
+                let upm = f64::from(font.units_per_em.max(1));
+                let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
+                let ink_left = f64::from(bbox[0]) / upm * size;
+                let ink_right = f64::from(bbox[2]) / upm * size;
+                let ink_top = f64::from(bbox[3]) / upm * size;
+                let ink_bottom = f64::from(bbox[1]) / upm * size;
+                let ink_w = ink_right - ink_left;
+                let row_w = ink_w * f64::from(n);
+                let dy = base_laid.boxx.height - c.x_height * size;
+                let skew = base_laid.italic / 2.0;
+                let row_left = base_laid.boxx.width / 2.0 + skew - row_w / 2.0;
+                let width = base_laid.boxx.width;
+                let height = base_laid.boxx.height.max(dy + ink_top);
+                let depth = base_laid.boxx.depth.max(-(dy + ink_bottom));
+                let mut children = Vec::with_capacity(usize::from(n) + 1);
+                for i in 0..n {
+                    children.push(Positioned {
+                        dx: row_left + ink_w * f64::from(i) - ink_left,
+                        dy,
+                        node: MNode::Glyph {
+                            face,
+                            gid,
+                            ch: combining,
+                            size,
+                            span,
+                        },
+                    });
+                }
+                children.push(Positioned {
+                    dx: 0.0,
+                    dy: 0.0,
+                    node: MNode::Box(base_laid.boxx),
+                });
+                Ok(Laid {
+                    boxx: MBox {
+                        kind: BoxKind::Horizontal,
+                        width,
+                        height,
+                        depth,
+                        children,
+                    },
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
             _ => {
                 let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);

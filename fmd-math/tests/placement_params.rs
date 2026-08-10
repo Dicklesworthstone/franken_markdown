@@ -316,8 +316,24 @@ fn formerly_pending_constructs_now_lay_out() {
         "the surface integral operator renders"
     );
 
+    // The dot accents (fm-j5t): \dddot is a row of three dot marks over
+    // the base, \ddddot four — amsmath's own construction.
+    let dots3 = e.typeset(r"\dddot x", Style::Display).unwrap();
+    assert_eq!(dots3.glyphs.len(), 4, "x and three dots");
+    let dots4 = e.typeset(r"\ddddot x", Style::Display).unwrap();
+    assert_eq!(dots4.glyphs.len(), 5, "x and four dots");
+    let x_top = dots3.glyphs.iter().find(|g| g.ch == 'x').unwrap().y;
+    assert!(
+        dots3
+            .glyphs
+            .iter()
+            .filter(|g| g.ch != 'x')
+            .all(|g| g.y > x_top),
+        "dots sit above the base"
+    );
+
     // A construct still outside the tier keeps the named-error contract:
     // precise, tier-tagged, never silent.
-    let err = e.typeset(r"\dddot x", Style::Display).unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\dddot"));
+    let err = e.typeset(r"\xrightarrow{f}", Style::Display).unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\xrightarrow"));
 }

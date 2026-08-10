@@ -577,6 +577,8 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "grave" => Cmd::Accent(AccentKind::Grave),
         "dot" => Cmd::Accent(AccentKind::Dot),
         "ddot" => Cmd::Accent(AccentKind::Ddot),
+        "dddot" => Cmd::Accent(AccentKind::Dddot),
+        "ddddot" => Cmd::Accent(AccentKind::Ddddot),
         "breve" => Cmd::Accent(AccentKind::Breve),
         "bar" => Cmd::Accent(AccentKind::Bar),
         "vec" => Cmd::Accent(AccentKind::Vec),
@@ -739,9 +741,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "centering" => Cmd::AlignDecl(LineAlign::Center),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
         // (`\centering` graduated to a real AlignDecl above.)
-        "doublespacing" | "dx" | "xmapsto" | "xrightarrow" | "dddot" | "ddddot" => {
-            Cmd::UnsupportedT2
-        }
+        "doublespacing" | "dx" | "xmapsto" | "xrightarrow" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }
@@ -947,7 +947,7 @@ mod tests {
     fn t2_vocabulary_is_tiered() {
         // Still pending. (The symbol shelf and the text accents graduated
         // in the fm-j5t tranches.)
-        for c in [r"\dx", r"\xrightarrow", r"\dddot", r"\doublespacing"] {
+        for c in [r"\dx", r"\xrightarrow", r"\xmapsto", r"\doublespacing"] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
@@ -960,6 +960,8 @@ mod tests {
             r"\i",
             r"\j",
             r"\circlearrowright",
+            r"\dddot",
+            r"\ddddot",
             r"\'",
             "\\\"",
         ] {

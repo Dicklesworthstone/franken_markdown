@@ -139,6 +139,11 @@ pub enum AccentKind {
     Bar,
     /// `\vec`
     Vec,
+    /// `\dddot` — amsmath builds it from three dot marks in a row; so does
+    /// the layout here (no bundled face carries U+20DB).
+    Dddot,
+    /// `\ddddot` — four dot marks, same construction.
+    Ddddot,
     /// `\mathring`
     Ring,
     /// `\widehat`

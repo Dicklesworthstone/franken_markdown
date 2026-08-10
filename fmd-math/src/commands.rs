@@ -779,10 +779,44 @@ pub(crate) fn line_align_env(name: &str) -> Option<LineAlign> {
     }
 }
 
-/// True when the control *symbol* is known tier-2 vocabulary (the text
-/// accents `\'` and `\"`).
+/// True when the control *symbol* is known tier-2 vocabulary. Empty since
+/// the text accents `\'` and `\"` graduated (fm-j5t); kept so the next
+/// tier-2 control symbol has its slot back.
 pub(crate) fn control_symbol_is_t2(ch: char) -> bool {
-    matches!(ch, '\'' | '"')
+    let _ = ch;
+    false
+}
+
+/// Compose a text accent over its base letter, to the precomposed Unicode
+/// character the bundled CM faces carry (probe-verified: the full Latin-1
+/// acute and dieresis rows exist in CM regular and italic). `None` is a
+/// precise malformed-argument error at the parse site, never silence.
+pub(crate) fn compose_text_accent(accent: char, base: char) -> Option<char> {
+    Some(match (accent, base) {
+        ('\'', 'a') => 'á',
+        ('\'', 'e') => 'é',
+        ('\'', 'i') => 'í',
+        ('\'', 'o') => 'ó',
+        ('\'', 'u') => 'ú',
+        ('\'', 'y') => 'ý',
+        ('\'', 'A') => 'Á',
+        ('\'', 'E') => 'É',
+        ('\'', 'I') => 'Í',
+        ('\'', 'O') => 'Ó',
+        ('\'', 'U') => 'Ú',
+        ('"', 'a') => 'ä',
+        ('"', 'e') => 'ë',
+        ('"', 'i') => 'ï',
+        ('"', 'o') => 'ö',
+        ('"', 'u') => 'ü',
+        ('"', 'y') => 'ÿ',
+        ('"', 'A') => 'Ä',
+        ('"', 'E') => 'Ë',
+        ('"', 'I') => 'Ï',
+        ('"', 'O') => 'Ö',
+        ('"', 'U') => 'Ü',
+        _ => return None,
+    })
 }
 
 /// The characters that may follow `\left`, `\right`, or a `\big`-class
@@ -824,7 +858,8 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
                     return ConstructStatus::UnsupportedT2;
                 }
                 // The supported control-symbol set: escapes, spacing,
-                // the line break, and the `\|` delimiter.
+                // the line break, the `\|` delimiter, and the graduated
+                // text accents.
                 return if matches!(
                     c,
                     '\\' | ','
@@ -840,6 +875,8 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
                         | '#'
                         | '_'
                         | '|'
+                        | '\''
+                        | '"'
                 ) {
                     ConstructStatus::Supported
                 } else {

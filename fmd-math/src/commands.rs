@@ -958,13 +958,11 @@ mod tests {
     fn t2_vocabulary_is_tiered() {
         // Still pending. (The symbol shelf and the text accents graduated
         // in the fm-j5t tranches.)
-        for c in [r"\dx"] {
-            assert_eq!(
-                construct_status(c),
-                ConstructStatus::UnsupportedT2,
-                "expected {c} tier-2"
-            );
-        }
+        assert_eq!(
+            construct_status(r"\dx"),
+            ConstructStatus::UnsupportedT2,
+            r"expected \dx tier-2 (the last pending construct)"
+        );
         for c in [
             r"\nmid",
             r"\oiint",

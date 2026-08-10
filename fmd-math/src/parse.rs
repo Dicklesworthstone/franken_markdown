@@ -381,6 +381,15 @@ impl<'s> Parser<'s> {
                 },
                 span,
             ),
+            accent @ ('\'' | '"') => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "\\{accent} is a text-mode accent; inside mathematics \
+                         use it within \\text{{…}}"
+                    ),
+                    at: span.start,
+                });
+            }
             other => {
                 return Err(MathError::UnsupportedCommand {
                     name: format!("\\{other}"),
@@ -787,6 +796,45 @@ impl<'s> Parser<'s> {
             _ => Err(MathError::Malformed {
                 what: format!("missing {what} (found an unusable token)"),
                 at: tok.span.start,
+            }),
+        }
+    }
+
+    /// A text accent's base: the next character token, or a one-character
+    /// braced group — TeX's accent argument rule.
+    fn text_accent_argument(
+        &mut self,
+        accent: char,
+        span: Span,
+    ) -> Result<(char, Span), MathError> {
+        match self.peek().cloned() {
+            Some(tok) if matches!(tok.kind, TokKind::BeginGroup) => {
+                let (raw, raw_span) = self.raw_group(&format!("argument of \\{accent}"))?;
+                let mut chars = raw.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(base), None) => Ok((base, raw_span)),
+                    _ => Err(MathError::Malformed {
+                        what: format!(
+                            "the argument of \\{accent} must be one character, got {raw:?}"
+                        ),
+                        at: raw_span.start,
+                    }),
+                }
+            }
+            Some(tok) => {
+                if let TokKind::Char(base) = tok.kind {
+                    self.pos += 1;
+                    Ok((base, tok.span))
+                } else {
+                    Err(MathError::Malformed {
+                        what: format!("missing argument of \\{accent}"),
+                        at: tok.span.start,
+                    })
+                }
+            }
+            None => Err(MathError::Malformed {
+                what: format!("missing argument of \\{accent} at end of input"),
+                at: span.end,
             }),
         }
     }
@@ -1411,6 +1459,25 @@ impl<'s> Parser<'s> {
                         '$' | '%' | '&' | '#' | '_' | '{' | '}' => {
                             run.push(c);
                             run_spans.push(tok.span);
+                            continue;
+                        }
+                        // The text accents (fm-j5t): `\'e`, `\"{o}` …
+                        // compose to the precomposed glyph and join the
+                        // surrounding word, span covering accent+base.
+                        '\'' | '"' => {
+                            let (base, base_span) = self.text_accent_argument(c, tok.span)?;
+                            let Some(composed) = commands::compose_text_accent(c, base) else {
+                                return Err(MathError::Malformed {
+                                    what: format!(
+                                        "\\{c} has no composition over '{base}' \
+                                         (the bundled faces carry the Latin-1 \
+                                         acute and dieresis rows)"
+                                    ),
+                                    at: base_span.start,
+                                });
+                            };
+                            run.push(composed);
+                            run_spans.push(tok.span.union(base_span));
                             continue;
                         }
                         _ => {}

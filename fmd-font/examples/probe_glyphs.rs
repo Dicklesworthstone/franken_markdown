@@ -1,4 +1,6 @@
-// probe
+// probe: which bundled faces map which codepoints. Not product code.
+#![allow(clippy::unwrap_used)]
+
 fn main() {
     let faces = [
         ("CM_REGULAR", fmd_font::bundled::CM_REGULAR),
@@ -12,6 +14,26 @@ fn main() {
             fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS,
         ),
     ];
+    // argv chars override the built-in list: probe_glyphs -- '<chars>'
+    let argv: Vec<(char, String)> = std::env::args()
+        .nth(1)
+        .map(|s| {
+            s.chars()
+                .map(|c| (c, format!("U+{:04X}", c as u32)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !argv.is_empty() {
+        for (ch, label) in &argv {
+            print!("U+{:04X} {}: ", *ch as u32, label);
+            for (name, bytes) in faces {
+                let font = fmd_font::Font::parse(bytes.to_vec()).unwrap();
+                print!("{}={} ", name, font.glyph_index(*ch));
+            }
+            println!();
+        }
+        return;
+    }
     let chars = [
         ('\u{2640}', "FEMALE"),
         ('\u{2642}', "MALE/MARS"),

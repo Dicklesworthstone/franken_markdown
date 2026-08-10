@@ -723,11 +723,10 @@ fn text_mode_malformations_are_precise() {
 
 #[test]
 fn t2_commands_fail_named_and_tiered() {
+    // (\nmid and \oiint graduated in the fm-j5t symbol tranche.)
     for (s, construct) in [
-        (r"a \nmid b", r"\nmid"),
         (r"\xrightarrow{f}", r"\xrightarrow"),
         (r"\dddot x", r"\dddot"),
-        (r"\oiint_S", r"\oiint"),
     ] {
         let err = parse(s).unwrap_err();
         assert_eq!(err.unsupported_construct(), Some(construct), "`{s}`");

@@ -209,8 +209,8 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "Re" => sym('ℜ', Ord),
         "Im" => sym('ℑ', Ord),
         "aleph" => sym('ℵ', Ord),
-        "imath" => sym('ı', Ord),
-        "jmath" => sym('ȷ', Ord),
+        "imath" | "i" => sym('ı', Ord),
+        "jmath" | "j" => sym('ȷ', Ord),
         "emptyset" => sym('∅', Ord),
         "varnothing" => sym('⌀', Ord),
         "exists" => sym('∃', Ord),
@@ -294,6 +294,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "propto" => sym('∝', Rel),
         "perp" => sym('⊥', Rel),
         "mid" => sym('∣', Rel),
+        "nmid" => sym('∤', Rel),
         "parallel" => sym('∥', Rel),
         "in" => sym('∈', Rel),
         "ni" => sym('∋', Rel),
@@ -344,6 +345,8 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "swarrow" => sym('↙', Rel),
         "nwarrow" => sym('↖', Rel),
         "hookrightarrow" => sym('↪', Rel),
+        "circlearrowleft" => sym('↺', Rel),
+        "circlearrowright" => sym('↻', Rel),
         "hookleftarrow" => sym('↩', Rel),
         "rightharpoonup" => sym('⇀', Rel),
         "rightharpoondown" => sym('⇁', Rel),
@@ -384,6 +387,10 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         },
         "iint" => Cmd::BigOp {
             ch: '∬',
+            integral: true,
+        },
+        "oiint" => Cmd::BigOp {
+            ch: '∯',
             integral: true,
         },
         "iiint" => Cmd::BigOp {
@@ -732,8 +739,9 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "centering" => Cmd::AlignDecl(LineAlign::Center),
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
         // (`\centering` graduated to a real AlignDecl above.)
-        "doublespacing" | "i" | "j" | "nmid" | "dx" | "oiint" | "xmapsto" | "xrightarrow"
-        | "circlearrowright" | "circlearrowleft" | "dddot" | "ddddot" => Cmd::UnsupportedT2,
+        "doublespacing" | "dx" | "xmapsto" | "xrightarrow" | "dddot" | "ddddot" => {
+            Cmd::UnsupportedT2
+        }
         _ => return None,
     })
 }
@@ -900,19 +908,20 @@ mod tests {
 
     #[test]
     fn t2_vocabulary_is_tiered() {
-        for c in [
-            r"\nmid",
-            r"\dx",
-            r"\oiint",
-            r"\xrightarrow",
-            r"\i",
-            r"\j",
-            r"\'",
-        ] {
+        // Still pending. (\nmid, \oiint, \i, \j, and the circle
+        // arrows graduated to real symbols in the fm-j5t symbol tranche.)
+        for c in [r"\dx", r"\xrightarrow", r"\dddot", r"\'"] {
             assert_eq!(
                 construct_status(c),
                 ConstructStatus::UnsupportedT2,
                 "expected {c} tier-2"
+            );
+        }
+        for c in [r"\nmid", r"\oiint", r"\i", r"\j", r"\circlearrowright"] {
+            assert_eq!(
+                construct_status(c),
+                ConstructStatus::Supported,
+                "expected {c} graduated"
             );
         }
     }

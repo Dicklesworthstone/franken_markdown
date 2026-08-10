@@ -301,6 +301,21 @@ fn formerly_pending_constructs_now_lay_out() {
         "{err}"
     );
 
+    // The fm-j5t symbol tranche: every graduated symbol resolves to a real
+    // bundled-face glyph in one string — no silent drops, no substitutions.
+    let syms = e
+        .typeset(
+            r"a \nmid b \circlearrowleft \circlearrowright \i \j",
+            Style::Display,
+        )
+        .unwrap();
+    assert_eq!(syms.glyphs.len(), 7, "a, nmid, b, two arrows, dotless i, j");
+    let op = e.typeset(r"\oiint_S f", Style::Display).unwrap();
+    assert!(
+        op.glyphs.iter().any(|g| g.ch == '∯'),
+        "the surface integral operator renders"
+    );
+
     // A construct still outside the tier keeps the named-error contract:
     // precise, tier-tagged, never silent.
     let err = e.typeset(r"\dddot x", Style::Display).unwrap_err();

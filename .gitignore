@@ -96,3 +96,7 @@ tests/artifacts/visual/
 .skill-loop-progress.md
 .skill-loop-progress-*.md
 .repo_janitor_workspace/
+# Source illustration leftover. The README uses the committed WebP.
+/franken_markdown_illustration.png
+# Duplicate of fmd-font/fonts/ left at the repo root after the crate split.
+/fonts/

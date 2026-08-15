@@ -35,6 +35,7 @@ Thumbs.db
 # Beads local DB (the JSONL is tracked; the SQLite DB is local)
 .beads/*.db
 .beads/*.db-*
+.beads/.br_history/
 
 # bv (beads viewer) local config and caches
 .bv/

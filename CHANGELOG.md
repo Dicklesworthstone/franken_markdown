@@ -4,25 +4,38 @@
 
 This changelog reconstructs the project's history from the git log, the
 repository files, the checked-in beads tracker (`.beads/`), and the docs under
-`docs/`. It is organized by landed capability rather than raw commit order, with
-a date-based timeline kept visible so chronology is never lost. Representative
-commits are linked directly.
+`docs/` (planning docs now live in `docs/planning/`). It is organized by landed
+capability rather than raw commit order, with a date-based timeline kept visible
+so chronology is never lost. Representative commits are linked directly.
 
 This changelog began as reconstructed pre-release development history and now
-records shipped binary and crate releases. The GitHub release ships standalone
-`fmd` CLI archives, the `franken_markdown` library is published to crates.io
-starting with `0.2.0`, and the WASM/npm package is assembled by the separate
+records shipped binary and crate releases. GitHub Releases ship standalone
+`fmd` CLI archives; the `franken_markdown` library is published to crates.io
+starting with `0.2.0`; and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 to 2026-07-10), the
-  working tree, `.beads/issues.jsonl`, `docs/`, and the CI
+**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, and
+`v0.3.0`–`v0.3.4`. The latest GitHub Release is
+[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4)
+(2026-07-11). In-tree Cargo is `0.3.5` (CJK line-breaking, 2026-07-23); that
+number is **not** a git tag and **not** a GitHub Release. Do not invent a
+`v0.3.5` release page.
+
+Scope window: 2026-06-26 through HEAD
+[`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9)
+(2026-08-19).
+
+- Sources: `git log --reverse --no-merges` (2026-06-26 through 2026-08-19), the
+  working tree, `.beads/issues.jsonl`, `docs/` and `docs/planning/`, and the CI
   workflows under `.github/workflows/`.
-- Version state: **`0.3.5` CJK (UAX #14) line-breaking patch.**
+- Version state: **Cargo `0.3.5` on `main`; latest GitHub Release `v0.3.4`.**
+  HEAD is [`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9)
+  (2026-08-19).
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
-## Version timeline
+## Version Timeline
 
 | Date | Phase | Headline |
 |---|---|---|
@@ -37,9 +50,61 @@ ratcheted floors enforced in CI, not aspirational targets.
 | 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
 | 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
 | 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
-| 2026-07-23 | CJK line breaking | `0.3.5` gives Chinese/Japanese/Korean text real break opportunities: UAX #14 inter-ideograph breaks with the closing/opening/non-starter and Hangul-cluster prohibitions, carried as zero-width stretchable glue so the Knuth-Plass optimizer fills the measure instead of overrunning it in narrow columns; Latin output is byte-identical and the break-point splitter is no longer quadratic |
+| 2026-07-23 | CJK line breaking (Cargo `0.3.5`, not a GitHub Release) | In-tree `0.3.5` gives Chinese/Japanese/Korean text real break opportunities: UAX #14 inter-ideograph breaks with the closing/opening/non-starter and Hangul-cluster prohibitions, carried as zero-width stretchable glue so the Knuth-Plass optimizer fills the measure instead of overrunning it in narrow columns; Latin output is byte-identical and the break-point splitter is no longer quadratic. No `v0.3.5` tag or Release. |
+| 2026-07-23 → 2026-08-19 | Unreleased: TeX-math engine + janitor | Clean-room TeX-mathematics layout (`fmd-math`), font packaging fix, installer `df` hardening, and a docs-reorg that moved root planning files into `docs/planning/` |
+
+## Unreleased (2026-07-23 → 2026-08-19)
+
+Current window after the in-tree `0.3.5` CJK landing
+([`6417d9b`](https://github.com/Dicklesworthstone/franken_markdown/commit/6417d9b92eef2905fd5fadea7529afe715b42e07))
+through HEAD
+[`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9):
+34 non-merge commits. Latest GitHub Release remains
+[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4).
+
+### Clean-room TeX-mathematics layout (`fmd-math`, `fm-j5t`)
+
+A TeX-mathematics layout engine landed as first-party workspace code: grammar
+and atom engine, Appendix-G placement with synthesized Computer Modern metrics,
+a span map with exact provenance, drawn delimiters, environments, stretchy
+accents, macros/packs, then the tier-2 size/substack/align/symbol shelf. Text
+accents `\'` and `\"` parse in text mode and refuse in math; `\dddot` /
+`\ddddot`, labeled extensible arrows, and `\doublespacing` graduated onto the
+supported tier. Bundled faces now load from the `fmd-font` crate so the
+package still publishes. The installer walks up to an existing path before
+calling `df` and no longer aborts when `df` fails.
+
+**Representative commits**
+- [`4328835`](https://github.com/Dicklesworthstone/franken_markdown/commit/4328835732c7e2c872a70f5eddd7b4e85a42e697) — `feat(fmd-math): the clean-room TeX-mathematics layout engine — grammar, atom engine, styles (core)`
+- [`2722c79`](https://github.com/Dicklesworthstone/franken_markdown/commit/2722c799086ff8118090c751e5ec63c8ff85d37c) — `feat(fmd-math): Appendix-G placement, the synthesized CM metrics, and path output — typeset lands`
+- [`5310d87`](https://github.com/Dicklesworthstone/franken_markdown/commit/5310d87a9db39e7e7c0ad7decacd883ab8c0b12a) — `feat(fmd-math): the span map — exact provenance everywhere, plus the query surface (§11.3)`
+- [`4e5066c`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e5066c62818dfce75ccd940a7a54f600e1fe6a8) — `feat(fmd-math): the extensions — drawn delimiters complete, environments, stretchy accents, macros and packs (§11.4)`
+- [`68e1f13`](https://github.com/Dicklesworthstone/franken_markdown/commit/68e1f13ab990d0def29035f0447446d113f08544) — `feat(fmd-math): land tier-2 size, substack, align, and symbol surfaces`
+- [`0e727c3`](https://github.com/Dicklesworthstone/franken_markdown/commit/0e727c3362818835f2942d9342c5cb2530ae09e3) — `feat(fmd-math): graduate the labeled extensible arrows (fm-j5t)`
+- [`c22677c`](https://github.com/Dicklesworthstone/franken_markdown/commit/c22677ccbae945bc7fd305002db93b5ab9a4da69) — `feat(fmd-math): graduate \doublespacing (fm-j5t)`
+- [`15219f4`](https://github.com/Dicklesworthstone/franken_markdown/commit/15219f43a05764fe4da55fb15e1afa8e27a02424) — `fix(fonts): load bundled faces from the fmd-font crate so the package publishes`
+- [`7cfb873`](https://github.com/Dicklesworthstone/franken_markdown/commit/7cfb8736eacb1ae09259526561368b213674a764) — `fix(install): walk up to an existing path before df, and do not abort on df failure`
+
+### Janitor docs-reorg (2026-08-19)
+
+Root planning leftovers moved under
+[`docs/planning/`](https://github.com/Dicklesworthstone/franken_markdown/tree/main/docs/planning):
+`COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md`, `CHANGELOG_RESEARCH.md`,
+`PERFORMANCE_OPTIMIZATION_PLAN.md`, `REALITY_CHECK_BRIDGE_PLAN.md`, and
+`TODO_LATEX_PDF_RENDERING.md`. Skill-loop scratch (`.skill-loop-progress.md`)
+was untracked.
+
+**Representative commits**
+- [`ff3efd5`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff3efd55ce280ea8d75187312bf9049150272b60) — `chore(janitor): untrack skill-loop scratch; move root planning docs into docs/planning/`
+- [`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9) — `chore(janitor): relocate remaining root reports and planning docs`
+
+---
 
 ## 0.3.5 - 2026-07-23
+
+In-tree Cargo `0.3.5`. **Not a git tag and not a GitHub Release.** The latest
+published GitHub Release remains
+[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4).
 
 CJK line breaking. Chinese, Japanese, and Korean text is written without
 interword spaces, so the whitespace-driven paragraph builder found *no* break
@@ -533,9 +598,11 @@ deterministic render-tree visual golden.
 
 Governance and project intent are checked in: the MIT License with the
 OpenAI/Anthropic rider, project-local agent guidance (`AGENTS.md`), the
-comprehensive plan, and reality-check bridge plans that keep the README honest
-against the code. A hero illustration and a GitHub social-preview image were
-added.
+comprehensive plan now at
+[`docs/planning/COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md`](docs/planning/COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md),
+and reality-check bridge plans under `docs/planning/` that keep the README
+honest against the code. A hero illustration and a GitHub social-preview image
+were added.
 
 - Project docs, governance, and license rider: [`e3cd358`](https://github.com/Dicklesworthstone/franken_markdown/commit/e3cd3587b7f14a58bb2826ad75419d1e82064105)
 - 2026-06-28 reality-check bridge plan + gap-closing beads: [`5c6af41`](https://github.com/Dicklesworthstone/franken_markdown/commit/5c6af418a1574f4f726d1e45c736f5d6f3fbcc9d); README reality-check after PDF typography landed: [`5917b30`](https://github.com/Dicklesworthstone/franken_markdown/commit/5917b30c435c48232a0ecf4e54d9d482fd912dcd)
@@ -561,4 +628,6 @@ added.
   `3i5.*`) map capability waves to their tracker entries.
 - **Where to look first:** `src/cli.rs` for the command contract, `src/pdf.rs`
   and `src/layout.rs`/`src/text.rs` for typography, `src/parse/` for the parser,
-  and `docs/` for the PDF accessibility and batch contracts.
+  `docs/` for the PDF accessibility and batch contracts, and
+  `docs/planning/` for the comprehensive plan and reality-check / performance
+  notes (moved off the repository root on 2026-08-19).

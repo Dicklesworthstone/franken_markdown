@@ -392,10 +392,17 @@ trap cleanup EXIT
 # ─────────────────────────────────────────────────────────────────────────────
 check_disk_space() {
   local min_kb=20480 path="$DEST"
-  [ -d "$path" ] || path=$(dirname "$path")
+  # Walk up until an existing directory so df has a real path to inspect
+  # (DEST and even its parent may not exist yet on a fresh host).
+  while [ ! -d "$path" ] && [ "$path" != "/" ] && [ -n "$path" ]; do
+    path=$(dirname "$path")
+  done
+  [ -d "$path" ] || path="/"
   if command -v df >/dev/null 2>&1; then
     local avail_kb
-    avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+    # `|| true` guards set -o pipefail: a df failure must degrade to
+    # "skip the check", never abort the whole install.
+    avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
     if [ -n "$avail_kb" ] && [ "$avail_kb" -lt "$min_kb" ] 2>/dev/null; then
       err "Insufficient disk space in $path (need at least 20MB)"
       exit 1

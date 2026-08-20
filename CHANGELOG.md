@@ -62,6 +62,15 @@ through HEAD
 34 non-merge commits. Latest GitHub Release remains
 [`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4).
 
+### Delivered capability
+
+- Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier.
+- Root planning docs relocated under `docs/planning/`.
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl).
+
 ### Clean-room TeX-mathematics layout (`fmd-math`, `fm-j5t`)
 
 A TeX-mathematics layout engine landed as first-party workspace code: grammar

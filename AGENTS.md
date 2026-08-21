@@ -174,3 +174,5 @@ Do not run bare `bv`; use only `bv --robot-*` modes.
 In multi-agent sessions, register with Agent Mail, reserve files before editing,
 and coordinate through threads. Treat unrecognized working-tree changes as peer
 work. Do not revert or overwrite them.
+
+For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"

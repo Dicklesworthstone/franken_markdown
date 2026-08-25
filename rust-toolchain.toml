@@ -1,3 +1,17 @@
 [toolchain]
-channel = "nightly"
+# Pinned to a dated nightly rather than the floating "nightly" channel.
+#
+# A floating channel makes builds non-reproducible: the same commit can compile
+# at one hour and fail the next because the channel moved underneath it. The
+# failure usually surfaces on async-heavy code as a compiler ICE, which reads
+# like a bug in this repository and is not one -- so it gets debugged in the
+# wrong place, or "fixed" by rewriting correct source to satisfy a compiler
+# that will be different tomorrow.
+#
+# It also mutates shared build hosts. Building a floating repo on a shared
+# builder advanced that machine's default nightly for every other user of it,
+# changing state unrelated work depended on.
+#
+# Bump this deliberately, not accidentally.
+channel = "nightly-2026-08-20"
 components = ["clippy", "rustfmt"]

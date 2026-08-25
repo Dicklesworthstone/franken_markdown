@@ -5,7 +5,7 @@
 # external consumer; see the franken_manim UPSTREAM_LEDGER).
 [package]
 name = "fmd-font"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license-file = "../LICENSE"

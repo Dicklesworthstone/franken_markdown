@@ -22,7 +22,7 @@ path = "src/lib.rs"
 # First-party only, ever: the engine philosophy. fmd-font (this repo's own
 # zero-dependency font subsystem) supplies glyph metrics, kerning, and
 # outlines for layout.
-fmd-font = { path = "../fmd-font", version = "0.1.0" }
+fmd-font = { path = "../fmd-font", version = "0.2.0" }
 
 [features]
 # The bundled OFL faces (via fmd-font) as the default face set: a math

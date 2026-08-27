@@ -1733,13 +1733,20 @@ impl MetricPrefixes {
         for item in items {
             match item {
                 ParagraphItem::Box(item) => {
-                    running_width += item.width.milli_points() as i64;
+                    let w = item.width.milli_points() as i64;
+                    running_width += w;
+                    // Micro-typography font expansion (Hàn Thế Thành / Zapf Hz-program):
+                    // Glyphs provide ±1.5% horizontal expansion/compression elasticity.
+                    let expansion_elasticity = (w * 15) / 1000;
+                    running_stretch += expansion_elasticity;
+                    running_shrink += expansion_elasticity;
                 }
                 ParagraphItem::Glue(item) => {
                     running_width += item.width.milli_points() as i64;
                     running_stretch += item.stretch.milli_points() as i64;
                     running_shrink += item.shrink.milli_points() as i64;
                 }
+
                 ParagraphItem::Penalty(_) => {}
             }
             self.width.push(running_width);
@@ -2755,4 +2762,43 @@ mod hyphen_and_break_edge_tests {
         assert_eq!(lines[1].start, 2); // word 2 start
         assert_eq!(lines[1].end, 5); // paragraph end
     }
+
+    #[test]
+    fn microtypography_font_expansion_elasticity_expands_stretch_and_shrink() {
+        let make_box = |width_pt: i32| {
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(width_pt),
+            })
+        };
+        let mut prefixes = super::MetricPrefixes::default();
+        let items = vec![
+            make_box(100),
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::from_points(10),
+                stretch: LayoutUnit::from_points(5),
+                shrink: LayoutUnit::from_points(2),
+            }),
+            make_box(100),
+        ];
+        prefixes.rebuild_from_items(&items);
+        let cand = super::BreakCandidate {
+            item_index: 2,
+            next: 3,
+            penalty: 0,
+            penalty_width: LayoutUnit::ZERO,
+            flagged: false,
+        };
+        let metrics = prefixes.segment_metrics(0, cand);
+        // Prefix up to item 2 (Box 0 + Glue 1): 100 pt + 10 pt = 110 pt = 110,000 mp
+        assert_eq!(metrics.width, LayoutUnit::from_points(110));
+        // Total stretch: glue stretch (5 pt = 5000 mp) + box 0 elasticity (1.5% of 100 pt = 1500 mp) = 6500 mp
+        assert_eq!(metrics.stretch, LayoutUnit(6500));
+        // Total shrink: glue shrink (2 pt = 2000 mp) + box 0 elasticity (1.5% of 100 pt = 1500 mp) = 3500 mp
+        assert_eq!(metrics.shrink, LayoutUnit(3500));
+    }
+
 }
+
+

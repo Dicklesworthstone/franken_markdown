@@ -68,7 +68,9 @@ const CHIP_RADIUS: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
 const TABLE_FONT_SIZE: f32 = 10.0;
+const TABLE_MIN_FONT_SIZE: f32 = 7.5;
 const TABLE_COL_GUTTER: f32 = 14.0;
+
 const TABLE_MIN_COL_WIDTH: f32 = 18.0;
 const TABLE_ALLOC_MIN_UNIT_PT: f32 = 0.5;
 const TABLE_ALLOC_MAX_EXTRA_STATES: usize = 900;
@@ -2690,7 +2692,7 @@ struct LayoutCx<'a> {
     /// buffer avoids allocating a new token vector for every emitted line.
     line_toks: Vec<LineTok>,
     /// Reused justification workspace for TeX-style glue stretch/shrink.
-    glue_adjustments: Vec<(usize, f32)>,
+    glue_adjustments: Vec<(usize, f32, bool)>,
     /// Reused syntax-highlight span workspace for PDF fenced-code layout.
     /// HTML already reuses highlight state; keeping this render-local avoids a
     /// fresh span Vec allocation for every code line while preserving exact
@@ -15517,7 +15519,7 @@ fn layout_table_uncached(
     group: u32,
     out: &mut Vec<Line>,
 ) {
-    let size = TABLE_FONT_SIZE;
+    let mut size = TABLE_FONT_SIZE;
     let ncol = table
         .head
         .len()
@@ -15527,7 +15529,7 @@ fn layout_table_uncached(
     }
     let left = page.left + indent;
     let avail = (page.content_w - indent).max(72.0);
-    let pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
+    let mut pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
 
     // Tokenize each cell once. Measurement and wrapping use the same styled
     // token stream, so table layout avoids repeating inline/style work while
@@ -15564,9 +15566,55 @@ fn layout_table_uncached(
         }
     }
 
-    let gutters = pad * ncol as f32;
-    let target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
+    let mut gutters = pad * ncol as f32;
+    let mut target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
+
+    // Multi-pass adaptive table font scaling (bead 45d2.3):
+    // When table columns experience severe measure pressure (unbreakable tokens
+    // exceeding target, or dense 5+ column layouts with tight widths), adaptively scale
+    // cell font size down (between 7.5pt and 10.0pt) and re-measure.
+    let total_min: f32 = columns.iter().map(|col| col.min_content).sum();
+    let total_max: f32 = columns.iter().map(|col| col.max_content).sum();
+    if total_min > target
+        || (ncol >= 5 && total_min > target * 0.70)
+        || (ncol >= 7 && total_max > target)
+    {
+        let min_ratio = if total_min > 0.0 {
+            (target * 0.88) / total_min
+        } else {
+            1.0
+        };
+        let col_cap = match ncol {
+            0..=4 => 1.0,
+            5 => 0.90,
+            6 => 0.85,
+            _ => 0.78,
+        };
+        let scale = min_ratio.min(col_cap).clamp(0.75, 1.0);
+        if scale < 0.96 {
+            size = (TABLE_FONT_SIZE * scale).clamp(TABLE_MIN_FONT_SIZE, TABLE_FONT_SIZE);
+            pad = (TABLE_COL_GUTTER * (size / TABLE_FONT_SIZE)).max(8.0);
+            gutters = pad * ncol as f32;
+            target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
+
+            columns = vec![TableColumnMetrics::default(); ncol];
+            for (k, toks) in head_toks.iter().enumerate() {
+                if let Some(column) = columns.get_mut(k) {
+                    column.push(table_cell_measure(toks, size, faces, width_cache, true));
+                }
+            }
+            for row in &row_toks {
+                for (k, toks) in row.iter().enumerate() {
+                    if let Some(column) = columns.get_mut(k) {
+                        column.push(table_cell_measure(toks, size, faces, width_cache, false));
+                    }
+                }
+            }
+        }
+    }
+
     let colw = allocate_table_column_widths(&columns, target);
+
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -16906,7 +16954,7 @@ fn line_tokens_for_break_into(
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
-    adjustments: &mut Vec<(usize, f32)>,
+    adjustments: &mut Vec<(usize, f32, bool)>,
     line: &mut Vec<LineTok>,
 ) {
     line.clear();
@@ -16914,7 +16962,7 @@ fn line_tokens_for_break_into(
     if adjustments.is_empty() {
         for idx in lb.start..lb.end {
             if let Some(group) = built.item_toks.get(idx) {
-                push_tok_group_line_toks(group, 0.0, line);
+                push_tok_group_line_toks(group, 0.0, false, line);
             }
         }
         while line.last().is_some_and(|t| t.tok.space) {
@@ -16934,12 +16982,14 @@ fn line_tokens_for_break_into(
         while adjustment_pos < adjustments.len() && adjustments[adjustment_pos].0 < idx {
             adjustment_pos += 1;
         }
-        let extra = adjustments
+        let (extra, applies_to_words) = adjustments
             .get(adjustment_pos)
-            .and_then(|(item_idx, extra)| (*item_idx == idx).then_some(*extra))
-            .unwrap_or(0.0);
+            .and_then(|(item_idx, extra, words)| {
+                (*item_idx == idx).then_some((*extra, *words))
+            })
+            .unwrap_or((0.0, false));
         if let Some(group) = built.item_toks.get(idx) {
-            push_tok_group_line_toks(group, extra, line);
+            push_tok_group_line_toks(group, extra, applies_to_words, line);
         }
     }
     while line.last().is_some_and(|t| t.tok.space) {
@@ -16953,27 +17003,31 @@ fn line_tokens_for_break_into(
     }
 }
 
-fn push_tok_group_line_toks(group: &TokGroup, extra: f32, line: &mut Vec<LineTok>) {
+fn push_tok_group_line_toks(
+    group: &TokGroup,
+    extra: f32,
+    applies_to_words: bool,
+    line: &mut Vec<LineTok>,
+) {
     if let Some(tok) = &group.first {
         line.push(LineTok {
             tok: tok.clone(),
-            extra_advance: if tok.space { extra } else { 0.0 },
+            extra_advance: if tok.space || applies_to_words { extra } else { 0.0 },
         });
     }
     for tok in &group.rest {
         line.push(LineTok {
             tok: tok.clone(),
-            extra_advance: if tok.space { extra } else { 0.0 },
+            extra_advance: if tok.space || applies_to_words { extra } else { 0.0 },
         });
     }
 }
-
 fn glue_adjustments_into(
     items: &[ParagraphItem],
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
-    out: &mut Vec<(usize, f32)>,
+    out: &mut Vec<(usize, f32, bool)>,
 ) {
     out.clear();
     if !justify || chosen_forced_break(items, lb) {
@@ -16983,45 +17037,68 @@ fn glue_adjustments_into(
     if delta == 0 {
         return;
     }
-    let mut total = 0i64;
-    let mut glue_count = 0usize;
-    for item in items.iter().take(lb.end).skip(lb.start) {
-        if let ParagraphItem::Glue(glue) = item {
-            let flex = glue_flex(*glue, delta);
-            if flex > 0 {
-                total = total.saturating_add(flex);
-                glue_count += 1;
+    // Collect per-item elastic capacity in one pass: interword glue
+    // contributes its directional flex; word boxes contribute the ±1.5
+    // permilli glyph elasticity (Hàn Thế Thành microtype) that
+    // MetricPrefixes::rebuild_from_items credits the breaker. The two sides
+    // must stay in lockstep, or a justified line chosen with expansion
+    // elasticity renders short/long by exactly the unapplied remainder.
+    const FONT_EXPANSION_PERMILLI: i64 = 15;
+    let mut capacities: Vec<(usize, i64, bool)> = Vec::with_capacity(8);
+    let mut box_total_width = 0i64;
+    for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
+        match item {
+            ParagraphItem::Glue(glue) => {
+                let flex = glue_flex(*glue, delta);
+                if flex > 0 {
+                    capacities.push((idx, flex, false));
+                }
+            }
+            ParagraphItem::Box(tb) => {
+                box_total_width += tb.width.milli_points() as i64;
+            }
+            ParagraphItem::Penalty(_) => {}
+        }
+    }
+    if box_total_width > 0 {
+        for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
+            if let ParagraphItem::Box(tb) = item {
+                let cap = tb.width.milli_points() as i64 * FONT_EXPANSION_PERMILLI / 1000;
+                if cap > 0 {
+                    capacities.push((idx, cap, true));
+                }
             }
         }
     }
-    if total <= 0 || glue_count == 0 {
+    let total_cap = capacities.iter().map(|(_, cap, _)| *cap).sum::<i64>();
+    if total_cap <= 0 || capacities.is_empty() {
         return;
     }
 
-    out.reserve(glue_count);
+    // TeX invariant extended to glyphs: never compress past width - shrink,
+    // where shrink now includes the credited box elasticity.
+    let effective_delta = if delta < 0 { delta.max(-total_cap) } else { delta };
     let mut assigned = 0i64;
-    let mut glue_pos = 0usize;
-    // When shrinking (delta < 0), total shrink applied across all glues must never
-    // exceed total available shrink (TeX invariant: glue never shrinks below width - shrink).
-    let effective_delta = if delta < 0 { delta.max(-total) } else { delta };
-    for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
-        let ParagraphItem::Glue(glue) = item else {
-            continue;
-        };
-        let flex = glue_flex(*glue, delta);
-        if flex <= 0 {
-            continue;
-        }
-        glue_pos += 1;
-        let extra = if glue_pos == glue_count {
-            effective_delta.saturating_sub(assigned)
+    let last = capacities.len() - 1;
+    let mut entries: Vec<(usize, i64, bool)> = Vec::with_capacity(capacities.len());
+    for (pos, (idx, cap, words)) in capacities.iter().enumerate() {
+        let extra = if pos == last {
+            effective_delta - assigned
         } else {
-            effective_delta.saturating_mul(flex) / total
+            effective_delta * cap / total_cap
         };
-        assigned = assigned.saturating_add(extra);
-        out.push((idx, extra as f32 / 1000.0));
+        assigned += extra;
+        entries.push((*idx, extra, *words));
     }
+    // The consumer walks item indices ascending; merge orderings explicitly.
+    entries.sort_by_key(|(idx, _, _)| *idx);
+    out.extend(
+        entries
+            .into_iter()
+            .map(|(idx, milli, applies_to_words)| (idx, milli as f32 / 1000.0, applies_to_words)),
+    );
 }
+
 
 fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -> bool {
     matches!(
@@ -33942,4 +34019,109 @@ mod coverage_gap_tests {
         assert!(texts.contains(&"foo—"));
         assert!(texts.contains(&"bar"));
     }
+
+    #[test]
+    fn dense_multi_column_table_adaptively_scales_font_size() {
+        let md = "| Metric | 2021 | 2022 | 2023 | 2024 | 2025 | 2026E | 2027E |\n|:---|---:|---:|---:|---:|---:|---:|---:|\n| Revenue ($B) | 56.8 | 75.9 | 69.3 | 90.1 | 122.4 | 171.0 | 215.0 |\n| Gross Margin | 51.6% | 59.6% | 54.4% | 56.1% | 60.5% | 67.7% | 64.0% |\n| Operating Margin | 40.9% | 49.5% | 42.6% | 44.5% | 49.8% | 58.2% | 53.5% |\n";
+        let doc = crate::parse_markdown(md);
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let lines = layout(&doc.blocks, &opts, &faces, page);
+        // Table lines with 8 columns under standard measure must have scaled font size (< 10.0)
+        let table_lines: Vec<&Line> = lines.iter().filter(|l| matches!(l.flow.kind, FlowKind::TableHeader | FlowKind::TableRow)).collect();
+        assert!(!table_lines.is_empty());
+        for line in &table_lines {
+            assert!(
+                line.size < 10.0,
+                "8-column table must adaptively scale font size down: was {}",
+                line.size
+            );
+            assert!(
+                line.size >= 7.5,
+                "scaled table font size must not drop below minimum: was {}",
+                line.size
+            );
+        }
+    }
+    fn justified_line_items() -> Vec<ParagraphItem> {
+        let box_a = ParagraphItem::Box(TextBox {
+            text: String::new(),
+            runs: crate::layout::StyledText::default(),
+            width: LayoutUnit::from_milli_points(20000),
+        });
+        let interword = ParagraphItem::Glue(Glue {
+            width: LayoutUnit::from_milli_points(1000),
+            stretch: LayoutUnit::from_milli_points(100),
+            shrink: LayoutUnit::from_milli_points(50),
+        });
+        let box_b = ParagraphItem::Box(TextBox {
+            text: String::new(),
+            runs: crate::layout::StyledText::default(),
+            width: LayoutUnit::from_milli_points(30000),
+        });
+        vec![box_a, interword, box_b]
+    }
+
+    #[test]
+    fn expansion_shortfall_reaches_word_boxes_proportionally() {
+        // natural 51pt on a 52.8pt measure: delta = +1800mp. Capacities:
+        // glue stretch 100, box A 300 (20pt * 15 permilli), box B 450.
+        let items = justified_line_items();
+        let lb = LineBreak {
+            start: 0,
+            end: 3,
+            next: 3,
+            natural_width: LayoutUnit::from_milli_points(51000),
+            badness: 0,
+            fitness: crate::layout::FitnessClass::Decent,
+            demerits: 0,
+        };
+        let mut out = Vec::new();
+        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(52800), true, &mut out);
+        assert_eq!(out.len(), 3, "glue plus both word boxes adjust");
+        assert!(!out[1].2, "index-1 entry is the glue");
+        assert!(out[0].2 && out[2].2, "box entries apply to words");
+    }
+
+    #[test]
+    fn compression_never_exceeds_combined_glue_and_glyph_shrink() {
+        // delta = -9000mp exceeds combined capacity 800 (shrink flex 50 +
+        // boxes 750); effective delta clamps to -800 = each capacity exactly.
+        let items = justified_line_items();
+        let lb = LineBreak {
+            start: 0,
+            end: 3,
+            next: 3,
+            natural_width: LayoutUnit::from_milli_points(53000),
+            badness: 0,
+            fitness: crate::layout::FitnessClass::Decent,
+            demerits: 0,
+        };
+        let mut out = Vec::new();
+        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(44000), true, &mut out);
+        let total_milli: i64 = out.iter().map(|e| (e.1 * 1000.0).round() as i64).sum();
+        assert_eq!(total_milli, -800, "sum of adjustments == clamped delta");
+        assert_eq!((out[2].1 * 1000.0).round() as i64, -450, "last share honors cap via remainder");
+    }
+
+    #[test]
+    fn unforced_ragged_lines_stay_unadjusted() {
+        let items = justified_line_items();
+        let lb = LineBreak {
+            start: 0,
+            end: 3,
+            next: 3,
+            natural_width: LayoutUnit::from_milli_points(52000),
+            badness: 0,
+            fitness: crate::layout::FitnessClass::Decent,
+            demerits: 0,
+        };
+        let mut out = Vec::new();
+        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(52000), false, &mut out);
+        assert!(out.is_empty(), "ragged lines never justify");
+    }
 }
+
+
+

@@ -14,7 +14,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$repo_root/target/fmd-checks}"
+mkdir -p "$CARGO_TARGET_DIR"
 # shellcheck source=scripts/validate-run-id.sh
+
 source scripts/validate-run-id.sh
 
 RUN_ID="${1:-local}"
@@ -116,8 +118,13 @@ size_fail=0
 
 # Native binary for the parity oracle (debug is fine: output is deterministic).
 log "build native fmd (parity oracle)"
-cargo build --quiet --bin fmd
-fmd="$CARGO_TARGET_DIR/debug/fmd"
+host_target="$(rustc -vV | sed -n 's|host: ||p')"
+cargo build --quiet --bin fmd --target "$host_target"
+fmd="$CARGO_TARGET_DIR/$host_target/debug/fmd"
+if [ ! -x "$fmd" ] && [ -x "$CARGO_TARGET_DIR/debug/fmd" ]; then
+  fmd="$CARGO_TARGET_DIR/debug/fmd"
+fi
+
 
 # Corpus: the showcase plus a focused probe.
 EPOCH=1700000000

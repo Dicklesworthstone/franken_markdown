@@ -67,8 +67,6 @@ const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
-const TABLE_FONT_SIZE: f32 = 10.0;
-const TABLE_MIN_FONT_SIZE: f32 = 7.5;
 const TABLE_COL_GUTTER: f32 = 14.0;
 
 const TABLE_MIN_COL_WIDTH: f32 = 18.0;
@@ -15607,8 +15605,10 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         };
         let scale = min_ratio.min(col_cap).clamp(0.75, 1.0);
         if scale < 0.96 {
-            size = (TABLE_FONT_SIZE * scale).clamp(TABLE_MIN_FONT_SIZE, TABLE_FONT_SIZE);
-            pad = (TABLE_COL_GUTTER * (size / TABLE_FONT_SIZE)).max(8.0);
+            let nominal = spec.nominal_size;
+            let min_size = (nominal * 0.75).max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT);
+            size = (nominal * scale).clamp(min_size, nominal);
+            pad = (TABLE_COL_GUTTER * (size / nominal)).max(8.0);
             gutters = pad * ncol as f32;
             target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
 
@@ -24209,7 +24209,9 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     if before
         .segs
         .last()
-        .map(|s| s.text.ends_with('-') || s.text.ends_with('—'))
+        .map(|s| {
+            s.text.ends_with('-') || s.text.ends_with('\u{AD}') || s.text.ends_with('\u{2010}')
+        })
         .unwrap_or(false)
     {
         penalty += 1_200_000.0;
@@ -28400,7 +28402,7 @@ mod pdf_writer_tests {
         };
 
         assert!(
-            TableLayoutKey::new(&table, 0.0, test_page_geom(), super::TABLE_FONT_SIZE).is_none(),
+            TableLayoutKey::new(&table, 0.0, test_page_geom(), 10.0).is_none(),
             "the table cache key must bound inline node count, not just text bytes"
         );
     }
@@ -31817,7 +31819,7 @@ mod svg_text_path_tests {
 mod table_wrap_tests {
     use super::{
         CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
-        Faces, Fill, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_FONT_SIZE,
+        Faces, Fill, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER,
         TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
         code_fragments, fitted_code_font_size, layout_list, list_marker_layouts,
         preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
@@ -31825,6 +31827,8 @@ mod table_wrap_tests {
     };
     use crate::PdfOptions;
     use crate::ast::{Inline, List, ListItem};
+
+    const TEST_TABLE_FONT_SIZE: f32 = 10.0;
 
     fn text_cell(text: &str) -> Vec<Inline> {
         vec![Inline::Text(text.to_string())]
@@ -31864,7 +31868,7 @@ mod table_wrap_tests {
         let toks = cell_tokens(cell, header, faces);
         column.push(table_cell_measure(
             &toks,
-            TABLE_FONT_SIZE,
+            TEST_TABLE_FONT_SIZE,
             faces,
             width_cache,
             header,
@@ -31898,7 +31902,7 @@ mod table_wrap_tests {
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
         let width_cache = width_cache();
         let toks = cell_tokens(cell, header, faces);
-        table_cell_measure(&toks, TABLE_FONT_SIZE, faces, &width_cache, header).max_content
+        table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, faces, &width_cache, header).max_content
     }
 
     fn total_table_badness(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
@@ -32002,9 +32006,15 @@ mod table_wrap_tests {
             Inline::Text(" repeat".to_string()),
         ]);
         let toks = cell_tokens(&cell, false, &faces);
-        let uncached = table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &width_cache(), false);
-        let measured =
-            table_cell_measure(&toks, TABLE_FONT_SIZE, &faces, &shared_width_cache, false);
+        let uncached =
+            table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, &faces, &width_cache(), false);
+        let measured = table_cell_measure(
+            &toks,
+            TEST_TABLE_FONT_SIZE,
+            &faces,
+            &shared_width_cache,
+            false,
+        );
 
         assert_eq!(measured.lines.len(), uncached.lines.len());
         assert_eq!(measured.min_content, uncached.min_content);

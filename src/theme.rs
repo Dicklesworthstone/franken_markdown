@@ -500,13 +500,18 @@ impl TypeScale {
     ) -> Self {
         let d = Self::default();
         let base = base_font_size
+            .filter(|x| x.is_finite())
             .unwrap_or(d.body)
             .clamp(BASE_FONT_SIZE_MIN_PT, BASE_FONT_SIZE_MAX_PT);
         let proportion = base / d.body;
         let table = table_font_size
+            .filter(|x| x.is_finite())
             .unwrap_or(d.table * proportion)
             .clamp(TABLE_FONT_SIZE_FLOOR_PT, base);
-        match heading_scale.map(|r| r.clamp(HEADING_SCALE_MIN, HEADING_SCALE_MAX)) {
+        match heading_scale
+            .filter(|x| x.is_finite())
+            .map(|r| r.clamp(HEADING_SCALE_MIN, HEADING_SCALE_MAX))
+        {
             None => Self {
                 h: d.h.map(|size| size * proportion),
                 body: base,
@@ -538,6 +543,14 @@ mod type_scale_tests {
     #[test]
     fn all_none_reproduces_legacy_ladder_exactly() {
         assert_eq!(TypeScale::resolve(None, None, None), TypeScale::default());
+    }
+
+    #[test]
+    fn non_finite_overrides_fall_back_to_defaults() {
+        assert_eq!(
+            TypeScale::resolve(Some(f32::NAN), Some(f32::INFINITY), Some(f32::NEG_INFINITY)),
+            TypeScale::default()
+        );
     }
 
     #[test]

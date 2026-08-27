@@ -221,3 +221,21 @@ fn typography_table_override_changes_render_output() {
         "table_font_size must reach layout_table_uncached"
     );
 }
+
+#[test]
+fn typography_table_override_affects_dense_adaptive_table() {
+    use franken_markdown::{PdfOptions, render_pdf_document};
+    let md = "| Col1 | Col2 | Col3 | Col4 | Col5 | Col6 |\n|:--|:--|:--|:--|:--|:--|\n| very long content alpha | beta | gamma | delta | epsilon | zeta |\n";
+    let doc = franken_markdown::parse_markdown(md);
+    let render = |opts: &PdfOptions| render_pdf_document(&doc, opts).expect("render");
+    let default = render(&PdfOptions::default());
+    let custom = PdfOptions {
+        table_font_size: Some(12.0),
+        ..Default::default()
+    };
+    assert_ne!(
+        default,
+        render(&custom),
+        "table_font_size override must propagate through adaptive table font scaling"
+    );
+}

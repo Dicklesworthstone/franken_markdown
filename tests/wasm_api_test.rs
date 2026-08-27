@@ -365,3 +365,23 @@ fn wasm_diagnostics_json_escapes_control_and_quote_characters() {
     assert!(json.contains("},{"), "diagnostics comma-separated: {json}");
     assert!(json.ends_with(']'));
 }
+
+#[test]
+fn wasm_pdf_accepts_typography_overrides() {
+    let opts_default = WasmRenderOptions::default();
+    let opts_custom = WasmRenderOptions::default()
+        .with_base_font_size(14.0)
+        .with_heading_scale(1.33)
+        .with_table_font_size(9.0);
+
+    let doc = "# Heading\n\nParagraph text.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let a = render_pdf(doc, &opts_default).unwrap();
+    let b = render_pdf(doc, &opts_custom).unwrap();
+    let c = render_pdf(doc, &opts_custom).unwrap();
+
+    assert_eq!(b.bytes, c.bytes, "WASM renders must be deterministic");
+    assert_ne!(
+        a.bytes, b.bytes,
+        "Typography overrides must change PDF output"
+    );
+}

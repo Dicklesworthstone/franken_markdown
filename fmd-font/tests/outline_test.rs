@@ -417,6 +417,11 @@ fn hostile_mutations_never_panic() {
                 for gid in 0..font.num_glyphs.min(64) {
                     let _ = font.glyph_outline(gid);
                 }
+                // The subsetter is the other trust surface: it walks the same
+                // hostile glyf/composite/cmap structures AND writes new bytes,
+                // so hostile input must survive it too — graceful `None`, never
+                // a panic.
+                let _ = font.subset(&['H', 'o', '\u{1D49C}', '\u{2192}']);
             }
         });
         assert!(outcome.is_ok(), "mutated font caused a panic");
@@ -438,6 +443,7 @@ fn truncation_sweep_never_panics() {
                 for gid in 0..font.num_glyphs.min(16) {
                     let _ = font.glyph_outline(gid);
                 }
+                let _ = font.subset(&['H', 'o', '\u{2192}']);
             }
         });
         assert!(outcome.is_ok(), "truncated font (cut {cut}) caused a panic");

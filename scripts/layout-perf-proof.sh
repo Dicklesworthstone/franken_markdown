@@ -86,15 +86,16 @@ if ! command -v python3 >/dev/null 2>&1; then
   fail "python3 is required for artifact summarization"
 fi
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/validate-run-id.sh
 source scripts/validate-run-id.sh
 
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-layout-$(git rev-parse --short HEAD)"
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-layout-$(git rev-parse --short HEAD 2>/dev/null || echo "head")"
 fi
 fmd_validate_run_id "layout-perf-proof" "$RUN_ID"
+
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"

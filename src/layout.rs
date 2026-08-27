@@ -1971,14 +1971,21 @@ pub fn break_paragraph_into(
             // lines share the capped demerit, so fewer lines would win). Its
             // overflow says nothing about the narrower inter-candidate
             // predecessors, so it is neither selectable-when-overfull nor a stop.
-            let overfull =
-                prev_idx != j && segment.width.saturating_sub(segment.shrink) > line_width;
+            let is_overfull = segment.width.saturating_sub(segment.shrink) > line_width;
+            if prev_idx == j && j > 0 && is_overfull {
+                // The whole-prefix line (start = 0 to candidate j > 0) does not fit on one line;
+                // do not cram multiple words into one overfull line when intermediate breaks exist.
+                continue;
+            }
+            let overfull = is_overfull;
+
             let badness = candidate_badness(*candidate, segment, line_width);
             // Underfull-past-stretch lines (INF badness, not overfull) stay illegal
             // — keep scanning toward wider segments.
             if badness >= INF_PENALTY && !overfull {
                 continue;
             }
+
             let prev_state = if prev_idx == j {
                 None
             } else {
@@ -1997,14 +2004,28 @@ pub fn break_paragraph_into(
             };
             let fitness = candidate_fitness(*candidate, segment, line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
-            let demerits = prev_demerits.saturating_add(line_demerits(
+            let line_demerit_val = line_demerits(
                 badness,
                 candidate.penalty,
                 prev_state.is_some_and(|(_, state)| state.flagged),
                 candidate.flagged,
                 prev_state.map(|(_, state)| state.fitness),
                 fitness,
-            ));
+            );
+            // Overfull lines must carry a massive penalty so that any feasible or
+            // stretchable underfull line strictly wins over bleeding into the margin.
+            // Scale by overflow amount so an overfull token is isolated to its own line
+            // rather than greedily dragging subsequent feasible words into the overflow.
+            let overfull_cost = if overfull {
+                let overflow = segment.width.saturating_sub(line_width).milli_points() as i64;
+                1_000_000_000i64.saturating_add(overflow.saturating_mul(100_000))
+            } else {
+                0i64
+            };
+            let demerits = prev_demerits
+                .saturating_add(line_demerit_val)
+                .saturating_add(overfull_cost);
+
             let state = BreakState {
                 prev: prev_state.map(|(idx, _)| idx),
                 line: LineBreak {
@@ -2521,8 +2542,8 @@ mod overfull_selectability_tests {
 mod hyphen_and_break_edge_tests {
     use super::{
         AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
-        FontSize, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem, Penalty, StyledText,
-        TextBox, TextStyle, append_styled_word_chunk, build_hyphen_trie,
+        FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem, Penalty, StyledText,
+        TextBox, TextStyle, append_styled_word_chunk, break_paragraph, build_hyphen_trie,
         insert_encoded_hyphen_pattern, insert_hyphen_pattern,
         push_hyphenated_word_items_from_points, trailing_forced_fit_break,
     };
@@ -2681,5 +2702,57 @@ mod hyphen_and_break_edge_tests {
         assert_eq!(line.badness, 0);
         assert_eq!(line.fitness, FitnessClass::Decent);
         assert_eq!(line.demerits, 1, "(badness 0 + 1)^2 with no penalty cost");
+    }
+
+    #[test]
+    fn overfull_first_word_paragraph_breaks_cleanly_into_multiple_lines() {
+        // Construct a paragraph starting with an unbreakable 150pt token followed by
+        // normal words on a 100pt line. The breaker must isolate the overfull token on
+        // line 1 and break subsequent words onto feasible lines without collapsing or dropping words.
+        let make_box = |width_pt: i32| {
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(width_pt),
+            })
+        };
+        let items = vec![
+            // Word 1: 150 pt box (overfull)
+            make_box(150),
+            // Space
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::from_points(5),
+                stretch: LayoutUnit::from_points(2),
+                shrink: LayoutUnit::from_points(1),
+            }),
+            // Word 2: 40 pt box
+            make_box(40),
+            // Space
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::from_points(5),
+                stretch: LayoutUnit::from_points(2),
+                shrink: LayoutUnit::from_points(1),
+            }),
+            // Word 3: 40 pt box
+            make_box(40),
+            // Final forced break
+            ParagraphItem::Penalty(Penalty {
+                width: LayoutUnit::ZERO,
+                penalty: FORCED_BREAK_PENALTY,
+                flagged: false,
+            }),
+        ];
+
+        let lines = break_paragraph(&items, LayoutUnit::from_points(100));
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "must break into 2 lines: overfull word 1, then words 2+3"
+        );
+        assert_eq!(lines[0].start, 0);
+        assert_eq!(lines[0].end, 1); // after word 1 glue
+        assert_eq!(lines[1].start, 2); // word 2 start
+        assert_eq!(lines[1].end, 5); // paragraph end
     }
 }

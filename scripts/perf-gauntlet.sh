@@ -68,15 +68,16 @@ if [ "$ITERS" -eq 0 ]; then
   exit 64
 fi
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/validate-run-id.sh
 source scripts/validate-run-id.sh
 
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD 2>/dev/null || echo "head")"
 fi
 fmd_validate_run_id "perf-gauntlet" "$RUN_ID"
+
 
 ARTIFACT_DIR="tests/artifacts/perf/$RUN_ID"
 GOLDEN_DIR="$ARTIFACT_DIR/golden"

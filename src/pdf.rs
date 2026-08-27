@@ -14892,7 +14892,53 @@ fn cell_tokens(inlines: &[Inline], header: bool, faces: &Faces) -> Vec<Tok> {
     let mut toks = Vec::new();
     tokenize(inlines, header, false, false, None, &mut toks);
     apply_symbol_fallback(&mut toks, faces);
-    toks
+    split_cell_separator_tokens(toks)
+}
+
+fn split_cell_separator_tokens(toks: Vec<Tok>) -> Vec<Tok> {
+    let mut out = Vec::with_capacity(toks.len());
+    for tok in toks {
+        if tok.space || tok.hard_break || tok.text.len() < 4 {
+            out.push(tok);
+            continue;
+        }
+        let mut start = 0;
+        let mut split_found = false;
+        for (idx, ch) in tok.text.char_indices() {
+            let is_sep =
+                ch == '-' || ch == '/' || ch == '_' || ch == '\u{2013}' || ch == '\u{2014}';
+            let end_idx = idx + ch.len_utf8();
+            if is_sep && end_idx < tok.text.len() && idx > start {
+                let part = &tok.text[start..end_idx];
+                out.push(Tok {
+                    text: part.to_string(),
+                    slot: tok.slot,
+                    space: false,
+                    hard_break: false,
+                    link: tok.link.clone(),
+                    strike: tok.strike,
+                });
+                start = end_idx;
+                split_found = true;
+            }
+        }
+        if start < tok.text.len() {
+            let tail = &tok.text[start..];
+            if split_found {
+                out.push(Tok {
+                    text: tail.to_string(),
+                    slot: tok.slot,
+                    space: false,
+                    hard_break: false,
+                    link: tok.link.clone(),
+                    strike: tok.strike,
+                });
+            } else {
+                out.push(tok);
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone, Default)]
@@ -15194,7 +15240,7 @@ fn table_column_badness(column: &TableColumnMetrics, width: f32) -> f32 {
 
     if column.min_content > width {
         let shortage = (column.min_content - width) / column.min_content.max(1.0);
-        badness += shortage * shortage * 2_000.0;
+        badness += 500_000.0 * (1.0 + shortage * shortage);
     }
 
     if column.max_content > 0.0 {
@@ -16955,6 +17001,9 @@ fn glue_adjustments_into(
     out.reserve(glue_count);
     let mut assigned = 0i64;
     let mut glue_pos = 0usize;
+    // When shrinking (delta < 0), total shrink applied across all glues must never
+    // exceed total available shrink (TeX invariant: glue never shrinks below width - shrink).
+    let effective_delta = if delta < 0 { delta.max(-total) } else { delta };
     for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
         let ParagraphItem::Glue(glue) = item else {
             continue;
@@ -16965,9 +17014,9 @@ fn glue_adjustments_into(
         }
         glue_pos += 1;
         let extra = if glue_pos == glue_count {
-            delta.saturating_sub(assigned)
+            effective_delta.saturating_sub(assigned)
         } else {
-            delta.saturating_mul(flex) / total
+            effective_delta.saturating_mul(flex) / total
         };
         assigned = assigned.saturating_add(extra);
         out.push((idx, extra as f32 / 1000.0));
@@ -17040,16 +17089,18 @@ fn build_segs_adjusted(
             Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
                 let old_width = s.width;
                 s.text.push_str(text);
-                s.width = shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs)
-                    + line_tok.extra_advance;
-                advance = s.width - old_width;
+                s.width = (shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs)
+                    + line_tok.extra_advance)
+                    .max(old_width);
+                advance = (s.width - old_width).max(0.0);
             }
             _ => {
                 if let Some(s) = cur.take() {
                     segs.push(s);
                 }
-                advance = shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs)
-                    + line_tok.extra_advance;
+                advance = (shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs)
+                    + line_tok.extra_advance)
+                    .max(0.0);
                 cur = Some(Seg {
                     x,
                     slot: tok.slot,
@@ -23831,17 +23882,59 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     // Keep headings with at least the first following content line. This is the
     // PDF analogue of TeX's high after-heading penalty.
     if before.flow.kind == FlowKind::Heading {
+        penalty += 1_500_000.0;
+    }
+
+    // Prevent orphan headings: if a heading occurred 1 or 2 lines before this break
+    // candidate, penalize breaking so the page break happens before the heading.
+    if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
+        penalty += 1_200_000.0;
+    }
+    if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
         penalty += 1_000_000.0;
     }
 
+    // Never separate table header or table rule from table rows, and never break
+    // between TableHeader and TableRule.
     if before.flow.group == after.flow.group
         && matches!(
             before.flow.kind,
             FlowKind::TableHeader | FlowKind::TableRule
         )
-        && after.flow.kind == FlowKind::TableRow
+        && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
     {
-        penalty += 900_000.0;
+        penalty += 1_500_000.0;
+    }
+
+    // Never break mid-row inside a table row or table header: keep all visual lines
+    // of a single logical table row together on the same page.
+    if before.flow.group == after.flow.group
+        && matches!(before.flow.kind, FlowKind::TableRow | FlowKind::TableHeader)
+        && before.flow.index + 1 < before.flow.count
+    {
+        penalty += 1_500_000.0;
+    }
+
+    // Keep a short intro/caption paragraph together: do not break inside a 1-3 line
+    // intro paragraph when it introduces a structured block.
+    if before.flow.group == after.flow.group
+        && before.flow.kind == FlowKind::Paragraph
+        && before.flow.count <= 3
+        && before.flow.index + 1 < before.flow.count
+    {
+        let mut following_is_captioned = false;
+        for next_line in &lines[candidate..] {
+            if next_line.flow.group != before.flow.group {
+                following_is_captioned = matches!(
+                    next_line.flow.kind,
+                    FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
+                ) || next_line.flow.list_start;
+                break;
+            }
+        }
+        if following_is_captioned {
+            penalty += 1_200_000.0;
+        }
     }
 
     // Generalized keep-with-next: keep a short intro/caption paragraph with the
@@ -23853,14 +23946,14 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     let before_ends_short_intro = before.flow.kind == FlowKind::Paragraph
         && before.flow.group != after.flow.group
         && before.flow.index + 1 == before.flow.count
-        && before.flow.count <= 2;
+        && before.flow.count <= 3;
     let after_starts_captioned_block = (matches!(
         after.flow.kind,
         FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
     ) && after.flow.index == 0)
         || after.flow.list_start;
     if before_ends_short_intro && after_starts_captioned_block {
-        penalty += 700_000.0;
+        penalty += 1_200_000.0;
     }
 
     // Avoid leaving the final, short item of a list alone on the next page when
@@ -30475,6 +30568,7 @@ flowchart LR
                 Err(e) => mismatches.push(format!("{name}: cannot read golden {path:?}: {e}")),
             }
         }
+
         assert!(
             mismatches.is_empty(),
             "render-tree golden mismatch ({}). If the change is intentional, \
@@ -30486,6 +30580,7 @@ flowchart LR
     }
 
     #[test]
+
     fn render_tree_is_stable_across_repeated_renders() {
         // The render tree must itself be deterministic (a prerequisite for the
         // golden to mean anything).
@@ -33794,5 +33889,57 @@ mod coverage_gap_tests {
             .expect("missing glyph warning");
         assert_eq!(*missing.0, 2, "both emoji occurrences are counted");
         assert_eq!(missing.1, "\u{1F984}", "sample dedupes repeated chars");
+    }
+
+    #[test]
+    fn section_17_inline_paragraph_layout_no_negative_advances_or_overlaps() {
+        let text = "Twenty-eight skills from the library were composed for this underwrite, each contributing the section noted: `single-name-overview` (workflow spine); `hfdt` (data-layer discipline); `business-classification-and-routing` (6-D classification; routed information-services, not SaaS); `evidence-triangulation-rules` (source weights; underwriter-coverage independence discount); `information-services-and-data-panel-economics` (§6 data-rights verdict); `quality-of-earnings` (§5); `capital-allocation-and-per-share-compounding` + `historical-compounding-quality` (§10 per-share record); `management-alignment` + `management-communication-quality` (§9, incl. the computed language-density series); `shareholder-capital-events` (§10 offering forensics); `insider-and-13F-signals` (§9 behavior); `unit-economics` + `driver-model-grammar` (§3); `economic-exposure-map` (§4); `guidance-credibility-and-cut-risk` (§1 optics note; beatable-guide read); `consensus-and-revisions` (§1/§11 consensus anchoring); `contract-repricing-and-customer-power-clock` (§6 supplier clock); `policy-cliff-and-regulatory-duration` (§8); `structural-change-threat-map` (§7); `market-expectations-map` + `valuation-and-return-profile` (§1/§11 implied expectations, ladder, marks); `external-mark-and-replacement-cost-triangulation` (§11 marks-as-caps); `mean-reversion-and-forensic-risk` (§15); `holder-flow-and-crowding` (§12 float/index); `corporate-action-dominance-and-path-survival` (§12 buyer ledger); `best-expression-selection` (§13); `variant-perception-and-catalyst-engine` + `thesis-legs-and-redteam` (§14); `catalyst-calendar` (§16); `winning-idea-quality-bar` (final quality gate: the long at $70 is a screen result — a great company at a full price — so the disciplined output is the conditional framework above, not a position).";
+        let doc = crate::parse_markdown(text);
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let lines = layout(&doc.blocks, &opts, &faces, page);
+        println!("LINES COUNT: {}", lines.len());
+        for (i, line) in lines.iter().enumerate() {
+            let line_str: String = line.segs.iter().map(|s| s.text.as_str()).collect();
+            println!("  L{i}: {line_str}");
+        }
+        assert!(lines.len() >= 15, "lines count was {}", lines.len());
+        for line in &lines {
+            let mut prev_x = page.left;
+            for seg in &line.segs {
+                assert!(
+                    seg.width >= 0.0,
+                    "segment width must be non-negative: {:?}",
+                    seg.text
+                );
+                assert!(
+                    seg.x >= prev_x - 0.01,
+                    "segment x must be monotonically advancing: prev_x={prev_x}, seg={:?}",
+                    seg.text
+                );
+                prev_x = seg.x + seg.width;
+            }
+        }
+        let pdf = crate::render_pdf_document(&doc, &opts).unwrap();
+        assert!(!pdf.is_empty());
+    }
+
+    #[test]
+    fn table_cell_tokens_split_on_dashes_and_slashes() {
+        let text = "Accounting/forensic 2–4 yrs multi-year foo—bar";
+        let inlines = vec![Inline::Text(text.to_string())];
+        let opts = PdfOptions::default();
+        let faces = Faces::load(&opts).unwrap();
+        let toks = cell_tokens(&inlines, false, &faces);
+        let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
+        assert!(texts.contains(&"Accounting/"));
+        assert!(texts.contains(&"forensic"));
+        assert!(texts.contains(&"2–"));
+        assert!(texts.contains(&"4"));
+        assert!(texts.contains(&"multi-"));
+        assert!(texts.contains(&"year"));
+        assert!(texts.contains(&"foo—"));
+        assert!(texts.contains(&"bar"));
     }
 }

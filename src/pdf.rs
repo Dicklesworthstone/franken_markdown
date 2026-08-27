@@ -15400,33 +15400,36 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         })
         .collect();
 
-    let mut previous = vec![f32::INFINITY; extra_units + 1];
-    previous[0] = 0.0;
-    let mut parents = vec![vec![0usize; extra_units + 1]; ncol];
-
+    // Min-plus DP over per-column extra units. `values[c]` holds the best
+    // cumulative badness after placing columns 0..c (with `values[0]` the
+    // zero-width start state). Parents are reconstructed afterwards from the
+    // value tables, so the hot loop is a branchless running min over two
+    // contiguous slices. Selection is bit-identical to the previous
+    // strict-`<` update: for a given column and total, the first `used` (in
+    // ascending order) whose `base + cost` equals the stored minimum is
+    // exactly the parent the inline update kept.
+    let mut values: Vec<Vec<f32>> = Vec::with_capacity(ncol + 1);
+    let mut start = vec![f32::INFINITY; extra_units + 1];
+    start[0] = 0.0;
+    values.push(start);
     for col_idx in 0..ncol {
+        let previous = &values[col_idx];
+        let cost = &costs[col_idx];
         let mut next = vec![f32::INFINITY; extra_units + 1];
         for (used, &base) in previous.iter().enumerate() {
             if !base.is_finite() {
                 continue;
             }
-            for (add, &cost) in costs[col_idx]
-                .iter()
-                .take(extra_units - used + 1)
-                .enumerate()
-            {
-                let total = used + add;
-                let candidate = base + cost;
-                if candidate < next[total] {
-                    next[total] = candidate;
-                    parents[col_idx][total] = add;
-                }
+            let candidates = cost.iter().take(extra_units - used + 1);
+            let slots = next[used..].iter_mut();
+            for (&step, slot) in candidates.zip(slots) {
+                *slot = (*slot).min(base + step);
             }
         }
-        previous = next;
+        values.push(next);
     }
 
-    if !previous[extra_units].is_finite() {
+    if !values[ncol][extra_units].is_finite() {
         let mut widths = vec![target / ncol as f32; ncol];
         finish_table_allocated_widths(columns, &mut widths, target);
         return widths;
@@ -15435,7 +15438,23 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
     let mut units_by_col = vec![0usize; ncol];
     let mut remaining = extra_units;
     for col_idx in (0..ncol).rev() {
-        let add = parents[col_idx][remaining];
+        let previous = &values[col_idx];
+        let placed = &values[col_idx + 1];
+        let cost = &costs[col_idx];
+        let mut add = 0usize;
+        if placed[remaining].is_finite() {
+            for used in 0..=remaining {
+                let base = previous[used];
+                if !base.is_finite() {
+                    continue;
+                }
+                let candidate = remaining - used;
+                if base + cost[candidate] == placed[remaining] {
+                    add = candidate;
+                    break;
+                }
+            }
+        }
         units_by_col[col_idx] = add;
         remaining = remaining.saturating_sub(add);
     }

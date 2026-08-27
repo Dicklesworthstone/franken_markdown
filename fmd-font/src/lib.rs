@@ -875,6 +875,7 @@ impl Font {
         let mut out = data.to_vec();
         let mut p = 10usize; // skip numberOfContours + 4x i16 bbox
         let mut instruction_flags_positions = Vec::new();
+        let mut dangling_more = false;
         loop {
             let last_flags_pos = p;
             let flags = be_u16(&out, p)?;
@@ -909,13 +910,22 @@ impl Font {
             // component header (flags + gid = 4 bytes), clear the dangling
             // MORE flag on the current record and finish the walk — the same
             // tolerance the component reader applies to a malformed final
-            // record, so one bad composite cannot fail the entire subset.
+            // record, so one bad composite cannot fail the entire subset. A
+            // dangling record claiming instructions has no instruction bytes
+            // behind it either, so its WE_HAVE_INSTRUCTIONS claim is dropped
+            // here and the strip pass below is skipped entirely.
             if off(p, 4).is_none_or(|end| end > out.len()) {
-                write_u16(&mut out, last_flags_pos, flags & !MORE)?;
+                write_u16(&mut out, last_flags_pos, flags & !(MORE | WE_HAVE_INSTRUCTIONS))?;
+                dangling_more = true;
                 break;
             }
         }
-        if !instruction_flags_positions.is_empty() {
+        if dangling_more {
+            for flags_pos in &instruction_flags_positions {
+                let flags = be_u16(&out, *flags_pos)?;
+                write_u16(&mut out, *flags_pos, flags & !WE_HAVE_INSTRUCTIONS)?;
+            }
+        } else if !instruction_flags_positions.is_empty() {
             for flags_pos in instruction_flags_positions {
                 let flags = be_u16(&out, flags_pos)?;
                 write_u16(&mut out, flags_pos, flags & !WE_HAVE_INSTRUCTIONS)?;
@@ -2996,6 +3006,42 @@ mod synthetic_font_tests {
         // The MORE bit on gid 7's single component record (offset 10) is gone.
         assert_eq!(be_u16(&out, 10), Some(0));
         assert!(font.subset_glyphs(&[7], &[]).is_some());
+    }
+
+    #[test]
+    fn subset_tolerates_composite_whose_dangling_record_claims_instructions() {
+        // A final record with WE_HAVE_INSTRUCTIONS|MORE_COMPONENTS and zero
+        // bytes behind it: the reader stops the walk, so the subsetter must
+        // too — dropping both claims rather than failing the whole font on
+        // the instruction_len read past the glyph end.
+        let glyph = composite_glyph([0; 4], &[(0x0100 | 0x0020, 0, &[0, 0])], &[]);
+        let mut glyf = Vec::new();
+        let mut loca = Vec::new();
+        push16(&mut loca, 0); // glyph 0 starts (and ends: it is empty)
+        push16(&mut loca, 0);
+        glyf.extend_from_slice(&glyph);
+        push16(&mut loca, u16::try_from(glyf.len() / 2).unwrap());
+        let mut tables = base_tables(
+            2,
+            1,
+            1000,
+            hmtx_long(&[(500, 0), (500, 1)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"loca", loca));
+        tables.push((b"glyf", glyf));
+        let font = parse(&tables);
+
+        let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
+        new_of[0] = 0;
+        new_of[1] = 1;
+        let out = font
+            .subset_glyph_bytes(1, &new_of)
+            .expect("dangling INSTRUCTIONS|MORE record is tolerated");
+        // Both the MORE and the instruction claim are gone from the final
+        // record's flags (offset 10).
+        let flags = be_u16(&out, 10).expect("record flags readable");
+        assert_eq!(flags & (0x0100 | 0x0020), 0, "MORE and INSTRUCTIONS cleared");
     }
 
     #[test]

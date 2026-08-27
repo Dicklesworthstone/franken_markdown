@@ -48,8 +48,8 @@ fn mirrored_blackboard(ch: char) -> Option<char> {
 }
 
 fn letterlike_exception_cps() -> impl Iterator<Item = u32> {
-    // The four ranges backing every exception letter above.
-    [(0x212C_u32, 0x2134_u32), (0x2102, 0x2119)]
+    // 0x2102–0x2124 covers ℂ ℍ ℕ ℙ ℚ ℛ ℤ; 0x212C–0x2134 covers ℬ ℰ ℱ ℳ ℯ ℴ.
+    [(0x2102_u32, 0x2124_u32), (0x212C, 0x2134)]
         .into_iter()
         .flat_map(|(s, e)| s..=e)
 }

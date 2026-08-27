@@ -5,8 +5,10 @@
 //! `maxp` (glyph count), `hhea`/`hmtx` (vertical metrics + advance widths),
 //! `cmap` (character → glyph, formats 4 and 12), `glyf`/`loca` (TrueType
 //! outlines for subsetting), legacy `kern` format-0 pair kerning, focused GPOS
-//! pair positioning, and GSUB standard ligatures. Latin-first, zero-dependency,
-//! and free of `unsafe`/`unwrap`/`panic` — every read is bounds-checked.
+//! pair positioning, GSUB standard ligatures, and optional `fvar`/`avar` font
+//! variation axes (named instances + clamped axis mapping). Latin-first,
+//! zero-dependency, and free of `unsafe`/`unwrap`/`panic` — every read is
+//! bounds-checked.
 //!
 //! CFF/OpenType outline subsetting and broader script shaping are still future
 //! increments. The current module is enough for bundled TrueType fonts, real
@@ -36,6 +38,16 @@ const MAX_LAYOUT_GLYPHS: usize = 65_536;
 /// Alias of the layout ceiling used specifically for Coverage-table expansion.
 const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
 const MISSING_GLYPH_REMAP: u16 = u16::MAX;
+
+/// OpenType variable fonts almost never exceed a handful of axes (`wght`,
+/// `wdth`, `opsz`, …). A hostile `fvar` can claim 65 535 axes at 20 bytes
+/// each; this cap bounds the retained `Vec` and the walk.
+const MAX_VARIATION_AXES: usize = 64;
+/// Named instances are a short designer-authored list. Cap the walk so a
+/// huge `instanceCount` cannot hang the parser.
+const MAX_NAMED_INSTANCES: usize = 256;
+/// `avar` segment maps are piecewise-linear; a few dozen knots is generous.
+const MAX_AVAR_MAPS: usize = 64;
 
 #[derive(Debug, Clone)]
 struct Cmap4Segment {
@@ -80,6 +92,63 @@ pub struct Font {
     loca_long: bool,
     /// `(pair_record_offset, pair_count)` for a legacy `kern` format-0 table.
     kern0: Option<(usize, u16)>,
+    /// Optional OpenType variations (`fvar` + optional `avar`). Absent for
+    /// static faces and for fonts whose variation tables fail validation.
+    variation: Option<FontVariation>,
+}
+
+/// One `fvar` variation axis (`wght`, `wdth`, `opsz`, …).
+///
+/// Values are in the axis's user space (the same units as `fvar` `minValue` /
+/// `defaultValue` / `maxValue`, typically 1.0-based design coordinates such as
+/// CSS `font-weight` 100–900).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VariationAxis {
+    /// Four-byte axis tag, e.g. `*b"wght"`.
+    pub tag: [u8; 4],
+    /// Inclusive lower bound of the axis.
+    pub min: f32,
+    /// Default (uninstanced) location.
+    pub default: f32,
+    /// Inclusive upper bound of the axis.
+    pub max: f32,
+    /// Axis flags from `fvar` (bit 0 = hidden axis).
+    pub flags: u16,
+    /// Name table ID for the axis's display name.
+    pub name_id: u16,
+}
+
+/// User-space `(min, default, max)` for one variation axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisBounds {
+    /// Inclusive lower bound.
+    pub min: f32,
+    /// Default location.
+    pub default: f32,
+    /// Inclusive upper bound.
+    pub max: f32,
+}
+
+/// One named instance from `fvar` (a designer-authored location in axis space).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedInstance {
+    /// Name table ID for the instance subfamily name (e.g. "Bold").
+    pub subfamily_name_id: u16,
+    /// Instance flags from `fvar`.
+    pub flags: u16,
+    /// Per-axis coordinates in user space, parallel to [`Font::axes`].
+    pub coordinates: Vec<f32>,
+    /// Optional PostScript name ID when `instanceSize` includes it.
+    pub postscript_name_id: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+struct FontVariation {
+    axes: Vec<VariationAxis>,
+    instances: Vec<NamedInstance>,
+    /// Per-axis `avar` maps of `(from, to)` in normalized `[-1, 1]` space.
+    /// `None` means identity mapping for that axis.
+    avar: Vec<Option<Vec<(f32, f32)>>>,
 }
 
 /// Why a font failed to parse.
@@ -118,6 +187,20 @@ pub(crate) fn be_i16(d: &[u8], o: usize) -> Option<i16> {
 fn be_u32(d: &[u8], o: usize) -> Option<u32> {
     let bytes = d.get(o..o.checked_add(4)?)?;
     Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn be_i32(d: &[u8], o: usize) -> Option<i32> {
+    be_u32(d, o).map(|v| v as i32)
+}
+
+/// OpenType `Fixed` (16.16) → `f32`.
+fn fixed_16_16(v: i32) -> f32 {
+    (f64::from(v) / 65536.0) as f32
+}
+
+/// OpenType `F2DOT14` → `f32` in (approximately) `[-2, 2)`.
+fn f2dot14(v: i16) -> f32 {
+    f32::from(v) / 16384.0
 }
 
 fn off(base: usize, delta: usize) -> Option<usize> {
@@ -233,6 +316,232 @@ fn find_kern0(d: &[u8]) -> Option<(usize, u16)> {
     None
 }
 
+/// Parse an optional `fvar` table. Returns `None` on truncation, version
+/// mismatch, or a structurally hostile header; a well-formed static font
+/// simply has no `fvar`.
+fn parse_fvar(d: &[u8], table_off: usize, table_len: usize) -> Option<FontVariation> {
+    let table_end = table_off.checked_add(table_len)?;
+    if table_off.checked_add(16)? > table_end {
+        return None;
+    }
+    let major = be_u16(d, table_off)?;
+    if major != 1 {
+        return None;
+    }
+    let axes_array_offset = be_u16_at(d, table_off, 4)? as usize;
+    let axis_count = be_u16_at(d, table_off, 8)? as usize;
+    let axis_size = be_u16_at(d, table_off, 10)? as usize;
+    let instance_count = be_u16_at(d, table_off, 12)? as usize;
+    let instance_size = be_u16_at(d, table_off, 14)? as usize;
+    if axis_size < 20 {
+        return None;
+    }
+    let n_axes = axis_count.min(MAX_VARIATION_AXES);
+    let axes_off = off(table_off, axes_array_offset)?;
+    let axes_bytes = n_axes.checked_mul(axis_size)?;
+    if axes_off.checked_add(axes_bytes)? > table_end {
+        return None;
+    }
+
+    let mut axes = Vec::with_capacity(n_axes);
+    for i in 0..n_axes {
+        let rec = off_mul(axes_off, i, axis_size)?;
+        let tag_bytes = bytes_at(d, rec, 4)?;
+        let mut tag = [0u8; 4];
+        tag.copy_from_slice(tag_bytes);
+        let min = fixed_16_16(be_i32(d, off(rec, 4)?)?);
+        let default = fixed_16_16(be_i32(d, off(rec, 8)?)?);
+        let max = fixed_16_16(be_i32(d, off(rec, 12)?)?);
+        let flags = be_u16_at(d, rec, 16)?;
+        let name_id = be_u16_at(d, rec, 18)?;
+        axes.push(VariationAxis {
+            tag,
+            min,
+            default,
+            max,
+            flags,
+            name_id,
+        });
+    }
+
+    let n_inst = instance_count.min(MAX_NAMED_INSTANCES);
+    let coord_bytes = n_axes.checked_mul(4)?;
+    let min_inst_size = 4usize.checked_add(coord_bytes)?;
+    let mut instances = Vec::new();
+    if instance_size >= min_inst_size {
+        let inst_off = off(axes_off, axes_bytes)?;
+        let inst_bytes = n_inst.checked_mul(instance_size)?;
+        if inst_off.checked_add(inst_bytes)? <= table_end {
+            let has_ps_name = instance_size >= min_inst_size.saturating_add(2);
+            for i in 0..n_inst {
+                let rec = off_mul(inst_off, i, instance_size)?;
+                let subfamily_name_id = be_u16(d, rec)?;
+                let flags = be_u16_at(d, rec, 2)?;
+                let mut coordinates = Vec::with_capacity(n_axes);
+                let mut ok = true;
+                for a in 0..n_axes {
+                    let Some(coord) = off(rec, 4)
+                        .and_then(|base| off_mul(base, a, 4))
+                        .and_then(|o| be_i32(d, o))
+                    else {
+                        ok = false;
+                        break;
+                    };
+                    coordinates.push(fixed_16_16(coord));
+                }
+                if !ok {
+                    continue;
+                }
+                let postscript_name_id = if has_ps_name {
+                    be_u16_at(d, rec, min_inst_size)
+                } else {
+                    None
+                };
+                instances.push(NamedInstance {
+                    subfamily_name_id,
+                    flags,
+                    coordinates,
+                    postscript_name_id,
+                });
+            }
+        }
+    }
+
+    let avar = vec![None; axes.len()];
+    Some(FontVariation {
+        axes,
+        instances,
+        avar,
+    })
+}
+
+/// Overlay `avar` segment maps onto a parsed `fvar`. Axis count must match
+/// the (already-capped) `fvar` axis count; otherwise `avar` is ignored.
+fn parse_avar(
+    d: &[u8],
+    table_off: usize,
+    table_len: usize,
+    n_axes: usize,
+) -> Option<Vec<Option<Vec<(f32, f32)>>>> {
+    let table_end = table_off.checked_add(table_len)?;
+    if table_off.checked_add(8)? > table_end {
+        return None;
+    }
+    let major = be_u16(d, table_off)?;
+    if major != 1 {
+        return None;
+    }
+    let axis_count = be_u16_at(d, table_off, 6)? as usize;
+    if axis_count != n_axes {
+        return None;
+    }
+    let mut maps = Vec::with_capacity(n_axes);
+    let mut cursor = off(table_off, 8)?;
+    for _ in 0..n_axes {
+        if cursor.checked_add(2)? > table_end {
+            return None;
+        }
+        let count = be_u16(d, cursor)? as usize;
+        cursor = off(cursor, 2)?;
+        let n = count.min(MAX_AVAR_MAPS);
+        let bytes = n.checked_mul(4)?;
+        if cursor.checked_add(bytes)? > table_end {
+            return None;
+        }
+        let mut segs = Vec::with_capacity(n);
+        for i in 0..n {
+            let rec = off_mul(cursor, i, 4)?;
+            let from = f2dot14(be_i16(d, rec)?);
+            let to = f2dot14(be_i16_at(d, rec, 2)?);
+            segs.push((from, to));
+        }
+        // Skip any claimed-but-capped remainder so the next axis stays aligned.
+        let claimed = count.checked_mul(4)?;
+        cursor = off(cursor, claimed)?;
+        if segs.len() < 2 {
+            maps.push(None);
+            continue;
+        }
+        // Piecewise lookup needs non-decreasing `from`. Drop the axis map
+        // rather than inventing a sort that would hide a broken table.
+        let sorted = segs.windows(2).all(|w| w[0].0 <= w[1].0);
+        maps.push(if sorted { Some(segs) } else { None });
+    }
+    Some(maps)
+}
+
+fn be_i16_at(d: &[u8], base: usize, delta: usize) -> Option<i16> {
+    be_i16(d, off(base, delta)?)
+}
+
+/// Map a normalized `[-1, 1]` coordinate through an `avar` segment list.
+fn avar_map(maps: &[(f32, f32)], x: f32) -> f32 {
+    let Some(first) = maps.first() else {
+        return x;
+    };
+    if x <= first.0 {
+        return first.1;
+    }
+    let Some(last) = maps.last() else {
+        return x;
+    };
+    if x >= last.0 {
+        return last.1;
+    }
+    for pair in maps.windows(2) {
+        let (from0, to0) = pair[0];
+        let (from1, to1) = pair[1];
+        if x <= from1 {
+            let span = from1 - from0;
+            if span == 0.0 {
+                return to0;
+            }
+            let t = (x - from0) / span;
+            return to0 + t * (to1 - to0);
+        }
+    }
+    last.1
+}
+
+/// User-space value → normalized `[-1, 1]`, clamped to `[min, max]`.
+/// Inverted `min`/`max` (hostile tables) are ordered before clamping so
+/// `f32::clamp` cannot panic.
+fn normalize_user(user: f32, axis: &VariationAxis) -> f32 {
+    let lo = axis.min.min(axis.max);
+    let hi = axis.min.max(axis.max);
+    let user = if user < lo {
+        lo
+    } else if user > hi {
+        hi
+    } else {
+        user
+    };
+    let default = if axis.default < lo {
+        lo
+    } else if axis.default > hi {
+        hi
+    } else {
+        axis.default
+    };
+    if user < default {
+        let span = default - lo;
+        if span == 0.0 {
+            0.0
+        } else {
+            (user - default) / span
+        }
+    } else if user > default {
+        let span = hi - default;
+        if span == 0.0 {
+            0.0
+        } else {
+            (user - default) / span
+        }
+    } else {
+        0.0
+    }
+}
+
 impl Font {
     /// Parse a font from its raw bytes (e.g. an `include_bytes!` blob).
     ///
@@ -282,6 +591,15 @@ impl Font {
         let loca_off = find_table(d, b"loca");
         let glyf = find_table_full(d, b"glyf");
         let kern0 = find_kern0(d);
+        let mut variation =
+            find_table_full(d, b"fvar").and_then(|(off, len)| parse_fvar(d, off, len));
+        if let Some(var) = variation.as_mut() {
+            if let Some(avar) = find_table_full(d, b"avar")
+                .and_then(|(off, len)| parse_avar(d, off, len, var.axes.len()))
+            {
+                var.avar = avar;
+            }
+        }
 
         Ok(Self {
             data,
@@ -299,6 +617,7 @@ impl Font {
             loca_off,
             loca_long,
             kern0,
+            variation,
         })
     }
 
@@ -306,6 +625,53 @@ impl Font {
     #[must_use]
     pub fn has_glyf_outlines(&self) -> bool {
         self.glyf.is_some() && self.loca_off.is_some()
+    }
+
+    /// Variation axes from `fvar`, in table order. Empty for static fonts.
+    #[must_use]
+    pub fn axes(&self) -> &[VariationAxis] {
+        self.variation
+            .as_ref()
+            .map(|v| v.axes.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Named instances from `fvar`. Empty when the table is absent or has none.
+    #[must_use]
+    pub fn named_instances(&self) -> &[NamedInstance] {
+        self.variation
+            .as_ref()
+            .map(|v| v.instances.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// User-space `(min, default, max)` for the axis whose tag is `tag`.
+    #[must_use]
+    pub fn instance_bounds(&self, tag: [u8; 4]) -> Option<AxisBounds> {
+        self.axes()
+            .iter()
+            .find(|a| a.tag == tag)
+            .map(|a| AxisBounds {
+                min: a.min,
+                default: a.default,
+                max: a.max,
+            })
+    }
+
+    /// Clamp `user` to the axis bounds, normalize to `[-1, 1]`, then apply
+    /// `avar` (identity when the table is absent or that axis has no maps).
+    ///
+    /// Values below `min` and above `max` map to the corresponding endpoints
+    /// (`-1` / `+1` after identity `avar`).
+    #[must_use]
+    pub fn normalized_axis(&self, tag: [u8; 4], user: f32) -> Option<f32> {
+        let var = self.variation.as_ref()?;
+        let (idx, axis) = var.axes.iter().enumerate().find(|(_, a)| a.tag == tag)?;
+        let mut n = normalize_user(user, axis);
+        if let Some(maps) = var.avar.get(idx).and_then(|m| m.as_ref()) {
+            n = avar_map(maps, n);
+        }
+        Some(n)
     }
 
     /// The `[start, end)` byte range of glyph `gid` within the `glyf` table.
@@ -3692,6 +4058,340 @@ mod synthetic_font_tests {
                 std::collections::BTreeMap::new();
             parse_ligature_subst(&d, 0, &mut rules);
             assert!(rules.is_empty(), "lig_count={lig_count}");
+        }
+    }
+
+    // --- fvar / avar --------------------------------------------------------
+
+    fn f32_to_fixed(v: f32) -> i32 {
+        (f64::from(v) * 65536.0).round() as i32
+    }
+
+    fn f32_to_f2dot14(v: f32) -> i16 {
+        (v * 16384.0).round() as i16
+    }
+
+    fn push_i32(out: &mut Vec<u8>, v: i32) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    /// `fvar` with `axes` of `(tag, min, default, max, name_id)` and named
+    /// instances of `(subfamily_name_id, coords_in_user_space)`.
+    fn fvar_table(
+        axes: &[(&[u8; 4], f32, f32, f32, u16)],
+        instances: &[(u16, &[f32])],
+        with_ps_name: bool,
+    ) -> Vec<u8> {
+        let axis_count = u16::try_from(axes.len()).unwrap();
+        let instance_count = u16::try_from(instances.len()).unwrap();
+        let instance_size = 4 + 4 * axis_count + u16::from(with_ps_name) * 2;
+        let mut t = Vec::new();
+        push16(&mut t, 1); // major
+        push16(&mut t, 0); // minor
+        push16(&mut t, 16); // axesArrayOffset
+        push16(&mut t, 0); // reserved
+        push16(&mut t, axis_count);
+        push16(&mut t, 20); // axisSize
+        push16(&mut t, instance_count);
+        push16(&mut t, instance_size);
+        for &(tag, min, default, max, name_id) in axes {
+            t.extend_from_slice(&tag[..]);
+            push_i32(&mut t, f32_to_fixed(min));
+            push_i32(&mut t, f32_to_fixed(default));
+            push_i32(&mut t, f32_to_fixed(max));
+            push16(&mut t, 0); // flags
+            push16(&mut t, name_id);
+        }
+        for &(name_id, coords) in instances {
+            push16(&mut t, name_id);
+            push16(&mut t, 0); // flags
+            for &c in coords {
+                push_i32(&mut t, f32_to_fixed(c));
+            }
+            if with_ps_name {
+                push16(&mut t, name_id.saturating_add(1000));
+            }
+        }
+        t
+    }
+
+    /// Identity or custom `avar` maps, one `&[(from, to)]` per axis.
+    fn avar_table(maps: &[&[(f32, f32)]]) -> Vec<u8> {
+        let mut t = Vec::new();
+        push16(&mut t, 1); // major
+        push16(&mut t, 0); // minor
+        push16(&mut t, 0); // reserved
+        push16(&mut t, u16::try_from(maps.len()).unwrap());
+        for axis in maps {
+            push16(&mut t, u16::try_from(axis.len()).unwrap());
+            for &(from, to) in *axis {
+                push_i16(&mut t, f32_to_f2dot14(from));
+                push_i16(&mut t, f32_to_f2dot14(to));
+            }
+        }
+        t
+    }
+
+    fn variation_font(fvar: Vec<u8>, avar: Option<Vec<u8>>) -> Font {
+        let mut tables = base_tables(1, 1, 1000, hmtx_long(&[(500, 0)]), cmap4_simple(&[]));
+        tables.push((b"fvar", fvar));
+        if let Some(avar) = avar {
+            tables.push((b"avar", avar));
+        }
+        parse(&tables)
+    }
+
+    /// Project-authored OFL test face: one `wght` axis 100..400..900, Regular
+    /// (400) and Bold (700) named instances, identity `avar`.
+    fn fmd_test_vf_bytes() -> Vec<u8> {
+        let fvar = fvar_table(
+            &[(b"wght", 100.0, 400.0, 900.0, 256)],
+            &[(258, &[400.0]), (259, &[700.0])],
+            true,
+        );
+        let avar = avar_table(&[&[(-1.0, -1.0), (0.0, 0.0), (1.0, 1.0)]]);
+        let mut tables = base_tables(1, 1, 1000, hmtx_long(&[(500, 0)]), cmap4_simple(&[]));
+        tables.push((b"fvar", fvar));
+        tables.push((b"avar", avar));
+        sfnt(0x0001_0000, &tables)
+    }
+
+    fn log_check(id: &str, subject: &str, ok: bool) {
+        eprintln!(
+            "check id={id} subject={subject} outcome={}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+        assert!(ok, "{id}: {subject}");
+    }
+
+    #[test]
+    fn fvar_axes_tags_and_named_instances() {
+        let font = variation_font(
+            fvar_table(
+                &[
+                    (b"wght", 100.0, 400.0, 900.0, 256),
+                    (b"wdth", 75.0, 100.0, 125.0, 257),
+                ],
+                &[(258, &[400.0, 100.0]), (259, &[700.0, 100.0])],
+                true,
+            ),
+            None,
+        );
+        let axes = font.axes();
+        log_check("gk3v.1.axes.count", "two axes", axes.len() == 2);
+        log_check(
+            "gk3v.1.axes.wght",
+            "first tag wght",
+            axes[0].tag == *b"wght",
+        );
+        log_check(
+            "gk3v.1.axes.wdth",
+            "second tag wdth",
+            axes[1].tag == *b"wdth",
+        );
+        let wght = font.instance_bounds(*b"wght").expect("wght present");
+        log_check(
+            "gk3v.1.bounds.wght",
+            "wght 100/400/900",
+            (wght.min - 100.0).abs() < 1e-4
+                && (wght.default - 400.0).abs() < 1e-4
+                && (wght.max - 900.0).abs() < 1e-4,
+        );
+        log_check(
+            "gk3v.1.bounds.missing",
+            "unknown tag is None",
+            font.instance_bounds(*b"opsz").is_none(),
+        );
+        let inst = font.named_instances();
+        log_check("gk3v.1.inst.count", "two named instances", inst.len() == 2);
+        log_check(
+            "gk3v.1.inst.regular",
+            "Regular at wght=400",
+            inst[0].subfamily_name_id == 258
+                && (inst[0].coordinates[0] - 400.0).abs() < 1e-4
+                && inst[0].postscript_name_id == Some(1258),
+        );
+        log_check(
+            "gk3v.1.inst.bold",
+            "Bold at wght=700",
+            inst[1].subfamily_name_id == 259 && (inst[1].coordinates[0] - 700.0).abs() < 1e-4,
+        );
+        log_check(
+            "gk3v.1.static",
+            "static face has no axes",
+            parse(&base_tables(
+                1,
+                1,
+                1000,
+                hmtx_long(&[(500, 0)]),
+                cmap4_simple(&[]),
+            ))
+            .axes()
+            .is_empty(),
+        );
+    }
+
+    #[test]
+    fn avar_clamp_edges_map_to_endpoints() {
+        // Compress the positive side: 0.5 → 0.25, endpoints stay ±1.
+        let font = variation_font(
+            fvar_table(&[(b"wght", 100.0, 400.0, 900.0, 256)], &[], false),
+            Some(avar_table(&[&[
+                (-1.0, -1.0),
+                (0.0, 0.0),
+                (0.5, 0.25),
+                (1.0, 1.0),
+            ]])),
+        );
+        let below = font.normalized_axis(*b"wght", 0.0);
+        let at_min = font.normalized_axis(*b"wght", 100.0);
+        let at_def = font.normalized_axis(*b"wght", 400.0);
+        let at_max = font.normalized_axis(*b"wght", 900.0);
+        let above = font.normalized_axis(*b"wght", 2000.0);
+        log_check(
+            "gk3v.1.avar.below",
+            "below-min → -1",
+            below.is_some_and(|v| (v + 1.0).abs() < 1e-4),
+        );
+        log_check(
+            "gk3v.1.avar.min",
+            "min → -1",
+            at_min.is_some_and(|v| (v + 1.0).abs() < 1e-4),
+        );
+        log_check(
+            "gk3v.1.avar.default",
+            "default → 0",
+            at_def.is_some_and(|v| v.abs() < 1e-4),
+        );
+        log_check(
+            "gk3v.1.avar.max",
+            "max → +1",
+            at_max.is_some_and(|v| (v - 1.0).abs() < 1e-4),
+        );
+        log_check(
+            "gk3v.1.avar.above",
+            "above-max → +1",
+            above.is_some_and(|v| (v - 1.0).abs() < 1e-4),
+        );
+        // Mid-positive user 650 is halfway 400→900 → 0.5, avar compresses to 0.25.
+        let mid = font.normalized_axis(*b"wght", 650.0);
+        log_check(
+            "gk3v.1.avar.mid",
+            "650 → avar(0.5)=0.25",
+            mid.is_some_and(|v| (v - 0.25).abs() < 1e-3),
+        );
+    }
+
+    #[test]
+    fn fvar_avar_truncation_and_hostile_headers() {
+        let good = fvar_table(&[(b"wght", 100.0, 400.0, 900.0, 256)], &[], false);
+        let font = variation_font(good[..10].to_vec(), None);
+        log_check(
+            "gk3v.1.trunc.header",
+            "truncated fvar header → no axes",
+            font.axes().is_empty(),
+        );
+
+        let mut bad_ver = good.clone();
+        bad_ver[0..2].copy_from_slice(&2u16.to_be_bytes());
+        log_check(
+            "gk3v.1.trunc.version",
+            "fvar major!=1 → no axes",
+            variation_font(bad_ver, None).axes().is_empty(),
+        );
+
+        let mut tiny_axis = good.clone();
+        tiny_axis[10..12].copy_from_slice(&8u16.to_be_bytes());
+        log_check(
+            "gk3v.1.trunc.axisSize",
+            "axisSize < 20 → no axes",
+            variation_font(tiny_axis, None).axes().is_empty(),
+        );
+
+        // avar axisCount mismatch is ignored; fvar still parses.
+        let mismatched = variation_font(
+            fvar_table(&[(b"wght", 100.0, 400.0, 900.0, 256)], &[], false),
+            Some(avar_table(&[
+                &[(-1.0, -1.0), (1.0, 1.0)],
+                &[(-1.0, -1.0), (1.0, 1.0)],
+            ])),
+        );
+        log_check(
+            "gk3v.1.avar.mismatch",
+            "avar axisCount mismatch → identity",
+            mismatched.axes().len() == 1
+                && mismatched
+                    .normalized_axis(*b"wght", 100.0)
+                    .is_some_and(|v| (v + 1.0).abs() < 1e-4),
+        );
+    }
+
+    #[test]
+    fn fvar_avar_lcg_mutation_never_panics() {
+        let base = fmd_test_vf_bytes();
+        let mut state = 0xC0FF_EE00u64;
+        let mut lcg = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 33) as usize
+        };
+        for round in 0..128 {
+            let mut mutated = base.clone();
+            for _ in 0..8 {
+                let pos = lcg() % mutated.len();
+                let bit = 1u8 << (lcg() % 8);
+                mutated[pos] ^= bit;
+            }
+            let outcome = std::panic::catch_unwind(move || {
+                if let Ok(font) = Font::parse(mutated) {
+                    let _ = font.axes();
+                    let _ = font.named_instances();
+                    let _ = font.instance_bounds(*b"wght");
+                    let _ = font.normalized_axis(*b"wght", 0.0);
+                    let _ = font.normalized_axis(*b"wght", 400.0);
+                    let _ = font.normalized_axis(*b"wght", 9999.0);
+                }
+            });
+            log_check(
+                "gk3v.1.lcg",
+                &format!("round {round} no panic"),
+                outcome.is_ok(),
+            );
+        }
+        for cut in (0..base.len()).step_by(7) {
+            let truncated = base[..cut].to_vec();
+            let outcome = std::panic::catch_unwind(move || {
+                if let Ok(font) = Font::parse(truncated) {
+                    let _ = font.axes();
+                    let _ = font.normalized_axis(*b"wght", 100.0);
+                }
+            });
+            log_check(
+                "gk3v.1.trunc.sweep",
+                &format!("cut {cut} no panic"),
+                outcome.is_ok(),
+            );
+        }
+    }
+
+    #[test]
+    fn fmd_test_vf_fixture_round_trip() {
+        let bytes = fmd_test_vf_bytes();
+        let font = Font::parse(bytes).expect("test VF parses");
+        log_check(
+            "gk3v.1.fixture.axes",
+            "committed-shape VF has wght",
+            font.axes().len() == 1 && font.axes()[0].tag == *b"wght",
+        );
+        log_check(
+            "gk3v.1.fixture.inst",
+            "Regular + Bold instances",
+            font.named_instances().len() == 2,
+        );
+        if std::env::var("FMD_DUMP_TEST_VF").ok().as_deref() == Some("1") {
+            std::fs::write("/tmp/FmdTestVF.ttf", fmd_test_vf_bytes()).unwrap();
+            eprintln!("check id=gk3v.1.dump subject=/tmp/FmdTestVF.ttf outcome=PASS");
         }
     }
 }

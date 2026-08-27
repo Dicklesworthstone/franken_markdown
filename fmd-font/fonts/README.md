@@ -14,6 +14,7 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Serif (LaTeX)  | Computer Modern | `computer-modern/cmun{rm,bx,ti,bi}.ttf` (Roman / Bold / Italic / BoldItalic) |
 | Mono (code)    | CM Typewriter   | `computer-modern/cmuntt.ttf` |
 | Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
+| Test-only VF | FmdTestVF (synthetic `wght` axis) | `test-variable/FmdTestVF.ttf` |
 
 `cmunrm` is the classic Computer Modern Roman — the canonical LaTeX body face.
 
@@ -46,6 +47,9 @@ are the single source of truth for the fallback repertoire.
   (© The Noto Project Authors), SIL OFL 1.1. License: `noto-sans-math/OFL.txt`.
   Committed as the curated `NotoSansMathSymbols.ttf` subset described above, not
   the full face.
+- **FmdTestVF** — project-authored synthetic variable font for `fvar`/`avar`
+  parser tests (`gk3v.1`). SIL OFL 1.1, no Reserved Font Name. License:
+  `test-variable/OFL.txt`. See `test-variable/README.md`.
 
 ## Notes
 

@@ -30529,10 +30529,17 @@ mod render_tree_golden_tests {
         }
     }
 
+    fn golden_dir() -> PathBuf {
+        // CI/blessing runners can redirect output elsewhere (e.g. an rch job
+        // result dir); default stays the committed location.
+        if let Some(dir) = std::env::var_os("RENDER_TREE_GOLDEN_DIR") {
+            return PathBuf::from(dir);
+        }
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/render_tree")
+    }
+
     fn golden_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/golden/render_tree")
-            .join(format!("{name}.txt"))
+        golden_dir().join(format!("{name}.txt"))
     }
 
     /// (name, markdown, page width, page height). Pages are kept narrow so prose

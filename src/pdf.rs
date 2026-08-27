@@ -15631,6 +15631,14 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     if ncol == 0 {
         return;
     }
+    let perf_on = std::env::var_os("FMD_TABLE_PERF").is_some();
+    let mut tok_ns = 0u128;
+    let mut meas_ns = 0u128;
+    let mut scale_ns = 0u128;
+    let mut alloc_ns = 0u128;
+    let mut align_ns = 0u128;
+    let mut wrap_ns = 0u128;
+    let mut rl_ns = 0u128;
     let faces = spec.faces;
     let width_cache = spec.width_cache;
     let page = spec.page;
@@ -15643,6 +15651,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     // Tokenize each cell once. Measurement and wrapping use the same styled
     // token stream, so table layout avoids repeating inline/style work while
     // keeping header bolding, links, and strikethrough behavior identical.
+    let t0 = std::time::Instant::now();
     let head_toks: Vec<Vec<Tok>> = table
         .head
         .iter()
@@ -15657,10 +15666,12 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 .collect()
         })
         .collect();
+    tok_ns = t0.elapsed().as_nanos();
 
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
     // the allocator can search candidate widths without reshaping text inside
     // its dynamic-programming loop.
+    let t0 = std::time::Instant::now();
     let mut columns = vec![TableColumnMetrics::default(); ncol];
     for (k, toks) in head_toks.iter().enumerate() {
         if let Some(column) = columns.get_mut(k) {
@@ -15674,6 +15685,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         }
     }
+    meas_ns = t0.elapsed().as_nanos();
 
     let mut gutters = pad * ncol as f32;
     let mut target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
@@ -15682,6 +15694,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     // When table columns experience severe measure pressure (unbreakable tokens
     // exceeding target, or dense 5+ column layouts with tight widths), adaptively scale
     // cell font size down (between 7.5pt and 10.0pt) and re-measure.
+    let t0 = std::time::Instant::now();
     let total_min: f32 = columns.iter().map(|col| col.min_content).sum();
     let total_max: f32 = columns.iter().map(|col| col.max_content).sum();
     if total_min > target
@@ -15723,8 +15736,11 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         }
     }
+    scale_ns = t0.elapsed().as_nanos();
 
+    let t0 = std::time::Instant::now();
     let colw = allocate_table_column_widths(&columns, target);
+    alloc_ns = t0.elapsed().as_nanos();
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -15734,6 +15750,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         cx += w + pad;
     }
 
+    let t0 = std::time::Instant::now();
     let is_numeric_toks = |toks: &[Tok]| -> bool {
         let mut text = String::new();
         for t in toks {
@@ -15768,8 +15785,11 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         })
         .collect();
+    align_ns = t0.elapsed().as_nanos();
 
-    let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
+    let mut row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
+        let t_rl = std::time::Instant::now();
+        let t0 = std::time::Instant::now();
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -15777,6 +15797,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 wrap_cell_styled(toks, cw, size, faces, width_cache)
             })
             .collect();
+        wrap_ns += t0.elapsed().as_nanos();
         let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
         let mut lines = Vec::with_capacity(depth);
 
@@ -15855,6 +15876,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             });
         }
 
+        rl_ns += t_rl.elapsed().as_nanos();
         lines
     };
 
@@ -15894,6 +15916,19 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     }
     out.push(rule(0.0));
     gap(out, 8.0);
+    if perf_on {
+        eprintln!(
+            "FMDTP tok_us={} meas_us={} scale_us={} alloc_us={} align_us={} wrap_us={} rl_us={} rows={}",
+            tok_ns / 1000,
+            meas_ns / 1000,
+            scale_ns / 1000,
+            alloc_ns / 1000,
+            align_ns / 1000,
+            wrap_ns / 1000,
+            rl_ns / 1000,
+            table.rows.len(),
+        );
+    }
 }
 
 struct ListMarkerLayout {

@@ -1,0 +1,47 @@
+# Publish-readiness gate (bead smif.1): on every version tag, prove the
+# distributable surfaces are consistent and every crate packages cleanly
+# BEFORE a human runs the real `cargo publish` (which requires the owner's
+# crates.io token — never stored in CI for this repo's threat model).
+#
+# Order matters at real-publish time: fmd-font first (root's path dependency
+# resolves from the registry), then franken_markdown; fmd-math is independent
+# (franken_manim consumes it, root does not).
+name: publish-readiness
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Release parity gate
+        run: bash scripts/check-release-parity.sh --tag "${GITHUB_REF_NAME}"
+      - name: Package fmd-font (license reachability + include list)
+        run: cargo package --list -p fmd-font
+      - name: Package fmd-math
+        run: cargo package --list -p fmd-math
+      - name: Dry-run publish fmd-font
+        run: cargo publish --dry-run -p fmd-font
+      - name: Dry-run publish fmd-math
+        run: cargo publish --dry-run -p fmd-math
+      - name: Dry-run publish franken_markdown
+        run: cargo publish --dry-run -p franken_markdown
+      - name: Upload packaged crates as artifacts
+        run: |
+          mkdir -p packaged
+          for c in fmd-font fmd-math franken_markdown; do
+            find target/package -maxdepth 1 -name "${c}-*.crate" -exec cp {} packaged/ \; || true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-crates
+          path: packaged/
+          if-no-files-found: error

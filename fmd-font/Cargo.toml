@@ -8,9 +8,10 @@ name = "fmd-font"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license-file = "../LICENSE"
+license-file = "LICENSE"
 description = "Clean-room TrueType/OpenType font reader and glyf outline decoder (franken_markdown's font subsystem)"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"
+include = ["src/**", "examples/**", "fonts/**", "LICENSE"]
 
 [lib]
 name = "fmd_font"

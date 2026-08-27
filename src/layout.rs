@@ -1710,26 +1710,39 @@ struct MetricPrefixes {
     width: Vec<i64>,
     stretch: Vec<i64>,
     shrink: Vec<i64>,
+    /// Per-box expansion credit accumulated into `stretch`/`shrink`, tracked
+    /// separately so a segment can be re-evaluated WITHOUT the credit (the
+    /// final line of a paragraph, which no emitter justifies).
+    box_elasticity: Vec<i64>,
 }
 
 impl MetricPrefixes {
-    fn rebuild_from_items(&mut self, items: &[ParagraphItem]) {
+    /// Rebuild prefix sums. `expansion_permilli` is the ±glyph elasticity
+    /// credit in permilli of each box's width (15 = ±1.5%, the Hàn Thế Thành
+    /// microtype default); 0 disables the credit entirely so segments are
+    /// evaluated on glue flexibility alone.
+    fn rebuild_from_items(&mut self, items: &[ParagraphItem], expansion_permilli: u16) {
         self.width.clear();
         self.stretch.clear();
         self.shrink.clear();
+        self.box_elasticity.clear();
 
         let needed = items.len() + 1;
         self.width.reserve(needed);
         self.stretch.reserve(needed);
         self.shrink.reserve(needed);
+        self.box_elasticity.reserve(needed);
 
         self.width.push(0);
         self.stretch.push(0);
         self.shrink.push(0);
+        self.box_elasticity.push(0);
 
         let mut running_width = 0i64;
         let mut running_stretch = 0i64;
         let mut running_shrink = 0i64;
+        let mut running_elasticity = 0i64;
+        let permilli = i64::from(expansion_permilli);
         for item in items {
             match item {
                 ParagraphItem::Box(item) => {
@@ -1737,9 +1750,10 @@ impl MetricPrefixes {
                     running_width += w;
                     // Micro-typography font expansion (Hàn Thế Thành / Zapf Hz-program):
                     // Glyphs provide ±1.5% horizontal expansion/compression elasticity.
-                    let expansion_elasticity = (w * 15) / 1000;
+                    let expansion_elasticity = (w * permilli) / 1000;
                     running_stretch += expansion_elasticity;
                     running_shrink += expansion_elasticity;
+                    running_elasticity += expansion_elasticity;
                 }
                 ParagraphItem::Glue(item) => {
                     running_width += item.width.milli_points() as i64;
@@ -1752,24 +1766,31 @@ impl MetricPrefixes {
             self.width.push(running_width);
             self.stretch.push(running_stretch);
             self.shrink.push(running_shrink);
+            self.box_elasticity.push(running_elasticity);
         }
     }
 
-    fn segment_metrics(&self, start: usize, candidate: BreakCandidate) -> SegmentMetrics {
+    fn segment_metrics(
+        &self,
+        start: usize,
+        candidate: BreakCandidate,
+        include_box_elasticity: bool,
+    ) -> SegmentMetrics {
         let width = prefix_diff(&self.width, start, candidate.item_index)
             + candidate.penalty_width.milli_points() as i64;
+        let elasticity = if include_box_elasticity {
+            0i64
+        } else {
+            prefix_diff(&self.box_elasticity, start, candidate.item_index)
+        };
         SegmentMetrics {
             width: LayoutUnit(clamp_i64_to_i32(width)),
-            stretch: LayoutUnit(clamp_i64_to_i32(prefix_diff(
-                &self.stretch,
-                start,
-                candidate.item_index,
-            ))),
-            shrink: LayoutUnit(clamp_i64_to_i32(prefix_diff(
-                &self.shrink,
-                start,
-                candidate.item_index,
-            ))),
+            stretch: LayoutUnit(clamp_i64_to_i32(
+                prefix_diff(&self.stretch, start, candidate.item_index) - elasticity,
+            )),
+            shrink: LayoutUnit(clamp_i64_to_i32(
+                prefix_diff(&self.shrink, start, candidate.item_index) - elasticity,
+            )),
         }
     }
 }
@@ -1788,13 +1809,7 @@ struct BreakState {
     fitness: FitnessClass,
 }
 
-/// Reusable scratch storage for paragraph layout.
-///
-/// This is render-call-local by design: callers create one workspace per render
-/// job, reuse it for every paragraph in that job, and then drop it. It keeps the
-/// core deterministic and WASM-friendly while avoiding per-paragraph allocation
-/// churn in the hot line-breaking path.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ParagraphLayoutScratch {
     hyphen_lower: String,
     hyphen_dotted: Vec<u8>,
@@ -1804,6 +1819,27 @@ pub struct ParagraphLayoutScratch {
     forced_prefix: Vec<usize>,
     metrics: MetricPrefixes,
     states: Vec<Option<BreakState>>,
+    /// Glyph-expansion credit in permilli of box width, applied by
+    /// `break_paragraph_into` while evaluating non-final lines. Defaults to
+    /// 15 (±1.5%); justified emitters apply the matching compression, so a
+    /// caller rendering purely ragged text should set this to 0.
+    expansion_permilli: u16,
+}
+
+impl Default for ParagraphLayoutScratch {
+    fn default() -> Self {
+        Self {
+            hyphen_lower: String::new(),
+            hyphen_dotted: Vec::new(),
+            hyphen_scores: Vec::new(),
+            hyphen_points: Vec::new(),
+            candidates: Vec::new(),
+            forced_prefix: Vec::new(),
+            metrics: MetricPrefixes::default(),
+            states: Vec::new(),
+            expansion_permilli: 15,
+        }
+    }
 }
 
 impl ParagraphLayoutScratch {
@@ -1811,6 +1847,17 @@ impl ParagraphLayoutScratch {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the glyph-expansion credit for subsequent paragraph breaks.
+    /// `permilli` is clamped to `0..=100` (±10% is already visually extreme).
+    pub fn set_expansion_permilli(&mut self, permilli: u16) {
+        self.expansion_permilli = permilli.min(100);
+    }
+
+    #[must_use]
+    pub const fn expansion_permilli(&self) -> u16 {
+        self.expansion_permilli
     }
 
     /// Clear all live scratch data while retaining allocations for reuse.
@@ -1824,6 +1871,7 @@ impl ParagraphLayoutScratch {
         self.metrics.width.clear();
         self.metrics.stretch.clear();
         self.metrics.shrink.clear();
+        self.metrics.box_elasticity.clear();
         self.states.clear();
     }
 
@@ -1893,6 +1941,7 @@ pub fn break_paragraph_into(
         scratch.metrics.width.clear();
         scratch.metrics.stretch.clear();
         scratch.metrics.shrink.clear();
+        scratch.metrics.box_elasticity.clear();
         scratch.states.clear();
         return;
     }
@@ -1907,11 +1956,14 @@ pub fn break_paragraph_into(
         scratch.metrics.width.clear();
         scratch.metrics.stretch.clear();
         scratch.metrics.shrink.clear();
+        scratch.metrics.box_elasticity.clear();
         scratch.states.clear();
         out.push(line);
         return;
     }
-    scratch.metrics.rebuild_from_items(items);
+    scratch
+        .metrics
+        .rebuild_from_items(items, scratch.expansion_permilli());
     if candidate_stats.has_interior_forced_break {
         forced_break_prefixes_into(items, &mut scratch.forced_prefix);
     } else {
@@ -1958,7 +2010,16 @@ pub fn break_paragraph_into(
             // segment can also be INF, and would wrongly stop the scan.) The
             // start = 0 whole-prefix segment is the widest of all, so its overflow
             // says nothing about narrower predecessors — skip it, don't stop.
-            let segment = scratch.metrics.segment_metrics(start, *candidate);
+            // The FINAL line of a paragraph is never justified (no emitter
+            // applies glyph compression to it), so it must not lean on the
+            // expansion credit: evaluating it without the credit keeps the
+            // solver-emitter contract symmetric and prevents sub-1.5% margin
+            // overhangs on ragged tails.
+            let include_box_elasticity = candidate.next != items.len();
+            let segment =
+                scratch
+                    .metrics
+                    .segment_metrics(start, *candidate, include_box_elasticity);
             // An INTER-candidate line (prev_idx != j) that cannot fit even fully
             // shrunk is "overfull". Segment width grows monotonically as the start
             // moves earlier, so the first overfull predecessor reached is the
@@ -2318,10 +2379,10 @@ fn greedy_break_paragraph_into(
     let mut start = 0usize;
     let mut last_candidate: Option<BreakCandidate> = None;
     for &candidate in candidates {
-        let mut segment = metrics.segment_metrics(start, candidate);
+        let mut segment = metrics.segment_metrics(start, candidate, true);
         if segment.width > line_width {
             if let Some(prev) = last_candidate {
-                let prev_metrics = metrics.segment_metrics(start, prev);
+                let prev_metrics = metrics.segment_metrics(start, prev, true);
                 out.push(LineBreak {
                     start,
                     end: prev.item_index,
@@ -2332,7 +2393,7 @@ fn greedy_break_paragraph_into(
                     demerits: 0,
                 });
                 start = prev.next;
-                segment = metrics.segment_metrics(start, candidate);
+                segment = metrics.segment_metrics(start, candidate, true);
             }
         }
         if candidate.penalty == FORCED_BREAK_PENALTY {
@@ -2352,7 +2413,7 @@ fn greedy_break_paragraph_into(
         last_candidate = Some(candidate);
     }
     if let Some(candidate) = last_candidate {
-        let metrics = metrics.segment_metrics(start, candidate);
+        let metrics = metrics.segment_metrics(start, candidate, true);
         out.push(LineBreak {
             start,
             end: candidate.item_index,
@@ -2543,16 +2604,13 @@ mod overfull_selectability_tests {
     }
 }
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod hyphen_and_break_edge_tests {
     use super::{
-        AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
-        FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem, Penalty, StyledText,
-        TextBox, TextStyle, append_styled_word_chunk, break_paragraph, build_hyphen_trie,
-        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
-        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+        AdvanceMetrics, BreakCandidate, BreakState, BuildHyphenNode, FORCED_BREAK_PENALTY,
+        FitnessClass, FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem,
+        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle, append_styled_word_chunk,
+        break_paragraph, break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
+        insert_hyphen_pattern, push_hyphenated_word_items_from_points, trailing_forced_fit_break,
     };
 
     /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.
@@ -2782,7 +2840,7 @@ mod hyphen_and_break_edge_tests {
             }),
             make_box(100),
         ];
-        prefixes.rebuild_from_items(&items);
+        prefixes.rebuild_from_items(&items, 15);
         let cand = super::BreakCandidate {
             item_index: 2,
             next: 3,
@@ -2790,12 +2848,157 @@ mod hyphen_and_break_edge_tests {
             penalty_width: LayoutUnit::ZERO,
             flagged: false,
         };
-        let metrics = prefixes.segment_metrics(0, cand);
+        let metrics = prefixes.segment_metrics(0, cand, true);
         // Prefix up to item 2 (Box 0 + Glue 1): 100 pt + 10 pt = 110 pt = 110,000 mp
         assert_eq!(metrics.width, LayoutUnit::from_points(110));
         // Total stretch: glue stretch (5 pt = 5000 mp) + box 0 elasticity (1.5% of 100 pt = 1500 mp) = 6500 mp
         assert_eq!(metrics.stretch, LayoutUnit(6500));
         // Total shrink: glue shrink (2 pt = 2000 mp) + box 0 elasticity (1.5% of 100 pt = 1500 mp) = 3500 mp
         assert_eq!(metrics.shrink, LayoutUnit(3500));
+    }
+
+    #[test]
+    fn zero_permilli_disables_box_elasticity_credit() {
+        let make_box = |width_pt: i32| {
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(width_pt),
+            })
+        };
+        let items = vec![
+            make_box(100),
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::from_points(10),
+                stretch: LayoutUnit::from_points(5),
+                shrink: LayoutUnit::from_points(2),
+            }),
+            make_box(100),
+        ];
+        let mut prefixes = super::MetricPrefixes::default();
+        prefixes.rebuild_from_items(&items, 0);
+        let cand = super::BreakCandidate {
+            item_index: 2,
+            next: 3,
+            penalty: 0,
+            penalty_width: LayoutUnit::ZERO,
+            flagged: false,
+        };
+        let metrics = prefixes.segment_metrics(0, cand, true);
+        // Ragged rendering: no credit at all, glue flexibility only.
+        assert_eq!(metrics.width, LayoutUnit::from_points(110));
+        assert_eq!(metrics.stretch, LayoutUnit(5000));
+        assert_eq!(metrics.shrink, LayoutUnit(2000));
+    }
+
+    #[test]
+    fn final_line_never_leans_on_expansion_credit() {
+        // measure = 100 pt. A 99 pt word, zero-width glue, then a 2 pt word:
+        // the whole-paragraph final segment is 101 pt natural. With the
+        // credit included its 1.515 pt shrink would "fit" (raw 101 - 1.515
+        // <= 100), letting the solver stuff the tail past the measure even
+        // though nothing will ever compress those glyphs. Excluding the
+        // credit on the final candidate makes that path infeasible and
+        // forces a split where every line fits naturally.
+        let items = vec![
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(99),
+            }),
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::ZERO,
+                stretch: LayoutUnit::ZERO,
+                shrink: LayoutUnit::ZERO,
+            }),
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(2),
+            }),
+            ParagraphItem::Penalty(Penalty {
+                width: LayoutUnit::ZERO,
+                penalty: FORCED_BREAK_PENALTY,
+                flagged: false,
+            }),
+        ];
+        let mut scratch = ParagraphLayoutScratch::new();
+        scratch.set_expansion_permilli(15);
+        let mut lines = Vec::new();
+        break_paragraph_into(
+            &items,
+            LayoutUnit::from_points(100),
+            &mut scratch,
+            &mut lines,
+        );
+        assert!(!lines.is_empty());
+        for line in &lines {
+            assert!(
+                line.natural_width <= LayoutUnit::from_points(100),
+                "final/any line must not rely on glyph compression: {}",
+                line.natural_width.milli_points()
+            );
+        }
+    }
+
+    #[test]
+    fn intermediate_lines_still_receive_the_credit() {
+        // measure = 100 pt: 95 pt word + zero glue + 6 pt word = 101 pt raw.
+        // With the credit the 101 pt line is feasible (shrunk to ~99.1) and
+        // is chosen as the first line; without it, the same line is overfull
+        // past its 0.5 pt glue shrink and the breaker must split earlier.
+        let items = vec![
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(95),
+            }),
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::ZERO,
+                stretch: LayoutUnit::ZERO,
+                shrink: LayoutUnit::from_points(0),
+            }),
+            ParagraphItem::Box(TextBox {
+                text: String::new(),
+                runs: StyledText::default(),
+                width: LayoutUnit::from_points(6),
+            }),
+            ParagraphItem::Glue(Glue {
+                width: LayoutUnit::from_points(2),
+                stretch: LayoutUnit::from_points(3),
+                shrink: LayoutUnit::from_points(1),
+            }),
+            ParagraphItem::Penalty(Penalty {
+                width: LayoutUnit::ZERO,
+                penalty: FORCED_BREAK_PENALTY,
+                flagged: false,
+            }),
+        ];
+        let mut scratch = ParagraphLayoutScratch::new();
+        scratch.set_expansion_permilli(15);
+        let mut lines = Vec::new();
+        break_paragraph_into(
+            &items,
+            LayoutUnit::from_points(100),
+            &mut scratch,
+            &mut lines,
+        );
+        assert_eq!(lines.len(), 2, "credit lets the 101 pt line stand");
+        assert_eq!(lines[0].end, 3, "first line spans both boxes");
+
+        scratch.set_expansion_permilli(0);
+        let mut lines = Vec::new();
+        break_paragraph_into(
+            &items,
+            LayoutUnit::from_points(100),
+            &mut scratch,
+            &mut lines,
+        );
+        for line in &lines {
+            assert!(
+                line.natural_width <= LayoutUnit::from_points(100),
+                "without credit no line may exceed the measure"
+            );
+        }
     }
 }

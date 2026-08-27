@@ -1828,6 +1828,16 @@ impl ParagraphPolicy {
         justify: true,
     };
 
+    /// Glyph-expansion credit the line breaker may assume (±permilli of box
+    /// width). Only justified emitters actually compress/stretch glyphs to
+    /// honor the credit, so ragged flows get zero: the solver must never
+    /// produce a line whose fit depends on compression nothing will apply.
+    /// (The final line of even a justified paragraph never leans on it — the
+    /// breaker excludes the credit there unconditionally.)
+    const fn expansion_permilli(self) -> u16 {
+        if self.justify { 15 } else { 0 }
+    }
+
     const fn for_flow(kind: FlowKind) -> Self {
         match kind {
             FlowKind::Paragraph => Self::TEX_PARAGRAPH,
@@ -1837,8 +1847,6 @@ impl ParagraphPolicy {
     }
 }
 
-/// Render a document to PDF bytes.
-///
 /// # Errors
 /// Infallible in practice (the bundled fonts always parse); returns [`Result`]
 /// to leave room for future validation without a signature change.
@@ -2712,7 +2720,14 @@ impl LayoutCx<'_> {
         self.next_flow
     }
 
-    fn break_paragraph(&mut self, items: &[ParagraphItem], line_width: LayoutUnit) {
+    fn break_paragraph(
+        &mut self,
+        items: &[ParagraphItem],
+        line_width: LayoutUnit,
+        policy: ParagraphPolicy,
+    ) {
+        self.paragraph_scratch
+            .set_expansion_permilli(policy.expansion_permilli());
         break_paragraph_into(
             items,
             line_width,
@@ -16742,7 +16757,7 @@ fn layout_inlines(
     }
 
     let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
-    cx.break_paragraph(&built.items, content_w);
+    cx.break_paragraph(&built.items, content_w, policy);
     if cx.line_breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
         layout_inlines_greedy(toks, indent, size, gap_after, cx.faces, cx.page, out);
@@ -16832,7 +16847,7 @@ fn layout_prefixed_inlines(
 
     let content_w =
         lu_from_points_f32((cx.page.content_w - spec.content_indent).max(MIN_CONTENT_DIM));
-    cx.break_paragraph(&built.items, content_w);
+    cx.break_paragraph(&built.items, content_w, policy);
     if cx.line_breaks.is_empty() {
         let before = out.len();
         layout_inlines_greedy(

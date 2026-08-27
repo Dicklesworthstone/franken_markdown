@@ -915,7 +915,11 @@ impl Font {
             // behind it either, so its WE_HAVE_INSTRUCTIONS claim is dropped
             // here and the strip pass below is skipped entirely.
             if off(p, 4).is_none_or(|end| end > out.len()) {
-                write_u16(&mut out, last_flags_pos, flags & !(MORE | WE_HAVE_INSTRUCTIONS))?;
+                write_u16(
+                    &mut out,
+                    last_flags_pos,
+                    flags & !(MORE | WE_HAVE_INSTRUCTIONS),
+                )?;
                 dangling_more = true;
                 break;
             }
@@ -3041,7 +3045,11 @@ mod synthetic_font_tests {
         // Both the MORE and the instruction claim are gone from the final
         // record's flags (offset 10).
         let flags = be_u16(&out, 10).expect("record flags readable");
-        assert_eq!(flags & (0x0100 | 0x0020), 0, "MORE and INSTRUCTIONS cleared");
+        assert_eq!(
+            flags & (0x0100 | 0x0020),
+            0,
+            "MORE and INSTRUCTIONS cleared"
+        );
     }
 
     #[test]

@@ -23,10 +23,9 @@ or `≠` render as real glyphs instead of `.notdef` boxes. It also carries the
 mathematical-alphanumeric script (`\mathcal`) and double-struck (`\mathbb`)
 letter repertoire — U+1D49C–U+1D4CF, U+1D538–U+1D56B, plus the double-struck
 digits U+1D7D8–U+1D7E1 — that `fmd-math`'s `faces::calligraphic_char` /
-`blackboard_char` route through this face (the Letterlike exceptions ℂℍℕℙℚℝℤ
-and ℬℰℱℋℐℒℳℛℯℊℴ live in the U+2100 block). It is a curated
-~80 KiB subset of Noto Sans Math produced deterministically by the project's
-own subsetter:
+and ℬℰℱℋℐℒℳℛℯℊℴ live in the U+2100 block). The result is a curated
+72,908-byte (~71 KiB) subset of Noto Sans Math, produced deterministically
+by the project's own subsetter:
 
 ```bash
 cargo run --example gen_symbol_fallback_font -- \

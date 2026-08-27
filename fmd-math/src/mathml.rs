@@ -1,0 +1,987 @@
+//! Node-tree → MathML Core serializer.
+//!
+//! Deterministic: attribute order is fixed per element, every element has an
+//! explicit close tag (no self-closing form), and text/attr values are XML
+//! escaped. The walk never panics; a hostile or fragment tree still yields a
+//! well-formed fragment.
+
+use crate::atom::AtomClass;
+use crate::node::{
+    AccentKind, Delim, FragmentKind, Limits, MathFont, Node, NodeKind, PhantomKind, SpaceKind,
+    Span, StackKind, TextStyle,
+};
+use crate::style::Style;
+
+const MATHML_NS: &str = "http://www.w3.org/1998/Math/MathML";
+
+/// Serialize `node` as a complete `<math>…</math>` fragment.
+///
+/// `display = true` sets `display="block"` (TeX display / `$$`); `false` sets
+/// `display="inline"` (`$…$`).
+#[must_use]
+pub fn to_mathml(node: &Node, display: bool) -> String {
+    let mut w = Writer::new();
+    let display_val = if display { "block" } else { "inline" };
+    w.open("math", &[("xmlns", MATHML_NS), ("display", display_val)]);
+    let style = if display { Style::Display } else { Style::Text };
+    match &node.kind {
+        NodeKind::List(items) => emit_run(&mut w, items, style, None, None),
+        _ => emit_node(&mut w, node, style),
+    }
+    w.close("math");
+    w.buf
+}
+
+/// Serialize `node` as a MathML element (no outer `<math>` wrapper).
+///
+/// A top-level [`NodeKind::List`] becomes a single `<mrow>`.
+#[must_use]
+pub fn to_mathml_element(node: &Node) -> String {
+    let mut w = Writer::new();
+    emit_node(&mut w, node, Style::Display);
+    w.buf
+}
+
+/// Std-only well-formedness check: balanced tags, quoted attributes, escaped
+/// text. Accepts the serializer's output contract (no self-closing tags).
+pub fn mathml_well_formed(xml: &str) -> Result<(), String> {
+    check_well_formed(xml)
+}
+
+struct Writer {
+    buf: String,
+}
+
+impl Writer {
+    fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    fn open(&mut self, tag: &str, attrs: &[(&str, &str)]) {
+        self.buf.push('<');
+        self.buf.push_str(tag);
+        for &(name, value) in attrs {
+            self.buf.push(' ');
+            self.buf.push_str(name);
+            self.buf.push_str("=\"");
+            push_escaped(&mut self.buf, value, true);
+            self.buf.push('"');
+        }
+        self.buf.push('>');
+    }
+
+    fn close(&mut self, tag: &str) {
+        self.buf.push('<');
+        self.buf.push('/');
+        self.buf.push_str(tag);
+        self.buf.push('>');
+    }
+
+    fn text(&mut self, s: &str) {
+        push_escaped(&mut self.buf, s, false);
+    }
+
+    fn char_text(&mut self, ch: char) {
+        match ch {
+            '&' => self.buf.push_str("&amp;"),
+            '<' => self.buf.push_str("&lt;"),
+            '>' => self.buf.push_str("&gt;"),
+            _ => self.buf.push(ch),
+        }
+    }
+}
+
+fn push_escaped(buf: &mut String, s: &str, attr: bool) {
+    for ch in s.chars() {
+        match ch {
+            '&' => buf.push_str("&amp;"),
+            '<' => buf.push_str("&lt;"),
+            '>' => buf.push_str("&gt;"),
+            '"' if attr => buf.push_str("&quot;"),
+            _ => buf.push(ch),
+        }
+    }
+}
+
+fn emit_node(w: &mut Writer, node: &Node, style: Style) {
+    match &node.kind {
+        NodeKind::List(items) => {
+            w.open("mrow", &[]);
+            emit_run(w, items, style, None, None);
+            w.close("mrow");
+        }
+        NodeKind::Symbol { ch, class } => emit_symbol(w, *ch, *class),
+        NodeKind::BigOp { ch, .. } => {
+            w.open("mo", &[("movablelimits", "true")]);
+            w.char_text(*ch);
+            w.close("mo");
+        }
+        NodeKind::OpName { name, .. } => {
+            w.open("mi", &[("mathvariant", "normal")]);
+            w.text(name);
+            w.close("mi");
+        }
+        NodeKind::Scripts {
+            base,
+            sub,
+            sup,
+            primes,
+        } => emit_scripts(
+            w,
+            base.as_deref(),
+            sub.as_deref(),
+            sup.as_deref(),
+            primes,
+            style,
+        ),
+        NodeKind::Frac { num, den, spec } => {
+            emit_frac(w, num, den, spec.bar, spec.delims, spec.forced_style, style)
+        }
+        NodeKind::Radical { index, radicand } => emit_radical(w, index.as_deref(), radicand, style),
+        NodeKind::Accent { accent, base } => emit_accent(w, *accent, base, style),
+        NodeKind::LeftRight { left, right, body } => emit_left_right(w, left, right, body, style),
+        NodeKind::SizedDelim { delim, .. } => {
+            if let Some(ch) = delim.ch {
+                w.open("mo", &[]);
+                w.char_text(ch);
+                w.close("mo");
+            }
+        }
+        NodeKind::Text { body } => emit_mtext_nodes(w, body),
+        NodeKind::TextRun { text, .. } => {
+            w.open("mtext", &[]);
+            w.text(text);
+            w.close("mtext");
+        }
+        NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body),
+        NodeKind::MathIsland { body, display } => {
+            let inner_style = if *display {
+                Style::Display
+            } else {
+                Style::Text
+            };
+            w.open("mrow", &[]);
+            emit_run(w, body, inner_style, None, None);
+            w.close("mrow");
+        }
+        NodeKind::StyleChange(_)
+        | NodeKind::AlignChange(_)
+        | NodeKind::SizeChange(_)
+        | NodeKind::ColorChange(_)
+        | NodeKind::LineSpacing(_) => {
+            // Remainder markers only have meaning inside a list walk.
+        }
+        NodeKind::MathFont { font, body } => {
+            w.open("mstyle", &[("mathvariant", math_font_variant(*font))]);
+            emit_node(w, body, style);
+            w.close("mstyle");
+        }
+        NodeKind::Phantom { kind, body } => emit_phantom(w, *kind, body, style),
+        NodeKind::Stack {
+            kind,
+            annotation,
+            base,
+        } => emit_stack(w, *kind, annotation, base, style),
+        NodeKind::XArrow {
+            mapsto,
+            above,
+            below,
+        } => emit_xarrow(w, *mapsto, above, below.as_deref(), style),
+        NodeKind::Space(kind) => emit_space(w, *kind),
+        NodeKind::Tie => {
+            w.open("mtext", &[]);
+            w.buf.push('\u{00A0}');
+            w.close("mtext");
+        }
+        NodeKind::Linebreak => {
+            w.open("mspace", &[("linebreak", "newline")]);
+            w.close("mspace");
+        }
+        NodeKind::AlignTab => {}
+        NodeKind::AlignBlock { lines, .. } => emit_align_block(w, lines, style),
+        NodeKind::Environment { name, spec, rows } => {
+            emit_environment(w, name, spec.as_deref(), rows, style)
+        }
+        NodeKind::Fragment(kind) => emit_fragment(w, kind),
+    }
+}
+
+fn emit_run(w: &mut Writer, items: &[Node], style: Style, color: Option<&str>, size: Option<f64>) {
+    if items.is_empty() {
+        return;
+    }
+    let marker_at = items.iter().position(|n| is_remainder_marker(&n.kind));
+    match marker_at {
+        None => emit_styled_siblings(w, items, style, color, size),
+        Some(0) => {
+            let (next_style, next_color, next_size) =
+                apply_marker(&items[0].kind, style, color, size);
+            emit_run(w, &items[1..], next_style, next_color, next_size);
+        }
+        Some(k) => {
+            emit_styled_siblings(w, &items[..k], style, color, size);
+            emit_run(w, &items[k..], style, color, size);
+        }
+    }
+}
+
+fn is_remainder_marker(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::StyleChange(_)
+            | NodeKind::AlignChange(_)
+            | NodeKind::SizeChange(_)
+            | NodeKind::ColorChange(_)
+            | NodeKind::LineSpacing(_)
+    )
+}
+
+fn apply_marker<'a>(
+    kind: &'a NodeKind,
+    style: Style,
+    color: Option<&'a str>,
+    size: Option<f64>,
+) -> (Style, Option<&'a str>, Option<f64>) {
+    match kind {
+        NodeKind::StyleChange(s) => (*s, color, size),
+        NodeKind::ColorChange(c) => (style, Some(c.as_str()), size),
+        NodeKind::SizeChange(f) => (style, color, Some(*f)),
+        NodeKind::AlignChange(_) | NodeKind::LineSpacing(_) => (style, color, size),
+        _ => (style, color, size),
+    }
+}
+
+fn emit_styled_siblings(
+    w: &mut Writer,
+    items: &[Node],
+    style: Style,
+    color: Option<&str>,
+    size: Option<f64>,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let wrap = color.is_some() || size.is_some() || style_needs_mstyle(style);
+    if wrap {
+        let ds = if matches!(style, Style::Display) {
+            "true"
+        } else {
+            "false"
+        };
+        let sl = match style {
+            Style::Display | Style::Text => "0",
+            Style::Script => "1",
+            Style::ScriptScript => "2",
+        };
+        let size_owned = size.map(percent_size);
+        let mut attrs: Vec<(&str, &str)> = Vec::new();
+        if style_needs_mstyle(style) {
+            attrs.push(("displaystyle", ds));
+            attrs.push(("scriptlevel", sl));
+        }
+        if let Some(c) = color {
+            attrs.push(("mathcolor", c));
+        }
+        if let Some(ref s) = size_owned {
+            attrs.push(("mathsize", s));
+        }
+        w.open("mstyle", &attrs);
+        for n in items {
+            emit_node(w, n, style);
+        }
+        w.close("mstyle");
+    } else {
+        for n in items {
+            emit_node(w, n, style);
+        }
+    }
+}
+
+fn style_needs_mstyle(style: Style) -> bool {
+    !matches!(style, Style::Display | Style::Text)
+}
+
+fn percent_size(factor: f64) -> String {
+    let pct = (factor * 100.0).round();
+    let n = if pct.is_finite() {
+        pct.clamp(-10_000.0, 10_000.0) as i32
+    } else {
+        100
+    };
+    format!("{n}%")
+}
+
+fn emit_symbol(w: &mut Writer, ch: char, class: AtomClass) {
+    let tag = symbol_tag(ch, class);
+    w.open(tag, &[]);
+    w.char_text(ch);
+    w.close(tag);
+}
+
+fn symbol_tag(ch: char, class: AtomClass) -> &'static str {
+    match class {
+        AtomClass::Ord if ch.is_ascii_digit() => "mn",
+        AtomClass::Ord => "mi",
+        AtomClass::Op
+        | AtomClass::Bin
+        | AtomClass::Rel
+        | AtomClass::Open
+        | AtomClass::Close
+        | AtomClass::Punct
+        | AtomClass::Inner => "mo",
+    }
+}
+
+fn emit_scripts(
+    w: &mut Writer,
+    base: Option<&Node>,
+    sub: Option<&Node>,
+    sup: Option<&Node>,
+    primes: &[Span],
+    style: Style,
+) {
+    let limits = scripts_as_limits(base, style);
+    let has_primes = !primes.is_empty();
+    let has_sub = sub.is_some();
+    let has_sup = sup.is_some() || has_primes;
+    if !has_sub && !has_sup {
+        match base {
+            Some(b) => emit_node(w, b, style),
+            None => {
+                w.open("mrow", &[]);
+                w.close("mrow");
+            }
+        }
+        return;
+    }
+    let tag = if limits {
+        match (has_sub, has_sup) {
+            (true, true) => "munderover",
+            (true, false) => "munder",
+            (false, true) => "mover",
+            (false, false) => "mrow",
+        }
+    } else {
+        match (has_sub, has_sup) {
+            (true, true) => "msubsup",
+            (true, false) => "msub",
+            (false, true) => "msup",
+            (false, false) => "mrow",
+        }
+    };
+    w.open(tag, &[]);
+    match base {
+        Some(b) => emit_node(w, b, style),
+        None => {
+            w.open("mrow", &[]);
+            w.close("mrow");
+        }
+    }
+    if has_sub {
+        if let Some(s) = sub {
+            emit_node(w, s, style);
+        }
+    }
+    if has_sup {
+        emit_superscript(w, sup, primes, style);
+    }
+    w.close(tag);
+}
+
+fn emit_superscript(w: &mut Writer, sup: Option<&Node>, primes: &[Span], style: Style) {
+    if primes.is_empty() {
+        if let Some(s) = sup {
+            emit_node(w, s, style);
+        }
+        return;
+    }
+    if sup.is_none() && primes.len() == 1 {
+        w.open("mo", &[]);
+        w.buf.push('′');
+        w.close("mo");
+        return;
+    }
+    w.open("mrow", &[]);
+    for _ in primes {
+        w.open("mo", &[]);
+        w.buf.push('′');
+        w.close("mo");
+    }
+    if let Some(s) = sup {
+        emit_node(w, s, style);
+    }
+    w.close("mrow");
+}
+
+fn scripts_as_limits(base: Option<&Node>, style: Style) -> bool {
+    let Some(node) = base else {
+        return false;
+    };
+    match &node.kind {
+        NodeKind::BigOp {
+            limits, integral, ..
+        } => match limits {
+            Limits::Limits => true,
+            Limits::NoLimits => false,
+            Limits::Default => !*integral && matches!(style, Style::Display),
+        },
+        NodeKind::OpName { limits, .. } => *limits && matches!(style, Style::Display),
+        _ => false,
+    }
+}
+
+fn emit_frac(
+    w: &mut Writer,
+    num: &Node,
+    den: &Node,
+    bar: bool,
+    delims: Option<(char, char)>,
+    forced_style: Option<Style>,
+    style: Style,
+) {
+    let wrap_style = forced_style;
+    if let Some(st) = wrap_style {
+        let ds = if matches!(st, Style::Display) {
+            "true"
+        } else {
+            "false"
+        };
+        w.open("mstyle", &[("displaystyle", ds)]);
+        emit_frac_body(w, num, den, bar, delims, style);
+        w.close("mstyle");
+    } else {
+        emit_frac_body(w, num, den, bar, delims, style);
+    }
+}
+
+fn emit_frac_body(
+    w: &mut Writer,
+    num: &Node,
+    den: &Node,
+    bar: bool,
+    delims: Option<(char, char)>,
+    style: Style,
+) {
+    if let Some((left, right)) = delims {
+        w.open("mrow", &[]);
+        emit_fence(w, left);
+        emit_mfrac(w, num, den, bar, style);
+        emit_fence(w, right);
+        w.close("mrow");
+    } else {
+        emit_mfrac(w, num, den, bar, style);
+    }
+}
+
+fn emit_mfrac(w: &mut Writer, num: &Node, den: &Node, bar: bool, style: Style) {
+    if bar {
+        w.open("mfrac", &[]);
+    } else {
+        w.open("mfrac", &[("linethickness", "0")]);
+    }
+    emit_node(w, num, style);
+    emit_node(w, den, style);
+    w.close("mfrac");
+}
+
+fn emit_fence(w: &mut Writer, ch: char) {
+    w.open("mo", &[("fence", "true"), ("stretchy", "true")]);
+    w.char_text(ch);
+    w.close("mo");
+}
+
+fn emit_radical(w: &mut Writer, index: Option<&Node>, radicand: &Node, style: Style) {
+    if let Some(ix) = index {
+        w.open("mroot", &[]);
+        emit_node(w, radicand, style);
+        emit_node(w, ix, style);
+        w.close("mroot");
+    } else {
+        w.open("msqrt", &[]);
+        emit_node(w, radicand, style);
+        w.close("msqrt");
+    }
+}
+
+fn emit_accent(w: &mut Writer, accent: AccentKind, base: &Node, style: Style) {
+    let tag = if accent.is_over() { "mover" } else { "munder" };
+    let stretchy = matches!(
+        accent,
+        AccentKind::WideHat
+            | AccentKind::WideTilde
+            | AccentKind::OverLine
+            | AccentKind::UnderLine
+            | AccentKind::OverBrace
+            | AccentKind::UnderBrace
+            | AccentKind::OverRightArrow
+            | AccentKind::OverLeftArrow
+    );
+    w.open(tag, &[]);
+    emit_node(w, base, style);
+    if stretchy {
+        w.open("mo", &[("stretchy", "true")]);
+    } else {
+        w.open("mo", &[]);
+    }
+    w.text(accent_char(accent));
+    w.close("mo");
+    w.close(tag);
+}
+
+fn accent_char(kind: AccentKind) -> &'static str {
+    match kind {
+        AccentKind::Hat | AccentKind::WideHat => "\u{02C6}",
+        AccentKind::Check => "\u{02C7}",
+        AccentKind::Tilde | AccentKind::WideTilde => "\u{02DC}",
+        AccentKind::Acute => "\u{00B4}",
+        AccentKind::Grave => "`",
+        AccentKind::Dot => "\u{02D9}",
+        AccentKind::Ddot => "\u{00A8}",
+        AccentKind::Breve => "\u{02D8}",
+        AccentKind::Bar => "\u{00AF}",
+        AccentKind::Vec | AccentKind::OverRightArrow => "\u{2192}",
+        AccentKind::Dddot => "\u{20DB}",
+        AccentKind::Ddddot => "\u{20DC}",
+        AccentKind::Ring => "\u{02DA}",
+        AccentKind::OverLine => "\u{203E}",
+        AccentKind::UnderLine => "_",
+        AccentKind::OverBrace => "\u{23DE}",
+        AccentKind::UnderBrace => "\u{23DF}",
+        AccentKind::OverLeftArrow => "\u{2190}",
+    }
+}
+
+fn emit_left_right(w: &mut Writer, left: &Delim, right: &Delim, body: &[Node], style: Style) {
+    w.open("mrow", &[]);
+    if let Some(ch) = left.ch {
+        emit_fence(w, ch);
+    }
+    emit_run(w, body, style, None, None);
+    if let Some(ch) = right.ch {
+        emit_fence(w, ch);
+    }
+    w.close("mrow");
+}
+
+fn emit_mtext_nodes(w: &mut Writer, body: &[Node]) {
+    w.open("mtext", &[]);
+    collect_text(w, body);
+    w.close("mtext");
+}
+
+fn collect_text(w: &mut Writer, body: &[Node]) {
+    for n in body {
+        match &n.kind {
+            NodeKind::TextRun { text, .. } => w.text(text),
+            NodeKind::Symbol { ch, .. } => w.char_text(*ch),
+            NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
+            NodeKind::TextStyled { body, .. } => collect_text(w, body),
+            NodeKind::Space(_) => w.buf.push(' '),
+            NodeKind::Tie => w.buf.push('\u{00A0}'),
+            _ => {}
+        }
+    }
+}
+
+fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
+    let variant = match ts {
+        TextStyle::Bold => "bold",
+        TextStyle::Emph => "italic",
+        TextStyle::Underline => "normal",
+    };
+    w.open("mtext", &[("mathvariant", variant)]);
+    collect_text(w, body);
+    w.close("mtext");
+}
+
+fn math_font_variant(font: MathFont) -> &'static str {
+    match font {
+        MathFont::Blackboard => "double-struck",
+        MathFont::Calligraphic => "script",
+        MathFont::Roman => "normal",
+        MathFont::Bold => "bold",
+        MathFont::BoldItalic => "bold-italic",
+        MathFont::SansSerif => "sans-serif",
+        MathFont::Typewriter => "monospace",
+        MathFont::Italic => "italic",
+    }
+}
+
+fn emit_phantom(w: &mut Writer, kind: PhantomKind, body: &Node, style: Style) {
+    match kind {
+        PhantomKind::Full => {
+            w.open("mphantom", &[]);
+            emit_node(w, body, style);
+            w.close("mphantom");
+        }
+        PhantomKind::Horizontal => {
+            w.open("mpadded", &[("height", "0"), ("depth", "0")]);
+            w.open("mphantom", &[]);
+            emit_node(w, body, style);
+            w.close("mphantom");
+            w.close("mpadded");
+        }
+        PhantomKind::Vertical => {
+            w.open("mpadded", &[("width", "0")]);
+            w.open("mphantom", &[]);
+            emit_node(w, body, style);
+            w.close("mphantom");
+            w.close("mpadded");
+        }
+    }
+}
+
+fn emit_stack(w: &mut Writer, kind: StackKind, annotation: &Node, base: &Node, style: Style) {
+    let tag = match kind {
+        StackKind::Stackrel | StackKind::Overset => "mover",
+        StackKind::Underset => "munder",
+    };
+    w.open(tag, &[]);
+    emit_node(w, base, style);
+    emit_node(w, annotation, style);
+    w.close(tag);
+}
+
+fn emit_xarrow(w: &mut Writer, mapsto: bool, above: &Node, below: Option<&Node>, style: Style) {
+    let arrow = if mapsto { "\u{21A6}" } else { "\u{2192}" };
+    let tag = if below.is_some() {
+        "munderover"
+    } else {
+        "mover"
+    };
+    w.open(tag, &[]);
+    w.open("mo", &[("stretchy", "true")]);
+    w.text(arrow);
+    w.close("mo");
+    if let Some(b) = below {
+        emit_node(w, b, style);
+    }
+    emit_node(w, above, style);
+    w.close(tag);
+}
+
+fn emit_space(w: &mut Writer, kind: SpaceKind) {
+    let width = em_from_mu(kind.mu());
+    w.open("mspace", &[("width", &width)]);
+    w.close("mspace");
+}
+
+fn em_from_mu(mu: i32) -> String {
+    // width = mu/18 em, rounded to thousandths.
+    let sign = if mu < 0 { -1 } else { 1 };
+    let milli = if mu == 0 {
+        0
+    } else {
+        (mu * 1000 + 9 * sign) / 18
+    };
+    let mut s = String::new();
+    if milli < 0 {
+        s.push('-');
+    }
+    let abs = milli.unsigned_abs();
+    let whole = abs / 1000;
+    let frac = abs % 1000;
+    s.push_str(&whole.to_string());
+    if frac != 0 {
+        s.push('.');
+        if frac < 100 {
+            s.push('0');
+        }
+        if frac < 10 {
+            s.push('0');
+        }
+        s.push_str(&frac.to_string());
+        while s.ends_with('0') && s.contains('.') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    s.push_str("em");
+    s
+}
+
+fn emit_environment(
+    w: &mut Writer,
+    name: &str,
+    spec: Option<&str>,
+    rows: &[Vec<Node>],
+    style: Style,
+) {
+    let fences = env_fences(name);
+    let columnalign = env_columnalign(name, spec, column_count(rows));
+    if let Some((left, right)) = fences {
+        w.open("mrow", &[]);
+        if let Some(ch) = left {
+            emit_fence(w, ch);
+        }
+        emit_table(w, rows, columnalign.as_deref(), style);
+        if let Some(ch) = right {
+            emit_fence(w, ch);
+        }
+        w.close("mrow");
+    } else {
+        emit_table(w, rows, columnalign.as_deref(), style);
+    }
+}
+
+fn env_fences(name: &str) -> Option<(Option<char>, Option<char>)> {
+    match name {
+        "pmatrix" => Some((Some('('), Some(')'))),
+        "bmatrix" => Some((Some('['), Some(']'))),
+        "Bmatrix" => Some((Some('{'), Some('}'))),
+        "vmatrix" => Some((Some('|'), Some('|'))),
+        "Vmatrix" => Some((Some('\u{2016}'), Some('\u{2016}'))),
+        "cases" => Some((Some('{'), None)),
+        _ => None,
+    }
+}
+
+fn column_count(rows: &[Vec<Node>]) -> usize {
+    rows.iter().map(Vec::len).max().unwrap_or(0)
+}
+
+fn env_columnalign(name: &str, spec: Option<&str>, cols: usize) -> Option<String> {
+    if let Some(spec) = spec {
+        let mut parts = Vec::new();
+        for ch in spec.chars() {
+            match ch {
+                'l' => parts.push("left"),
+                'r' => parts.push("right"),
+                'c' => parts.push("center"),
+                _ => {}
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(" "));
+        }
+    }
+    match name {
+        "align" | "align*" | "aligned" => {
+            if cols == 0 {
+                return None;
+            }
+            let mut parts = Vec::with_capacity(cols);
+            for i in 0..cols {
+                parts.push(if i % 2 == 0 { "right" } else { "left" });
+            }
+            Some(parts.join(" "))
+        }
+        "cases" => Some("left left".to_owned()),
+        _ => None,
+    }
+}
+
+fn emit_align_block(w: &mut Writer, lines: &[Node], style: Style) {
+    w.open("mtable", &[]);
+    for line in lines {
+        w.open("mtr", &[]);
+        w.open("mtd", &[]);
+        emit_node(w, line, style);
+        w.close("mtd");
+        w.close("mtr");
+    }
+    w.close("mtable");
+}
+
+fn emit_table(w: &mut Writer, rows: &[Vec<Node>], columnalign: Option<&str>, style: Style) {
+    if let Some(align) = columnalign {
+        w.open("mtable", &[("columnalign", align)]);
+    } else {
+        w.open("mtable", &[]);
+    }
+    let width = column_count(rows);
+    for row in rows {
+        w.open("mtr", &[]);
+        for i in 0..width {
+            w.open("mtd", &[]);
+            if let Some(cell) = row.get(i) {
+                emit_node(w, cell, style);
+            }
+            w.close("mtd");
+        }
+        w.close("mtr");
+    }
+    w.close("mtable");
+}
+
+fn emit_fragment(w: &mut Writer, kind: &FragmentKind) {
+    match kind {
+        FragmentKind::UnmatchedClose | FragmentKind::RedundantMathShift => {}
+        FragmentKind::StrayRight(delim) => {
+            if let Some(ch) = delim.ch {
+                emit_fence(w, ch);
+            }
+        }
+    }
+}
+
+fn check_well_formed(xml: &str) -> Result<(), String> {
+    let bytes = xml.as_bytes();
+    let mut i = 0;
+    let mut stack: Vec<(String, usize)> = Vec::new();
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let start = i;
+            i += 1;
+            if i >= bytes.len() {
+                return Err("truncated tag".to_owned());
+            }
+            if bytes[i] == b'/' {
+                i += 1;
+                let name = read_name(bytes, &mut i)?;
+                skip_ws(bytes, &mut i);
+                if bytes.get(i).copied() != Some(b'>') {
+                    return Err(format!("malformed close tag at {start}"));
+                }
+                i += 1;
+                match stack.pop() {
+                    Some((open, _)) if open == name => {}
+                    Some((open, at)) => {
+                        return Err(format!(
+                            "close </{name}> at {start} does not match <{open}> opened at {at}"
+                        ));
+                    }
+                    None => return Err(format!("unmatched close </{name}> at {start}")),
+                }
+            } else {
+                let name = read_name(bytes, &mut i)?;
+                read_attrs(bytes, &mut i)?;
+                if bytes.get(i).copied() == Some(b'/') {
+                    return Err(format!(
+                        "self-closing tag <{name}/> at {start} is forbidden"
+                    ));
+                }
+                if bytes.get(i).copied() != Some(b'>') {
+                    return Err(format!("unterminated open tag <{name}> at {start}"));
+                }
+                i += 1;
+                stack.push((name, start));
+            }
+        } else {
+            // Text: reject raw '<' (handled) and bare '&'.
+            if bytes[i] == b'&' {
+                i += 1;
+                consume_entity(bytes, &mut i)?;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    if let Some((open, at)) = stack.last() {
+        return Err(format!("unclosed <{open}> opened at {at}"));
+    }
+    Ok(())
+}
+
+fn read_name(bytes: &[u8], i: &mut usize) -> Result<String, String> {
+    let start = *i;
+    if *i >= bytes.len() || !bytes[*i].is_ascii_alphabetic() {
+        return Err(format!("expected tag name at {start}"));
+    }
+    *i += 1;
+    while *i < bytes.len() && (bytes[*i].is_ascii_alphanumeric() || bytes[*i] == b'-') {
+        *i += 1;
+    }
+    let name = core::str::from_utf8(&bytes[start..*i]).map_err(|_| "non-utf8 tag name")?;
+    Ok(name.to_owned())
+}
+
+fn skip_ws(bytes: &[u8], i: &mut usize) {
+    while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
+        *i += 1;
+    }
+}
+
+fn read_attrs(bytes: &[u8], i: &mut usize) -> Result<(), String> {
+    loop {
+        skip_ws(bytes, i);
+        if *i >= bytes.len() {
+            return Err("truncated attributes".to_owned());
+        }
+        match bytes[*i] {
+            b'>' | b'/' => return Ok(()),
+            b'a'..=b'z' | b'A'..=b'Z' => {
+                let _ = read_name(bytes, i)?;
+                skip_ws(bytes, i);
+                if bytes.get(*i).copied() != Some(b'=') {
+                    return Err("attribute missing '='".to_owned());
+                }
+                *i += 1;
+                skip_ws(bytes, i);
+                if bytes.get(*i).copied() != Some(b'"') {
+                    return Err("attribute value must be double-quoted".to_owned());
+                }
+                *i += 1;
+                while *i < bytes.len() && bytes[*i] != b'"' {
+                    if bytes[*i] == b'&' {
+                        *i += 1;
+                        consume_entity(bytes, i)?;
+                    } else if bytes[*i] == b'<' {
+                        return Err("raw '<' in attribute".to_owned());
+                    } else {
+                        *i += 1;
+                    }
+                }
+                if bytes.get(*i).copied() != Some(b'"') {
+                    return Err("unterminated attribute value".to_owned());
+                }
+                *i += 1;
+            }
+            _ => return Err(format!("unexpected byte 0x{:02x} in tag", bytes[*i])),
+        }
+    }
+}
+
+fn consume_entity(bytes: &[u8], i: &mut usize) -> Result<(), String> {
+    let start = *i;
+    if bytes.get(*i).copied() == Some(b'#') {
+        *i += 1;
+        let hex = bytes.get(*i).copied() == Some(b'x') || bytes.get(*i).copied() == Some(b'X');
+        if hex {
+            *i += 1;
+        }
+        let digit_start = *i;
+        while *i < bytes.len() {
+            let b = bytes[*i];
+            let ok = if hex {
+                b.is_ascii_hexdigit()
+            } else {
+                b.is_ascii_digit()
+            };
+            if !ok {
+                break;
+            }
+            *i += 1;
+        }
+        if *i == digit_start {
+            return Err("empty numeric entity".to_owned());
+        }
+    } else {
+        while *i < bytes.len() && bytes[*i].is_ascii_alphabetic() {
+            *i += 1;
+        }
+        if *i == start {
+            return Err("bare '&'".to_owned());
+        }
+    }
+    if bytes.get(*i).copied() != Some(b';') {
+        return Err("entity missing ';'".to_owned());
+    }
+    *i += 1;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::em_from_mu;
+
+    #[test]
+    fn em_from_mu_thousandths() {
+        assert_eq!(em_from_mu(3), "0.167em");
+        assert_eq!(em_from_mu(18), "1em");
+        assert_eq!(em_from_mu(-3), "-0.167em");
+        assert_eq!(em_from_mu(0), "0em");
+    }
+}

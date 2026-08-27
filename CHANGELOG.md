@@ -74,6 +74,11 @@ through HEAD
   `theme::TypeScale`; WASM mirrors them as builder methods and
   `baseFontSize` / `headingScale` / `tableFontSize` render options
   (`45d2.5`). All-`None` stays byte-identical to the legacy ladder.
+- Solver–emitter symmetry for microtype expansion: the Knuth-Plass breaker's
+  ±1.5% glyph elasticity credit is now policy-gated (justified paragraphs
+  only) and never applies to a paragraph's final line, eliminating sub-1.5%
+  ragged-tail overhangs into the right margin while leaving justified layout
+  unchanged.
 - Page-level void budgeting: when a forced break strands a visual void beyond
   12% of content height, inter-block gaps flex toward a bounded floor so the
   following block pulls up instead (`45d2.4`); untriggered documents pick

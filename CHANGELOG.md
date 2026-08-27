@@ -74,6 +74,10 @@ through HEAD
   `theme::TypeScale`; WASM mirrors them as builder methods and
   `baseFontSize` / `headingScale` / `tableFontSize` render options
   (`45d2.5`). All-`None` stays byte-identical to the legacy ladder.
+- Page-level void budgeting: when a forced break strands a visual void beyond
+  12% of content height, inter-block gaps flex toward a bounded floor so the
+  following block pulls up instead (`45d2.4`); untriggered documents pick
+  byte-identical page breaks.
 
 ### Math-alphabet fallback subset (`4vjj`, `yp8t`)
 

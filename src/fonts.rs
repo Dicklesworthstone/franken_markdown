@@ -63,7 +63,9 @@ const CM_BOLD_ITALIC: &[u8] = fmd_font::bundled::CM_BOLD_ITALIC;
 const MONO_REGULAR: &[u8] = fmd_font::bundled::CM_TYPEWRITER;
 
 // Noto Sans Math (curated subset) — symbol fallback face for characters the
-// primary body/mono faces cannot map (arrows, math operators, …). SIL OFL 1.1.
+// primary body/mono faces cannot map: arrows, math operators, and the
+// math-alphanumeric script/double-struck letters (`\mathcal`/`\mathbb`
+// repertoire, supplementary-plane) that fmd-math routes here. SIL OFL 1.1.
 // Regenerated via `cargo run --example gen_symbol_fallback_font`.
 const SYMBOL_REGULAR: &[u8] = fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS;
 

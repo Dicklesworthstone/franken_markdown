@@ -78,7 +78,74 @@ const CURATED_RANGES: &[(u32, u32)] = &[
     (0x2A00, 0x2A06),
     (0x2A2F, 0x2A2F),
     (0x2A7D, 0x2A7E),
+    // Mathematical alphanumeric letters backing `\mathcal` / `\mathbb`
+    // (`fmd_math::faces::calligraphic_char` / `blackboard_char`): the
+    // script block, the double-struck block, and the double-struck digits.
+    // The letters whose plane-1 slots are reserved for `<letter> + VS16`
+    // pairs always resolve through the Letterlike block above instead,
+    // so any source-font holes inside these ranges are harmless.
+    (0x1D49C, 0x1D4CF),
+    (0x1D538, 0x1D56B),
+    (0x1D7D8, 0x1D7E1),
 ];
+
+/// Every codepoint `\mathcal{X}` / `\mathbb{Y}` / `\mathbb{0}` can resolve
+/// through (`fmd-math`'s `faces::calligraphic_char` / `blackboard_char`
+/// offset tables, minus their Letterlike exceptions). The generator fails if
+/// a future Noto Sans Math release drops any of these from its cmap, rather
+/// than shipping a curated face that quietly downgrades math rendering.
+const MATH_ALPHABET_EXCEPTIONS_UPPER_CALLIGRAPHIC: [char; 8] =
+    ['B', 'E', 'F', 'H', 'I', 'L', 'M', 'R'];
+const MATH_ALPHABET_EXCEPTIONS_LOWER_CALLIGRAPHIC: [char; 3] = ['e', 'g', 'o'];
+const MATH_ALPHABET_EXCEPTIONS_UPPER_BLACKBOARD: [char; 7] = ['C', 'H', 'N', 'P', 'Q', 'R', 'Z'];
+
+fn math_alphabet_emitted() -> Vec<char> {
+    let alphabet = |r: std::ops::RangeInclusive<u8>| {
+        r.clone().map(|b| char::from(b)).collect::<Vec<_>>()
+    };
+    let mut out = Vec::new();
+    let mut push_offset = |base: u32, zero: u32, chs: &[u8]| {
+        for &b in chs {
+            if let Some(c) = char::from_u32(base + u32::from(b) - zero) {
+                out.push(c);
+            }
+        }
+    };
+    // Script upper/lower minus exceptions.
+    let upper = alphabet(b'A'..=b'Z');
+    let lower = alphabet(b'a'..=b'z');
+    push_offset(
+        0x1D49C,
+        'A' as u32,
+        &upper
+            .iter()
+            .filter(|c| !MATH_ALPHABET_EXCEPTIONS_UPPER_CALLIGRAPHIC.contains(c))
+            .map(|c| *c as u8)
+            .collect::<Vec<_>>(),
+    );
+    push_offset(
+        0x1D4B6,
+        'a' as u32,
+        &lower
+            .iter()
+            .filter(|c| !MATH_ALPHABET_EXCEPTIONS_LOWER_CALLIGRAPHIC.contains(c))
+            .map(|c| *c as u8)
+            .collect::<Vec<_>>(),
+    );
+    // Double-struck upper/lower minus exceptions, plus all digits.
+    push_offset(
+        0x1D538,
+        'A' as u32,
+        &upper
+            .iter()
+            .filter(|c| !MATH_ALPHABET_EXCEPTIONS_UPPER_BLACKBOARD.contains(c))
+            .map(|c| *c as u8)
+            .collect::<Vec<_>>(),
+    );
+    push_offset(0x1D552, 'a' as u32, &lower.iter().map(|c| *c as u8).collect::<Vec<_>>());
+    push_offset(0x1D7D8, '0' as u32, &(b'0'..=b'9').collect::<Vec<u8>>());
+    out
+}
 
 /// Codepoints the generated face must cover; the generator fails if the source
 /// font cannot provide them. These are exactly the glyphs real-world issues
@@ -134,6 +201,16 @@ fn run(source_path: &str, output_path: &str) -> Result<(), String> {
         if reparsed.glyph_index(c) == 0 {
             return Err(format!(
                 "subset lost coverage for {c:?} (U+{:04X})",
+                u32::from(c)
+            ));
+        }
+    }
+
+    for c in math_alphabet_emitted() {
+        if font.glyph_index(c) == 0 {
+            return Err(format!(
+                "source font {source_path} lacks required math-alphabet glyph {c:?} \
+                 (U+{:04X}) — \\mathcal/\\mathbb coverage would regress",
                 u32::from(c)
             ));
         }

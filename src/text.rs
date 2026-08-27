@@ -716,8 +716,17 @@ impl Font {
         write_u32(&mut head, 8, 0)?;
         write_u16(&mut head, 50, 1)?; // indexToLocFormat = 1 (long)
 
-        // cmap: fresh single format-4 (3,1) subtable.
-        let cmap = self.build_cmap4(cmap_chars, &new_of_lookup)?;
+        // cmap: fresh single-subtable table. Format 4 (`(3,1)`, BMP-only)
+        // remains the default so every existing BMP-only subset stays
+        // byte-identical; format 12 (`(3,10)`, full Unicode) is required as
+        // soon as any kept supplementary-plane glyph survives (the math
+        // alphanumeric letters), because format 4's u16 segment arrays cannot
+        // address codepoints past 0xFFFF.
+        let cmap = if self.subset_reaches_supplementary_plane(cmap_chars, &new_of_lookup) {
+            self.build_cmap12(cmap_chars, &new_of_lookup)?
+        } else {
+            self.build_cmap4(cmap_chars, &new_of_lookup)?
+        };
 
         // name: minimal valid table (format 0, count 0, stringOffset 6).
         let mut name: Vec<u8> = Vec::with_capacity(6);
@@ -856,7 +865,9 @@ impl Font {
         let mut p = 10usize; // skip numberOfContours + 4x i16 bbox
         let mut instruction_flags_positions = Vec::new();
         loop {
+            let last_flags_pos = p;
             let flags = be_u16(&out, p)?;
+
             if flags & WE_HAVE_INSTRUCTIONS != 0 {
                 instruction_flags_positions.push(p);
             }
@@ -882,7 +893,15 @@ impl Font {
             if flags & MORE == 0 {
                 break;
             }
+            // If MORE_COMPONENTS was set but there are no remaining bytes for a
+            // complete component header (flags + gid = 4 bytes), clear the dangling
+            // MORE flag on the current record and finish the walk (matching glyph_components).
+            if off(p, 4).is_none_or(|next_end| next_end > out.len()) {
+                write_u16(&mut out, last_flags_pos, flags & !MORE)?;
+                break;
+            }
         }
+
         if !instruction_flags_positions.is_empty() {
             for flags_pos in instruction_flags_positions {
                 let flags = be_u16(&out, flags_pos)?;
@@ -972,6 +991,74 @@ impl Font {
         cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
         cmap.extend_from_slice(&3u16.to_be_bytes()); // platformID (Windows)
         cmap.extend_from_slice(&1u16.to_be_bytes()); // encodingID (Unicode BMP)
+        cmap.extend_from_slice(&12u32.to_be_bytes()); // subtable offset
+    /// Whether any char in `keep` maps to a supplementary-plane codepoint with
+    /// a surviving glyph, which format 4's u16 segments cannot address.
+    fn subset_reaches_supplementary_plane(&self, keep: &[char], new_of: &[u16]) -> bool {
+        keep.iter().any(|&ch| {
+            (ch as u32) >= 0x1_0000
+                && remapped_gid(new_of, self.glyph_index(ch)).is_some()
+        })
+    }
+
+    /// Build a complete `cmap` table holding a single format-12 `(3,10)`
+    /// subtable mapping every kept char — supplementary-plane math
+    /// alphanumeric letters included — to its NEW gid. Entries merge into a
+    /// group only where both the codepoints and their new gids are fully
+    /// contiguous, keeping the output deterministic and compact; otherwise one
+    /// single-char group per entry, mirroring `build_cmap4`'s segment shape.
+    fn build_cmap12(&self, keep: &[char], new_of: &[u16]) -> Option<Vec<u8>> {
+        // Unique, ascending codepoint -> new gid.
+        let mut codes: std::collections::BTreeMap<u32, u16> = std::collections::BTreeMap::new();
+        for &ch in keep {
+            let old = self.glyph_index(ch);
+            // Same policy as build_cmap4: skip rather than fail when a char's
+            // glyph is missing or unreachable — it falls back to `.notdef`.
+            let Some(ng) = remapped_gid(new_of, old) else {
+                continue;
+            };
+            codes.insert(ch as u32, ng);
+        }
+        struct Group {
+            start_cp: u32,
+            end_cp: u32,
+            start_gid: u16,
+        }
+        let mut groups: Vec<Group> = Vec::with_capacity(codes.len());
+        for (&cp, &ng) in &codes {
+            match groups.last_mut() {
+                Some(g)
+                    if g.end_cp == cp - 1
+                        && u64::from(g.start_gid) + (g.end_cp - g.start_cp) as u64 + 1
+                            == u64::from(ng) =>
+                {
+                    g.end_cp = cp;
+                }
+                _ => groups.push(Group { start_cp: cp, end_cp: cp, start_gid: ng }),
+            }
+        }
+
+        let sub_len = 16usize.checked_add(groups.len().checked_mul(12)?)?;
+        if sub_len > u32::MAX as usize {
+            return None;
+        }
+        let mut sub: Vec<u8> = Vec::with_capacity(sub_len);
+        sub.extend_from_slice(&12u16.to_be_bytes()); // format
+        sub.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        sub.extend_from_slice(&(sub_len as u32).to_be_bytes()); // length
+        sub.extend_from_slice(&0u32.to_be_bytes()); // language
+        sub.extend_from_slice(&(groups.len() as u32).to_be_bytes()); // numGroups
+        for g in &groups {
+            sub.extend_from_slice(&g.start_cp.to_be_bytes());
+            sub.extend_from_slice(&g.end_cp.to_be_bytes());
+            sub.extend_from_slice(&(u32::from(g.start_gid)).to_be_bytes());
+        }
+
+        let mut cmap: Vec<u8> = Vec::with_capacity(12 + sub.len());
+        cmap.extend_from_slice(&0u16.to_be_bytes()); // version
+        cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        cmap.extend_from_slice(&3u16.to_be_bytes()); // platformID (Windows)
+        cmap.extend_from_slice(&10u16.to_be_bytes()); // encodingID (full Unicode)
         cmap.extend_from_slice(&12u32.to_be_bytes()); // subtable offset
         cmap.extend_from_slice(&sub);
         Some(cmap)
@@ -2314,6 +2401,95 @@ mod synthetic_font_tests {
         parse(&tables)
     }
 
+    /// A font whose kept repertoire spans the BMP and the supplementary
+    /// plane: BMP-only subsets must keep emitting the compact format-4 cmap,
+    /// while any supplementary-plane keep forces the full-Unicode format-12
+    /// cmap (the old format-4-only writer silently dropped those glyphs).
+    fn mixed_plane_font() -> Font {
+        let mut glyf = Vec::new();
+        let mut loca = Vec::new();
+        push16(&mut loca, 0);
+        // gid 0: empty. gid 1..=4: real simple glyphs.
+        let mut glyphs = vec![Vec::new()];
+        for _ in 0..4 {
+            glyphs.push(simple_glyph16());
+        }
+        for g in &glyphs {
+            glyf.extend_from_slice(g);
+            push16(&mut loca, u16::try_from(glyf.len() / 2).unwrap());
+        }
+        let metrics: Vec<(u16, i16)> = (0..5u16).map(|g| (500 + g, g as i16)).collect();
+        // Source cmap with two Windows subtables: format 4 mapping
+        // 'A'->1, 'B'->2, plus a format-12 supplementary group
+        // U+1D49C->3, U+1D49D->4 (one contiguous group).
+        let subtable4 = {
+            let t = cmap4_table(
+                &[
+                    (u16::from('A'), u16::from('A'), 1, 0),
+                    (u16::from('B'), u16::from('B'), 2, 0),
+                    (0xFFFF, 0xFFFF, 1, 0),
+                ],
+                &[],
+            );
+            t[12..].to_vec() // strip the helper's single-entry outer header
+        };
+        let subtable12 = {
+            let t = cmap12_table(&[(0x1_D49C, 0x1_D49E, 3)]);
+            t[12..].to_vec()
+        };
+        debug_assert_eq!(subtable4.len(), 16 + 8 * 3);
+        let directory_len = 6usize + 2 * 8;
+        let mut cmap: Vec<u8> = Vec::new();
+        push16(&mut cmap, 0); // version
+        push16(&mut cmap, 2); // numTables
+        push16(&mut cmap, 3); // platformID (Windows)
+        push16(&mut cmap, 1); // encodingID (Unicode BMP)
+        push32(&mut cmap, u32::try_from(directory_len).unwrap());
+        push16(&mut cmap, 3); // platformID (Windows)
+        push16(&mut cmap, 10); // encodingID (full Unicode)
+        push32(
+            &mut cmap,
+            u32::try_from(directory_len + subtable4.len()).unwrap(),
+        );
+        cmap.extend_from_slice(&subtable4);
+        cmap.extend_from_slice(&subtable12);
+        let tables = base_tables(5, 5, 1000, hmtx_long(&metrics), cmap);
+        parse(&tables)
+    }
+
+    #[test]
+    fn subset_preserves_format4_cmap_for_bmp_only_keeps() {
+        let font = mixed_plane_font();
+        let subset = font
+            .subset(&['A', 'B'])
+            .expect("BMP-only subset succeeds");
+        let reparsed = Font::parse(subset).expect("subset re-parses");
+        assert_eq!(reparsed.glyph_index('A'), 1);
+        assert_eq!(reparsed.glyph_index('B'), 2);
+        assert_eq!(reparsed.glyph_index('\u{1D49C}'), 0);
+    }
+
+    #[test]
+    fn subset_emits_format12_cmap_when_supplementary_plane_is_kept() {
+        let font = mixed_plane_font();
+        let subset = font
+            .subset(&['A', 'B', '\u{1D49C}', '\u{1D49D}'])
+            .expect("supplementary-plane subset succeeds");
+        let reparsed = Font::parse(subset).expect("subset re-parses");
+        assert_eq!(reparsed.glyph_index('A'), 1);
+        assert_eq!(reparsed.glyph_index('B'), 2);
+        assert_ne!(
+            reparsed.glyph_index('\u{1D49C}'),
+            0,
+            "script A must survive the subset"
+        );
+        assert_ne!(
+            reparsed.glyph_index('\u{1D49D}'),
+            0,
+            "script B must survive the subset"
+        );
+    }
+
     /// One composite glyph whose loca/glyf directory claims 16 bytes while the
     /// file physically ends after `keep` of them.
     fn truncated_composite_font(keep: usize) -> Font {
@@ -2872,20 +3048,24 @@ mod synthetic_font_tests {
     }
 
     #[test]
-    fn subset_aborts_on_composite_whose_last_record_dangles_more() {
+    fn subset_tolerates_composite_whose_last_record_dangles_more() {
         // `glyph_components` tolerates a final record with MORE_COMPONENTS set
-        // and nothing after it (gid 7), but `subset_glyph_bytes` keeps walking,
-        // fails the next bounds-checked read, and refuses the whole subset
-        // rather than emit a corrupt composite.
+        // and nothing after it (gid 7). `subset_glyph_bytes` clears the dangling
+        // MORE_COMPONENTS flag on the final record and produces a valid truncated composite.
         let font = zoo_font();
         assert_eq!(font.glyph_components(7), vec![5]);
         let mut new_of = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
         new_of[0] = 0;
         new_of[5] = 1;
         new_of[7] = 2;
-        assert_eq!(font.subset_glyph_bytes(7, &new_of), None);
-        assert!(font.subset_glyphs(&[7], &[]).is_none());
+        let out = font
+            .subset_glyph_bytes(7, &new_of)
+            .expect("dangling MORE bit is tolerated and stripped");
+        // Verify MORE bit is cleared on gid 7's single component record (offset 10)
+        assert_eq!(be_u16(&out, 10), Some(0));
+        assert!(font.subset_glyphs(&[7], &[]).is_some());
     }
+
 
     #[test]
     fn subset_strips_valid_composite_instructions_and_clears_the_flag() {

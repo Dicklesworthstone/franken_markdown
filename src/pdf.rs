@@ -15443,8 +15443,7 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         let cost = &costs[col_idx];
         let mut add = 0usize;
         if placed[remaining].is_finite() {
-            for used in 0..=remaining {
-                let base = previous[used];
+            for (used, &base) in previous.iter().enumerate().take(remaining + 1) {
                 if !base.is_finite() {
                     continue;
                 }
@@ -26485,8 +26484,6 @@ fn build_pdf(
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     }
 
-    ser_record!("seri_content_streams", p);
-    ser_checkpoint!();
     // Embedded font object groups.
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);

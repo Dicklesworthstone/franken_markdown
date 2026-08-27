@@ -48,6 +48,8 @@ const MAX_VARIATION_AXES: usize = 64;
 const MAX_NAMED_INSTANCES: usize = 256;
 /// `avar` segment maps are piecewise-linear; a few dozen knots is generous.
 const MAX_AVAR_MAPS: usize = 64;
+/// Per-axis `avar` maps: `None` means identity for that axis.
+type AvarAxisMaps = Vec<Option<Vec<(f32, f32)>>>;
 
 #[derive(Debug, Clone)]
 struct Cmap4Segment {
@@ -148,7 +150,7 @@ struct FontVariation {
     instances: Vec<NamedInstance>,
     /// Per-axis `avar` maps of `(from, to)` in normalized `[-1, 1]` space.
     /// `None` means identity mapping for that axis.
-    avar: Vec<Option<Vec<(f32, f32)>>>,
+    avar: AvarAxisMaps,
 }
 
 /// Why a font failed to parse.
@@ -417,12 +419,7 @@ fn parse_fvar(d: &[u8], table_off: usize, table_len: usize) -> Option<FontVariat
 
 /// Overlay `avar` segment maps onto a parsed `fvar`. Axis count must match
 /// the (already-capped) `fvar` axis count; otherwise `avar` is ignored.
-fn parse_avar(
-    d: &[u8],
-    table_off: usize,
-    table_len: usize,
-    n_axes: usize,
-) -> Option<Vec<Option<Vec<(f32, f32)>>>> {
+fn parse_avar(d: &[u8], table_off: usize, table_len: usize, n_axes: usize) -> Option<AvarAxisMaps> {
     let table_end = table_off.checked_add(table_len)?;
     if table_off.checked_add(8)? > table_end {
         return None;

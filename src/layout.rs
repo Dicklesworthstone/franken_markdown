@@ -383,6 +383,7 @@ impl StyledText {
 fn push_inline_runs(out: &mut StyledText, inlines: &[Inline], style: TextStyle) {
     for inline in inlines {
         match inline {
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(text) => out.push_text(text, style),
             Inline::Emphasis(content) => push_inline_runs(out, content, style.with_italic()),
             Inline::Strong(content) => push_inline_runs(out, content, style.with_bold()),

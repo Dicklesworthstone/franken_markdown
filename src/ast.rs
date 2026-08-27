@@ -32,6 +32,13 @@ pub enum Block {
     /// A raw HTML block (only emitted when raw HTML is allowed; otherwise the
     /// parser keeps it as a paragraph of escaped text).
     HtmlBlock(String),
+    /// A GFM footnote definition `[^id]: content`. Kept in the block flow at
+    /// source position; emitters skip it in normal flow and render a notes
+    /// section from all definitions (numbered by first-reference order).
+    FootnoteDefinition {
+        id: String,
+        blocks: Vec<Block>,
+    },
 }
 
 /// An ordered or unordered list.
@@ -111,4 +118,9 @@ pub enum Inline {
     HardBreak,
     /// Raw inline HTML (only when allowed).
     Html(String),
+    /// A GFM footnote reference `[^id]`. The superscript number is assigned
+    /// renderer-side by first-reference document order; `id` links the
+    /// reference to its `[^id]:` definition. References whose id has no
+    /// definition are rewritten to literal text by a post-parse pass.
+    FootnoteRef { id: String },
 }

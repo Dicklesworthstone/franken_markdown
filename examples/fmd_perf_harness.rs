@@ -127,6 +127,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sample.print_json();
     }
     io::stdout().flush()?;
+    if std::env::var_os("FMD_WRAP_PERF").is_some() {
+        eprintln!("{}", franken_markdown::pdf::wrap_perf::summary());
+    }
     Ok(())
 }
 

@@ -1147,6 +1147,9 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
                 collect_image_destinations_inlines(inlines, out);
             }
             Block::BlockQuote(inner) => collect_image_destinations(inner, out),
+            Block::FootnoteDefinition { blocks: inner, .. } => {
+                collect_image_destinations(inner, out);
+            }
             Block::List(list) => {
                 for item in &list.items {
                     collect_image_destinations(&item.blocks, out);
@@ -1177,6 +1180,7 @@ fn collect_image_destinations_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&
             | Inline::Link {
                 content: children, ..
             } => collect_image_destinations_inlines(children, out),
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(_)
             | Inline::Code(_)
             | Inline::SoftBreak

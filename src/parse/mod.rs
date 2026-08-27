@@ -647,6 +647,36 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, R
     (consumed, refs)
 }
 
+/// Detect a GFM footnote definition start: `[^id]: content`. Returns the id
+/// and the inline content after the colon. The id must be non-empty with no
+/// whitespace or brackets.
+fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("[^")?;
+    let close = rest.find(']')?;
+    let id = &rest[..close];
+    if id.is_empty() || id.chars().any(|c| c.is_whitespace() || c == '[' || c == ']') {
+        return None;
+    }
+    let after = rest[close + 1..].strip_prefix(':')?;
+    Some((id.to_string(), after.trim()))
+}
+
+/// Cheap check: the line starts a footnote definition (`[^id]:`).
+fn footnote_definition_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("[^") else {
+        return false;
+    };
+    let Some(close) = rest.find(']') else {
+        return false;
+    };
+    let id = &rest[..close];
+    !id.is_empty()
+        && !id.chars().any(|c| c.is_whitespace() || c == '[' || c == ']')
+        && rest[close + 1..].starts_with(':')
+}
+
 fn collect_link_reference_metadata_into(
     lines: &[&str],
     mut consumed: Option<&mut ConsumedReferenceLines>,
@@ -739,6 +769,17 @@ fn collect_link_reference_metadata_into(
             && let Some(end_cond) = html_block_kind(line)
         {
             i = html_block_end(lines, i, end_cond, |l| *l);
+            in_paragraph = false;
+            continue;
+        }
+
+        // GFM footnote definitions (`[^id]: content`) are NOT link reference
+        // definitions: the footnote block parser consumes them later. Skip the
+        // marker line here so it is not extracted as a `[label]: dest` link ref
+        // (which would silently delete the footnote). Continuation lines are
+        // indented, so the indented-code branch below passes them through.
+        if footnote_definition_marker(line) {
+            i += 1;
             in_paragraph = false;
             continue;
         }
@@ -1329,6 +1370,38 @@ fn parse_blocks_with_refs_profiled(
                 started,
             );
             blocks.push(Block::CodeBlock { lang: None, code });
+            i += used;
+            continue;
+        }
+        // GFM footnote definition: `[^id]: content` plus 4-space-indented
+        // continuation lines (v1: single-paragraph bodies — multi-block
+        // footnote content is a documented follow-up).
+        if let Some((id, content)) = scan_footnote_definition(line) {
+            let started = profiler.checkpoint();
+            let mut text = content.to_string();
+            let mut used = 1usize;
+            while i + used < lines.len() {
+                let cont = lines[i + used];
+                if cont.trim().is_empty() || leading_spaces(cont) < 4 {
+                    break;
+                }
+                text.push(' ');
+                text.push_str(cont.trim_start());
+                used += 1;
+            }
+            let inlines = parse_inlines_with_refs_profiled(&text, refs, profiler);
+            profiler.record_since(
+                "footnote_definition",
+                used,
+                text.len(),
+                1 + inlines.len(),
+                "parse one GFM footnote definition and its inline content",
+                started,
+            );
+            blocks.push(Block::FootnoteDefinition {
+                id,
+                blocks: vec![Block::Paragraph(inlines)],
+            });
             i += used;
             continue;
         }
@@ -3040,6 +3113,29 @@ fn record_plain_inline_parse(
     inlines
 }
 
+/// Parse a GFM footnote-reference id starting at `start` (just past `[^`).
+/// Returns (id, index-past-the-closing-`]`) when the id is non-empty and
+/// contains no whitespace, `[`, `]`, or control characters.
+fn parse_footnote_ref_id(bytes: &[char], start: usize) -> Option<(String, usize)> {
+    let mut id = String::new();
+    let mut i = start;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == ']' {
+            if id.is_empty() {
+                return None;
+            }
+            return Some((id, i + 1));
+        }
+        if c.is_whitespace() || c == '[' || c == ']' || (c as u32) < 0x20 {
+            return None;
+        }
+        id.push(c);
+        i += 1;
+    }
+    None
+}
+
 fn inline_text_needs_full_parse(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut i = 0usize;
@@ -3155,6 +3251,22 @@ fn parse_inlines_chars_with_refs_profiled(
                 } else {
                     buf.push(c);
                     i += 1;
+                }
+            }
+            '[' if bytes.get(i + 1) == Some(&'^') => {
+                // GFM footnote reference: [^id] where id has no spaces or
+                // brackets. Emits FootnoteRef; the renderer numbers it and
+                // drops refs whose id has no definition (post-parse pass).
+                match parse_footnote_ref_id(&bytes, i + 2) {
+                    Some((id, next)) => {
+                        flush(&mut buf, &mut els);
+                        els.push(InlineEl::Node(Inline::FootnoteRef { id }));
+                        i = next;
+                    }
+                    None => {
+                        buf.push(c);
+                        i += 1;
+                    }
                 }
             }
             '[' => {
@@ -3321,6 +3433,7 @@ fn inline_tree_node_count(inlines: &[Inline]) -> usize {
             Inline::Text(_)
             | Inline::Code(_)
             | Inline::Image { .. }
+            | Inline::FootnoteRef { .. }
             | Inline::SoftBreak
             | Inline::HardBreak
             | Inline::Html(_) => 1,
@@ -4455,6 +4568,7 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
             }
             Inline::Link { content, .. } => push_inlines_to_plain(content, out),
             Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
             Inline::Html(h) => out.push_str(h),
         }

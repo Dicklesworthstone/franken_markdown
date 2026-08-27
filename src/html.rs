@@ -5,7 +5,7 @@
 //! blockquotes, and code blocks ready for syntax highlighting.
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, hash_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
@@ -39,7 +39,9 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
     let mut state = RenderState::default();
+    state.footnote_defs = collect_footnote_defs(&doc.blocks);
     render_blocks(&doc.blocks, &mut html, opts, &mut state);
+    push_footnotes_section(&mut state, &mut html, opts);
     html.push_str("</main>\n</body>\n</html>\n");
     html
 }
@@ -89,6 +91,13 @@ struct RenderState<'a> {
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: HashMap<String, usize>,
+    /// GFM footnotes: definitions collected before rendering (source id ->
+    /// content blocks), in document order.
+    footnote_defs: Vec<(&'a str, &'a [Block])>,
+    /// Footnote numbers by first-reference appearance (render-time assignment).
+    footnote_numbers: BTreeMap<String, usize>,
+    /// Footnote ids in number order (insertion order of first reference).
+    footnote_order: Vec<String>,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
     /// Bounded per-render cache for repeated non-consecutive code blocks.
@@ -233,6 +242,7 @@ fn render_block<'a>(
     state: &mut RenderState<'a>,
 ) {
     match block {
+        Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
             out.push_str("<h");
             push_u64(out, u64::from(*level));
@@ -403,6 +413,9 @@ fn render_inlines<'a>(
     for inl in inlines {
         match inl {
             Inline::Text(t) => push_escaped_text(t, out),
+            Inline::FootnoteRef { id } => {
+                render_footnote_ref(id, out, state);
+            }
             Inline::Emphasis(c) => wrap(out, "em", c, opts, state),
             Inline::Strong(c) => wrap(out, "strong", c, opts, state),
             Inline::Strikethrough(c) => wrap(out, "del", c, opts, state),
@@ -834,6 +847,7 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
             Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_inlines_to_plain(c, out);
             }
@@ -866,6 +880,7 @@ fn slug_inlines(inlines: &[Inline]) -> String {
 fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
     for inl in inlines {
         match inl {
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => {
                 for c in t.chars() {
                     push_slug_char(out, pending_dash, c);
@@ -895,6 +910,92 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
     } else if c == ' ' || c == '-' || c == '_' {
         *pending_dash = true;
     }
+}
+
+
+/// Collect GFM footnote definitions in document order (container-aware), for
+/// the trailing notes section. References may precede their definitions, so
+/// this runs before the block walk.
+fn collect_footnote_defs<'a>(
+    blocks: &'a [Block],
+) -> Vec<(&'a str, &'a [Block])> {
+    let mut defs = Vec::new();
+    fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
+        for block in blocks {
+            match block {
+                Block::FootnoteDefinition { id, blocks: inner } => {
+                    defs.push((id.as_str(), inner.as_slice()));
+                }
+                Block::BlockQuote(inner) => walk(inner, defs),
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, defs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(blocks, &mut defs);
+    defs
+}
+
+/// Render the trailing notes section for every footnote that was referenced
+/// (numbered) during the body walk. Unreferenced definitions are omitted.
+fn push_footnotes_section<'a>(
+    state: &mut RenderState<'a>,
+    out: &mut String,
+    opts: &HtmlOptions,
+) {
+    if state.footnote_order.is_empty() {
+        return;
+    }
+    // The refs are 'a (borrowed from the document), so cloning the pair list
+    // is cheap and independent of the later &mut state borrows.
+    let defs = state.footnote_defs.clone();
+    let order = state.footnote_order.clone();
+    out.push_str("<section class=\"footnotes\">\n<ol>\n");
+    for (idx, id) in order.iter().enumerate() {
+        let number = idx + 1;
+        let Some((_, blocks)) = defs.iter().find(|(def_id, _)| def_id == id) else {
+            continue;
+        };
+        out.push_str("<li id=\"fn-");
+        out.push_str(&escape_text(id));
+        out.push_str("\">");
+        render_blocks(blocks, out, opts, state);
+        out.push_str(" <a class=\"footnote-backref\" href=\"#fnref-");
+        push_u64(out, number as u64);
+        out.push_str("\">\u{21a9}</a>\n</li>\n");
+    }
+    out.push_str("</ol>\n</section>\n");
+}
+
+/// Render one footnote reference: superscript number linked to the notes
+/// section entry. The first reference to a footnote carries the backref
+/// anchor id. References without definitions stay literal text (GFM).
+fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
+    let has_def = state.footnote_defs.iter().any(|(def_id, _)| *def_id == id);
+    if !has_def {
+        out.push_str("<sup class=\"footnote-ref\">[^");
+        out.push_str(&escape_text(id));
+        out.push_str("]</sup>");
+        return;
+    }
+    let next_number = state.footnote_numbers.len() + 1;
+    let number = *state.footnote_numbers.entry(id.to_string()).or_insert(next_number);
+    let first = number == next_number;
+    out.push_str("<sup class=\"footnote-ref\"");
+    if first {
+        out.push_str(" id=\"fnref-");
+        push_u64(out, number as u64);
+        out.push('"');
+    }
+    out.push_str("><a href=\"#fn-");
+    out.push_str(&escape_text(id));
+    out.push_str("\">");
+    push_u64(out, number as u64);
+    out.push_str("</a></sup>");
 }
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token;
@@ -1509,6 +1610,9 @@ fn collect_font_usage(doc: &Document) -> FontUsage {
 fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
     for block in blocks {
         match block {
+            Block::FootnoteDefinition { blocks: inner, .. } => {
+                collect_blocks_font_usage(inner, usage);
+            }
             Block::Heading { inlines, .. } => {
                 collect_inlines_font_usage(inlines, usage, InlineStyle::default().bold());
             }
@@ -1541,6 +1645,7 @@ fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
 fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: InlineStyle) {
     for inl in inlines {
         match inl {
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(text) => usage.add_body_text(text, style),
             Inline::Emphasis(children) => {
                 collect_inlines_font_usage(children, usage, style.italic())
@@ -1838,8 +1943,30 @@ strong { font-weight: 680; }
     overflow: visible;
     border-color: #999;
   }
-}
-"#;
+  .footnote-ref {
+    font-size: 0.75em;
+    vertical-align: super;
+  }
+  .footnote-ref a {
+    text-decoration: none;
+  }
+  .footnotes {
+    margin-top: 2em;
+    padding-top: 1em;
+    border-top: 1px solid #999;
+    font-size: 0.875em;
+  }
+  .footnotes ol {
+    padding-left: 1.5em;
+  }
+  .footnotes li {
+    margin: 0.4em 0;
+  }
+  .footnote-backref {
+    text-decoration: none;
+    margin-left: 0.25em;
+  }
+}"#;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

@@ -2023,6 +2023,7 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
                 collect_image_dests_inlines(inlines, out);
             }
             Block::BlockQuote(inner) => collect_image_dests(inner, out),
+            Block::FootnoteDefinition { blocks: inner, .. } => collect_image_dests(inner, out),
             Block::List(list) => {
                 for item in &list.items {
                     collect_image_dests(&item.blocks, out);
@@ -2064,6 +2065,7 @@ fn collect_text(blocks: &[Block], out: &mut String) {
             }
             Block::CodeBlock { code, .. } => out.push_str(code),
             Block::BlockQuote(inner) => collect_text(inner, out),
+            Block::FootnoteDefinition { blocks: inner, .. } => collect_text(inner, out),
             Block::List(list) => {
                 for item in &list.items {
                     collect_text(&item.blocks, out);
@@ -2089,6 +2091,7 @@ fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
     for inline in inlines {
         match inline {
             Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 collect_text_inlines(c, out);
             }
@@ -2566,6 +2569,9 @@ fn table_layout_inline_key(
 ) -> Option<TableLayoutInlineKey> {
     add_table_layout_key_node(inline_nodes)?;
     match inline {
+        Inline::FootnoteRef { id } => {
+            Some(TableLayoutInlineKey::Text(format!("[^{id}]")))
+        }
         Inline::Text(text) => {
             add_table_layout_key_bytes(inline_bytes, text.len())?;
             Some(TableLayoutInlineKey::Text(text.clone()))
@@ -2762,6 +2768,7 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
     match block {
+        Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
             let idx = (*level as usize).saturating_sub(1).min(5);
             let size = cx.type_scale.h[idx];
@@ -15012,6 +15019,7 @@ fn table_cell_measure(
     width_cache: &RefCell<WidthCache>,
     header: bool,
 ) -> TableCellMeasure {
+    let t0 = wrap_perf_enabled().then(std::time::Instant::now);
     let mut cell = TableCellMeasure {
         lines: Vec::new(),
         min_content: 0.0,
@@ -15050,7 +15058,14 @@ fn table_cell_measure(
         line.min_content = line.min_content.max(word_width);
     }
 
-    finish_table_measure_line(&mut cell, &mut line);
+    if wrap_perf_enabled() {
+        let ns = t0.map_or(0, |t| u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let key = (
+            wrap_perf_tok_hash(toks),
+            u64::from(size.to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+        );
+        wrap_perf::add_measure(ns, 1, Some(key));
+    }
     cell
 }
 
@@ -15526,6 +15541,122 @@ struct TableLayoutSpec<'a> {
     width_cache: &'a RefCell<WidthCache>,
 }
 
+// TEMP PERF INSTRUMENTATION (pass 3) — env-gated via FMD_WRAP_PERF, fully reverted.
+#[doc(hidden)]
+pub mod wrap_perf {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TOKENIZE_NS: AtomicU64 = AtomicU64::new(0);
+    static TOKENIZE_CELLS: AtomicU64 = AtomicU64::new(0);
+    static MEASURE_NS: AtomicU64 = AtomicU64::new(0);
+    static MEASURE_CELLS: AtomicU64 = AtomicU64::new(0);
+    static WRAP_NS: AtomicU64 = AtomicU64::new(0);
+    static WRAP_CELLS: AtomicU64 = AtomicU64::new(0);
+    static MEASURE_KEYS: Mutex<Option<HashSet<(u64, u64)>>> = Mutex::new(None);
+    static WRAP_KEYS: Mutex<Option<HashSet<(u64, u64)>>> = Mutex::new(None);
+
+    fn add(counter_ns: &AtomicU64, counter_cells: &AtomicU64, ns: u64, cells: u64) {
+        counter_ns.fetch_add(ns, Ordering::Relaxed);
+        counter_cells.fetch_add(cells, Ordering::Relaxed);
+    }
+
+    fn note_key(store: &Mutex<Option<HashSet<(u64, u64)>>>, key: (u64, u64)) {
+        if let Ok(mut guard) = store.lock() {
+            guard
+                .get_or_insert_with(HashSet::new)
+                .insert(key);
+        }
+    }
+
+    pub fn add_tokenize(ns: u64, cells: u64) {
+        add(&TOKENIZE_NS, &TOKENIZE_CELLS, ns, cells);
+    }
+
+    pub fn add_measure(ns: u64, cells: u64, key: Option<(u64, u64)>) {
+        add(&MEASURE_NS, &MEASURE_CELLS, ns, cells);
+        if let Some(key) = key {
+            note_key(&MEASURE_KEYS, key);
+        }
+    }
+
+    pub fn add_wrap(ns: u64, cells: u64, key: Option<(u64, u64)>) {
+        add(&WRAP_NS, &WRAP_CELLS, ns, cells);
+        if let Some(key) = key {
+            note_key(&WRAP_KEYS, key);
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn summary() -> String {
+        let tok_ns = TOKENIZE_NS.load(Ordering::Relaxed);
+        let tok_cells = TOKENIZE_CELLS.load(Ordering::Relaxed);
+        let mea_ns = MEASURE_NS.load(Ordering::Relaxed);
+        let mea_cells = MEASURE_CELLS.load(Ordering::Relaxed);
+        let wrp_ns = WRAP_NS.load(Ordering::Relaxed);
+        let wrp_cells = WRAP_CELLS.load(Ordering::Relaxed);
+        let mea_distinct = MEASURE_KEYS
+            .lock()
+            .map(|g| g.as_ref().map_or(0, HashSet::len))
+            .unwrap_or(0);
+        let wrp_distinct = WRAP_KEYS
+            .lock()
+            .map(|g| g.as_ref().map_or(0, HashSet::len))
+            .unwrap_or(0);
+        format!(
+            "FMD_WRAP_PERF tokenize: {} ms / {} cells | measure: {} ms / {} cells / {} distinct keys | wrap: {} ms / {} cells / {} distinct keys",
+            tok_ns / 1_000_000,
+            tok_cells,
+            mea_ns / 1_000_000,
+            mea_cells,
+            mea_distinct,
+            wrp_ns / 1_000_000,
+            wrp_cells,
+            wrp_distinct,
+        )
+    }
+}
+
+fn wrap_perf_enabled() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static STATE: AtomicU8 = AtomicU8::new(0);
+    match STATE.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let on = std::env::var_os("FMD_WRAP_PERF").is_some();
+            STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+fn wrap_perf_tok_hash(toks: &[Tok]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for t in toks {
+        fnv1a64_update_u64(&mut hash, u64::from(t.slot));
+        fnv1a64_update_byte(&mut hash, u8::from(t.space));
+        fnv1a64_update_byte(&mut hash, u8::from(t.hard_break));
+        fnv1a64_update_byte(&mut hash, u8::from(t.strike));
+        match &t.link {
+            None => fnv1a64_update_byte(&mut hash, 0),
+            Some(LinkTarget::Uri(s)) => {
+                fnv1a64_update_byte(&mut hash, 1);
+                fnv1a64_update(&mut hash, s.as_bytes());
+            }
+            Some(LinkTarget::Fragment(s)) => {
+                fnv1a64_update_byte(&mut hash, 2);
+                fnv1a64_update(&mut hash, s.as_bytes());
+            }
+        }
+        fnv1a64_update(&mut hash, t.text.as_bytes());
+        fnv1a64_update_byte(&mut hash, 0xFF);
+    }
+    hash
+}
+
+// END TEMP PERF INSTRUMENTATION
 fn layout_table(
     table: &Table,
     indent: f32,
@@ -15661,6 +15792,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     // Tokenize each cell once. Measurement and wrapping use the same styled
     // token stream, so table layout avoids repeating inline/style work while
     // keeping header bolding, links, and strikethrough behavior identical.
+    let perf = wrap_perf_enabled();
+    let t_tok = perf.then(std::time::Instant::now);
     let head_toks: Vec<Vec<Tok>> = table
         .head
         .iter()
@@ -15675,6 +15808,15 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 .collect()
         })
         .collect();
+    if perf {
+        let cells = u64::try_from(
+            head_toks.len() + row_toks.iter().map(Vec::len).sum::<usize>(),
+        )
+        .unwrap_or(u64::MAX);
+        let ns = t_tok.map_or(0, |t| u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        wrap_perf::add_tokenize(ns, cells);
+    }
+
 
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
     // the allocator can search candidate widths without reshaping text inside
@@ -15792,7 +15934,22 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
                 let toks = cells.get(k).map(Vec::as_slice).unwrap_or(&[]);
-                wrap_cell_styled(toks, cw, size, faces, width_cache)
+                let t_w = perf.then(std::time::Instant::now);
+                let wrapped_cell = wrap_cell_styled(toks, cw, size, faces, width_cache);
+                if perf {
+                    let ns = t_w.map_or(0, |t| {
+                        u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+                    });
+                    let key = (
+                        wrap_perf_tok_hash(toks),
+                        cw.to_bits() as u64 | (u64::from(size.to_bits()) << 32),
+                    );
+                    // (hash, size_bits) — size widened to u64 to match
+                    // add_wrap's key tuple (fixes a compile error in the
+                    // in-flight FMD_TABLE_PERF instrumentation).
+                    wrap_perf::add_wrap(ns, 1, Some((key.0, u64::from(key.1))));
+                }
+                wrapped_cell
             })
             .collect();
         let depth = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
@@ -16059,6 +16216,7 @@ fn tokenize(
 ) {
     for inl in inlines {
         match inl {
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(t) => push_text_tokens(t, slot_of(bold, italic, false), strike, link, out),
             Inline::Code(t) => push_text_tokens(t, F_MONO, strike, link, out),
             Inline::Strong(c) => tokenize(c, true, italic, strike, link, out),
@@ -34880,6 +35038,7 @@ pub struct AnchorAudit {
 fn push_plain_inlines(inlines: &[Inline], out: &mut String, links: &mut Vec<String>) {
     for inl in inlines {
         match inl {
+            Inline::FootnoteRef { .. } => {}
             Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => out.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_plain_inlines(c, out, links);

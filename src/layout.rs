@@ -2604,13 +2604,17 @@ mod overfull_selectability_tests {
     }
 }
 
+#[cfg(test)]
 mod hyphen_and_break_edge_tests {
+    #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+
     use super::{
-        AdvanceMetrics, BreakCandidate, BreakState, BuildHyphenNode, FORCED_BREAK_PENALTY,
-        FitnessClass, FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem,
-        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle, append_styled_word_chunk,
-        break_paragraph, break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
-        insert_hyphen_pattern, push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+        AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
+        FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem,
+        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle,
+        append_styled_word_chunk, break_paragraph, break_paragraph_into, build_hyphen_trie,
+        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
+        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
     };
 
     /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.
@@ -2759,9 +2763,9 @@ mod hyphen_and_break_edge_tests {
         };
         assert_eq!(trailing_forced_fit_break(interior, 4, natural, width), None);
 
-        // Paragraph-final forced penalty that fits: one Decent zero-badness line.
-        let line = trailing_forced_fit_break(interior, 3, natural, width)
-            .expect("fitting trailing forced break yields the fast-path line");
+        let Some(line) = trailing_forced_fit_break(interior, 3, natural, width) else {
+            panic!("fitting trailing forced break yields the fast-path line");
+        };
         assert_eq!((line.start, line.end, line.next), (0, 2, 3));
         assert_eq!(line.natural_width, natural);
         assert_eq!(line.badness, 0);

@@ -26310,34 +26310,6 @@ fn build_pdf(
     profiler: &mut PdfProfiler,
 ) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
-    // TEMP pass2 instrumentation (FMD_SER_PERF=1): sub-stage split of
-    // pdf_object_serialization_total. Fully reverted after measurement.
-    let ser_perf = std::env::var_os("FMD_SER_PERF").is_some();
-    let mut ser_t0 = if ser_perf { pdf_stage_now() } else { None };
-    let mut ser_cap = 0usize;
-    let mut ser_reallocs = 0usize;
-    macro_rules! ser_checkpoint {
-        () => {
-            ser_t0 = if ser_perf { pdf_stage_now() } else { None };
-        };
-    }
-    macro_rules! ser_record {
-        ($name:expr, $count:expr) => {{
-            if ser_perf {
-                if buf.capacity() != ser_cap {
-                    ser_reallocs += 1;
-                    ser_cap = buf.capacity();
-                }
-                profiler.stages.push(PdfStageSummary {
-                    stage: $name,
-                    count: $count,
-                    elapsed_ns: pdf_stage_elapsed_ns(ser_t0),
-                    bytes: buf.len(),
-                    notes: "pass2 temporary instrumentation",
-                });
-            }
-        }};
-    }
     let p = pages.len();
     let nf = faces.len();
     let ni = images.len();
@@ -26496,8 +26468,6 @@ fn build_pdf(
     );
     let mut buf: Vec<u8> = Vec::with_capacity(pdf_buffer_capacity);
     let mut offsets: Vec<usize> = vec![0; total_objs + 1];
-    ser_cap = buf.capacity();
-    ser_record!("seri_plan", total_objs);
 
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
 
@@ -26545,8 +26515,6 @@ fn build_pdf(
     };
     let media_w = pdf_num(page_geom.width);
     let media_h = pdf_num(page_geom.height);
-    ser_record!("seri_catalog_pages", p + 2);
-    ser_checkpoint!();
     for (i, page) in pages.iter().enumerate() {
         let annot_count = annot_counts.get(i).copied().unwrap_or(0);
         let annot_start_object_id = annot_base + annot_starts.get(i).copied().unwrap_or(0);
@@ -26572,8 +26540,6 @@ fn build_pdf(
         );
     }
 
-    ser_record!("seri_page_objects", p);
-    ser_checkpoint!();
     for (i, stream) in page_streams.iter().enumerate() {
         offsets[content_obj(i)] = buf.len();
         append_pdf_object_header(&mut buf, content_obj(i));
@@ -26583,8 +26549,6 @@ fn build_pdf(
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     }
 
-    ser_record!("seri_content_streams", p);
-    ser_checkpoint!();
     // Embedded font object groups.
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);
@@ -26660,8 +26624,6 @@ fn build_pdf(
         append_pdf_tounicode_stream_object(&mut buf, &mut offsets, touni_obj(k), &cmap);
     }
 
-    ser_record!("seri_font_objects", nf);
-    ser_checkpoint!();
     for (k, image) in images.iter().enumerate() {
         offsets[image_obj(k)] = buf.len();
         let colors = image.color.components();
@@ -26722,8 +26684,6 @@ fn build_pdf(
         }
     }
 
-    ser_record!("seri_image_objects", ni);
-    ser_checkpoint!();
     for (page_index, page) in pages.iter().enumerate() {
         for (local_index, annot) in page
             .annots
@@ -26744,8 +26704,6 @@ fn build_pdf(
         }
     }
 
-    ser_record!("seri_annotations", total_annots);
-    ser_checkpoint!();
     if outline_count > 0 {
         append_pdf_object_str(
             &mut buf,
@@ -26775,8 +26733,6 @@ fn build_pdf(
         }
     }
 
-    ser_record!("seri_outline", outline_count);
-    ser_checkpoint!();
     if tagged {
         // StructTreeRoot points at the single /Document node (node 0).
         // /ParentTreeNextKey is one past the highest key used in /Nums.
@@ -26828,8 +26784,6 @@ fn build_pdf(
         }
     }
 
-    ser_record!("seri_structtree", struct_node_count);
-    ser_checkpoint!();
     let title_entry = if title.is_empty() {
         String::new()
     } else {
@@ -26852,7 +26806,6 @@ fn build_pdf(
         ),
     );
 
-    ser_record!("seri_info", 1);
     if offsets.iter().skip(1).any(|&offset| offset == 0) {
         return Err(RenderError::PdfGeneration(
             "internal: a PDF object was left unwritten (zero xref offset)",
@@ -26888,7 +26841,6 @@ fn build_pdf(
         "write classic xref table and trailer",
         xref_started,
     );
-    ser_record!("seri_reallocs", ser_reallocs);
     profiler.record_since(
         "pdf_object_serialization_total",
         total_objs,
@@ -34892,7 +34844,7 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
             } else {
                 let text = line.segs.iter().map(|s| s.text.as_str()).collect::<String>();
                 let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
-                (text, x, line_overshoot(line, page))
+                (text, x, line_overshoot(line, &page))
             };
             runs.push(VerifyTextRun {
                 text,

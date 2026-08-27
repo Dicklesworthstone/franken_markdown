@@ -34817,8 +34817,12 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
     if line.rule || line.segs.is_empty() {
         return None;
     }
+    // `right` is the margin WIDTH; the content's right edge coordinate is
+    // width - right. Comparing against the raw margin value would flag every
+    // line on the page (plan-space review caught this in the first smoke run).
+    let right_edge = page.width - page.right;
     let last = line.segs.last()?;
-    let overshoot = last.x + last.width - page.right;
+    let overshoot = last.x + last.width - right_edge;
     if overshoot > VERIFY_OVERSHOOT_TOLERANCE_PT {
         Some(overshoot)
     } else {

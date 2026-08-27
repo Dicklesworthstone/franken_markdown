@@ -1675,6 +1675,7 @@ fn normalized_args() -> Vec<String> {
         "capabilities",
         "robot-docs",
         "doctor",
+        "verify",
         "config",
         // Recognized even without the `batch` feature so it is never rewritten to
         // `render batch ...`; clap then reports a clean "unrecognized subcommand".

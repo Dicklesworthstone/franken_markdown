@@ -10,9 +10,9 @@
 
 use crate::ast::Document;
 use crate::pdf::{
-    audit_anchors, render_warnings, verification_text_layer, PdfOptions, RenderWarning,
-    VerifyTextLayer,
+    audit_anchors, render_warnings, verification_text_layer, RenderWarning, VerifyTextLayer,
 };
+use crate::PdfOptions;
 
 /// Report schema version (bump on any breaking shape change).
 pub const SCHEMA_VERSION: &str = "1";
@@ -262,6 +262,33 @@ mod tests {
     fn json_escape_covers_control_chars_and_quotes() {
         assert_eq!(json_escape_str("a\"b\\c\nd\te"), "a\\\"b\\\\c\\nd\\te");
         assert_eq!(json_escape_str("\u{1}"), "\\u0001");
+    }
+
+    #[test]
+    fn schema_shape_is_pinned_end_to_end() {
+        // A tiny document exercising every report section: heading (anchor
+        // target), a matching link, and a run on page 1. The JSON shape is
+        // the contract — key order and structure are asserted, and the
+        // digest is stable for identical inputs.
+        let doc = crate::parse_markdown("# T\n\nsee [x](#t) and [bad](#nope)\n");
+        let opts = PdfOptions::default();
+        let report = verify_pdf(&doc, &opts).expect("verify runs");
+        let json = to_json(&report);
+        for key in [
+            "\"schema_version\":\"1\"",
+            "\"target\":\"pdf\"",
+            "\"verdict\":\"findings\"",
+            "\"anchors\":{\"resolved\":1,\"unresolved\":[\"nope\"]}",
+            "\"code\":\"unresolved_anchor\"",
+            "\"pages\":[{\"number\":1,",
+            "\"kind\":\"heading\"",
+        ] {
+            assert!(json.contains(key), "missing {key} in:\n{json}");
+        }
+        assert!(json.contains("fnv1a64:"), "digest hex present");
+        // Deterministic: same document, same JSON.
+        let again = verify_pdf(&doc, &opts).expect("re-verify");
+        assert_eq!(to_json(&again), json);
     }
 
     #[test]

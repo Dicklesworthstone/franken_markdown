@@ -1009,7 +1009,6 @@ impl Font {
         Some(cmap)
     }
 
-
     /// Whether any char in `keep` maps to a supplementary-plane codepoint
     /// with a surviving glyph, which format 4's u16 segments cannot address.
     fn subset_reaches_supplementary_plane(&self, keep: &[char], new_of: &[u16]) -> bool {
@@ -1049,7 +1048,11 @@ impl Font {
                 {
                     g.end_cp = cp;
                 }
-                _ => groups.push(Group { start_cp: cp, end_cp: cp, start_gid: ng }),
+                _ => groups.push(Group {
+                    start_cp: cp,
+                    end_cp: cp,
+                    start_gid: ng,
+                }),
             }
         }
 
@@ -3027,7 +3030,9 @@ mod synthetic_font_tests {
         assert_ne!(font.glyph_index('A'), 0);
         assert_ne!(font.glyph_index('\u{1D49C}'), 0);
 
-        let subset = font.subset(&['A', 'B', '\u{1D49C}', '\u{1D49D}']).expect("subset");
+        let subset = font
+            .subset(&['A', 'B', '\u{1D49C}', '\u{1D49D}'])
+            .expect("subset");
         let reparsed = Font::parse(subset).expect("subset re-parses");
         assert_ne!(reparsed.glyph_index('A'), 0, "BMP letter survives");
         assert_ne!(reparsed.glyph_index('B'), 0, "BMP letter survives");

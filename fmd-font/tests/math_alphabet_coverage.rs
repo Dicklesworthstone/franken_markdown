@@ -1,6 +1,7 @@
 //! Runs only when the faces ship in-crate (workspace builds unify this on;
 //! an isolated `-p fmd-font` run without the feature skips cleanly).
 #![cfg(feature = "bundled-faces")]
+#![allow(clippy::expect_used)]
 
 //! Math-alphabet coverage of the bundled symbol fallback face (bead 4vjj):
 //! `\mathcal` / `\mathbb` route script and double-struck letters through the
@@ -48,24 +49,24 @@ fn mirrored_blackboard(ch: char) -> Option<char> {
 
 fn letterlike_exception_cps() -> impl Iterator<Item = u32> {
     // The four ranges backing every exception letter above.
-    [(0x212C_u32, 0x2134_u32), (0x2102, 0x2119)].into_iter().flat_map(|(s, e)| s..=e)
+    [(0x212C_u32, 0x2134_u32), (0x2102, 0x2119)]
+        .into_iter()
+        .flat_map(|(s, e)| s..=e)
 }
 
 #[test]
 fn curated_subset_maps_every_emittable_math_alphabet_char() {
-    let font =
-        Font::parse(bundled::NOTO_SANS_MATH_SYMBOLS.to_vec()).expect("bundled face parses");
+    let font = Font::parse(bundled::NOTO_SANS_MATH_SYMBOLS.to_vec()).expect("bundled face parses");
 
     let mut checked = 0usize;
     let mut gaps = Vec::new();
     let alphabet: Vec<char> = (b'0'..=b'9')
         .chain(b'A'..=b'Z')
         .chain(b'a'..=b'z')
-        .map(|b| char::from(b))
+        .map(char::from)
         .collect();
     for ch in alphabet {
-        let candidates: [Option<char>; 2] =
-            [mirrored_calligraphic(ch), mirrored_blackboard(ch)];
+        let candidates: [Option<char>; 2] = [mirrored_calligraphic(ch), mirrored_blackboard(ch)];
         for mapped in candidates.into_iter().flatten() {
             checked += 1;
             if font.glyph_index(mapped) == 0 {
@@ -81,14 +82,15 @@ fn curated_subset_maps_every_emittable_math_alphabet_char() {
         gaps.is_empty(),
         "symbol subset lacks {} math-alphabet glyph(s): {}",
         gaps.len(),
-        gaps.iter().map(|(_, m)| format!("U+{:04X}", *m as u32)).collect::<String>()
+        gaps.iter()
+            .map(|(_, m)| format!("U+{:04X}", *m as u32))
+            .collect::<String>()
     );
 }
 
 #[test]
 fn letterlike_exceptions_still_map_in_the_2100_block() {
-    let font =
-        Font::parse(bundled::NOTO_SANS_MATH_SYMBOLS.to_vec()).expect("bundled face parses");
+    let font = Font::parse(bundled::NOTO_SANS_MATH_SYMBOLS.to_vec()).expect("bundled face parses");
 
     for cp in letterlike_exception_cps() {
         // Every Letterlike codepoint carried by the curated range must keep

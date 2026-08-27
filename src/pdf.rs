@@ -25983,6 +25983,81 @@ fn append_marked_content_begin(out: &mut String, tag: &str, mcid: usize) {
     out.push_str(">> BDC\n");
 }
 
+/// Compress every page content stream, recording one `page_stream_compression`
+/// stage entry for the whole batch. Pages are independent byte streams, so the
+/// per-page `page_stream` results — and therefore the PDF bytes — are identical
+/// to the sequential path; only wall-clock parallelism changes.
+fn compress_page_streams<'a>(
+    pages: &'a [PageContent],
+    profiler: &mut PdfProfiler,
+) -> Vec<PdfStream<'a>> {
+    let total_input = pages.iter().map(|page| page.stream.len()).sum::<usize>();
+    let started = profiler.checkpoint();
+    let page_streams = compress_page_streams_inner(pages);
+    let compressed_bytes = page_streams
+        .iter()
+        .map(|stream| stream.bytes.len())
+        .sum::<usize>();
+    profiler.record_since(
+        "page_stream_compression",
+        total_input,
+        compressed_bytes,
+        "encode page content streams and apply FlateDecode when it wins",
+        started,
+    );
+    page_streams
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compress_page_streams_inner(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(pages.len().max(1));
+    let total_input = pages.iter().map(|page| page.stream.len()).sum::<usize>();
+    // Thread spawn plus per-thread hash scratch costs more than parallel
+    // compression recovers on tiny renders; keep those sequential.
+    if workers < 4 || total_input < 256 * 1024 {
+        return compress_page_streams_sequential(pages);
+    }
+    let chunk_size = pages.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = pages
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut scratch = crate::compress::ZlibCompressScratch::new();
+                    chunk
+                        .iter()
+                        .map(|page| page_stream(&page.stream, &mut scratch))
+                        .collect::<Vec<PdfStream<'_>>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .expect("page content stream compression thread panicked")
+            })
+            .collect()
+    })
+}
+
+fn compress_page_streams_sequential(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
+    let mut scratch = crate::compress::ZlibCompressScratch::new();
+    pages
+        .iter()
+        .map(|page| page_stream(&page.stream, &mut scratch))
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn compress_page_streams_inner(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
+    compress_page_streams_sequential(pages)
+}
+
 fn page_stream<'a>(
     stream: &'a str,
     compress_scratch: &mut crate::compress::ZlibCompressScratch,
@@ -26394,17 +26469,7 @@ fn build_pdf(
         String::new()
     };
 
-    let mut page_stream_compress_scratch = crate::compress::ZlibCompressScratch::new();
-    let mut page_streams = Vec::with_capacity(pages.len());
-    for page in pages {
-        page_streams.push(profiler.measure(
-            "page_stream_compression",
-            page.stream.len(),
-            "encode page content stream and apply FlateDecode when it wins",
-            || page_stream(&page.stream, &mut page_stream_compress_scratch),
-            |stream| stream.bytes.len(),
-        ));
-    }
+    let page_streams = compress_page_streams(pages, profiler);
     let page_stream_bytes = page_streams
         .iter()
         .map(|stream| stream.bytes.len())
@@ -34740,4 +34805,196 @@ mod coverage_gap_tests {
         );
         assert!(out.is_empty(), "ragged lines never justify");
     }
+}
+
+// ===========================================================================
+// fmd verify — machine-readable render verification surface (bead yo83.1/2).
+// Mirrors the layout+pagination pipeline the writer uses and exposes owned,
+// JSON-ready text runs plus an internal-anchor audit, without re-parsing the
+// emitted PDF bytes.
+
+/// One extracted text run with its placement, for verification consumers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifyTextRun {
+    /// Concatenated segment text for this line (empty for rules).
+    pub text: String,
+    /// Left edge (points) of the first segment (rule x for rules).
+    pub x: f32,
+    /// Baseline y (points, top-down as placed).
+    pub y: f32,
+    /// Font size in points.
+    pub size: f32,
+    /// Stable flow-kind label.
+    pub kind: &'static str,
+    /// Horizontal overshoot past the right margin when the last segment
+    /// exceeds it by more than 0.5pt (None = within measure).
+    pub overshoot: Option<f32>,
+}
+
+/// One page of extracted runs (1-based numbering).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifyPage {
+    pub number: usize,
+    pub runs: Vec<VerifyTextRun>,
+}
+
+/// The full text-layer surface of a rendered document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifyTextLayer {
+    pub page_count: usize,
+    pub pages: Vec<VerifyPage>,
+}
+
+const VERIFY_OVERSHOOT_TOLERANCE_PT: f32 = 0.5;
+
+fn flow_kind_label(kind: FlowKind) -> &'static str {
+    match kind {
+        FlowKind::Paragraph => "paragraph",
+        FlowKind::Heading => "heading",
+        FlowKind::Code => "code",
+        FlowKind::Image => "image",
+        FlowKind::TableHeader => "table_header",
+        FlowKind::TableRule => "table_rule",
+        FlowKind::TableRow => "table_row",
+        FlowKind::Rule => "rule",
+        FlowKind::Other => "other",
+    }
+}
+
+fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
+    if line.rule || line.segs.is_empty() {
+        return None;
+    }
+    let last = line.segs.last()?;
+    let overshoot = last.x + last.width - page.right;
+    if overshoot > VERIFY_OVERSHOOT_TOLERANCE_PT {
+        Some(overshoot)
+    } else {
+        None
+    }
+}
+
+/// Build the verification text layer for a parsed document using the same
+/// layout + pagination pipeline the PDF writer runs. Returns `None` when font
+/// loading fails (never panics).
+pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
+    let page = PageGeom::from_theme(&opts.theme);
+    let faces = Faces::load(opts).ok()?;
+    let lines = layout(&doc.blocks, opts, &faces, page);
+    let pages = paginate_lines(&lines, page);
+    let mut out_pages = Vec::with_capacity(pages.len());
+    for (idx, placed) in pages.iter().enumerate() {
+        let mut runs = Vec::with_capacity(placed.len());
+        for p in placed {
+            let line = p.line;
+            let (text, x, overshoot) = if line.rule {
+                (String::new(), line.rule_x, None)
+            } else {
+                let text = line.segs.iter().map(|s| s.text.as_str()).collect::<String>();
+                let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
+                (text, x, line_overshoot(line, page))
+            };
+            runs.push(VerifyTextRun {
+                text,
+                x,
+                y: p.y,
+                size: line.size,
+                kind: flow_kind_label(line.flow.kind),
+                overshoot,
+            });
+        }
+        out_pages.push(VerifyPage { number: idx + 1, runs });
+    }
+    Some(VerifyTextLayer {
+        page_count: out_pages.len(),
+        pages: out_pages,
+    })
+}
+
+/// Internal-anchor audit (bead yo83.2): every heading receives its
+/// deterministic id (same slug + collision-suffix scheme the emitter uses),
+/// and every inline link whose destination starts with `#` is checked against
+/// that set. Repeated unresolved targets are reported once each.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnchorAudit {
+    pub resolved: usize,
+    pub unresolved: Vec<String>,
+}
+
+fn push_plain_inlines(inlines: &[Inline], out: &mut String, links: &mut Vec<String>) {
+    for inl in inlines {
+        match inl {
+            Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => out.push_str(t),
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                push_plain_inlines(c, out, links);
+            }
+            Inline::Link { dest, content, .. } => {
+                links.push(dest.clone());
+                push_plain_inlines(content, out, links);
+            }
+            Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::SoftBreak | Inline::HardBreak => out.push(' '),
+        }
+    }
+}
+
+pub fn audit_anchors(doc: &Document) -> AnchorAudit {
+    let mut state = HeadingIdState::default();
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+
+    // Pass 1: assign deterministic ids to every heading (container-aware).
+    fn collect_ids(blocks: &[Block], state: &mut HeadingIdState, ids: &mut BTreeSet<String>) {
+        for block in blocks {
+            match block {
+                Block::Heading { inlines, .. } => {
+                    let mut plain = String::new();
+                    let mut links = Vec::new();
+                    push_plain_inlines(inlines, &mut plain, &mut links);
+                    ids.insert(state.heading_id(&plain));
+                }
+                Block::BlockQuote(inner) => collect_ids(inner, state, ids),
+                Block::List(list) => {
+                    for item in &list.items {
+                        collect_ids(&item.blocks, state, ids);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    collect_ids(&doc.blocks, &mut state, &mut ids);
+
+    // Pass 2: audit every inline link target against the assigned ids.
+    // (Links inside headings are audited here too; their text was already
+    // consumed by pass 1's slug computation.)
+    let mut audit = AnchorAudit { resolved: 0, unresolved: Vec::new() };
+    fn collect_links(blocks: &[Block], audit: &mut AnchorAudit, ids: &BTreeSet<String>) {
+        for block in blocks {
+            match block {
+                Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                    let mut plain = String::new();
+                    let mut links = Vec::new();
+                    push_plain_inlines(inlines, &mut plain, &mut links);
+                    for dest in links {
+                        if let Some(target) = dest.strip_prefix('#') {
+                            if ids.contains(target) {
+                                audit.resolved += 1;
+                            } else if !audit.unresolved.iter().any(|u| u == target) {
+                                audit.unresolved.push(target.to_string());
+                            }
+                        }
+                    }
+                }
+                Block::BlockQuote(inner) => collect_links(inner, audit, ids),
+                Block::List(list) => {
+                    for item in &list.items {
+                        collect_links(&item.blocks, audit, ids);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    collect_links(&doc.blocks, &mut audit, &ids);
+    audit
 }

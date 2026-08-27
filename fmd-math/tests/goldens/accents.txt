@@ -2,7 +2,7 @@ layout w 3.775119 h 0.776340 d 0.081055
 glyph face 5 gid 942 ch U+0302 x 0.258033 y 0.011340 size 1.000000 span 0..6
 glyph face 1 gid 91 ch U+0078 x 0.000000 y 0.000000 size 1.000000 span 5..6
 glyph face 0 gid 14 ch U+002B x 0.685113 y 0.000000 size 1.000000 span 7..8
-glyph face 6 gid 373 ch U+20D7 x 1.409148 y 0.011340 size 1.000000 span 9..16
+glyph face 6 gid 469 ch U+20D7 x 1.409148 y 0.011340 size 1.000000 span 9..16
 glyph face 1 gid 89 ch U+0076 x 1.685167 y 0.000000 size 1.000000 span 14..15
 glyph face 0 gid 14 ch U+002B x 2.367350 y 0.000000 size 1.000000 span 17..18
 glyph face 5 gid 936 ch U+0304 x 3.598338 y 0.011340 size 1.000000 span 19..25

@@ -101,7 +101,7 @@ const MATH_ALPHABET_EXCEPTIONS_UPPER_BLACKBOARD: [char; 7] = ['C', 'H', 'N', 'P'
 
 fn math_alphabet_emitted() -> Vec<char> {
     let alphabet = |r: std::ops::RangeInclusive<u8>| {
-        r.clone().map(|b| char::from(b)).collect::<Vec<_>>()
+        r.clone().map(char::from).collect::<Vec<_>>()
     };
     let mut out = Vec::new();
     let mut push_offset = |base: u32, zero: u32, chs: &[u8]| {

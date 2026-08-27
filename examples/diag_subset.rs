@@ -1,6 +1,6 @@
 //! TEMPORARY diagnostic for bead 4vjj regeneration debugging. Not product
 //! code; removed before commit.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use franken_markdown::text::Font;
 
@@ -57,8 +57,8 @@ fn synth_font() -> Vec<u8> {
     push32(&mut sub, (16 + 12) as u32);
     push32(&mut sub, 0);
     push32(&mut sub, 1);
-    push32(&mut sub, 0x0001_49C); // start
-    push32(&mut sub, 0x0001_49C); // end
+    push32(&mut sub, 0x0001_D49C); // start (U+1D49C)
+    push32(&mut sub, 0x0001_D49C); // end
     push32(&mut sub, 1); // startGlyphID
     let mut cmap = Vec::new();
     push16(&mut cmap, 0);

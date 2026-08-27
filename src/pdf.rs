@@ -21546,11 +21546,11 @@ fn append_svg_stroke_options(body: &mut String, style: SvgStyle) {
         let dash_len = style.dash.len as usize;
         let repeat_count = if dash_len % 2 == 1 { 2 } else { 1 };
         for repeat in 0..repeat_count {
-            for idx in 0..dash_len {
+            for (idx, value) in style.dash.values.iter().enumerate().take(dash_len) {
                 if repeat > 0 || idx > 0 {
                     body.push(' ');
                 }
-                append_pdf_num(body, style.dash.values[idx]);
+                append_pdf_num(body, *value);
             }
         }
         body.push_str("] ");

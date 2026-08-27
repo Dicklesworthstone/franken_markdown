@@ -476,6 +476,7 @@ struct StageBucket {
     notes: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_pdf_large_stage_artifacts(
     out_dir: Option<&Path>,
     label: &str,
@@ -559,14 +560,13 @@ fn write_pdf_large_stage_artifacts(
         .find(|rank| !rank.stage.ends_with("_total"))
         .unwrap_or_else(unknown_stage_rank);
     let recommended = recommended_pdf_perf_bead(top_rank.stage);
-    let recommendation_path = dir.join("pdf-large-recommendation.jsonl");
+    let recommendation_path = dir.join(format!("{label}-recommendation.jsonl"));
     fs::write(
         recommendation_path,
         format!(
-            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"{}\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_ranking_metric\":\"total_ns\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{}}}\n",
+            "{{\"type\":\"next_target_recommendation\",\"recommended_bead_id\":\"{}\",\"reason\":\"{}\",\"evidence_path\":\"golden/{label}-stages.jsonl\",\"confidence\":\"{}\",\"top_stage\":\"{}\",\"top_stage_ranking_metric\":\"total_ns\",\"top_stage_p95_ns\":{},\"top_stage_total_ns\":{}}}\n",
             recommended.bead_id,
             json_escape(recommended.reason),
-            "golden/pdf-large-stages.jsonl",
             recommended.confidence,
             top_rank.stage,
             top_rank.p95_ns,
@@ -1182,4 +1182,87 @@ fn fnv1a64(data: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+/// Parse + HTML + PDF benchmarks for a caller-supplied corpus file (read at
+/// runtime; bytes are never embedded in the binary). PDF stage attribution
+/// is emitted alongside the goldens when `--out-dir` is provided.
+fn corpus_scenarios(
+    path: &Path,
+    iterations: usize,
+    out_dir: Option<&Path>,
+) -> Result<Vec<Sample>, Box<dyn std::error::Error>> {
+    let src = fs::read_to_string(path)?;
+    let opts = PdfOptions::default();
+    let doc = parse_markdown(&src);
+
+    let parse_durations = measure(iterations, || {
+        let parsed = parse_markdown(&src);
+        black_box(parsed.blocks.len())
+    });
+
+    let html_opts = HtmlOptions::default();
+    let golden_html = render_html_document(&doc, &html_opts)?;
+    write_golden(out_dir, "corpus.html", golden_html.as_bytes())?;
+    let html_durations = measure(iterations, || {
+        let html = render_html_document(&doc, &html_opts).unwrap_or_default();
+        black_box(html.len())
+    });
+
+    let golden_pdf = render_pdf_document(&doc, &opts)?;
+    write_golden(out_dir, "corpus.pdf", &golden_pdf)?;
+    write_pdf_large_stage_artifacts(
+        out_dir,
+        "corpus-pdf",
+        iterations,
+        src.len(),
+        golden_pdf.len(),
+        &doc,
+        &opts,
+        &golden_pdf,
+    )?;
+    let pdf_durations = measure(iterations, || {
+        let pdf = render_pdf_document(&doc, &opts).unwrap_or_default();
+        black_box(pdf.len())
+    });
+
+    let sample = |scenario: &'static str,
+                  category: &'static str,
+                  output_bytes: usize,
+                  durations: Vec<Duration>,
+                  notes: &'static str| {
+        Sample {
+            scenario,
+            category,
+            iterations,
+            bytes: src.len(),
+            output_bytes,
+            durations,
+            notes: notes.to_string(),
+        }
+    };
+
+    Ok(vec![
+        sample(
+            "corpus-parse",
+            "parse",
+            doc.blocks.len(),
+            parse_durations,
+            "parse of caller-supplied corpus file",
+        ),
+        sample(
+            "corpus-html",
+            "render-html",
+            golden_html.len(),
+            html_durations,
+            "HTML render of caller-supplied corpus file",
+        ),
+        sample(
+            "corpus-pdf",
+            "render-pdf",
+            golden_pdf.len(),
+            pdf_durations,
+            "PDF render of caller-supplied corpus file",
+        ),
+    ])
 }

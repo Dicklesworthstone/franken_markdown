@@ -288,6 +288,8 @@ pub struct PdfOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks.
     pub code_line_numbers: bool,
+    /// Render running page numbers in the bottom margin of PDF pages.
+    pub page_numbers: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///
     /// Scales the whole typographic hierarchy proportionally when no explicit

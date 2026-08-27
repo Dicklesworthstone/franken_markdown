@@ -40,6 +40,8 @@ export interface FmdRenderOptions {
   /** Finite non-negative integer seconds, <= Number.MAX_SAFE_INTEGER. */
   metadataEpochSeconds?: number;
   codeLineNumbers?: boolean;
+  /** Render running page numbers in the bottom margin of PDF pages. */
+  pageNumbers?: boolean;
   /** Base body size override in points (clamped by the core to [6, 24]). */
   baseFontSize?: number;
   /** Per-step heading ratio, e.g. 1.25 (Major Third); clamped to [1.05, 2]. */

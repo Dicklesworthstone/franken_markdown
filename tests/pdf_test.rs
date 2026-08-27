@@ -8321,3 +8321,46 @@ fn pdf_wrapped_table_cells_are_not_duplicated_in_structure() {
         "expected header + body rows, checked {checked}"
     );
 }
+
+#[test]
+fn pdf_renders_running_page_numbers_when_enabled() {
+    let md = "# Title\n\nFirst paragraph of text.";
+    let opts = PdfOptions {
+        page_numbers: true,
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(md, &opts).expect("render pdf with page numbers");
+    let raw = as_text(&pdf);
+    assert!(raw.contains("BT /F"), "must contain text streams");
+    assert!(
+        raw.contains("/Artifact"),
+        "page numbers should be marked as /Artifact"
+    );
+}
+
+#[test]
+fn pdf_subscript_phonetic_symbol_fallback_renders_cleanly() {
+    let md = "# Subscript Test\n\nFormula: *e* = Σ pᵢ×LGEᵢ and base rates: aₐ + bₑ + cₒ + xₓ.";
+    let doc = parse_markdown(md);
+    let opts = PdfOptions::default();
+    let warnings = render_warnings(&doc, &opts);
+    assert!(
+        warnings.is_empty(),
+        "subscript characters should resolve via symbol/phonetic fallback without missing glyph warnings: {warnings:?}"
+    );
+    let pdf = render_pdf_document(&doc, &opts).expect("render pdf");
+    assert!(!pdf.is_empty());
+}
+
+#[test]
+fn pdf_numeric_table_column_alignment_inference() {
+    let md = "| Metric | Q1 | Q2 |\n\
+              |---|---|---|\n\
+              | Revenue | $100M | $120M |\n\
+              | Margin | 58% | 62% |\n\
+              | Growth | +20% | +25% |";
+    let doc = parse_markdown(md);
+    let opts = PdfOptions::default();
+    let pdf = render_pdf_document(&doc, &opts).expect("render pdf");
+    assert!(!pdf.is_empty());
+}

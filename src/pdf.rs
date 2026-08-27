@@ -133,6 +133,7 @@ struct Seg {
 enum Fill {
     Black,
     Link,
+    Muted,
     Syntax(HighlightTok),
 }
 
@@ -1954,7 +1955,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                 if c.is_whitespace() || c.is_control() {
                     continue;
                 }
-                let mapped = faces.body.glyph_index(c) != 0
+                let mut mapped = faces.body.glyph_index(c) != 0
                     || faces.bold.glyph_index(c) != 0
                     || faces.italic.glyph_index(c) != 0
                     || faces.bolditalic.glyph_index(c) != 0
@@ -1963,6 +1964,16 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                     // (see `apply_symbol_fallback`); embedded SVG text does
                     // not, so its coverage is judged on the primary faces only.
                     || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0);
+                if !mapped && allow_symbol_fallback {
+                    if let Some(fb) = subscript_phonetic_fallback(c) {
+                        mapped = faces.body.glyph_index(fb) != 0
+                            || faces.bold.glyph_index(fb) != 0
+                            || faces.italic.glyph_index(fb) != 0
+                            || faces.bolditalic.glyph_index(fb) != 0
+                            || faces.mono.glyph_index(fb) != 0
+                            || faces.symbol.glyph_index(fb) != 0;
+                    }
+                }
                 if !mapped {
                     missing += 1;
                     if seen.insert(c) && sample.chars().count() < 8 {
@@ -15541,6 +15552,76 @@ fn stamp_table_layout_group(out: &mut [Line], start: usize, group: u32) {
     }
 }
 
+fn is_numeric_cell_text(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty()
+        || t == "-"
+        || t == "—"
+        || t == "–"
+        || t.eq_ignore_ascii_case("n/a")
+        || t.eq_ignore_ascii_case("n/p")
+        || t.eq_ignore_ascii_case("none")
+    {
+        return true;
+    }
+    let trimmed = t
+        .trim_start_matches(|c: char| {
+            matches!(
+                c,
+                '$' | '€'
+                    | '£'
+                    | '¥'
+                    | '₩'
+                    | '₹'
+                    | '~'
+                    | '≈'
+                    | '+'
+                    | '-'
+                    | '−'
+                    | '('
+                    | '<'
+                    | '>'
+                    | '['
+                    | ' '
+            )
+        })
+        .trim_start_matches("NT$")
+        .trim_start_matches("US$")
+        .trim_end_matches(|c: char| {
+            matches!(
+                c,
+                '%' | 'x'
+                    | 'X'
+                    | 'k'
+                    | 'K'
+                    | 'm'
+                    | 'M'
+                    | 'b'
+                    | 'B'
+                    | 't'
+                    | 'T'
+                    | ')'
+                    | ']'
+                    | ' '
+                    | 'p'
+                    | 'P'
+            )
+        })
+        .trim_end_matches("mn")
+        .trim_end_matches("bn")
+        .trim_end_matches("pp")
+        .trim_end_matches("bps")
+        .trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
+    let valid_chars = trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '–' | '—' | '/' | ':' | ' '));
+    has_digit && valid_chars
+}
+
 fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec<Line>) {
     let mut size = spec.nominal_size;
     let ncol = table
@@ -15653,10 +15734,42 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         cx += w + pad;
     }
 
+    let is_numeric_toks = |toks: &[Tok]| -> bool {
+        let mut text = String::new();
+        for t in toks {
+            text.push_str(&t.text);
+        }
+        is_numeric_cell_text(&text)
+    };
+    let inferred_align: Vec<Align> = (0..ncol)
+        .map(|k| {
+            if table.align.get(k).copied().unwrap_or(Align::None) != Align::None {
+                return table.align.get(k).copied().unwrap_or(Align::None);
+            }
+            if row_toks.len() < 2 {
+                return Align::None;
+            }
+            let mut numeric_count = 0usize;
+            let mut total_count = 0usize;
+            for row in &row_toks {
+                if let Some(toks) = row.get(k) {
+                    if !toks.is_empty() {
+                        total_count += 1;
+                        if is_numeric_toks(toks) {
+                            numeric_count += 1;
+                        }
+                    }
+                }
+            }
+            if total_count >= 2 && numeric_count * 4 >= total_count * 3 {
+                Align::Right
+            } else {
+                Align::None
+            }
+        })
+        .collect();
+
     let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
-        // Wrap each cell's STYLED tokens to its column width so bold/italic/
-        // code faces, strikethrough, and clickable links survive (they used
-        // to be flattened to one plain slot per cell).
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -15686,9 +15799,15 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 }
                 let cw = colw.get(k).copied().unwrap_or(0.0);
                 let base = tx.get(k).copied().unwrap_or(left);
-                let offset = match table.align.get(k) {
-                    Some(Align::Right) => (cw - cell_line.width).max(0.0),
-                    Some(Align::Center) => ((cw - cell_line.width) / 2.0).max(0.0),
+                let effective_align = match table.align.get(k) {
+                    Some(Align::Right) => Align::Right,
+                    Some(Align::Center) => Align::Center,
+                    Some(Align::Left) => Align::Left,
+                    _ => inferred_align.get(k).copied().unwrap_or(Align::None),
+                };
+                let offset = match effective_align {
+                    Align::Right => (cw - cell_line.width).max(0.0),
+                    Align::Center => ((cw - cell_line.width) / 2.0).max(0.0),
                     _ => 0.0,
                 };
                 let mut x = base + offset;
@@ -16002,10 +16121,36 @@ fn push_text_tokens(
     }
 }
 
-/// Rewrite `toks` so every character a token's own face cannot map (glyph 0)
-/// but the bundled symbol fallback face can is carried by an [`F_SYMBOL`]
-/// token. This runs before any width measurement, so line breaking,
-/// justification, and the content stream all agree on the fallback face's real
+fn subscript_phonetic_fallback(c: char) -> Option<char> {
+    match c {
+        '\u{1D62}' => Some('i'), // ᵢ
+        '\u{1D63}' => Some('r'), // ᵣ
+        '\u{1D64}' => Some('u'), // ᵤ
+        '\u{1D65}' => Some('v'), // ᵥ
+        '\u{1D66}' => Some('β'), // ᵦ
+        '\u{1D67}' => Some('γ'), // ᵧ
+        '\u{1D68}' => Some('ρ'), // ᵨ
+        '\u{1D69}' => Some('ϕ'), // ᵩ
+        '\u{1D6A}' => Some('χ'), // ᵪ
+        '\u{2090}' => Some('a'), // ₐ
+        '\u{2091}' => Some('e'), // ₑ
+        '\u{2092}' => Some('o'), // ₒ
+        '\u{2093}' => Some('x'), // ₓ
+        '\u{2094}' => Some('ə'), // ₔ
+        '\u{2095}' => Some('h'), // ₕ
+        '\u{2096}' => Some('k'), // ₖ
+        '\u{2097}' => Some('l'), // ₗ
+        '\u{2098}' => Some('m'), // ₘ
+        '\u{2099}' => Some('n'), // ₙ
+        '\u{209A}' => Some('p'), // ₚ
+        '\u{209B}' => Some('s'), // ₛ
+        '\u{209C}' => Some('t'), // ₜ
+        _ => None,
+    }
+}
+
+/// Tokenize and route non-ASCII symbol glyphs in `toks` into the symbol fallback
+/// face where needed, leaving font advance metrics consistent with actual glyph
 /// advances. Word identity is preserved: split pieces are adjacent non-space
 /// tokens, which the paragraph builder already measures as one unbreakable
 /// word with per-slot shaping.
@@ -16022,14 +16167,28 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         }
         let slot = tok.slot;
         let mut runs: Vec<(u8, String)> = Vec::new();
-        for c in tok.text.chars() {
-            let target = faces.fallback_slot(slot, c);
+        for mut c in tok.text.chars() {
+            let mut target = faces.fallback_slot(slot, c);
+            if target == slot
+                && faces.face(slot).glyph_index(c) == 0
+                && faces.symbol.glyph_index(c) == 0
+            {
+                if let Some(fb) = subscript_phonetic_fallback(c) {
+                    if faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0 {
+                        c = fb;
+                        target = faces.fallback_slot(slot, c);
+                    }
+                }
+            }
             match runs.last_mut() {
                 Some((run_slot, buf)) if *run_slot == target => buf.push(c),
                 _ => runs.push((target, c.to_string())),
             }
         }
-        if runs.len() <= 1 && runs.first().is_none_or(|(s, _)| *s == slot) {
+        if runs.len() <= 1
+            && runs.first().is_none_or(|(s, _)| *s == slot)
+            && runs.first().is_none_or(|(_, s)| s == &tok.text)
+        {
             i += 1;
             continue;
         }
@@ -17872,6 +18031,7 @@ fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
     match fill {
         Fill::Black => palette.fg,
         Fill::Link => palette.link,
+        Fill::Muted => (0.431, 0.467, 0.506),
         Fill::Syntax(HighlightTok::Keyword) => (0.812, 0.133, 0.180),
         Fill::Syntax(HighlightTok::Type) => (0.584, 0.220, 0.000),
         Fill::Syntax(HighlightTok::Func) => (0.400, 0.224, 0.729),
@@ -17908,7 +18068,12 @@ fn serialize(
 
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
-    let slot_texts = collect_font_slot_text_refs(lines);
+    let mut slot_texts = collect_font_slot_text_refs(lines);
+    if opts.page_numbers {
+        if let Some(slot_idx) = pdf_font_slot_index(F_BODY) {
+            slot_texts[slot_idx].texts.push("0123456789");
+        }
+    }
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()
         .zip(slot_texts.iter())
@@ -18397,6 +18562,41 @@ fn serialize(
         if !quote_acc.is_empty() {
             body.push_str("/Artifact BMC\n");
             flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
+            body.push_str("EMC\n");
+        }
+
+        // (f) Running page numbers (opt-in): stamp centered footer in the bottom margin.
+        if opts.page_numbers {
+            let footer_text = format!("{}", page_idx + 1);
+            let size = 9.0;
+            let width = faces.shaped_width_points(F_BODY, &footer_text, size);
+            let x = page.left + (page.content_w - width) / 2.0;
+            let y = (page.bottom / 2.0).max(18.0);
+            let footer_seg = Seg {
+                x,
+                slot: F_BODY,
+                text: footer_text,
+                link: None,
+                fill: Fill::Muted,
+                strike: false,
+                task: None,
+                width,
+            };
+            append_marked_content_begin(&mut body, "Artifact", next_mcid);
+            draw_seg(
+                &mut body,
+                &mut annots,
+                &mut current_fill,
+                next_mcid,
+                &footer_seg,
+                size,
+                y,
+                &subsets,
+                &subset_lookup,
+                faces,
+                &shaped_cache,
+                &palette,
+            );
             body.push_str("EMC\n");
         }
 
@@ -24119,13 +24319,22 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 1_500_000.0;
     }
 
-    // Prevent orphan headings: if a heading occurred 1 or 2 lines before this break
+    // Prevent orphan headings: if a heading occurred 1, 2, or 3 lines before this break
     // candidate, penalize breaking so the page break happens before the heading.
     if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
         penalty += 1_200_000.0;
     }
     if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
         penalty += 1_000_000.0;
+    }
+
+    // Keep list items together with an immediately preceding heading: do not separate
+    // a heading from the first line of a following list.
+    if before.flow.list_start
+        && candidate >= 2
+        && lines[candidate - 2].flow.kind == FlowKind::Heading
+    {
+        penalty += 1_500_000.0;
     }
 
     // Never separate table header or table rule from table rows, and never break

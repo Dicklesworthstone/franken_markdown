@@ -69,6 +69,8 @@ pub struct WasmRenderOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks for PDF output.
     pub code_line_numbers: bool,
+    /// Render running page numbers in the bottom margin of PDF pages.
+    pub page_numbers: bool,
     /// Optional base body size override in points; see [`crate::PdfOptions`].
     pub base_font_size: Option<f32>,
     /// Optional per-step heading ratio; see [`crate::PdfOptions`].
@@ -188,6 +190,13 @@ impl WasmRenderOptions {
         Ok(self)
     }
 
+    /// Return a copy with running page numbers enabled or disabled for PDF output.
+    #[must_use]
+    pub fn with_page_numbers(mut self, page_numbers: bool) -> Self {
+        self.page_numbers = page_numbers;
+        self
+    }
+
     /// Return a copy with a base body font size override in points.
     #[must_use]
     pub fn with_base_font_size(mut self, points: f32) -> Self {
@@ -228,6 +237,7 @@ impl WasmRenderOptions {
             metadata_epoch_seconds: self.metadata_epoch_seconds,
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
+            page_numbers: self.page_numbers,
             base_font_size: self.base_font_size,
             heading_scale: self.heading_scale,
             table_font_size: self.table_font_size,

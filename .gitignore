@@ -103,3 +103,4 @@ tests/artifacts/visual/
 /franken_markdown_illustration.png
 # Duplicate of fmd-font/fonts/ left at the repo root after the crate split.
 /fonts/
+.skill-loop-progress.md

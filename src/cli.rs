@@ -165,6 +165,9 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
+    /// Render running page numbers in the bottom margin of PDF pages.
+    #[arg(long)]
+    pdf_page_numbers: bool,
     /// Base body font size override in points (clamped to [6, 24]).
     #[arg(long)]
     pdf_base_font_size: Option<f32>,
@@ -502,6 +505,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
             code_line_numbers: args.pdf_line_numbers,
+            page_numbers: args.pdf_page_numbers,
             base_font_size: args.pdf_base_font_size,
             heading_scale: args.pdf_heading_scale,
             table_font_size: args.pdf_table_font_size,

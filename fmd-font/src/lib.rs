@@ -4378,6 +4378,12 @@ mod synthetic_font_tests {
     #[test]
     fn fmd_test_vf_fixture_round_trip() {
         let bytes = fmd_test_vf_bytes();
+        let committed = include_bytes!("../fonts/test-variable/FmdTestVF.ttf");
+        log_check(
+            "gk3v.1.fixture.bytes",
+            "committed TTF matches generator",
+            bytes.as_slice() == committed,
+        );
         let font = Font::parse(bytes).expect("test VF parses");
         log_check(
             "gk3v.1.fixture.axes",

@@ -325,7 +325,6 @@ pub fn main() -> ExitCode {
     let json = cli.json;
     let _no_color = cli.no_color;
     let no_config = cli.no_config;
-        Some(Command::Verify(args)) => run_verify(args, json),
     if cli.robot_triage {
         return print_robot_triage();
     }
@@ -340,6 +339,7 @@ pub fn main() -> ExitCode {
         Some(Command::Config(args)) => run_config(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
+        Some(Command::Verify(args)) => run_verify(args, json),
         None => {
             let mut cmd = Cli::command();
             if cmd.print_long_help().is_err() {
@@ -593,6 +593,46 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     ExitCode::SUCCESS
 }
 
+
+/// `fmd verify` — render through the same layout+pagination pipeline the PDF
+/// writer uses and emit a stable-schema JSON report: per-page text runs,
+/// internal-anchor audit, render warnings, horizontal overflow findings, and
+/// a content digest (beads yo83.1-3). Exit codes: 0 clean, 1 findings, 2/66
+/// usage/input errors, 70 font load failure.
+fn run_verify(args: VerifyArgs, global_json: bool) -> ExitCode {
+    let json = global_json || args.json;
+    let Some(path_str) = args.input.to_str() else {
+        return fail_json(
+            64,
+            "usage_error",
+            "verify input path must be valid UTF-8",
+            json,
+        );
+    };
+    let src = match read_input(Some(path_str), None, DEFAULT_MAX_INPUT_BYTES) {
+        Ok(s) => s,
+        Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
+    };
+    let doc = parse_markdown(&src);
+    // Verification baseline: the default theme/options, deliberately
+    // independent of config, so the same document verifies identically on
+    // every machine (the digest is a portable change detector).
+    let opts = PdfOptions::default();
+    let Some(report) = crate::verify::verify_pdf(&doc, &opts) else {
+        return fail_json(
+            70,
+            "font_load_failed",
+            "verification could not load the bundled fonts",
+            json,
+        );
+    };
+    emit_stdout(&crate::verify::to_json(&report));
+    if report.verdict == "clean" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
 #[cfg(feature = "batch")]
 fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};

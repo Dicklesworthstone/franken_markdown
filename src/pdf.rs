@@ -26485,6 +26485,8 @@ fn build_pdf(
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     }
 
+    ser_record!("seri_content_streams", p);
+    ser_checkpoint!();
     // Embedded font object groups.
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);

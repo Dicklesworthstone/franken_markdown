@@ -2237,8 +2237,10 @@ fn pdf_stage_elapsed_ns(_started: Option<PdfStageStart>) -> u128 {
 
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
     let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
+    let type_scale = opts.type_scale();
     let mut cx = LayoutCx {
         opts,
+        type_scale,
         faces,
         page,
         next_bg: 0,
@@ -2435,7 +2437,7 @@ struct TableLayoutKey {
 }
 
 impl TableLayoutKey {
-    fn new(table: &Table, indent: f32, page: PageGeom) -> Option<Self> {
+    fn new(table: &Table, indent: f32, page: PageGeom, font_size: f32) -> Option<Self> {
         let cell_count = table
             .head
             .len()
@@ -2467,7 +2469,7 @@ impl TableLayoutKey {
             page_top_bits: page.top.to_bits(),
             page_bottom_bits: page.bottom.to_bits(),
             page_content_w_bits: page.content_w.to_bits(),
-            font_size_bits: TABLE_FONT_SIZE.to_bits(),
+            font_size_bits: font_size.to_bits(),
             col_gutter_bits: TABLE_COL_GUTTER.to_bits(),
             min_col_width_bits: TABLE_MIN_COL_WIDTH.to_bits(),
             alloc_min_unit_bits: TABLE_ALLOC_MIN_UNIT_PT.to_bits(),
@@ -2661,6 +2663,7 @@ struct ListFrame {
 
 struct LayoutCx<'a> {
     opts: &'a PdfOptions,
+    type_scale: crate::theme::TypeScale,
     faces: &'a Faces,
     page: PageGeom,
     list_stack: Vec<ListFrame>,
@@ -2736,14 +2739,8 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
     match block {
         Block::Heading { level, inlines } => {
-            let size = match level {
-                1 => 24.0,
-                2 => 19.0,
-                3 => 16.0,
-                4 => 13.5,
-                5 => 12.0,
-                _ => 11.0,
-            };
+            let idx = (*level as usize).saturating_sub(1).min(5);
+            let size = cx.type_scale.h[idx];
             gap(out, heading_gap_before(*level));
             // Headings render bold; inner emphasis becomes bold-italic.
             let mut toks = Vec::new();
@@ -2790,7 +2787,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             layout_inlines(
                 toks,
                 indent,
-                11.0,
+                cx.type_scale.body,
                 7.0,
                 out,
                 cx,
@@ -2809,6 +2806,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             let digits = line_count.to_string().len().max(1);
             let code_area_width = (cx.page.content_w - indent - CODE_PAD_X).max(12.0);
             let preserve_lines = preserve_code_block_lines(lang.as_deref(), code);
+            let default_code_size = cx.type_scale.code;
             let code_size = if preserve_lines {
                 fitted_code_font_size(
                     code,
@@ -2816,15 +2814,16 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         code_area_width,
                         line_numbers: cx.opts.code_line_numbers,
                         digits,
-                        default_size: CODE_FONT_SIZE,
+                        default_size: default_code_size,
                         min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                         faces: cx.faces,
                         width_cache: &cx.width_cache,
                     },
                 )
             } else {
-                CODE_FONT_SIZE
+                default_code_size
             };
+
             let number_col = if cx.opts.code_line_numbers {
                 code_line_number_column_width(digits, code_size, cx.faces, &cx.width_cache)
             } else {
@@ -2983,7 +2982,7 @@ fn layout_simple_text_paragraph(
     group: u32,
 ) {
     let left = cx.page.left + indent;
-    let size = 11.0;
+    let size = cx.type_scale.body;
     let gap_after = 7.0;
     let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
     let flow = FlowSpec {
@@ -15475,6 +15474,16 @@ fn finish_table_allocated_widths(columns: &[TableColumnMetrics], widths: &mut [f
 /// Lay out a GFM pipe table as a measured-column grid: a bold header row with a
 /// rule beneath it and a closing rule (booktabs-style). Column widths are chosen
 /// by minimizing predicted wrapping badness under the available page measure.
+#[derive(Clone, Copy)]
+struct TableLayoutSpec<'a> {
+    indent: f32,
+    page: PageGeom,
+    group: u32,
+    nominal_size: f32,
+    faces: &'a Faces,
+    width_cache: &'a RefCell<WidthCache>,
+}
+
 fn layout_table(
     table: &Table,
     indent: f32,
@@ -15483,8 +15492,17 @@ fn layout_table(
     cx: &mut LayoutCx<'_>,
 ) {
     let page = cx.page;
-    let Some(key) = TableLayoutKey::new(table, indent, page) else {
-        layout_table_uncached(table, indent, cx.faces, &cx.width_cache, page, group, out);
+    let nominal_size = cx.type_scale.table;
+    let spec = TableLayoutSpec {
+        indent,
+        page,
+        group,
+        nominal_size,
+        faces: cx.faces,
+        width_cache: &cx.width_cache,
+    };
+    let Some(key) = TableLayoutKey::new(table, indent, page, nominal_size) else {
+        layout_table_uncached(table, spec, out);
         return;
     };
 
@@ -15496,7 +15514,7 @@ fn layout_table(
     }
 
     let start = out.len();
-    layout_table_uncached(table, indent, cx.faces, &cx.width_cache, page, group, out);
+    layout_table_uncached(table, spec, out);
     let lines = out[start..].to_vec();
     cx.table_layout_cache.insert_if_room(key, lines);
 }
@@ -15510,16 +15528,8 @@ fn stamp_table_layout_group(out: &mut [Line], start: usize, group: u32) {
     }
 }
 
-fn layout_table_uncached(
-    table: &Table,
-    indent: f32,
-    faces: &Faces,
-    width_cache: &RefCell<WidthCache>,
-    page: PageGeom,
-    group: u32,
-    out: &mut Vec<Line>,
-) {
-    let mut size = TABLE_FONT_SIZE;
+fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec<Line>) {
+    let mut size = spec.nominal_size;
     let ncol = table
         .head
         .len()
@@ -15527,6 +15537,11 @@ fn layout_table_uncached(
     if ncol == 0 {
         return;
     }
+    let faces = spec.faces;
+    let width_cache = spec.width_cache;
+    let page = spec.page;
+    let group = spec.group;
+    let indent = spec.indent;
     let left = page.left + indent;
     let avail = (page.content_w - indent).max(72.0);
     let mut pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
@@ -15614,7 +15629,6 @@ fn layout_table_uncached(
     }
 
     let colw = allocate_table_column_widths(&columns, target);
-
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -16984,9 +16998,7 @@ fn line_tokens_for_break_into(
         }
         let (extra, applies_to_words) = adjustments
             .get(adjustment_pos)
-            .and_then(|(item_idx, extra, words)| {
-                (*item_idx == idx).then_some((*extra, *words))
-            })
+            .and_then(|(item_idx, extra, words)| (*item_idx == idx).then_some((*extra, *words)))
             .unwrap_or((0.0, false));
         if let Some(group) = built.item_toks.get(idx) {
             push_tok_group_line_toks(group, extra, applies_to_words, line);
@@ -17012,13 +17024,21 @@ fn push_tok_group_line_toks(
     if let Some(tok) = &group.first {
         line.push(LineTok {
             tok: tok.clone(),
-            extra_advance: if tok.space || applies_to_words { extra } else { 0.0 },
+            extra_advance: if tok.space || applies_to_words {
+                extra
+            } else {
+                0.0
+            },
         });
     }
     for tok in &group.rest {
         line.push(LineTok {
             tok: tok.clone(),
-            extra_advance: if tok.space || applies_to_words { extra } else { 0.0 },
+            extra_advance: if tok.space || applies_to_words {
+                extra
+            } else {
+                0.0
+            },
         });
     }
 }
@@ -17077,7 +17097,11 @@ fn glue_adjustments_into(
 
     // TeX invariant extended to glyphs: never compress past width - shrink,
     // where shrink now includes the credited box elasticity.
-    let effective_delta = if delta < 0 { delta.max(-total_cap) } else { delta };
+    let effective_delta = if delta < 0 {
+        delta.max(-total_cap)
+    } else {
+        delta
+    };
     let mut assigned = 0i64;
     let last = capacities.len() - 1;
     let mut entries: Vec<(usize, i64, bool)> = Vec::with_capacity(capacities.len());
@@ -17098,7 +17122,6 @@ fn glue_adjustments_into(
             .map(|(idx, milli, applies_to_words)| (idx, milli as f32 / 1000.0, applies_to_words)),
     );
 }
-
 
 fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -> bool {
     matches!(
@@ -17143,6 +17166,23 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
     build_segs_adjusted(&line_toks, left, size, faces, None)
 }
 
+fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
+    let Some(first) = toks.first() else {
+        return 0.0;
+    };
+    let text = token_visible_text(&first.tok);
+    let Some(ch) = text.chars().next() else {
+        return 0.0;
+    };
+    let per_mille = match ch {
+        '"' | '\'' | '`' | '“' | '‘' => 350.0,
+        '(' | '[' | '{' => 120.0,
+        '-' | '–' | '—' => 80.0,
+        _ => 0.0,
+    };
+    (size * per_mille) / 1000.0
+}
+
 fn build_segs_adjusted(
     toks: &[LineTok],
     left: f32,
@@ -17154,8 +17194,9 @@ fn build_segs_adjusted(
         return vec![seg];
     }
 
+    let hang = left_protrusion_hang(toks, size);
     let mut segs: Vec<Seg> = Vec::new();
-    let mut x = left;
+    let mut x = left - hang;
     let mut cur: Option<Seg> = None;
     let fs = font_size_of(size);
     for line_tok in toks {
@@ -17226,8 +17267,9 @@ fn build_single_adjusted_seg(
     }
     let fs = font_size_of(size);
     let width = shaped_width_points_for_layout(faces, width_cache, slot, &text, fs);
+    let hang = left_protrusion_hang(toks, size);
     Some(Seg {
-        x: left,
+        x: left - hang,
         slot,
         text,
         link: link.clone(),
@@ -23890,6 +23932,29 @@ fn clone_prefix_with_extra(prefix: &[SElem], extra_len: usize) -> Vec<SElem> {
     path
 }
 
+/// 45d2.4 void budgeting: when a forced break strands a large trailing void
+/// ahead of an unbreakable block, inter-block gaps already placed on the
+/// page may shrink toward this fraction of their nominal size so more of the
+/// following block pulls up onto the page instead.
+const GAP_SHRINK_FACTOR: f32 = 0.35;
+/// Floor for a shrunk inter-block gap, in points, so glue never collapses
+/// entirely and adjacent blocks stay visually separate.
+const MIN_SHRUNK_GAP_PT: f32 = 2.0;
+/// A page triggers the shrink refit only when its forced-break void exceeds
+/// this share of content height — ordinary near-full pages keep their exact
+/// historical breaks (and golden bytes).
+const VOID_TRIGGER_FRACTION: f32 = 0.12;
+
+/// True when `line[i]`'s trailing gap separates two flow groups (a genuine
+/// block boundary rather than intra-block leading rhythm).
+fn is_block_boundary(lines: &[Line], i: usize) -> bool {
+    i + 1 < lines.len() && lines[i].flow.group != lines[i + 1].flow.group
+}
+
+fn flexed_gap(gap: f32) -> f32 {
+    ((gap * GAP_SHRINK_FACTOR).max(MIN_SHRUNK_GAP_PT)).min(gap)
+}
+
 fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>> {
     if lines.is_empty() {
         return vec![Vec::new()];
@@ -23898,8 +23963,8 @@ fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>>
     let mut pages = Vec::new();
     let mut start = 0usize;
     while start < lines.len() {
-        let end = choose_page_break(lines, start, page);
-        pages.push(place_lines(lines, start, end, page));
+        let (end, shrink_from) = choose_page_break_with_void_control(lines, start, page);
+        pages.push(place_lines_shrunk(lines, start, end, page, shrink_from));
         start = end;
     }
     pages
@@ -23941,6 +24006,83 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     best.max(start + 1).min(lines.len())
 }
 
+/// 45d2.4: wrapper around [`choose_page_break`] adding global-void budgeting.
+/// The baseline break stands unless it strands a large trailing void ahead of
+/// the next block; in that case a shrunk-gap refit is attempted and accepted
+/// only when it strictly advances the break (pulling content up), keeping
+/// every existing penalty and capacity invariant intact.
+fn choose_page_break_with_void_control(
+    lines: &[Line],
+    start: usize,
+    page: PageGeom,
+) -> (usize, Option<usize>) {
+    let baseline_end = choose_page_break(lines, start, page);
+    if baseline_end >= lines.len() {
+        return (baseline_end, None);
+    }
+
+    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+    let capacity =
+        (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+    let mut used = 0.0f32;
+    for line in &lines[start..baseline_end] {
+        used += line_leading(line) + line.gap_after;
+    }
+    // The final line's trailing gap renders nothing on this page — the true
+    // visual void excludes it.
+    let tail_gap = if baseline_end > start {
+        lines[baseline_end - 1].gap_after
+    } else {
+        0.0
+    };
+    let void_ratio = ((capacity - (used - tail_gap)).max(0.0)) / capacity.max(1.0);
+    if void_ratio < VOID_TRIGGER_FRACTION {
+        return (baseline_end, None);
+    }
+
+    // Shrunk refit: same walk as the baseline, but inter-block gaps flex.
+    let mut used_s = 0.0f32;
+    let mut last_fit_s = start;
+    for (idx, line) in lines.iter().enumerate().skip(start) {
+        let gap = if is_block_boundary(lines, idx) {
+            flexed_gap(line.gap_after)
+        } else {
+            line.gap_after
+        };
+        let leading = line_leading(line);
+        if idx > start && used_s + leading > capacity {
+            break;
+        }
+        used_s += leading + gap;
+        last_fit_s = idx + 1;
+    }
+    if last_fit_s <= baseline_end {
+        return (baseline_end, None);
+    }
+
+    let mut best = baseline_end;
+    let mut best_score = f32::INFINITY;
+    let mut candidate_used = 0.0f32;
+    for candidate in (start + 1)..=last_fit_s {
+        let line = &lines[candidate - 1];
+        let gap = if is_block_boundary(lines, candidate - 1) {
+            flexed_gap(line.gap_after)
+        } else {
+            line.gap_after
+        };
+        candidate_used += line_leading(line) + gap;
+        let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
+        if score < best_score {
+            best_score = score;
+            best = candidate;
+        }
+    }
+    if best > baseline_end {
+        (best, Some(start))
+    } else {
+        (baseline_end, None)
+    }
+}
 fn break_score_for_used_height(lines: &[Line], candidate: usize, capacity: f32, used: f32) -> f32 {
     let remaining = (capacity - used).max(0.0);
     let fill_badness = (remaining / capacity.max(1.0)).powi(2) * 10_000.0;
@@ -24052,14 +24194,25 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 750_000.0;
     }
 
-    // Avoid club/widow breaks when splitting a paragraph-like group: at least
-    // two lines should remain on both sides when the paragraph has enough lines.
+    // Avoid club/widow/orphan breaks when splitting a paragraph-like group:
+    // at least two lines should remain on both sides of the page break.
     if before.flow.group == after.flow.group && before.flow.kind == FlowKind::Paragraph {
         let before_count = before.flow.index + 1;
         let after_count = after.flow.count.saturating_sub(after.flow.index);
-        if before.flow.count >= 4 && (before_count < 2 || after_count < 2) {
-            penalty += 850_000.0;
+        if before.flow.count >= 2 && (before_count < 2 || after_count < 2) {
+            penalty += 1_200_000.0;
         }
+    }
+
+    // Never break across a page boundary immediately after a hyphenated line:
+    // a word must not be split across physical pages.
+    if before
+        .segs
+        .last()
+        .map(|s| s.text.ends_with('-') || s.text.ends_with('—'))
+        .unwrap_or(false)
+    {
+        penalty += 1_200_000.0;
     }
 
     penalty
@@ -24434,18 +24587,148 @@ mod keep_with_next_tests {
     }
 }
 
+/// 45d2.4: global-void budgeting over [`choose_page_break_with_void_control`].
+#[cfg(test)]
+mod void_budget_tests {
+    use super::*;
+
+    fn page(height: f32) -> PageGeom {
+        PageGeom {
+            width: 400.0,
+            height,
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            content_w: 400.0,
+        }
+    }
+
+    fn line(kind: FlowKind, group: u32, index: usize, count: usize) -> Line {
+        Line {
+            size: 11.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark {
+                group,
+                index,
+                count,
+                kind,
+                list_start: false,
+            },
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs: Vec::new(),
+            image: None,
+        }
+    }
+
+    /// Five short paragraph lines (g1, boundary gap on the last one) followed
+    /// by three code lines (g2). `line_leading = size * 1.32` = 14.52.
+    fn frontier(gap: f32) -> Vec<Line> {
+        let mut lines = Vec::new();
+        for i in 0..5 {
+            let mut l = line(FlowKind::Paragraph, 1, i, 5);
+            l.gap_after = if i == 4 { gap } else { 0.0 };
+            lines.push(l);
+        }
+        for i in 0..3 {
+            lines.push(line(FlowKind::Code, 2, i, 3));
+        }
+        lines
+    }
+
+    #[test]
+    fn shrunk_refit_pulls_whole_code_block_over_a_stranded_void() {
+        // H=134: baseline consumes exactly the paragraph block (122.6 used,
+        // 72.6 without the trailing gap), refuses the first code row
+        // (137.12 > 134), and strands a 45.8% visual void — far past the
+        // trigger. Every internal code split costs the 750k frame penalty,
+        // so the legacy chooser keeps it stranded. Shrinking the 50pt
+        // boundary gap to 17.5 lets all three rows join: total 133.66 <= 134.
+        let lines = frontier(50.0);
+        let page = page(134.0);
+        assert_eq!(
+            choose_page_break(&lines, 0, page),
+            5,
+            "legacy oracle strands the void"
+        );
+
+        let (end, shrink_from) = choose_page_break_with_void_control(&lines, 0, page);
+        assert_eq!(end, 8, "refit pulls the entire code block up");
+        assert_eq!(shrink_from, Some(0));
+
+        let placed = place_lines_shrunk(&lines, 0, end, page, shrink_from);
+        assert_eq!(placed.len(), 8);
+        assert!(matches!(placed[5].line.flow.kind, FlowKind::Code));
+        let mut used = 0.0f32;
+        for (i, p) in placed.iter().enumerate() {
+            let gap = if is_block_boundary(&lines, i) {
+                flexed_gap(lines[i].gap_after)
+            } else {
+                lines[i].gap_after
+            };
+            used += line_leading(p.line) + gap;
+        }
+        assert!(
+            used <= 134.0,
+            "shrunk page must respect capacity (used={used})"
+        );
+    }
+
+    #[test]
+    fn docs_without_the_trigger_keep_legacy_breaks() {
+        // A modest boundary gap: even though the visual void crosses the
+        // trigger here, the shrunk refit cannot advance past the baseline
+        // (the code block genuinely does not fit), so the wrapper must fall
+        // back to the untouched legacy choice with no shrink window.
+        let lines = frontier(10.0);
+        let page = page(110.0);
+        let (end, shrink_from) = choose_page_break_with_void_control(&lines, 0, page);
+        assert_eq!(end, choose_page_break(&lines, 0, page));
+        assert_eq!(shrink_from, None);
+    }
+}
+
 fn line_leading(line: &Line) -> f32 {
     line.size * 1.32
 }
 
-fn place_lines<'a>(lines: &'a [Line], start: usize, end: usize, page: PageGeom) -> Vec<Placed<'a>> {
+/// Place `[start, end)` onto one page. When `shrink_from` is set (45d2.4),
+/// inter-block gaps from that index onward flex toward
+/// [`flexed_gap`], matching the accounting the void-control chooser used to
+/// extend this page.
+fn place_lines_shrunk<'a>(
+    lines: &'a [Line],
+    start: usize,
+    end: usize,
+    page: PageGeom,
+    shrink_from: Option<usize>,
+) -> Vec<Placed<'a>> {
     let repeated = repeated_table_header_lines(lines, start);
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
     let mut y = page.top_y();
-    for line in repeated.into_iter().chain(lines[start..end].iter()) {
+    let mut idx = start;
+    for line in repeated.into_iter() {
         y -= line_leading(line);
         placed.push(Placed { line, y });
         y -= line.gap_after;
+    }
+    for line in &lines[start..end] {
+        y -= line_leading(line);
+        placed.push(Placed { line, y });
+        let gap = match shrink_from {
+            Some(from) if idx >= from && is_block_boundary(lines, idx) => {
+                flexed_gap(line.gap_after)
+            }
+            _ => line.gap_after,
+        };
+        y -= gap;
+        idx += 1;
     }
     placed
 }
@@ -27139,6 +27422,7 @@ mod pdf_writer_tests {
     fn test_layout_cx<'a>(opts: &'a PdfOptions, faces: &'a Faces, page: PageGeom) -> LayoutCx<'a> {
         LayoutCx {
             opts,
+            type_scale: opts.type_scale(),
             faces,
             page,
             list_stack: Vec::new(),
@@ -27771,15 +28055,15 @@ mod pdf_writer_tests {
     ) -> (usize, u32) {
         let start = out.len();
         let group = cx.alloc_flow();
-        layout_table_uncached(
-            table,
+        let spec = super::TableLayoutSpec {
             indent,
-            cx.faces,
-            &cx.width_cache,
-            cx.page,
+            page: cx.page,
             group,
-            out,
-        );
+            nominal_size: cx.type_scale.table,
+            faces: cx.faces,
+            width_cache: &cx.width_cache,
+        };
+        layout_table_uncached(table, spec, out);
         (start, group)
     }
 
@@ -28116,7 +28400,7 @@ mod pdf_writer_tests {
         };
 
         assert!(
-            TableLayoutKey::new(&table, 0.0, test_page_geom()).is_none(),
+            TableLayoutKey::new(&table, 0.0, test_page_geom(), super::TABLE_FONT_SIZE).is_none(),
             "the table cache key must bound inline node count, not just text bytes"
         );
     }
@@ -31846,6 +32130,7 @@ mod table_wrap_tests {
         let page = test_page();
         let mut cx = LayoutCx {
             opts: &opts,
+            type_scale: opts.type_scale(),
             faces: &faces,
             page,
             next_bg: 0,
@@ -33848,6 +34133,7 @@ mod coverage_gap_tests {
     ) -> LayoutCx<'a> {
         LayoutCx {
             opts,
+            type_scale: opts.type_scale(),
             faces,
             page,
             next_bg: 0,
@@ -33990,7 +34276,7 @@ mod coverage_gap_tests {
         }
         assert!(lines.len() >= 15, "lines count was {}", lines.len());
         for line in &lines {
-            let mut prev_x = page.left;
+            let mut prev_x = line.segs.first().map_or(page.left, |s| s.x);
             for seg in &line.segs {
                 assert!(
                     seg.width >= 0.0,
@@ -34005,6 +34291,7 @@ mod coverage_gap_tests {
                 prev_x = seg.x + seg.width;
             }
         }
+
         let pdf = crate::render_pdf_document(&doc, &opts).unwrap();
         assert!(!pdf.is_empty());
     }
@@ -34036,7 +34323,10 @@ mod coverage_gap_tests {
         let page = PageGeom::from_theme(&opts.theme);
         let lines = layout(&doc.blocks, &opts, &faces, page);
         // Table lines with 8 columns under standard measure must have scaled font size (< 10.0)
-        let table_lines: Vec<&Line> = lines.iter().filter(|l| matches!(l.flow.kind, FlowKind::TableHeader | FlowKind::TableRow)).collect();
+        let table_lines: Vec<&Line> = lines
+            .iter()
+            .filter(|l| matches!(l.flow.kind, FlowKind::TableHeader | FlowKind::TableRow))
+            .collect();
         assert!(!table_lines.is_empty());
         for line in &table_lines {
             assert!(
@@ -34085,7 +34375,13 @@ mod coverage_gap_tests {
             demerits: 0,
         };
         let mut out = Vec::new();
-        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(52800), true, &mut out);
+        glue_adjustments_into(
+            &items,
+            &lb,
+            LayoutUnit::from_milli_points(52800),
+            true,
+            &mut out,
+        );
         assert_eq!(out.len(), 3, "glue plus both word boxes adjust");
         assert!(!out[1].2, "index-1 entry is the glue");
         assert!(out[0].2 && out[2].2, "box entries apply to words");
@@ -34106,10 +34402,20 @@ mod coverage_gap_tests {
             demerits: 0,
         };
         let mut out = Vec::new();
-        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(44000), true, &mut out);
+        glue_adjustments_into(
+            &items,
+            &lb,
+            LayoutUnit::from_milli_points(44000),
+            true,
+            &mut out,
+        );
         let total_milli: i64 = out.iter().map(|e| (e.1 * 1000.0).round() as i64).sum();
         assert_eq!(total_milli, -800, "sum of adjustments == clamped delta");
-        assert_eq!((out[2].1 * 1000.0).round() as i64, -450, "last share honors cap via remainder");
+        assert_eq!(
+            (out[2].1 * 1000.0).round() as i64,
+            -450,
+            "last share honors cap via remainder"
+        );
     }
 
     #[test]
@@ -34125,10 +34431,13 @@ mod coverage_gap_tests {
             demerits: 0,
         };
         let mut out = Vec::new();
-        glue_adjustments_into(&items, &lb, LayoutUnit::from_milli_points(52000), false, &mut out);
+        glue_adjustments_into(
+            &items,
+            &lb,
+            LayoutUnit::from_milli_points(52000),
+            false,
+            &mut out,
+        );
         assert!(out.is_empty(), "ragged lines never justify");
     }
 }
-
-
-

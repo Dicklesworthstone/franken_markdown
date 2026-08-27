@@ -69,6 +69,12 @@ pub struct WasmRenderOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks for PDF output.
     pub code_line_numbers: bool,
+    /// Optional base body size override in points; see [`crate::PdfOptions`].
+    pub base_font_size: Option<f32>,
+    /// Optional per-step heading ratio; see [`crate::PdfOptions`].
+    pub heading_scale: Option<f32>,
+    /// Optional nominal table size override in points; see [`crate::PdfOptions`].
+    pub table_font_size: Option<f32>,
     /// Caller-provided image bytes keyed by Markdown image destination.
     ///
     /// Browser hosts pass explicit bytes. The core never fetches URLs and never
@@ -182,6 +188,27 @@ impl WasmRenderOptions {
         Ok(self)
     }
 
+    /// Return a copy with a base body font size override in points.
+    #[must_use]
+    pub fn with_base_font_size(mut self, points: f32) -> Self {
+        self.base_font_size = Some(points);
+        self
+    }
+
+    /// Return a copy with a per-step heading scale ratio override.
+    #[must_use]
+    pub fn with_heading_scale(mut self, ratio: f32) -> Self {
+        self.heading_scale = Some(ratio);
+        self
+    }
+
+    /// Return a copy with a nominal table font size override in points.
+    #[must_use]
+    pub fn with_table_font_size(mut self, points: f32) -> Self {
+        self.table_font_size = Some(points);
+        self
+    }
+
     fn html_options(&self) -> HtmlOptions {
         HtmlOptions {
             theme: self.theme.clone(),
@@ -201,6 +228,9 @@ impl WasmRenderOptions {
             metadata_epoch_seconds: self.metadata_epoch_seconds,
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
+            base_font_size: self.base_font_size,
+            heading_scale: self.heading_scale,
+            table_font_size: self.table_font_size,
             image_assets: self.pdf_image_assets.clone(),
             font_assets: self.font_assets.clone(),
         }

@@ -443,3 +443,135 @@ mod tests {
         assert_eq!(json_num(0.0), "0");
     }
 }
+
+/// Materialized typographic scale for one PDF render, in points.
+///
+/// Single source of truth for PDF heading/body/code/table sizes. The default
+/// reproduces the historical hard-coded ladder byte-for-byte; explicit
+/// overrides harmonize the whole hierarchy around them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeScale {
+    /// Heading sizes for levels 1..=6 (H1 first).
+    pub h: [f32; 6],
+    /// Body paragraph size.
+    pub body: f32,
+    /// Monospace code size.
+    pub code: f32,
+    /// Nominal table cell size before adaptive scaling.
+    pub table: f32,
+}
+
+/// Clamp bounds for caller-supplied typography overrides.
+pub const BASE_FONT_SIZE_MIN_PT: f32 = 6.0;
+pub const BASE_FONT_SIZE_MAX_PT: f32 = 24.0;
+pub const HEADING_SCALE_MIN: f32 = 1.05;
+pub const HEADING_SCALE_MAX: f32 = 2.0;
+pub const TABLE_FONT_SIZE_FLOOR_PT: f32 = 5.0;
+
+impl Default for TypeScale {
+    fn default() -> Self {
+        Self {
+            h: [24.0, 19.0, 16.0, 13.5, 12.0, 11.0],
+            body: 11.0,
+            code: 9.5,
+            table: 10.0,
+        }
+    }
+}
+
+impl TypeScale {
+    /// Resolve effective sizes from optional `PdfOptions` overrides.
+    ///
+    /// * All-`None` reproduces [`TypeScale::default`] exactly so existing
+    ///   renders stay byte-identical.
+    /// * `base_font_size` alone rescales every entry by its ratio to the
+    ///   11 pt default body.
+    /// * Adding a `heading_scale` rebuilds the heading ladder geometrically
+    ///   from an H1 anchor of `(24/11) x base`; each next level divides by
+    ///   the ratio and floors at [`BASE_FONT_SIZE_MIN_PT`], giving the Major
+    ///   Third / Perfect Fourth hierarchies the typography bead calls for.
+    /// * `table_font_size` overrides the nominal table size directly, clamped
+    ///   into `[TABLE_FONT_SIZE_FLOOR_PT, base]`.
+    #[must_use]
+    pub fn resolve(
+        base_font_size: Option<f32>,
+        heading_scale: Option<f32>,
+        table_font_size: Option<f32>,
+    ) -> Self {
+        let d = Self::default();
+        let base = base_font_size
+            .unwrap_or(d.body)
+            .clamp(BASE_FONT_SIZE_MIN_PT, BASE_FONT_SIZE_MAX_PT);
+        let proportion = base / d.body;
+        let table = table_font_size
+            .unwrap_or(d.table * proportion)
+            .clamp(TABLE_FONT_SIZE_FLOOR_PT, base);
+        match heading_scale.map(|r| r.clamp(HEADING_SCALE_MIN, HEADING_SCALE_MAX)) {
+            None => Self {
+                h: d.h.map(|size| size * proportion),
+                body: base,
+                code: d.code * proportion,
+                table,
+            },
+            Some(ratio) => {
+                let mut prev = d.h[0] * proportion;
+                let mut h = [prev; 6];
+                for slot in h.iter_mut().skip(1) {
+                    prev = (prev / ratio).max(BASE_FONT_SIZE_MIN_PT);
+                    *slot = prev;
+                }
+                Self {
+                    h,
+                    body: base,
+                    code: d.code * proportion,
+                    table,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod type_scale_tests {
+    use super::*;
+
+    #[test]
+    fn all_none_reproduces_legacy_ladder_exactly() {
+        assert_eq!(TypeScale::resolve(None, None, None), TypeScale::default());
+    }
+
+    #[test]
+    fn base_override_rescales_whole_hierarchy_proportionally() {
+        let s = TypeScale::resolve(Some(16.5), None, None);
+        assert_eq!(s.body, 16.5);
+        assert!((s.h[0] - 36.0).abs() < 1e-4); // 24 * 1.5
+        assert!((s.code - 14.25).abs() < 1e-4); // 9.5 * 1.5
+        assert!((s.table - 15.0).abs() < 1e-4); // 10 * 1.5
+    }
+
+    #[test]
+    fn heading_scale_builds_monotone_geometric_ladder() {
+        let s = TypeScale::resolve(Some(10.0), Some(1.25), None);
+        // H1 anchor is (24/11) x 10.
+        assert!((s.h[0] - 240.0 / 11.0).abs() < 1e-4);
+        for pair in s.h.windows(2) {
+            assert!(pair[0] > pair[1], "headings must strictly decrease");
+        }
+        assert!((s.h[1] - s.h[0] / 1.25).abs() < 1e-4);
+        // Table defaults track the base proportion within documented bounds.
+        assert!((s.table - 10.0 * (10.0 / 11.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn overrides_clamp_into_documented_bounds() {
+        let tiny = TypeScale::resolve(Some(1.0), Some(9.9), Some(0.5));
+        assert_eq!(tiny.body, BASE_FONT_SIZE_MIN_PT);
+        assert_eq!(tiny.h[3], BASE_FONT_SIZE_MIN_PT);
+        assert_eq!(tiny.table, TABLE_FONT_SIZE_FLOOR_PT);
+        let huge = TypeScale::resolve(Some(99.0), Some(0.0), Some(99.0));
+        assert_eq!(huge.body, BASE_FONT_SIZE_MAX_PT);
+        assert!(
+            (huge.h[0] - TypeScale::default().h[0] * (BASE_FONT_SIZE_MAX_PT / 11.0)).abs() < 1e-3
+        );
+    }
+}

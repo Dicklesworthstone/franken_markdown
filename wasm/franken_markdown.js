@@ -91,7 +91,10 @@ export async function renderPdf(markdown, options = {}) {
       fontBytesForSlot(fontAssets, "body-bold"),
       fontBytesForSlot(fontAssets, "body-italic"),
       fontBytesForSlot(fontAssets, "body-bold-italic"),
-      fontBytesForSlot(fontAssets, "mono-regular")
+      fontBytesForSlot(fontAssets, "mono-regular"),
+      numberOption(options.baseFontSize),
+      numberOption(options.headingScale),
+      numberOption(options.tableFontSize)
     )
   );
 }
@@ -214,6 +217,21 @@ function epochOption(value) {
   return epoch;
 }
 
+
+/**
+ * Coerce an optional typography override to a finite number for the core
+ * ABI. Non-finite values are rejected here so the Rust-side deterministic
+ * clamps only ever see well-formed input.
+ */
+function numberOption(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError("typography overrides must be finite numbers");
+  }
+  return value;
+}
 function pdfImagesOption(value) {
   if (value === undefined || value === null) {
     return [];

@@ -49,6 +49,8 @@ const CURATED_RANGES: &[(u32, u32)] = &[
     (0x2044, 0x2044),
     // Superscripts and subscripts.
     (0x2070, 0x209C),
+    // Latin subscript letters (ᵢ, ᵣ, ᵤ, ᵥ, ᵦ, ᵧ, ᵨ, ᵩ, ᵪ).
+    (0x1D62, 0x1D6A),
     // Letterlike symbols (ℂ, ℏ, ℓ, ℕ, ℝ, ℤ, Ω, ℵ, …).
     (0x2100, 0x214F),
     // Number forms / vulgar fractions.
@@ -100,9 +102,7 @@ const MATH_ALPHABET_EXCEPTIONS_LOWER_CALLIGRAPHIC: [char; 3] = ['e', 'g', 'o'];
 const MATH_ALPHABET_EXCEPTIONS_UPPER_BLACKBOARD: [char; 7] = ['C', 'H', 'N', 'P', 'Q', 'R', 'Z'];
 
 fn math_alphabet_emitted() -> Vec<char> {
-    let alphabet = |r: std::ops::RangeInclusive<u8>| {
-        r.clone().map(char::from).collect::<Vec<_>>()
-    };
+    let alphabet = |r: std::ops::RangeInclusive<u8>| r.clone().map(char::from).collect::<Vec<_>>();
     let mut out = Vec::new();
     let mut push_offset = |base: u32, zero: u32, chs: &[u8]| {
         for &b in chs {
@@ -142,7 +142,11 @@ fn math_alphabet_emitted() -> Vec<char> {
             .map(|c| *c as u8)
             .collect::<Vec<_>>(),
     );
-    push_offset(0x1D552, 'a' as u32, &lower.iter().map(|c| *c as u8).collect::<Vec<_>>());
+    push_offset(
+        0x1D552,
+        'a' as u32,
+        &lower.iter().map(|c| *c as u8).collect::<Vec<_>>(),
+    );
     push_offset(0x1D7D8, '0' as u32, &(b'0'..=b'9').collect::<Vec<u8>>());
     out
 }

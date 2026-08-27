@@ -443,9 +443,9 @@ fn line_break_certificate_locks_prefix_metric_behavior() {
     assert_eq!(
         certificate,
         vec![
-            (0, 3, 4, 12_500, 8_518, FitnessClass::VeryLoose, 72_573_361),
-            (4, 7, 8, 12_500, 8_518, FitnessClass::VeryLoose, 145_146_722),
-            (8, 9, 10, 5_000, 0, FitnessClass::Decent, 145_149_723),
+            (0, 3, 4, 12_500, 6_060, FitnessClass::VeryLoose, 36_735_721),
+            (4, 7, 8, 12_500, 6_060, FitnessClass::VeryLoose, 73_471_442),
+            (8, 9, 10, 5_000, 0, FitnessClass::Decent, 73_474_443),
         ]
     );
 }

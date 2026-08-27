@@ -2798,7 +2798,4 @@ mod hyphen_and_break_edge_tests {
         // Total shrink: glue shrink (2 pt = 2000 mp) + box 0 elasticity (1.5% of 100 pt = 1500 mp) = 3500 mp
         assert_eq!(metrics.shrink, LayoutUnit(3500));
     }
-
 }
-
-

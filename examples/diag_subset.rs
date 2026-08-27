@@ -118,19 +118,31 @@ fn main() {
         Some(out) => {
             std::fs::write("/tmp/subset_one.bin", &out).unwrap();
             let rp = Font::parse(out).expect("reparse");
-            println!("REAL-FONT OUTPUT: glyphs={} index(𝒜)={}", rp.num_glyphs, rp.glyph_index(a));
+            println!(
+                "REAL-FONT OUTPUT: glyphs={} index(𝒜)={}",
+                rp.num_glyphs,
+                rp.glyph_index(a)
+            );
         }
         None => println!("subset returned None"),
     }
 
     // Part 2: synthetic minimal plane-1 font through the same API.
     let s = Font::parse(synth_font()).expect("synth parses");
-    println!("SYNTH: glyphs={} index(𝒜)={}", s.num_glyphs, s.glyph_index(a));
+    println!(
+        "SYNTH: glyphs={} index(𝒜)={}",
+        s.num_glyphs,
+        s.glyph_index(a)
+    );
     match s.subset(&[a]) {
         Some(out) => {
             std::fs::write("/tmp/subset_synth.bin", &out).unwrap();
             let rp = Font::parse(out).expect("reparse synth");
-            println!("SYNTH OUTPUT: glyphs={} index(𝒜)={}", rp.num_glyphs, rp.glyph_index(a));
+            println!(
+                "SYNTH OUTPUT: glyphs={} index(𝒜)={}",
+                rp.num_glyphs,
+                rp.glyph_index(a)
+            );
         }
         None => println!("synth subset None"),
     }

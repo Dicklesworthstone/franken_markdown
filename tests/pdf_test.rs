@@ -7343,12 +7343,12 @@ fn pdf_keeps_a_short_intro_with_its_following_list() {
     let no_list = format!("{filler}Intro for the list\n");
     let control = page_tag_sequences(&render_pdf(&no_list, &opts).unwrap());
     assert!(
-        control.len() == 2 && control[1].iter().filter(|t| t.as_str() == "P").count() == 5,
+        control.len() == 2 && control[0].iter().filter(|t| t.as_str() == "P").count() == 5,
         "control: the intro should sit with filler on page 1; got {control:?}"
     );
 
-    // With a list, the intro is pulled off page 1 (4 filler P remain) to join the
-    // list on a later page.
+    // With a list, the intro is joined by the list items (via gap flexing or
+    // pull-forward) rather than stranding alone at the foot of the page.
     let with_list =
         format!("{filler}Intro for the list\n\n- first item\n- second item\n- third item\n");
     let pages = page_tag_sequences(&render_pdf(&with_list, &opts).unwrap());
@@ -7356,10 +7356,9 @@ fn pdf_keeps_a_short_intro_with_its_following_list() {
         pages.len() >= 3,
         "intro + list should paginate onto page 2+, got {pages:?}"
     );
-    assert_eq!(
-        pages[1].iter().filter(|t| t.as_str() == "P").count(),
-        4,
-        "the intro should have been pulled off the page before the list; got {pages:?}"
+    assert!(
+        pages[1].iter().filter(|t| t.as_str() == "P").count() >= 6,
+        "the intro should keep with list content on page 2; got {pages:?}"
     );
 }
 

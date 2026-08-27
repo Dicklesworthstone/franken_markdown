@@ -40,6 +40,12 @@ export interface FmdRenderOptions {
   /** Finite non-negative integer seconds, <= Number.MAX_SAFE_INTEGER. */
   metadataEpochSeconds?: number;
   codeLineNumbers?: boolean;
+  /** Base body size override in points (clamped by the core to [6, 24]). */
+  baseFontSize?: number;
+  /** Per-step heading ratio, e.g. 1.25 (Major Third); clamped to [1.05, 2]. */
+  headingScale?: number;
+  /** Nominal table cell size override in points; clamped to [5, base]. */
+  tableFontSize?: number;
   /** Host-supplied PDF image bytes; any number of assets may be supplied per render call. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */

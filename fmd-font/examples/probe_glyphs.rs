@@ -1,6 +1,7 @@
 // probe: which bundled faces map which codepoints. Not product code.
 #![allow(clippy::unwrap_used)]
 
+#[cfg(feature = "bundled-faces")]
 fn main() {
     let faces = [
         ("CM_REGULAR", fmd_font::bundled::CM_REGULAR),
@@ -53,3 +54,6 @@ fn main() {
         println!();
     }
 }
+
+#[cfg(not(feature = "bundled-faces"))]
+fn main() {}

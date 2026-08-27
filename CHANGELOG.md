@@ -69,6 +69,11 @@ through HEAD
 - Math-alphanumeric script/double-struck coverage in the bundled symbol
   fallback face, plus format-12 cmap emission and dangling-composite
   tolerance in the `fmd-font` subsetter (`4vjj`, `yp8t`).
+- Configurable PDF typography: `PdfOptions` gains `base_font_size`,
+  `heading_scale`, and `table_font_size` overrides backed by a materialized
+  `theme::TypeScale`; WASM mirrors them as builder methods and
+  `baseFontSize` / `headingScale` / `tableFontSize` render options
+  (`45d2.5`). All-`None` stays byte-identical to the legacy ladder.
 
 ### Math-alphabet fallback subset (`4vjj`, `yp8t`)
 

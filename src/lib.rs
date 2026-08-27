@@ -288,6 +288,18 @@ pub struct PdfOptions {
     pub allow_raw_html: bool,
     /// Render muted line numbers in fenced code blocks.
     pub code_line_numbers: bool,
+    /// Optional base body size override, in points (clamped to [6, 24]).
+    ///
+    /// Scales the whole typographic hierarchy proportionally when no explicit
+    /// heading scale is supplied. `None` keeps the theme's 11 pt default.
+    pub base_font_size: Option<f32>,
+    /// Optional per-step heading ratio (e.g. 1.25 = Major Third, clamped to
+    /// [1.05, 2.0]). Rebuilds H1..H6 geometrically around an H1 anchor of
+    /// `(24/11) x base_font_size`. `None` keeps the historical ladder.
+    pub heading_scale: Option<f32>,
+    /// Optional nominal table cell size override, in points
+    /// (clamped to [5, base]). Adaptive table scaling still applies on top.
+    pub table_font_size: Option<f32>,
     /// Caller-provided image bytes keyed by the Markdown image destination.
     ///
     /// The render core never fetches network resources or reads files. Native
@@ -297,6 +309,19 @@ pub struct PdfOptions {
     pub image_assets: Vec<PdfImageAsset>,
     /// Optional caller-supplied fonts. Missing slots use bundled fonts.
     pub font_assets: FontAssets,
+}
+
+impl PdfOptions {
+    /// Effective materialized [`TypeScale`](crate::theme::TypeScale) after
+    /// applying this render's typography overrides.
+    #[must_use]
+    pub fn type_scale(&self) -> crate::theme::TypeScale {
+        crate::theme::TypeScale::resolve(
+            self.base_font_size,
+            self.heading_scale,
+            self.table_font_size,
+        )
+    }
 }
 
 /// Image bytes supplied by a host for PDF/HTML rendering.

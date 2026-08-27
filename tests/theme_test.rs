@@ -131,3 +131,93 @@ fn theme_sans_constructor_equals_default_and_serif_differs() {
     assert_eq!(Theme::sans(), Theme::default());
     assert_ne!(Theme::serif().font, Theme::sans().font);
 }
+
+#[test]
+fn pdf_options_type_scale_defaults_reproduce_legacy_ladder() {
+    let opts = franken_markdown::PdfOptions::default();
+    let scale = opts.type_scale();
+    assert_eq!(scale.h, [24.0, 19.0, 16.0, 13.5, 12.0, 11.0]);
+    assert_eq!(scale.body, 11.0);
+    assert_eq!(scale.code, 9.5);
+    assert_eq!(scale.table, 10.0);
+}
+
+#[test]
+fn pdf_options_type_scale_applies_overrides() {
+    let mut opts = franken_markdown::PdfOptions {
+        base_font_size: Some(16.5),
+        ..Default::default()
+    };
+    let scale = opts.type_scale();
+    assert_eq!(scale.body, 16.5);
+    assert!((scale.h[0] - 36.0).abs() < 1e-4);
+    // Explicit heading ratio switches to the geometric ladder.
+    opts.heading_scale = Some(1.333);
+    let geometric = opts.type_scale();
+    for pair in geometric.h.windows(2) {
+        assert!(pair[0] > pair[1]);
+    }
+    // Table override respects the documented floor.
+    opts.table_font_size = Some(1.0);
+    assert_eq!(opts.type_scale().table, 5.0);
+}
+
+#[test]
+fn wasm_typography_builders_set_fields_and_default_stays_none() {
+    use franken_markdown::wasm::WasmRenderOptions;
+    let base = WasmRenderOptions::sans();
+    assert_eq!(base.base_font_size, None);
+    assert_eq!(base.heading_scale, None);
+    assert_eq!(base.table_font_size, None);
+    let tuned = WasmRenderOptions::serif()
+        .with_base_font_size(13.0)
+        .with_heading_scale(1.25)
+        .with_table_font_size(8.5);
+    assert_eq!(tuned.base_font_size, Some(13.0));
+    assert_eq!(tuned.heading_scale, Some(1.25));
+    assert_eq!(tuned.table_font_size, Some(8.5));
+}
+
+#[test]
+fn typography_overrides_render_deterministically_and_differ_from_default() {
+    use franken_markdown::{PdfOptions, render_pdf_document};
+    let doc = franken_markdown::parse_markdown("# Title\n\nbody text\n");
+    let render = |opts: &PdfOptions| render_pdf_document(&doc, opts).expect("render");
+    let default = render(&PdfOptions::default());
+    assert_eq!(
+        default,
+        render(&PdfOptions::default()),
+        "same options must be byte-deterministic"
+    );
+    let bigger = PdfOptions {
+        base_font_size: Some(20.0),
+        ..Default::default()
+    };
+    let enlarged = render(&bigger);
+    assert_ne!(
+        default, enlarged,
+        "a larger base font must move the layout tree"
+    );
+}
+
+#[test]
+fn typography_table_override_changes_render_output() {
+    // Guards 45d2.5 acceptance: PdfOptions.table_font_size must actually
+    // reach PDF table layout, not just exist as an inert field. Dense grid
+    // maximizes cell-size influence on column allocation and wrapping.
+    use franken_markdown::{PdfOptions, render_pdf_document};
+    let md = "| A | B | C |\n|:--|:--|:--|\n| alpha | beta | gamma |\n";
+    let doc = franken_markdown::parse_markdown(md);
+    let render = |opts: &PdfOptions| render_pdf_document(&doc, opts).expect("render");
+    let default = render(&PdfOptions::default());
+    assert_eq!(default, render(&PdfOptions::default()));
+    let bigger = PdfOptions {
+        table_font_size: Some(14.0),
+        ..Default::default()
+    };
+    assert_ne!(
+        default,
+        render(&bigger),
+        "table_font_size must reach layout_table_uncached"
+    );
+}

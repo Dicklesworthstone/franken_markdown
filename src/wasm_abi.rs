@@ -309,6 +309,9 @@ pub fn render_pdf_configured_multi(
     body_italic: Vec<u8>,
     body_bold_italic: Vec<u8>,
     mono_regular: Vec<u8>,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = pdf_options_configured(
         font,
@@ -318,8 +321,10 @@ pub fn render_pdf_configured_multi(
         metadata_epoch_seconds,
         allow_raw_html,
         code_line_numbers,
+        base_font_size,
+        heading_scale,
+        table_font_size,
     )?;
-
     for (destination, bytes) in
         split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
             .map_err(JsValue::from_str)?
@@ -350,6 +355,9 @@ fn pdf_options_configured(
     metadata_epoch_seconds: Option<f64>,
     allow_raw_html: bool,
     code_line_numbers: bool,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
 ) -> std::result::Result<WasmRenderOptions, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
@@ -357,7 +365,16 @@ fn pdf_options_configured(
     options.metadata_epoch_seconds = parse_epoch(metadata_epoch_seconds)?;
     options.allow_raw_html = allow_raw_html;
     options.code_line_numbers = code_line_numbers;
+    options.base_font_size = finite_f32(base_font_size);
+    options.heading_scale = finite_f32(heading_scale);
+    options.table_font_size = finite_f32(table_font_size);
     Ok(options)
+}
+
+/// Reject non-finite host floats up front so the deterministic clamps in
+/// [`crate::theme::TypeScale::resolve`] never see NaN/inf.
+fn finite_f32(value: Option<f64>) -> Option<f32> {
+    value.filter(f64::is_finite).map(|v| v as f32)
 }
 
 fn options_with_font_and_dark_mode(

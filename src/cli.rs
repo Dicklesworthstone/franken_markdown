@@ -165,6 +165,15 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
+    /// Base body font size override in points (clamped to [6, 24]).
+    #[arg(long)]
+    pdf_base_font_size: Option<f32>,
+    /// Per-step heading geometric scale ratio (e.g. 1.25 for Major Third, clamped to [1.05, 2.0]).
+    #[arg(long)]
+    pdf_heading_scale: Option<f32>,
+    /// Nominal table cell font size override in points (clamped to [5, base_font_size]).
+    #[arg(long)]
+    pdf_table_font_size: Option<f32>,
     /// Provide or override a local PDF image asset as MARKDOWN_DEST=PATH.
     /// File-based HTML/PDF renders also auto-load relative local PNG/SVG/JPEG
     /// image destinations, and PDF renders fetch remote http(s) destinations
@@ -493,6 +502,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
             code_line_numbers: args.pdf_line_numbers,
+            base_font_size: args.pdf_base_font_size,
+            heading_scale: args.pdf_heading_scale,
+            table_font_size: args.pdf_table_font_size,
             image_assets: pdf_image_assets,
             font_assets: FontAssets::default(),
         };

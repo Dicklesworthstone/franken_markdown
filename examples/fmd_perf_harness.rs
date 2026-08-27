@@ -22,6 +22,9 @@ struct Args {
     scenario: String,
     iterations: usize,
     out_dir: Option<PathBuf>,
+    /// Optional caller-supplied corpus markdown file for the `corpus`
+    /// scenario. The file is read at runtime and never embedded.
+    corpus_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +90,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             samples.push(compress_corpus(args.iterations, args.out_dir.as_deref())?);
             samples.push(pdf_large(args.iterations, args.out_dir.as_deref())?);
         }
+        "corpus" => {
+            let Some(path) = &args.corpus_path else {
+                return Err("--scenario corpus requires --corpus <markdown file>".into());
+            };
+            samples.extend(corpus_scenarios(
+                path,
+                args.iterations,
+                args.out_dir.as_deref(),
+            )?);
+        }
         "html-showcase" => samples.push(html_showcase(args.iterations, args.out_dir.as_deref())?),
         "html-large" => samples.push(html_large(args.iterations, args.out_dir.as_deref())?),
         "html-code-heavy" => {
@@ -124,6 +137,7 @@ where
     let mut scenario = String::from("all");
     let mut iterations = 100usize;
     let mut out_dir = None;
+    let mut corpus_path = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -149,9 +163,15 @@ where
                     .ok_or_else(|| String::from("--out-dir requires a value"))?;
                 out_dir = Some(PathBuf::from(raw));
             }
+            "--corpus" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| String::from("--corpus requires a value"))?;
+                corpus_path = Some(PathBuf::from(raw));
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: cargo run --profile release-perf --example fmd_perf_harness -- --scenario all --iters 100 --out-dir tests/artifacts/perf/<run>/golden"
+                    "Usage: cargo run --profile release-perf --example fmd_perf_harness -- --scenario all --iters 100 --out-dir tests/artifacts/perf/<run>/golden [--corpus <markdown file>]"
                 );
                 std::process::exit(0);
             }
@@ -163,9 +183,9 @@ where
         scenario,
         iterations,
         out_dir,
+        corpus_path,
     })
 }
-
 fn html_showcase(
     iterations: usize,
     out_dir: Option<&Path>,
@@ -422,6 +442,7 @@ fn pdf_large(
     write_golden(out_dir, "pdf-large.pdf", &golden)?;
     write_pdf_large_stage_artifacts(
         out_dir,
+        "pdf-large",
         iterations,
         src.len(),
         golden.len(),
@@ -457,6 +478,7 @@ struct StageBucket {
 
 fn write_pdf_large_stage_artifacts(
     out_dir: Option<&Path>,
+    label: &str,
     iterations: usize,
     input_bytes: usize,
     output_bytes: usize,
@@ -485,13 +507,12 @@ fn write_pdf_large_stage_artifacts(
         }
     }
 
-    let stage_path = dir.join("pdf-large-stages.jsonl");
+    let stage_path = dir.join(format!("{label}-stages.jsonl"));
     let mut stage_jsonl = String::new();
     stage_jsonl.push_str(&format!(
-        "{{\"type\":\"scenario_start\",\"scenario\":\"pdf-large\",\"category\":\"render-pdf\",\"input_bytes\":{},\"iterations\":{},\"notes\":\"{}\"}}\n",
+        "{{\"type\":\"scenario_start\",\"scenario\":\"{label}\",\"category\":\"render-pdf\",\"input_bytes\":{},\"iterations\":{},\"notes\":\"stage attribution for pre-parsed Markdown document to PDF\"}}\n",
         input_bytes,
         iterations,
-        "stage attribution for pre-parsed large mixed Markdown document to PDF"
     ));
 
     let mut ranked: Vec<StageRank> = Vec::new();

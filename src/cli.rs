@@ -1619,7 +1619,6 @@ fn normalized_args() -> Vec<String> {
         "help",
     ];
     let global_no_value = ["--json", "--no-color", "--no-config", "--robot-triage"];
-    let global_with_value: [&str; 0] = [];
     let root_flags = ["--help", "-h", "--version", "-V"];
 
     let mut i = 1;
@@ -1630,10 +1629,6 @@ fn normalized_args() -> Vec<String> {
         }
         if global_no_value.contains(&arg) {
             i += 1;
-            continue;
-        }
-        if global_with_value.contains(&arg) {
-            i += 2;
             continue;
         }
         args.insert(i, "render".to_string());

@@ -17,6 +17,7 @@ Thumbs.db
 
 # Local scratch / generated render outputs
 /scratch
+tests/scratch/
 *.tmp
 *.tmp.*
 

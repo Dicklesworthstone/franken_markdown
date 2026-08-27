@@ -1056,7 +1056,7 @@ impl Font {
         for (&cp, &ng) in &codes {
             match groups.last_mut() {
                 Some(g)
-                    if g.end_cp == cp - 1
+                    if g.end_cp.checked_add(1) == Some(cp)
                         && u64::from(g.start_gid) + (g.end_cp - g.start_cp) as u64 + 1
                             == u64::from(ng) =>
                 {

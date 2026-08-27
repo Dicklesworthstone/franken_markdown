@@ -66,6 +66,26 @@ through HEAD
 
 - Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier.
 - Root planning docs relocated under `docs/planning/`.
+- Math-alphanumeric script/double-struck coverage in the bundled symbol
+  fallback face, plus format-12 cmap emission and dangling-composite
+  tolerance in the `fmd-font` subsetter (`4vjj`, `yp8t`).
+
+### Math-alphabet fallback subset (`4vjj`, `yp8t`)
+
+The bundled Noto Sans Math symbol-fallback face gained the mathematical
+alphanumeric script/double-struck repertoire (`\mathcal` / `\mathbb`):
+U+1D49C–U+1D4CF, U+1D538–U+1D56B, and the double-struck digits U+1D7D8–U+1D7E1,
+routing through `fmd-math`'s alphabet tables while Letterlike exceptions stay
+in U+2100. To carry supplementary-plane letters at all, the factored
+`fmd-font` subsetter learned to emit a format-12 `(3,10)` cmap when a kept
+glyph lives past U+FFFF — staying byte-identical on BMP-only subsets — and its
+composite walker now tolerates a dangling final `MORE_COMPONENTS` record like
+the glyph reader instead of failing the whole font.
+
+**Representative commits**
+- [`2406e21`](https://github.com/Dicklesworthstone/franken_markdown/commit/2406e21) — `feat(font,text): expand mathematical alphabet and symbol fallback coverage`
+- [`8af8f95`](https://github.com/Dicklesworthstone/franken_markdown/commit/8af8f95) — `build(fonts): update generated NotoSansMathSymbols fallback font` (72,908-byte curated face; deterministic regeneration proven byte-identical)
+- [`ed9ff3d`](https://github.com/Dicklesworthstone/franken_markdown/commit/ed9ff3d) — `style(fmd-font): apply rustfmt and clippy allowances to math-alphabet work`
 
 ### Closed workstreams
 

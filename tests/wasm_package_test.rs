@@ -85,10 +85,18 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("metadataEpochSeconds must be a number"));
     assert!(js.contains("Number.isSafeInteger"));
     assert!(js.contains("Number.MAX_SAFE_INTEGER"));
+    assert!(js.contains("function numberOption"));
+    assert!(js.contains("numberOption(options.baseFontSize)"));
+    assert!(js.contains("numberOption(options.headingScale)"));
+    assert!(js.contains("numberOption(options.tableFontSize)"));
+    assert!(js.contains("typography overrides must be finite numbers"));
 
     assert!(dts.contains("export interface FmdRenderOutput"));
     assert!(dts.contains("export type FmdDarkMode"));
     assert!(dts.contains("darkMode?: FmdDarkMode"));
+    assert!(dts.contains("baseFontSize?: number"));
+    assert!(dts.contains("headingScale?: number"));
+    assert!(dts.contains("tableFontSize?: number"));
     assert!(dts.contains("export interface FmdPdfImageAsset"));
     assert!(dts.contains("export interface FmdFontAsset"));
     assert!(dts.contains("export type FmdFontAssetSlot"));

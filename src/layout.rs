@@ -2611,10 +2611,9 @@ mod hyphen_and_break_edge_tests {
     use super::{
         AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
         FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem,
-        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle,
-        append_styled_word_chunk, break_paragraph, break_paragraph_into, build_hyphen_trie,
-        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
-        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle, append_styled_word_chunk,
+        break_paragraph, break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
+        insert_hyphen_pattern, push_hyphenated_word_items_from_points, trailing_forced_fit_break,
     };
 
     /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.

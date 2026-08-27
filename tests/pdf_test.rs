@@ -8340,13 +8340,13 @@ fn pdf_renders_running_page_numbers_when_enabled() {
 
 #[test]
 fn pdf_subscript_phonetic_symbol_fallback_renders_cleanly() {
-    let md = "# Subscript Test\n\nFormula: *e* = Σ pᵢ×LGEᵢ and base rates: aₐ + bₑ + cₒ + xₓ.";
+    let md = "# Subscript & Superscript Test\n\nFormula: *e* = Σ pᵢ×LGEᵢ and base rates: aₐ + bₑ + cₒ + xₓ and formulas: H₂O, CO₂, x² + y³, 10⁻⁵, nᵗʰ, Mᵃˣ.";
     let doc = parse_markdown(md);
     let opts = PdfOptions::default();
     let warnings = render_warnings(&doc, &opts);
     assert!(
         warnings.is_empty(),
-        "subscript characters should resolve via symbol/phonetic fallback without missing glyph warnings: {warnings:?}"
+        "subscript and superscript characters should resolve via symbol/phonetic fallback without missing glyph warnings: {warnings:?}"
     );
     let pdf = render_pdf_document(&doc, &opts).expect("render pdf");
     assert!(!pdf.is_empty());

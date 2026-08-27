@@ -692,6 +692,10 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         metadata_epoch_seconds: pdf_epoch,
         allow_raw_html: false,
         code_line_numbers: false,
+        page_numbers: false,
+        base_font_size: None,
+        heading_scale: None,
+        table_font_size: None,
         image_assets: Vec::new(),
         font_assets: FontAssets::default(),
     };

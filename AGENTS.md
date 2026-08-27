@@ -176,3 +176,14 @@ and coordinate through threads. Treat unrecognized working-tree changes as peer
 work. Do not revert or overwrite them.
 
 For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
+
+## Font Subsystem Location (factored)
+
+The font reader/subsetter is the `fmd-font/` workspace crate — `fmd-font/src/lib.rs`
+is the real implementation; root `src/lib.rs` re-exports it as
+`pub use fmd_font as text`. There is NO live `src/text.rs`: that file is a
+leftover from before commit e9e9d02 and is compiled by nothing. Bead
+descriptions citing `src/text.rs:N` refer to the legacy file; find the current
+code in `fmd-font/src/lib.rs` instead. Bundled faces and the curated Noto Sans
+Math subset live under `fmd-font/fonts/`, regenerated via
+`cargo run --example gen_symbol_fallback_font`.

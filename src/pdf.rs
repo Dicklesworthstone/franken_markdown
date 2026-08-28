@@ -17355,9 +17355,50 @@ fn hyphenator_for_word(word: &str) -> Hyphenator {
         Hyphenator::french()
     } else if spanish {
         Hyphenator::spanish()
+    } else if french_apostrophe_cue(word) {
+        // English `hyphenate_ascii` refuses apostrophes, so `aujourd'hui`
+        // and elisions (`l'homme`, `d'accord`) would otherwise never break.
+        Hyphenator::french()
     } else {
         Hyphenator::english()
     }
+}
+
+fn french_apostrophe_cue(word: &str) -> bool {
+    let mut folded = String::with_capacity(word.len());
+    let mut has_apostrophe = false;
+    for c in word.chars() {
+        if c == '\'' || c == '\u{2019}' {
+            has_apostrophe = true;
+            folded.push('\'');
+        } else {
+            folded.extend(c.to_lowercase());
+        }
+    }
+    if !has_apostrophe || english_contraction_suffix(&folded) {
+        return false;
+    }
+    folded.contains("aujourd")
+        || folded.contains("'hui")
+        || folded.starts_with("d'")
+        || folded.starts_with("l'")
+        || folded.starts_with("n'")
+        || folded.starts_with("m'")
+        || folded.starts_with("t'")
+        || folded.starts_with("s'")
+        || folded.starts_with("c'")
+        || folded.starts_with("j'")
+        || folded.starts_with("qu'")
+}
+
+fn english_contraction_suffix(folded: &str) -> bool {
+    folded.ends_with("n't")
+        || folded.ends_with("'s")
+        || folded.ends_with("'re")
+        || folded.ends_with("'ve")
+        || folded.ends_with("'ll")
+        || folded.ends_with("'d")
+        || folded.ends_with("'m")
 }
 
 fn pdf_word_string(word: &[Tok], byte_len: usize) -> String {
@@ -31244,6 +31285,16 @@ mod pdf_writer_tests {
         assert!(
             !fr_pts.is_empty(),
             "French patterns must hyphenate développement, got {fr_pts:?}"
+        );
+        assert_eq!(hyphenator_for_word("aujourd'hui").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("l'homme").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("don't").lang().as_str(), "en");
+        assert_eq!(hyphenator_for_word("it's").lang().as_str(), "en");
+        let hui = hyphenator_for_word("aujourd'hui");
+        let hui_pts = hui.hyphenation_points("aujourd'hui", hui.default_options());
+        assert!(
+            !hui_pts.is_empty(),
+            "French patterns must hyphenate aujourd'hui, got {hui_pts:?}"
         );
     }
 

@@ -644,6 +644,115 @@ mod tests {
         );
     }
 
+    // xjld: directory mode for `fmd watch <dir>`.
+
+    #[test]
+    fn expand_md_directory_finds_nested_markdown_sorted() {
+        // xjld: a watch over a directory must surface every `*.md`
+        // file in a deterministic order so a render re-emits the
+        // same output bytes across runs. Nested directories count.
+        let dir = fresh_dir("expand");
+        std::fs::write(dir.join("z.md"), "# z\n").unwrap();
+        std::fs::write(dir.join("a.md"), "# a\n").unwrap();
+        let sub = dir.join("nested");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("m.md"), "# m\n").unwrap();
+        let found = expand_md_directory(&dir);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        log_check(
+            "xjld.expand.sorted",
+            "lexicographic order across nested paths",
+            names == ["a.md", "m.md", "z.md"],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_md_directory_skips_hidden_files_and_extensions() {
+        // xjld: only `*.md` is watched. A `.scratch.md` note or a
+        // `.txt` file must not appear in the watch set. Hidden
+        // directories are also skipped (no descent into `.git/`).
+        let dir = fresh_dir("hiddendir");
+        std::fs::write(dir.join("keep.md"), "# k\n").unwrap();
+        std::fs::write(dir.join(".scratch.md"), "# n\n").unwrap();
+        std::fs::write(dir.join("readme.txt"), "txt\n").unwrap();
+        let git = dir.join(".git");
+        std::fs::create_dir(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let found = expand_md_directory(&dir);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        log_check(
+            "xjld.expand.filtered",
+            "only keep.md survives filtering",
+            names == ["keep.md"],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_md_directory_uppercase_extension_is_markdown() {
+        // xjld: case-insensitive match. A `.MD` file is still
+        // Markdown. The case-insensitive walk is a small but
+        // important concession to cross-platform file systems
+        // (HFS+ and Windows are case-insensitive by default).
+        let dir = fresh_dir("caseins");
+        std::fs::write(dir.join("lower.md"), "# l\n").unwrap();
+        std::fs::write(dir.join("upper.MD"), "# u\n").unwrap();
+        let found = expand_md_directory(&dir);
+        log_check(
+            "xjld.expand.case",
+            "two markdown files (one .MD, one .md)",
+            found.len() == 2,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_md_directory_empty_returns_empty_vec() {
+        // xjld: an empty directory or one with no `*.md` must
+        // return an empty Vec so the CLI fails loudly with a
+        // clear error (rather than silently watching nothing).
+        let dir = fresh_dir("empty");
+        let found = expand_md_directory(&dir);
+        log_check(
+            "xjld.expand.empty_dir",
+            "no markdown files",
+            found.is_empty(),
+        );
+        let only_txt = fresh_dir("only_txt");
+        std::fs::write(only_txt.join("a.txt"), "x\n").unwrap();
+        let found_txt = expand_md_directory(&only_txt);
+        log_check(
+            "xjld.expand.only_txt",
+            "directory with only .txt returns empty",
+            found_txt.is_empty(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&only_txt);
+    }
+
+    #[test]
+    fn expand_md_directory_nonexistent_path_returns_empty() {
+        // xjld: a missing path is not a panic; the function
+        // returns empty so the CLI can surface a clear "not
+        // found" error (the CLI does the final user-facing
+        // translation).
+        let bogus = PathBuf::from("/nonexistent/path/that/does/not/exist");
+        let found = expand_md_directory(&bogus);
+        log_check(
+            "xjld.expand.missing",
+            "missing path returns empty vec (no panic)",
+            found.is_empty(),
+        );
+    }
+
+
     #[test]
     fn referenced_local_paths_skips_urls_and_missing_files() {
         let dir = fresh_dir("assets");

@@ -284,7 +284,7 @@ fn instance_simple(
             Some(&mut phantoms),
         );
     }
-    let bytes = encode_simple(&simple);
+    let bytes = encode_simple(&simple)?;
     let (aw, lsb) = hmtx_from_phantoms(&simple.points, &phantoms);
     Some((bytes, aw, lsb))
 }
@@ -932,11 +932,11 @@ fn next_in(i: usize, start: usize, end: usize) -> usize {
     if i >= end { start } else { i + 1 }
 }
 
-fn encode_simple(g: &SimpleGlyph) -> Vec<u8> {
+fn encode_simple(g: &SimpleGlyph) -> Option<Vec<u8>> {
     let n = g.points.len();
     let mut out = Vec::new();
-    let n_contours = g.contour_ends.len();
-    out.extend_from_slice(&(n_contours as i16).to_be_bytes());
+    let n_contours = i16::try_from(g.contour_ends.len()).ok()?;
+    out.extend_from_slice(&n_contours.to_be_bytes());
     let (xmin, ymin, xmax, ymax) = bbox(&g.points);
     out.extend_from_slice(&xmin.to_be_bytes());
     out.extend_from_slice(&ymin.to_be_bytes());
@@ -953,6 +953,10 @@ fn encode_simple(g: &SimpleGlyph) -> Vec<u8> {
     for (i, &(x, y)) in g.points.iter().enumerate() {
         let dx = x.saturating_sub(prev.0);
         let dy = y.saturating_sub(prev.1);
+        // glyf stores relative int16. Silent `as i16` truncation would emit a
+        // different outline than the instanced points / hmtx we just computed.
+        i16::try_from(dx).ok()?;
+        i16::try_from(dy).ok()?;
         dxs.push(dx);
         dys.push(dy);
         let mut f = if g.on_curve.get(i).copied().unwrap_or(true) {
@@ -975,16 +979,16 @@ fn encode_simple(g: &SimpleGlyph) -> Vec<u8> {
         if f & X_SAME_OR_POS != 0 && dx == 0 {
             continue;
         }
-        out.extend_from_slice(&(dx as i16).to_be_bytes());
+        out.extend_from_slice(&i16::try_from(dx).ok()?.to_be_bytes());
     }
     for (i, &dy) in dys.iter().enumerate() {
         let f = flags.get(i).copied().unwrap_or(0);
         if f & Y_SAME_OR_POS != 0 && dy == 0 {
             continue;
         }
-        out.extend_from_slice(&(dy as i16).to_be_bytes());
+        out.extend_from_slice(&i16::try_from(dy).ok()?.to_be_bytes());
     }
-    out
+    Some(out)
 }
 
 fn bbox(points: &[(i32, i32)]) -> (i16, i16, i16, i16) {
@@ -1176,7 +1180,8 @@ pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
         points: vec![(0, 0), (100, 0), (50, 100)],
         on_curve: vec![true, true, true],
         contour_ends: vec![2],
-    });
+    })
+    .expect("tiny fixture encodes");
     let mut loca = Vec::new();
     push32(&mut loca, 0);
     push32(&mut loca, glyph.len() as u32);
@@ -1418,6 +1423,7 @@ mod tests {
             on_curve: vec![true, true, true],
             contour_ends: vec![2],
         })
+        .expect("triangle encodes")
     }
 
     /// `gvar` for one glyph, one axis, one tuple at peak +1 with a private
@@ -1624,7 +1630,8 @@ mod tests {
             points: vec![(0, 0), (10, 0), (100, 0)],
             on_curve: vec![true, true, true],
             contour_ends: vec![2],
-        });
+        })
+        .expect("iup glyph encodes");
         let mut loca = Vec::new();
         push32(&mut loca, 0);
         push32(&mut loca, u32::try_from(glyph.len()).unwrap());
@@ -1722,6 +1729,30 @@ mod tests {
             "gk3v.gvar.nan-weight",
             "NaN/inf weight does not instance",
             font.instance(f32::NAN).is_none() && font.instance(f32::INFINITY).is_none(),
+        );
+    }
+
+    #[test]
+    fn encode_simple_rejects_relative_delta_outside_i16() {
+        let huge = encode_simple(&SimpleGlyph {
+            points: vec![(0, 0), (40_000, 0)],
+            on_curve: vec![true, true],
+            contour_ends: vec![1],
+        });
+        log_check(
+            "gk3v.gvar.encode-i16",
+            "delta 40000 does not silently truncate",
+            huge.is_none(),
+        );
+        let ok = encode_simple(&SimpleGlyph {
+            points: vec![(0, 0), (100, 0)],
+            on_curve: vec![true, true],
+            contour_ends: vec![1],
+        });
+        log_check(
+            "gk3v.gvar.encode-ok",
+            "in-range delta encodes",
+            ok.is_some(),
         );
     }
 

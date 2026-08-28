@@ -67,6 +67,7 @@ tests/artifacts/conformance/
 tests/artifacts/pagination/
 tests/artifacts/theme/
 tests/artifacts/wasm/
+tests/artifacts/watch/
 # Ephemeral timestamped perf run dirs. This replaces a per-run-name pattern list
 # that could not keep up: ~760 run dirs (14k files) still leaked through and made
 # the tree permanently dirty, which blocks the HFDT release-candidate identity

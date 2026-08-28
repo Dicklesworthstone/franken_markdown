@@ -1,0 +1,42 @@
+# Verify CI recipe (bead yo83.4): fmd verify against the fixtures.
+# broken.md MUST produce findings (exit 1); clean.md MUST be clean (exit 0).
+name: verify-docs
+
+on:
+  push:
+    paths: ["docs/verify-fixtures/**", ".github/workflows/verify-docs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build fmd
+        run: cargo build --release --bin fmd --features cli
+      - name: Verify broken fixture (expect findings, exit 1)
+        run: |
+          set +e
+          ./target/release/fmd verify docs/verify-fixtures/broken.md --json > broken.json
+          code=$?
+          set -e
+          echo "exit=$code"
+          test "$code" -eq 1
+      - name: Verify clean fixture (expect clean, exit 0)
+        run: |
+          ./target/release/fmd verify docs/verify-fixtures/clean.md --json > clean.json
+          test "$?" -eq 0
+      - name: Assert the broken report names its findings
+        run: |
+          grep -q '"code":"unresolved_anchor"' broken.json
+          grep -q '"code":"missing_glyphs"' broken.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verify-reports
+          path: |
+            broken.json
+            clean.json

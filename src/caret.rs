@@ -271,21 +271,29 @@ fn is_wide(ch: char) -> bool {
 }
 
 fn line_ranges(source: &str) -> Vec<(usize, usize)> {
+    // Same terminators as `str::lines`: `\n`, `\r\n`, and lone `\r`. Displayed
+    // ranges exclude the terminator so a caret on those bytes still belongs to
+    // the preceding logical line (see `locate`).
     let mut out = Vec::new();
     let b = source.as_bytes();
     let mut start = 0usize;
     let mut i = 0usize;
     while i < b.len() {
-        if b[i] == b'\n' {
-            let mut end = i;
-            if end > start && b[end - 1] == b'\r' {
-                end -= 1;
+        match b[i] {
+            b'\n' => {
+                out.push((start, i));
+                i += 1;
+                start = i;
             }
-            out.push((start, end));
-            i += 1;
-            start = i;
-        } else {
-            i += 1;
+            b'\r' => {
+                out.push((start, i));
+                i += 1;
+                if i < b.len() && b[i] == b'\n' {
+                    i += 1;
+                }
+                start = i;
+            }
+            _ => i += 1,
         }
     }
     if start < b.len() || out.is_empty() {
@@ -512,6 +520,11 @@ mod tests {
         assert_eq!(line_ranges("a\r\n"), vec![(0, 1)]);
         assert_eq!(span_of_line("a\r\nb", 1), SourceSpan::new(0, 1));
         assert_eq!(span_of_line("a\r\nb", 2), SourceSpan::new(3, 4));
+        // Classic Mac / lone CR — same split as `str::lines`, so config
+        // `line N:` carets land on the right key=value.
+        assert_eq!(line_ranges("a\rb"), vec![(0, 1), (2, 3)]);
+        assert_eq!(span_of_line("a\rb", 1), SourceSpan::new(0, 1));
+        assert_eq!(span_of_line("a\rb", 2), SourceSpan::new(2, 3));
     }
 
     #[test]
@@ -530,6 +543,11 @@ mod tests {
         // Second-line content.
         assert_eq!(locate(lf, &lf_lines, 2), (1, 0));
         assert_eq!(locate(crlf, &crlf_lines, 3), (1, 0));
+        let cr = "a\rb";
+        let cr_lines = line_ranges(cr);
+        assert_eq!(locate(cr, &cr_lines, 0), (0, 0));
+        assert_eq!(locate(cr, &cr_lines, 1), (0, 1)); // lone `\r`
+        assert_eq!(locate(cr, &cr_lines, 2), (1, 0));
     }
 
     #[test]

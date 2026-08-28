@@ -141,7 +141,7 @@ const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
 const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-// Font slots referenced in page Resources as /F1../F6.
+// Font slots referenced in page Resources as /F1../F7.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;

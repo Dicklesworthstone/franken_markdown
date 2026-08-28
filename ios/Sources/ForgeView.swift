@@ -558,6 +558,15 @@ struct ForgeView: View {
         }
     }
 
+    private func exportFilename(ext: String) -> String {
+        let trimmed = renderer.documentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Document.\(ext)"
+        }
+        let safe = trimmed.components(separatedBy: CharacterSet(charactersIn: "/:\\?%*|\"<>")).joined(separator: "-")
+        return "\(safe).\(ext)"
+    }
+
     private func triggerPdfExport() {
         guard !isExporting else { return }
         isExporting = true
@@ -565,7 +574,7 @@ struct ForgeView: View {
             do {
                 let (data, _, _) = try await renderer.exportPdf()
                 let tempDir = FileManager.default.temporaryDirectory
-                let fileUrl = tempDir.appendingPathComponent("Document.pdf")
+                let fileUrl = tempDir.appendingPathComponent(exportFilename(ext: "pdf"))
                 try data.write(to: fileUrl)
                 exportItemUrl = fileUrl
                 showShareSheet = true
@@ -583,7 +592,7 @@ struct ForgeView: View {
             do {
                 let (html, _, _) = try await renderer.exportHtml()
                 let tempDir = FileManager.default.temporaryDirectory
-                let fileUrl = tempDir.appendingPathComponent("Document.html")
+                let fileUrl = tempDir.appendingPathComponent(exportFilename(ext: "html"))
                 try html.write(to: fileUrl, atomically: true, encoding: .utf8)
                 exportItemUrl = fileUrl
                 showShareSheet = true

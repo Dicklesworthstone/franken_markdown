@@ -14,6 +14,7 @@ const PHANTOMS: usize = 4;
 const EMBEDDED_PEAK: u16 = 0x8000;
 const INTERMEDIATE: u16 = 0x4000;
 const PRIVATE_POINTS: u16 = 0x2000;
+const SHARED_POINT_NUMBERS: u16 = 0x8000;
 const TUPLE_INDEX_MASK: u16 = 0x0FFF;
 
 const ON_CURVE: u8 = 0x01;
@@ -47,13 +48,13 @@ pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
     }
     let location = location_for_weight(font, weight)?;
     let data = font.raw_bytes();
-    let parsed =
-        find_table_full(data, b"gvar").and_then(|(o, len)| parse_gvar(data, o, len, n_axes));
+    let (gvar_off, gvar_len) = find_table_full(data, b"gvar")?;
+    let parsed = parse_gvar(data, gvar_off, gvar_len, n_axes)?;
 
     let mut glyf_bytes = Vec::new();
     let mut loca: Vec<u32> = vec![0];
     for gid in 0..font.num_glyphs {
-        let bytes = instance_glyph(font, parsed.as_ref(), gid, &location)
+        let bytes = instance_glyph(font, Some(&parsed), gid, &location)
             .or_else(|| font.glyph_data(gid).map(|s| s.to_vec()))
             .unwrap_or_default();
         glyf_bytes.extend_from_slice(&bytes);
@@ -112,16 +113,25 @@ fn parse_gvar(d: &[u8], table_off: usize, table_len: usize, n_axes: usize) -> Op
         }
     }
 
+    // Offset array is immediately after the 20-byte header. Values are
+    // relative to `glyphVariationDataArrayOffset`, which in retail fonts is
+    // later than 20. Reading the array from `glyph_var_offset` only works
+    // when that field is 20 (the in-tree fixtures).
     let n_off = glyph_count.checked_add(1)?;
-    let off_base = off(table_off, glyph_var_offset)?;
+    let offset_array_base = off(table_off, 20)?;
+    let data_array_base = off(table_off, glyph_var_offset)?;
     let mut glyph_data_off = Vec::with_capacity(n_off);
     for i in 0..n_off {
         let rel = if long_off {
-            be_u32(d, off_mul(off_base, i, 4)?)? as usize
+            be_u32(d, off_mul(offset_array_base, i, 4)?)? as usize
         } else {
-            (be_u16(d, off_mul(off_base, i, 2)?)? as usize).checked_mul(2)?
+            (be_u16(d, off_mul(offset_array_base, i, 2)?)? as usize).checked_mul(2)?
         };
-        glyph_data_off.push(off(off_base, rel).unwrap_or(table_end));
+        let abs = off(data_array_base, rel)?;
+        if abs > table_end {
+            return None;
+        }
+        glyph_data_off.push(abs);
     }
 
     Some(GvarHeader {
@@ -266,6 +276,7 @@ fn instance_simple(
             location,
             &mut simple.points,
             Some(simple.contour_ends.as_slice()),
+            true,
         );
     }
     Some(encode_simple(&simple))
@@ -295,7 +306,8 @@ fn instance_composite(
         }
     }
     if let Some(gvar) = gvar {
-        apply_store(font_bytes, gvar, gid, location, &mut pts, None);
+        // `pts` already holds 4 phantoms + per-component origins.
+        apply_store(font_bytes, gvar, gid, location, &mut pts, None, false);
     }
     // Rewrite XY args.
     let mut out = data.to_vec();
@@ -399,6 +411,7 @@ fn apply_store(
     location: &[f32],
     points: &mut [(i32, i32)],
     contours: Option<&[u16]>,
+    extra_phantoms: bool,
 ) {
     let gid_us = gid as usize;
     let Some(&start) = gvar.glyph_data_off.get(gid_us) else {
@@ -410,11 +423,29 @@ fn apply_store(
     if start >= end || end > gvar.table_end {
         return;
     }
-    let Some(tuples) = read_tuples(font_bytes, start, end, gvar, location) else {
+    let Some(stream) = read_tuples(font_bytes, start, end, gvar, location) else {
         return;
     };
-    let n_var = points.len().saturating_add(PHANTOMS);
-    apply_tuples(font_bytes, &tuples, points, contours, n_var);
+    // Simple glyphs store only on-curve points; the four phantoms live past
+    // `points.len()`. Composites already prepend phantoms, so n_var is the
+    // vector length — adding PHANTOMS again makes all-points tuples over-read.
+    let n_var = if extra_phantoms {
+        points.len().saturating_add(PHANTOMS)
+    } else {
+        points.len()
+    };
+    let shared_idx = stream.shared_points_off.and_then(|off| {
+        let mut cursor = off;
+        unpack_points(font_bytes, &mut cursor, end, n_var)
+    });
+    apply_tuples(
+        font_bytes,
+        &stream.tuples,
+        points,
+        contours,
+        n_var,
+        shared_idx.as_deref(),
+    );
 }
 
 fn apply_tuples(
@@ -423,32 +454,29 @@ fn apply_tuples(
     points: &mut [(i32, i32)],
     contours: Option<&[u16]>,
     n_var: usize,
+    shared_idx: Option<&[usize]>,
 ) {
     let n_real = points.len();
     let mut acc_x = vec![0.0f32; n_var];
     let mut acc_y = vec![0.0f32; n_var];
     let mut touched = vec![false; n_var];
-    let mut shared_idx: Option<Vec<usize>> = None;
     for t in tuples {
         if t.scalar.abs() < 1e-8 {
             continue;
         }
         let mut cursor = t.data_off;
-        if t.shared_points && !t.private_points && shared_idx.is_none() {
-            shared_idx = unpack_points(d, &mut cursor, t.data_end, n_var);
-        }
         let idx = if t.private_points {
             match unpack_points(d, &mut cursor, t.data_end, n_var) {
                 Some(v) => v,
                 None => continue,
             }
         } else if t.shared_points {
-            match shared_idx.as_ref() {
-                Some(v) => v.clone(),
+            match shared_idx {
+                Some(v) => v.to_vec(),
                 None => continue,
             }
         } else {
-            (0..n_var.min(n_real + PHANTOMS)).collect()
+            (0..n_var).collect()
         };
         let Some((dx, dy)) = unpack_xy_deltas(d, &mut cursor, t.data_end, idx.len()) else {
             continue;
@@ -488,28 +516,39 @@ struct TupleWork {
     shared_points: bool,
 }
 
+struct TupleStream {
+    /// Start of packed shared point numbers in the serialized stream, if any.
+    shared_points_off: Option<usize>,
+    tuples: Vec<TupleWork>,
+}
+
 fn read_tuples(
     d: &[u8],
     start: usize,
     end: usize,
     gvar: &GvarHeader,
     location: &[f32],
-) -> Option<Vec<TupleWork>> {
+) -> Option<TupleStream> {
     if start.checked_add(4)? > end {
-        return Some(Vec::new());
+        return Some(TupleStream {
+            shared_points_off: None,
+            tuples: Vec::new(),
+        });
     }
     let packed = be_u16(d, start)?;
-    let has_shared_points = packed & 0x8000 != 0;
+    let has_shared_points = packed & SHARED_POINT_NUMBERS != 0;
     let tuple_count = (packed & 0x0FFF) as usize;
     let data_offset = be_u16(d, off(start, 2)?)? as usize;
     let mut serialized = off(start, data_offset)?;
+    let mut shared_points_off = None;
+    if has_shared_points {
+        // Shared packed points are NOT part of any tuple's variationDataSize.
+        shared_points_off = Some(serialized);
+        skip_packed_points(d, &mut serialized, end)?;
+    }
     let mut cursor = off(start, 4)?;
     let n = tuple_count.min(MAX_TUPLES);
     let mut out = Vec::with_capacity(n);
-    // Shared point numbers sit at the front of the serialized stream when
-    // the high bit of tupleVariationCount is set. Each tuple that does NOT
-    // have PRIVATE_POINT_NUMBERS reuses them; we leave them in-stream and
-    // let apply_tuples consume them from the first such tuple's data_off.
     for _ in 0..n {
         if cursor.checked_add(4)? > end {
             break;
@@ -556,7 +595,10 @@ fn read_tuples(
         });
         serialized = data_end;
     }
-    Some(out)
+    Some(TupleStream {
+        shared_points_off,
+        tuples: out,
+    })
 }
 
 fn tuple_scalar(peak: &[f32], start: Option<&[f32]>, end: Option<&[f32]>, loc: &[f32]) -> f32 {
@@ -603,6 +645,44 @@ fn tuple_scalar(peak: &[f32], start: Option<&[f32]>, end: Option<&[f32]>, loc: &
         }
     }
     scalar
+}
+
+/// Advance `cursor` past one packed-point run without allocating indices.
+fn skip_packed_points(d: &[u8], cursor: &mut usize, end: usize) -> Option<()> {
+    if *cursor >= end {
+        return None;
+    }
+    let n0 = *d.get(*cursor)? as usize;
+    *cursor = cursor.checked_add(1)?;
+    if n0 == 0 {
+        return Some(());
+    }
+    let count = if n0 & 0x80 != 0 {
+        if *cursor >= end {
+            return None;
+        }
+        let n1 = *d.get(*cursor)? as usize;
+        *cursor = cursor.checked_add(1)?;
+        ((n0 & 0x7F) << 8) | n1
+    } else {
+        n0
+    };
+    let count = count.min(MAX_GVAR_POINTS);
+    let mut seen = 0usize;
+    while seen < count {
+        if *cursor >= end {
+            return None;
+        }
+        let ctrl = *d.get(*cursor)?;
+        *cursor = cursor.checked_add(1)?;
+        let words = ctrl & 0x80 != 0;
+        let run = usize::from(ctrl & 0x7F) + 1;
+        let take = run.min(count - seen);
+        let stride = if words { 2 } else { 1 };
+        *cursor = cursor.checked_add(take.checked_mul(stride)?)?;
+        seen = seen.checked_add(take)?;
+    }
+    Some(())
 }
 
 fn unpack_points(d: &[u8], cursor: &mut usize, end: usize, n_var: usize) -> Option<Vec<usize>> {
@@ -1257,7 +1337,38 @@ mod tests {
         build_gvar_table(&gvd)
     }
 
+    fn gvar_move_p0_shared_points() -> Vec<u8> {
+        // Same +50 x on p0, but the packed point numbers are SHARED at the
+        // front of the serialized stream and excluded from variationDataSize.
+        let shared = vec![1, 0, 0];
+        let mut deltas = vec![0x80];
+        deltas.extend_from_slice(&50i16.to_be_bytes());
+        deltas.push(0x00);
+        let mut gvd = Vec::new();
+        push16(&mut gvd, SHARED_POINT_NUMBERS | 1);
+        push16(&mut gvd, 0); // dataOffset patched below
+        push16(&mut gvd, u16::try_from(deltas.len()).unwrap());
+        push16(&mut gvd, EMBEDDED_PEAK); // not PRIVATE_POINTS
+        push_i16(&mut gvd, f32_to_f2dot14(1.0));
+        let data_off = gvd.len();
+        gvd[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+        gvd.extend_from_slice(&shared);
+        gvd.extend_from_slice(&deltas);
+        build_gvar_table(&gvd)
+    }
+
     fn build_gvar_table(gvd: &[u8]) -> Vec<u8> {
+        build_gvar_table_with_data_offset(gvd, 20)
+    }
+
+    /// OpenType: offset array lives at byte 20; values are relative to
+    /// `glyphVariationDataArrayOffset`. When that field is 20 the array and
+    /// data overlap, so the first offset must skip the 4-byte array (the
+    /// in-tree fixtures). A later field (retail fonts) uses start offset 0
+    /// and padding between the array and the payloads.
+    fn build_gvar_table_with_data_offset(gvd: &[u8], data_offset: u32) -> Vec<u8> {
+        const HEADER: usize = 20;
+        const OFFSET_ARRAY_BYTES: usize = 4;
         let mut table = Vec::new();
         push16(&mut table, 1);
         push16(&mut table, 0);
@@ -1266,14 +1377,23 @@ mod tests {
         push32(&mut table, 20);
         push16(&mut table, 1);
         push16(&mut table, 0); // short offsets
-        push32(&mut table, 20);
-        // offset array at 20: 2 × u16, values in words from the array start.
-        let array_bytes = 4usize;
-        let start_words = (array_bytes / 2) as u16; // 2
-        let end_bytes = array_bytes + gvd.len();
-        let end_words = end_bytes.div_ceil(2) as u16;
-        push16(&mut table, start_words);
-        push16(&mut table, end_words);
+        push32(&mut table, data_offset);
+        let rel_start = if data_offset as usize <= HEADER {
+            OFFSET_ARRAY_BYTES
+        } else {
+            0
+        };
+        let rel_end = rel_start + gvd.len();
+        push16(&mut table, (rel_start / 2) as u16);
+        push16(&mut table, rel_end.div_ceil(2) as u16);
+        let data_at = if data_offset as usize <= HEADER {
+            HEADER + OFFSET_ARRAY_BYTES
+        } else {
+            data_offset as usize
+        };
+        while table.len() < data_at {
+            table.push(0xAA);
+        }
         table.extend_from_slice(gvd);
         if table.len() % 2 != 0 {
             table.push(0);
@@ -1363,6 +1483,83 @@ mod tests {
             "gk3v.2.static",
             "instance drops fvar/gvar",
             def.axes().is_empty() && find_table_full(def.raw_bytes(), b"gvar").is_none(),
+        );
+    }
+
+    #[test]
+    fn instance_shared_points_match_private_point_peak() {
+        let glyph = triangle_glyph();
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(glyph.len()).unwrap());
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(1)),
+            (b"hhea", hhea_table(1)),
+            (b"hmtx", hmtx(1)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyph),
+            (b"fvar", fvar_wght()),
+            (b"gvar", gvar_move_p0_shared_points()),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("shared-point VF");
+        let peak = font.instance(900.0).expect("shared-point peak");
+        let p0 = decode_simple(peak.glyph_data(0).unwrap(), 1).unwrap();
+        log_check(
+            "gk3v.gvar.shared",
+            "shared packed points still +50 x at peak",
+            p0.points[0] == (50, 0),
+        );
+    }
+
+    #[test]
+    fn instance_reads_offset_array_at_header_not_data_array() {
+        // Retail fonts store glyphVariationDataArrayOffset past the offset
+        // array. The old parser treated that field as the offset-array base
+        // and read payload bytes as offsets.
+        let glyph = triangle_glyph();
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(glyph.len()).unwrap());
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(1)),
+            (b"hhea", hhea_table(1)),
+            (b"hmtx", hmtx(1)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyph),
+            (b"fvar", fvar_wght()),
+            (
+                b"gvar",
+                build_gvar_table_with_data_offset(
+                    &{
+                        let mut payload = vec![1, 0, 0, 0x80];
+                        payload.extend_from_slice(&50i16.to_be_bytes());
+                        payload.push(0x00);
+                        let mut gvd = Vec::new();
+                        push16(&mut gvd, 1);
+                        push16(&mut gvd, 0);
+                        push16(&mut gvd, u16::try_from(payload.len()).unwrap());
+                        push16(&mut gvd, EMBEDDED_PEAK | PRIVATE_POINTS);
+                        push_i16(&mut gvd, f32_to_f2dot14(1.0));
+                        let data_off = gvd.len();
+                        gvd[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+                        gvd.extend_from_slice(&payload);
+                        gvd
+                    },
+                    32,
+                ),
+            ),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("split-offset gvar parses");
+        let peak = font.instance(900.0).expect("peak with split offsets");
+        let p0 = decode_simple(peak.glyph_data(0).unwrap(), 1).unwrap();
+        log_check(
+            "gk3v.gvar.offset-array",
+            "peak still +50 x when data array is not at byte 20",
+            p0.points[0] == (50, 0),
         );
     }
 
@@ -1493,6 +1690,92 @@ mod tests {
         log_check(
             "gk3v.2.comp.delta",
             "component origin 10+30, 20",
+            x == 40 && y == 20,
+        );
+    }
+
+    #[test]
+    fn composite_all_points_tuple_uses_four_phantoms_not_eight() {
+        // Implicit (all-points) tuples ship n_comp+4 deltas. Counting phantoms
+        // twice made unpack_xy_deltas fail and dropped the tuple.
+        let triangle = triangle_glyph();
+        let mut composite = Vec::new();
+        push_i16(&mut composite, -1);
+        for v in [0i16, 0, 100, 100] {
+            push_i16(&mut composite, v);
+        }
+        push16(&mut composite, ARG_WORDS | ARGS_ARE_XY);
+        push16(&mut composite, 0);
+        push_i16(&mut composite, 10);
+        push_i16(&mut composite, 20);
+
+        let mut glyf = Vec::new();
+        glyf.extend_from_slice(&triangle);
+        let comp_off = glyf.len();
+        glyf.extend_from_slice(&composite);
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(comp_off).unwrap());
+        push32(&mut loca, u32::try_from(glyf.len()).unwrap());
+
+        // 5 x-deltas (4 phantom zeros + component +30), 5 y-zeros. No packed points.
+        let mut payload = Vec::new();
+        payload.push(3); // 4 zeros
+        payload.push(0x80); // 1 word
+        payload.extend_from_slice(&30i16.to_be_bytes());
+        payload.push(4); // 5 y zeros
+
+        let mut gvd0 = Vec::new();
+        push16(&mut gvd0, 0);
+        push16(&mut gvd0, 4);
+        let mut gvd1 = Vec::new();
+        push16(&mut gvd1, 1);
+        push16(&mut gvd1, 0);
+        push16(&mut gvd1, u16::try_from(payload.len()).unwrap());
+        push16(&mut gvd1, EMBEDDED_PEAK); // all-points, not private
+        push_i16(&mut gvd1, f32_to_f2dot14(1.0));
+        let data_off = gvd1.len();
+        gvd1[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+        gvd1.extend_from_slice(&payload);
+
+        let mut gvar = Vec::new();
+        push16(&mut gvar, 1);
+        push16(&mut gvar, 0);
+        push16(&mut gvar, 1);
+        push16(&mut gvar, 0);
+        push32(&mut gvar, 20);
+        push16(&mut gvar, 2);
+        push16(&mut gvar, 1);
+        push32(&mut gvar, 20);
+        let array = 12usize;
+        let o0 = array as u32;
+        let o1 = (array + gvd0.len()) as u32;
+        let o2 = o1 + gvd1.len() as u32;
+        push32(&mut gvar, o0);
+        push32(&mut gvar, o1);
+        push32(&mut gvar, o2);
+        gvar.extend_from_slice(&gvd0);
+        gvar.extend_from_slice(&gvd1);
+
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(2)),
+            (b"hhea", hhea_table(2)),
+            (b"hmtx", hmtx(2)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyf),
+            (b"fvar", fvar_wght()),
+            (b"gvar", gvar),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("all-points composite VF");
+        let inst = font.instance(900.0).expect("instance");
+        let data = inst.glyph_data(1).unwrap();
+        let x = be_i16(data, 14).unwrap();
+        let y = be_i16(data, 16).unwrap();
+        log_check(
+            "gk3v.gvar.comp-all-points",
+            "all-points tuple still +30 x on component origin",
             x == 40 && y == 20,
         );
     }

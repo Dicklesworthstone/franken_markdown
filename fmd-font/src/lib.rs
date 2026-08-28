@@ -1611,13 +1611,49 @@ fn select_cmap(d: &[u8], cmap: usize) -> Option<(usize, u16)> {
 // bounds-checked against the font data.
 // ===========================================================================
 
+/// Hasher for packed `(left << 16) | right` kern-pair keys: a single
+/// multiply-rotate mix, far cheaper than the default SipHash for the
+/// O(pairs) `pair()` lookups in layout and TJ generation. Deterministic.
+#[derive(Default)]
+struct PairKeyHasher(u64);
+
+impl std::hash::Hasher for PairKeyHasher {
+    fn write_u32(&mut self, v: u32) {
+        self.0 = u64::from(v).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        // Keys are always written via `write_u32`.
+    }
+
+    fn finish(&self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 29;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 32;
+        x
+    }
+}
+
+type PairMap = std::collections::HashMap<u32, i16, std::hash::BuildHasherDefault<PairKeyHasher>>;
+
+/// Pack a kern pair into the u32 key `PairMap` is keyed on.
+fn pair_key(left: u16, right: u16) -> u32 {
+    (u32::from(left) << 16) | u32::from(right)
+}
+
 /// A class-definition table (`ClassDef`), used by Pair Adjustment format 2.
 #[derive(Clone, Debug)]
 enum ClassDef {
     /// `startGlyphID` + dense `classValueArray`.
     Format1 { start: u16, classes: Vec<u16> },
-    /// Sorted `(startGlyphID, endGlyphID, class)` ranges.
-    Format2 { ranges: Vec<(u16, u16, u16)> },
+    /// `(startGlyphID, endGlyphID, class)` ranges. `dense` marks ranges that
+    /// are sorted by start and pairwise non-overlapping (the spec-mandated
+    /// shape), which lets `class()` binary-search instead of linearly scanning.
+    Format2 {
+        ranges: Vec<(u16, u16, u16)>,
+        dense: bool,
+    },
 }
 
 impl ClassDef {
@@ -1633,13 +1669,26 @@ impl ClassDef {
                 }
                 0
             }
-            ClassDef::Format2 { ranges } => {
-                for &(s, e, c) in ranges {
-                    if g >= s && g <= e {
-                        return c;
+            ClassDef::Format2 { ranges, dense } => {
+                if *dense {
+                    // Last range whose start is <= g; the range covers g iff
+                    // its end reaches g (ranges are sorted + non-overlapping).
+                    let idx = ranges.partition_point(|&(s, _, _)| s <= g);
+                    if idx > 0 {
+                        let (_, e, c) = ranges[idx - 1];
+                        if g <= e {
+                            return c;
+                        }
                     }
+                    0
+                } else {
+                    for &(s, e, c) in ranges {
+                        if g >= s && g <= e {
+                            return c;
+                        }
+                    }
+                    0
                 }
-                0
             }
         }
     }
@@ -1649,10 +1698,8 @@ impl ClassDef {
 /// `xAdvance` of `valueRecord1` (the only field we apply).
 #[derive(Clone, Debug)]
 enum KernSubtable {
-    /// Specific-pair kerning: `(leftGlyph, rightGlyph) -> xAdvance`.
-    Format1 {
-        pairs: std::collections::BTreeMap<(u16, u16), i16>,
-    },
+    /// Specific-pair kerning: packed `(left << 16) | right` -> `xAdvance`.
+    Format1 { pairs: PairMap },
     /// Class-based kerning.
     Format2 {
         /// First-glyph coverage, sorted ascending for `binary_search`.
@@ -1677,7 +1724,7 @@ impl KernSubtable {
     /// dimensions — that still counts as a defined (first) match.
     fn lookup(&self, left: u16, right: u16) -> Option<i16> {
         match self {
-            KernSubtable::Format1 { pairs } => pairs.get(&(left, right)).copied(),
+            KernSubtable::Format1 { pairs } => pairs.get(&pair_key(left, right)).copied(),
             KernSubtable::Format2 {
                 coverage,
                 class1,
@@ -1829,7 +1876,16 @@ fn parse_class_def(d: &[u8], cd: usize) -> Option<ClassDef> {
                 let c = be_u16_at(d, rec, 4)?;
                 ranges.push((s, e, c));
             }
-            Some(ClassDef::Format2 { ranges })
+            // The spec orders ranges by ascending startGlyphID without
+            // overlap; detect that shape so `class()` can binary-search.
+            // Sorting keeps a merely unsorted (still well-formed) table on
+            // the fast path; overlapping ranges leave `dense` off and
+            // preserve the original first-match-wins linear scan.
+            ranges.sort_by_key(|&(s, _, _)| s);
+            let dense = ranges
+                .windows(2)
+                .all(|w| w[0].1 < w[1].0 || (w[0].1 == w[1].0 && w[0].2 == w[1].2));
+            Some(ClassDef::Format2 { ranges, dense })
         }
         _ => None,
     }
@@ -1859,7 +1915,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
 
     let coverage = parse_coverage_glyphs(d, off(sub, cov_off)?)?;
 
-    let mut pairs: std::collections::BTreeMap<(u16, u16), i16> = std::collections::BTreeMap::new();
+    let mut pairs: PairMap = std::collections::HashMap::default();
 
     // Bound total work: PairSet offsets may all alias one target, so a font of
     // O(pair_set_count + pair_value_count) bytes can otherwise drive their product
@@ -1898,7 +1954,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
                 .and_then(|value_off| value_record_x_advance(d, value_off, vf1))
                 .unwrap_or(0);
             // First subtable / first record wins for a given pair.
-            pairs.entry((left_glyph, second)).or_insert(x_adv);
+            pairs.entry(pair_key(left_glyph, second)).or_insert(x_adv);
             let Some(np) = p.checked_add(pair_rec_size) else {
                 break;
             };
@@ -3815,8 +3871,14 @@ mod synthetic_font_tests {
 
         let empty = KernSubtable::Format2 {
             coverage: vec![5],
-            class1: ClassDef::Format2 { ranges: Vec::new() },
-            class2: ClassDef::Format2 { ranges: Vec::new() },
+            class1: ClassDef::Format2 {
+                ranges: Vec::new(),
+                dense: true,
+            },
+            class2: ClassDef::Format2 {
+                ranges: Vec::new(),
+                dense: true,
+            },
             class1_count: 1,
             class2_count: 1,
             matrix: Vec::new(),

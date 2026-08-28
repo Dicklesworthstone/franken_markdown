@@ -2281,7 +2281,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn toc_nav_closes_sibling_items_and_wraps_skipped_levels() {
         let doc = crate::parse_markdown("[[TOC]]\n\n# A\n\n# B\n\n### C\n");
         let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();

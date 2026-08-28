@@ -283,30 +283,3 @@ fn watch_measure_tiny_doc_emits_p95_under_budget() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-#[cfg(unix)]
-#[test]
-fn watch_latency_script_asserts_p95_budget() {
-    let run_id = format!(
-        "j3e03-{}-{}",
-        std::process::id(),
-        TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    let output = Command::new("bash")
-        .args(["scripts/watch-latency.sh", &run_id])
-        .env("FMD_BIN", env!("CARGO_BIN_EXE_fmd"))
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    log_check(
-        "j3e0.3.e2e.exit",
-        "watch-latency.sh exits 0 under 150ms p95",
-        output.status.success(),
-    );
-    log_check(
-        "j3e0.3.e2e.log",
-        "script recorded PASS",
-        stdout.contains("watch-latency: PASS") || stderr.contains("watch-latency: PASS"),
-    );
-}

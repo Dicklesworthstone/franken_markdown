@@ -36,6 +36,19 @@ pub enum Block {
     /// source position; emitters skip it in normal flow and render a notes
     /// section from all definitions (numbered by first-reference order).
     FootnoteDefinition { id: String, blocks: Vec<Block> },
+    /// A display mathematics block (`$$...$$` or ````math ... ````).
+    MathBlock(String),
+    /// A definition list (GFM-plus).
+    DefinitionList(Vec<DefinitionItem>),
+}
+
+/// An item in a definition list: one or more terms, followed by one or more definitions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionItem {
+    /// The term(s) being defined.
+    pub terms: Vec<Vec<Inline>>,
+    /// The definition(s) for the term(s).
+    pub definitions: Vec<Vec<Inline>>,
 }
 
 /// An ordered or unordered list.
@@ -120,4 +133,8 @@ pub enum Inline {
     /// reference to its `[^id]:` definition. References whose id has no
     /// definition are rewritten to literal text by a post-parse pass.
     FootnoteRef { id: String },
+    /// Inline mathematics (`$…$`).
+    Math(String),
+    /// Inline display mathematics (`$$…$$`).
+    DisplayMath(String),
 }

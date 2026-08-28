@@ -47,6 +47,9 @@ pub mod span;
 /// module name so `crate::text::Font` and the public
 /// `franken_markdown::text::*` surface are unchanged.
 pub use fmd_font as text;
+/// The TeX-mathematics layout and MathML engine, factored into the
+/// `fmd-math` workspace crate.
+pub use fmd_math as math;
 pub mod theme;
 pub mod wasm;
 
@@ -68,7 +71,7 @@ pub mod watch;
 #[cfg(feature = "batch")]
 pub mod batch;
 
-pub use ast::Document;
+pub use ast::{DefinitionItem, Document};
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use compress::zlib_decompress;
 pub use error::{RenderError, Result};
@@ -407,6 +410,37 @@ pub(crate) fn instance_host_font(
     Ok(font.instance(f32::from(weight)).unwrap_or(font))
 }
 
+/// Authoring profile for Markdown parsing and rendering (ryu4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// Standard CommonMark + GitHub Flavored Markdown (tables, task lists, strikethrough, autolinks).
+    #[default]
+    CommonMarkGfm,
+    /// GFM-Plus: CommonMark + GFM + Footnotes + GitHub Alerts + Definition Lists.
+    GfmPlus,
+}
+
+impl Profile {
+    /// Parse profile from string identifier.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "commonmark" | "gfm" | "commonmark-gfm" | "default" => Some(Self::CommonMarkGfm),
+            "gfm-plus" | "gfm_plus" | "plus" => Some(Self::GfmPlus),
+            _ => None,
+        }
+    }
+
+    /// Canonical string identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CommonMarkGfm => "commonmark-gfm",
+            Self::GfmPlus => "gfm-plus",
+        }
+    }
+}
+
 /// Options for the all-in-one HTML renderer.
 #[derive(Debug, Clone, Default)]
 pub struct HtmlOptions {
@@ -430,6 +464,10 @@ pub struct HtmlOptions {
     /// explicit byte assets before rendering; the core never fetches network
     /// resources or reads files.
     pub image_assets: Vec<PdfImageAsset>,
+    /// Document language tag (e.g. "en", "de", "fr", "es", "nl").
+    pub lang: Option<String>,
+    /// Markdown authoring profile (e.g. CommonMark/GFM default vs GFM-plus).
+    pub profile: Option<Profile>,
 }
 
 /// Options for the PDF renderer.
@@ -441,6 +479,10 @@ pub struct PdfOptions {
     pub title: Option<String>,
     /// Optional document author metadata.
     pub author: Option<String>,
+    /// Document language tag for hyphenation and metadata (e.g. "en", "de", "fr", "es", "nl").
+    pub lang: Option<String>,
+    /// Markdown authoring profile (e.g. CommonMark/GFM default vs GFM-plus).
+    pub profile: Option<Profile>,
     /// Optional UTC Unix timestamp for deterministic PDF CreationDate/ModDate.
     ///
     /// CLI callers usually populate this from `SOURCE_DATE_EPOCH`; library and
@@ -691,6 +733,16 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
                         item.blocks = rewrite_blocks(&item.blocks, numbers, defs);
                     }
                     out.push(Block::List(new_list));
+                }
+                Block::DefinitionList(items) => {
+                    let mut new_items = Vec::with_capacity(items.len());
+                    for item in items {
+                        new_items.push(crate::ast::DefinitionItem {
+                            terms: item.terms.iter().map(|t| rewrite_inlines(t, numbers)).collect(),
+                            definitions: item.definitions.iter().map(|d| rewrite_inlines(d, numbers)).collect(),
+                        });
+                    }
+                    out.push(Block::DefinitionList(new_items));
                 }
                 other => out.push(other.clone()),
             }

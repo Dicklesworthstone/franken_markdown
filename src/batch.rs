@@ -699,6 +699,16 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
                     collect_image_destinations(&item.blocks, out);
                 }
             }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        collect_image_destinations_inlines(term, out);
+                    }
+                    for def in &item.definitions {
+                        collect_image_destinations_inlines(def, out);
+                    }
+                }
+            }
             Block::Table(table) => {
                 for cell in &table.head {
                     collect_image_destinations_inlines(cell, out);
@@ -709,7 +719,10 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
                     }
                 }
             }
-            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+            Block::CodeBlock { .. }
+            | Block::ThematicBreak
+            | Block::HtmlBlock(_)
+            | Block::MathBlock(_) => {}
         }
     }
 }

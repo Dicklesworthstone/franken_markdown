@@ -390,7 +390,9 @@ fn push_inline_runs(out: &mut StyledText, inlines: &[Inline], style: TextStyle) 
             Inline::Strikethrough(content) => {
                 push_inline_runs(out, content, style.with_strikethrough());
             }
-            Inline::Code(text) => out.push_text(text, style.with_code()),
+            Inline::Code(text) | Inline::Math(text) | Inline::DisplayMath(text) => {
+                out.push_text(text, style.with_code())
+            }
             Inline::Link { content, .. } => push_inline_runs(out, content, style.with_link()),
             Inline::Image { alt, .. } => out.push_text(alt, style),
             Inline::SoftBreak | Inline::HardBreak => out.push_text(" ", style),

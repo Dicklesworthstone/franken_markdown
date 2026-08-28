@@ -228,6 +228,12 @@ struct RenderArgs {
     /// Document author metadata for PDF output.
     #[arg(long)]
     author: Option<String>,
+    /// Document language tag for hyphenation and HTML lang attribute (e.g. "en", "de", "fr", "es", "nl").
+    #[arg(long)]
+    lang: Option<String>,
+    /// Markdown authoring profile (e.g. "commonmark-gfm", "gfm-plus").
+    #[arg(long)]
+    profile: Option<String>,
     /// Pass raw HTML in the source through instead of escaping it.
     #[arg(long)]
     allow_html: bool,
@@ -459,6 +465,8 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         css: args.css.clone(),
         title: None,
         author: None,
+        lang: None,
+        profile: None,
         allow_html: false,
         pdf_line_numbers: false,
         pdf_page_numbers: false,
@@ -913,6 +921,8 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
         allow_raw_html: false,
         font_assets: FontAssets::default(),
         image_assets: Vec::new(),
+        lang: None,
+        profile: None,
     };
     render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
@@ -1126,6 +1136,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Vec::new()
     };
 
+    let profile = args.profile.as_deref().and_then(crate::Profile::parse);
+
     // Render every requested format to bytes BEFORE writing any of them, so a
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
@@ -1138,6 +1150,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             allow_raw_html: args.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets,
+            lang: args.lang.clone(),
+            profile,
         };
         match render_html_document(&doc, &opts) {
             Ok(html) => Some(html.into_bytes()),
@@ -1152,6 +1166,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             theme: theme.clone(),
             title: args.title.clone(),
             author: args.author.clone(),
+            lang: args.lang.clone(),
+            profile,
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
             code_line_numbers: args.pdf_line_numbers,
@@ -1984,6 +2000,16 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
                     collect_image_destinations(&item.blocks, out);
                 }
             }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        collect_image_destinations_inlines(term, out);
+                    }
+                    for def in &item.definitions {
+                        collect_image_destinations_inlines(def, out);
+                    }
+                }
+            }
             Block::Table(table) => {
                 for cell in &table.head {
                     collect_image_destinations_inlines(cell, out);
@@ -1994,7 +2020,10 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
                     }
                 }
             }
-            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+            Block::CodeBlock { .. }
+            | Block::ThematicBreak
+            | Block::HtmlBlock(_)
+            | Block::MathBlock(_) => {}
         }
     }
 }
@@ -2012,6 +2041,8 @@ fn collect_image_destinations_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&
             Inline::FootnoteRef { .. } => {}
             Inline::Text(_)
             | Inline::Code(_)
+            | Inline::Math(_)
+            | Inline::DisplayMath(_)
             | Inline::SoftBreak
             | Inline::HardBreak
             | Inline::Html(_) => {}
@@ -2630,7 +2661,7 @@ fn run_doctor_health(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))

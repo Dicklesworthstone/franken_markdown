@@ -31,7 +31,10 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     let mut html = String::with_capacity(
         186 + escaped_title.len() + css.len() + initial_body_capacity(doc.blocks.len()),
     );
-    html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+    let lang = opts.lang.as_deref().unwrap_or("en");
+    html.push_str("<!DOCTYPE html>\n<html lang=\"");
+    push_escaped_attr(lang, &mut html);
+    html.push_str("\">\n<head>\n<meta charset=\"utf-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str("<title>");
     html.push_str(&escaped_title);
@@ -320,8 +323,21 @@ fn render_block<'a, 'b>(
             }
         },
         Block::List(list) => render_list(list, out, opts, state),
+        Block::DefinitionList(items) => render_definition_list(items, out, opts, state),
         Block::Table(table) => render_table(table, out, opts, state),
         Block::ThematicBreak => out.push_str("<hr>\n"),
+        Block::MathBlock(tex) => match fmd_math::parse(tex.trim()) {
+            Ok(node) => {
+                let mathml = fmd_math::to_mathml(&node, true);
+                out.push_str(&mathml);
+                out.push('\n');
+            }
+            Err(_) => {
+                out.push_str("<div class=\"math display\">\\[");
+                push_escaped_text(tex, out);
+                out.push_str("\\]</div>\n");
+            }
+        },
         Block::HtmlBlock(html) => {
             if opts.allow_raw_html {
                 out.push_str(html);
@@ -333,6 +349,28 @@ fn render_block<'a, 'b>(
             }
         }
     }
+}
+
+fn render_definition_list<'a, 'b>(
+    items: &'b [crate::ast::DefinitionItem],
+    out: &mut String,
+    opts: &HtmlOptions,
+    state: &mut RenderState<'a>,
+) {
+    out.push_str("<dl>\n");
+    for item in items {
+        for term in &item.terms {
+            out.push_str("<dt>");
+            render_inlines(term, out, opts, state);
+            out.push_str("</dt>\n");
+        }
+        for def in &item.definitions {
+            out.push_str("<dd>");
+            render_inlines(def, out, opts, state);
+            out.push_str("</dd>\n");
+        }
+    }
+    out.push_str("</dl>\n");
 }
 
 fn render_list<'a, 'b>(
@@ -514,6 +552,28 @@ fn render_inlines(
                     push_escaped_text(h, out);
                 }
             }
+            Inline::Math(tex) => match fmd_math::parse(tex.trim()) {
+                Ok(node) => {
+                    let mathml = fmd_math::to_mathml(&node, false);
+                    out.push_str(&mathml);
+                }
+                Err(_) => {
+                    out.push_str("<span class=\"math inline\">\\(");
+                    push_escaped_text(tex, out);
+                    out.push_str("\\)</span>");
+                }
+            },
+            Inline::DisplayMath(tex) => match fmd_math::parse(tex.trim()) {
+                Ok(node) => {
+                    let mathml = fmd_math::to_mathml(&node, true);
+                    out.push_str(&mathml);
+                }
+                Err(_) => {
+                    out.push_str("<span class=\"math display\">\\[");
+                    push_escaped_text(tex, out);
+                    out.push_str("\\]</span>");
+                }
+            },
         }
     }
 }
@@ -885,7 +945,9 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
 fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
-            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
+                out.push_str(t)
+            }
             Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_inlines_to_plain(c, out);
@@ -920,7 +982,11 @@ fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bo
     for inl in inlines {
         match inl {
             Inline::FootnoteRef { .. } => {}
-            Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => {
+            Inline::Text(t)
+            | Inline::Code(t)
+            | Inline::Html(t)
+            | Inline::Math(t)
+            | Inline::DisplayMath(t) => {
                 for c in t.chars() {
                     push_slug_char(out, pending_dash, c);
                 }
@@ -1839,11 +1905,21 @@ fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
             Block::Paragraph(inlines) => {
                 collect_inlines_font_usage(inlines, usage, InlineStyle::default());
             }
-            Block::CodeBlock { code, .. } => usage.add_mono_text(code),
+            Block::CodeBlock { code, .. } | Block::MathBlock(code) => usage.add_mono_text(code),
             Block::BlockQuote(inner) => collect_blocks_font_usage(inner, usage),
             Block::List(list) => {
                 for item in &list.items {
                     collect_blocks_font_usage(&item.blocks, usage);
+                }
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        collect_inlines_font_usage(term, usage, InlineStyle::default().bold());
+                    }
+                    for def in &item.definitions {
+                        collect_inlines_font_usage(def, usage, InlineStyle::default());
+                    }
                 }
             }
             Block::Table(table) => {
@@ -1877,7 +1953,9 @@ fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: 
             } => {
                 collect_inlines_font_usage(children, usage, style);
             }
-            Inline::Code(text) => usage.add_mono_text(text),
+            Inline::Code(text) | Inline::Math(text) | Inline::DisplayMath(text) => {
+                usage.add_mono_text(text)
+            }
             Inline::Image { alt, .. } => usage.add_body_text(alt, style),
             Inline::SoftBreak | Inline::HardBreak => usage.add_soft_break(style),
             Inline::Html(html) => usage.add_body_text(html, style),
@@ -2078,6 +2156,11 @@ blockquote {
   border-radius: 0 var(--fmd-radius) var(--fmd-radius) 0;
 }
 blockquote > :last-child { margin-bottom: 0; }
+
+dl { margin: 0 0 1.2em; }
+dt { font-weight: 650; margin-top: 0.6em; }
+dt:first-child { margin-top: 0; }
+dd { margin-left: 1.5em; margin-bottom: 0.5em; }
 
 code {
   font-family: var(--fmd-font-mono);

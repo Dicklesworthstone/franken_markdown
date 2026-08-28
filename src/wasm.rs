@@ -85,6 +85,10 @@ pub struct WasmRenderOptions {
     /// Caller-provided font bytes. Missing slots use bundled deterministic
     /// fallback fonts.
     pub font_assets: FontAssets,
+    /// Document language tag (e.g. "en", "de", "fr", "es", "nl").
+    pub lang: Option<String>,
+    /// Markdown authoring profile (e.g. CommonMark/GFM default vs GFM-plus).
+    pub profile: Option<crate::Profile>,
 }
 
 impl WasmRenderOptions {
@@ -101,6 +105,20 @@ impl WasmRenderOptions {
             theme: Theme::serif(),
             ..Self::default()
         }
+    }
+
+    /// Return a copy with the given authoring profile.
+    #[must_use]
+    pub fn with_profile(mut self, profile: crate::Profile) -> Self {
+        self.profile = Some(profile);
+        self
+    }
+
+    /// Return a copy with the document language tag set.
+    #[must_use]
+    pub fn with_lang(mut self, lang: impl Into<String>) -> Self {
+        self.lang = Some(lang.into());
+        self
     }
 
     /// Return a copy with the body font set from the stable config spelling.
@@ -194,7 +212,42 @@ impl WasmRenderOptions {
         self.with_font_slot_weight(slot, weight)
     }
 
-    /// Return a copy with one PDF image asset appended.
+    /// Return a copy with the given document title.
+    #[must_use]
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Return a copy with the given PDF author metadata.
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    /// Return a copy with an explicit UTC Unix timestamp for PDF CreationDate/ModDate.
+    #[must_use]
+    pub fn with_metadata_epoch_seconds(mut self, seconds: u64) -> Self {
+        self.metadata_epoch_seconds = Some(seconds);
+        self
+    }
+
+    /// Return a copy with raw HTML passthrough enabled or disabled.
+    #[must_use]
+    pub fn with_allow_raw_html(mut self, allow: bool) -> Self {
+        self.allow_raw_html = allow;
+        self
+    }
+
+    /// Return a copy with code-block line numbers enabled or disabled for PDF.
+    #[must_use]
+    pub fn with_code_line_numbers(mut self, line_numbers: bool) -> Self {
+        self.code_line_numbers = line_numbers;
+        self
+    }
+
+    /// Return a copy with one caller-provided PDF image asset attached.
     ///
     /// # Errors
     /// Returns [`RenderError::InvalidInput`] when the Markdown destination is
@@ -252,6 +305,8 @@ impl WasmRenderOptions {
             allow_raw_html: self.allow_raw_html,
             font_assets: self.font_assets.clone(),
             image_assets: self.pdf_image_assets.clone(),
+            lang: self.lang.clone(),
+            profile: self.profile,
         }
     }
 
@@ -269,6 +324,8 @@ impl WasmRenderOptions {
             table_font_size: self.table_font_size,
             image_assets: self.pdf_image_assets.clone(),
             font_assets: self.font_assets.clone(),
+            lang: self.lang.clone(),
+            profile: self.profile,
         }
     }
 }

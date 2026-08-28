@@ -1379,8 +1379,68 @@ fn parse_blocks_with_refs_profiled(
                 "parse one fenced code block body and language info",
                 started,
             );
-            blocks.push(Block::CodeBlock { lang, code });
+            if lang.as_deref() == Some("math") {
+                blocks.push(Block::MathBlock(code.trim_end_matches('\n').to_string()));
+            } else {
+                blocks.push(Block::CodeBlock { lang, code });
+            }
             continue;
+        }
+        if leading_spaces(line) < 4 && line.trim_start().starts_with("$$") {
+            let started = profiler.checkpoint();
+            let trimmed = line.trim();
+            if trimmed.len() >= 4 && trimmed.ends_with("$$") && trimmed != "$$" {
+                let code = trimmed[2..trimmed.len() - 2].trim().to_string();
+                profiler.record_since(
+                    "math_block",
+                    1,
+                    code.len(),
+                    1,
+                    "parse one single-line math block",
+                    started,
+                );
+                blocks.push(Block::MathBlock(code));
+                i += 1;
+                continue;
+            } else if trimmed == "$$" || (trimmed.starts_with("$$") && !trimmed[2..].contains("$$")) {
+                let mut code = String::new();
+                let initial = trimmed[2..].trim();
+                if !initial.is_empty() {
+                    code.push_str(initial);
+                    code.push('\n');
+                }
+                let mut used = 1usize;
+                while i + used < lines.len() {
+                    let l = lines[i + used];
+                    let t = l.trim();
+                    if t == "$$" {
+                        used += 1;
+                        break;
+                    } else if t.ends_with("$$") {
+                        let inner = t[..t.len() - 2].trim_end();
+                        if !inner.is_empty() {
+                            code.push_str(inner);
+                            code.push('\n');
+                        }
+                        used += 1;
+                        break;
+                    }
+                    code.push_str(l);
+                    code.push('\n');
+                    used += 1;
+                }
+                profiler.record_since(
+                    "math_block",
+                    used,
+                    code.len(),
+                    1,
+                    "parse one multi-line math block",
+                    started,
+                );
+                blocks.push(Block::MathBlock(code.trim_end_matches('\n').to_string()));
+                i += used;
+                continue;
+            }
         }
         if scanned_indented_code_start(scan) {
             let started = profiler.checkpoint();
@@ -1536,6 +1596,24 @@ fn parse_blocks_with_refs_profiled(
                 started,
             );
             blocks.push(Block::List(list));
+            i += used;
+            continue;
+        }
+        if let Some((dl, used)) = parse_definition_list_profiled(&lines[i..], refs, profiler) {
+            let started = profiler.checkpoint();
+            profiler.record_since(
+                "definition_list_block",
+                used,
+                if profiler.enabled {
+                    lines[i..i + used].iter().map(|line| line.len()).sum()
+                } else {
+                    0
+                },
+                1,
+                "parse one definition list block",
+                started,
+            );
+            blocks.push(dl);
             i += used;
             continue;
         }
@@ -2437,6 +2515,145 @@ fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
     false
 }
 
+fn is_definition_marker(line: &str) -> bool {
+    let trimmed = trim_start_space_tab(line);
+    leading_spaces(line) < 4
+        && (trimmed.starts_with(": ") || trimmed.starts_with(":\t") || trimmed == ":")
+}
+
+fn strip_definition_marker(line: &str) -> &str {
+    let trimmed = trim_start_space_tab(line);
+    if let Some(rest) = trimmed.strip_prefix(": ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix(":\t") {
+        rest
+    } else if trimmed == ":" {
+        ""
+    } else {
+        trimmed
+    }
+}
+
+fn parse_definition_list_profiled(
+    lines: &[&str],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Option<(Block, usize)> {
+    if lines.len() < 2 {
+        return None;
+    }
+
+    let mut items: Vec<crate::ast::DefinitionItem> = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let mut term_lines = Vec::new();
+        let item_start = i;
+        while i < lines.len() {
+            let line = lines[i];
+            let trimmed = trim_space_tab(line);
+            if trimmed.is_empty() {
+                break;
+            }
+            let scan = BlockStartScan::new(line, trimmed);
+            if scanned_paragraph_interrupt(scan) {
+                break;
+            }
+            if is_definition_marker(line) {
+                break;
+            }
+            term_lines.push(trimmed);
+            i += 1;
+        }
+
+        if term_lines.is_empty() || i >= lines.len() || !is_definition_marker(lines[i]) {
+            if items.is_empty() {
+                return None;
+            }
+            i = item_start;
+            break;
+        }
+
+        let terms: Vec<Vec<crate::ast::Inline>> = term_lines
+            .into_iter()
+            .map(|t| parse_inlines_with_refs_profiled(t, refs, profiler))
+            .collect();
+
+        let mut definitions: Vec<Vec<crate::ast::Inline>> = Vec::new();
+        while i < lines.len() && is_definition_marker(lines[i]) {
+            let first_def = strip_definition_marker(lines[i]);
+            let mut def_text = first_def.to_string();
+            i += 1;
+            while i < lines.len() {
+                let line = lines[i];
+                let trimmed = trim_space_tab(line);
+                if trimmed.is_empty() {
+                    break;
+                }
+                let scan = BlockStartScan::new(line, trimmed);
+                if scanned_paragraph_interrupt(scan) {
+                    break;
+                }
+                if is_definition_marker(line) {
+                    break;
+                }
+                if i + 1 < lines.len() && is_definition_marker(lines[i + 1]) {
+                    break;
+                }
+                if !def_text.is_empty() {
+                    def_text.push(' ');
+                }
+                def_text.push_str(trimmed);
+                i += 1;
+            }
+            definitions.push(parse_inlines_with_refs_profiled(&def_text, refs, profiler));
+        }
+
+        if definitions.is_empty() {
+            if items.is_empty() {
+                return None;
+            }
+            i = item_start;
+            break;
+        }
+
+        items.push(crate::ast::DefinitionItem { terms, definitions });
+
+        if i < lines.len() && trim_space_tab(lines[i]).is_empty() {
+            let mut next_k = i;
+            while next_k < lines.len() && trim_space_tab(lines[next_k]).is_empty() {
+                next_k += 1;
+            }
+            let mut term_cand = next_k;
+            while term_cand < lines.len()
+                && !trim_space_tab(lines[term_cand]).is_empty()
+                && !is_definition_marker(lines[term_cand])
+            {
+                let scan =
+                    BlockStartScan::new(lines[term_cand], trim_space_tab(lines[term_cand]));
+                if scanned_paragraph_interrupt(scan) {
+                    break;
+                }
+                term_cand += 1;
+            }
+            if term_cand > next_k
+                && term_cand < lines.len()
+                && is_definition_marker(lines[term_cand])
+            {
+                i = next_k;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if items.is_empty() {
+        None
+    } else {
+        Some((Block::DefinitionList(items), i))
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod html_block_classifier_tests {
@@ -3180,7 +3397,7 @@ fn inline_text_needs_full_parse(text: &str) -> bool {
     while i < bytes.len() {
         match bytes[i] {
             b'\\' | b'\n' | b'\r' | b'`' | b'!' | b'[' | b'<' | b'&' | b'~' | b'*' | b'_'
-            | b'@' => return true,
+            | b'@' | b'$' => return true,
             b':' if bytes[i..].starts_with(b"://") && inline_http_scheme_before_colon(bytes, i) => {
                 return true;
             }
@@ -3381,6 +3598,27 @@ fn parse_inlines_chars_with_refs_profiled(
                     i += 1;
                 }
             }
+            '$' => {
+                let n = run_len(&bytes, i, '$');
+                if n >= 2 {
+                    if let Some((inner, next)) = parse_math_delim(&bytes, i, 2) {
+                        flush(&mut buf, &mut els);
+                        els.push(InlineEl::Node(Inline::DisplayMath(inner)));
+                        i = next;
+                        continue;
+                    }
+                }
+                if n == 1 {
+                    if let Some((inner, next)) = parse_math_delim(&bytes, i, 1) {
+                        flush(&mut buf, &mut els);
+                        els.push(InlineEl::Node(Inline::Math(inner)));
+                        i = next;
+                        continue;
+                    }
+                }
+                buf.push(c);
+                i += 1;
+            }
             '~' if run_len(&bytes, i, '~') >= 2 => {
                 if let Some((inner, next)) = parse_delim(&bytes, i, '~', 2) {
                     flush(&mut buf, &mut els);
@@ -3479,6 +3717,8 @@ fn inline_tree_node_count(inlines: &[Inline]) -> usize {
             Inline::Link { content, .. } => 1 + inline_tree_node_count(content),
             Inline::Text(_)
             | Inline::Code(_)
+            | Inline::Math(_)
+            | Inline::DisplayMath(_)
             | Inline::Image { .. }
             | Inline::FootnoteRef { .. }
             | Inline::SoftBreak
@@ -3928,6 +4168,41 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
                 && j > after
                 && chars[j - 1] != ' '
                 && !is_intraword_underscore_run(chars, j, run)
+            {
+                let inner: String = chars[after..j].iter().collect();
+                return Some((inner, j + want));
+            }
+            j += run;
+        } else {
+            j += 1;
+        }
+    }
+    None
+}
+
+/// Parse a math delimiter run `$` or `$$`, returning inner TeX text and next index.
+fn parse_math_delim(chars: &[char], i: usize, want: usize) -> Option<(String, usize)> {
+    let open_run = run_len(chars, i, '$');
+    if open_run != want {
+        return None;
+    }
+    let after = i + want;
+    if after >= chars.len() || chars[after] == ' ' || chars[after] == '\t' || chars[after] == '\n' {
+        return None;
+    }
+    let mut j = after;
+    while j < chars.len() {
+        if chars[j] == '\\' && j + 1 < chars.len() {
+            j += 2;
+            continue;
+        }
+        if chars[j] == '$' {
+            let run = run_len(chars, j, '$');
+            if run == want
+                && j > after
+                && chars[j - 1] != ' '
+                && chars[j - 1] != '\t'
+                && chars[j - 1] != '\n'
             {
                 let inner: String = chars[after..j].iter().collect();
                 return Some((inner, j + want));
@@ -4610,7 +4885,9 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
 fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
-            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
+                out.push_str(t)
+            }
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_inlines_to_plain(c, out);
             }

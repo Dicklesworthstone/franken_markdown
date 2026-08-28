@@ -37,10 +37,20 @@ ART="tests/artifacts/claims/${RUN_ID}"
 mkdir -p "$ART"
 
 # Build once and capture the capabilities contract.
-cargo build --quiet
-BIN="${CARGO_TARGET_DIR:-target}/debug/fmd"
-[ -x "$BIN" ] || BIN="target/debug/fmd"
-CAPS="$("$BIN" capabilities --json 2>/dev/null)"
+# Optional FMD_BIN override: lets the gate use a pre-built native binary
+# (e.g. on macOS where the rch shim offloads to Linux workers and produces
+# non-executable ELFs on disk). When unset, fall back to the standard
+# cargo-target paths.
+: "${FMD_BIN:=}"
+if [ -n "$FMD_BIN" ]; then
+  : # use the override as-is
+else
+  cargo build --quiet
+  BIN="${CARGO_TARGET_DIR:-target}/debug/fmd"
+  [ -x "$BIN" ] || BIN="target/debug/fmd"
+  FMD_BIN="$BIN"
+fi
+CAPS="$("$FMD_BIN" capabilities --json 2>/dev/null)"
 
 # Extract a feature flag value from the capabilities JSON.
 cap_value() {

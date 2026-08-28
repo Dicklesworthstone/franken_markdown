@@ -9,7 +9,7 @@
 # registry never forces a claim the README does not actually make.
 label	readme_pattern	capability_key	expected_substr	proof_path
 html_render	all-in-one HTML	html	available	scripts/check-determinism.sh
-embedded_subset_fonts	embedded-subset-font	embedded_subset_fonts_pdf	available	tests/pdf_embed_test.rs
+embedded_subset_fonts	embedded subset fonts	embedded_subset_fonts_pdf	available	tests/pdf_embed_test.rs
 knuth_plass	Knuth-Plass	knuth_plass_pdf	available	tests/layout_test.rs
 hyphenation	hyphenation	hyphenation_pdf	available	tests/layout_test.rs
 syntax_highlighting	syntax highlighting	syntax_highlighting	available	tests/highlight_test.rs

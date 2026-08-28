@@ -300,19 +300,23 @@ struct ForgeView: View {
                 MarkdownCodeEditor(text: $renderer.source, isFocused: $editorFocused)
                     .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
                     .frame(minHeight: 320)
-                HStack {
-                    Button {
-                        editorFocused = false
-                        renderer.renderNow()
-                    } label: {
-                        Label("Forge Preview", systemImage: "sparkles.rectangle.stack")
+#if !targetEnvironment(macCatalyst)
+                if horizontalSizeClass == .compact {
+                    HStack {
+                        Button {
+                            editorFocused = false
+                            renderer.renderNow()
+                        } label: {
+                            Label("Forge Preview", systemImage: "sparkles.rectangle.stack")
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        Spacer()
+                        Text("⌘R")
+                            .font(.system(size: Lab.size(10), design: .monospaced))
+                            .foregroundStyle(Lab.secondary)
                     }
-                    .buttonStyle(PrimaryButtonStyle())
-                    Spacer()
-                    Text("⌘R")
-                        .font(.system(size: Lab.size(10), design: .monospaced))
-                        .foregroundStyle(Lab.secondary)
                 }
+#endif
             }
         }
     }
@@ -400,9 +404,8 @@ struct ForgeView: View {
                             .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
                             .foregroundStyle(Lab.secondary)
                         Picker("Theme", selection: $renderer.darkMode) {
-                            Text("Auto").tag("auto")
+                            Text("Adaptive Dark").tag("auto")
                             Text("Light").tag("disabled")
-                            Text("Dark").tag("enabled")
                         }
                         .pickerStyle(.segmented)
                     }

@@ -502,6 +502,7 @@ fmd --text '<markdown>' --out out.html
 | `--to html\|pdf\|both` | Output format(s). Default `html` |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
+| `--html-font-format woff1\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `ttf` keeps raw TrueType data URLs) |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
 | `--title <text>` | Set the document title (otherwise the first heading, then "Document") |
 | `--author <text>` | Set PDF author metadata |
@@ -819,8 +820,10 @@ Honest about what the renderer does not do yet.
   examples match** after normalizing fmd's styled HTML (64.8% of the 588 in-scope
   examples; the 64 raw-HTML examples are intentional non-goals, since fmd escapes
   raw HTML by default). This is a ratcheted floor: CI fails if it drops.
-- **HTML font subsets are TTF data URLs, not WOFF2.** Output is deterministic and
-  portable; smaller WOFF2 subsets are future work.
+- **HTML font subsets are WOFF1 data URLs by default.** Per-document subsets are
+  wrapped in the renderer's own deterministic DEFLATE container (measured 18.4%
+  smaller HTML on the showcase document; `--html-font-format ttf` opts back to
+  raw TrueType data URLs). WOFF2 (Brotli-based) remains future work.
 - **Browser visual/golden fixtures are still early.** The npm package
   (`@franken-suite/franken-markdown`) is published with proven native parity and
   gated manifest/size budgets, but browser-side visual fixtures remain thin.

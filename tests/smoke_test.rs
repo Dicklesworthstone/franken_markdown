@@ -256,11 +256,13 @@ fn main() { println!(\"hello\"); }
     assert!(first.contains("font-family: \"FMD Mono\";"));
     assert!(first.contains("font-style: italic;"));
     assert!(first.contains("font-weight: 700;"));
-    assert!(first.contains("data:font/ttf;base64,"));
+    // WOFF1 is the default embed format (ge1t): subsets are wrapped in the
+    // renderer's own deterministic DEFLATE container.
+    assert!(first.contains("data:font/woff;base64,"));
     assert!(first.contains("--fmd-font-body: \"FMD Body\","));
     assert!(first.contains("--fmd-font-mono: \"FMD Mono\","));
     assert!(
-        first.matches("data:font/ttf;base64,").count() >= 5,
+        first.matches("data:font/woff;base64,").count() >= 5,
         "expected regular/bold/italic/bold-italic body faces plus mono"
     );
     assert!(

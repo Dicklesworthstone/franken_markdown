@@ -47,6 +47,13 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var pdfContinuations: [Int: CheckedContinuation<(Data, Int, Int), Error>] = [:]
     private var htmlContinuations: [Int: CheckedContinuation<(String, Int, Int), Error>] = [:]
 
+    /// The Rust/WASM ABI intentionally supports only adaptive dark CSS or a
+    /// light-only document. Keep the bridge fail-safe even if a future UI or
+    /// restored state supplies an unsupported value.
+    private var validatedDarkMode: String {
+        darkMode == "disabled" ? "disabled" : "auto"
+    }
+
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(FrankenResourceSchemeHandler(), forURLScheme: "frankenmd")
@@ -99,7 +106,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         }
         requestID += 1
         var options: [String: Any] = [
-            "darkMode": darkMode,
+            "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
             "font": fontFamily
         ]
@@ -130,7 +137,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         requestID += 1
         let req = requestID
         var options: [String: Any] = [
-            "darkMode": darkMode,
+            "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
             "font": fontFamily,
             "pageNumbers": pageNumbers,
@@ -167,7 +174,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         requestID += 1
         let req = requestID
         var options: [String: Any] = [
-            "darkMode": darkMode,
+            "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
             "font": fontFamily
         ]

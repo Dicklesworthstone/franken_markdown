@@ -742,7 +742,9 @@ fn collect_image_destinations_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&
             | Inline::Code(_)
             | Inline::SoftBreak
             | Inline::HardBreak
-            | Inline::Html(_) => {}
+            | Inline::Html(_)
+            | Inline::Math(_)
+            | Inline::DisplayMath(_) => {}
         }
     }
 }

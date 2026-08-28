@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct FrankenMarkdownApp: App {
@@ -6,13 +7,14 @@ struct FrankenMarkdownApp: App {
         WindowGroup {
             ForgeView()
                 .preferredColorScheme(.dark)
+                .background(CatalystWindowFreedom())
 #if targetEnvironment(macCatalyst)
-                .frame(minWidth: 760, minHeight: 600)
+                .frame(minWidth: 480, minHeight: 420)
 #endif
         }
 #if targetEnvironment(macCatalyst)
         .defaultSize(width: 1220, height: 820)
-        .windowResizability(.automatic)
+        .windowResizability(.contentMinSize)
 #endif
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -43,11 +45,34 @@ struct FrankenMarkdownApp: App {
     }
 }
 
+private struct CatalystWindowFreedom: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.configure() }
+
+    final class Controller: UIViewController {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            configure()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            configure()
+        }
+
+        func configure() {
+#if targetEnvironment(macCatalyst)
+            guard let restrictions = view.window?.windowScene?.sizeRestrictions else { return }
+            restrictions.minimumSize = CGSize(width: 480, height: 420)
+            restrictions.maximumSize = CGSize(width: 10_000, height: 10_000)
+#endif
+        }
+    }
+}
+
 extension Notification.Name {
     static let renderMarkdownNow = Notification.Name("FrankenMarkdown.renderNow")
     static let exportPdfNow = Notification.Name("FrankenMarkdown.exportPdfNow")
     static let exportHtmlNow = Notification.Name("FrankenMarkdown.exportHtmlNow")
     static let newMarkdownDocument = Notification.Name("FrankenMarkdown.newDocument")
 }
-
-

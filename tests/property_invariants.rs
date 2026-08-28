@@ -15,7 +15,7 @@
 //! on which font weights the document uses, so byte-level HTML round-trip
 //! does not converge by design.
 
-use franken_markdown::{parse_markdown, render_html_document, HtmlOptions};
+use franken_markdown::{HtmlOptions, parse_markdown, render_html_document};
 
 // ---------------------------------------------------------------------------
 // LCG (deterministic, matches the hostile-input sweep style in fmd-font)
@@ -47,17 +47,38 @@ impl Lcg {
 // ---------------------------------------------------------------------------
 
 const WORDS: [&str; 10] = [
-    "alpha", "beta", "gamma", "data", "test", "value", "x", "café", "日本語", "影院",
+    "alpha",
+    "beta",
+    "gamma",
+    "data",
+    "test",
+    "value",
+    "x",
+    "café",
+    "日本語",
+    "影院",
 ];
 
 const INLINE_BITS: [&str; 8] = [
-    "*em*", "**strong**", "~~strike~~", "`code`", "[link](/u)", "a & b",
-    "emoji \u{1f642}", "entity &amp;",
+    "*em*",
+    "**strong**",
+    "~~strike~~",
+    "`code`",
+    "[link](/u)",
+    "a & b",
+    "emoji \u{1f642}",
+    "entity &amp;",
 ];
 
 const ADVERSARIAL: [&str; 8] = [
-    "[^1]", "[^unclosed", "*unclosed *emphasis", "[unclosed](/link",
-    "\u{0000}nul", "\u{10FFFF}astral", "a\r\nb", "**a *b** c*",
+    "[^1]",
+    "[^unclosed",
+    "*unclosed *emphasis",
+    "[unclosed](/link",
+    "\u{0000}nul",
+    "\u{10FFFF}astral",
+    "a\r\nb",
+    "**a *b** c*",
 ];
 
 fn gen_inline(lcg: &mut Lcg, out: &mut String) {
@@ -249,10 +270,7 @@ fn adversarial_seeds_no_panic_and_deterministic() {
             };
             let doc_again = parse_markdown(&src);
             let html2 = render_html_document(&doc_again, &opts).unwrap();
-            assert_eq!(
-                html, html2,
-                "determinism violated for:\n{src}"
-            );
+            assert_eq!(html, html2, "determinism violated for:\n{src}");
         }
     }
 }

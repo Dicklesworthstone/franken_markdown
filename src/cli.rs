@@ -15,7 +15,8 @@ use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::watch::{
     DEFAULT_INTERVAL_MS, PollWatcher, Route, SystemClock, bind_loopback, collect_watch_paths,
-    referenced_local_paths, render_response, route_for, sse_preamble, sse_reload_event,
+    expand_md_directory, referenced_local_paths, render_response, route_for, sse_preamble,
+    sse_reload_event,
 };
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, HtmlOptions, PdfAMode, PdfASettings, PdfImageAsset,
@@ -151,7 +152,7 @@ struct VerifyArgs {
     json: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 struct WatchArgs {
     /// Markdown file to watch (a real path; stdin cannot be polled).
     input: PathBuf,
@@ -488,6 +489,24 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         let base = args.input.parent().unwrap_or_else(|| Path::new("."));
         extras.extend(referenced_local_paths(&src, base));
     }
+    // xjld: a directory input expands to every `*.md` file under it.
+    // A directory with no `*.md` is a usage error (silent no-watch
+    // would surprise agents that typed the wrong path).
+    if args.input.is_dir() {
+        let md_files = expand_md_directory(&args.input);
+        if md_files.is_empty() {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "no *.md files found under {}; fmd watch <dir> requires at least one Markdown input",
+                    args.input.display()
+                ),
+                json,
+            );
+        }
+        return run_watch_directory(args, md_files, interval, json, no_config);
+    }
     let paths = collect_watch_paths(&args.input, &extras);
     let debounce = if args.measure.is_some() {
         Duration::ZERO
@@ -588,6 +607,111 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
             }
         }
     }
+}
+
+/// xjld: handle `fmd watch <dir>` — a directory of Markdown files. Every
+/// `*.md` file under `args.input` is watched; on a change, the file is
+/// rendered individually to a sibling output path (under `args.out`,
+/// which must be a directory in this mode). The first file (lex order)
+/// is the "primary" input used for the initial render and for the
+/// loopback preview.
+fn run_watch_directory(
+    args: WatchArgs,
+    md_files: Vec<PathBuf>,
+    interval: Duration,
+    json: bool,
+    no_config: bool,
+) -> ExitCode {
+    if !args.out.is_dir() {
+        return fail_json(
+            64,
+            "usage_error",
+            "fmd watch <dir> requires --out to be a directory; the per-file output is written there",
+            json,
+        );
+    }
+    let primary = md_files[0].clone();
+    let primary_args = WatchArgs {
+        input: primary.clone(),
+        out: args.out.join(derive_sibling_html(&primary)),
+        ..args.clone()
+    };
+    let _ = run_render(watch_to_render(&primary_args), json, no_config);
+    // Build the watch set: primary + every other `.md` file + CSS
+    // (deduplicated by collect_watch_paths).
+    let mut others: Vec<PathBuf> = md_files.iter().skip(1).cloned().collect();
+    if let Some(css) = &primary_args.css {
+        others.push(css.clone());
+    }
+    if let Ok(src) = std::fs::read_to_string(&primary) {
+        let base = primary.parent().unwrap_or_else(|| Path::new("."));
+        others.extend(referenced_local_paths(&src, base));
+    }
+    let paths = collect_watch_paths(&primary, &others);
+    let mut watcher = PollWatcher::new(paths, interval, SystemClock);
+    let preview = if args.serve {
+        match start_watch_preview() {
+            Ok(preview) => Some(preview),
+            Err(e) => {
+                return fail_json(
+                    70,
+                    "preview_bind_failed",
+                    &format!("loopback preview bind failed: {e}"),
+                    json,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    loop {
+        let events = watcher.poll();
+        if events.is_empty() {
+            std::thread::sleep(interval);
+            continue;
+        }
+        // Render the most recently changed `.md` file in the
+        // directory; other changes (e.g. CSS) are picked up by the
+        // watcher but do not dispatch a per-file render.
+        let changed = events
+            .iter()
+            .rev()
+            .map(|e| e.path.clone())
+            .find(|p| md_files.iter().any(|m| m == p))
+            .unwrap_or(primary.clone());
+        let per_file_args = WatchArgs {
+            input: changed.clone(),
+            out: args.out.join(derive_sibling_html(&changed)),
+            ..primary_args.clone()
+        };
+        let _ = run_render(watch_to_render(&per_file_args), json, no_config);
+        if let Some(preview) = preview.as_ref() {
+            refresh_watch_preview(preview, &per_file_args, no_config);
+        }
+        if json {
+            eprintln!(
+                "{{\"ok\":true,\"event\":\"watched_rebuild\",\"path\":\"{}\",\"out\":\"{}\"}}",
+                changed.display(),
+                per_file_args.out.display()
+            );
+        } else if args.verbose {
+            eprintln!(
+                "fmd: re-rendered {} -> {} ({} files watched)",
+                changed.display(),
+                per_file_args.out.display(),
+                md_files.len()
+            );
+        } else {
+            eprintln!("fmd: re-rendered {}", changed.display());
+        }
+    }
+}
+
+/// Derive a sibling `.html` path for a `.md` input: `foo/bar.md` ->
+/// `foo/bar.html`. Used by `fmd watch <dir>` to compute the per-file
+/// output under the user-supplied `--out` directory.
+fn derive_sibling_html(md_path: &Path) -> PathBuf {
+    md_path.with_extension("html")
 }
 
 const WATCH_MEASURE_BUDGET_MS: f64 = 150.0;

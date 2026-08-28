@@ -12,7 +12,7 @@ private enum ForgeLane: String, CaseIterable, Identifiable {
 struct ForgeView: View {
     @StateObject private var renderer = MarkdownRendererModel()
     @State private var lane: ForgeLane = .write
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
 
     @State private var exportedPdfData: Data?
     @State private var exportedHtmlText: String?
@@ -220,12 +220,7 @@ struct ForgeView: View {
                         .font(.system(size: Lab.size(9), design: .monospaced))
                         .foregroundStyle(Lab.secondary)
                 }
-                TextEditor(text: $renderer.source)
-                    .focused($editorFocused)
-                    .font(.system(size: Lab.size(14), design: .monospaced))
-                    .foregroundStyle(Lab.text)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
+                MarkdownCodeEditor(text: $renderer.source, isFocused: $editorFocused)
                     .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
                     .frame(minHeight: 320)
                 HStack {
@@ -456,4 +451,3 @@ struct ShareActivityView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
-

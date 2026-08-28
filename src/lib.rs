@@ -92,8 +92,8 @@ pub use span::{
     SpannedInline, SpannedListItem, SpannedTable,
 };
 pub use theme::{
-    CodeTheme, DarkModePolicy, FontFamily, MonoFontFamily, PageMargins, PageSize, PageStyle, Theme,
-    ThemeColors, ThemeSpacing,
+    CodeTheme, DarkModePolicy, FontFamily, FontScale, MonoFontFamily, PageMargins, PageSize,
+    PageStyle, Theme, ThemeColors, ThemeSpacing, TypeScale, TypeScalePreset,
 };
 
 /// Font container format for embedded `@font-face` subsets in HTML output.

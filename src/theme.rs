@@ -183,6 +183,17 @@ impl Default for ThemeSpacing {
     }
 }
 
+impl ThemeSpacing {
+    /// Return a copy with base font size and readable measure scaled by a typographic scale.
+    #[must_use]
+    pub fn with_font_scale(mut self, scale: FontScale) -> Self {
+        let factor = scale.scale_factor();
+        self.base_px = scale.html_base_px().round() as u16;
+        self.max_width_px = ((760.0 * factor).round() as u16).max(400);
+        self
+    }
+}
+
 /// PDF/page size in points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PageSize {
@@ -294,6 +305,13 @@ impl Theme {
     #[must_use]
     pub fn with_dark_mode(mut self, dark_mode: DarkModePolicy) -> Self {
         self.dark_mode = dark_mode;
+        self
+    }
+
+    /// Return a copy with a uniform typographic font scale applied to spacing tokens.
+    #[must_use]
+    pub fn with_font_scale(mut self, scale: FontScale) -> Self {
+        self.spacing = self.spacing.with_font_scale(scale);
         self
     }
 
@@ -540,6 +558,233 @@ impl TypeScale {
     }
 }
 
+/// Named typographic scale presets for uniform, anti-aliased type sizing across HTML and PDF.
+///
+/// Each preset scales the entire typographic ladder (body, headings H1–H6, code,
+/// tables, line heights, and layout measure) proportionally without subpixel
+/// aliasing or layout distortion.
+///
+/// Presets:
+/// - `ExtraSmall` (`xs`, `0.75x`): 12px HTML / 8.25pt PDF
+/// - `Small` (`sm`, `compact`, `0.875x`): 14px HTML / 9.625pt PDF
+/// - `Medium` (`md`, `default`, `normal`, `1.0x`): 16px HTML / 11.0pt PDF
+/// - `Large` (`lg`, `large`, `1.125x`): 18px HTML / 12.375pt PDF
+/// - `ExtraLarge` (`xl`, `1.25x`): 20px HTML / 13.75pt PDF
+/// - `Huge` (`2xl`, `1.5x`): 24px HTML / 16.5pt PDF
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeScalePreset {
+    /// 0.75x scale (12px HTML / 8.25pt PDF).
+    ExtraSmall,
+    /// 0.875x scale (14px HTML / 9.625pt PDF).
+    Small,
+    /// 1.0x scale (16px HTML / 11.0pt PDF).
+    #[default]
+    Medium,
+    /// 1.125x scale (18px HTML / 12.375pt PDF).
+    Large,
+    /// 1.25x scale (20px HTML / 13.75pt PDF).
+    ExtraLarge,
+    /// 1.5x scale (24px HTML / 16.5pt PDF).
+    Huge,
+}
+
+impl TypeScalePreset {
+    /// All named presets in increasing scale order.
+    pub const ALL: [Self; 6] = [
+        Self::ExtraSmall,
+        Self::Small,
+        Self::Medium,
+        Self::Large,
+        Self::ExtraLarge,
+        Self::Huge,
+    ];
+
+    /// Parse stable preset spelling or shorthand (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "xs" | "x-small" | "extra-small" | "extrasmall" | "tiny" => Some(Self::ExtraSmall),
+            "sm" | "small" | "compact" => Some(Self::Small),
+            "md" | "medium" | "normal" | "default" | "regular" | "standard" => Some(Self::Medium),
+            "lg" | "large" | "comfortable" => Some(Self::Large),
+            "xl" | "x-large" | "extra-large" | "extralarge" => Some(Self::ExtraLarge),
+            "2xl" | "xxl" | "huge" | "display" => Some(Self::Huge),
+            _ => None,
+        }
+    }
+
+    /// Stable CLI/config/JSON spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExtraSmall => "xs",
+            Self::Small => "sm",
+            Self::Medium => "md",
+            Self::Large => "lg",
+            Self::ExtraLarge => "xl",
+            Self::Huge => "2xl",
+        }
+    }
+
+    /// Descriptive human-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ExtraSmall => "Extra Small (75%)",
+            Self::Small => "Small / Compact (87.5%)",
+            Self::Medium => "Medium / Default (100%)",
+            Self::Large => "Large (112.5%)",
+            Self::ExtraLarge => "Extra Large (125%)",
+            Self::Huge => "Huge (150%)",
+        }
+    }
+
+    /// Proportional scale factor.
+    #[must_use]
+    pub const fn scale_factor(self) -> f32 {
+        match self {
+            Self::ExtraSmall => 0.75,
+            Self::Small => 0.875,
+            Self::Medium => 1.0,
+            Self::Large => 1.125,
+            Self::ExtraLarge => 1.25,
+            Self::Huge => 1.5,
+        }
+    }
+
+    /// Crisp HTML root font size in CSS pixels (snapped to whole integer pixels to prevent text aliasing).
+    #[must_use]
+    pub const fn html_base_px(self) -> u16 {
+        match self {
+            Self::ExtraSmall => 12,
+            Self::Small => 14,
+            Self::Medium => 16,
+            Self::Large => 18,
+            Self::ExtraLarge => 20,
+            Self::Huge => 24,
+        }
+    }
+
+    /// Nominal PDF body font size in points.
+    #[must_use]
+    pub const fn pdf_base_pt(self) -> f32 {
+        match self {
+            Self::ExtraSmall => 8.25,
+            Self::Small => 9.625,
+            Self::Medium => 11.0,
+            Self::Large => 12.375,
+            Self::ExtraLarge => 13.75,
+            Self::Huge => 16.5,
+        }
+    }
+}
+
+/// Typographic scale configuration, either a named preset or a custom multiplier / size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FontScale {
+    /// One of the standard named presets.
+    Preset(TypeScalePreset),
+    /// Custom positive multiplier (e.g. 1.25 = 125%).
+    Factor(f32),
+}
+
+impl Default for FontScale {
+    fn default() -> Self {
+        Self::Preset(TypeScalePreset::Medium)
+    }
+}
+
+impl FontScale {
+    /// Parse a font scale string (preset name, percentage like `125%`, decimal like `1.2`, or `px`/`pt` values).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        if let Some(preset) = TypeScalePreset::parse(trimmed) {
+            return Some(Self::Preset(preset));
+        }
+        if let Some(pct) = trimmed.strip_suffix('%') {
+            if let Ok(val) = pct.trim().parse::<f32>() {
+                if val.is_finite() && val > 0.0 {
+                    return Some(Self::from_factor(val / 100.0));
+                }
+            }
+        }
+        if let Some(px) = trimmed.strip_suffix("px") {
+            if let Ok(val) = px.trim().parse::<f32>() {
+                if val.is_finite() && val > 0.0 {
+                    return Some(Self::from_factor(val / 16.0));
+                }
+            }
+        }
+        if let Some(pt) = trimmed.strip_suffix("pt") {
+            if let Ok(val) = pt.trim().parse::<f32>() {
+                if val.is_finite() && val > 0.0 {
+                    return Some(Self::from_factor(val / 11.0));
+                }
+            }
+        }
+        if let Ok(val) = trimmed.parse::<f32>() {
+            if val.is_finite() && val > 0.0 {
+                return Some(Self::from_factor(val));
+            }
+        }
+        None
+    }
+
+    /// Construct a font scale from a custom float factor.
+    #[must_use]
+    pub fn from_factor(factor: f32) -> Self {
+        let clamped = factor.clamp(0.5, 3.0);
+        for preset in TypeScalePreset::ALL {
+            if (preset.scale_factor() - clamped).abs() < 1e-4 {
+                return Self::Preset(preset);
+            }
+        }
+        Self::Factor(clamped)
+    }
+
+    /// Proportional scale factor.
+    #[must_use]
+    pub fn scale_factor(self) -> f32 {
+        match self {
+            Self::Preset(p) => p.scale_factor(),
+            Self::Factor(f) => f.clamp(0.5, 3.0),
+        }
+    }
+
+    /// HTML base font size in pixels, snapped to clean whole pixels to prevent antialiasing blur.
+    #[must_use]
+    pub fn html_base_px(self) -> f32 {
+        match self {
+            Self::Preset(p) => p.html_base_px() as f32,
+            Self::Factor(f) => {
+                let raw = 16.0 * f.clamp(0.5, 3.0);
+                raw.round().max(8.0)
+            }
+        }
+    }
+
+    /// PDF base font size in points (clamped to [6, 24]).
+    #[must_use]
+    pub fn pdf_base_pt(self) -> f32 {
+        match self {
+            Self::Preset(p) => p.pdf_base_pt(),
+            Self::Factor(f) => {
+                (11.0 * f.clamp(0.5, 3.0)).clamp(BASE_FONT_SIZE_MIN_PT, BASE_FONT_SIZE_MAX_PT)
+            }
+        }
+    }
+
+    /// Scale a `Theme` in place (spacing base_px, max_width_px, etc.).
+    #[must_use]
+    pub fn apply_to_theme(self, mut theme: Theme) -> Theme {
+        let factor = self.scale_factor();
+        theme.spacing.base_px = self.html_base_px().round() as u16;
+        theme.spacing.max_width_px = ((760.0 * factor).round() as u16).max(400);
+        theme
+    }
+}
+
 #[cfg(test)]
 mod type_scale_tests {
     use super::*;
@@ -590,5 +835,33 @@ mod type_scale_tests {
         assert!(
             (huge.h[0] - TypeScale::default().h[0] * (BASE_FONT_SIZE_MAX_PT / 11.0)).abs() < 1e-3
         );
+    }
+
+    #[test]
+    fn type_scale_presets_parse_and_scale_cleanly() {
+        assert_eq!(TypeScalePreset::parse("xs"), Some(TypeScalePreset::ExtraSmall));
+        assert_eq!(TypeScalePreset::parse("sm"), Some(TypeScalePreset::Small));
+        assert_eq!(TypeScalePreset::parse("compact"), Some(TypeScalePreset::Small));
+        assert_eq!(TypeScalePreset::parse("md"), Some(TypeScalePreset::Medium));
+        assert_eq!(TypeScalePreset::parse("default"), Some(TypeScalePreset::Medium));
+        assert_eq!(TypeScalePreset::parse("lg"), Some(TypeScalePreset::Large));
+        assert_eq!(TypeScalePreset::parse("xl"), Some(TypeScalePreset::ExtraLarge));
+        assert_eq!(TypeScalePreset::parse("2xl"), Some(TypeScalePreset::Huge));
+
+        for preset in TypeScalePreset::ALL {
+            let scale = FontScale::Preset(preset);
+            assert!(scale.html_base_px() >= 12.0 && scale.html_base_px() <= 24.0);
+            assert!(scale.pdf_base_pt() >= 8.0 && scale.pdf_base_pt() <= 17.0);
+            let theme = scale.apply_to_theme(Theme::default());
+            assert_eq!(theme.spacing.base_px as f32, scale.html_base_px());
+        }
+    }
+
+    #[test]
+    fn font_scale_parsing_handles_percentages_and_numbers() {
+        assert_eq!(FontScale::parse("125%"), Some(FontScale::Preset(TypeScalePreset::ExtraLarge)));
+        assert_eq!(FontScale::parse("75%"), Some(FontScale::Preset(TypeScalePreset::ExtraSmall)));
+        assert_eq!(FontScale::parse("1.5"), Some(FontScale::Preset(TypeScalePreset::Huge)));
+        assert_eq!(FontScale::parse("18px"), Some(FontScale::Preset(TypeScalePreset::Large)));
     }
 }

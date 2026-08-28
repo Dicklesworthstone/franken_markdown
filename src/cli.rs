@@ -247,6 +247,13 @@ struct RenderArgs {
     /// ~half the bytes, every modern browser) or ttf (raw subset bytes).
     #[arg(long, value_enum)]
     html_font_format: Option<HtmlFontFormatArg>,
+    /// Typographic scale factor or preset for uniform type sizing across HTML and PDF.
+    ///
+    /// Accepts named presets (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`),
+    /// percentages (e.g. `125%`), multipliers (e.g. `1.125`), or CSS sizes (`18px`, `12pt`).
+    /// Scales body, headings, code, tables, and layout measure proportionally without aliasing.
+    #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
+    font_scale: Option<String>,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -496,6 +503,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         toc: false,
         toc_depth: None,
         html_font_format: None,
+        font_scale: None,
         pdf_line_numbers: false,
         pdf_page_numbers: false,
         pdf_base_font_size: None,
@@ -1048,6 +1056,28 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         theme = theme.with_font(font.into());
     }
 
+    let font_scale = if let Some(scale_str) = &args.font_scale {
+        match FontScale::parse(scale_str) {
+            Some(scale) => Some(scale),
+            None => {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    &format!(
+                        "unknown font scale: '{scale_str}'. Valid choices: 'xs', 'sm', 'compact', 'md', 'normal', 'default', 'lg', 'xl', '2xl', 'huge', percentages like '125%', or numbers like '1.2'"
+                    ),
+                    json,
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(scale) = font_scale {
+        theme = theme.with_font_scale(scale);
+    }
+
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
         Some(p) => match read_stylesheet(p) {
@@ -1223,7 +1253,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             allow_raw_html: args.allow_html,
             code_line_numbers: args.pdf_line_numbers,
             page_numbers: args.pdf_page_numbers,
-            base_font_size: args.pdf_base_font_size,
+            base_font_size: args
+                .pdf_base_font_size
+                .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
             heading_scale: args.pdf_heading_scale,
             table_font_size: args.pdf_table_font_size,
             image_assets: pdf_image_assets,

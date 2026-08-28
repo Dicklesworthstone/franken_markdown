@@ -73,6 +73,8 @@ pub struct WasmRenderOptions {
     pub page_numbers: bool,
     /// Optional base body size override in points; see [`crate::PdfOptions`].
     pub base_font_size: Option<f32>,
+    /// Optional uniform typographic scale multiplier (e.g. 1.125 = 112.5% / Large).
+    pub font_scale: Option<f32>,
     /// Optional per-step heading ratio; see [`crate::PdfOptions`].
     pub heading_scale: Option<f32>,
     /// Optional nominal table size override in points; see [`crate::PdfOptions`].
@@ -301,6 +303,13 @@ impl WasmRenderOptions {
         self
     }
 
+    /// Return a copy with a uniform typographic font scale multiplier.
+    #[must_use]
+    pub fn with_font_scale(mut self, scale: f32) -> Self {
+        self.font_scale = Some(scale);
+        self
+    }
+
     /// Return a copy with a per-step heading scale ratio override.
     #[must_use]
     pub fn with_heading_scale(mut self, ratio: f32) -> Self {
@@ -316,8 +325,12 @@ impl WasmRenderOptions {
     }
 
     fn html_options(&self) -> HtmlOptions {
+        let mut theme = self.theme.clone();
+        if let Some(scale) = self.font_scale {
+            theme = theme.with_font_scale(crate::FontScale::from_factor(scale));
+        }
         HtmlOptions {
-            theme: self.theme.clone(),
+            theme,
             title: self.title.clone(),
             custom_css: self.custom_css.clone(),
             allow_raw_html: self.allow_raw_html,
@@ -332,15 +345,24 @@ impl WasmRenderOptions {
     }
 
     fn pdf_options(&self) -> PdfOptions {
+        let mut theme = self.theme.clone();
+        let mut base_font_size = self.base_font_size;
+        if let Some(scale) = self.font_scale {
+            let fs = crate::FontScale::from_factor(scale);
+            theme = theme.with_font_scale(fs);
+            if base_font_size.is_none() {
+                base_font_size = Some(fs.pdf_base_pt());
+            }
+        }
         PdfOptions {
-            theme: self.theme.clone(),
+            theme,
             title: self.title.clone(),
             author: self.author.clone(),
             metadata_epoch_seconds: self.metadata_epoch_seconds,
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
             page_numbers: self.page_numbers,
-            base_font_size: self.base_font_size,
+            base_font_size,
             heading_scale: self.heading_scale,
             table_font_size: self.table_font_size,
             image_assets: self.pdf_image_assets.clone(),

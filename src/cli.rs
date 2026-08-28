@@ -1136,9 +1136,23 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Vec::new()
     };
 
-    let profile = args.profile.as_deref().and_then(crate::Profile::parse);
-
-    // Render every requested format to bytes BEFORE writing any of them, so a
+    let profile = if let Some(prof_str) = &args.profile {
+        match crate::Profile::parse(prof_str) {
+            Some(p) => Some(p),
+            None => {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    &format!(
+                        "unknown markdown authoring profile: '{prof_str}'. Valid choices: 'commonmark-gfm', 'gfm-plus'"
+                    ),
+                    json,
+                );
+            }
+        }
+    } else {
+        None
+    };
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
     // with the HTML already committed).

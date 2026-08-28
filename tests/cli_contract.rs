@@ -2262,6 +2262,32 @@ fn non_utf8_source_date_epoch_is_a_usage_error() {
     assert!(!out_path.exists());
 }
 
+#[test]
+fn unknown_profile_is_a_usage_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .args([
+            "--text",
+            "# Test",
+            "--profile",
+            "nonexistent-profile",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("\"code\":\"usage_error\""),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown markdown authoring profile"),
+        "stderr: {stderr}"
+    );
+}
+
 /// `config set` reports a config write error (exit 73) when the target config
 /// directory is read-only. Skipped when DAC permissions are not enforced for
 /// this process (e.g. running as root), so the assertion is never a false claim.

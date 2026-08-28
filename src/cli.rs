@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
+mod font_coverage;
+
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::watch::{
@@ -315,6 +317,24 @@ struct DoctorArgs {
     /// Emit a stable JSON health report.
     #[arg(long)]
     json: bool,
+    #[command(subcommand)]
+    command: Option<DoctorCommand>,
+}
+
+#[derive(Subcommand)]
+enum DoctorCommand {
+    /// Audit Markdown corpus glyph coverage against bundled faces.
+    Fonts(DoctorFontsArgs),
+}
+
+#[derive(Args)]
+struct DoctorFontsArgs {
+    /// Markdown file or directory to scan (recursed; no symlink follow).
+    #[arg(long)]
+    corpus: PathBuf,
+    /// Emit the stable JSON schema on stdout.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -412,7 +432,7 @@ pub fn main() -> ExitCode {
             let _guide = args.command.unwrap_or(RobotDocsCommand::Guide);
             print_robot_docs()
         }
-        Some(Command::Doctor(args)) => run_doctor(json || args.json),
+        Some(Command::Doctor(args)) => run_doctor(args, json),
         Some(Command::Config(args)) => run_config(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
@@ -2536,7 +2556,55 @@ fn report_write(kind: &str, path: &Path, bytes: usize, json: bool) {
     }
 }
 
-fn run_doctor(json: bool) -> ExitCode {
+fn run_doctor(args: DoctorArgs, global_json: bool) -> ExitCode {
+    match args.command {
+        None => run_doctor_health(global_json || args.json),
+        Some(DoctorCommand::Fonts(fonts)) => run_doctor_fonts(fonts, global_json || args.json),
+    }
+}
+
+fn run_doctor_fonts(args: DoctorFontsArgs, parent_json: bool) -> ExitCode {
+    let json = parent_json || args.json;
+    if args.corpus.as_os_str().is_empty() {
+        return fail_json(
+            64,
+            "usage_error",
+            "fmd doctor fonts requires --corpus <dir-or-file>",
+            json,
+        );
+    }
+    let paths = match font_coverage::expand_corpus(&args.corpus) {
+        Ok(p) => p,
+        Err(e) => return fail_json(66, "input_error", &e, json),
+    };
+    if json {
+        eprintln!(
+            "{{\"ok\":true,\"event\":\"doctor_fonts\",\"phase\":\"scan\",\"files\":{},\"corpus\":\"{}\"}}",
+            paths.len(),
+            json_escape(&args.corpus.display().to_string())
+        );
+    }
+    let report = match font_coverage::audit_files(&paths) {
+        Ok(r) => r,
+        Err(e) => return fail_json(66, "input_error", &e, json),
+    };
+    let out = if json {
+        report.to_json()
+    } else {
+        report.to_human()
+    };
+    let status = emit_stdout(&out);
+    if status != ExitCode::SUCCESS {
+        return status;
+    }
+    if font_coverage::report_has_gaps(&report) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn run_doctor_health(json: bool) -> ExitCode {
     let out = if json {
         format!(
             "{{\"ok\":true,\"tool\":\"fmd\",\"version\":\"{}\",\"engine\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"syntax_highlighting\":\"available\",\"wasm_core\":\"no-default-features\"}},\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"dependency_posture\":{{\"core\":\"std-only\",\"cli\":\"clap\"}},\"license\":\"LicenseRef-MIT-OpenAI-Anthropic-Rider\"}}",
@@ -2562,7 +2630,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -2577,7 +2645,11 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. deeper page-builder polish is still planned; specifics: full widow/orphan control, keep-with-next, footnotes layout, columns.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license
+  fmd doctor fonts --corpus ./docs --json
+                             # glyph coverage vs bundled faces + Noto math fallback.
+                             # stdout JSON: scripts/ranges/uncovered/hints.
+                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. deeper page-builder polish is still planned; specifics: full widow/orphan control, keep-with-next, footnotes layout, columns.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 

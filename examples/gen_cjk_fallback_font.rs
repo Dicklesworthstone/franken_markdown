@@ -36,18 +36,17 @@ const CJK_CURATED_RANGES: &[(u32, u32)] = &[
 
 /// Non-negotiable required sample codepoints across Han, Kana, Hangul, Fullwidth.
 const REQUIRED_CJK: &[char] = &[
-    '中', '文', '排', '版', '测', '试', '字', '符', '串', '换', '行', '处', '理',
-    'あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ',
-    'ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ',
-    '한', '글', '가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하',
-    '。', '、', '「', '」', '【', '】', '！', '？', '：', '；',
+    '中', '文', '排', '版', '测', '试', '字', '符', '串', '换', '行', '处', '理', 'あ', 'い', 'う',
+    'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ',
+    'コ', '한', '글', '가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파',
+    '하', '。', '、', '「', '」', '【', '】', '！', '？', '：', '；',
 ];
 
 fn run(source_path: &str, output_path: &str) -> Result<(), String> {
     let source_bytes = std::fs::read(source_path)
         .map_err(|e| format!("reading source font {source_path}: {e}"))?;
-    let font = Font::parse(source_bytes)
-        .map_err(|e| format!("parsing source font {source_path}: {e}"))?;
+    let font =
+        Font::parse(source_bytes).map_err(|e| format!("parsing source font {source_path}: {e}"))?;
 
     let mut curated = Vec::new();
     for &(start, end) in CJK_CURATED_RANGES {
@@ -86,7 +85,10 @@ fn run(source_path: &str, output_path: &str) -> Result<(), String> {
     let reparsed = Font::parse(subset.clone()).map_err(|e| format!("re-parsing subset: {e}"))?;
     for &c in &keep {
         if reparsed.glyph_index(c) == 0 {
-            return Err(format!("subset lost coverage for {c:?} (U+{:04X})", u32::from(c)));
+            return Err(format!(
+                "subset lost coverage for {c:?} (U+{:04X})",
+                u32::from(c)
+            ));
         }
     }
 
@@ -99,7 +101,10 @@ fn run(source_path: &str, output_path: &str) -> Result<(), String> {
         if skipped.is_empty() {
             String::new()
         } else {
-            format!(" (sample skipped: {:?})", skipped.iter().take(10).collect::<String>())
+            format!(
+                " (sample skipped: {:?})",
+                skipped.iter().take(10).collect::<String>()
+            )
         }
     );
     Ok(())

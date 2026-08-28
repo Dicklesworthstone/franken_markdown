@@ -91,12 +91,10 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<(u32, Vec<SfntTable>)> {
 
 /// Slice one table's bytes, clamping an over-long final table to the file end.
 fn slice_table(sfnt: &[u8], table: SfntTable, is_last: bool) -> Result<&[u8]> {
-    let start = usize::try_from(table.offset).map_err(|_| {
-        RenderError::InvalidInput("woff1: table offset does not fit usize".into())
-    })?;
-    let declared_len = usize::try_from(table.length).map_err(|_| {
-        RenderError::InvalidInput("woff1: table length does not fit usize".into())
-    })?;
+    let start = usize::try_from(table.offset)
+        .map_err(|_| RenderError::InvalidInput("woff1: table offset does not fit usize".into()))?;
+    let declared_len = usize::try_from(table.length)
+        .map_err(|_| RenderError::InvalidInput("woff1: table length does not fit usize".into()))?;
     let available = sfnt.len().saturating_sub(start);
     let len = if is_last {
         declared_len.min(available)
@@ -212,9 +210,8 @@ fn usize_from_u32(v: u32) -> usize {
 }
 
 fn u32_len(slice: &[u8]) -> Result<u32> {
-    u32::try_from(slice.len()).map_err(|_| {
-        RenderError::InvalidInput("woff1: table larger than 4 GiB".into())
-    })
+    u32::try_from(slice.len())
+        .map_err(|_| RenderError::InvalidInput("woff1: table larger than 4 GiB".into()))
 }
 
 fn u32_from_usize(v: usize) -> Result<u32> {
@@ -235,10 +232,15 @@ mod tests {
             let off = WOFF_HEADER_LEN + i * WOFF_DIR_ENTRY_LEN;
             let mut tag = [0u8; 4];
             tag.copy_from_slice(&woff[off..off + 4]);
-            let read = |o: usize| {
-                u32::from_be_bytes([woff[o], woff[o + 1], woff[o + 2], woff[o + 3]])
-            };
-            out.push((tag, read(off + 4), read(off + 8), read(off + 12), read(off + 16)));
+            let read =
+                |o: usize| u32::from_be_bytes([woff[o], woff[o + 1], woff[o + 2], woff[o + 3]]);
+            out.push((
+                tag,
+                read(off + 4),
+                read(off + 8),
+                read(off + 12),
+                read(off + 16),
+            ));
         }
         out
     }
@@ -257,8 +259,7 @@ mod tests {
             let (tag, offset, comp_len, orig_len, checksum) = *entry;
             assert_eq!(&tag, &table.tag, "directory stays sorted by tag");
             assert_eq!(checksum, table.checksum, "checksum preserved");
-            let payload =
-                &woff[offset as usize..offset as usize + comp_len as usize];
+            let payload = &woff[offset as usize..offset as usize + comp_len as usize];
             let decoded = if comp_len == orig_len {
                 payload.to_vec()
             } else {

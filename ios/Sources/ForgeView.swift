@@ -44,7 +44,11 @@ struct ForgeView: View {
                     if geometry.size.width >= 1_180 {
                         wideForge
                     } else if geometry.size.width >= 760 {
-                        regularForge
+                        if geometry.size.height > geometry.size.width {
+                            portraitTabletForge
+                        } else {
+                            regularForge
+                        }
                     } else {
                         compactForge
                     }
@@ -274,6 +278,15 @@ struct ForgeView: View {
         }
     }
 
+    private var portraitTabletForge: some View {
+        VStack(spacing: 14) {
+            editorPanel
+                .frame(minHeight: 320, maxHeight: .infinity)
+            previewPanel
+                .frame(minHeight: 320, maxHeight: .infinity)
+        }
+    }
+
     private var editorPanel: some View {
         LabPanel {
             VStack(alignment: .leading, spacing: 12) {
@@ -474,7 +487,7 @@ struct ForgeView: View {
         isExporting = true
         Task {
             do {
-                let (data, bytes, _) = try await renderer.exportPdf()
+                let (data, _, _) = try await renderer.exportPdf()
                 let tempDir = FileManager.default.temporaryDirectory
                 let fileUrl = tempDir.appendingPathComponent("Document.pdf")
                 try data.write(to: fileUrl)
@@ -492,7 +505,7 @@ struct ForgeView: View {
         isExporting = true
         Task {
             do {
-                let (html, bytes, _) = try await renderer.exportHtml()
+                let (html, _, _) = try await renderer.exportHtml()
                 let tempDir = FileManager.default.temporaryDirectory
                 let fileUrl = tempDir.appendingPathComponent("Document.html")
                 try html.write(to: fileUrl, atomically: true, encoding: .utf8)

@@ -28,6 +28,12 @@ export interface FmdFontAsset {
   slot: FmdFontAssetSlot;
   /** Browser-supplied TrueType font bytes. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
+  /**
+   * Optional CSS `font-weight` pin (integer 1..=1000) for variable `wght` faces.
+   * Static faces ignore the pin. When `body-bold` is omitted and `body-regular`
+   * is a variable face, bold instances from that same file at 700 (or this pin).
+   */
+  weight?: number;
 }
 
 export interface FmdRenderOptions {
@@ -75,12 +81,14 @@ export interface FmdCapabilities {
     self_contained: boolean;
     custom_css_utf8: boolean;
     font_assets: "ttf_v0_host_supplied_bytes";
+    font_slot_weight: "css_1_to_1000_variable_wght";
   };
   pdf: {
     mime_type: "application/pdf";
     deterministic_metadata_epoch: boolean;
     image_assets: "png_svg_v0_host_supplied_bytes";
     font_assets: "ttf_v0_host_supplied_bytes";
+    font_slot_weight: "css_1_to_1000_variable_wght";
   };
   diagnostics: {
     source_spans: "byte_offsets";

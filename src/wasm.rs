@@ -168,6 +168,32 @@ impl WasmRenderOptions {
         self.with_font_asset_bytes(slot, bytes)
     }
 
+    /// Pin CSS `font-weight` for a host-supplied (or VF-shared) slot.
+    ///
+    /// Variable `wght` faces instance at this location; static faces ignore the
+    /// pin. Valid range is 1..=1000.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] when `weight` is outside 1..=1000.
+    pub fn with_font_slot_weight(mut self, slot: FontAssetSlot, weight: u16) -> Result<Self> {
+        self.font_assets.set_slot_weight(slot, weight)?;
+        Ok(self)
+    }
+
+    /// Pin CSS `font-weight` using the stable slot spelling.
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] for unknown slots or out-of-range
+    /// weights.
+    pub fn with_font_slot_weight_name(self, slot: &str, weight: u16) -> Result<Self> {
+        let slot = FontAssetSlot::parse(slot).ok_or_else(|| {
+            RenderError::InvalidInput(format!(
+                "unknown font asset slot '{slot}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular"
+            ))
+        })?;
+        self.with_font_slot_weight(slot, weight)
+    }
+
     /// Return a copy with one PDF image asset appended.
     ///
     /// # Errors
@@ -367,8 +393,8 @@ pub fn capabilities_json() -> String {
     "{\"schema\":\"fmd-wasm-capabilities-v1\",\
      \"outputs\":[\"html\",\"pdf\"],\
      \"input\":\"markdown_utf8\",\
-     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"font_assets\":\"ttf_v0_host_supplied_bytes\"},\
-     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\"},\
+     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
+     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
      \"runtime_assumptions\":{\"filesystem\":false,\"process\":false,\"network\":false,\"threads\":false},\
      \"theme\":"

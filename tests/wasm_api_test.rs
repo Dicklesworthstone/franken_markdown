@@ -276,6 +276,66 @@ fn wasm_capabilities_json_exposes_browser_safe_contract() {
     assert!(json.contains("\"custom_css_utf8\":true"));
     assert!(json.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""));
     assert!(json.contains("\"font_assets\":\"ttf_v0_host_supplied_bytes\""));
+    assert!(json.contains("\"font_slot_weight\":\"css_1_to_1000_variable_wght\""));
+}
+
+fn log_check(id: &str, subject: &str, ok: bool) {
+    eprintln!(
+        "check id={id} subject={subject} outcome={}",
+        if ok { "PASS" } else { "FAIL" }
+    );
+    assert!(ok, "{id}: {subject}");
+}
+
+#[test]
+fn wasm_builder_pins_variable_font_slot_weight() {
+    let vf = franken_markdown::text::variable_triangle_fixture();
+    let err = WasmRenderOptions::default()
+        .with_font_slot_weight_name("not-a-slot", 650)
+        .unwrap_err();
+    log_check(
+        "gk3v.3.wasm.slot",
+        "unknown slot rejected",
+        err.to_string().contains("unknown font asset slot"),
+    );
+    let err = WasmRenderOptions::default()
+        .with_font_slot_weight(FontAssetSlot::BodyRegular, 0)
+        .unwrap_err();
+    log_check(
+        "gk3v.3.wasm.weight",
+        "weight 0 rejected",
+        err.to_string().contains("out of range"),
+    );
+
+    let at_400 = WasmRenderOptions::default()
+        .with_font_asset_bytes(FontAssetSlot::BodyRegular, vf.clone())
+        .unwrap()
+        .with_font_slot_weight_name("body-regular", 400)
+        .unwrap();
+    let at_650 = WasmRenderOptions::default()
+        .with_font_asset_bytes(FontAssetSlot::BodyRegular, vf)
+        .unwrap()
+        .with_font_slot_weight(FontAssetSlot::BodyRegular, 650)
+        .unwrap();
+    at_400.font_assets.validate().unwrap();
+    let a = render_pdf("Hello variable", &at_400).unwrap();
+    let b = render_pdf("Hello variable", &at_650).unwrap();
+    let b2 = render_pdf("Hello variable", &at_650).unwrap();
+    log_check(
+        "gk3v.3.wasm.diff",
+        "WASM PDF at 400 differs from 650",
+        a.bytes != b.bytes,
+    );
+    log_check(
+        "gk3v.3.wasm.det",
+        "WASM PDF at 650 is deterministic",
+        b.bytes == b2.bytes,
+    );
+    log_check(
+        "gk3v.3.wasm.pdf",
+        "WASM PDF is a PDF",
+        b.bytes.starts_with(b"%PDF-"),
+    );
 }
 
 // --- grn.2.8: small-module coverage for the wasm core surface ---------------

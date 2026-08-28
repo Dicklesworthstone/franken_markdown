@@ -40,7 +40,8 @@ export async function renderHtml(markdown, options = {}) {
         fontBytesForSlot(fontAssets, "body-bold"),
         fontBytesForSlot(fontAssets, "body-italic"),
         fontBytesForSlot(fontAssets, "body-bold-italic"),
-        fontBytesForSlot(fontAssets, "mono-regular")
+        fontBytesForSlot(fontAssets, "mono-regular"),
+        fontWeightsForSlots(fontAssets)
       )
     );
   }
@@ -92,6 +93,7 @@ export async function renderPdf(markdown, options = {}) {
       fontBytesForSlot(fontAssets, "body-italic"),
       fontBytesForSlot(fontAssets, "body-bold-italic"),
       fontBytesForSlot(fontAssets, "mono-regular"),
+      fontWeightsForSlots(fontAssets),
       numberOption(options.baseFontSize),
       numberOption(options.headingScale),
       numberOption(options.tableFontSize)
@@ -273,7 +275,8 @@ function fontAssetsOption(value) {
     if (bytes.byteLength === 0) {
       throw new TypeError(`fontAssets[${index}].bytes must not be empty`);
     }
-    return Object.freeze({ slot, bytes });
+    const weight = fontWeightOption(asset.weight, `fontAssets[${index}].weight`);
+    return Object.freeze({ slot, bytes, weight });
   });
 }
 
@@ -297,6 +300,30 @@ function fontSlotOption(value, label) {
 function fontBytesForSlot(assets, slot) {
   const asset = assets.find((entry) => entry.slot === slot);
   return asset === undefined ? new Uint8Array() : asset.bytes;
+}
+
+function fontWeightsForSlots(assets) {
+  const slots = [
+    "body-regular",
+    "body-bold",
+    "body-italic",
+    "body-bold-italic",
+    "mono-regular"
+  ];
+  return Uint32Array.from(slots, (slot) => {
+    const asset = assets.find((entry) => entry.slot === slot);
+    return asset === undefined || asset.weight === undefined ? 0 : asset.weight;
+  });
+}
+
+function fontWeightOption(value, label) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 1000) {
+    throw new TypeError(`${label} must be an integer 1..=1000`);
+  }
+  return value;
 }
 
 function bytesOption(value, label) {

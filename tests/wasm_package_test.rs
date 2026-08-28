@@ -63,6 +63,8 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("fontAssets"));
     assert!(js.contains("fontAssetsOption"));
     assert!(js.contains("fontBytesForSlot"));
+    assert!(js.contains("fontWeightsForSlots"));
+    assert!(js.contains("must be an integer 1..=1000"));
     assert!(js.contains("fontAssets contains duplicate slot"));
     assert!(js.contains("body-bold-italic"));
     assert!(js.contains("darkMode"));
@@ -100,6 +102,8 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(dts.contains("export interface FmdPdfImageAsset"));
     assert!(dts.contains("export interface FmdFontAsset"));
     assert!(dts.contains("export type FmdFontAssetSlot"));
+    assert!(dts.contains("weight?: number"));
+    assert!(dts.contains("font_slot_weight: \"css_1_to_1000_variable_wght\""));
     assert!(dts.contains("bytes: Uint8Array"));
     assert!(dts.contains("PNG and SVG assets are supported in PDF output"));
     assert!(dts.contains("fontAssets?: FmdFontAsset[]"));

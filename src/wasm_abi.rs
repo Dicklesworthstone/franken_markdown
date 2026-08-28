@@ -134,6 +134,7 @@ pub fn render_html_configured_with_fonts(
     body_italic: Vec<u8>,
     body_bold_italic: Vec<u8>,
     mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
@@ -147,6 +148,7 @@ pub fn render_html_configured_with_fonts(
         body_bold_italic,
         mono_regular,
     )?;
+    apply_font_weights(&mut options, &font_weights)?;
     wasm::render_html(markdown, &options)
         .map(render_result)
         .map_err(render_error_to_js)
@@ -309,6 +311,7 @@ pub fn render_pdf_configured_multi(
     body_italic: Vec<u8>,
     body_bold_italic: Vec<u8>,
     mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
     base_font_size: Option<f64>,
     heading_scale: Option<f64>,
     table_font_size: Option<f64>,
@@ -342,6 +345,7 @@ pub fn render_pdf_configured_multi(
         body_bold_italic,
         mono_regular,
     )?;
+    apply_font_weights(&mut options, &font_weights)?;
     wasm::render_pdf(markdown, &options)
         .map(render_result)
         .map_err(render_error_to_js)
@@ -435,6 +439,35 @@ fn set_font_asset(
         .font_assets
         .set_slot(slot, bytes)
         .map_err(render_error_to_js)
+}
+
+/// Parallel CSS `font-weight` pins for the five slots. Empty means "no pins".
+/// Length 5: 0 = unset, 1..=1000 = pin. Any other length is invalid.
+fn apply_font_weights(
+    options: &mut WasmRenderOptions,
+    weights: &[u32],
+) -> std::result::Result<(), JsValue> {
+    if weights.is_empty() {
+        return Ok(());
+    }
+    if weights.len() != FontAssetSlot::ALL.len() {
+        return Err(JsValue::from_str(
+            "font_weights must be empty or a 5-element array (body-regular, body-bold, body-italic, body-bold-italic, mono-regular)",
+        ));
+    }
+    for (slot, &weight) in FontAssetSlot::ALL.iter().zip(weights.iter()) {
+        if weight == 0 {
+            continue;
+        }
+        let weight = u16::try_from(weight).map_err(|_| {
+            JsValue::from_str("font slot weight must be an integer 1..=1000 (0 means unset)")
+        })?;
+        options
+            .font_assets
+            .set_slot_weight(*slot, weight)
+            .map_err(render_error_to_js)?;
+    }
+    Ok(())
 }
 
 fn split_nonempty_image_assets<'a>(

@@ -91,7 +91,6 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<Vec<SfntTable>, WoffError> {
     }
     tables.sort_by_key(|t| t.tag);
     Ok(tables)
-    Ok(tables)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

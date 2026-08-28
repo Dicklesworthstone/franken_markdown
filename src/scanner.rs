@@ -369,10 +369,11 @@ fn find_by_chunk32(
     for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
         if chunk32_hot(chunk, word_matches) {
             let base = chunk_idx * 32;
-            return chunk
-                .iter()
-                .position(|&byte| byte_matches(byte))
-                .map(|rel| base + rel);
+            // SWAR can theoretically false-positive; do not abort the scan
+            // with `None` just because this lane's byte predicate missed.
+            if let Some(rel) = chunk.iter().position(|&byte| byte_matches(byte)) {
+                return Some(base + rel);
+            }
         }
     }
     let base = bytes.len() - chunks.remainder().len();
@@ -389,10 +390,9 @@ fn find_by_chunk16(
     for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
         if chunk16_hot(chunk, word_matches) {
             let base = chunk_idx * 16;
-            return chunk
-                .iter()
-                .position(|&byte| byte_matches(byte))
-                .map(|rel| base + rel);
+            if let Some(rel) = chunk.iter().position(|&byte| byte_matches(byte)) {
+                return Some(base + rel);
+            }
         }
     }
     let base = bytes.len() - chunks.remainder().len();
@@ -410,10 +410,9 @@ fn find_by_word_scan(
         lane.copy_from_slice(chunk);
         if word_matches(u64::from_ne_bytes(lane)) {
             let base = chunk_idx * 8;
-            return chunk
-                .iter()
-                .position(|&byte| byte_matches(byte))
-                .map(|rel| base + rel);
+            if let Some(rel) = chunk.iter().position(|&byte| byte_matches(byte)) {
+                return Some(base + rel);
+            }
         }
     }
     let base = bytes.len() - chunks.remainder().len();

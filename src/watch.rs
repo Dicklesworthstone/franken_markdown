@@ -262,6 +262,152 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
     Some(Fingerprint { len, hash })
 }
 
+// =====================================================================
+// j3e0.2: loopback-only preview HTTP server with auto-reload
+// =====================================================================
+
+/// The auto-reload snippet injected into the served preview HTML. The
+/// `EventSource` connection lives at `/events`; each `data: reload` line
+/// from the server causes the page to refresh. This snippet is **not**
+/// injected into `--out` files: it is only present in the in-memory
+/// preview served over the loopback connection.
+pub const RELOAD_SNIPPET: &str = "<script>(function(){var es=new EventSource('/events');es.onmessage=function(e){if(e.data==='reload')location.reload();};})();</script>";
+
+/// What the preview server knows how to serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// `GET /` — current rendered HTML with the reload snippet appended.
+    Index,
+    /// `GET /events` — `text/event-stream` with `data: reload` lines.
+    Events,
+    /// Anything else (404).
+    NotFound,
+}
+
+/// Parse a single HTTP/1.1 request line + headers into a route. The
+/// parser is intentionally minimal: a request method that isn't `GET`,
+/// a path that doesn't start with `/`, or any path component that
+/// contains `..` is treated as `NotFound` (directory-traversal hard
+/// reject). The body is not consumed.
+#[must_use]
+pub fn route_for(req: &[u8]) -> Route {
+    let Ok(text) = std::str::from_utf8(req) else {
+        return Route::NotFound;
+    };
+    // Request-line: `METHOD SP PATH SP HTTP/1.x CRLF`
+    let mut lines = text.split("\r\n");
+    let Some(request_line) = lines.next() else {
+        return Route::NotFound;
+    };
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    if method != "GET" {
+        return Route::NotFound;
+    }
+    if !path.starts_with('/') {
+        return Route::NotFound;
+    }
+    // Disallow `..` path components (hard traversal reject).
+    for seg in path.split('/') {
+        if seg == ".." {
+            return Route::NotFound;
+        }
+    }
+    // Route. No query string handling in v1.
+    let path = path.split('?').next().unwrap_or(path);
+    if path == "/" {
+        Route::Index
+    } else if path == "/events" {
+        Route::Events
+    } else {
+        Route::NotFound
+    }
+}
+
+/// Render the response bytes for a given route. `events` is the
+/// pre-encoded SSE body (without the trailing `data: reload\n\n` line,
+/// which the caller appends each time a change is announced).
+#[must_use]
+pub fn render_response(route: Route, html: &str, events_header: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(html.len() + 256);
+    match route {
+        Route::Index => {
+            // Inject the reload snippet just before `</body>` if present,
+            // otherwise append it. The served preview must always refresh.
+            let body = inject_reload_snippet(html);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                 Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            out.extend_from_slice(header.as_bytes());
+            out.extend_from_slice(body.as_bytes());
+        }
+        Route::Events => {
+            // EventSource preamble + caller-supplied buffered events.
+            out.extend_from_slice(events_header.as_bytes());
+        }
+        Route::NotFound => {
+            let body = b"not found";
+            let header = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            out.extend_from_slice(header.as_bytes());
+            out.extend_from_slice(body);
+        }
+    }
+    out
+}
+
+/// The SSE preamble sent to a freshly-connected `/events` client. Each
+/// subsequent `data: reload\n\n` line is appended by the writer when a
+/// file change is observed.
+#[must_use]
+pub fn sse_preamble() -> String {
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+     Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+        .to_string()
+}
+
+fn inject_reload_snippet(html: &str) -> String {
+    if let Some(idx) = html.rfind("</body>") {
+        let mut out = String::with_capacity(html.len() + RELOAD_SNIPPET.len());
+        out.push_str(&html[..idx]);
+        out.push_str(RELOAD_SNIPPET);
+        out.push_str(&html[idx..]);
+        out
+    } else {
+        let mut out = String::with_capacity(html.len() + RELOAD_SNIPPET.len());
+        out.push_str(html);
+        out.push_str(RELOAD_SNIPPET);
+        out
+    }
+}
+
+/// Bind a `TcpListener` on 127.0.0.1 with the OS-chosen port and return
+/// `(listener, bound_port)`. The loopback-only constraint is structural
+/// — the listener is created with `SocketAddrV4::new(LOCALHOST, 0)`,
+/// not from a `to_socket_addrs` lookup, so a hostile hostname cannot
+/// redirect the bind to an external interface.
+#[cfg(feature = "cli")]
+pub fn bind_loopback() -> std::io::Result<(std::net::TcpListener, u16)> {
+    use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
+    let listener = TcpListener::bind(addr)?;
+    let port = listener.local_addr()?.port();
+    Ok((listener, port))
+}
+
+/// A single SSE reload event ready to be written to a `/events` client.
+#[must_use]
+pub fn sse_reload_event() -> &'static str {
+    "data: reload\n\n"
+}
+
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -448,5 +594,186 @@ mod tests {
         let found = referenced_local_paths(md, &dir);
         log_check("j3e0.1.assets", "only existing local dest", found == [img]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===============================================================
+    // j3e0.2 — loopback-only preview HTTP server with auto-reload
+    // ===============================================================
+
+    fn req(path: &str) -> Vec<u8> {
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: test\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn route_for_gets_root_index() {
+        log_check(
+            "j3e0.2.route.index",
+            "GET / -> Index",
+            route_for(&req("/")) == Route::Index,
+        );
+    }
+
+    #[test]
+    fn route_for_gets_events_stream() {
+        log_check(
+            "j3e0.2.route.events",
+            "GET /events -> Events",
+            route_for(&req("/events")) == Route::Events,
+        );
+    }
+
+    #[test]
+    fn route_for_rejects_directory_traversal() {
+        for hostile in ["/../etc/passwd", "/a/../b", "/foo/.."] {
+            log_check(
+                "j3e0.2.route.traversal",
+                hostile,
+                route_for(&req(hostile)) == Route::NotFound,
+            );
+        }
+    }
+
+    #[test]
+    fn route_for_rejects_unknown_paths() {
+        log_check(
+            "j3e0.2.route.unknown",
+            "GET /admin -> NotFound",
+            route_for(&req("/admin")) == Route::NotFound,
+        );
+    }
+
+    #[test]
+    fn route_for_rejects_non_get_methods() {
+        let post = b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let put = b"PUT /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        log_check(
+            "j3e0.2.route.post",
+            "POST / -> NotFound",
+            route_for(post) == Route::NotFound,
+        );
+        log_check(
+            "j3e0.2.route.put",
+            "PUT /events -> NotFound",
+            route_for(put) == Route::NotFound,
+        );
+    }
+
+    #[test]
+    fn route_for_ignores_query_strings() {
+        log_check(
+            "j3e0.2.route.query",
+            "GET /?v=1 -> Index",
+            route_for(&req("/?v=1")) == Route::Index,
+        );
+    }
+
+    #[test]
+    fn render_response_index_injects_reload_snippet() {
+        let html = "<html><body><p>hi</p></body></html>";
+        let resp = render_response(Route::Index, html, "");
+        let text = std::str::from_utf8(&resp).expect("utf-8");
+        log_check(
+            "j3e0.2.index.200",
+            "200 OK status",
+            text.starts_with("HTTP/1.1 200 OK\r\n"),
+        );
+        log_check(
+            "j3e0.2.index.snippet",
+            "EventSource snippet present",
+            text.contains("EventSource('/events')"),
+        );
+        log_check(
+            "j3e0.2.index.before_close",
+            "snippet injected before </body>",
+            text.find("EventSource").unwrap() < text.find("</body>").unwrap(),
+        );
+        log_check(
+            "j3e0.2.index.content_type",
+            "Content-Type is text/html",
+            text.contains("Content-Type: text/html; charset=utf-8"),
+        );
+        log_check(
+            "j3e0.2.index.no_store",
+            "Cache-Control: no-store so reload wins",
+            text.contains("Cache-Control: no-store"),
+        );
+    }
+
+    #[test]
+    fn render_response_index_appends_when_no_body_tag() {
+        let html = "<p>fragment</p>";
+        let resp = render_response(Route::Index, html, "");
+        let text = std::str::from_utf8(&resp).expect("utf-8");
+        log_check(
+            "j3e0.2.index.appended",
+            "snippet appended when no </body>",
+            text.contains("EventSource") && text.ends_with("</script>"),
+        );
+    }
+
+    #[test]
+    fn render_response_events_uses_sse_preamble() {
+        let resp = render_response(Route::Events, "", &sse_preamble());
+        let text = std::str::from_utf8(&resp).expect("utf-8");
+        log_check(
+            "j3e0.2.events.200",
+            "200 OK status",
+            text.starts_with("HTTP/1.1 200 OK\r\n"),
+        );
+        log_check(
+            "j3e0.2.events.content_type",
+            "Content-Type: text/event-stream",
+            text.contains("Content-Type: text/event-stream"),
+        );
+    }
+
+    #[test]
+    fn render_response_not_found_is_404() {
+        let resp = render_response(Route::NotFound, "", "");
+        let text = std::str::from_utf8(&resp).expect("utf-8");
+        log_check(
+            "j3e0.2.404.status",
+            "404 Not Found status",
+            text.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        );
+        log_check(
+            "j3e0.2.404.body",
+            "404 body mentions 'not found'",
+            text.contains("not found"),
+        );
+    }
+
+    #[test]
+    fn sse_reload_event_is_well_formed() {
+        let ev = sse_reload_event();
+        log_check(
+            "j3e0.2.sse.data",
+            "payload is 'data: '",
+            ev.starts_with("data: "),
+        );
+        log_check(
+            "j3e0.2.sse.terminator",
+            "terminator is \\n\\n",
+            ev.ends_with("\n\n"),
+        );
+    }
+
+    #[test]
+    fn bind_loopback_uses_localhost_only() {
+        let (listener, port) = bind_loopback().expect("bind");
+        log_check(
+            "j3e0.2.bind.port_nonzero",
+            "OS-chosen port is non-zero",
+            port != 0,
+        );
+        let addr = listener.local_addr().expect("local_addr");
+        log_check(
+            "j3e0.2.bind.is_loopback",
+            "bound to 127.0.0.1",
+            addr.ip().is_loopback() && addr.ip().to_string() == "127.0.0.1",
+        );
     }
 }

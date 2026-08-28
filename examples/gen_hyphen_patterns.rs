@@ -70,12 +70,22 @@ fn main() -> ExitCode {
         match args[i].as_str() {
             "--src" => {
                 i += 1;
-                src = args.get(i).map(PathBuf::from);
+                match args.get(i) {
+                    Some(p) => src = Some(PathBuf::from(p)),
+                    None => {
+                        let _ = writeln!(io::stderr(), "error: --src requires a directory");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             "--out" => {
                 i += 1;
-                if let Some(p) = args.get(i) {
-                    out = PathBuf::from(p);
+                match args.get(i) {
+                    Some(p) => out = PathBuf::from(p),
+                    None => {
+                        let _ = writeln!(io::stderr(), "error: --out requires a directory");
+                        return ExitCode::from(2);
+                    }
                 }
             }
             "--help" | "-h" => {
@@ -232,8 +242,16 @@ fn extract_tex_patterns(src: &str) -> Result<Vec<String>, String> {
     let body = &rest[brace + 1..];
     let mut depth = 1i32;
     let mut end = None;
+    let mut in_comment = false;
     for (idx, ch) in body.char_indices() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
         match ch {
+            '%' => in_comment = true,
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
@@ -263,4 +281,16 @@ fn tokenize_pattern_body(body: &str) -> Vec<String> {
         }
     }
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_tex_patterns;
+
+    #[test]
+    fn patterns_extractor_ignores_braces_inside_comments() {
+        let src = "\\patterns{\n% closing brace in a comment }\na1b\n}\n";
+        let tokens = extract_tex_patterns(src).expect("extract");
+        assert_eq!(tokens, vec!["a1b".to_string()]);
+    }
 }

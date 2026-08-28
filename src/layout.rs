@@ -1397,24 +1397,24 @@ impl Hyphenator {
         out: &mut Vec<usize>,
         scores: &mut Vec<u8>,
     ) {
-        let mut units = 0usize;
+        // One codepoint per original character so returned offsets stay
+        // character indexes into `word`. If `to_lowercase` expands (e.g. İ →
+        // i + combining dot), skip the word rather than emit unmapped points.
+        let mut cps = Vec::with_capacity(word.len().saturating_add(2));
+        cps.push(u32::from(b'.'));
         for ch in word.chars() {
             if !is_hyphen_letter(ch) {
                 return;
             }
-            units += 1;
-        }
-        if units <= opts.min_left.saturating_add(opts.min_right) {
-            return;
-        }
-
-        let mut cps = Vec::with_capacity(units + 2);
-        cps.push(u32::from(b'.'));
-        for ch in word.chars() {
             let ch = if ch == '\u{2019}' { '\'' } else { ch };
-            for lower in ch.to_lowercase() {
-                cps.push(lower as u32);
+            let mut lower = ch.to_lowercase();
+            let Some(first) = lower.next() else {
+                return;
+            };
+            if lower.next().is_some() {
+                return;
             }
+            cps.push(first as u32);
         }
         cps.push(u32::from(b'.'));
         let char_len = cps.len().saturating_sub(2);

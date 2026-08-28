@@ -214,3 +214,17 @@ fn non_letters_do_not_hyphenate() {
         assert!(got.is_empty(), "{word}");
     }
 }
+
+#[test]
+fn expanding_lowercase_does_not_emit_desynced_points() {
+    // U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE lowercases to two
+    // codepoints. Offsets into that expansion would not be character
+    // indexes in the original word, so the hyphenator must refuse.
+    let h = Hyphenator::german();
+    let o = opts(HyphenLang::German);
+    let word = "İstanbulxx";
+    let got = h.hyphenation_points(word, o);
+    let outcome = if got.is_empty() { "PASS" } else { "FAIL" };
+    eprintln!("check=expanding-lower subject={word:?} got={got:?} outcome={outcome}");
+    assert!(got.is_empty(), "{word} → {got:?}");
+}

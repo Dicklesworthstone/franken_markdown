@@ -28,6 +28,9 @@ rm -rf -- "$WORK"; mkdir -p -- "$WORK"
 LEDGER="$ART/ledger.txt"
 : >"$LEDGER"
 log() { printf '%s\n' "$*" | tee -a "$LEDGER"; }
+log_check() {
+  printf 'wasm-package: check id=%s subject=%s outcome=%s\n' "$1" "$2" "$3" | tee -a "$LEDGER"
+}
 
 # Committed size budget for the wasm-bindgen .wasm (raw + gzip). The bundled
 # fonts and vector-SVG/PDF drawing code dominate; bump consciously (and note why)
@@ -117,12 +120,35 @@ if [ -s "$package_dir/README.md" ]; then log "  README.md: present"; else log " 
 # checksum so the artifact identity is recorded in the ledger.
 bg="$pkg_dir/franken_markdown_bg.wasm"
 raw=$(wc -c <"$bg"); gz=$(gzip -c "$bg" | wc -c)
-if command -v brotli >/dev/null 2>&1; then br=$(brotli -c "$bg" | wc -c); else br="n/a (brotli not installed)"; fi
-log "wasm size: raw=${raw} (budget ${BUDGET_RAW}); gzip=${gz} (budget ${BUDGET_GZIP}); brotli=${br}"
+raw=${raw// /}
+gz=${gz// /}
+if command -v brotli >/dev/null 2>&1; then br=$(brotli -c "$bg" | wc -c); br=${br// /}; else br="n/a"; fi
+fmt_delta() {
+  local d="$1"
+  if [ "$d" -gt 0 ]; then printf '+%s' "$d"
+  elif [ "$d" -eq 0 ]; then printf '0'
+  else printf '%s' "$d"
+  fi
+}
+delta_raw=$(fmt_delta $((raw - PREVIOUS_RAW)))
+delta_gz=$(fmt_delta $((gz - PREVIOUS_GZIP)))
+log "wasm size: raw=${raw} (budget ${BUDGET_RAW}, delta vs last ratchet ${delta_raw}); gzip=${gz} (budget ${BUDGET_GZIP}, delta vs last ratchet ${delta_gz}); brotli=${br}"
 log "wasm sha256: $(sha256sum "$bg" | cut -d' ' -f1)"
 size_fail=0
-[ "$raw" -le "$BUDGET_RAW" ] || { log "SIZE FAIL: raw ${raw} > ${BUDGET_RAW}"; size_fail=1; }
-[ "$gz"  -le "$BUDGET_GZIP" ] || { log "SIZE FAIL: gzip ${gz} > ${BUDGET_GZIP}"; size_fail=1; }
+if [ "$raw" -le "$BUDGET_RAW" ]; then
+  log_check "smif.2.size.raw" "raw=${raw} budget=${BUDGET_RAW} delta=${delta_raw}" PASS
+else
+  log_check "smif.2.size.raw" "raw=${raw} budget=${BUDGET_RAW} delta=${delta_raw}" FAIL
+  log "SIZE FAIL: raw ${raw} > ${BUDGET_RAW}"
+  size_fail=1
+fi
+if [ "$gz" -le "$BUDGET_GZIP" ]; then
+  log_check "smif.2.size.gzip" "gzip=${gz} budget=${BUDGET_GZIP} delta=${delta_gz}" PASS
+else
+  log_check "smif.2.size.gzip" "gzip=${gz} budget=${BUDGET_GZIP} delta=${delta_gz}" FAIL
+  log "SIZE FAIL: gzip ${gz} > ${BUDGET_GZIP}"
+  size_fail=1
+fi
 
 # Native binary for the parity oracle (debug is fine: output is deterministic).
 log "build native fmd (parity oracle)"

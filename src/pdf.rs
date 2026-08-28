@@ -49,6 +49,8 @@ static SUBSET_TAIL: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_SUBSET_TAIL").is_some());
 static TAIL_NOPAIR: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOPAIR").is_some());
+static TAIL_NOHEX: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOHEX").is_some());
 static TAIL_NOGLYPH: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOGLYPH").is_some());
 

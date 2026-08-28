@@ -15,9 +15,9 @@ starting with `0.2.0`; and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, `v0.3.0`–`v0.3.4`, and `v0.4.0`. The latest GitHub Release is
-[`v0.4.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0)
-(2026-08-24). In-tree Cargo on `main` is `0.4.1` (development version).
+**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, `v0.3.0`–`v0.3.4`, `v0.4.0`, and `v0.4.1`. The latest GitHub Release is
+[`v0.4.1`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.1)
+(2026-08-28). In-tree Cargo on `main` is `0.4.1`.
 
 Scope window: 2026-06-26 through 2026-08-28.
 
@@ -43,7 +43,7 @@ Scope window: 2026-06-26 through 2026-08-28.
 | 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
 | 2026-07-23 | CJK line breaking | UAX #14 inter-ideograph breaks with closing/opening/non-starter prohibitions, zero-width stretchable glue for Knuth-Plass |
 | 2026-08-24 | TeX-math + font factoring release | `v0.4.0` ships clean-room TeX-mathematics layout (`fmd-math`), factored font crate (`fmd-font` `v0.2.0`), UAX #14 CJK line breaking, expanded math symbol fallbacks, and configurable typography |
-| 2026-08-25 → 2026-08-28 | Unreleased (0.4.1-dev) | MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, and TOC foundation |
+| 2026-08-28 | Document-navigation + hardening release | `v0.4.1` ships MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page, PDF outline bookmarks, WOFF1 embedded subsets, recursive watch, PDF/A-2b, and the reality-check build/CI hardening wave |
 
 ## 0.4.1 - 2026-08-28
 

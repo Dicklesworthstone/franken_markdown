@@ -26,11 +26,11 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
 > | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.1`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.0`** (2026-08-24) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0 |
+> | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.1`** (2026-08-28) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.1 |
 > | **crates.io** | `franken_markdown` library | **`0.4.0`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.3.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
-> The latest tagged release is **v0.4.0** (shipped to GitHub Releases and crates.io), carrying the clean-room TeX-mathematics layout engine (`fmd-math`), TrueType font reader factoring (`fmd-font`), UAX #14 CJK line breaking, and expanded math symbol fallbacks. The current development tree on `main` is **0.4.1** (MathML Core HTML output, multi-language hyphenation, GFM-plus definition lists, and caret diagnostics). For the current `0.4.0` CLI use the GitHub release archives; for the in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
+> The latest tagged release is **v0.4.1** (shipped to GitHub Releases; crates.io pending), carrying MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page, PDF outline bookmarks, WOFF1 embedded font subsets, recursive watch mode, and PDF/A-2b. For the current `0.4.1` CLI use the GitHub release archives; for the in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn

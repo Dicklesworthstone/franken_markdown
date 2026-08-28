@@ -96,7 +96,8 @@ export async function renderPdf(markdown, options = {}) {
       fontWeightsForSlots(fontAssets),
       numberOption(options.baseFontSize),
       numberOption(options.headingScale),
-      numberOption(options.tableFontSize)
+      numberOption(options.tableFontSize),
+      Boolean(options.pageNumbers)
     )
   );
 }

@@ -542,7 +542,7 @@ fn looks_like_reference_definition(line: &str) -> bool {
     if leading_spaces(line) > 3 {
         return false;
     }
-    let t = line.trim_start();
+    let t = trim_start_space_tab(line);
     t.starts_with('[') && t.contains("]:")
 }
 
@@ -652,7 +652,7 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, R
 /// whitespace or brackets) plus a byte cap; HTML/PDF delimiter characters are
 /// allowed so a `[^a"b]: dest` line is not stolen as a link-reference definition.
 fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
-    let trimmed = line.trim_start();
+    let trimmed = trim_start_space_tab(line);
     let rest = trimmed.strip_prefix("[^")?;
     let close = rest.find(']')?;
     let id = &rest[..close];
@@ -660,12 +660,12 @@ fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
         return None;
     }
     let after = rest[close + 1..].strip_prefix(':')?;
-    Some((id.to_string(), after.trim()))
+    Some((id.to_string(), trim_space_tab(after)))
 }
 
 /// Cheap check: the line starts a footnote definition (`[^id]:`).
 fn footnote_definition_marker(line: &str) -> bool {
-    let trimmed = line.trim_start();
+    let trimmed = trim_start_space_tab(line);
     let Some(rest) = trimmed.strip_prefix("[^") else {
         return false;
     };
@@ -774,7 +774,7 @@ fn collect_link_reference_metadata_into(
                     i += 1;
                 } else if blockquote_lazy_continuation(last_inner, lines[i]) {
                     kept_reference_candidate |= lines[i].contains("]:");
-                    last_inner = Some(lines[i].trim_start());
+                    last_inner = Some(trim_start_space_tab(lines[i]));
                     i += 1;
                 } else {
                     break;
@@ -1094,7 +1094,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                     inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
-                    inner.push(lines[i].trim_start());
+                    inner.push(trim_start_space_tab(lines[i]));
                     i += 1;
                 } else {
                     break;
@@ -1408,7 +1408,10 @@ fn parse_blocks_with_refs_profiled(
                     break;
                 }
                 text.push(' ');
-                text.push_str(cont.trim_start());
+                // Strip the 4-column continuation indent, not every leading
+                // whitespace — extra spaces are content (a nested code span,
+                // etc.), not padding.
+                text.push_str(strip_n(cont, 4));
                 used += 1;
             }
             let inlines = parse_inlines_with_refs_profiled(&text, refs, profiler);
@@ -1438,7 +1441,7 @@ fn parse_blocks_with_refs_profiled(
                     // CommonMark lazy continuation: a non-blank, non-`>` line that
                     // does not start a new block continues the blockquote's open
                     // paragraph instead of ending the quote.
-                    inner.push(lines[i].trim_start());
+                    inner.push(trim_start_space_tab(lines[i]));
                     i += 1;
                 } else {
                     break;
@@ -1741,7 +1744,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     if leading_spaces(line) > 3 {
         return None;
     }
-    let t = line.trim_start();
+    let t = trim_start_space_tab(line);
     let chars: Vec<char> = t.chars().collect();
     if chars.first() != Some(&'[') {
         return None;
@@ -1818,7 +1821,7 @@ fn parse_reference_title_line(line: &str) -> Option<String> {
     if leading_spaces(line) > 3 {
         return None;
     }
-    let t = line.trim_start();
+    let t = trim_start_space_tab(line);
     if t.is_empty() {
         return None;
     }
@@ -1833,7 +1836,7 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
     if leading_spaces(line) > 3 || !line.is_ascii() {
         return None;
     }
-    let t = line.trim_start();
+    let t = trim_start_space_tab(line);
     let bytes = t.as_bytes();
     if bytes.first() != Some(&b'[') {
         return None;
@@ -1910,7 +1913,7 @@ fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
     if leading_spaces(line) > 3 || !line.is_ascii() {
         return None;
     }
-    let t = line.trim_start();
+    let t = trim_start_space_tab(line);
     if t.is_empty() {
         return None;
     }
@@ -2561,12 +2564,13 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
         && (first == '-' || first == '*' || first == '+')
     {
         let after_marker = &t[first.len_utf8()..];
-        let (rest, padding) = marker_padding(after_marker)?;
+        let marker_cols = 1usize;
+        let (rest, padding) = marker_padding(after_marker, indent + marker_cols)?;
         return Some(Marker {
             indent,
             ordered: false,
             start: 1,
-            content_indent: indent + first.len_utf8() + padding,
+            content_indent: indent + marker_cols + padding,
             rest,
         });
     }
@@ -2577,7 +2581,7 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
         let after = &t[digit_len..];
         if (after.starts_with('.') || after.starts_with(')'))
             && let Ok(start) = digits.parse()
-            && let Some((rest, padding)) = marker_padding(&after[1..])
+            && let Some((rest, padding)) = marker_padding(&after[1..], indent + digit_len + 1)
         {
             return Some(Marker {
                 indent,
@@ -2591,17 +2595,21 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
     None
 }
 
-fn marker_padding(after_marker: &str) -> Option<(&str, usize)> {
+fn marker_padding(after_marker: &str, column_after_marker: usize) -> Option<(&str, usize)> {
     if after_marker.is_empty() {
         return Some(("", 1));
     }
     let first = after_marker.chars().next()?;
-    if first == ' ' || first == '\t' {
-        let width = first.len_utf8();
-        Some((&after_marker[width..], 1))
-    } else {
-        None
-    }
+    // CommonMark W+N: one space is 1 column; a tab advances to the next
+    // 4-column stop from the column after the marker. Treating a tab as 1
+    // made `-\\tfoo` content_indent 2 instead of 4, so continuation strips
+    // ate the wrong number of columns.
+    let padding = match first {
+        ' ' => 1,
+        '\t' => 4 - (column_after_marker % 4),
+        _ => return None,
+    };
+    Some((&after_marker[first.len_utf8()..], padding))
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {
@@ -2733,7 +2741,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
                 // continues the current OPEN paragraph/list item.
-                item_lines.push(lines[i].trim_start());
+                item_lines.push(trim_start_space_tab(lines[i]));
             }
             i += 1;
         }
@@ -2803,7 +2811,7 @@ fn parse_list_split(
 }
 
 fn split_task_marker(text: &str) -> (Option<bool>, &str) {
-    let trimmed = text.trim_start();
+    let trimmed = trim_start_space_tab(text);
     // GFM requires the checkbox to be followed by at least one whitespace
     // character (or to be the item's entire content). Without this, `[x]foo`
     // renders as a checkbox plus "foo", and — worse — a list item whose text is a
@@ -2835,7 +2843,7 @@ fn scan_table_delimiter<F>(line: &str, mut push_align: F) -> Option<usize>
 where
     F: FnMut(Align),
 {
-    let t = line.trim();
+    let t = trim_space_tab(line);
     if !t.as_bytes().contains(&b'-') {
         return None;
     }
@@ -2879,7 +2887,7 @@ fn split_table_row(line: &str) -> Vec<&str> {
 }
 
 fn split_table_row_cell_count(line: &str) -> usize {
-    let t = line.trim();
+    let t = trim_space_tab(line);
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
@@ -2919,7 +2927,7 @@ fn split_table_row_cell_count(line: &str) -> usize {
 
 fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
     cells.clear();
-    let t = line.trim();
+    let t = trim_space_tab(line);
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
@@ -2964,7 +2972,7 @@ fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn table_delimiter_row_inner(line: &str) -> &str {
-    table_delimiter_row_inner_from_trimmed(line.trim())
+    table_delimiter_row_inner_from_trimmed(trim_space_tab(line))
 }
 
 fn table_delimiter_row_inner_from_trimmed(t: &str) -> &str {
@@ -6338,5 +6346,58 @@ mod commonmark_blank_line_tests {
     fn trailing_nbsp_does_not_make_a_thematic_break() {
         assert!(!is_thematic_break("---\u{00A0}"));
         assert!(is_thematic_break("---  "));
+    }
+
+    #[test]
+    fn tab_after_list_marker_uses_tab_stop_columns() {
+        // `-` at column 0, tab from column 1 → stop 4, so content_indent is 4.
+        let m = list_marker("-\tfoo").expect("list marker");
+        assert_eq!(m.content_indent, 4);
+        assert_eq!(m.rest, "foo");
+        let m = list_marker("1.\tfoo").expect("ordered marker");
+        assert_eq!(m.content_indent, 4);
+        assert_eq!(m.rest, "foo");
+        let m = list_marker("- foo").expect("space padding");
+        assert_eq!(m.content_indent, 2);
+        assert_eq!(m.rest, "foo");
+    }
+
+    #[test]
+    fn footnote_continuation_keeps_spaces_beyond_the_four_column_indent() {
+        let doc = crate::parse_markdown("[^1]: hello\n        extra\n");
+        let Block::FootnoteDefinition { blocks, .. } = &doc.blocks[0] else {
+            panic!("expected footnote definition: {doc:?}");
+        };
+        let Block::Paragraph(inlines) = &blocks[0] else {
+            panic!("expected paragraph body: {blocks:?}");
+        };
+        let text: String = inlines
+            .iter()
+            .filter_map(|inl| match inl {
+                Inline::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("    extra"),
+            "8-space continuation should keep 4 spaces of content, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn nbsp_before_bracket_is_not_a_link_reference_definition() {
+        // Unicode trim_start() used to eat NBSP and treat this as `[foo]: /url`,
+        // deleting the line. CommonMark indent is space/tab only.
+        let doc = crate::parse_markdown("\u{00A0}[foo]: /url\n\n[foo]\n");
+        let has_link = doc.blocks.iter().any(|block| match block {
+            Block::Paragraph(inlines) => inlines
+                .iter()
+                .any(|inl| matches!(inl, Inline::Link { dest, .. } if dest == "/url")),
+            _ => false,
+        });
+        assert!(
+            !has_link,
+            "NBSP-prefixed definition must not define [foo]: {doc:?}"
+        );
     }
 }

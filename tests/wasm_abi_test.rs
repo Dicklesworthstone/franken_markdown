@@ -217,6 +217,7 @@ fn render_pdf_configured_multi_embeds_every_supplied_image() {
         None,
         None,
         None,
+        false,
     )
     .expect("pdf with two images");
     let bytes = out.bytes();
@@ -290,6 +291,7 @@ fn render_pdf_configured_multi_skips_fully_blank_placeholder_entries() {
         None,
         None,
         None,
+        false,
     )
     .expect("placeholder entry is skipped");
     let bytes = out.bytes();

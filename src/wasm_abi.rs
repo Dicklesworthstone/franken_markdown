@@ -321,6 +321,7 @@ pub fn render_pdf_configured_multi(
     base_font_size: Option<f64>,
     heading_scale: Option<f64>,
     table_font_size: Option<f64>,
+    page_numbers: bool,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = pdf_options_configured(
         font,
@@ -334,6 +335,7 @@ pub fn render_pdf_configured_multi(
         heading_scale,
         table_font_size,
     )?;
+    options.page_numbers = page_numbers;
     for (destination, bytes) in
         split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
             .map_err(JsValue::from_str)?
@@ -384,7 +386,7 @@ fn pdf_options_configured(
 /// Reject non-finite host floats up front so the deterministic clamps in
 /// [`crate::theme::TypeScale::resolve`] never see NaN/inf.
 fn finite_f32(value: Option<f64>) -> Option<f32> {
-    value.filter(f64::is_finite).map(|v| v as f32)
+    value.filter(|v| v.is_finite()).map(|v| v as f32)
 }
 
 fn options_with_font_and_dark_mode(

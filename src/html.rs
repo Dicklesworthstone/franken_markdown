@@ -1091,19 +1091,27 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
     let Some(Inline::Text(text)) = inlines.first() else {
         return None;
     };
-    let trimmed = text.trim_start();
+    let trimmed = text.trim_start_matches(|c: char| c == ' ' || c == '\t');
     let rest = trimmed.strip_prefix("[!")?;
     let close = rest.find(']')?;
     let tag_raw = rest[..close].to_ascii_lowercase();
     let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
 
-    let tail = rest[close + 1..].trim_start().to_string();
-    let mut body_inlines: Vec<Inline> = Vec::new();
-    if !tail.is_empty() {
-        body_inlines.push(Inline::Text(tail));
+    // GFM: the first line is only the marker (optional trailing space/tab).
+    // Same-line prose (`> [!NOTE] urgent`) stays a normal blockquote so the
+    // text is not swallowed into a false callout.
+    if !rest[close + 1..].bytes().all(|b| b == b' ' || b == b'\t') {
+        return None;
     }
+    if inlines.len() > 1 && !matches!(inlines[1], Inline::SoftBreak | Inline::HardBreak) {
+        return None;
+    }
+    let mut body_inlines: Vec<Inline> = Vec::new();
     body_inlines.extend_from_slice(&inlines[1..]);
-    if matches!(body_inlines.first(), Some(Inline::SoftBreak)) {
+    if matches!(
+        body_inlines.first(),
+        Some(Inline::SoftBreak | Inline::HardBreak)
+    ) {
         body_inlines.remove(0);
     }
     let mut body: Vec<Block> = Vec::new();
@@ -1124,6 +1132,7 @@ fn collect_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
             match block {
                 Block::FootnoteDefinition { id, blocks: inner } => {
                     defs.push((id.as_str(), inner.as_slice()));
+                    walk(inner, defs);
                 }
                 Block::BlockQuote(inner) => walk(inner, defs),
                 Block::List(list) => {
@@ -2329,6 +2338,22 @@ mod tests {
         assert!(
             !html.contains("<aside class=\"callout"),
             "no callout markup"
+        );
+    }
+
+    #[test]
+    fn same_line_alert_marker_stays_a_blockquote() {
+        let doc = crate::parse_markdown("> [!NOTE] urgent details\n");
+        let html = render(&doc, &crate::HtmlOptions::default());
+        assert!(html.contains("<blockquote>"), "{html}");
+        assert!(
+            html.contains("[!NOTE]"),
+            "marker stays in the quote: {html}"
+        );
+        assert!(html.contains("urgent details"), "{html}");
+        assert!(
+            !html.contains("<aside class=\"callout"),
+            "same-line tail is not a GFM alert: {html}"
         );
     }
 

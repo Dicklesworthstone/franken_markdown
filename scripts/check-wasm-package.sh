@@ -34,19 +34,29 @@ log_check() {
 
 # Committed size budget for the wasm-bindgen .wasm (raw + gzip). The bundled
 # fonts and vector-SVG/PDF drawing code dominate; bump consciously (and note why)
-# if a real win/cost lands. 0.3.4: raw raised 3,400,000 -> 3,500,000 for the
-# ~56 KiB Noto Sans Math symbol fallback face (issue #3) plus JPEG /DCTDecode
-# embedding support (issue #2); measured raw=3,447,897, gzip=1,557,945.
-# 0.3.5+ wave bump: measured raw=4,020,074 gzip=1,798,280.
-# Growth from 0.3.4 (raw=3,447,897) is attributable to: GFM footnotes,
-# GitHub alerts, TOC nav, page-void budgeting, variable-font gvar
-# instancer, CJK script routing, multi-language hyphenation (de/fr/nl/es
-# tries), typography knobs (base_font_size/heading_scale/table_font_size),
-# page-numbers emission, caret diagnostics, emoji fallback config, the
-# math-alphabet CJK subset face (+15.4 KiB), property-test infrastructure
-# (test-only, not shipped), and URL cache ownership refactor.
+# if a real win/cost lands.
+#
+# History (measured `franken_markdown_bg.wasm` after wasm-bindgen --target web):
+#   0.3.0  budget raw 3,200,000→3,300,000  gzip 1,600,000   vector-SVG/PDF
+#   0.3.2  measured raw=3,351,808 gzip=1,510,214  budget 3,400,000 / 1,600,000
+#   0.3.4  measured raw=3,447,897 gzip=1,557,945  budget 3,500,000 / 1,600,000
+#          (~56 KiB Noto Sans Math fallback + JPEG /DCTDecode)
+#   0.3.5  measured raw=4,019,715 gzip=1,798,217 brotli=1,344,427
+#          budget 4,200,000 / 1,850,000  (smif.2)  +571,818 raw / +240,272 gzip
+#          vs 0.3.4. Shipped contributors (not test-only):
+#            fmd-math TeX engine + MathML serializer (dominant compiled code);
+#            de/fr/nl/es hyphenation tries; CJK UAX #14; variable-font gvar;
+#            typography knobs + page numbers; NotoSansMathSymbols regen
+#            (bundled TTF 72,908 B, ~+16 KiB vs 0.3.4's +15.4 KiB face).
+#          Not trimmed: build-time face subsetting would edit the reserved
+#          fmd-font reader. Cost is documented; the gate re-ratchets.
+#
+# PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
+# Update PREVIOUS_* and BUDGET_* together.
+PREVIOUS_RAW=4019715
+PREVIOUS_GZIP=1798217
 BUDGET_RAW=4200000
-BUDGET_GZIP=1900000
+BUDGET_GZIP=1850000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"

@@ -655,7 +655,11 @@ fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
     let rest = trimmed.strip_prefix("[^")?;
     let close = rest.find(']')?;
     let id = &rest[..close];
-    if id.is_empty() || id.chars().any(|c| c.is_whitespace() || c == '[' || c == ']') {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|c| c.is_whitespace() || c == '[' || c == ']')
+    {
         return None;
     }
     let after = rest[close + 1..].strip_prefix(':')?;
@@ -673,7 +677,9 @@ fn footnote_definition_marker(line: &str) -> bool {
     };
     let id = &rest[..close];
     !id.is_empty()
-        && !id.chars().any(|c| c.is_whitespace() || c == '[' || c == ']')
+        && !id
+            .chars()
+            .any(|c| c.is_whitespace() || c == '[' || c == ']')
         && rest[close + 1..].starts_with(':')
 }
 

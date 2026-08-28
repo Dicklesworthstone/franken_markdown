@@ -420,6 +420,7 @@ fn collect_blocks_text(blocks: &[Block], out: &mut Vec<String>) {
                     push_nonempty(out, inline_cells_text(row));
                 }
             }
+            Block::FootnoteDefinition { blocks, .. } => collect_blocks_text(blocks, out),
             Block::ThematicBreak => {}
         }
     }
@@ -443,6 +444,11 @@ fn inline_text(inlines: &[Inline]) -> String {
             }
             Inline::Link { content, .. } => out.push_str(&inline_text(content)),
             Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::FootnoteRef { id } => {
+                out.push('[');
+                out.push_str(id);
+                out.push(']');
+            }
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
         }
     }

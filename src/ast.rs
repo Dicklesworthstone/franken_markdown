@@ -35,10 +35,7 @@ pub enum Block {
     /// A GFM footnote definition `[^id]: content`. Kept in the block flow at
     /// source position; emitters skip it in normal flow and render a notes
     /// section from all definitions (numbered by first-reference order).
-    FootnoteDefinition {
-        id: String,
-        blocks: Vec<Block>,
-    },
+    FootnoteDefinition { id: String, blocks: Vec<Block> },
 }
 
 /// An ordered or unordered list.

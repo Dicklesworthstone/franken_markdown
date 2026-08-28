@@ -38,8 +38,10 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</title>\n<style>\n");
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
-    let mut state = RenderState::default();
-    state.footnote_defs = collect_footnote_defs(&doc.blocks);
+    let mut state = RenderState {
+        footnote_defs: collect_footnote_defs(&doc.blocks),
+        ..RenderState::default()
+    };
     render_blocks(&doc.blocks, &mut html, opts, &mut state);
     push_footnotes_section(&mut state, &mut html, opts);
     html.push_str("</main>\n</body>\n</html>\n");
@@ -912,13 +914,10 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
     }
 }
 
-
 /// Collect GFM footnote definitions in document order (container-aware), for
 /// the trailing notes section. References may precede their definitions, so
 /// this runs before the block walk.
-fn collect_footnote_defs<'a>(
-    blocks: &'a [Block],
-) -> Vec<(&'a str, &'a [Block])> {
+fn collect_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
     let mut defs = Vec::new();
     fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
         for block in blocks {
@@ -942,11 +941,7 @@ fn collect_footnote_defs<'a>(
 
 /// Render the trailing notes section for every footnote that was referenced
 /// (numbered) during the body walk. Unreferenced definitions are omitted.
-fn push_footnotes_section<'a>(
-    state: &mut RenderState<'a>,
-    out: &mut String,
-    opts: &HtmlOptions,
-) {
+fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opts: &HtmlOptions) {
     if state.footnote_order.is_empty() {
         return;
     }
@@ -983,8 +978,15 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
         return;
     }
     let next_number = state.footnote_numbers.len() + 1;
-    let number = *state.footnote_numbers.entry(id.to_string()).or_insert(next_number);
+    let number = *state
+        .footnote_numbers
+        .entry(id.to_string())
+        .or_insert(next_number);
     let first = number == next_number;
+    if first {
+        // Number-order record drives the trailing notes section.
+        state.footnote_order.push(id.to_string());
+    }
     out.push_str("<sup class=\"footnote-ref\"");
     if first {
         out.push_str(" id=\"fnref-");
@@ -1975,6 +1977,36 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::ast::{Block, Document, Inline};
+
+    #[test]
+    fn footnotes_render_refs_notes_section_and_backrefs() {
+        let doc = crate::parse_markdown(
+            "Text[^1] and two[^two].\n\n[^1]: First note.\n[^two]: Second with *em*.\n",
+        );
+        let opts = crate::HtmlOptions::default();
+        let html = super::render(&doc, &opts);
+        assert_eq!(html.matches("class=\"footnote-ref\"").count(), 2);
+        assert!(html.contains("<section class=\"footnotes\">"));
+        assert!(html.contains("First note."));
+        assert!(html.contains("Second with <em>em</em>."));
+        assert_eq!(html.matches("footnote-backref").count(), 2);
+        assert!(html.contains("id=\"fn-1\"") && html.contains("id=\"fn-two\""));
+        assert!(!html.contains("[^1]"), "literal marker must not survive");
+        // Definition content renders exactly once (the section), never in flow.
+        assert_eq!(html.matches("<p>First note.</p>").count(), 1);
+    }
+
+    #[test]
+    fn footnote_ref_without_definition_stays_literal() {
+        let doc = crate::parse_markdown("dangling[^nope] here\n");
+        let html = super::render(&doc, &crate::HtmlOptions::default());
+        assert!(html.contains("[^nope]"), "unmatched refs stay literal");
+        assert!(
+            !html.contains("footnotes"),
+            "no section without definitions"
+        );
+    }
+
     use crate::highlight::{Span, Tok};
     use crate::{HtmlOptions, PdfImageAsset};
 

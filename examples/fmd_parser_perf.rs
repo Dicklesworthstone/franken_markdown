@@ -273,6 +273,7 @@ fn count_block(block: &Block) -> AstCounts {
             }
             AstCounts { blocks: 0, inlines }
         }
+        Block::FootnoteDefinition { blocks, .. } => count_blocks(blocks),
         Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => AstCounts {
             blocks: 0,
             inlines: 0,
@@ -307,6 +308,7 @@ fn count_inlines(inlines: &[Inline]) -> usize {
             Inline::Text(_)
             | Inline::Code(_)
             | Inline::Image { .. }
+            | Inline::FootnoteRef { .. }
             | Inline::SoftBreak
             | Inline::HardBreak
             | Inline::Html(_) => 0,

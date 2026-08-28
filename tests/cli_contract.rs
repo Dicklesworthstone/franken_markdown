@@ -221,6 +221,14 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("--pdf-font-weight"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
+    assert!(
+        stdout.contains("fmd verify doc.md --json"),
+        "verify example must be a real clap command, not --to pdf"
+    );
+    assert!(
+        !stdout.contains("fmd verify doc.md --to pdf"),
+        "verify has no --to flag; agents that copy this get exit 64"
+    );
     assert!(stdout.contains("\"knuth_plass_pdf\":\"available\""));
     assert!(stdout.contains("\"page_builder_pdf\":\"available_v0_keep_widow\""));
     assert!(stdout.contains("\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\""));

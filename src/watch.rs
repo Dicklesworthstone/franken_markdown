@@ -199,6 +199,48 @@ pub fn collect_watch_paths(input: &Path, extras: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// Recursively collect every `*.md` file under `dir`, sorted by path. Used
+/// by `fmd watch <dir>` to expand a directory input into a stable,
+/// deterministic set of watch targets. Hidden files (`.foo.md`) and
+/// files inside hidden directories (e.g. `.git/`) are skipped — agents
+/// and CI users occasionally keep notes in `.scratch.md` that they do
+/// not want watched. Symlinks are not followed: a symlinked file that
+/// re-enters the directory would create a cycle, and a non-following
+/// walker is the safe default for a CLI tool. Empty directories return
+/// an empty `Vec` so the caller can fail with a clear error.
+#[must_use]
+pub fn expand_md_directory(dir: &Path) -> Vec<PathBuf> {
+    fn walk(acc: &mut Vec<PathBuf>, dir: &Path) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                walk(acc, &path)?;
+            } else if file_type.is_file()
+                && std::path::Path::new(&name_str)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                acc.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut acc = Vec::new();
+    if walk(&mut acc, dir).is_err() {
+        return Vec::new();
+    }
+    acc.sort();
+    acc
+}
+
+
 /// Local `](dest)` / image destinations that exist as files under `base_dir`.
 #[must_use]
 pub fn referenced_local_paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {

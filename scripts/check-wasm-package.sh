@@ -34,8 +34,16 @@ log() { printf '%s\n' "$*" | tee -a "$LEDGER"; }
 # if a real win/cost lands. 0.3.4: raw raised 3,400,000 -> 3,500,000 for the
 # ~56 KiB Noto Sans Math symbol fallback face (issue #3) plus JPEG /DCTDecode
 # embedding support (issue #2); measured raw=3,447,897, gzip=1,557,945.
-BUDGET_RAW=3500000
-BUDGET_GZIP=1600000
+# 0.3.5+ wave bump: measured raw=4,020,074 gzip=1,798,280.
+# Growth from 0.3.4 (raw=3,447,897) is attributable to: GFM footnotes,
+# GitHub alerts, TOC nav, page-void budgeting, variable-font gvar
+# instancer, CJK script routing, multi-language hyphenation (de/fr/nl/es
+# tries), typography knobs (base_font_size/heading_scale/table_font_size),
+# page-numbers emission, caret diagnostics, emoji fallback config, the
+# math-alphabet CJK subset face (+15.4 KiB), property-test infrastructure
+# (test-only, not shipped), and URL cache ownership refactor.
+BUDGET_RAW=4200000
+BUDGET_GZIP=1900000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"

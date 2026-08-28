@@ -1287,7 +1287,60 @@ impl Hyphenator {
             _ => None,
         }
     }
+}
 
+/// Stable render-warning code when [`resolve_hyphen_lang`] falls back to English.
+pub const UNKNOWN_HYPHEN_LANG: &str = "unknown_hyphen_lang";
+
+/// Result of mapping a caller language tag onto a hyphenator (38re.2).
+#[derive(Debug, Clone)]
+pub enum HyphenLangChoice {
+    /// Tag was empty or a known language. Default path (empty) is English
+    /// with no warning so unmarked documents stay byte-identical.
+    Selected(Hyphenator),
+    /// Tag was non-empty but unknown. Use English and emit [`UNKNOWN_HYPHEN_LANG`].
+    FallbackEnglish {
+        /// Original trimmed tag the caller supplied.
+        requested: String,
+    },
+}
+
+impl HyphenLangChoice {
+    /// Hyphenator to use (selected language or English fallback).
+    #[must_use]
+    pub fn hyphenator(&self) -> Hyphenator {
+        match self {
+            Self::Selected(hyphenator) => *hyphenator,
+            Self::FallbackEnglish { .. } => Hyphenator::english(),
+        }
+    }
+
+    /// Warning code when the tag was unknown.
+    #[must_use]
+    pub fn warning_code(&self) -> Option<&'static str> {
+        match self {
+            Self::FallbackEnglish { .. } => Some(UNKNOWN_HYPHEN_LANG),
+            Self::Selected(_) => None,
+        }
+    }
+}
+
+/// Map a BCP-47-ish tag to a hyphenator, with a distinct fallback for unknown tags.
+#[must_use]
+pub fn resolve_hyphen_lang(tag: &str) -> HyphenLangChoice {
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        return HyphenLangChoice::Selected(Hyphenator::english());
+    }
+    match Hyphenator::for_tag(trimmed) {
+        Some(hyphenator) => HyphenLangChoice::Selected(hyphenator),
+        None => HyphenLangChoice::FallbackEnglish {
+            requested: trimmed.to_string(),
+        },
+    }
+}
+
+impl Hyphenator {
     /// Language this hyphenator was built for.
     #[must_use]
     pub const fn lang(self) -> HyphenLang {
@@ -2947,11 +3000,12 @@ mod hyphen_and_break_edge_tests {
 
     use super::{
         AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
-        FontSize, Glue, HyphenLang, HyphenPattern, Hyphenator, LayoutUnit, PairMetrics,
-        ParagraphItem, ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle,
-        append_styled_word_chunk, break_paragraph, break_paragraph_into, build_hyphen_trie,
-        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
-        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+        FontSize, Glue, HyphenLang, HyphenLangChoice, HyphenPattern, Hyphenator, LayoutUnit,
+        PairMetrics, ParagraphItem, ParagraphLayoutScratch, Penalty, StyledText, TextBox,
+        TextStyle, UNKNOWN_HYPHEN_LANG, append_styled_word_chunk, break_paragraph,
+        break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
+        insert_hyphen_pattern, push_hyphenated_word_items_from_points, resolve_hyphen_lang,
+        trailing_forced_fit_break,
     };
 
     /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.
@@ -3066,6 +3120,41 @@ mod hyphen_and_break_edge_tests {
             })
             .collect();
         assert_eq!(texts, ["Bä", "cke", "rei"]);
+    }
+
+    #[test]
+    fn resolve_hyphen_lang_selects_known_tags_without_a_warning() {
+        for (tag, lang) in [
+            ("", HyphenLang::English),
+            ("  ", HyphenLang::English),
+            ("en-GB", HyphenLang::English),
+            ("DE", HyphenLang::German),
+            ("  FR ", HyphenLang::French),
+            ("nl", HyphenLang::Dutch),
+            ("es", HyphenLang::Spanish),
+        ] {
+            let choice = resolve_hyphen_lang(tag);
+            assert_eq!(choice.warning_code(), None, "tag {tag:?}");
+            assert_eq!(choice.hyphenator().lang(), lang, "tag {tag:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_hyphen_lang_unknown_tag_falls_back_to_english_with_stable_code() {
+        let choice = resolve_hyphen_lang("zz");
+        assert_eq!(choice.warning_code(), Some(UNKNOWN_HYPHEN_LANG));
+        assert_eq!(choice.hyphenator().lang(), HyphenLang::English);
+        match choice {
+            HyphenLangChoice::FallbackEnglish { requested } => assert_eq!(requested, "zz"),
+            other => panic!("expected fallback, got {other:?}"),
+        }
+        let spaced = resolve_hyphen_lang("  unknown-tag  ");
+        match spaced {
+            HyphenLangChoice::FallbackEnglish { requested } => {
+                assert_eq!(requested, "unknown-tag");
+            }
+            other => panic!("expected trimmed fallback, got {other:?}"),
+        }
     }
 
     #[test]

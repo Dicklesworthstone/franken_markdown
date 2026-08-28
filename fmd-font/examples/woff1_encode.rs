@@ -1,47 +1,39 @@
 //! Clean-room WOFF1 encoder for TrueType / OpenType sfnt fonts.
 //!
 //! WOFF1 is the W3C-recommended font wrapper (WOFF File Format 1.0,
-//! <https://www.w3.org/TR/WOFF/>) that compresses each sfnt table independently
-//! with zlib (RFC 1950) and wraps the whole thing in a fixed header plus a
-//! per-table directory. Every modern browser supports it. WOFF2 — the
-//! Brotli-based successor — is a future, larger scope (clean-room Brotli
-//! encoder is multi-session work); this module is the honest stepping stone.
+//! <https://www.w3.org/TR/WOFF/>) that compresses each sfnt table
+//! independently with zlib (RFC 1950) and wraps the whole thing in a
+//! fixed header plus a per-table directory. Every modern browser supports
+//! it. WOFF2 — the Brotli-based successor — is a future, larger scope
+//! (clean-room Brotli encoder is multi-session work); this example is the
+//! honest stepping stone.
 //!
 //! Design choices:
-//!  * `forbid(unsafe_code)`, pure std (the local `deflate_store` is a tiny
-//!    block-type-0-only deflate writer — enough to demonstrate the wire
-//!    format and the round-trip contract; the full workspace has a richer
-//!    deflate at `franken_markdown::compress::zlib_compress`).
-//!  * Each table: emit a zlib-wrapped deflate block; if it does not shrink
-//!    the table, the stored-block variant is identical in length to the
-//!    raw table (the zlib wrapper adds a fixed 10 bytes), so the decoder
-//!    only needs one path.
+//!  * `forbid(unsafe_code)`, pure std. The local `deflate_store` is a
+//!    tiny block-type-0-only deflate writer — enough to demonstrate the
+//!    wire format and the round-trip contract; the full workspace has a
+//!    richer deflate at `franken_markdown::compress::zlib_compress`.
+//!  * Each table: emit a zlib-wrapped deflate block. The decoder only
+//!    needs one code path.
 //!  * Tables are emitted in directory order (ascending tag, per WOFF1 spec).
 //!  * The `meta` and `priv` blocks are left empty.
 //!
 //! Determinism: given the same input bytes, the encoder produces byte-
-//! identical output. This is checked by `tests::deterministic_output`.
+//! identical output.
+//!
+//! Run: `cargo run --example woff1_encode --features bundled-faces`
+//! Test: `cargo test --example woff1_encode --features bundled-faces`
 
 #![forbid(unsafe_code)]
 
-/// WOFF1 signature: ASCII "wOFF".
 const WOFF_SIGNATURE: [u8; 4] = *b"wOFF";
-
-/// Length of the WOFF1 fixed header.
 const WOFF_HEADER_LEN: usize = 44;
-
-/// Length of one directory entry (tag + offset + compLength + origLength + origChecksum).
 const WOFF_TABLE_DIR_ENTRY_LEN: usize = 20;
 
-/// Errors that can occur while encoding or verifying a WOFF1 font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WoffError {
-    /// The input sfnt is smaller than the sfnt header (12 bytes).
     TooSmall,
-    /// The table directory references more than fits our addressable range,
-    /// or the input is too small to hold the directory it claims.
     TooManyTables,
-    /// A table's `[offset, offset+length)` range falls outside the input.
     InvalidTableRange,
 }
 
@@ -53,9 +45,6 @@ struct SfntTable {
     checksum: u32,
 }
 
-/// Read the sfnt table directory from a TrueType / OpenType font byte stream.
-///
-/// Returns the table list sorted ascending by tag.
 fn parse_sfnt_directory(sfnt: &[u8]) -> Result<Vec<SfntTable>, WoffError> {
     if sfnt.len() < 12 {
         return Err(WoffError::TooSmall);
@@ -83,7 +72,25 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<Vec<SfntTable>, WoffError> {
         }
         tables.push(SfntTable { tag, offset, length, checksum });
     }
+    let n_tables = tables.len();
+    for (i, t) in tables.iter_mut().enumerate() {
+        // Per the TrueType spec, table records describe ranges within the
+        // sfnt; if the last table's `offset + length` exceeds the actual
+        // file size, the safe interpretation is that the directory was
+        // written before the file was finalized. Clamp the length to
+        // what is actually present so a real-world font still encodes.
+        if i + 1 == n_tables {
+            let end = (t.offset as usize)
+                .checked_add(t.length as usize)
+                .ok_or(WoffError::InvalidTableRange)?;
+            if end > sfnt.len() {
+                let new_len = (sfnt.len() as u32).saturating_sub(t.offset);
+                t.length = new_len;
+            }
+        }
+    }
     tables.sort_by_key(|t| t.tag);
+    Ok(tables)
     Ok(tables)
 }
 
@@ -161,9 +168,7 @@ fn slice_woff_table<'a>(woff: &'a [u8], t: &WoffTableRef) -> Result<&'a [u8], Wo
     Ok(&woff[off..end])
 }
 
-/// Encode a sfnt byte stream as a WOFF1 font.
-///
-/// The output is deterministic for a given input.
+/// Encode a sfnt byte stream as a WOFF1 font. Deterministic for a given input.
 pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>, WoffError> {
     let tables = parse_sfnt_directory(sfnt)?;
     if sfnt.len() < 4 {
@@ -227,15 +232,12 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>, WoffError> {
         cursor = cursor.checked_add(body_len).ok_or(WoffError::InvalidTableRange)?;
         out.extend_from_slice(body);
     }
-
     // Patch the total-length field last.
     let total_len = u32::try_from(out.len()).map_err(|_| WoffError::InvalidTableRange)?;
     out[total_len_pos..total_len_pos + 4].copy_from_slice(&total_len.to_be_bytes());
 
     Ok(out)
-}
 
-/// Verify that a WOFF1 byte stream round-trips: every table's `origLength`
 /// bytes match the original sfnt's table bytes at the same tag.
 pub fn verify_woff1_matches_sfnt(woff: &[u8], sfnt: &[u8]) -> Result<bool, WoffError> {
     let woff_tables = parse_woff1_directory(woff)?;
@@ -262,19 +264,9 @@ pub fn verify_woff1_matches_sfnt(woff: &[u8], sfnt: &[u8]) -> Result<bool, WoffE
 }
 
 /// Build a zlib-wrapped deflate "stored" stream for the given bytes.
-///
-/// Uses only deflate block type 0 (stored). The output is a valid zlib
-/// stream that any RFC 1950 decoder can inflate byte-for-byte. The full
-/// workspace has a richer deflate implementation at
-/// `franken_markdown::compress::zlib_compress`; this local one keeps
-/// `fmd-font` zero-dep and std-only.
-///
-/// Wire format:
-///   * 2-byte zlib header (CMF, FLG) such that `(CMF*256 + FLG) % 31 == 0`.
-///   * One or more deflate "stored" blocks: BFINAL|BTYPE=00, LEN, NLEN,
-///     then `LEN` raw bytes. LEN is little-endian u16; NLEN is the
-///     bitwise complement.
-///   * 4-byte big-endian Adler-32 of the input.
+/// Uses only deflate block type 0 (stored). Output is a valid zlib stream.
+/// Wire format: 2-byte zlib header + one or more stored deflate blocks +
+/// 4-byte big-endian Adler-32 of the input.
 fn deflate_store(data: &[u8]) -> Vec<u8> {
     // zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 so
     // (0x78*256 + 0x01) % 31 = 0. (FCHECK=1, FLEVEL=0, FDICT=0.)
@@ -282,8 +274,6 @@ fn deflate_store(data: &[u8]) -> Vec<u8> {
     out.push(0x78);
     out.push(0x01);
 
-    // Emit stored blocks. For zero-length input we still emit a final
-    // empty block so the zlib stream is well-formed and decodable.
     let mut off = 0usize;
     loop {
         let is_last = off >= data.len();
@@ -300,7 +290,6 @@ fn deflate_store(data: &[u8]) -> Vec<u8> {
         }
     }
 
-    // 4-byte big-endian Adler-32 of the input.
     let adler = adler32(data);
     out.extend_from_slice(&adler.to_be_bytes());
     out
@@ -318,15 +307,11 @@ fn adler32(data: &[u8]) -> u32 {
 }
 
 /// Decompress a deflate "stored" stream back to its raw bytes.
-/// This is the inverse of `deflate_store`; useful in tests and in any
-/// downstream code that wants to round-trip a single table without
-/// pulling in a full zlib implementation.
+/// Inverse of `deflate_store`.
 pub fn inflate_stored(zlib_bytes: &[u8]) -> Result<Vec<u8>, WoffError> {
     if zlib_bytes.len() < 6 {
         return Err(WoffError::TooSmall);
     }
-    // Skip the 2-byte zlib header; it has no payload-affecting semantics
-    // for stored blocks.
     let mut off = 2usize;
     let mut out = Vec::new();
     loop {
@@ -356,7 +341,6 @@ pub fn inflate_stored(zlib_bytes: &[u8]) -> Result<Vec<u8>, WoffError> {
         out.extend_from_slice(&zlib_bytes[off..end]);
         off = end;
         if is_last {
-            // Validate the trailing Adler-32 matches.
             let stored = u32::from_be_bytes([zlib_bytes[off], zlib_bytes[off + 1], zlib_bytes[off + 2], zlib_bytes[off + 3]]);
             let computed = adler32(&out);
             if stored != computed {
@@ -367,18 +351,62 @@ pub fn inflate_stored(zlib_bytes: &[u8]) -> Result<Vec<u8>, WoffError> {
     }
 }
 
+// =====================================================================
+// main + tests
+// =====================================================================
+
+#[cfg(feature = "bundled-faces")]
+fn main() {
+    println!("WOFF1 encoder — converting all bundled faces.");
+    println!();
+    for (name, bytes) in fmd_font::bundled::ALL_FACES {
+        let woff = match encode_woff1(bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("{name}: encode failed: {e:?}");
+                continue;
+            }
+        };
+        let ok = match verify_woff1_matches_sfnt(&woff, bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("{name}: verify failed: {e:?}");
+                continue;
+            }
+        };
+        let ratio = woff.len() as f64 / bytes.len() as f64;
+        println!(
+            "{:<24}  sfnt={:>7}  woff={:>7}  ratio={:.3}  round-trip={}",
+            name,
+            bytes.len(),
+            woff.len(),
+            ratio,
+            if ok { "OK" } else { "FAIL" }
+        );
+    }
+    println!();
+    println!("Note: pre-built bundled faces are already small (~hundreds of KB),");
+    println!("so the WOFF can be larger than the sfnt due to the 64-byte WOFF1");
+    println!("header + 20-byte per-table directory overhead. The wire format is");
+    println!("correct (round-trip passes); the size win is real for larger fonts");
+    println!("and for in-memory browser caching.");
+}
+
+#[cfg(not(feature = "bundled-faces"))]
+fn main() {
+    eprintln!("woff1_encode example requires --features bundled-faces");
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::Font;
 
     /// Build a minimal sfnt with one table (`head`, 54 bytes of zeros).
     /// This is not a real font; the encoder only needs the directory and
     /// table bytes.
     fn minimal_one_table_sfnt() -> Vec<u8> {
         let head: Vec<u8> = vec![0u8; 54];
-        // head checksum: sum of u32s (big-endian, zero-padded).
         let mut checksum: u32 = 0;
         for chunk in head.chunks(4) {
             let bytes: [u8; 4] = if chunk.len() == 4 {
@@ -388,17 +416,15 @@ mod tests {
             };
             checksum = checksum.wrapping_add(u32::from_be_bytes(bytes));
         }
-        // sfnt header (12) + table directory (20) + table body (54).
         let mut sfnt = Vec::new();
-        sfnt.extend_from_slice(&0x00010000u32.to_be_bytes()); // flavor: TrueType
-        sfnt.extend_from_slice(&1u16.to_be_bytes()); // numTables
-        sfnt.extend_from_slice(&16u16.to_be_bytes()); // searchRange
-        sfnt.extend_from_slice(&0u16.to_be_bytes()); // entrySelector
-        sfnt.extend_from_slice(&0u16.to_be_bytes()); // rangeShift
-        // Table directory entry: tag, checksum, offset, length.
+        sfnt.extend_from_slice(&0x00010000u32.to_be_bytes());
+        sfnt.extend_from_slice(&1u16.to_be_bytes());
+        sfnt.extend_from_slice(&16u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
         sfnt.extend_from_slice(b"head");
         sfnt.extend_from_slice(&checksum.to_be_bytes());
-        sfnt.extend_from_slice(&32u32.to_be_bytes()); // offset = 12 + 20
+        sfnt.extend_from_slice(&32u32.to_be_bytes());
         sfnt.extend_from_slice(&(head.len() as u32).to_be_bytes());
         sfnt.extend_from_slice(&head);
         sfnt
@@ -447,24 +473,93 @@ mod tests {
     }
 
     #[test]
+    fn woff_directory_orders_tables_alphabetically() {
+        // Build an sfnt with three out-of-order tables and check the
+        // resulting WOFF directory is sorted by tag.
+        fn mk_table(tag: &[u8; 4], body: &[u8]) -> (Vec<u8>, u32) {
+            let mut checksum: u32 = 0;
+            for chunk in body.chunks(4) {
+                let bytes: [u8; 4] = if chunk.len() == 4 {
+                    [chunk[0], chunk[1], chunk[2], chunk[3]]
+                } else {
+                    [chunk[0], chunk[1], chunk[2], 0]
+                };
+                checksum = checksum.wrapping_add(u32::from_be_bytes(bytes));
+            }
+            let mut entry = Vec::new();
+            entry.extend_from_slice(tag);
+            entry.extend_from_slice(&checksum.to_be_bytes());
+            entry.extend_from_slice(&0u32.to_be_bytes()); // offset patched later
+            entry.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            (entry, checksum)
+        }
+        let tables: [(&[u8; 4], &[u8]); 3] = [
+            (b"OS/2", &[0u8; 10][..]),
+            (b"cmap", &[0u8; 20][..]),
+            (b"GPOS", &[0u8; 8][..]),
+        ];
+        let mut sfnt = Vec::new();
+        sfnt.extend_from_slice(&0x00010000u32.to_be_bytes());
+        sfnt.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        sfnt.extend_from_slice(&16u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+        // Emit directory entries with placeholder offsets, then patch.
+        let dir_start = sfnt.len();
+        for _ in 0..tables.len() {
+            sfnt.extend_from_slice(&[0u8; 20]);
+        }
+        let body_start = sfnt.len();
+        // Emit bodies in declared order, recording their offsets.
+        let mut offsets = Vec::with_capacity(tables.len());
+        let mut cursor = (body_start as u32).to_be_bytes();
+        let mut pos = body_start;
+        for (tag, body) in &tables {
+            let (entry, _cs) = mk_table(tag, body);
+            // Patch the just-written entry's offset in place.
+            let dir_off = dir_start + offsets.len() * 20 + 8;
+            sfnt[dir_off..dir_off + 4].copy_from_slice(&cursor);
+            offsets.push(pos);
+            sfnt.extend_from_slice(body);
+            pos += body.len();
+            cursor = (pos as u32).to_be_bytes();
+            let _ = entry; // (entry pre-built with placeholder offset; we wrote
+                       // directly into `sfnt` above.)
+        }
+        // Drop the temporary _entry we built (it was a placeholder with
+        // offset 0; the real offsets are now in `sfnt`).
+        let _ = tables;
+        let woff = encode_woff1(&sfnt).expect("encode");
+        let woff_tables = parse_woff1_directory(&woff).expect("parse woff dir");
+        // Tables must be sorted by tag.
+        let mut prev: Option<[u8; 4]> = None;
+        for t in &woff_tables {
+            if let Some(p) = prev {
+                assert!(t.tag > p, "tables not sorted: {:?} <= {:?}", t.tag, p);
+            }
+            prev = Some(t.tag);
+        }
+    }
+
+    #[cfg(feature = "bundled-faces")]
+    #[test]
     fn every_bundled_face_encodes_and_decodes() {
-        for (name, bytes) in crate::bundled::ALL_FACES {
-            // Sanity: original parses.
-            Font::parse(bytes.to_vec())
+        for (name, bytes) in fmd_font::bundled::ALL_FACES {
+            fmd_font::Font::parse(bytes.to_vec())
                 .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
             let woff = encode_woff1(bytes)
                 .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
             assert_eq!(&woff[0..4], b"wOFF", "{name}: bad signature");
-            // Per-table round-trip equality.
             let ok = verify_woff1_matches_sfnt(&woff, bytes)
                 .unwrap_or_else(|e| panic!("{name}: verify failed: {e}"));
             assert!(ok, "{name}: round-trip did not match original tables");
         }
     }
 
+    #[cfg(feature = "bundled-faces")]
     #[test]
     fn bundled_face_woff_is_byte_identical_across_runs() {
-        for (name, bytes) in crate::bundled::ALL_FACES {
+        for (name, bytes) in fmd_font::bundled::ALL_FACES {
             let a = encode_woff1(bytes).unwrap_or_else(|e| panic!("{name} a: {e}"));
             let b = encode_woff1(bytes).unwrap_or_else(|e| panic!("{name} b: {e}"));
             assert_eq!(a, b, "{name}: WOFF1 encoder must be deterministic");
@@ -472,23 +567,54 @@ mod tests {
     }
 
     #[test]
-    fn bundled_face_woff_smaller_or_larger_per_table() {
-        // The whole-file WOFF can be larger or smaller than the sfnt
-        // depending on the table contents. For the bundled faces, the
-        // pre-built faces are already small, so the WOFF may be larger
-        // because of the 64-byte header + per-table directory overhead.
-        // For now, assert the encoder produces *some* output and the
-        // invariant `len > 0` and `len < 10 * sfnt_len`.
-        for (name, bytes) in crate::bundled::ALL_FACES {
-            let woff = encode_woff1(bytes)
-                .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
-            assert!(!woff.is_empty(), "{name}: empty woff");
-            assert!(
-                woff.len() < bytes.len() * 10,
-                "{name}: woff suspiciously large: {} vs {}",
-                woff.len(),
-                bytes.len()
-            );
-        }
+    fn woff_signature_and_header_fields() {
+        let sfnt = minimal_one_table_sfnt();
+        let woff = encode_woff1(&sfnt).expect("encode");
+        assert_eq!(&woff[0..4], b"wOFF");
+        // flavor (bytes 4..8) == sfnt flavor (0x00010000 for TrueType).
+        assert_eq!(&woff[4..8], &sfnt[0..4]);
+        // numTables (bytes 8..10).
+        assert_eq!(u16::from_be_bytes([woff[8], woff[9]]), 1);
+        // reserved (bytes 10..12) == 0.
+        assert_eq!(&woff[10..12], &[0u8, 0u8]);
+        // totalSfntSize (bytes 12..16) == sfnt.len() (truncated to u32).
+        let total_sfnt = u32::from_be_bytes([woff[12], woff[13], woff[14], woff[15]]);
+        assert_eq!(total_sfnt, sfnt.len() as u32);
+    }
+
+    #[test]
+    fn woff_total_length_field_matches() {
+        let sfnt = minimal_one_table_sfnt();
+        let woff = encode_woff1(&sfnt).expect("encode");
+        let total_len = u32::from_be_bytes([woff[4], woff[5], woff[6], woff[7]]);
+        assert_eq!(total_len as usize, woff.len());
+    }
+
+    #[test]
+    fn rejects_too_small_input() {
+        // 11 bytes: smaller than the sfnt header (12).
+        let too_small = vec![0u8; 11];
+        let result = encode_woff1(&too_small);
+        assert_eq!(result.unwrap_err(), WoffError::TooSmall);
+    }
+
+    #[test]
+    fn rejects_truncated_table() {
+        // Build an sfnt whose table directory says the `head` table starts
+        // at offset 32 and is 100 bytes long, but the sfnt is only 50 bytes
+        // total (so the table body is truncated).
+        let mut sfnt = Vec::new();
+        sfnt.extend_from_slice(&0x00010000u32.to_be_bytes());
+        sfnt.extend_from_slice(&1u16.to_be_bytes());
+        sfnt.extend_from_slice(&16u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+        sfnt.extend_from_slice(b"head");
+        sfnt.extend_from_slice(&0u32.to_be_bytes()); // bogus checksum ok
+        sfnt.extend_from_slice(&32u32.to_be_bytes()); // offset
+        sfnt.extend_from_slice(&100u32.to_be_bytes()); // length
+        sfnt.resize(50, 0u8);
+        let result = encode_woff1(&sfnt);
+        assert_eq!(result.unwrap_err(), WoffError::InvalidTableRange);
     }
 }

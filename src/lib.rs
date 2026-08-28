@@ -36,6 +36,7 @@ pub mod fonts;
 pub mod highlight;
 pub mod html;
 pub mod layout;
+pub mod md_gen;
 pub mod parse;
 pub mod pdf;
 pub mod scanner;
@@ -67,6 +68,7 @@ pub mod batch;
 pub use ast::Document;
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use error::{RenderError, Result};
+pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{PdfProfile, PdfStageSummary, RenderWarning, render_warnings};
 pub use scanner::{

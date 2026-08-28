@@ -318,6 +318,10 @@ fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult 
             "scripts/scanner-share-proof.sh",
             "ARTIFACT_DIR=\"tests/artifacts/perf/$RUN_ID\"",
         ),
+        (
+            "scripts/rss-profile-proof.sh",
+            "ARTIFACT_DIR=\"tests/artifacts/perf/$RUN_ID\"",
+        ),
     ] {
         assert_run_id_validation_before(script, marker, marker)?;
     }
@@ -341,6 +345,30 @@ fn showcase_mermaid_verifier_pins_frankenmermaid_reproduction_contract() -> Test
             "showcase Mermaid verifier should contain reproduction contract needle {needle:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn rss_profile_proof_rejects_unsafe_run_ids_before_artifact_paths() -> TestResult {
+    let output = Command::new("bash")
+        .args(["scripts/rss-profile-proof.sh", "--run-id", "../bad"])
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(64),
+        "unsafe run ids should use the documented usage exit before cargo or mkdir; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rss-profile-proof: run-id must match"),
+        "unsafe run id should get the shared run-id grammar error: {stderr}",
+    );
+    assert!(
+        !stderr.contains("profile=release-perf"),
+        "cargo must not start before run-id validation: {stderr}",
+    );
     Ok(())
 }
 

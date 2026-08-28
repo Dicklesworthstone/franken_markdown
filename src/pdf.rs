@@ -1346,6 +1346,18 @@ struct Face {
     font: Cow<'static, Font>,
     kern: Cow<'static, Kerning>,
     lig: Cow<'static, Ligatures>,
+    /// Lazily built fast tables for pure-ASCII text: glyph ids, 1/1000-em
+    /// advances, and a dense 128x128 pair-adjustment table, plus a per-byte
+    /// flag marking chars that start a ligature rule (so `substitute` can be
+    /// skipped only when provably an identity). Values are identical to what
+    /// the general path computes, so results are bit-for-bit equal.
+    ascii: std::sync::OnceLock<AsciiWidthTables>,
+}
+
+struct AsciiWidthTables {
+    advances: [u32; 128],
+    kern: Box<[i32]>,
+    lig_start: [bool; 128],
 }
 
 #[derive(Clone, Copy)]
@@ -1358,7 +1370,12 @@ struct PdfFontFace<'a> {
 impl Face {
     fn load(slot: FontAssetSlot, face: PdfFontFace<'_>, weight: u16) -> Result<Self> {
         let (font, kern, lig) = load_pdf_face_parts(slot, face, weight)?;
-        Ok(Self { font, kern, lig })
+        Ok(Self {
+            font,
+            kern,
+            lig,
+            ascii: std::sync::OnceLock::new(),
+        })
     }
 
     /// Load the bundled symbol fallback face. It has no caller-override slot
@@ -1379,6 +1396,7 @@ impl Face {
             font: Cow::Borrowed(font),
             kern: Cow::Borrowed(&layout.kern),
             lig: Cow::Borrowed(&layout.lig),
+            ascii: std::sync::OnceLock::new(),
         })
     }
 
@@ -1393,7 +1411,68 @@ impl Face {
         self.font.glyph_index(ch)
     }
 
+    fn ascii_tables(&self) -> &AsciiWidthTables {
+        self.ascii.get_or_init(|| {
+            let mut advances = [0u32; 128];
+            let mut lig_start = [false; 128];
+            let rule_start_glyphs: std::collections::BTreeSet<u16> =
+                self.lig.rule_start_glyphs().copied().collect();
+            let mut glyph_ids = [0u16; 128];
+            for b in 0usize..128 {
+                let glyph = self.font.glyph_index(b as u8 as char);
+                glyph_ids[b] = glyph;
+                advances[b] = self.glyph_advance_1000(glyph);
+                lig_start[b] = rule_start_glyphs.contains(&glyph);
+            }
+            let upm = i32::from(self.font.units_per_em);
+            let mut kern = vec![0i32; 128 * 128];
+            if upm != 0 {
+                for l in 0usize..128 {
+                    for r in 0usize..128 {
+                        kern[l * 128 + r] = i32::from(
+                            self.kern.pair(glyph_ids[l], glyph_ids[r]),
+                        ) * 1000
+                            / upm;
+                    }
+                }
+            }
+            AsciiWidthTables {
+                advances,
+                kern: kern.into_boxed_slice(),
+                lig_start,
+            }
+        })
+    }
+
+    /// Fast path for pure-ASCII text whose bytes provably cannot start a
+    /// ligature rule: the shaped glyph sequence is the per-char cmap sequence,
+    /// so width is the direct per-glyph/per-pair accumulation from the tables.
+    fn shaped_width_ascii(
+        &self,
+        bytes: &[u8],
+        size: FontSize,
+        tables: &AsciiWidthTables,
+    ) -> LayoutUnit {
+        let mut total = LayoutUnit::ZERO;
+        for (idx, &b) in bytes.iter().enumerate() {
+            total += advance_to_layout_units(tables.advances[b as usize], size);
+            if let Some(&next) = bytes.get(idx + 1) {
+                total += adjustment_to_layout_units(
+                    tables.kern[b as usize * 128 + next as usize],
+                    size,
+                );
+            }
+        }
+        total.max(LayoutUnit::ZERO)
+    }
+
     fn shaped_width(&self, text: &str, size: FontSize) -> LayoutUnit {
+        let bytes = text.as_bytes();
+        if bytes.iter().all(|&b| b < 128)
+            && !bytes.iter().any(|&b| self.ascii_tables().lig_start[b as usize])
+        {
+            return self.shaped_width_ascii(bytes, size, self.ascii_tables());
+        }
         let glyphs: Vec<u16> = text.chars().map(|ch| self.font.glyph_index(ch)).collect();
         let shaped = self.lig.substitute(&glyphs);
         self.shaped_glyph_width(&shaped, size)
@@ -2296,13 +2375,11 @@ const TABLE_LAYOUT_CACHE_MAX_CELLS: usize = 256;
 const TABLE_LAYOUT_CACHE_MAX_INLINE_BYTES: usize = 24 * 1024;
 const TABLE_LAYOUT_CACHE_MAX_INLINE_NODES: usize = 4096;
 const TABLE_LAYOUT_CACHE_MAX_LINES: usize = 512;
-
 #[derive(Default)]
 struct WidthCache {
     entries: HashMap<(u8, u32), HashMap<String, LayoutUnit>>,
     len: usize,
 }
-
 impl WidthCache {
     fn get(&self, key: (u8, u32), text: &str) -> Option<LayoutUnit> {
         self.entries
@@ -27812,6 +27889,54 @@ mod pdf_writer_tests {
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
+
+    #[test]
+    fn ascii_fast_path_is_bit_identical_to_general_shaping() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let sizes = [
+            super::font_size_of(9.0),
+            super::font_size_of(11.0),
+            super::font_size_of(16.0),
+        ];
+        let mut texts: Vec<String> = Vec::new();
+        for l in 0u8..128 {
+            for r in 0u8..128 {
+                let mut s = String::new();
+                s.push(l as char);
+                s.push(r as char);
+                texts.push(s);
+            }
+        }
+        for w in [
+            "fi", "fl", "ff", "ffi", "ffl", "office", "affix", "waffle", "fjord", "f", "fluffy",
+            "To", "AV", "Wa", "123", "a", "",
+        ] {
+            texts.push(w.to_string());
+        }
+        for slot in [
+            F_BODY,
+            F_BOLD,
+            super::F_ITALIC,
+            super::F_BOLDITALIC,
+            F_MONO,
+            super::F_SYMBOL,
+        ] {
+            let face = faces.face(slot);
+            for text in &texts {
+                for &fs in &sizes {
+                    let fast = face.shaped_width(text, fs);
+                    let slow = {
+                        let glyphs: Vec<u16> =
+                            text.chars().map(|ch| face.font.glyph_index(ch)).collect();
+                        let shaped = face.lig.substitute(&glyphs);
+                        face.shaped_glyph_width(&shaped, fs)
+                    };
+                    assert_eq!(fast, slow, "slot {slot} text {text:?}");
+                }
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn heading_id_state_preserves_collision_suffixes() {
         let mut state = HeadingIdState::default();

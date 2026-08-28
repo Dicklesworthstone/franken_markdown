@@ -2115,6 +2115,15 @@ impl Ligatures {
         self.rules.is_empty()
     }
 
+    /// Glyph ids that begin some ligature rule (the keys of the rule map).
+    /// Callers shaping ASCII text use this to prove `substitute` is an identity
+    /// for a given string: if no glyph in the string starts a rule, the
+    /// substitution is a no-op.
+    #[must_use]
+    pub fn rule_start_glyphs(&self) -> impl Iterator<Item = &u16> {
+        self.rules.keys()
+    }
+
     /// Apply ligature substitution to a glyph-id sequence (greedy longest match),
     /// returning the shaped sequence (which may contain ligature glyph ids that
     /// no single character maps to).

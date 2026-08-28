@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum ForgeLane: String, CaseIterable, Identifiable {
     case write = "Write"
     case preview = "Preview"
+    case outline = "Outline"
     case inspect = "Inspect"
     var id: Self { self }
 }
@@ -12,9 +14,15 @@ struct ForgeView: View {
     @State private var lane: ForgeLane = .write
     @FocusState private var editorFocused: Bool
 
+    @State private var exportedPdfData: Data?
+    @State private var exportedHtmlText: String?
+    @State private var exportItemUrl: URL?
+    @State private var showShareSheet = false
+    @State private var isExporting = false
+    @State private var exportStatusMessage: String?
+    @State private var showCopiedAlert = false
+
     init() {
-        // Deterministic launch-state hook for screenshot/UI gates. Production
-        // launches omit it and always open in the useful writing surface.
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
         _lane = State(initialValue: ForgeLane(rawValue: requested ?? "") ?? .write)
     }
@@ -25,27 +33,65 @@ struct ForgeView: View {
                 LaboratoryBackground()
                 VStack(spacing: 14) {
                     masthead
-                    if geometry.size.width >= 760 {
+                    if geometry.size.width >= 820 {
                         wideForge
                     } else {
                         compactForge
                     }
                     footer
                 }
-                .padding(.horizontal, geometry.size.width >= 760 ? 22 : 14)
+                .padding(.horizontal, geometry.size.width >= 820 ? 22 : 14)
                 .padding(.top, 12)
             }
         }
         .onChange(of: renderer.source) { _, _ in renderer.scheduleRender() }
+        .onChange(of: renderer.fontFamily) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.darkMode) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.allowRawHtml) { _, _ in renderer.renderNow() }
         .onReceive(NotificationCenter.default.publisher(for: .renderMarkdownNow)) { _ in
             renderer.renderNow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .exportPdfNow)) { _ in
+            triggerPdfExport()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .exportHtmlNow)) { _ in
+            triggerHtmlExport()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newMarkdownDocument)) { _ in
+            renderer.source = "# New Document\n\nStart writing..."
+            lane = .write
+        }
+        .sheet(isPresented: $showShareSheet) {
+            if let url = exportItemUrl {
+                ShareActivityView(activityItems: [url])
+            }
+        }
+        .overlay(alignment: .top) {
+            if showCopiedAlert {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Lab.emerald)
+                    Text("Copied to clipboard")
+                        .font(.system(size: Lab.size(12), weight: .bold, design: .monospaced))
+                        .foregroundStyle(Lab.text)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.85), in: Capsule())
+                .overlay(Capsule().stroke(Lab.emerald.opacity(0.4)))
+                .padding(.top, 16)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
     }
 
     private var masthead: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { brand; Spacer(); statusPill }
-            VStack(alignment: .leading, spacing: 10) { brand; statusPill }
+            HStack(spacing: 12) { brand; Spacer(); actionButtons; statusPill }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack { brand; Spacer(); statusPill }
+                actionButtons
+            }
         }
     }
 
@@ -54,13 +100,13 @@ struct ForgeView: View {
             Image("MonsterIcon")
                 .resizable()
                 .scaledToFill()
-                .frame(width: 56, height: 56)
+                .frame(width: 52, height: 52)
                 .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .shadow(color: Lab.emerald.opacity(0.42), radius: 13)
                 .accessibilityLabel("Friendly FrankenMarkdown document monster")
             VStack(alignment: .leading, spacing: 1) {
                 Text("FRANKENMARKDOWN")
-                    .font(.system(size: Lab.size(20), weight: .black, design: .monospaced))
+                    .font(.system(size: Lab.size(19), weight: .black, design: .monospaced))
                     .minimumScaleFactor(0.66)
                     .lineLimit(1)
                     .foregroundStyle(Lab.text)
@@ -71,12 +117,64 @@ struct ForgeView: View {
         }
     }
 
+    private var actionButtons: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(MarkdownRendererModel.presets) { preset in
+                    Button {
+                        renderer.source = preset.markdown
+                    } label: {
+                        Label(preset.title, systemImage: "doc.text")
+                    }
+                }
+            } label: {
+                Label("Presets", systemImage: "folder")
+                    .font(.system(size: Lab.size(11), weight: .bold, design: .monospaced))
+                    .foregroundStyle(Lab.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+            }
+
+            Button {
+                triggerPdfExport()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.down.doc")
+                    Text("PDF")
+                }
+                .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
+                .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(LinearGradient(colors: [Lab.amber, Lab.amber.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+            }
+            .disabled(isExporting)
+
+            Button {
+                triggerHtmlExport()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "curlybraces")
+                    Text("HTML")
+                }
+                .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
+                .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(LinearGradient(colors: [Lab.cyan, Lab.cyan.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+            }
+            .disabled(isExporting)
+        }
+    }
+
     private var statusPill: some View {
         HStack(spacing: 8) {
             Image(systemName: statusSymbol)
             Text(statusText)
                 .lineLimit(1)
-            if renderer.phase == .rendering { ProgressView().controlSize(.small) }
+            if renderer.phase == .rendering || isExporting { ProgressView().controlSize(.small) }
         }
         .font(.system(size: Lab.size(10), weight: .bold, design: .monospaced))
         .foregroundStyle(statusColor)
@@ -95,6 +193,7 @@ struct ForgeView: View {
             switch lane {
             case .write: editorPanel
             case .preview: previewPanel
+            case .outline: outlinePanel
             case .inspect: inspectorPanel
             }
         }
@@ -106,6 +205,8 @@ struct ForgeView: View {
                 .frame(minWidth: 320, maxWidth: .infinity)
             previewPanel
                 .frame(minWidth: 360, maxWidth: .infinity)
+            inspectorPanel
+                .frame(width: 260)
         }
     }
 
@@ -115,7 +216,7 @@ struct ForgeView: View {
                 HStack {
                     LabLabel(text: "01 · The Source")
                     Spacer()
-                    Text("\(renderer.source.utf8.count) bytes")
+                    Text("\(renderer.source.utf8.count) bytes · \(characterCount) chars · \(wordCount) words")
                         .font(.system(size: Lab.size(9), design: .monospaced))
                         .foregroundStyle(Lab.secondary)
                 }
@@ -169,19 +270,93 @@ struct ForgeView: View {
         }
     }
 
+    private var outlinePanel: some View {
+        LabPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                LabLabel(text: "Document Outline")
+                if renderer.headings.isEmpty {
+                    Text("No headings found in source Markdown (# Heading).")
+                        .font(.system(size: Lab.size(12)))
+                        .foregroundStyle(Lab.secondary)
+                        .padding(.vertical, 16)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(renderer.headings) { heading in
+                                HStack(spacing: 8) {
+                                    Text(String(repeating: "· ", count: heading.level - 1) + "H\(heading.level)")
+                                        .font(.system(size: Lab.size(10), weight: .black, design: .monospaced))
+                                        .foregroundStyle(Lab.emerald)
+                                    Text(heading.title)
+                                        .font(.system(size: Lab.size(12), weight: .medium))
+                                        .foregroundStyle(Lab.text)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("L\(heading.lineNumber)")
+                                        .font(.system(size: Lab.size(9), design: .monospaced))
+                                        .foregroundStyle(Lab.secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private var inspectorPanel: some View {
         LabPanel {
-            VStack(alignment: .leading, spacing: 14) {
-                LabLabel(text: "03 · The Press")
-                Label("Raw HTML is off", systemImage: "lock.shield")
-                Label("No network surface", systemImage: "network.slash")
-                Label("The exact Rust/WASM package is bundled", systemImage: "shippingbox")
-                Text("Typography, attachments, diagnostics, PDF export, document browsing, widgets, and Shortcuts are the next tracked foundation milestones.")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    LabLabel(text: "03 · The Press")
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("FONT FAMILY")
+                            .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
+                            .foregroundStyle(Lab.secondary)
+                        Picker("Font", selection: $renderer.fontFamily) {
+                            Text("Sans (IBM Plex)").tag("sans")
+                            Text("Serif (CM Serif)").tag("serif")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("COLOR THEME")
+                            .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
+                            .foregroundStyle(Lab.secondary)
+                        Picker("Theme", selection: $renderer.darkMode) {
+                            Text("Auto").tag("auto")
+                            Text("Light").tag("disabled")
+                            Text("Dark").tag("enabled")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    Divider().background(Lab.stroke)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("PDF Page Numbers", isOn: $renderer.pageNumbers)
+                        Toggle("Code Line Numbers", isOn: $renderer.codeLineNumbers)
+                        Toggle("Allow Raw HTML", isOn: $renderer.allowRawHtml)
+                    }
+                    .font(.system(size: Lab.size(12)))
+                    .foregroundStyle(Lab.text)
+
+                    Divider().background(Lab.stroke)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Raw HTML off by default", systemImage: "lock.shield")
+                        Label("Offline on-device Rust core", systemImage: "network.slash")
+                        Label("Exact checked WASM package", systemImage: "shippingbox")
+                    }
+                    .font(.system(size: Lab.size(11)))
                     .foregroundStyle(Lab.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.system(size: Lab.size(13)))
-            .foregroundStyle(Lab.text)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -198,11 +373,21 @@ struct ForgeView: View {
         .padding(.bottom, 8)
     }
 
+    private var characterCount: Int {
+        renderer.source.count
+    }
+
+    private var wordCount: Int {
+        let components = renderer.source.components(separatedBy: .whitespacesAndNewlines)
+        return components.filter { !$0.isEmpty }.count
+    }
+
     private var statusText: String {
         switch renderer.phase {
         case .loading: "warming the document press"
         case .ready: "Rust press ready"
         case .rendering: "parse · theme · layout · render"
+        case .exporting(let msg): msg
         case .failed(let message): message
         }
     }
@@ -212,15 +397,63 @@ struct ForgeView: View {
         case .loading: "bolt.horizontal.circle"
         case .ready: "checkmark.seal"
         case .rendering: "gearshape.2"
+        case .exporting: "arrow.down.circle"
         case .failed: "exclamationmark.triangle"
         }
     }
 
     private var statusColor: Color {
         switch renderer.phase {
-        case .loading, .rendering: Lab.amber
+        case .loading, .rendering, .exporting: Lab.amber
         case .ready: Lab.emerald
         case .failed: Lab.danger
         }
     }
+
+    private func triggerPdfExport() {
+        guard !isExporting else { return }
+        isExporting = true
+        Task {
+            do {
+                let (data, bytes, _) = try await renderer.exportPdf()
+                let tempDir = FileManager.default.temporaryDirectory
+                let fileUrl = tempDir.appendingPathComponent("Document.pdf")
+                try data.write(to: fileUrl)
+                exportItemUrl = fileUrl
+                showShareSheet = true
+                isExporting = false
+            } catch {
+                isExporting = false
+            }
+        }
+    }
+
+    private func triggerHtmlExport() {
+        guard !isExporting else { return }
+        isExporting = true
+        Task {
+            do {
+                let (html, bytes, _) = try await renderer.exportHtml()
+                let tempDir = FileManager.default.temporaryDirectory
+                let fileUrl = tempDir.appendingPathComponent("Document.html")
+                try html.write(to: fileUrl, atomically: true, encoding: .utf8)
+                exportItemUrl = fileUrl
+                showShareSheet = true
+                isExporting = false
+            } catch {
+                isExporting = false
+            }
+        }
+    }
 }
+
+struct ShareActivityView: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+

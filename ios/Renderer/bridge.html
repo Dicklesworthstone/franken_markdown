@@ -48,6 +48,50 @@
           return false;
         }
       };
+      window.frankenExportPdf = async (command) => {
+        const requestID = Number(command.requestID);
+        try {
+          const output = await renderer.renderPdf(String(command.markdown), command.options || {});
+          let binary = '';
+          const bytes = output.bytes;
+          const len = bytes.byteLength;
+          for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          const base64 = btoa(binary);
+          bridge.postMessage({
+            type: 'exportPdfResult',
+            requestID,
+            base64,
+            byteLength: len,
+            diagnosticCount: output.diagnostics.length
+          });
+          return true;
+        } catch (error) {
+          bridge.postMessage({type: 'exportFailure', requestID, message: String(error)});
+          return false;
+        }
+      };
+
+      window.frankenExportHtml = async (command) => {
+        const requestID = Number(command.requestID);
+        try {
+          const output = await renderer.renderHtml(String(command.markdown), command.options || {});
+          const htmlText = output.text();
+          bridge.postMessage({
+            type: 'exportHtmlResult',
+            requestID,
+            htmlText,
+            byteLength: output.bytes.byteLength,
+            diagnosticCount: output.diagnostics.length
+          });
+          return true;
+        } catch (error) {
+          bridge.postMessage({type: 'exportFailure', requestID, message: String(error)});
+          return false;
+        }
+      };
+
       bridge.postMessage({type: 'ready'});
     } catch (error) {
       bridge.postMessage({type: 'failure', message: `WASM initialization failed: ${error}`});

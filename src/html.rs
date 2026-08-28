@@ -243,13 +243,29 @@ impl<'a> RenderState<'a> {
     }
 }
 
+fn has_toc_marker(blocks: &[Block]) -> bool {
+    blocks.iter().any(|b| match b {
+        Block::Paragraph(inlines) => toc_marker_depth(inlines).is_some(),
+        _ => false,
+    })
+}
+
 fn render_blocks<'a, 'b>(
     blocks: &'b [Block],
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
 ) {
+    let mut injected_toc = false;
     for block in blocks {
+        if opts.toc
+            && !injected_toc
+            && matches!(block, Block::Heading { .. })
+            && !has_toc_marker(blocks)
+        {
+            injected_toc = true;
+            push_toc_nav(&state.toc_entries, opts.toc_depth, out);
+        }
         render_block(block, out, opts, state);
     }
 }
@@ -280,7 +296,7 @@ fn render_block<'a, 'b>(
         Block::Paragraph(inlines) => {
             if let Some(max_depth) = toc_marker_depth(inlines) {
                 // TOC marker: replace the paragraph with the generated nav.
-                push_toc_nav(&state.toc_entries, max_depth, out);
+                push_toc_nav(&state.toc_entries, max_depth.or(opts.toc_depth), out);
                 return;
             }
             out.push_str("<p>");

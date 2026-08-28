@@ -237,6 +237,12 @@ struct RenderArgs {
     /// Pass raw HTML in the source through instead of escaping it.
     #[arg(long)]
     allow_html: bool,
+    /// Generate a table of contents.
+    #[arg(long)]
+    toc: bool,
+    /// Maximum heading depth for table of contents (default: 3).
+    #[arg(long)]
+    toc_depth: Option<u8>,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -468,6 +474,8 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         lang: None,
         profile: None,
         allow_html: false,
+        toc: false,
+        toc_depth: None,
         pdf_line_numbers: false,
         pdf_page_numbers: false,
         pdf_base_font_size: None,
@@ -923,6 +931,8 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
         image_assets: Vec::new(),
         lang: None,
         profile: None,
+        toc: false,
+        toc_depth: None,
     };
     render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
@@ -1166,6 +1176,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             image_assets: html_image_assets,
             lang: args.lang.clone(),
             profile,
+            toc: args.toc,
+            toc_depth: args.toc_depth,
         };
         match render_html_document(&doc, &opts) {
             Ok(html) => Some(html.into_bytes()),
@@ -1191,6 +1203,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             table_font_size: args.pdf_table_font_size,
             image_assets: pdf_image_assets,
             font_assets: font_assets.clone(),
+            toc: args.toc,
+            toc_depth: args.toc_depth,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -1429,6 +1443,10 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         allow_raw_html: false,
         font_assets: FontAssets::default(),
         image_assets: Vec::new(),
+        lang: None,
+        profile: None,
+        toc: false,
+        toc_depth: None,
     };
     let pdf = PdfOptions {
         theme,
@@ -1443,6 +1461,10 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         table_font_size: None,
         image_assets: Vec::new(),
         font_assets: FontAssets::default(),
+        lang: None,
+        profile: None,
+        toc: false,
+        toc_depth: None,
     };
 
     let plan = BatchPlan {

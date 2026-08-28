@@ -15,23 +15,14 @@ starting with `0.2.0`; and the WASM/npm package is assembled by the separate
 tag-gated workflow. Conformance and status numbers below are the measured,
 ratcheted floors enforced in CI, not aspirational targets.
 
-**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, and
-`v0.3.0`–`v0.3.4`. The latest GitHub Release is
-[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4)
-(2026-07-11). In-tree Cargo is `0.3.5` (CJK line-breaking, 2026-07-23); that
-number is **not** a git tag and **not** a GitHub Release. Do not invent a
-`v0.3.5` release page.
+**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, `v0.3.0`–`v0.3.4`, and `v0.4.0`. The latest GitHub Release is
+[`v0.4.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0)
+(2026-08-24). In-tree Cargo on `main` is `0.4.1` (development version).
 
-Scope window: 2026-06-26 through HEAD
-[`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9)
-(2026-08-19).
+Scope window: 2026-06-26 through 2026-08-28.
 
-- Sources: `git log --reverse --no-merges` (2026-06-26 through 2026-08-19), the
-  working tree, `.beads/issues.jsonl`, `docs/` and `docs/planning/`, and the CI
-  workflows under `.github/workflows/`.
-- Version state: **Cargo `0.3.5` on `main`; latest GitHub Release `v0.3.4`.**
-  HEAD is [`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9)
-  (2026-08-19).
+- Sources: git history, the working tree, `.beads/issues.jsonl`, `docs/`, and CI workflows.
+- Version state: **Cargo `0.4.1` on `main`; latest GitHub Release `v0.4.0` (2026-08-24); crates.io `0.4.0`; npm `0.3.2`.**
 - Commit links use the form
   `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
 
@@ -50,19 +41,32 @@ Scope window: 2026-06-26 through HEAD
 | 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
 | 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
 | 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
-| 2026-07-23 | CJK line breaking (Cargo `0.3.5`, not a GitHub Release) | In-tree `0.3.5` gives Chinese/Japanese/Korean text real break opportunities: UAX #14 inter-ideograph breaks with the closing/opening/non-starter and Hangul-cluster prohibitions, carried as zero-width stretchable glue so the Knuth-Plass optimizer fills the measure instead of overrunning it in narrow columns; Latin output is byte-identical and the break-point splitter is no longer quadratic. No `v0.3.5` tag or Release. |
-| 2026-07-23 → 2026-08-19 | Unreleased: TeX-math engine + janitor | Clean-room TeX-mathematics layout (`fmd-math`), font packaging fix, installer `df` hardening, and a docs-reorg that moved root planning files into `docs/planning/` |
+| 2026-07-23 | CJK line breaking | UAX #14 inter-ideograph breaks with closing/opening/non-starter prohibitions, zero-width stretchable glue for Knuth-Plass |
+| 2026-08-24 | TeX-math + font factoring release | `v0.4.0` ships clean-room TeX-mathematics layout (`fmd-math`), factored font crate (`fmd-font` `v0.2.0`), UAX #14 CJK line breaking, expanded math symbol fallbacks, and configurable typography |
+| 2026-08-25 → 2026-08-28 | Unreleased (0.4.1-dev) | MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, and TOC foundation |
 
-## Unreleased (2026-07-23 → 2026-08-19)
+## Unreleased (2026-08-25 → 2026-08-28)
 
-Current window after the in-tree `0.3.5` CJK landing
-([`6417d9b`](https://github.com/Dicklesworthstone/franken_markdown/commit/6417d9b92eef2905fd5fadea7529afe715b42e07))
-through HEAD
-[`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9):
-34 non-merge commits. Latest GitHub Release remains
-[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4).
+Development on `main` post-`v0.4.0`.
 
 ### Delivered capability
+
+- MathML Core HTML output (`lqxy`): native `<math>` and `<annotation encoding="application/x-tex">` rendering in self-contained HTML.
+- Multi-language hyphenation (`38re`): TeX pattern tables and Knuth-Liang hyphenation for German (`de`), French (`fr`), Spanish (`es`), and Dutch (`nl`).
+- GFM-plus definition lists (`ryu4`): `<dl>`, `<dt>`, `<dd>` in HTML and PDF layout, `--profile gfm-plus` validation.
+- Caret diagnostics (`9wse`): accurate line/column caret reporting for parse warnings and syntax errors.
+- Table of Contents (`byqs`): HTML TOC emission with depth controls and marker support.
+
+## 0.4.0 - 2026-08-24
+
+Major feature release: clean-room TeX-mathematics layout, font crate factoring, and CJK typography.
+
+- Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier: grammar, atom engine, styles, Appendix-G placement, CM metrics, drawn delimiters, environments, stretchy accents, macros, and packs.
+- Factored `fmd-font` workspace crate (`v0.2.0`) with clean-room sfnt reader, glyf outline decoder, and bundled OFL faces.
+- UAX #14 CJK line breaking: inter-ideograph breaks with closing/opening/non-starter and Hangul-cluster prohibitions.
+- Expanded math-alphanumeric and symbol fallback coverage (`\mathcal`, `\mathbb`) with format-12 cmap emission.
+- Configurable PDF typography: `base_font_size`, `heading_scale`, `table_font_size` overrides.
+- Knuth-Plass solver-emitter elasticity credit policy fix and page-level void budgeting.
 
 - Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier.
 - Root planning docs relocated under `docs/planning/`.

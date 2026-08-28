@@ -89,6 +89,10 @@ pub struct WasmRenderOptions {
     pub lang: Option<String>,
     /// Markdown authoring profile (e.g. CommonMark/GFM default vs GFM-plus).
     pub profile: Option<crate::Profile>,
+    /// Generate a table of contents.
+    pub toc: bool,
+    /// Maximum heading depth for table of contents (e.g. 1..=6).
+    pub toc_depth: Option<u8>,
 }
 
 impl WasmRenderOptions {
@@ -111,6 +115,20 @@ impl WasmRenderOptions {
     #[must_use]
     pub fn with_profile(mut self, profile: crate::Profile) -> Self {
         self.profile = Some(profile);
+        self
+    }
+
+    /// Return a copy with table of contents generation enabled or disabled.
+    #[must_use]
+    pub fn with_toc(mut self, toc: bool) -> Self {
+        self.toc = toc;
+        self
+    }
+
+    /// Return a copy with a maximum table of contents heading depth.
+    #[must_use]
+    pub fn with_toc_depth(mut self, depth: u8) -> Self {
+        self.toc_depth = Some(depth);
         self
     }
 
@@ -307,6 +325,8 @@ impl WasmRenderOptions {
             image_assets: self.pdf_image_assets.clone(),
             lang: self.lang.clone(),
             profile: self.profile,
+            toc: self.toc,
+            toc_depth: self.toc_depth,
         }
     }
 
@@ -326,6 +346,8 @@ impl WasmRenderOptions {
             font_assets: self.font_assets.clone(),
             lang: self.lang.clone(),
             profile: self.profile,
+            toc: self.toc,
+            toc_depth: self.toc_depth,
         }
     }
 }

@@ -25,16 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.3.5`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.3.4`** (2026-07-11) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4 |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.1`** | `Cargo.toml` `version` field |
+> | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.0`** (2026-08-24) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0 |
+> | **crates.io** | `franken_markdown` library | **`0.4.0`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.3.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
-> | **crates.io** | `franken_markdown` library | **`0.2.0`** | https://crates.io/crates/franken_markdown |
 >
-> The `0.3.5` library and CLI on `main` are **not yet on crates.io or npm and have no GitHub Release**; the in-tree
-> source has the renderer work that landed after `v0.3.4` (CJK line breaking, the clean-room TeX-math
-> layout engine, configurable PDF typography, the Knuth-Plass elasticity-credit policy fix,
-> page-void budgeting). For the current `0.3.4` CLI use the GitHub release archives; for the
-> in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
+> The latest tagged release is **v0.4.0** (shipped to GitHub Releases and crates.io), carrying the clean-room TeX-mathematics layout engine (`fmd-math`), TrueType font reader factoring (`fmd-font`), UAX #14 CJK line breaking, and expanded math symbol fallbacks. The current development tree on `main` is **0.4.1** (MathML Core HTML output, multi-language hyphenation, GFM-plus definition lists, and caret diagnostics). For the current `0.4.0` CLI use the GitHub release archives; for the in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn

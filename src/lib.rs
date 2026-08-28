@@ -468,6 +468,10 @@ pub struct HtmlOptions {
     pub lang: Option<String>,
     /// Markdown authoring profile (e.g. CommonMark/GFM default vs GFM-plus).
     pub profile: Option<Profile>,
+    /// Generate a table of contents.
+    pub toc: bool,
+    /// Maximum heading depth for table of contents (e.g. 1..=6).
+    pub toc_depth: Option<u8>,
 }
 
 /// Options for the PDF renderer.
@@ -520,6 +524,10 @@ pub struct PdfOptions {
     pub image_assets: Vec<PdfImageAsset>,
     /// Optional caller-supplied fonts. Missing slots use bundled fonts.
     pub font_assets: FontAssets,
+    /// Generate a table of contents.
+    pub toc: bool,
+    /// Maximum heading depth for table of contents (e.g. 1..=6).
+    pub toc_depth: Option<u8>,
 }
 
 impl PdfOptions {

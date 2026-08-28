@@ -50,6 +50,14 @@ else
   [ -x "$BIN" ] || BIN="target/debug/fmd"
   FMD_BIN="$BIN"
 fi
+
+if [ ! -x "$FMD_BIN" ] || ! "$FMD_BIN" --version >/dev/null 2>&1; then
+  echo "check-claim-discipline: binary at $FMD_BIN not executable on host; rebuilding locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --quiet
+  BIN="${CARGO_TARGET_DIR:-target}/debug/fmd"
+  [ -x "$BIN" ] || BIN="target/debug/fmd"
+  FMD_BIN="$BIN"
+fi
 CAPS="$("$FMD_BIN" capabilities --json 2>/dev/null)"
 
 # Extract a feature flag value from the capabilities JSON.

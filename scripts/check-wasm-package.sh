@@ -50,13 +50,20 @@ log_check() {
 #            (bundled TTF 72,908 B, ~+16 KiB vs 0.3.4's +15.4 KiB face).
 #          Not trimmed: build-time face subsetting would edit the reserved
 #          fmd-font reader. Cost is documented; the gate re-ratchets.
+#   0.3.5 (post-math & definition lists)
+#          measured raw=4,150,881 gzip=1,848,152 brotli=1,382,581
+#          budget 4,300,000 / 1,900,000 (+131,166 raw / +49,935 gzip)
+#          Shipped contributors:
+#            GFM-plus definition lists AST/parser/HTML/PDF engine,
+#            expanded superscript/phonetic glyph fallbacks,
+#            MathML block/inline wiring & caret diagnostics.
 #
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=4019715
-PREVIOUS_GZIP=1798217
-BUDGET_RAW=4200000
-BUDGET_GZIP=1850000
+PREVIOUS_RAW=4150881
+PREVIOUS_GZIP=1848152
+BUDGET_RAW=4300000
+BUDGET_GZIP=1900000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"
@@ -167,6 +174,14 @@ cargo build --quiet --bin fmd --target "$host_target"
 fmd="$CARGO_TARGET_DIR/$host_target/debug/fmd"
 if [ ! -x "$fmd" ] && [ -x "$CARGO_TARGET_DIR/debug/fmd" ]; then
   fmd="$CARGO_TARGET_DIR/debug/fmd"
+fi
+if [ ! -x "$fmd" ] || ! "$fmd" --version >/dev/null 2>&1; then
+  log "fmd binary not executable on host; rebuilding locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --quiet --bin fmd --target "$host_target"
+  fmd="$CARGO_TARGET_DIR/$host_target/debug/fmd"
+  if [ ! -x "$fmd" ] && [ -x "$CARGO_TARGET_DIR/debug/fmd" ]; then
+    fmd="$CARGO_TARGET_DIR/debug/fmd"
+  fi
 fi
 
 

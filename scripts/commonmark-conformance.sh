@@ -49,7 +49,14 @@ else
   cargo build --release --quiet --bin fmd
   BIN="$CARGO_TARGET_DIR/release/fmd"
 fi
+
+if [ ! -x "$BIN" ] || ! "$BIN" --version >/dev/null 2>&1; then
+  echo "commonmark-conformance: binary at $BIN not executable on host; rebuilding locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --release --quiet --bin fmd
+  BIN="$CARGO_TARGET_DIR/release/fmd"
+fi
 [ -x "$BIN" ] || { echo "fmd binary not found at $BIN"; exit 2; }
+"$BIN" --version >/dev/null 2>&1 || { echo "fmd binary at $BIN cannot execute on host"; exit 2; }
 
 FLOOR=0
 [ -s "$FLOOR_FILE" ] && FLOOR="$(tr -dc '0-9' <"$FLOOR_FILE")"

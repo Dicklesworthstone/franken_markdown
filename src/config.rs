@@ -491,13 +491,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_caret_follows_lone_cr_line_endings() {
+    fn parse_error_caret_follows_str_lines_not_lone_cr() {
+        // `str::lines` (and therefore `FmdConfig::parse`) does not treat a lone
+        // CR as a record separator. The caret must not invent a second line, or
+        // `line 1:` would highlight `font=sans` while the invalid value is the
+        // mashed remainder.
         let src = "font=sans\rdark_mode=bogus";
         let err = FmdConfig::parse(src).unwrap_err();
         match &err {
             ConfigError::Parse(msg) => assert!(
-                msg.starts_with("line 2:"),
-                "str::lines counts CR-separated keys as two lines, got {msg}"
+                msg.starts_with("line 1:"),
+                "lone CR is one parse line, got {msg}"
             ),
             other => panic!("expected parse error, got {other:?}"),
         }
@@ -505,8 +509,29 @@ mod tests {
             .render_caret(src, Some("fmd.toml"), CaretStyle::default())
             .expect("parse errors produce a caret");
         assert!(
+            caret.contains("fmd.toml:1:"),
+            "caret must stay on parse line 1, got {caret:?}"
+        );
+        assert!(
+            !caret.contains("fmd.toml:2:"),
+            "lone CR must not invent line 2, got {caret:?}"
+        );
+
+        let crlf = "font=sans\r\ndark_mode=bogus";
+        let err = FmdConfig::parse(crlf).unwrap_err();
+        match &err {
+            ConfigError::Parse(msg) => assert!(
+                msg.starts_with("line 2:"),
+                "CRLF is two parse lines, got {msg}"
+            ),
+            other => panic!("expected parse error, got {other:?}"),
+        }
+        let caret = err
+            .render_caret(crlf, Some("fmd.toml"), CaretStyle::default())
+            .expect("parse errors produce a caret");
+        assert!(
             caret.contains("fmd.toml:2:"),
-            "caret must point at the second CR-separated line, got {caret:?}"
+            "CRLF caret must follow parse line 2, got {caret:?}"
         );
         assert!(
             caret.contains("dark_mode=bogus"),

@@ -4,7 +4,7 @@
 //! at a pinned `wght` location and emits a static TrueType font.
 
 use crate::{
-    be_i16, be_u16, be_u32, find_table_full, off, off_mul, table_checksum, write_u32, Font,
+    Font, be_i16, be_u16, be_u32, find_table_full, off, off_mul, table_checksum, write_u32,
 };
 
 const MAX_TUPLES: usize = 256;
@@ -83,11 +83,7 @@ fn location_for_weight(font: &Font, weight: f32) -> Option<Vec<f32>> {
             loc.push(0.0);
         }
     }
-    if saw_wght {
-        Some(loc)
-    } else {
-        None
-    }
+    if saw_wght { Some(loc) } else { None }
 }
 
 fn parse_gvar(d: &[u8], table_off: usize, table_len: usize, n_axes: usize) -> Option<GvarHeader> {
@@ -927,11 +923,7 @@ fn iup_delta(oa: i32, oi: i32, ob: i32, da: f32, db: f32) -> f32 {
 }
 
 fn next_in(i: usize, start: usize, end: usize) -> usize {
-    if i >= end {
-        start
-    } else {
-        i + 1
-    }
+    if i >= end { start } else { i + 1 }
 }
 
 fn encode_simple(g: &SimpleGlyph) -> Option<Vec<u8>> {
@@ -1180,12 +1172,13 @@ pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
     fn push32(out: &mut Vec<u8>, v: u32) {
         out.extend_from_slice(&v.to_be_bytes());
     }
-    let glyph = encode_simple(&SimpleGlyph {
+    let Some(glyph) = encode_simple(&SimpleGlyph {
         points: vec![(0, 0), (100, 0), (50, 100)],
         on_curve: vec![true, true, true],
         contour_ends: vec![2],
-    })
-    .expect("tiny fixture encodes");
+    }) else {
+        return Vec::new();
+    };
     let mut loca = Vec::new();
     push32(&mut loca, 0);
     push32(&mut loca, glyph.len() as u32);

@@ -64,8 +64,9 @@ run).
 | IBMPlexSans-Bold.ttf | 200872 | bundled static cut |
 | IBMPlexSans Regular + Bold | 401372 | two static files the VF is meant to replace |
 | FmdTestVF.ttf | 338 | fvar/avar-only parse fixture (no glyf/gvar) |
-| variable_triangle_fixture | measured by e2e | gvar+glyf synthetic (not a design face) |
-| instanced static @ 400 / 700 | measured by e2e | what PDF/HTML actually embed |
+| variable_triangle_fixture | 416 | gvar+glyf synthetic (not a design face) |
+| instanced static @ 400 | 304 | what PDF/HTML actually embed |
+| instanced static @ 700 | 308 | what PDF/HTML actually embed |
 
 No-claim line: a retail variable font can be **larger** than the static cuts
 it replaces. Do not budget the host VF into the npm/WASM package. `smif.2`

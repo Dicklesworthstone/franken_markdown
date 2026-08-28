@@ -6,9 +6,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::text::Font;
-use franken_markdown::wasm::{render_pdf as wasm_render_pdf, WasmRenderOptions};
+use franken_markdown::wasm::{WasmRenderOptions, render_pdf as wasm_render_pdf};
 use franken_markdown::{
-    parse_markdown, render_pdf, render_pdf_document, FontAssetSlot, FontAssets, PdfOptions,
+    FontAssetSlot, FontAssets, PdfOptions, parse_markdown, render_pdf, render_pdf_document,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -173,23 +173,24 @@ fn host_bytes_mixed_weight_pdf_is_deterministic_and_matches_wasm() {
 }
 
 #[test]
-fn mixed_weight_pdf_differs_from_regular_only() {
-    let mixed = render_pdf(MIXED_MD, &pdf_opts(mixed_assets(400, 700))).unwrap();
-    let regular = render_pdf(
-        MIXED_MD,
-        &pdf_opts(
-            FontAssets::default()
-                .with_slot(FontAssetSlot::BodyRegular, vf_bytes())
-                .unwrap()
-                .with_slot_weight(FontAssetSlot::BodyRegular, 400)
-                .unwrap(),
-        ),
-    )
-    .unwrap();
+fn mixed_weight_pdf_honors_bold_pin_and_bold_markup() {
+    let pinned_700 = render_pdf(MIXED_MD, &pdf_opts(mixed_assets(400, 700))).unwrap();
+    let pinned_400 = render_pdf(MIXED_MD, &pdf_opts(mixed_assets(400, 400))).unwrap();
     log_check(
-        "gk3v.4.mixed.diff",
-        "regular+bold slots differ from regular-only",
-        mixed != regular && mixed.starts_with(b"%PDF-") && regular.starts_with(b"%PDF-"),
+        "gk3v.4.mixed.pin.diff",
+        "bold pin 700 vs 400 changes the mixed-weight PDF",
+        pinned_700 != pinned_400
+            && pinned_700.starts_with(b"%PDF-")
+            && pinned_400.starts_with(b"%PDF-"),
+    );
+
+    let assets = mixed_assets(400, 700);
+    let with_bold = render_pdf(MIXED_MD, &pdf_opts(assets.clone())).unwrap();
+    let regular_only = render_pdf("Regular body.\n", &pdf_opts(assets)).unwrap();
+    log_check(
+        "gk3v.4.mixed.markup.diff",
+        "bold markup uses the bold slot (PDF differs from regular-only markdown)",
+        with_bold != regular_only,
     );
 }
 
@@ -335,30 +336,52 @@ fn cli_slot_mixed_weight_pdf_is_deterministic() {
         bytes_a.starts_with(b"%PDF-"),
     );
 
-    let light = run(&out_light_s, &[]);
+    let light = run(&out_light_s, &["--pdf-font-weight", "body-bold=400"]);
     log_check(
         "gk3v.4.cli.light.exit",
-        "regular-only CLI render exits 0",
+        "CLI mixed markdown with bold pin 400 exits 0",
         light.status.success(),
     );
     let bytes_light = fs::read(&out_light).unwrap();
     log_check(
         "gk3v.4.cli.mixed.diff",
-        "CLI mixed-weight PDF differs from regular-only",
+        "CLI bold pin 700 vs 400 changes the mixed-weight PDF",
         bytes_a != bytes_light,
     );
 
-    // Phase logs stay on stderr; stdout stays empty when --out is a file.
+    // Phase logs are JSON-only (`if json { report_font_assets }`); --out
+    // without --json keeps stdout empty.
     log_check(
         "gk3v.4.cli.stdout",
-        "CLI stdout is empty with --out",
+        "CLI stdout is empty with --out and no --json",
         a.stdout.is_empty(),
     );
-    let stderr = String::from_utf8_lossy(&a.stderr);
+    let json_run = fmd(&[
+        "--no-config",
+        "--json",
+        "--text",
+        MIXED_MD,
+        "--to",
+        "pdf",
+        "--out",
+        &out_a_s,
+        "--pdf-font",
+        mapping.as_str(),
+        "--pdf-font-weight",
+        "body-regular=400",
+        "--pdf-font-weight",
+        "body-bold=700",
+    ]);
+    let json_err = String::from_utf8_lossy(&json_run.stderr);
+    log_check(
+        "gk3v.4.cli.json.exit",
+        "CLI --json mixed-weight render exits 0",
+        json_run.status.success(),
+    );
     log_check(
         "gk3v.4.cli.phase",
-        "stderr records font_instance/font_assets phase",
-        stderr.contains("font_instance") || stderr.contains("font_assets"),
+        "stderr records font_instance/font_assets phase under --json",
+        json_err.contains("font_instance") || json_err.contains("font_assets"),
     );
 
     let _ = fs::remove_file(&vf_path);

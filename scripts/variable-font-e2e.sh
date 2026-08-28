@@ -94,8 +94,16 @@ set -e
 check "gk3v.4.e2e.a.exit" "first mixed-weight CLI render exits 0" "$([ "$status_a" -eq 0 ] && echo 1 || echo 0)" || fail=1
 magic="$(head -c 5 "$OUT_A" 2>/dev/null || true)"
 check "gk3v.4.e2e.a.pdf" "first output is a PDF" "$([ "$magic" = "%PDF-" ] && echo 1 || echo 0)" || fail=1
-check "gk3v.4.e2e.a.stdout" "stdout stays empty with --out" "$([ ! -s "$ART/run-a.stdout" ] && echo 1 || echo 0)" || fail=1
-check "gk3v.4.e2e.a.phase" "stderr has font phase logs" "$(grep -q 'font_instance\|font_assets' "$ART/run-a.stderr" && echo 1 || echo 0)" || fail=1
+check "gk3v.4.e2e.a.stdout" "stdout stays empty with --out and no --json" "$([ ! -s "$ART/run-a.stdout" ] && echo 1 || echo 0)" || fail=1
+phase "cli-json-phase"
+set +e
+SOURCE_DATE_EPOCH=1700000000 "$BIN" "$MD" --no-config --json --to pdf --out "$WORK/json.pdf" \
+  --pdf-font "body-regular=$VF" --pdf-font-weight body-regular=400 --pdf-font-weight body-bold=700 \
+  >"$ART/run-json.stdout" 2>"$ART/run-json.stderr"
+status_json=$?
+set -e
+check "gk3v.4.e2e.json.exit" "CLI --json mixed-weight render exits 0" "$([ "$status_json" -eq 0 ] && echo 1 || echo 0)" || fail=1
+check "gk3v.4.e2e.a.phase" "stderr has font phase logs under --json" "$(grep -q 'font_instance\|font_assets' "$ART/run-json.stderr" && echo 1 || echo 0)" || fail=1
 
 phase "cli-mixed-b"
 set +e
@@ -112,17 +120,17 @@ else
   check "gk3v.4.e2e.det" "two CLI mixed-weight PDFs are byte-identical" 0 || fail=1
 fi
 
-phase "regular-only"
+phase "bold-pin-400"
 set +e
-run_pdf "$OUT_LIGHT" --pdf-font-weight body-regular=400 \
+run_pdf "$OUT_LIGHT" --pdf-font-weight body-regular=400 --pdf-font-weight body-bold=400 \
   >"$ART/run-light.stdout" 2>"$ART/run-light.stderr"
 status_light=$?
 set -e
-check "gk3v.4.e2e.light.exit" "regular-only CLI render exits 0" "$([ "$status_light" -eq 0 ] && echo 1 || echo 0)" || fail=1
+check "gk3v.4.e2e.light.exit" "mixed markdown with bold pin 400 exits 0" "$([ "$status_light" -eq 0 ] && echo 1 || echo 0)" || fail=1
 if [ -f "$OUT_A" ] && [ -f "$OUT_LIGHT" ] && ! cmp -s -- "$OUT_A" "$OUT_LIGHT"; then
-  check "gk3v.4.e2e.mixed.diff" "mixed-weight PDF differs from regular-only" 1 || fail=1
+  check "gk3v.4.e2e.mixed.diff" "bold pin 700 vs 400 changes the mixed-weight PDF" 1 || fail=1
 else
-  check "gk3v.4.e2e.mixed.diff" "mixed-weight PDF differs from regular-only" 0 || fail=1
+  check "gk3v.4.e2e.mixed.diff" "bold pin 700 vs 400 changes the mixed-weight PDF" 0 || fail=1
 fi
 
 phase "size-report"

@@ -5,11 +5,15 @@
 use std::io::{Error, ErrorKind as IoErrorKind, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
+use crate::watch::{
+    DEFAULT_INTERVAL_MS, PollWatcher, SystemClock, collect_watch_paths, referenced_local_paths,
+};
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError,
     RenderWarning, Theme, parse_markdown, render_html_document, render_pdf_document,
@@ -29,7 +33,7 @@ const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
     name = "fmd",
     version,
     about,
-    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path embeds curated per-document font subsets, uses Knuth-Plass paragraph breaking, applies deterministic discretionary hyphenation/justification for body paragraphs, and includes basic keep/widow pagination today; deeper page polish is still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd --robot-triage"
+    long_about = "fmd converts Markdown files, stdin, or raw Markdown text into attractive self-contained HTML and compact deterministic PDF. The PDF path embeds curated per-document font subsets, uses Knuth-Plass paragraph breaking, applies deterministic discretionary hyphenation/justification for body paragraphs, and includes basic keep/widow pagination today; deeper page polish is still landing behind the same command contract.\n\nFirst tries that work:\n  fmd README.md\n  fmd - < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd capabilities --json\n  fmd robot-docs guide\n  fmd watch README.md --out README.html\n  fmd --robot-triage"
 )]
 struct Cli {
     /// Emit stable machine-readable JSON for command metadata/status.
@@ -63,6 +67,8 @@ enum Command {
     /// Check a rendered document: text layer, internal anchors, warnings,
     /// overflow — machine-readable JSON on stdout (beads yo83).
     Verify(VerifyArgs),
+    /// Rebuild when the Markdown file, `--css`, or referenced local assets change.
+    Watch(WatchArgs),
     /// Check local build/runtime capabilities and report implementation status.
     Doctor(DoctorArgs),
     /// Read or edit native fmd config (never used by the WASM/core library).
@@ -137,6 +143,33 @@ struct VerifyArgs {
     input: PathBuf,
     /// Emit stable JSON (verify always writes JSON to stdout; the flag is
     /// accepted for contract consistency with the other commands).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct WatchArgs {
+    /// Markdown file to watch (a real path; stdin cannot be polled).
+    input: PathBuf,
+    /// Which output(s) to produce on each rebuild.
+    #[arg(long, value_enum, default_value_t = Target::Html)]
+    to: Target,
+    /// Output path. Required: a watch loop cannot own stdout as a document sink.
+    #[arg(long, short)]
+    out: PathBuf,
+    /// Override the configured/default body font.
+    #[arg(long, value_enum)]
+    font: Option<FontArg>,
+    /// Custom stylesheet watched together with the Markdown file.
+    #[arg(long)]
+    css: Option<PathBuf>,
+    /// Poll and debounce window in milliseconds (default 300).
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_MS)]
+    interval: u64,
+    /// Extra stderr detail on each rebuild (path counts).
+    #[arg(long)]
+    verbose: bool,
+    /// JSONL rebuild/watch events on stderr; stdout stays empty.
     #[arg(long)]
     json: bool,
 }
@@ -360,6 +393,7 @@ pub fn main() -> ExitCode {
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
         Some(Command::Verify(args)) => run_verify(args, json, no_color),
+        Some(Command::Watch(args)) => run_watch(args, json, no_config),
         None => {
             let mut cmd = Cli::command();
             if cmd.print_long_help().is_err() {
@@ -367,6 +401,119 @@ pub fn main() -> ExitCode {
             }
             println!();
             ExitCode::SUCCESS
+        }
+    }
+}
+
+fn watch_to_render(args: &WatchArgs) -> RenderArgs {
+    RenderArgs {
+        input: Some(args.input.display().to_string()),
+        text: None,
+        to: args.to,
+        out: Some(args.out.clone()),
+        font: args.font,
+        css: args.css.clone(),
+        title: None,
+        author: None,
+        allow_html: false,
+        pdf_line_numbers: false,
+        pdf_page_numbers: false,
+        pdf_base_font_size: None,
+        pdf_heading_scale: None,
+        pdf_table_font_size: None,
+        pdf_images: Vec::new(),
+        pdf_fonts: Vec::new(),
+        pdf_font_weights: Vec::new(),
+        max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
+        no_remote_images: false,
+        remote_image_timeout_secs: DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS,
+        max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
+        json: args.json,
+    }
+}
+
+fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
+    let json = global_json || args.json;
+    if args.input.as_os_str() == "-" {
+        return fail_json(
+            64,
+            "usage_error",
+            "fmd watch needs a file path; stdin cannot be polled",
+            json,
+        );
+    }
+    if args.out.as_os_str() == "-" {
+        return fail_json(
+            64,
+            "usage_error",
+            "fmd watch requires a real --out path; stdout is not a watch sink",
+            json,
+        );
+    }
+    let interval_ms = args.interval.max(1);
+    let interval = Duration::from_millis(interval_ms);
+    let mut extras = Vec::new();
+    if let Some(css) = &args.css {
+        extras.push(css.clone());
+    }
+    if let Ok(src) = std::fs::read_to_string(&args.input) {
+        let base = args.input.parent().unwrap_or_else(|| Path::new("."));
+        extras.extend(referenced_local_paths(&src, base));
+    }
+    let paths = collect_watch_paths(&args.input, &extras);
+    if json {
+        eprintln!(
+            "{{\"ok\":true,\"event\":\"watching\",\"paths\":{},\"interval_ms\":{}}}",
+            paths.len(),
+            interval_ms
+        );
+    } else {
+        eprintln!(
+            "fmd watch: {} path(s), interval {interval_ms}ms; Ctrl-C to stop",
+            paths.len()
+        );
+    }
+    let mut watcher = PollWatcher::new(paths, interval, SystemClock);
+    let _ = run_render(watch_to_render(&args), json, no_config);
+    loop {
+        std::thread::sleep(interval);
+        let events = watcher.poll();
+        if events.is_empty() {
+            continue;
+        }
+        if json {
+            let mut changed = String::from("[");
+            for (i, event) in events.iter().enumerate() {
+                if i > 0 {
+                    changed.push(',');
+                }
+                changed.push('"');
+                changed.push_str(&json_escape(&event.path.display().to_string()));
+                changed.push('"');
+            }
+            changed.push(']');
+            eprintln!(
+                "{{\"ok\":true,\"event\":\"rebuild\",\"changed\":{changed},\"count\":{}}}",
+                events.len()
+            );
+        } else if args.verbose {
+            eprintln!(
+                "fmd watch: {} change(s) across {} path(s); rebuilding",
+                events.len(),
+                watcher.paths().len()
+            );
+        } else {
+            eprintln!(
+                "fmd watch: {} changed; rebuilding",
+                events[0].path.display()
+            );
+        }
+        let _ = run_render(watch_to_render(&args), json, no_config);
+        if let Ok(src) = std::fs::read_to_string(&args.input) {
+            let base = args.input.parent().unwrap_or_else(|| Path::new("."));
+            for path in referenced_local_paths(&src, base) {
+                watcher.add_path(path);
+            }
         }
     }
 }
@@ -1918,7 +2065,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --to pdf --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --to pdf --json\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"watch\":\"available_poll_hash_debounce\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -1933,7 +2080,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at the pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd watch README.md --out README.html\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at the pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.",
     )
 }
 
@@ -1951,6 +2098,7 @@ fn normalized_args() -> Vec<String> {
         "robot-docs",
         "doctor",
         "verify",
+        "watch",
         "config",
         // Recognized even without the `batch` feature so it is never rewritten to
         // `render batch ...`; clap then reports a clean "unrecognized subcommand".

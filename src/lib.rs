@@ -60,6 +60,8 @@ pub mod config;
 pub(crate) mod file_write;
 #[cfg(feature = "cli")]
 pub mod verify;
+#[cfg(feature = "cli")]
+pub mod watch;
 // Native-only batch renderer; pulls Asupersync. Never compiled for the core,
 // `--no-default-features`, or wasm builds.
 #[cfg(feature = "batch")]

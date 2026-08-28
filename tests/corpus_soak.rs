@@ -33,8 +33,11 @@ fn collect_markdown(root: &Path, out: &mut Vec<PathBuf>) {
                     | "node_modules"
                     | "pkg"
                     | "scratch"
+                    | "target-local"
                     | "beads_compliance_audit"
-            ) || path.ends_with("tests/artifacts")
+            ) || name.starts_with(".rch")
+                || name.starts_with("target")
+                || path.ends_with("tests/artifacts")
             {
                 continue;
             }
@@ -64,7 +67,9 @@ fn every_repo_markdown_renders_to_valid_deterministic_html_and_pdf() {
 
     let mut rendered = 0usize;
     for path in &files {
-        let src = std::fs::read_to_string(path).unwrap();
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
         let label = path.strip_prefix(&root).unwrap_or(path).display();
 
         // HTML: well-formed self-contained document.

@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>franken_markdown WASM Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --panel-2: #f0f3f7;
+        --text: #16181d;
+        --muted: #626a78;
+        --line: #d9dee7;
+        --accent: #1769aa;
+        --accent-2: #0f7f68;
+        --danger: #a61b3c;
+        --shadow: 0 14px 30px rgba(33, 42, 55, 0.10);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .topbar {
+        display: grid;
+        grid-template-columns: minmax(210px, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .brand {
+        min-width: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        align-items: baseline;
+      }
+
+      .brand strong {
+        font-size: 15px;
+        letter-spacing: 0;
+      }
+
+      .brand span,
+      .status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .button {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--text);
+        min-height: 34px;
+        padding: 0 12px;
+        cursor: pointer;
+      }
+
+      .button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .button.secondary {
+        border-color: var(--accent-2);
+        color: var(--accent-2);
+      }
+
+      .button:disabled {
+        cursor: wait;
+        opacity: 0.62;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.88fr) minmax(320px, 1.12fr);
+        gap: 12px;
+        min-height: 0;
+        padding: 12px;
+      }
+
+      .pane {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .pane header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel-2);
+      }
+
+      .pane h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .editor-body {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        min-height: 0;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 8px;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .field {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+      }
+
+      .field.wide {
+        grid-column: span 2;
+      }
+
+      label,
+      .check span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #ffffff;
+        color: var(--text);
+        outline-color: var(--accent);
+      }
+
+      input,
+      select {
+        height: 34px;
+        padding: 0 8px;
+      }
+
+      textarea {
+        min-height: 0;
+        resize: none;
+        line-height: 1.45;
+        padding: 10px;
+        tab-size: 2;
+      }
+
+      #markdown {
+        border: 0;
+        border-radius: 0;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+      }
+
+      #custom-css {
+        min-height: 72px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+
+      .checks {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        gap: 8px 14px;
+      }
+
+      .check {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        min-height: 34px;
+      }
+
+      .check input {
+        width: 16px;
+        height: 16px;
+      }
+
+      .preview-wrap {
+        display: grid;
+        grid-template-rows: 1fr minmax(94px, 0.26fr);
+        min-height: 0;
+      }
+
+      #preview {
+        width: 100%;
+        height: 100%;
+        min-height: 320px;
+        border: 0;
+        background: #ffffff;
+      }
+
+      .diagnostics {
+        border-top: 1px solid var(--line);
+        background: #fbfcfd;
+        overflow: auto;
+      }
+
+      .diagnostics h3 {
+        margin: 10px 12px 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+        text-transform: uppercase;
+      }
+
+      .diagnostics ul {
+        margin: 0;
+        padding: 0 12px 12px;
+        list-style: none;
+      }
+
+      .diagnostics li {
+        border-left: 3px solid var(--accent);
+        margin-top: 7px;
+        padding: 4px 8px;
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .diagnostics li.error {
+        border-left-color: var(--danger);
+      }
+
+      .empty {
+        color: var(--muted);
+      }
+
+      @media (max-width: 980px) {
+        .topbar,
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          justify-content: start;
+        }
+
+        .controls {
+          grid-template-columns: repeat(2, minmax(120px, 1fr));
+        }
+      }
+
+      @media (max-width: 620px) {
+        .controls {
+          grid-template-columns: 1fr;
+        }
+
+        .field.wide {
+          grid-column: auto;
+        }
+
+        .actions {
+          flex-wrap: wrap;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <div class="topbar">
+        <div class="brand">
+          <strong>franken_markdown</strong>
+          <span id="status" class="status">loading wasm package</span>
+        </div>
+        <div class="actions">
+          <button id="render" class="button primary" type="button">Render</button>
+          <button id="download-pdf" class="button secondary" type="button">Download PDF</button>
+        </div>
+      </div>
+
+      <section class="workspace" aria-label="Markdown demo workspace">
+        <section class="pane" aria-label="Markdown input">
+          <header>
+            <h2>Markdown</h2>
+            <span id="source-size" class="status">0 bytes</span>
+          </header>
+          <div class="editor-body">
+            <div class="controls">
+              <label class="field">
+                Font
+                <select id="font">
+                  <option value="sans">Sans</option>
+                  <option value="serif">Serif</option>
+                </select>
+              </label>
+              <label class="field">
+                Dark CSS
+                <select id="dark-mode">
+                  <option value="auto">Auto</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </label>
+              <label class="field">
+                Title
+                <input id="title" value="franken_markdown demo" />
+              </label>
+              <label class="field">
+                Author
+                <input id="author" value="FMD" />
+              </label>
+              <label class="field wide">
+                Custom CSS
+                <textarea id="custom-css" spellcheck="false" placeholder="body { max-width: 860px; }"></textarea>
+              </label>
+              <div class="checks">
+                <label class="check">
+                  <input id="allow-html" type="checkbox" />
+                  <span>Allow raw HTML</span>
+                </label>
+                <label class="check">
+                  <input id="line-numbers" type="checkbox" checked />
+                  <span>PDF line numbers</span>
+                </label>
+              </div>
+            </div>
+            <textarea id="markdown" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section class="pane" aria-label="Rendered output">
+          <header>
+            <h2>Preview</h2>
+            <span id="preview-meta" class="status">waiting</span>
+          </header>
+          <div class="preview-wrap">
+            <iframe id="preview" title="Rendered HTML preview" sandbox=""></iframe>
+            <aside class="diagnostics" aria-live="polite">
+              <h3>Diagnostics</h3>
+              <ul id="diagnostics">
+                <li class="empty">No diagnostics yet.</li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./demo.js"></script>
+  </body>
+</html>

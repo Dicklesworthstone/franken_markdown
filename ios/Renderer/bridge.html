@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' frankenmd:; connect-src frankenmd:; style-src 'unsafe-inline'; frame-src blob: data:; img-src data: blob:">
+  <style>
+    html, body, #preview { margin: 0; width: 100%; height: 100%; background: #f7f7f4; }
+    body { overflow: hidden; }
+    #preview { border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="preview" title="Rendered Markdown preview" sandbox="allow-same-origin"></iframe>
+  <script type="module">
+    import { createRenderer } from './franken_markdown.js';
+
+    const bridge = window.webkit.messageHandlers.frankenBridge;
+    const preview = document.querySelector('#preview');
+    let latestRequest = 0;
+
+    try {
+      // wasm-bindgen's default initializer attempts instantiateStreaming on
+      // the custom-scheme response. WebKit serves the bytes correctly, but a
+      // custom WKURLScheme response is not a normal HTTP Response and the
+      // streaming path rejects it. Materialize the allow-listed local bytes
+      // and pass the BufferSource explicitly to the same package API.
+      const wasmResponse = await fetch('./pkg/franken_markdown_bg.wasm');
+      const wasmBytes = await wasmResponse.arrayBuffer();
+      const renderer = await createRenderer(wasmBytes);
+      window.frankenRender = async (command) => {
+        const requestID = Number(command.requestID);
+        latestRequest = Math.max(latestRequest, requestID);
+        const started = performance.now();
+        try {
+          const output = await renderer.renderHtml(String(command.markdown), command.options || {});
+          if (requestID !== latestRequest) return false;
+          preview.srcdoc = output.text();
+          bridge.postMessage({
+            type: 'result', requestID,
+            elapsedMS: performance.now() - started,
+            outputBytes: output.bytes.byteLength,
+            diagnosticCount: output.diagnostics.length
+          });
+          return true;
+        } catch (error) {
+          bridge.postMessage({type: 'failure', requestID, message: String(error)});
+          return false;
+        }
+      };
+      bridge.postMessage({type: 'ready'});
+    } catch (error) {
+      bridge.postMessage({type: 'failure', message: `WASM initialization failed: ${error}`});
+    }
+  </script>
+</body>
+</html>

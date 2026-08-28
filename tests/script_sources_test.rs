@@ -322,6 +322,10 @@ fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult 
             "scripts/rss-profile-proof.sh",
             "ARTIFACT_DIR=\"tests/artifacts/perf/$RUN_ID\"",
         ),
+        (
+            "scripts/watch-latency.sh",
+            "ART=\"$PWD/tests/artifacts/watch/${RUN_ID}\"",
+        ),
     ] {
         assert_run_id_validation_before(script, marker, marker)?;
     }
@@ -345,6 +349,21 @@ fn showcase_mermaid_verifier_pins_frankenmermaid_reproduction_contract() -> Test
             "showcase Mermaid verifier should contain reproduction contract needle {needle:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn watch_latency_rejects_unsafe_run_ids_before_artifact_paths() -> TestResult {
+    let output = Command::new("bash")
+        .args(["scripts/watch-latency.sh", "../bad"])
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(64),
+        "unsafe run ids should use the documented usage exit before cargo or mkdir; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
     Ok(())
 }
 

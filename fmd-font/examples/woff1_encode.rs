@@ -25,6 +25,20 @@ pub enum WoffError {
     InvalidTableRange,
 }
 
+impl std::fmt::Display for WoffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooSmall => write!(f, "font buffer is too small to be an sfnt font"),
+            Self::TooManyTables => write!(f, "too many sfnt tables for WOFF1 directory"),
+            Self::InvalidTableRange => {
+                write!(f, "table directory references out-of-bounds byte range")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WoffError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SfntTable {
     tag: [u8; 4],
@@ -55,7 +69,12 @@ fn read_u32(buf: &[u8], off: usize) -> Result<u32, WoffError> {
     if end > buf.len() {
         return Err(WoffError::TooSmall);
     }
-    Ok(u32::from_be_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]))
+    Ok(u32::from_be_bytes([
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+    ]))
 }
 
 /// Parse the sfnt table directory. Per the TrueType / OpenType spec, each
@@ -72,7 +91,9 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<Vec<SfntTable>, WoffError> {
     let dir_bytes = num_tables
         .checked_mul(SFNT_TABLE_DIR_ENTRY_LEN)
         .ok_or(WoffError::TooManyTables)?;
-    let dir_end = 12usize.checked_add(dir_bytes).ok_or(WoffError::TooManyTables)?;
+    let dir_end = 12usize
+        .checked_add(dir_bytes)
+        .ok_or(WoffError::TooManyTables)?;
     if sfnt.len() < dir_end {
         return Err(WoffError::TooSmall);
     }
@@ -82,24 +103,23 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<Vec<SfntTable>, WoffError> {
         let tag = [sfnt[base], sfnt[base + 1], sfnt[base + 2], sfnt[base + 3]];
         let checksum = read_u32(sfnt, base + 4)?;
         let offset = read_u32(sfnt, base + 8)?;
-        let length = read_u32(sfnt, base + 12)?;
+        let mut length = read_u32(sfnt, base + 12)?;
         let end = (offset as usize)
             .checked_add(length as usize)
             .ok_or(WoffError::InvalidTableRange)?;
         if end > sfnt.len() {
-            return Err(WoffError::InvalidTableRange);
+            if i == num_tables - 1 && (offset as usize) <= sfnt.len() {
+                length = (sfnt.len() - offset as usize) as u32;
+            } else {
+                return Err(WoffError::InvalidTableRange);
+            }
         }
-        tables.push(SfntTable { tag, offset, length, checksum });
-    }
-    // Last-table clamp.
-    if let Some(last) = tables.last_mut() {
-        let end_last = (last.offset as usize)
-            .checked_add(last.length as usize)
-            .ok_or(WoffError::InvalidTableRange)?;
-        if end_last > sfnt.len() {
-            let new_len = (sfnt.len() as u32).saturating_sub(last.offset);
-            last.length = new_len;
-        }
+        tables.push(SfntTable {
+            tag,
+            offset,
+            length,
+            checksum,
+        });
     }
     tables.sort_by_key(|t| t.tag);
     Ok(tables)
@@ -112,29 +132,37 @@ fn parse_woff1_directory(woff: &[u8]) -> Result<Vec<WoffTableRef>, WoffError> {
     if woff[0..4] != WOFF_SIGNATURE {
         return Err(WoffError::TooSmall);
     }
-    let num_tables = read_u16(woff, 4)? as usize;
+    let num_tables = read_u16(woff, 12)? as usize;
     let dir_bytes = num_tables
         .checked_mul(WOFF_TABLE_DIR_ENTRY_LEN)
         .ok_or(WoffError::TooManyTables)?;
-    let dir_end = 12usize.checked_add(dir_bytes).ok_or(WoffError::TooManyTables)?;
+    let dir_end = WOFF_HEADER_LEN
+        .checked_add(dir_bytes)
+        .ok_or(WoffError::TooManyTables)?;
     if woff.len() < dir_end {
         return Err(WoffError::TooSmall);
     }
     let mut tables = Vec::with_capacity(num_tables);
     for i in 0..num_tables {
-        let base = 12 + i * WOFF_TABLE_DIR_ENTRY_LEN;
+        let base = WOFF_HEADER_LEN + i * WOFF_TABLE_DIR_ENTRY_LEN;
         let tag = [woff[base], woff[base + 1], woff[base + 2], woff[base + 3]];
         let offset = read_u32(woff, base + 4)?;
         let comp_length = read_u32(woff, base + 8)?;
         let orig_length = read_u32(woff, base + 12)?;
         let orig_checksum = read_u32(woff, base + 16)?;
-        tables.push(WoffTableRef { tag, offset, comp_length, orig_length, orig_checksum });
+        tables.push(WoffTableRef {
+            tag,
+            offset,
+            comp_length,
+            orig_length,
+            orig_checksum,
+        });
     }
     tables.sort_by_key(|t| t.tag);
     Ok(tables)
 }
 
-fn slice_sfnt_table<'a>(sfnt: &'a [u8], t: SfntTable) -> Result<&'a [u8], WoffError> {
+fn slice_sfnt_table(sfnt: &[u8], t: SfntTable) -> Result<&[u8], WoffError> {
     let off = t.offset as usize;
     let len = t.length as usize;
     let end = off.checked_add(len).ok_or(WoffError::InvalidTableRange)?;
@@ -177,9 +205,7 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>, WoffError> {
 
     // Pass 2: lay out the WOFF byte stream.
     let mut out: Vec<u8> = Vec::with_capacity(
-        WOFF_HEADER_LEN
-            + tables.len() * WOFF_TABLE_DIR_ENTRY_LEN
-            + total_compressed as usize,
+        WOFF_HEADER_LEN + tables.len() * WOFF_TABLE_DIR_ENTRY_LEN + total_compressed as usize,
     );
     out.extend_from_slice(&WOFF_SIGNATURE);
     out.extend_from_slice(&flavor.to_be_bytes());
@@ -214,7 +240,9 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>, WoffError> {
         out[entry_pos + 8..entry_pos + 12].copy_from_slice(&body_len.to_be_bytes());
         out[entry_pos + 12..entry_pos + 16].copy_from_slice(&tables[i].length.to_be_bytes());
         out[entry_pos + 16..entry_pos + 20].copy_from_slice(&tables[i].checksum.to_be_bytes());
-        cursor = cursor.checked_add(body_len).ok_or(WoffError::InvalidTableRange)?;
+        cursor = cursor
+            .checked_add(body_len)
+            .ok_or(WoffError::InvalidTableRange)?;
         out.extend_from_slice(body);
     }
     let total_len = u32::try_from(out.len()).map_err(|_| WoffError::InvalidTableRange)?;
@@ -242,7 +270,12 @@ pub fn verify_woff1_matches_sfnt(woff: &[u8], sfnt: &[u8]) -> Result<bool, WoffE
         };
         let original = slice_sfnt_table(sfnt, *s)?;
         let stored = slice_woff_table(woff, w)?;
-        if original != stored {
+        let decompressed = if w.comp_length < w.orig_length || stored.starts_with(&[0x78, 0x01]) {
+            inflate_stored(stored)?
+        } else {
+            stored.to_vec()
+        };
+        if original != decompressed.as_slice() {
             return Ok(false);
         }
     }
@@ -316,7 +349,9 @@ pub fn inflate_stored(zlib_bytes: &[u8]) -> Result<Vec<u8>, WoffError> {
             return Err(WoffError::InvalidTableRange);
         }
         off += 4;
-        let end = off.checked_add(len as usize).ok_or(WoffError::InvalidTableRange)?;
+        let end = off
+            .checked_add(len as usize)
+            .ok_or(WoffError::InvalidTableRange)?;
         if end + 4 > zlib_bytes.len() {
             return Err(WoffError::TooSmall);
         }
@@ -395,11 +430,8 @@ mod tests {
         let head: Vec<u8> = vec![0u8; 54];
         let mut checksum: u32 = 0;
         for chunk in head.chunks(4) {
-            let bytes: [u8; 4] = if chunk.len() == 4 {
-                [chunk[0], chunk[1], chunk[2], chunk[3]]
-            } else {
-                [chunk[0], chunk[1], chunk[2], 0]
-            };
+            let mut bytes = [0u8; 4];
+            bytes[..chunk.len()].copy_from_slice(chunk);
             checksum = checksum.wrapping_add(u32::from_be_bytes(bytes));
         }
         let mut sfnt = Vec::new();
@@ -464,9 +496,13 @@ mod tests {
         let woff = encode_woff1(&sfnt).expect("encode");
         assert_eq!(&woff[0..4], b"wOFF");
         assert_eq!(&woff[4..8], &sfnt[0..4]);
-        assert_eq!(u16::from_be_bytes([woff[8], woff[9]]), 1);
-        assert_eq!(&woff[10..12], &[0u8, 0u8]);
-        let total_sfnt = u32::from_be_bytes([woff[12], woff[13], woff[14], woff[15]]);
+        assert_eq!(
+            u32::from_be_bytes([woff[8], woff[9], woff[10], woff[11]]),
+            woff.len() as u32
+        );
+        assert_eq!(u16::from_be_bytes([woff[12], woff[13]]), 1);
+        assert_eq!(&woff[14..16], &[0u8, 0u8]);
+        let total_sfnt = u32::from_be_bytes([woff[16], woff[17], woff[18], woff[19]]);
         assert_eq!(total_sfnt, sfnt.len() as u32);
     }
 
@@ -474,7 +510,7 @@ mod tests {
     fn woff_total_length_field_matches() {
         let sfnt = minimal_one_table_sfnt();
         let woff = encode_woff1(&sfnt).expect("encode");
-        let total_len = u32::from_be_bytes([woff[4], woff[5], woff[6], woff[7]]);
+        let total_len = u32::from_be_bytes([woff[8], woff[9], woff[10], woff[11]]);
         assert_eq!(total_len as usize, woff.len());
     }
 
@@ -513,8 +549,7 @@ mod tests {
         for (name, bytes) in fmd_font::bundled::ALL_FACES {
             fmd_font::Font::parse(bytes.to_vec())
                 .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
-            let woff = encode_woff1(bytes)
-                .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
+            let woff = encode_woff1(bytes).unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
             assert_eq!(&woff[0..4], b"wOFF", "{name}: bad signature");
             let ok = verify_woff1_matches_sfnt(&woff, bytes)
                 .unwrap_or_else(|e| panic!("{name}: verify failed: {e}"));

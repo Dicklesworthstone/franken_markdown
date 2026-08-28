@@ -19,6 +19,9 @@ use crate::{
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS: u64 = 20;
+/// Caller-supplied stylesheets are inlined into `<style>`; a multi-gigabyte
+/// sheet is an unmetered read. 1 MiB is far larger than any real theme CSS.
+const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 
 /// franken_markdown — Markdown to beautiful all-in-one HTML & tiny PDF.
 #[derive(Parser)]
@@ -399,7 +402,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
 
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
-        Some(p) => match std::fs::read_to_string(p) {
+        Some(p) => match read_stylesheet(p) {
             Ok(s) => Some(s),
             Err(e) => {
                 return fail_json(
@@ -716,7 +719,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     }
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
-        Some(p) => match std::fs::read_to_string(p) {
+        Some(p) => match read_stylesheet(p) {
             Ok(s) => Some(s),
             Err(e) => {
                 return fail_json(
@@ -1063,6 +1066,28 @@ fn read_limited_with_flag<R: Read>(
 fn string_from_input_bytes(bytes: Vec<u8>) -> std::io::Result<String> {
     String::from_utf8(bytes)
         .map_err(|e| Error::new(IoErrorKind::InvalidData, format!("input is not UTF-8: {e}")))
+}
+
+fn read_stylesheet(path: &Path) -> std::io::Result<String> {
+    let label = format!("stylesheet {}", path.display());
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > MAX_STYLESHEET_BYTES
+    {
+        return Err(size_limit_error(
+            &label,
+            meta.len(),
+            MAX_STYLESHEET_BYTES,
+            "the stylesheet size limit",
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    let bytes = read_limited_with_flag(
+        file,
+        MAX_STYLESHEET_BYTES,
+        &label,
+        "the stylesheet size limit",
+    )?;
+    string_from_input_bytes(bytes)
 }
 
 fn input_too_large(label: &str, observed: u64, max_bytes: u64) -> Error {
@@ -1487,7 +1512,7 @@ fn append_remote_image_assets(
 
 /// Download one remote image via the system `curl` (preferred) or `wget`,
 /// with a hard timeout, an HTTP(S)-only protocol allowlist, bounded
-/// redirects, and the caller's byte cap enforced on the received body.
+/// redirects, and the caller's byte cap enforced while the body is read.
 fn fetch_remote_image(
     url: &str,
     max_bytes: u64,
@@ -1495,84 +1520,139 @@ fn fetch_remote_image(
 ) -> std::result::Result<Vec<u8>, String> {
     let timeout = timeout_secs.max(1).to_string();
     let user_agent = format!("fmd/{}", crate::VERSION);
-    let curl = std::process::Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-redirs",
-            "5",
-            "--proto",
-            "=http,https",
-            "--proto-redir",
-            "=http,https",
-            "--max-time",
-            &timeout,
-            "--max-filesize",
-            &max_bytes.to_string(),
-            "--user-agent",
-            &user_agent,
-            "--output",
-            "-",
-            "--",
-            url,
-        ])
-        .stdin(std::process::Stdio::null())
-        .output();
-    match curl {
-        Ok(output) => return finish_remote_image_fetch("curl", &output, max_bytes),
-        Err(e) if e.kind() == IoErrorKind::NotFound => {}
-        Err(e) => return Err(format!("running curl: {e}")),
+    let max_bytes_s = max_bytes.to_string();
+    let curl_args = [
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--location",
+        "--max-redirs",
+        "5",
+        "--proto",
+        "=http,https",
+        "--proto-redir",
+        "=http,https",
+        "--max-time",
+        timeout.as_str(),
+        "--max-filesize",
+        max_bytes_s.as_str(),
+        "--user-agent",
+        user_agent.as_str(),
+        "--output",
+        "-",
+        "--",
+        url,
+    ];
+    match run_capped_fetch("curl", &curl_args, url, max_bytes) {
+        Ok(bytes) => return Ok(bytes),
+        Err(FetchSpawn::NotFound) => {}
+        Err(FetchSpawn::Failed(reason)) => return Err(reason),
     }
-    let wget = std::process::Command::new("wget")
-        .args([
-            "--quiet",
-            "--tries=1",
-            &format!("--timeout={timeout}"),
-            "--max-redirect=5",
-            &format!("--user-agent={user_agent}"),
-            "--output-document=-",
-            "--",
-            url,
-        ])
-        .stdin(std::process::Stdio::null())
-        .output();
-    match wget {
-        Ok(output) => finish_remote_image_fetch("wget", &output, max_bytes),
-        Err(e) if e.kind() == IoErrorKind::NotFound => Err(
+
+    let timeout_flag = format!("--timeout={timeout}");
+    let ua_flag = format!("--user-agent={user_agent}");
+    let wget_args = wget_remote_image_args(url, &timeout_flag, &ua_flag);
+    match run_capped_fetch("wget", &wget_args, url, max_bytes) {
+        Ok(bytes) => Ok(bytes),
+        Err(FetchSpawn::NotFound) => Err(
             "neither curl nor wget is available; pass --pdf-image 'URL=PATH' or use \
              --no-remote-images"
                 .to_string(),
         ),
-        Err(e) => Err(format!("running wget: {e}")),
+        Err(FetchSpawn::Failed(reason)) => Err(reason),
     }
 }
 
-fn finish_remote_image_fetch(
+enum FetchSpawn {
+    NotFound,
+    Failed(String),
+}
+
+/// GNU wget has no `--proto` jail. `--https-only` blocks `file://` (and
+/// `ftp://`) redirects when the requested URL is already HTTPS. HTTP URLs
+/// keep following redirects; the initial URL is still http(s)-only.
+fn wget_remote_image_args<'a>(
+    url: &'a str,
+    timeout_flag: &'a str,
+    user_agent_flag: &'a str,
+) -> Vec<&'a str> {
+    let mut args = vec![
+        "--quiet",
+        "--tries=1",
+        timeout_flag,
+        "--max-redirect=5",
+        user_agent_flag,
+        "--output-document=-",
+    ];
+    if url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://") {
+        args.push("--https-only");
+    }
+    args.push("--");
+    args.push(url);
+    args
+}
+
+fn run_capped_fetch(
     tool: &str,
-    output: &std::process::Output,
+    args: &[&str],
+    url: &str,
     max_bytes: u64,
-) -> std::result::Result<Vec<u8>, String> {
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.lines().next().unwrap_or_default().trim().to_string();
-        return Err(if detail.is_empty() {
-            format!("{tool} exited with {}", output.status)
+) -> std::result::Result<Vec<u8>, FetchSpawn> {
+    let mut child = match std::process::Command::new(tool)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) if e.kind() == IoErrorKind::NotFound => return Err(FetchSpawn::NotFound),
+        Err(e) => return Err(FetchSpawn::Failed(format!("running {tool}: {e}"))),
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(FetchSpawn::Failed(format!(
+                "{tool} produced no stdout pipe"
+            )));
+        }
+    };
+    let label = format!("remote image {url}");
+    let bytes = match read_limited_with_flag(stdout, max_bytes, &label, "--max-pdf-image-bytes") {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(FetchSpawn::Failed(e.to_string()));
+        }
+    };
+    let mut stderr = Vec::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_end(&mut stderr);
+    }
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(e) => return Err(FetchSpawn::Failed(format!("waiting for {tool}: {e}"))),
+    };
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        return Err(FetchSpawn::Failed(if detail.is_empty() {
+            format!("{tool} exited with {status}")
         } else {
             format!("{tool}: {detail}")
-        });
+        }));
     }
-    if output.stdout.is_empty() {
-        return Err(format!("{tool} returned an empty body"));
+    if bytes.is_empty() {
+        return Err(FetchSpawn::Failed(format!("{tool} returned an empty body")));
     }
-    let received = output.stdout.len();
-    if received as u64 > max_bytes {
-        return Err(format!(
-            "body is {received} bytes, over the --max-pdf-image-bytes cap ({max_bytes})"
-        ));
-    }
-    Ok(output.stdout.clone())
+    Ok(bytes)
 }
 
 fn report_remote_image_warning(url: &str, reason: &str, json: bool) {
@@ -2046,6 +2126,33 @@ mod font_pin_warning_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod helper_tests {
     use super::*;
+
+    #[test]
+    fn wget_https_urls_enable_https_only_to_block_file_redirects() {
+        let args = wget_remote_image_args(
+            "https://cdn.example/x.png",
+            "--timeout=20",
+            "--user-agent=fmd/test",
+        );
+        assert!(
+            args.contains(&"--https-only"),
+            "https fetches must refuse file:// redirects: {args:?}"
+        );
+        assert_eq!(args.last().copied(), Some("https://cdn.example/x.png"));
+    }
+
+    #[test]
+    fn wget_http_urls_do_not_pass_https_only() {
+        let args = wget_remote_image_args(
+            "http://cdn.example/x.png",
+            "--timeout=20",
+            "--user-agent=fmd/test",
+        );
+        assert!(
+            !args.contains(&"--https-only"),
+            "http images must still fetch: {args:?}"
+        );
+    }
 
     /// Create a fresh, unique temp directory for one test. Process id plus a
     /// monotonic counter keeps concurrent tests from sharing a directory.

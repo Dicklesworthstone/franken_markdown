@@ -226,6 +226,11 @@ fn generated_documents_satisfy_all_invariants() {
             Err(_) => panic!("case {case}: parse/render panicked on:\n{src}"),
         };
 
+        // Failure artifacts: written so the offending input + renders survive
+        // stdout truncation (AGENTS.md logging discipline).
+        let artifact = format!("tests/artifacts/property/case-{case}");
+        let _ = std::fs::create_dir_all(&artifact);
+
         // Invariant 2: round-trip convergence — re-parsing the rendered
         // document's text content and rendering again reaches a fixed point
         // (the second render's *structure* is stable).
@@ -233,10 +238,12 @@ fn generated_documents_satisfy_all_invariants() {
         let html2 = render_html_document(&doc2, &opts).unwrap();
         let doc3 = parse_markdown(&html2);
         let html3 = render_html_document(&doc3, &opts).unwrap();
-        assert_eq!(
-            html2, html3,
-            "case {case}: round-trip did not converge; input:\n{src}"
-        );
+        if html2 != html3 {
+            let _ = std::fs::write(format!("{artifact}/input.md"), &src);
+            let _ = std::fs::write(format!("{artifact}/render2.html"), &html2);
+            let _ = std::fs::write(format!("{artifact}/render3.html"), &html3);
+            panic!("case {case}: round-trip did not converge; input:\n{src}");
+        }
 
         // Invariant 4: determinism — the same input renders byte-identically.
         let doc_again = parse_markdown(&src);

@@ -178,6 +178,9 @@ pub fn render_pdf_configured(
         metadata_epoch_seconds,
         allow_raw_html,
         code_line_numbers,
+        None,
+        None,
+        None,
     )?;
     wasm::render_pdf(markdown, &options)
         .map(render_result)
@@ -260,6 +263,9 @@ pub fn render_pdf_configured_with_assets(
         metadata_epoch_seconds,
         allow_raw_html,
         code_line_numbers,
+        None,
+        None,
+        None,
     )?;
     if !image_destination.trim().is_empty() || !image_bytes.is_empty() {
         options = options

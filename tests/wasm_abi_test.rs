@@ -136,6 +136,7 @@ fn render_html_configured_with_fonts_accepts_real_font_bytes() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .expect("custom font html");
     let html = String::from_utf8(out.bytes()).unwrap();
@@ -212,6 +213,10 @@ fn render_pdf_configured_multi_embeds_every_supplied_image() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
     )
     .expect("pdf with two images");
     let bytes = out.bytes();
@@ -281,6 +286,10 @@ fn render_pdf_configured_multi_skips_fully_blank_placeholder_entries() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
     )
     .expect("placeholder entry is skipped");
     let bytes = out.bytes();

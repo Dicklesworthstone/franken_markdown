@@ -51,7 +51,15 @@ def crashes(data: bytes) -> bool:
     return marker in data
 
 def ddmin(data: bytes) -> bytes:
-    assert crashes(data)
+    if not crashes(data):
+        print(
+            "fuzz-triage: --minimize only implements the !PANIC! drill oracle; "
+            "this file has no marker. Drop a real crash into "
+            "tests/fixtures/fuzz-regressions/ (not named drill.bin) and shrink "
+            "it with ddmin in tests/fuzz_triage.rs.",
+            file=sys.stderr,
+        )
+        sys.exit(64)
     cur = data
     changed = True
     while changed and len(cur) > 1:
@@ -83,8 +91,9 @@ Usage:
   scripts/fuzz-triage.sh --minimize CRASH.bin --out MIN.bin
 
   --drill     bloated !PANIC! input -> ddmin -> artifact dir + compare fixture
-  --minimize  shrink a crashing file with the same marker oracle (drill) or
-              copy it next to a note that engine oracles live in tests/fuzz_triage.rs
+  --minimize  shrink a file that contains the !PANIC! drill marker (exit 64
+              otherwise). Real engine crashes are replayed by dropping them
+              into tests/fixtures/fuzz-regressions/ (see fuzz/README.md).
 EOF
 }
 
@@ -95,12 +104,28 @@ RUN_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test) self_test; exit 0 ;;
-    --drill) MODE=drill; shift; RUN_ID="${1:-}"; [[ $# -gt 0 && "${1:-}" != --* ]] && shift || true ;;
-    --minimize) MODE=minimize; CRASH="${2:?}"; shift 2 ;;
-    --out) OUT="${2:?}"; shift 2 ;;
+    --drill)
+      MODE=drill
+      shift
+      if [[ $# -gt 0 && "$1" != --* ]]; then
+        RUN_ID="$1"
+        shift
+      fi
+      ;;
+    --minimize)
+      MODE=minimize
+      CRASH="${2:?}"
+      shift 2
+      ;;
+    --out)
+      OUT="${2:?}"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *)
-      RUN_ID="$1"
+      if [[ -z "$RUN_ID" ]]; then
+        RUN_ID="$1"
+      fi
       shift
       ;;
   esac

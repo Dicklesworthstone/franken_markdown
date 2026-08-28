@@ -90,6 +90,12 @@ fn drill_oracle_panics_on_the_marker() {
 }
 
 #[test]
+#[should_panic(expected = "ddmin requires a crashing starting input")]
+fn ddmin_rejects_input_without_the_marker() {
+    let _ = ddmin(b"no marker here".to_vec(), contains_marker);
+}
+
+#[test]
 fn ddmin_shrinks_injected_panic_to_the_marker() {
     let start = bloated_crash();
     log_check(

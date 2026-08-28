@@ -14,8 +14,8 @@ the three libFuzzer targets. This file is the **crash triage runbook**
    `cargo test --test fuzz_triage -- --nocapture` after dropping the file
    (not named `drill.bin`) into `tests/fixtures/fuzz-regressions/`. That
    test `catch_unwind`s parse + HTML + PDF + zlib + font subset.
-3. **Minimize.** `scripts/fuzz-triage.sh --minimize CRASH.bin --out MIN.bin`
-   delta-debuges with the injected `!PANIC!` *drill* oracle. For a real
+3. **Minimize.** `scripts/fuzz-triage.sh --minimize` only understands the
+   `!PANIC!` drill marker (it exits 64 on any other file). For a real
    engine panic, copy `ddmin` from `tests/fuzz_triage.rs` around a
    `catch_unwind` of the same APIs and shrink until the panic remains.
 4. **Fix the root cause** in the engine. Do not silence the panic.

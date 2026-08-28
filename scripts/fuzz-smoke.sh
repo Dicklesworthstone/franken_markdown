@@ -112,8 +112,8 @@ if [[ "$BUILD_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-if ! command -v clang >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
-  log_check "m7fs.1.clang" "clang missing; cannot link libFuzzer" "SKIP"
+if ! command -v clang >/dev/null 2>&1; then
+  log_check "m7fs.1.clang" "clang missing; skipping libFuzzer run (compile already passed)" "SKIP"
   exit 0
 fi
 

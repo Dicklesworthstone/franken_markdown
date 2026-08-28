@@ -10,7 +10,7 @@ use franken_markdown::caret::{
     render_byte_range, render_parse_diagnostics, span_of_line, style_for_stderr,
 };
 use franken_markdown::config::FmdConfig;
-use franken_markdown::verify::{to_human, to_json, verify_pdf};
+use franken_markdown::verify::{VerifyFinding, VerifyReport, to_human, to_json, verify_pdf};
 use franken_markdown::{
     CaretStyle, ColorMode, DiagnosticSeverity, PdfOptions, parse_markdown, parse_markdown_spanned,
 };
@@ -89,6 +89,21 @@ fn config_unknown_key_caret_points_at_the_line() {
         "config-unknown-key",
         "nope=1",
         caret.contains("nope=1") && caret.contains("unknown config key"),
+        &caret,
+    );
+}
+
+#[test]
+fn config_caret_maps_crlf_line_numbers() {
+    let src = "font=sans\r\nfont=comic\r\n";
+    let err = FmdConfig::parse(src).expect_err("comic is not a font");
+    let caret = err
+        .render_caret(src, Some("fmd.toml"), plain())
+        .expect("parse errors render");
+    assert_ok(
+        "config-crlf-line",
+        "font=comic",
+        caret.contains("font=comic") && !caret.contains('\r'),
         &caret,
     );
 }
@@ -201,6 +216,67 @@ fn span_of_line_covers_first_and_last_lines() {
 }
 
 #[test]
+fn span_of_line_strips_crlf_and_empty_middle_lines() {
+    let src = "alpha\r\n\r\nbeta";
+    let l1 = span_of_line(src, 1);
+    let l2 = span_of_line(src, 2);
+    let l3 = span_of_line(src, 3);
+    assert_ok(
+        "span-crlf-1",
+        "alpha",
+        &src[l1.start..l1.end] == "alpha",
+        &format!("{:?}", &src[l1.start..l1.end]),
+    );
+    assert_ok(
+        "span-crlf-empty",
+        "line2",
+        l2.start == l2.end,
+        &format!("{}..{}", l2.start, l2.end),
+    );
+    assert_ok(
+        "span-crlf-3",
+        "beta",
+        &src[l3.start..l3.end] == "beta",
+        &format!("{:?}", &src[l3.start..l3.end]),
+    );
+}
+
+#[test]
+fn verify_overflow_caret_keeps_colons_inside_run_text() {
+    let src = "intro foo: bar unique-xyz outro";
+    let report = VerifyReport {
+        schema_version: "1",
+        target: "pdf",
+        page_count: 1,
+        digest: 0,
+        anchors_resolved: 0,
+        anchors_unresolved: Vec::new(),
+        findings: vec![VerifyFinding {
+            code: "overflow",
+            detail: "page 1 run exceeds the right margin by 3.250pt: foo: bar unique-xyz"
+                .to_string(),
+        }],
+        verdict: "findings",
+        pages: Vec::new(),
+    };
+    let human = to_human(&report, src, Some("doc.md"), plain());
+    assert_ok(
+        "overflow-full-needle",
+        "foo: bar unique-xyz",
+        human.contains("foo: bar unique-xyz") && human.contains('^'),
+        &human,
+    );
+    // Column 7 is the 'f' of `foo`. A rsplit-on-": " bug would start at `bar`
+    // (column 12) and miss the `foo: ` prefix of the run text.
+    assert_ok(
+        "overflow-starts-at-foo",
+        "col7",
+        human.contains("doc.md:1:7:"),
+        &human,
+    );
+}
+
+#[test]
 fn stderr_style_never_colors_when_mode_is_never() {
     let style = style_for_stderr(ColorMode::Never, true, Some(80));
     assert_ok(
@@ -209,9 +285,4 @@ fn stderr_style_never_colors_when_mode_is_never() {
         !style.color && style.columns == Some(80),
         &format!("{style:?}"),
     );
-}
-
-#[test]
-fn cli_e2e_skipped_while_cli_rs_is_reserved() {
-    log("cli-e2e", "src/cli.rs exclusive PlumWolf gk3v.3", "SKIP");
 }

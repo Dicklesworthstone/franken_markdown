@@ -12,7 +12,8 @@ use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError,
-    Theme, parse_markdown, render_html_document, render_pdf_document, render_warnings,
+    RenderWarning, Theme, parse_markdown, render_html_document, render_pdf_document,
+    render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -611,6 +612,10 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     {
         report_pdf_warnings(&doc, opts, json);
         report_write("pdf", path, bytes.len(), json);
+    } else {
+        // PDF `render_warnings` is not run on HTML-only output; still surface
+        // a weight pin that did not instance so the drop is not silent.
+        report_font_pin_warnings(&font_assets, json);
     }
 
     ExitCode::SUCCESS
@@ -1076,15 +1081,22 @@ fn load_host_font_assets(
     weights: &[String],
 ) -> std::result::Result<FontAssets, HostFontError> {
     let mut assets = FontAssets::default();
+    let max_bytes = crate::MAX_FONT_ASSET_BYTES as u64;
     for spec in fonts {
         let (slot, path) = parse_pdf_font_spec(spec).map_err(HostFontError::Usage)?;
-        let bytes = std::fs::read(&path).map_err(|e| {
-            HostFontError::Input(format!(
-                "reading {} font from {}: {e}",
-                slot.as_str(),
-                path.display()
-            ))
-        })?;
+        let label = format!("{} font from {}", slot.as_str(), path.display());
+        if let Ok(meta) = std::fs::metadata(&path)
+            && meta.len() > max_bytes
+        {
+            return Err(HostFontError::Input(format!(
+                "{label} is {} bytes; exceeds the {max_bytes}-byte font-asset limit",
+                meta.len()
+            )));
+        }
+        let file = std::fs::File::open(&path)
+            .map_err(|e| HostFontError::Input(format!("reading {label}: {e}")))?;
+        let bytes = read_limited_with_flag(file, max_bytes, &label, "the font-asset size limit")
+            .map_err(|e| HostFontError::Input(format!("reading {label}: {e}")))?;
         assets
             .set_slot(slot, bytes)
             .map_err(|e| HostFontError::Input(e.to_string()))?;
@@ -1142,6 +1154,34 @@ fn parse_css_weight(raw: &str) -> std::result::Result<u16, String> {
         Err(format!(
             "invalid --pdf-font-weight {weight}; CSS font-weight is 1..=1000"
         ))
+    }
+}
+
+fn report_font_pin_warnings(assets: &FontAssets, json: bool) {
+    for slot in FontAssetSlot::ALL {
+        let Some(weight) = assets.slot_weight(slot) else {
+            continue;
+        };
+        let instanced = assets.resolved_bytes(slot).and_then(|bytes| {
+            crate::text::Font::parse(bytes.to_vec())
+                .ok()
+                .and_then(|font| font.instance(f32::from(weight)))
+        });
+        if instanced.is_none() {
+            let warning = RenderWarning::FontWeightIgnoredStatic {
+                slot: slot.as_str().to_string(),
+                weight,
+            };
+            if json {
+                eprintln!(
+                    "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                    warning.code(),
+                    json_escape(&warning.message())
+                );
+            } else {
+                eprintln!("fmd: warning: {}", warning.message());
+            }
+        }
     }
 }
 

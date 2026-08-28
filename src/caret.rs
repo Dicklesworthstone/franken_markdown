@@ -192,24 +192,21 @@ pub fn render_byte_range(
 }
 
 /// Byte span of 1-based line `line_no` in `source` (the whole line, no newline).
+///
+/// Uses the same `\n` / `\r\n` splitting as the caret renderer so a config
+/// error's `line N:` maps onto the text the gutter will actually print.
 #[must_use]
 pub fn span_of_line(source: &str, line_no: usize) -> SourceSpan {
     if line_no == 0 {
         return SourceSpan::default();
     }
-    let mut current = 1usize;
-    let mut start = 0usize;
-    for (i, ch) in source.char_indices() {
-        if current == line_no && (ch == '\n' || i + ch.len_utf8() == source.len()) {
-            let end = if ch == '\n' { i } else { source.len() };
-            return SourceSpan::new(start, end);
-        }
-        if ch == '\n' {
-            current = current.saturating_add(1);
-            start = i.saturating_add(1);
+    match line_ranges(source).get(line_no.saturating_sub(1)).copied() {
+        Some((start, end)) => SourceSpan::new(start, end),
+        None => {
+            let n = source.len();
+            SourceSpan::new(n, n)
         }
     }
-    SourceSpan::new(start, source.len())
 }
 
 /// Stderr caret style from a resolved [`ColorMode`].

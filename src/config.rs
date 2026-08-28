@@ -79,8 +79,9 @@ impl ConfigError {
 
 fn parse_line_number(msg: &str) -> Option<usize> {
     let rest = msg.strip_prefix("line ")?;
-    let digits = rest.split(':').next()?;
-    digits.parse().ok()
+    let digits = rest.split(':').next()?.trim();
+    let n: usize = digits.parse().ok()?;
+    (n >= 1).then_some(n)
 }
 
 impl From<std::io::Error> for ConfigError {

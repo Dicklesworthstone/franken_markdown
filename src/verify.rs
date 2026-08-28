@@ -157,19 +157,24 @@ pub fn to_human(
 }
 
 fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
-    // Overflow details end with `: {run text}`. Unresolved anchors are `#id`.
+    // Overflow details are `… by {n:.3}pt: {run.text}`. Split on the first
+    // `pt: ` so a colon inside the run text is kept as part of the needle.
     if finding.code == "overflow" {
-        if let Some((_, text)) = finding.detail.rsplit_once(": ") {
+        if let Some((_, text)) = finding.detail.split_once("pt: ") {
             return find_source_span(source, text);
         }
     }
     if finding.code == "unresolved_anchor" {
         let rest = finding.detail.split_once('#')?.1;
         let id = rest.split_whitespace().next()?.trim_end_matches(['.', ',']);
+        if id.is_empty() {
+            return None;
+        }
+        // Prefer the markdown link form so we don't highlight an unrelated
+        // occurrence of the same identifier in body prose.
         let needle = format!("](#{id})");
         return find_source_span(source, &needle)
-            .or_else(|| find_source_span(source, &format!("#{id}")))
-            .or_else(|| find_source_span(source, id));
+            .or_else(|| find_source_span(source, &format!("#{id}")));
     }
     None
 }

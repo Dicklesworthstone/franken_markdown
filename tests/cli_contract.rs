@@ -1963,11 +1963,33 @@ fn pdf_font_and_weight_flags_instance_variable_faces() {
         static_run.status.success() && static_err.contains("font_weight_ignored_static"),
     );
 
+    let html_out = temp_file("gk3v3-static-html", "html");
+    let html_run = fmd(&[
+        "--text",
+        "Hello",
+        "--to",
+        "html",
+        "--pdf-font",
+        &static_map,
+        "--pdf-font-weight",
+        "650",
+        "--out",
+        &html_out.display().to_string(),
+        "--json",
+    ]);
+    let html_err = text(&html_run.stderr);
+    log_check(
+        "gk3v.3.cli.html.static.warn",
+        "HTML-only static pin warns font_weight_ignored_static",
+        html_run.status.success() && html_err.contains("font_weight_ignored_static"),
+    );
+
     let _ = fs::remove_file(&font_path);
     let _ = fs::remove_file(&out_400);
     let _ = fs::remove_file(&out_650);
     let _ = fs::remove_file(&static_path);
     let _ = fs::remove_file(&static_out);
+    let _ = fs::remove_file(&html_out);
 }
 
 // ---------------------------------------------------------------------------

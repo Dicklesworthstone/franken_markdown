@@ -17,6 +17,7 @@ private enum AuxiliaryPanel: String, Identifiable {
 
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("renderFontScale") private var renderFontScale = 1.0
     @StateObject private var renderer = MarkdownRendererModel()
     @State private var lane: ForgeLane = .write
     @State private var editorFocused = false
@@ -62,6 +63,15 @@ struct ForgeView: View {
         .onChange(of: renderer.fontFamily) { _, _ in renderer.renderNow() }
         .onChange(of: renderer.darkMode) { _, _ in renderer.renderNow() }
         .onChange(of: renderer.allowRawHtml) { _, _ in renderer.renderNow() }
+        .onChange(of: renderFontScale) { _, scale in
+            renderer.renderFontScale = clampedRenderFontScale(scale)
+            renderer.renderNow()
+        }
+        .onAppear {
+            let clamped = clampedRenderFontScale(renderFontScale)
+            if renderFontScale != clamped { renderFontScale = clamped }
+            renderer.renderFontScale = clamped
+        }
         .onReceive(NotificationCenter.default.publisher(for: .renderMarkdownNow)) { _ in
             renderer.renderNow()
         }
@@ -174,6 +184,19 @@ struct ForgeView: View {
             }
 
             if horizontalSizeClass == .regular {
+#if targetEnvironment(macCatalyst)
+                Button {
+                    auxiliaryPanel = .outline
+                } label: {
+                    Label("Outline", systemImage: "list.bullet.indent")
+                        .font(.system(size: Lab.size(11), weight: .bold, design: .monospaced))
+                        .foregroundStyle(Lab.text)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+                }
+#else
                 Menu {
                     Button {
                         auxiliaryPanel = .outline
@@ -194,6 +217,7 @@ struct ForgeView: View {
                         .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
                 }
+#endif
             }
 
             Button {
@@ -399,6 +423,16 @@ struct ForgeView: View {
                         .pickerStyle(.segmented)
                     }
 
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("RENDERED TEXT SIZE")
+                            .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
+                            .foregroundStyle(Lab.secondary)
+                        renderFontSizeControl
+                        Text("Changes the reading view and exported document—not the editor or app controls.")
+                            .font(.system(size: Lab.size(9)))
+                            .foregroundStyle(Lab.secondary)
+                    }
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("COLOR THEME")
                             .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
@@ -446,6 +480,45 @@ struct ForgeView: View {
         .foregroundStyle(Lab.secondary.opacity(0.78))
         .multilineTextAlignment(.center)
         .padding(.bottom, 8)
+    }
+
+    private var renderFontSizeControl: some View {
+        HStack(spacing: 8) {
+            Button {
+                renderFontScale = clampedRenderFontScale(renderFontScale - 0.1)
+            } label: {
+                Image(systemName: "textformat.size.smaller")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered)
+            .disabled(renderFontScale <= 0.7)
+            .accessibilityLabel("Decrease rendered text size")
+
+            Button {
+                renderFontScale = 1.0
+            } label: {
+                Text("\(Int((renderFontScale * 100).rounded()))%")
+                    .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
+                    .frame(minWidth: 48)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Rendered text size \(Int((renderFontScale * 100).rounded())) percent. Reset to 100 percent")
+
+            Button {
+                renderFontScale = clampedRenderFontScale(renderFontScale + 0.1)
+            } label: {
+                Image(systemName: "textformat.size.larger")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.bordered)
+            .disabled(renderFontScale >= 1.6)
+            .accessibilityLabel("Increase rendered text size")
+        }
+        .tint(Lab.emerald)
+    }
+
+    private func clampedRenderFontScale(_ value: Double) -> Double {
+        min(1.6, max(0.7, (value * 10).rounded() / 10))
     }
 
     private var characterCount: Int {

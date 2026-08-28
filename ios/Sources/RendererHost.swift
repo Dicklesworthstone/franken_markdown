@@ -34,6 +34,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published var pageNumbers = false
     @Published var codeLineNumbers = false
     @Published var documentTitle = ""
+    var renderFontScale = 1.0
 
     @Published private(set) var phase: RenderPhase = .loading
     @Published private(set) var elapsedMS: Double?
@@ -108,7 +109,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         var options: [String: Any] = [
             "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
-            "font": fontFamily
+            "font": fontFamily,
+            "renderFontScale": renderFontScale
         ]
         if !documentTitle.isEmpty {
             options["title"] = documentTitle
@@ -141,7 +143,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             "allowRawHtml": allowRawHtml,
             "font": fontFamily,
             "pageNumbers": pageNumbers,
-            "pdfLineNumbers": codeLineNumbers
+            "codeLineNumbers": codeLineNumbers,
+            "baseFontSize": 11.0 * renderFontScale
         ]
         if !documentTitle.isEmpty {
             options["title"] = documentTitle
@@ -176,7 +179,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         var options: [String: Any] = [
             "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
-            "font": fontFamily
+            "font": fontFamily,
+            "renderFontScale": renderFontScale
         ]
         if !documentTitle.isEmpty {
             options["title"] = documentTitle

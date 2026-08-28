@@ -27,8 +27,9 @@ use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FORCED_BREAK_PENALTY, FontSize, Glue, HyphenLang, Hyphenator, LayoutUnit, LineBreak,
     ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
-    cjk_break_prohibited, default_interword_glue, is_breakable_whitespace, is_cjk_char,
+    advance_to_layout_units, break_paragraph_into, classify_script, cjk_break_allowed,
+    cjk_break_glue, cjk_break_prohibited, default_interword_glue, is_breakable_whitespace,
+    is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -87,6 +88,7 @@ fn subset_tail_slot_name(slot: u8) -> &'static str {
         F_MONO => "mono",
         F_BOLDITALIC => "bolditalic",
         F_SYMBOL => "symbol",
+        F_CJK => "cjk",
         _ => "other",
     }
 }
@@ -150,7 +152,10 @@ const F_BOLDITALIC: u8 = 5;
 /// but the fallback does, so common math/arrow symbols render as real glyphs
 /// instead of `.notdef` boxes.
 const F_SYMBOL: u8 = 6;
-const SLOTS: [u8; 6] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC, F_SYMBOL];
+/// The optional CJK fallback face (Han/Kana/Hangul routing). Layout routes CJK
+/// characters here when the style slot lacks the glyph and the CJK face is loaded.
+const F_CJK: u8 = 7;
+const SLOTS: [u8; 7] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC, F_SYMBOL, F_CJK];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.
@@ -1555,6 +1560,8 @@ struct Faces {
     /// Bundled symbol fallback face; never caller-overridable, always loaded so
     /// coverage checks are total. Embedded in the PDF only when actually used.
     symbol: Face,
+    /// Optional CJK fallback face for Han, Kana, Hangul characters.
+    cjk: Option<Face>,
 }
 
 /// Sanitized page geometry derived from the shared theme model.
@@ -1660,6 +1667,7 @@ impl Faces {
                 assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
+            cjk: None,
         })
     }
 
@@ -1670,21 +1678,29 @@ impl Faces {
             F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
             F_SYMBOL => &self.symbol,
+            F_CJK => self.cjk.as_ref().unwrap_or(&self.symbol),
             _ => &self.body,
         }
     }
 
     /// The slot that should carry `c` when the requested style slot renders it:
-    /// the style slot itself when its face maps the character (or when nothing
-    /// does), otherwise the bundled symbol fallback face.
+    /// the style slot itself when its face maps the character, otherwise CJK
+    /// fallback (for Han/Kana/Hangul) or bundled symbol fallback face.
     fn fallback_slot(&self, slot: u8, c: char) -> u8 {
-        if slot == F_SYMBOL
-            || self.face(slot).glyph_index(c) != 0
-            || self.symbol.glyph_index(c) == 0
-        {
+        if slot == F_SYMBOL || slot == F_CJK || self.face(slot).glyph_index(c) != 0 {
             slot
-        } else {
+        } else if let Some(ref cjk) = self.cjk {
+            if classify_script(c).wants_cjk_fallback() && cjk.glyph_index(c) != 0 {
+                F_CJK
+            } else if self.symbol.glyph_index(c) != 0 {
+                F_SYMBOL
+            } else {
+                slot
+            }
+        } else if self.symbol.glyph_index(c) != 0 {
             F_SYMBOL
+        } else {
+            slot
         }
     }
 
@@ -2098,9 +2114,11 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                     || faces.bolditalic.glyph_index(c) != 0
                     || faces.mono.glyph_index(c) != 0
                     // Markdown text runs fall back to the bundled symbol face
-                    // (see `apply_symbol_fallback`); embedded SVG text does
-                    // not, so its coverage is judged on the primary faces only.
-                    || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0);
+                    // (see `apply_symbol_fallback`) or optional CJK fallback; embedded
+                    // SVG text does not, so its coverage is judged on the primary faces only.
+                    || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0)
+                    || (allow_symbol_fallback
+                        && faces.cjk.as_ref().is_some_and(|f| f.glyph_index(c) != 0));
                 if !mapped && allow_symbol_fallback {
                     if let Some(fb) = subscript_phonetic_fallback(c) {
                         mapped = faces.body.glyph_index(fb) != 0
@@ -2108,7 +2126,8 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                             || faces.italic.glyph_index(fb) != 0
                             || faces.bolditalic.glyph_index(fb) != 0
                             || faces.mono.glyph_index(fb) != 0
-                            || faces.symbol.glyph_index(fb) != 0;
+                            || faces.symbol.glyph_index(fb) != 0
+                            || faces.cjk.as_ref().is_some_and(|f| f.glyph_index(fb) != 0);
                     }
                 }
                 if !mapped {
@@ -21071,6 +21090,7 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
         F_MONO => Some(3),
         F_BOLDITALIC => Some(4),
         F_SYMBOL => Some(5),
+        F_CJK => Some(6),
         _ => None,
     }
 }

@@ -2502,32 +2502,298 @@ fn pdf_stage_elapsed_ns(_started: Option<PdfStageStart>) -> u128 {
     0
 }
 
+#[derive(Debug, Clone)]
+struct PdfTocEntry {
+    level: u8,
+    title: String,
+    id: String,
+}
+
+fn toc_marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
+    let [Inline::Text(text)] = inlines else {
+        return None;
+    };
+    let trimmed = text.trim();
+    let inner = trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
+        .trim_start_matches('_')
+        .trim_end_matches('_')
+        .to_ascii_lowercase();
+    let inner = inner.strip_prefix("toc")?;
+    if inner.is_empty() {
+        return Some(None);
+    }
+    let depth = inner.strip_prefix(':')?.trim().parse::<u8>().ok()?;
+    (depth >= 1).then_some(Some(depth))
+}
+
+fn has_toc_marker(blocks: &[Block]) -> bool {
+    blocks.iter().any(|b| match b {
+        Block::Paragraph(inlines) => toc_marker_depth(inlines).is_some(),
+        _ => false,
+    })
+}
+
+fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
+    for inl in inlines {
+        match inl {
+            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
+                out.push_str(t);
+            }
+            Inline::FootnoteRef { id } => {
+                out.push_str("[^");
+                out.push_str(id);
+                out.push(']');
+            }
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                push_inlines_to_plain_text(c, out);
+            }
+            Inline::Link { content, .. } => {
+                push_inlines_to_plain_text(content, out);
+            }
+            Inline::Image { alt, .. } => {
+                out.push_str(alt);
+            }
+            Inline::SoftBreak | Inline::HardBreak => {
+                out.push(' ');
+            }
+            Inline::Html(html) => {
+                out.push_str(html);
+            }
+        }
+    }
+}
+
+fn collect_pdf_toc_entries(blocks: &[Block]) -> Vec<PdfTocEntry> {
+    let mut state = HeadingIdState::default();
+    let mut entries = Vec::new();
+    fn walk(blocks: &[Block], state: &mut HeadingIdState, entries: &mut Vec<PdfTocEntry>) {
+        for block in blocks {
+            match block {
+                Block::Heading { level, inlines } => {
+                    let mut plain = String::new();
+                    push_inlines_to_plain_text(inlines, &mut plain);
+                    let title = plain.trim().to_string();
+                    let title = if title.is_empty() {
+                        "Section".to_string()
+                    } else {
+                        title
+                    };
+                    let id = state.heading_id(&title);
+                    entries.push(PdfTocEntry {
+                        level: *level,
+                        title,
+                        id,
+                    });
+                }
+                Block::BlockQuote(inner) => walk(inner, state, entries),
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, state, entries);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(blocks, &mut state, &mut entries);
+    entries
+}
+
+fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let filtered: Vec<PdfTocEntry> = cx
+        .toc_entries
+        .iter()
+        .filter(|e| max_depth.is_none_or(|max| e.level <= max))
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        return;
+    }
+
+    let font_size = cx.type_scale.body;
+    let fs = font_size_of(font_size);
+    let dot_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, ".", fs).to_points_f32();
+    let space_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, " ", fs).to_points_f32();
+
+    gap(out, 6.0);
+    for entry in filtered {
+        let level_indent = ((entry.level.saturating_sub(1)) as f32) * 14.0;
+        let page_num = cx.toc_page_map.get(&entry.id).copied().unwrap_or(1);
+        let page_str = format!("{page_num}");
+        let page_w =
+            cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &page_str, fs).to_points_f32();
+        let title_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &entry.title, fs)
+            .to_points_f32();
+
+        let left_x = cx.page.left + indent + level_indent;
+        let right_x = cx.page.right_x();
+        let avail_dots = (right_x - left_x - title_w - page_w - 2.0 * space_w).max(0.0);
+
+        let (dots_str, dots_w) = if avail_dots > (dot_w + space_w) * 2.0 {
+            let step = (dot_w + space_w).max(1.0);
+            let count = ((avail_dots / step).floor() as usize).max(2);
+            let s = " .".repeat(count);
+            let w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &s, fs).to_points_f32();
+            (s, w)
+        } else {
+            (String::new(), 0.0)
+        };
+
+        let title_seg = Seg {
+            x: left_x,
+            slot: F_BODY,
+            text: entry.title.clone(),
+            link: Some(LinkTarget::Fragment(entry.id.clone())),
+            fill: Fill::Black,
+            strike: false,
+            task: None,
+            width: title_w,
+        };
+
+        let mut segs = vec![title_seg];
+        if !dots_str.is_empty() {
+            let dots_seg = Seg {
+                x: left_x + title_w + space_w,
+                slot: F_BODY,
+                text: dots_str,
+                link: Some(LinkTarget::Fragment(entry.id.clone())),
+                fill: Fill::Muted,
+                strike: false,
+                task: None,
+                width: dots_w,
+            };
+            segs.push(dots_seg);
+        }
+
+        let page_seg = Seg {
+            x: right_x - page_w,
+            slot: F_BODY,
+            text: page_str,
+            link: Some(LinkTarget::Fragment(entry.id.clone())),
+            fill: Fill::Black,
+            strike: false,
+            task: None,
+            width: page_w,
+        };
+        segs.push(page_seg);
+
+        out.push(Line {
+            size: font_size,
+            gap_after: 4.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark {
+                group: cx.alloc_flow(),
+                index: 0,
+                count: 1,
+                kind: FlowKind::Paragraph,
+                list_start: false,
+            },
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs,
+            image: None,
+        });
+    }
+    gap(out, 10.0);
+}
+
 // ---- layout -----------------------------------------------------------------
 
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
-    let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
-    let type_scale = opts.type_scale();
-    let mut cx = LayoutCx {
-        opts,
-        type_scale,
-        faces,
-        page,
-        next_bg: 0,
-        next_flow: 0,
-        list_stack: Vec::new(),
-        hyphen_cache: RefCell::new(HashMap::new()),
-        width_cache: RefCell::new(WidthCache::default()),
-        simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
-        table_layout_cache: TableLayoutCache::default(),
-        paragraph_scratch: ParagraphLayoutScratch::new(),
-        line_breaks: Vec::new(),
-        line_toks: Vec::new(),
-        glue_adjustments: Vec::new(),
-        code_highlight_spans: Vec::new(),
-    };
-    layout_blocks(blocks, 0.0, &mut out, &mut cx);
-    layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
-    out
+    let has_toc = opts.toc || has_toc_marker(blocks);
+    if !has_toc {
+        let type_scale = opts.type_scale();
+        let mut cx = LayoutCx {
+            opts,
+            type_scale,
+            faces,
+            page,
+            next_bg: 0,
+            next_flow: 0,
+            list_stack: Vec::new(),
+            hyphen_cache: RefCell::new(HashMap::new()),
+            width_cache: RefCell::new(WidthCache::default()),
+            simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+            table_layout_cache: TableLayoutCache::default(),
+            paragraph_scratch: ParagraphLayoutScratch::new(),
+            line_breaks: Vec::new(),
+            line_toks: Vec::new(),
+            glue_adjustments: Vec::new(),
+            code_highlight_spans: Vec::new(),
+            toc_entries: Vec::new(),
+            toc_page_map: BTreeMap::new(),
+        };
+        let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
+        layout_blocks(blocks, 0.0, &mut out, &mut cx);
+        layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
+        return out;
+    }
+
+    let toc_entries = collect_pdf_toc_entries(blocks);
+    let mut page_map = BTreeMap::new();
+    for entry in &toc_entries {
+        page_map.insert(entry.id.clone(), 1);
+    }
+
+    let mut final_lines = Vec::new();
+    for _iter in 0..5 {
+        let type_scale = opts.type_scale();
+        let mut cx = LayoutCx {
+            opts,
+            type_scale,
+            faces,
+            page,
+            next_bg: 0,
+            next_flow: 0,
+            list_stack: Vec::new(),
+            hyphen_cache: RefCell::new(HashMap::new()),
+            width_cache: RefCell::new(WidthCache::default()),
+            simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+            table_layout_cache: TableLayoutCache::default(),
+            paragraph_scratch: ParagraphLayoutScratch::new(),
+            line_breaks: Vec::new(),
+            line_toks: Vec::new(),
+            glue_adjustments: Vec::new(),
+            code_highlight_spans: Vec::new(),
+            toc_entries: toc_entries.clone(),
+            toc_page_map: page_map.clone(),
+        };
+        let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
+        layout_blocks(blocks, 0.0, &mut out, &mut cx);
+        layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
+
+        // Run pagination to find the resulting page of each heading
+        let heading_metas = heading_metadata(&out);
+        let pages = paginate_lines(&out, page);
+        let mut new_page_map = BTreeMap::new();
+        for (page_idx, placed_page) in pages.iter().enumerate() {
+            let page_num = page_idx + 1;
+            for p in placed_page {
+                if p.line.flow.kind == FlowKind::Heading
+                    && p.line.flow.group != 0
+                    && let Some(meta) = heading_metas.get(&p.line.flow.group)
+                {
+                    new_page_map.entry(meta.id.clone()).or_insert(page_num);
+                }
+            }
+        }
+
+        let converged = new_page_map == page_map;
+        page_map = new_page_map;
+        final_lines = out;
+        if converged {
+            break;
+        }
+    }
+
+    final_lines
 }
 
 /// GFM footnote definitions are skipped in the body walk (same as HTML). The
@@ -3151,6 +3417,8 @@ struct LayoutCx<'a> {
     /// fresh span Vec allocation for every code line while preserving exact
     /// source-byte slicing and token colors.
     code_highlight_spans: Vec<highlight::Span>,
+    toc_entries: Vec<PdfTocEntry>,
+    toc_page_map: BTreeMap<String, usize>,
 }
 
 impl LayoutCx<'_> {
@@ -3188,7 +3456,16 @@ struct FlowSpec {
 }
 
 fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let mut injected_toc = false;
     for block in blocks {
+        if cx.opts.toc
+            && !injected_toc
+            && matches!(block, Block::Heading { .. })
+            && !has_toc_marker(blocks)
+        {
+            injected_toc = true;
+            layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
+        }
         layout_block(block, indent, out, cx);
     }
 }
@@ -3230,6 +3507,10 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
         }
         Block::Paragraph(inlines) => {
+            if let Some(max_depth) = toc_marker_depth(inlines) {
+                layout_pdf_toc(max_depth.or(cx.opts.toc_depth), indent, out, cx);
+                return;
+            }
             if layout_standalone_image(inlines, indent, out, cx) {
                 return;
             }
@@ -29483,6 +29764,8 @@ mod pdf_writer_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            toc_entries: Vec::new(),
+            toc_page_map: std::collections::BTreeMap::new(),
         }
     }
 
@@ -34252,6 +34535,8 @@ mod table_wrap_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            toc_entries: Vec::new(),
+            toc_page_map: std::collections::BTreeMap::new(),
         };
         let empty_item = || ListItem {
             task: None,
@@ -36255,6 +36540,8 @@ mod coverage_gap_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            toc_entries: Vec::new(),
+            toc_page_map: BTreeMap::new(),
         }
     }
 

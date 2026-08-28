@@ -395,10 +395,9 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 // ---------------------------------------------------------------------------
 
 fn is_markdown(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("md") | Some("markdown")
-    )
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
 /// A CLI input path that could not be expanded (missing, or an unreadable
@@ -1797,6 +1796,17 @@ mod tests {
     }
 
     #[test]
+    fn is_markdown_matches_extensions_case_insensitively() {
+        assert!(is_markdown(Path::new("doc.md")));
+        assert!(is_markdown(Path::new("doc.MD")));
+        assert!(is_markdown(Path::new("notes.markdown")));
+        assert!(is_markdown(Path::new("notes.MarkDown")));
+        assert!(!is_markdown(Path::new("doc.txt")));
+        assert!(!is_markdown(Path::new("markdown")));
+        assert!(!is_markdown(Path::new("doc.mdx")));
+    }
+
+    #[test]
     fn expand_inputs_recurses_filters_and_orders() {
         let dir = fresh_dir("expand-tree");
         std::fs::create_dir_all(dir.join("sub/deep")).unwrap();
@@ -1805,6 +1815,9 @@ mod tests {
         std::fs::write(dir.join("a.markdown"), "a").unwrap();
         std::fs::write(dir.join("sub/c.md"), "c").unwrap();
         std::fs::write(dir.join("sub/deep/d.markdown"), "d").unwrap();
+        // Case-insensitive extensions: README.MD is still Markdown.
+        std::fs::write(dir.join("E.MD"), "e").unwrap();
+        std::fs::write(dir.join("sub/F.MarkDown"), "f").unwrap();
         // Excluded: wrong extension and no extension.
         std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
         std::fs::write(dir.join("README"), "ignored").unwrap();
@@ -1822,7 +1835,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["a.markdown", "b.md", "sub/c.md", "sub/deep/d.markdown"],
+            vec![
+                "E.MD",
+                "a.markdown",
+                "b.md",
+                "sub/F.MarkDown",
+                "sub/c.md",
+                "sub/deep/d.markdown"
+            ],
             "recursion collects only markdown, in deterministic sorted order"
         );
 

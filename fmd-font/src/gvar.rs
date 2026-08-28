@@ -323,15 +323,7 @@ fn instance_composite(
     }
     if let Some(gvar) = gvar {
         // `pts` already holds 4 phantoms + per-component origins.
-        apply_store(
-            font.raw_bytes(),
-            gvar,
-            gid,
-            location,
-            &mut pts,
-            None,
-            None,
-        );
+        apply_store(font.raw_bytes(), gvar, gid, location, &mut pts, None, None);
     }
     // Rewrite XY args.
     let mut out = data.to_vec();
@@ -435,13 +427,15 @@ fn component_args(data: &[u8], p: usize, flags: u16) -> Option<(i32, i32, usize)
 fn write_component_xy(out: &mut [u8], p: usize, flags: u16, x: i32, y: i32) -> Option<()> {
     let arg_base = p.checked_add(4)?;
     if flags & ARG_WORDS != 0 {
-        let xb = i16::try_from(x.clamp(i32::from(i16::MIN), i32::from(i16::MAX))).ok()?;
-        let yb = i16::try_from(y.clamp(i32::from(i16::MIN), i32::from(i16::MAX))).ok()?;
+        let xb = i16::try_from(x).ok()?;
+        let yb = i16::try_from(y).ok()?;
         write_i16(out, arg_base, xb)?;
         write_i16(out, arg_base.checked_add(2)?, yb)?;
     } else {
-        *out.get_mut(arg_base)? = x.clamp(-128, 127) as u8;
-        *out.get_mut(arg_base.checked_add(1)?)? = y.clamp(-128, 127) as u8;
+        let xb = i8::try_from(x).ok()?;
+        let yb = i8::try_from(y).ok()?;
+        *out.get_mut(arg_base)? = xb as u8;
+        *out.get_mut(arg_base.checked_add(1)?)? = yb as u8;
     }
     Some(())
 }
@@ -950,11 +944,13 @@ fn encode_simple(g: &SimpleGlyph) -> Option<Vec<u8>> {
     let mut prev = (0i32, 0i32);
     let mut dxs = Vec::with_capacity(n);
     let mut dys = Vec::with_capacity(n);
-    for (i, &(x, y)) in g.points.iter().enumerate() {
-        let dx = x.saturating_sub(prev.0);
-        let dy = y.saturating_sub(prev.1);
-        // glyf stores relative int16. Silent `as i16` truncation would emit a
-        // different outline than the instanced points / hmtx we just computed.
+    for (i, &(raw_x, raw_y)) in g.points.iter().enumerate() {
+        // glyf header bbox and on-disk deltas are i16. A point outside that
+        // range (or a hop larger than i16) cannot be stored without lying.
+        let x = i32::from(i16::try_from(raw_x).ok()?);
+        let y = i32::from(i16::try_from(raw_y).ok()?);
+        let dx = x - prev.0;
+        let dy = y - prev.1;
         i16::try_from(dx).ok()?;
         i16::try_from(dy).ok()?;
         dxs.push(dx);
@@ -1754,6 +1750,16 @@ mod tests {
             "in-range delta encodes",
             ok.is_some(),
         );
+        let abs_oob = encode_simple(&SimpleGlyph {
+            points: vec![(20_000, 0), (40_000, 0)],
+            on_curve: vec![true, true],
+            contour_ends: vec![1],
+        });
+        log_check(
+            "gk3v.gvar.encode-abs-i16",
+            "absolute 40000 fails even if the hop is 20000",
+            abs_oob.is_none(),
+        );
     }
 
     #[test]
@@ -1934,6 +1940,88 @@ mod tests {
             "gk3v.2.comp.delta",
             "component origin 10+30, 20",
             x == 40 && y == 20,
+        );
+    }
+
+    #[test]
+    fn composite_byte_xy_overflow_keeps_default_glyph() {
+        // Byte ARGS_ARE_XY (no ARG_WORDS): origin (100, 0) + 50 x at peak is
+        // 150, which does not fit in i8. Fail closed instead of clamping to 127.
+        let triangle = triangle_glyph();
+        let mut composite = Vec::new();
+        push_i16(&mut composite, -1);
+        for v in [0i16, 0, 100, 100] {
+            push_i16(&mut composite, v);
+        }
+        push16(&mut composite, ARGS_ARE_XY);
+        push16(&mut composite, 0);
+        composite.push(100u8);
+        composite.push(0u8);
+
+        let mut glyf = Vec::new();
+        glyf.extend_from_slice(&triangle);
+        let comp_off = glyf.len();
+        glyf.extend_from_slice(&composite);
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(comp_off).unwrap());
+        push32(&mut loca, u32::try_from(glyf.len()).unwrap());
+
+        let mut payload = vec![1, 0, 4, 0x80];
+        payload.extend_from_slice(&50i16.to_be_bytes());
+        payload.push(0x00);
+
+        let mut gvd0 = Vec::new();
+        push16(&mut gvd0, 0);
+        push16(&mut gvd0, 4);
+
+        let mut gvd1 = Vec::new();
+        push16(&mut gvd1, 1);
+        push16(&mut gvd1, 0);
+        push16(&mut gvd1, u16::try_from(payload.len()).unwrap());
+        push16(&mut gvd1, EMBEDDED_PEAK | PRIVATE_POINTS);
+        push_i16(&mut gvd1, f32_to_f2dot14(1.0));
+        let data_off = gvd1.len();
+        gvd1[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+        gvd1.extend_from_slice(&payload);
+
+        let mut gvar = Vec::new();
+        push16(&mut gvar, 1);
+        push16(&mut gvar, 0);
+        push16(&mut gvar, 1);
+        push16(&mut gvar, 0);
+        push32(&mut gvar, 20);
+        push16(&mut gvar, 2);
+        push16(&mut gvar, 1);
+        push32(&mut gvar, 20);
+        let array = 12usize;
+        let o0 = array as u32;
+        let o1 = (array + gvd0.len()) as u32;
+        let o2 = o1 + gvd1.len() as u32;
+        push32(&mut gvar, o0);
+        push32(&mut gvar, o1);
+        push32(&mut gvar, o2);
+        gvar.extend_from_slice(&gvd0);
+        gvar.extend_from_slice(&gvd1);
+
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(2)),
+            (b"hhea", hhea_table(2)),
+            (b"hmtx", hmtx(2)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyf),
+            (b"fvar", fvar_wght()),
+            (b"gvar", gvar),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("byte-arg composite VF");
+        let inst = font.instance(900.0).expect("instance still succeeds");
+        let data = inst.glyph_data(1).unwrap();
+        log_check(
+            "gk3v.gvar.comp-i8-x",
+            "overflowed byte origin stays 100, not clamped 127",
+            data.get(14).copied() == Some(100),
         );
     }
 

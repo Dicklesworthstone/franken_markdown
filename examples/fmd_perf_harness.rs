@@ -130,9 +130,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("FMD_WRAP_PERF").is_some() {
         eprintln!("{}", franken_markdown::pdf::wrap_perf::summary());
     }
-    if std::env::var_os("FMD_LAYOUT_PERF").is_some() {
-        eprintln!("{}", franken_markdown::pdf::layout_perf::summary());
-    }
     Ok(())
 }
 

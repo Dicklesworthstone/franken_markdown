@@ -2987,7 +2987,6 @@ impl LayoutCx<'_> {
         line_width: LayoutUnit,
         policy: ParagraphPolicy,
     ) {
-        let _perf_t = layout_perf::Timer::new(layout_perf::PARA_BREAK);
         self.paragraph_scratch
             .set_expansion_permilli(policy.expansion_permilli());
         break_paragraph_into(
@@ -3012,16 +3011,6 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
-    let _perf_t = layout_perf::Timer::new(match block {
-        Block::Heading { .. } => layout_perf::HEADING,
-        Block::Paragraph(_) => layout_perf::PARA_BLOCK,
-        Block::CodeBlock { .. } => layout_perf::CODE,
-        Block::BlockQuote(_) => layout_perf::QUOTE,
-        Block::List(_) => layout_perf::LIST,
-        Block::Table(_) => layout_perf::TABLE,
-        Block::HtmlBlock(_) => layout_perf::HTML,
-        Block::FootnoteDefinition { .. } | Block::ThematicBreak => layout_perf::OTHER,
-    });
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
@@ -3066,13 +3055,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 layout_simple_text_paragraph(text, indent, out, cx, group);
                 return;
             }
-            let toks = {
-                let _perf_tok = layout_perf::Timer::new(layout_perf::PARA_TOKENIZE);
-                let mut toks = Vec::new();
-                tokenize(inlines, false, false, false, None, &mut toks);
-                apply_symbol_fallback(&mut toks, cx.faces);
-                toks
-            };
+            let mut toks = Vec::new();
+            tokenize(inlines, false, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -3271,7 +3256,6 @@ fn layout_simple_text_paragraph(
     cx: &mut LayoutCx<'_>,
     group: u32,
 ) {
-    let _perf_t = layout_perf::Timer::new(layout_perf::SIMPLE_PARA);
     let left = cx.page.left + indent;
     let size = cx.type_scale.body;
     let gap_after = 7.0;
@@ -15381,7 +15365,6 @@ fn build_cell_line_owned(
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
 ) -> CellWrapLine {
-    let _perf_t = layout_perf::Timer::new(layout_perf::WRAP_BUILD);
 
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
@@ -15423,7 +15406,6 @@ fn wrap_cell_styled(
     let mut lines = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0;
-    let _perf_t = layout_perf::Timer::new(layout_perf::WRAP_TOTAL);
     let mut pending: Option<Tok> = None;
     for t in toks {
         if t.hard_break {
@@ -15638,6 +15620,40 @@ fn table_measure_line_wrap_stats(line: &TableCellMeasureLine, width: f32) -> Tab
             ragged_penalty: table_ragged_line_penalty(line.fit_width, width),
         };
     }
+    // Single-word fast path: with one word there is no inter-word packing, so
+    // the loop reduces to its split branch (word wider than the column) or to
+    // a single fitting row. Both are pure functions of `words[0]` and `width`,
+    // replicated here with identical float expressions and ordering, so the
+    // result is bit-identical to running the full simulation. This is the
+    // dominant shape in numeric table cells (one token per cell).
+    if line.words.len() == 1 {
+        let word_width = line.words[0];
+        if word_width > width {
+            let pieces = (word_width / width).ceil().max(1.0) as usize;
+            let shortage = (word_width - width).max(0.0) / width;
+            let split_penalty = shortage * shortage * pieces as f32 * 2_500.0;
+            let current = (word_width - pieces.saturating_sub(1) as f32 * width).clamp(0.0, width);
+            let ragged_penalty = if current > 0.0 {
+                table_ragged_line_penalty(current, width)
+            } else {
+                0.0
+            };
+            return TableMeasureWrapStats {
+                visual_lines: pieces,
+                split_penalty,
+                ragged_penalty,
+            };
+        }
+        return TableMeasureWrapStats {
+            visual_lines: 1,
+            split_penalty: 0.0,
+            ragged_penalty: if word_width > 0.0 {
+                table_ragged_line_penalty(word_width, width)
+            } else {
+                0.0
+            },
+        };
+    }
 
     let mut visual_lines = 1usize;
     let mut split_penalty = 0.0;
@@ -15719,19 +15735,16 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         return widths;
     }
 
-    let costs: Vec<Vec<f32>> = {
-        let _perf_t = layout_perf::Timer::new(layout_perf::COL_COSTS);
-        columns
-            .iter()
-            .map(|column| {
-                (0..=extra_units)
-                    .map(|units| {
-                        table_column_badness(column, TABLE_MIN_COL_WIDTH + units as f32 * unit)
-                    })
-                    .collect()
-            })
-            .collect()
-    };
+    let costs: Vec<Vec<f32>> = columns
+        .iter()
+        .map(|column| {
+            (0..=extra_units)
+                .map(|units| {
+                    table_column_badness(column, TABLE_MIN_COL_WIDTH + units as f32 * unit)
+                })
+                .collect()
+        })
+        .collect();
     // Min-plus DP over per-column extra units. `values[c]` holds the best
     // cumulative badness after placing columns 0..c (with `values[0]` the
     // zero-width start state). Parents are reconstructed afterwards from the
@@ -15740,7 +15753,6 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
     // strict-`<` update: for a given column and total, the first `used` (in
     // ascending order) whose `base + cost` equals the stored minimum is
     // exactly the parent the inline update kept.
-    let _perf_dp = layout_perf::Timer::new(layout_perf::COL_DP);
     let mut values: Vec<Vec<f32>> = Vec::with_capacity(ncol + 1);
     let mut start = vec![f32::INFINITY; extra_units + 1];
     start[0] = 0.0;
@@ -15761,7 +15773,6 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         }
         values.push(next);
     }
-    drop(_perf_dp);
 
     if !values[ncol][extra_units].is_finite() {
         let mut widths = vec![target / ncol as f32; ncol];
@@ -15982,114 +15993,6 @@ fn wrap_perf_tok_hash(toks: &[Tok]) -> u64 {
     hash
 }
 
-pub mod layout_perf {
-    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-    use std::time::Instant;
-
-    pub const HEADING: usize = 0;
-    pub const PARA_BLOCK: usize = 1;
-    pub const CODE: usize = 2;
-    pub const QUOTE: usize = 3;
-    pub const LIST: usize = 4;
-    pub const TABLE: usize = 5;
-    pub const HTML: usize = 6;
-    pub const OTHER: usize = 7;
-    pub const SIMPLE_PARA: usize = 8;
-    pub const PARA_BUILD: usize = 9;
-    pub const PARA_BREAK: usize = 10;
-    pub const PARA_EMIT: usize = 11;
-    pub const TABLE_ROWLINES: usize = 12;
-    pub const ALIGN_INFER: usize = 13;
-    pub const COL_ALLOC: usize = 14;
-    pub const PARA_TOKENIZE: usize = 15;
-    pub const COL_COSTS: usize = 16;
-    pub const COL_DP: usize = 17;
-    pub const WRAP_BUILD: usize = 18;
-    pub const WRAP_TOTAL: usize = 19;
-    const NAMES: [&str; 20] = [
-        "heading_total",
-        "para_block_total",
-        "code_total",
-        "quote_total",
-        "list_total",
-        "table_total",
-        "html_total",
-        "other_total",
-        "simple_para_total",
-        "para_build",
-        "para_break",
-        "para_emit",
-        "table_rowlines",
-        "table_align_infer",
-        "table_col_alloc",
-        "para_tokenize",
-        "col_costs",
-        "col_dp",
-        "wrap_build",
-        "wrap_total",
-    ];
-    static NS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
-    static COUNTS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
-
-    fn enabled() -> bool {
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            static STATE: AtomicU8 = AtomicU8::new(0);
-            match STATE.load(Ordering::Relaxed) {
-                1 => false,
-                2 => true,
-                _ => {
-                    let on = std::env::var_os("FMD_LAYOUT_PERF").is_some();
-                    STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-                    on
-                }
-            }
-        }
-    }
-
-    pub struct Timer(usize, Option<Instant>);
-
-    impl Timer {
-        #[inline]
-        #[must_use]
-        pub fn new(idx: usize) -> Self {
-            Timer(idx, enabled().then(Instant::now))
-        }
-    }
-    impl Drop for Timer {
-        #[inline]
-        fn drop(&mut self) {
-            if let Some(t) = self.1 {
-                NS[self.0].fetch_add(
-                    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                    Ordering::Relaxed,
-                );
-                COUNTS[self.0].fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn summary() -> String {
-        let mut out = String::from("FMD_LAYOUT_PERF sub-stage attribution (2-iter totals):\n");
-        for i in 0..NAMES.len() {
-            let ns = NS[i].load(Ordering::Relaxed);
-            let count = COUNTS[i].load(Ordering::Relaxed);
-            out.push_str(&format!(
-                "  {:<22} {:>8.1} ms  {:>8} calls\n",
-                NAMES[i],
-                ns as f64 / 1_000_000.0,
-                count
-            ));
-        }
-        out
-    }
-}
-// END TEMP PASS6 LAYOUT SUB-STAGE INSTRUMENTATION
 fn layout_table(
     table: &Table,
     indent: f32,
@@ -16316,10 +16219,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         }
     }
 
-    let colw = {
-        let _perf_t = layout_perf::Timer::new(layout_perf::COL_ALLOC);
-        allocate_table_column_widths(&columns, target)
-    };
+    let colw = allocate_table_column_widths(&columns, target);
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -16336,7 +16236,6 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         }
         is_numeric_cell_text(&text)
     };
-    let _perf_align = layout_perf::Timer::new(layout_perf::ALIGN_INFER);
     let inferred_align: Vec<Align> = (0..ncol)
         .map(|k| {
             if table.align.get(k).copied().unwrap_or(Align::None) != Align::None {
@@ -16364,10 +16263,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         })
         .collect();
-    drop(_perf_align);
 
     let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
-        let _perf_rows = layout_perf::Timer::new(layout_perf::TABLE_ROWLINES);
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -17609,17 +17506,14 @@ fn layout_inlines(
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
     let policy = ParagraphPolicy::for_flow(flow.kind);
-    let built = {
-        let _perf_t = layout_perf::Timer::new(layout_perf::PARA_BUILD);
-        build_paragraph(
-            &toks,
-            fs,
-            cx.faces,
-            policy,
-            &cx.hyphen_cache,
-            &cx.width_cache,
-        )
-    };
+    let built = build_paragraph(
+        &toks,
+        fs,
+        cx.faces,
+        policy,
+        &cx.hyphen_cache,
+        &cx.width_cache,
+    );
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
     if !built.has_boxes {
@@ -17636,7 +17530,6 @@ fn layout_inlines(
         return;
     }
 
-    let _perf_t = layout_perf::Timer::new(layout_perf::PARA_EMIT);
     let n = cx.line_breaks.len();
     for i in 0..n {
         let lb = cx.line_breaks[i];

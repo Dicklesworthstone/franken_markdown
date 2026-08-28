@@ -1292,7 +1292,7 @@ fn scanned_list_marker(scan: BlockStartScan<'_>) -> Option<Marker<'_>> {
 }
 
 fn scanned_list_marker_interrupts_paragraph(scan: BlockStartScan<'_>) -> bool {
-    scanned_list_marker(scan).is_some_and(|m| !m.ordered || m.start == 1)
+    scanned_list_marker(scan).is_some_and(marker_interrupts_paragraph)
 }
 
 fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
@@ -1302,10 +1302,12 @@ fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
 }
 
 fn scanned_paragraph_interrupt(scan: BlockStartScan<'_>) -> bool {
+    // CommonMark: an indented code block cannot interrupt a paragraph (it is
+    // hanging indent / lazy continuation). The block-start path still opens
+    // indented code at a real boundary.
     scanned_thematic_break(scan)
         || scanned_atx_heading(scan).is_some()
         || scanned_open_fence(scan).is_some()
-        || scanned_indented_code_start(scan)
         || scanned_blockquote_start(scan)
         || scanned_html_block_start(scan)
         || scanned_list_marker_interrupts_paragraph(scan)
@@ -2617,6 +2619,11 @@ fn list_marker_interrupts_paragraph(line: &str) -> bool {
 }
 
 fn marker_interrupts_paragraph(marker: Marker<'_>) -> bool {
+    // CommonMark: a list interrupts a paragraph only when the first item has
+    // content on the marker line. Ordered lists must also start at 1.
+    if marker.rest.is_empty() {
+        return false;
+    }
     !marker.ordered || marker.start == 1
 }
 
@@ -3186,12 +3193,21 @@ fn inline_text_needs_full_parse(text: &str) -> bool {
 }
 
 fn inline_http_scheme_before_colon(bytes: &[u8], colon: usize) -> bool {
-    (colon >= 4 && bytes.get(colon - 4..colon) == Some(b"http".as_slice()))
-        || (colon >= 5 && bytes.get(colon - 5..colon) == Some(b"https".as_slice()))
+    (colon >= 4
+        && bytes
+            .get(colon - 4..colon)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"http")))
+        || (colon >= 5
+            && bytes
+                .get(colon - 5..colon)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"https")))
 }
 
 fn inline_www_prefix_before_dot(bytes: &[u8], dot: usize) -> bool {
-    dot >= 3 && bytes.get(dot - 3..dot) == Some(b"www".as_slice())
+    dot >= 3
+        && bytes
+            .get(dot - 3..dot)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"www"))
 }
 
 fn parse_inlines_chars_with_refs_profiled(
@@ -3474,11 +3490,11 @@ fn inline_tree_node_count(inlines: &[Inline]) -> usize {
 
 fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {
     match chars.get(idx) {
-        Some('h') => {
-            starts_with_ascii_chars(chars, idx, b"http://")
-                || starts_with_ascii_chars(chars, idx, b"https://")
+        Some('h' | 'H') => {
+            starts_with_ascii_chars_ignore_case(chars, idx, b"http://")
+                || starts_with_ascii_chars_ignore_case(chars, idx, b"https://")
         }
-        Some('w') => starts_with_ascii_chars(chars, idx, b"www."),
+        Some('w' | 'W') => starts_with_ascii_chars_ignore_case(chars, idx, b"www."),
         _ => false,
     }
 }
@@ -4309,13 +4325,13 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
     }
 
     let is_www = match chars.get(i) {
-        Some('h')
-            if starts_with_ascii_chars(chars, i, b"http://")
-                || starts_with_ascii_chars(chars, i, b"https://") =>
+        Some('h' | 'H')
+            if starts_with_ascii_chars_ignore_case(chars, i, b"http://")
+                || starts_with_ascii_chars_ignore_case(chars, i, b"https://") =>
         {
             false
         }
-        Some('w') if starts_with_ascii_chars(chars, i, b"www.") => true,
+        Some('w' | 'W') if starts_with_ascii_chars_ignore_case(chars, i, b"www.") => true,
         _ => return None,
     };
 
@@ -4388,7 +4404,7 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
     Some((label, dest, end))
 }
 
-fn starts_with_ascii_chars(chars: &[char], i: usize, needle: &[u8]) -> bool {
+fn starts_with_ascii_chars_ignore_case(chars: &[char], i: usize, needle: &[u8]) -> bool {
     let Some(end) = i.checked_add(needle.len()) else {
         return false;
     };
@@ -4396,7 +4412,8 @@ fn starts_with_ascii_chars(chars: &[char], i: usize, needle: &[u8]) -> bool {
         return false;
     };
     for idx in 0..needle.len() {
-        if window[idx] != needle[idx] as char {
+        let got = window[idx];
+        if !got.is_ascii() || got.to_ascii_lowercase() as u8 != needle[idx].to_ascii_lowercase() {
             return false;
         }
     }
@@ -4726,6 +4743,9 @@ mod inline_autolink_candidate_tests {
         assert!(maybe_bare_url_start("See http://example.test", 4));
         assert!(maybe_bare_url_start("See https://example.test", 4));
         assert!(maybe_bare_url_start("See www.example.test", 4));
+        assert!(maybe_bare_url_start("See HTTP://example.test", 4));
+        assert!(maybe_bare_url_start("See HTTPS://example.test", 4));
+        assert!(maybe_bare_url_start("See WWW.example.test", 4));
         assert!(!maybe_bare_url_start("ship shape and whole words", 1));
         assert!(!maybe_bare_url_start("Email user@example.test", 0));
 
@@ -4735,6 +4755,55 @@ mod inline_autolink_candidate_tests {
         for ch in ['@', '*', '`', ' '] {
             assert!(!inline_char_maybe_bare_email_start(ch));
         }
+    }
+
+    #[test]
+    fn bare_autolink_is_case_insensitive_for_http_https_www() {
+        use super::parse_inlines;
+        use crate::ast::Inline;
+
+        fn links(src: &str) -> Vec<(String, String)> {
+            parse_inlines(src)
+                .into_iter()
+                .filter_map(|inl| match inl {
+                    Inline::Link { dest, content, .. } => {
+                        let label = match content.as_slice() {
+                            [Inline::Text(t)] => t.clone(),
+                            _ => String::new(),
+                        };
+                        Some((label, dest))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            links("See HTTP://example.test now"),
+            vec![(
+                "HTTP://example.test".to_string(),
+                "HTTP://example.test".to_string()
+            )]
+        );
+        assert_eq!(
+            links("See HTTPS://Example.COM/x now"),
+            vec![(
+                "HTTPS://Example.COM/x".to_string(),
+                "HTTPS://Example.COM/x".to_string()
+            )]
+        );
+        assert_eq!(
+            links("See WWW.example.test now"),
+            vec![(
+                "WWW.example.test".to_string(),
+                "http://WWW.example.test".to_string()
+            )]
+        );
+        assert!(
+            super::inline_text_needs_full_parse("See HTTP://example.test"),
+            "uppercase scheme must not take the plain-text inline fast path"
+        );
+        assert!(super::inline_text_needs_full_parse("See WWW.example.test"));
     }
 }
 
@@ -6398,6 +6467,77 @@ mod commonmark_blank_line_tests {
         assert!(
             !has_link,
             "NBSP-prefixed definition must not define [foo]: {doc:?}"
+        );
+    }
+
+    #[test]
+    fn indented_code_does_not_interrupt_a_paragraph() {
+        // CommonMark: hanging indent is lazy continuation, not a new code block.
+        let doc = crate::parse_markdown("Foo\n    bar\n");
+        assert_eq!(doc.blocks.len(), 1, "must stay one paragraph: {doc:?}");
+        let Block::Paragraph(inlines) = &doc.blocks[0] else {
+            panic!("expected paragraph: {doc:?}");
+        };
+        let text: String = inlines
+            .iter()
+            .map(|inl| match inl {
+                Inline::Text(t) => t.as_str(),
+                Inline::SoftBreak | Inline::HardBreak => " ",
+                _ => "",
+            })
+            .collect();
+        assert!(
+            text.contains("Foo") && text.contains("bar"),
+            "both lines must remain paragraph text: {text:?}"
+        );
+
+        let code = crate::parse_markdown("    foo\nbar\n");
+        assert!(
+            matches!(code.blocks.first(), Some(Block::CodeBlock { .. })),
+            "indented code at a block boundary is still a code block: {code:?}"
+        );
+        assert!(
+            matches!(code.blocks.get(1), Some(Block::Paragraph(_))),
+            "the unindented line after a boundary code block is a paragraph: {code:?}"
+        );
+    }
+
+    #[test]
+    fn empty_list_item_does_not_interrupt_a_paragraph() {
+        // `Foo` then `-` is a setext heading, so use `*` / `1.` for empty items.
+        let doc = crate::parse_markdown("Foo\n*\n\nbar\n");
+        let lists = doc
+            .blocks
+            .iter()
+            .filter(|block| matches!(block, Block::List(_)))
+            .count();
+        assert_eq!(lists, 0, "an empty bullet must not interrupt: {doc:?}");
+        assert!(
+            matches!(doc.blocks.first(), Some(Block::Paragraph(_))),
+            "Foo/* stay a paragraph: {doc:?}"
+        );
+
+        let ordered = crate::parse_markdown("Foo\n1.\n\nbar\n");
+        assert_eq!(
+            ordered
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, Block::List(_)))
+                .count(),
+            0,
+            "an empty ordered item must not interrupt: {ordered:?}"
+        );
+
+        let interrupted = crate::parse_markdown("Foo\n* bar\n");
+        assert!(
+            matches!(interrupted.blocks.get(1), Some(Block::List(_))),
+            "a bullet with content still interrupts: {interrupted:?}"
+        );
+
+        let empty_at_boundary = crate::parse_markdown("*\n\nbar\n");
+        assert!(
+            matches!(empty_at_boundary.blocks.first(), Some(Block::List(_))),
+            "an empty bullet at a block boundary is still a list: {empty_at_boundary:?}"
         );
     }
 }

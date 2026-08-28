@@ -11,11 +11,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use franken_markdown::{
-    adversarial, generate, parse_markdown, parse_markdown_spanned, render_html_document,
-    render_pdf_document, GenOptions, HtmlOptions, PdfOptions, SourceSpan, ADVERSARIES,
+    ADVERSARIES, GenOptions, HtmlOptions, PdfOptions, SourceSpan, adversarial, generate,
+    parse_markdown, parse_markdown_spanned, render_html_document, render_pdf_document,
 };
 
 const PARSE_N: u64 = 10_000;
@@ -293,11 +293,7 @@ fn utf8_window(s: &str, mid: usize, before: usize, after: usize) -> &str {
     while hi > 0 && !s.is_char_boundary(hi) {
         hi -= 1;
     }
-    if lo > hi {
-        ""
-    } else {
-        &s[lo..hi]
-    }
+    if lo > hi { "" } else { &s[lo..hi] }
 }
 
 fn first_text_diff(a: &str, b: &str) -> String {

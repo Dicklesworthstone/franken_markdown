@@ -74,7 +74,9 @@ pub use compress::zlib_decompress;
 pub use error::{RenderError, Result};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
-pub use pdf::{PdfProfile, PdfStageSummary, RenderWarning, render_warnings};
+pub use pdf::{
+    PdfEmitOptions, PdfPageEmission, PdfProfile, PdfStageSummary, RenderWarning, render_warnings,
+};
 pub use pdfa::{PdfAMode, PdfASettings};
 pub use scanner::{
     ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
@@ -568,9 +570,35 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 /// otherwise propagates renderer errors. The HTML and PDF renderers share this
 /// one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
+    render_pdf_document_emitted(doc, opts, PdfEmitOptions::default())
+}
+
+/// Render a document to PDF with an explicit page-emission mode.
+///
+/// [`PdfPageEmission::Chunked`] is the production writer: it paginates, draws,
+/// and compresses one page at a time. [`PdfPageEmission::Monolithic`] holds
+/// every placed page until the object write and exists so tests can prove the
+/// two paths emit identical bytes.
+///
+/// # Errors
+/// See [`render_pdf_document`]. [`PdfEmitOptions::max_retained_bytes`] also
+/// returns [`RenderError::InvalidInput`] with a `pdf_heap_ceiling:` prefix.
+pub fn render_pdf_document_emitted(
+    doc: &Document,
+    opts: &PdfOptions,
+    emit: PdfEmitOptions,
+) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
     let doc = transform_footnotes_for_pdf(doc);
-    pdf::render(&doc, opts, PdfASettings::OFF)
+    pdf::render_with_emit(&doc, opts, PdfASettings::OFF, emit)
+}
+
+/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_emitted`].
+///
+/// # Errors
+/// See [`render_pdf_document_emitted`].
+pub fn render_pdf_emitted(src: &str, opts: &PdfOptions, emit: PdfEmitOptions) -> Result<Vec<u8>> {
+    render_pdf_document_emitted(&parse_markdown(src), opts, emit)
 }
 
 /// Render a document to PDF with PDF/A-2b identification (XMP + sRGB

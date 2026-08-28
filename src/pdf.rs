@@ -1954,7 +1954,26 @@ impl ParagraphPolicy {
 /// Infallible in practice (the bundled fonts always parse); returns [`Result`]
 /// to leave room for future validation without a signature change.
 pub fn render(doc: &Document, opts: &PdfOptions, pdf_a: crate::PdfASettings) -> Result<Vec<u8>> {
-    render_inner(doc, opts, pdf_a, false).map(|profile| profile.bytes)
+    render_with_emit(doc, opts, pdf_a, PdfEmitOptions::default())
+}
+
+/// Render with an explicit page-emission mode (chunked vs monolithic).
+///
+/// Production [`render`] uses [`PdfPageEmission::Chunked`]. The monolithic path
+/// exists so tests can prove chunked bytes equal the previous all-at-once writer.
+///
+/// # Errors
+/// See [`render`]. [`PdfEmitOptions::max_retained_bytes`] also returns
+/// [`RenderError::InvalidInput`] with a `pdf_heap_ceiling:` prefix when the
+/// writer-owned retained set (subset fonts, images, compressed page streams,
+/// annotations, structure marks) exceeds the ceiling.
+pub fn render_with_emit(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<Vec<u8>> {
+    render_inner(doc, opts, pdf_a, false, emit).map(|profile| profile.bytes)
 }
 
 /// Render a document to PDF bytes while collecting stage-level attribution.
@@ -1966,7 +1985,13 @@ pub fn render(doc: &Document, opts: &PdfOptions, pdf_a: crate::PdfASettings) -> 
 /// # Errors
 /// See [`render`].
 pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
-    render_inner(doc, opts, crate::PdfASettings::OFF, true)
+    render_inner(
+        doc,
+        opts,
+        crate::PdfASettings::OFF,
+        true,
+        PdfEmitOptions::default(),
+    )
 }
 
 /// A non-fatal diagnostic about a PDF render: content that was *degraded* rather
@@ -2236,6 +2261,7 @@ fn render_inner(
     opts: &PdfOptions,
     pdf_a: crate::PdfASettings,
     profiled: bool,
+    emit: PdfEmitOptions,
 ) -> Result<PdfProfile> {
     let mut profiler = if profiled {
         PdfProfiler::enabled()
@@ -2259,7 +2285,7 @@ fn render_inner(
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let bytes = serialize(&lines, opts, &faces, page, pdf_a, &mut profiler)?;
+    let bytes = serialize(&lines, opts, &faces, page, pdf_a, emit, &mut profiler)?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -2271,6 +2297,70 @@ fn render_inner(
         bytes,
         stages: profiler.finish(),
     })
+}
+
+/// How the PDF writer turns laid-out lines into page objects.
+///
+/// Chunked emission paginates, draws, and compresses one page at a time so
+/// placed lines and uncompressed content streams are not all retained. Font
+/// subsetting still runs once over the whole document (a documented memory
+/// tradeoff: the global glyph set is not known without a pre-pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PdfPageEmission {
+    /// Paginate / generate / compress one page at a time, then write objects.
+    #[default]
+    Chunked,
+    /// Hold every placed page and uncompressed stream until the object write.
+    /// Used as the parity baseline for [`PdfPageEmission::Chunked`].
+    Monolithic,
+}
+
+/// Writer options that are not part of [`PdfOptions`] (so complete
+/// `PdfOptions { ... }` literals in CLI/WASM/tests stay compiling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfEmitOptions {
+    /// Page emission strategy. Default is chunked.
+    pub emission: PdfPageEmission,
+    /// Optional ceiling on writer-owned retained bytes (subset fonts, images,
+    /// compressed page streams, annotations, structure marks). `None` is
+    /// unlimited. Exceeding it is [`RenderError::InvalidInput`] with a
+    /// `pdf_heap_ceiling:` prefix.
+    pub max_retained_bytes: Option<usize>,
+    /// When true, emit one stderr line per major serialize phase. Stdout stays
+    /// the PDF (or empty, for the CLI `--json` contract).
+    pub verbose: bool,
+}
+
+impl Default for PdfEmitOptions {
+    fn default() -> Self {
+        Self {
+            emission: PdfPageEmission::Chunked,
+            max_retained_bytes: None,
+            verbose: false,
+        }
+    }
+}
+
+impl PdfEmitOptions {
+    /// Monolithic writer used only as a byte-parity baseline.
+    #[must_use]
+    pub const fn monolithic() -> Self {
+        Self {
+            emission: PdfPageEmission::Monolithic,
+            max_retained_bytes: None,
+            verbose: false,
+        }
+    }
+
+    /// Chunked writer with a retained-byte ceiling.
+    #[must_use]
+    pub const fn chunked_with_ceiling(max_retained_bytes: usize) -> Self {
+        Self {
+            emission: PdfPageEmission::Chunked,
+            max_retained_bytes: Some(max_retained_bytes),
+            verbose: false,
+        }
+    }
 }
 
 /// PDF bytes plus the profiling ledger collected by [`render_profiled`].
@@ -18720,6 +18810,7 @@ fn serialize(
     faces: &Faces,
     page: PageGeom,
     pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
 ) -> Result<Vec<u8>> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
@@ -18944,15 +19035,15 @@ fn serialize(
         None,
     );
 
-    // PASS 1 — build pages from a vertical list of lines. Backgrounds need each
-    // panel's full vertical extent, which is only known once all its lines are
-    // placed on pages.
-    let pages_placed = profiler.measure(
-        "pagination",
-        lines.len(),
-        "place laid-out lines onto PDF pages with simple keep/widow rules",
-        || paginate_lines(lines, page),
-        |_| 0,
+    // PASS 1+2 — paginate and emit page content. Chunked emission walks one
+    // page at a time (drop placed lines + uncompressed streams). Monolithic
+    // holds every placed page until all streams are generated, then compresses
+    // as a batch. Font subsetting above is still a whole-document pre-pass.
+    pdf_emit_phase(
+        emit.verbose,
+        "font_subset",
+        subsets.len(),
+        &format!("faces={}", subsets.len()),
     );
     let heading_meta = profiler.measure(
         "heading_metadata",
@@ -18979,412 +19070,32 @@ fn serialize(
         .map(|(idx, image)| (image.key.as_str(), idx))
         .collect();
 
-    // PASS 2 — per page: backgrounds (code panels + inline-code chips) FIRST,
-    // then text + rules, then blockquote gutter bars. Link annotations and
-    // outline destinations are collected from the same placed geometry.
-    let stream_generation_started = profiler.checkpoint();
-    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len());
-    let mut page_buffer_reserved_bytes = 0usize;
-    for (page_idx, placed) in pages_placed.iter().enumerate() {
-        let capacity = estimate_page_content_capacity(placed);
-        let bg_capacity = capacity.background_bytes;
-        let body_capacity = capacity.body_bytes;
-        let annot_capacity = capacity.link_annotations;
-        let mark_capacity = capacity.marks;
-        page_buffer_reserved_bytes = page_buffer_reserved_bytes
-            .saturating_add(bg_capacity)
-            .saturating_add(body_capacity)
-            .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
-            .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
-        let mut bg = String::with_capacity(bg_capacity);
-        let mut shadings = Vec::new();
-        let mut alpha_states = BTreeSet::new();
-        let mut page_resources = SvgPageResources {
-            shadings: &mut shadings,
-            alpha_states: &mut alpha_states,
-        };
-        let mut annots = Vec::with_capacity(annot_capacity);
-        let mut marks = Vec::with_capacity(mark_capacity);
-        let mut next_mcid = 0usize;
-
-        // (a) Blockquote backgrounds: subtle page-local panels behind quoted
-        // content, using the same extents as the gutter bars.
-        let mut quote_acc = if capacity.quote_bars == 0 {
-            BTreeMap::new()
-        } else {
-            quote_extents(placed)
-        };
-        for (bar_x, top_y, bot_y) in quote_acc.values() {
-            append_page_background_rounded_rect_fill(
-                &mut bg,
-                bar_x - QUOTE_BG_PAD_X,
-                bot_y - QUOTE_BG_PAD_V,
-                page.right_x(),
-                top_y + QUOTE_BG_PAD_V,
-                3.0,
-                palette.quote_bg,
-            );
-        }
-
-        // (a2) Table zebra stripes: one subtle full-measure tint per shaded body
-        // line. Drawn per placed line so it survives page breaks deterministically;
-        // bands tile within a wrapped row (band top of a line meets the band bottom
-        // of the line above it). `rule_x` carries the stripe's left edge.
-        for p in placed {
-            if !p.line.shade {
-                continue;
-            }
-            let size = p.line.size;
-            let top_y = p.y + size * 0.92;
-            let bot_y = p.y - size * 0.40;
-            append_page_background_rounded_rect_fill(
-                &mut bg,
-                p.line.rule_x,
-                bot_y,
-                page.right_x(),
-                top_y,
-                0.0,
-                palette.table_stripe,
-            );
-        }
-
-        // (b) Code panels: maximal runs of equal nonzero `bg` id within the page.
-        let mut i = 0;
-        while i < placed.len() {
-            let Some(first) = placed.get(i) else { break };
-            let gid = first.line.bg;
-            if gid == 0 {
-                i += 1;
-                continue;
-            }
-            let mut j = i;
-            while placed.get(j).is_some_and(|p| p.line.bg == gid) {
-                j += 1;
-            }
-            if let (Some(head), Some(tail)) = (placed.get(i), placed.get(j.saturating_sub(1))) {
-                let size = head.line.size;
-                let x_text = head.line.segs.first().map_or(page.left, |s| s.x);
-                let x0 = x_text - CODE_PAD_X;
-                let x1 = page.right_x();
-                let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
-                let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
-                append_page_background_rounded_rect_fill(
-                    &mut bg,
-                    x0,
-                    bot_y,
-                    x1,
-                    top_y,
-                    PANEL_RADIUS,
-                    palette.code_panel_bg,
-                );
-            }
-            i = j.max(i + 1);
-        }
-
-        // (c) Inline-code chips: F_MONO segs on non-panel, non-rule lines.
-        if capacity.has_mono_chips() {
-            for p in placed {
-                if p.line.bg != 0 || p.line.rule {
-                    continue;
-                }
-                for seg in &p.line.segs {
-                    if seg.slot != F_MONO || seg.text.trim().is_empty() {
-                        continue;
-                    }
-                    let cx0 = seg.x - CHIP_PAD_X;
-                    let cx1 = seg.x + seg.width + CHIP_PAD_X;
-                    let cy0 = p.y - p.line.size * 0.26;
-                    let cy1 = p.y + p.line.size * 0.74;
-                    append_page_background_rounded_rect_fill(
-                        &mut bg,
-                        cx0,
-                        cy0,
-                        cx1,
-                        cy1,
-                        CHIP_RADIUS,
-                        palette.code_chip_bg,
-                    );
-                }
-            }
-        }
-
-        // (d) Text + rules. Prime the nonstroking color to the theme body color
-        // so the first run (which equals `current_fill` and would otherwise skip
-        // emitting `rg`) renders in the theme `fg`, not PDF-default black.
-        let mut body = finish_page_content_stream(bg, body_capacity);
-        let mut current_fill = Fill::Black;
-        append_rgb_fill_operator(&mut body, palette.fg);
-        // Per-page logical-row tracking for table cells: a new table fragment
-        // (or a new logical row within it) is detected from the table flow group
-        // and the per-row wrap index resetting to 0. The header is row 0.
-        // `prev_table_kind` additionally catches an orphan body-row wrap line that
-        // begins a continuation page after the repeated header: its wrap index is
-        // != 0, but the header→body kind transition still starts a fresh row.
-        let mut tbl_group: Option<u32> = None;
-        let mut tbl_row: u32 = 0;
-        let mut prev_table_kind: Option<FlowKind> = None;
-        for p in placed {
-            let line = p.line;
-            let y = p.y;
-            if line.flow.kind == FlowKind::Heading
-                && line.flow.group != 0
-                && scratch.seen_heading_groups.insert(line.flow.group)
-                && let Some(meta) = heading_meta.get(&line.flow.group)
-            {
-                scratch.outlines.push(OutlineEntry {
-                    id: meta.id.clone(),
-                    title: meta.title.clone(),
-                    page_index: page_idx,
-                    y: (y + line.size * 0.9).min(page.top_y()),
-                });
-            }
-            if line.rule {
-                // Rules (heading hairlines, thematic breaks, table booktabs lines)
-                // are decoration: wrap them as an /Artifact so they never enter the
-                // tagged reading order.
-                let x2 = page.right_x();
-                let (rr, rg, rb) = if line.flow.kind == FlowKind::Rule {
-                    palette.hr
-                } else {
-                    palette.rule
-                };
-                append_artifact_rule_stroke(
-                    &mut body,
-                    (rr, rg, rb),
-                    0.7,
-                    line.rule_x,
-                    y + line.size * 0.5,
-                    x2,
-                );
-            } else if !line.table_cols.is_empty() {
-                // Table content line: emit one marked-content cell per seg so the
-                // structure tree can carry true `/TH`/`/TD` semantics. Track the
-                // logical row for cell grouping.
-                match tbl_group {
-                    Some(g) if g == line.flow.group => {
-                        let into_body = line.flow.kind == FlowKind::TableRow
-                            && prev_table_kind != Some(FlowKind::TableRow);
-                        if line.flow.index == 0 || into_body {
-                            tbl_row += 1;
-                        }
-                    }
-                    _ => {
-                        tbl_group = Some(line.flow.group);
-                        tbl_row = 0;
-                    }
-                }
-                prev_table_kind = Some(line.flow.kind);
-                let header = line.flow.kind == FlowKind::TableHeader;
-                let cell_tag = if header { "TH" } else { "TD" };
-                let prefix = container_prefix(line);
-                for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
-                    if seg.text.is_empty() {
-                        continue;
-                    }
-                    let mut path = clone_prefix_with_extra(&prefix, 3);
-                    path.push(SElem {
-                        key: SKey::Table(line.flow.group),
-                        tag: "Table",
-                    });
-                    path.push(SElem {
-                        key: SKey::TableRow(line.flow.group, tbl_row),
-                        tag: "TR",
-                    });
-                    path.push(SElem {
-                        key: SKey::TableCell(line.flow.group, tbl_row, col),
-                        tag: cell_tag,
-                    });
-                    append_marked_content_begin(&mut body, cell_tag, next_mcid);
-                    draw_seg(
-                        &mut body,
-                        &mut annots,
-                        &mut current_fill,
-                        next_mcid,
-                        seg,
-                        line.size,
-                        y,
-                        &subsets,
-                        &subset_lookup,
-                        faces,
-                        &shaped_cache,
-                        &palette,
-                    );
-                    body.push_str("EMC\n");
-                    marks.push(StructMark {
-                        mcid: next_mcid,
-                        path,
-                        alt: None,
-                        bbox: None,
-                    });
-                    next_mcid += 1;
-                }
-            } else {
-                let first_visible_seg = first_visible_segment_index(line);
-                let marked = line.image.is_some() || first_visible_seg.is_some();
-                let owner = next_mcid;
-                if marked {
-                    let leaf = leaf_elem(line);
-                    append_marked_content_begin(&mut body, leaf.tag, next_mcid);
-                    let mut path = container_prefix_with_extra(line, 1);
-                    path.push(leaf);
-                    let (alt, bbox) = if let Some(image) = &line.image {
-                        let x0 = line.rule_x;
-                        let y1 = y + image.height_pt;
-                        (
-                            Some(pdf_image_alt_text(image)),
-                            Some([x0, y, x0 + image.width_pt, y1]),
-                        )
-                    } else {
-                        (None, None)
-                    };
-                    marks.push(StructMark {
-                        mcid: next_mcid,
-                        path,
-                        alt,
-                        bbox,
-                    });
-                    next_mcid += 1;
-                }
-                if let Some(image) = &line.image {
-                    if image.image.vector.is_some() {
-                        draw_svg_image(
-                            &mut body,
-                            &mut annots,
-                            image,
-                            line.rule_x,
-                            y,
-                            &image_index,
-                            &mut page_resources,
-                            &subsets,
-                            &subset_lookup,
-                            faces,
-                            &shaped_cache,
-                        );
-                    } else if let Some(idx) = image_index.get(image.image.key.as_str()) {
-                        append_image_xobject_do(
-                            &mut body,
-                            *idx,
-                            image.width_pt,
-                            image.height_pt,
-                            line.rule_x,
-                            y,
-                        );
-                    }
-                }
-                if let Some(seg_start) = first_visible_seg {
-                    for seg in &line.segs[seg_start..] {
-                        draw_seg(
-                            &mut body,
-                            &mut annots,
-                            &mut current_fill,
-                            owner,
-                            seg,
-                            line.size,
-                            y,
-                            &subsets,
-                            &subset_lookup,
-                            faces,
-                            &shaped_cache,
-                            &palette,
-                        );
-                    }
-                }
-                if marked {
-                    body.push_str("EMC\n");
-                }
-            }
-        }
-
-        // (e) Blockquote gutter bars: accumulate each quote's vertical extent on
-        // this page (keyed by quote id), then stroke one segment per quote. The
-        // bars are decorative, so they are wrapped as an /Artifact.
-        if !quote_acc.is_empty() {
-            body.push_str("/Artifact BMC\n");
-            flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
-            body.push_str("EMC\n");
-        }
-
-        // (f) Running page numbers (opt-in): stamp centered footer in the bottom margin.
-        if opts.page_numbers {
-            let footer_text = format!("{}", page_idx + 1);
-            let size = 9.0;
-            let width = faces.shaped_width_points(F_BODY, &footer_text, size);
-            let x = page.left + (page.content_w - width) / 2.0;
-            let y = (page.bottom / 2.0).max(18.0);
-            let footer_seg = Seg {
-                x,
-                slot: F_BODY,
-                text: footer_text,
-                link: None,
-                fill: Fill::Muted,
-                strike: false,
-                task: None,
-                width,
-            };
-            append_marked_content_begin(&mut body, "Artifact", next_mcid);
-            draw_seg(
-                &mut body,
-                &mut annots,
-                &mut current_fill,
-                next_mcid,
-                &footer_seg,
-                size,
-                y,
-                &subsets,
-                &subset_lookup,
-                faces,
-                &shaped_cache,
-                &palette,
-            );
-            body.push_str("EMC\n");
-        }
-
-        // Backgrounds, panels, chips, and zebra stripes are purely decorative;
-        // wrap the whole prelude as one /Artifact so it stays out of the tagged
-        // reading order. (Per-rule and per-quote-bar artifacts are wrapped at
-        // their draw sites above and below.)
-        scratch.pages.push(PageContent {
-            stream: body,
-            shadings,
-            alpha_states,
-            annots,
-            marks,
-        });
-    }
-    profiler.record_since(
-        "page_content_buffer_preallocation",
-        scratch.pages.len(),
-        page_buffer_reserved_bytes,
-        "pre-size per-page content, annotation, and structure-mark buffers",
-        None,
-    );
-    if scratch.pages.is_empty() {
-        scratch.pages.push(PageContent {
-            stream: String::new(),
-            shadings: Vec::new(),
-            alpha_states: BTreeSet::new(),
-            annots: Vec::new(),
-            marks: Vec::new(),
-        });
-    }
-    let page_stream_bytes = scratch.pages.iter().map(|page| page.stream.len()).sum();
-    profiler.record_since(
-        "page_content_stream_generation",
-        scratch.pages.len(),
-        page_stream_bytes,
-        "generate page drawing operators, annotations, outlines, and structure marks",
-        stream_generation_started,
-    );
+    let serialized = serialize_pages(
+        lines,
+        opts,
+        faces,
+        page,
+        &palette,
+        &subsets,
+        &subset_lookup,
+        &shaped_cache,
+        &heading_meta,
+        &image_index,
+        &images,
+        emit,
+        profiler,
+    )?;
 
     build_pdf(
-        &scratch.pages,
-        &scratch.outlines,
+        &serialized.pages,
+        &serialized.outlines,
         &subsets,
         &images,
         opts,
         page,
         pdf_a,
         profiler,
+        serialized.precompressed,
     )
 }
 
@@ -19411,6 +19122,713 @@ struct PageContent {
     annots: Vec<LinkAnnotation>,
     marks: Vec<StructMark>,
 }
+
+struct OwnedPdfStream {
+    bytes: Vec<u8>,
+    decoded_len: usize,
+    flate_decode: bool,
+}
+
+struct SerializedPages {
+    pages: Vec<PageContent>,
+    outlines: Vec<OutlineEntry>,
+    precompressed: Option<Vec<OwnedPdfStream>>,
+}
+
+fn pdf_emit_phase(verbose: bool, phase: &str, items: usize, extra: &str) {
+    if verbose {
+        eprintln!("pdf: phase={phase} items={items} {extra}");
+    }
+}
+
+fn own_page_stream(stream: PdfStream<'_>) -> OwnedPdfStream {
+    OwnedPdfStream {
+        bytes: stream.bytes.into_owned(),
+        decoded_len: stream.decoded_len,
+        flate_decode: stream.flate_decode,
+    }
+}
+
+fn empty_page_content() -> PageContent {
+    PageContent {
+        stream: String::new(),
+        shadings: Vec::new(),
+        alpha_states: BTreeSet::new(),
+        annots: Vec::new(),
+        marks: Vec::new(),
+    }
+}
+
+fn retained_pdf_bytes(
+    pages: &[PageContent],
+    compressed: &[OwnedPdfStream],
+    subsets: &[EmbeddedFace],
+    images: &[PdfImageData],
+) -> usize {
+    let mut n = 0usize;
+    for page in pages {
+        n = n.saturating_add(page.stream.len());
+        n = n.saturating_add(
+            page.annots
+                .len()
+                .saturating_mul(std::mem::size_of::<LinkAnnotation>()),
+        );
+        n = n.saturating_add(
+            page.marks
+                .len()
+                .saturating_mul(std::mem::size_of::<StructMark>()),
+        );
+        n = n.saturating_add(page.shadings.len().saturating_mul(64));
+    }
+    for stream in compressed {
+        n = n.saturating_add(stream.bytes.len());
+    }
+    for face in subsets {
+        n = n.saturating_add(face.bytes.len());
+    }
+    for image in images {
+        n = n.saturating_add(image.data.len());
+        n = n.saturating_add(image.smask.as_ref().map_or(0, Vec::len));
+    }
+    n
+}
+
+fn check_retained_ceiling(
+    max: Option<usize>,
+    pages: &[PageContent],
+    compressed: &[OwnedPdfStream],
+    subsets: &[EmbeddedFace],
+    images: &[PdfImageData],
+) -> Result<()> {
+    let Some(max) = max else {
+        return Ok(());
+    };
+    let n = retained_pdf_bytes(pages, compressed, subsets, images);
+    if n > max {
+        return Err(RenderError::InvalidInput(format!(
+            "pdf_heap_ceiling: retained {n} bytes exceeds {max}"
+        )));
+    }
+    Ok(())
+}
+
+fn next_placed_page<'a>(
+    lines: &'a [Line],
+    start: &mut usize,
+    page: PageGeom,
+    emitted_any: &mut bool,
+) -> Option<Vec<Placed<'a>>> {
+    if lines.is_empty() {
+        if *emitted_any {
+            return None;
+        }
+        *emitted_any = true;
+        return Some(Vec::new());
+    }
+    if *start >= lines.len() {
+        return None;
+    }
+    let (end, shrink_from) = choose_page_break_with_void_control(lines, *start, page);
+    let placed = place_lines_shrunk(lines, *start, end, page, shrink_from);
+    *start = end;
+    *emitted_any = true;
+    Some(placed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serialize_pages(
+    lines: &[Line],
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+    palette: &Palette,
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    shaped_cache: &ShapedRunCache,
+    heading_meta: &BTreeMap<u32, HeadingMeta>,
+    image_index: &BTreeMap<&str, usize>,
+    images: &[PdfImageData],
+    emit: PdfEmitOptions,
+    profiler: &mut PdfProfiler,
+) -> Result<SerializedPages> {
+    match emit.emission {
+        PdfPageEmission::Monolithic => serialize_pages_monolithic(
+            lines,
+            opts,
+            faces,
+            page,
+            palette,
+            subsets,
+            subset_lookup,
+            shaped_cache,
+            heading_meta,
+            image_index,
+            images,
+            emit,
+            profiler,
+        ),
+        PdfPageEmission::Chunked => serialize_pages_chunked(
+            lines,
+            opts,
+            faces,
+            page,
+            palette,
+            subsets,
+            subset_lookup,
+            shaped_cache,
+            heading_meta,
+            image_index,
+            images,
+            emit,
+            profiler,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serialize_pages_monolithic(
+    lines: &[Line],
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+    palette: &Palette,
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    shaped_cache: &ShapedRunCache,
+    heading_meta: &BTreeMap<u32, HeadingMeta>,
+    image_index: &BTreeMap<&str, usize>,
+    images: &[PdfImageData],
+    emit: PdfEmitOptions,
+    profiler: &mut PdfProfiler,
+) -> Result<SerializedPages> {
+    let pages_placed = profiler.measure(
+        "pagination",
+        lines.len(),
+        "place laid-out lines onto PDF pages with simple keep/widow rules",
+        || paginate_lines(lines, page),
+        |_| 0,
+    );
+    pdf_emit_phase(
+        emit.verbose,
+        "pagination",
+        pages_placed.len(),
+        "mode=monolithic",
+    );
+    let stream_generation_started = profiler.checkpoint();
+    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len());
+    let mut page_buffer_reserved_bytes = 0usize;
+    for (page_idx, placed) in pages_placed.iter().enumerate() {
+        let (content, reserved) = generate_page_content(
+            placed,
+            page_idx,
+            page,
+            palette,
+            opts,
+            faces,
+            subsets,
+            subset_lookup,
+            shaped_cache,
+            heading_meta,
+            image_index,
+            &mut scratch,
+        );
+        page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
+        scratch.pages.push(content);
+    }
+    finish_serialized_pages(
+        scratch,
+        None,
+        page_buffer_reserved_bytes,
+        stream_generation_started,
+        subsets,
+        images,
+        emit,
+        profiler,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serialize_pages_chunked(
+    lines: &[Line],
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+    palette: &Palette,
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    shaped_cache: &ShapedRunCache,
+    heading_meta: &BTreeMap<u32, HeadingMeta>,
+    image_index: &BTreeMap<&str, usize>,
+    images: &[PdfImageData],
+    emit: PdfEmitOptions,
+    profiler: &mut PdfProfiler,
+) -> Result<SerializedPages> {
+    let stream_generation_started = profiler.checkpoint();
+    let mut scratch = RenderScratch::with_capacity(1, heading_meta.len());
+    let mut compressed = Vec::new();
+    let mut start = 0usize;
+    let mut emitted_any = false;
+    let mut page_idx = 0usize;
+    let mut page_buffer_reserved_bytes = 0usize;
+    let mut zlib_scratch = crate::compress::ZlibCompressScratch::new();
+    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
+        let (mut content, reserved) = generate_page_content(
+            &placed,
+            page_idx,
+            page,
+            palette,
+            opts,
+            faces,
+            subsets,
+            subset_lookup,
+            shaped_cache,
+            heading_meta,
+            image_index,
+            &mut scratch,
+        );
+        page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
+        let stream = page_stream(&content.stream, &mut zlib_scratch);
+        let owned = own_page_stream(stream);
+        content.stream = String::new();
+        scratch.pages.push(content);
+        compressed.push(owned);
+        check_retained_ceiling(
+            emit.max_retained_bytes,
+            &scratch.pages,
+            &compressed,
+            subsets,
+            images,
+        )?;
+        page_idx += 1;
+        pdf_emit_phase(emit.verbose, "page", page_idx, "mode=chunked");
+    }
+    profiler.record_since(
+        "pagination",
+        lines.len(),
+        scratch.pages.len(),
+        "place laid-out lines onto PDF pages one page at a time",
+        None,
+    );
+    finish_serialized_pages(
+        scratch,
+        Some(compressed),
+        page_buffer_reserved_bytes,
+        stream_generation_started,
+        subsets,
+        images,
+        emit,
+        profiler,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_serialized_pages(
+    mut scratch: RenderScratch,
+    precompressed: Option<Vec<OwnedPdfStream>>,
+    page_buffer_reserved_bytes: usize,
+    stream_generation_started: Option<PdfStageStart>,
+    subsets: &[EmbeddedFace],
+    images: &[PdfImageData],
+    emit: PdfEmitOptions,
+    profiler: &mut PdfProfiler,
+) -> Result<SerializedPages> {
+    profiler.record_since(
+        "page_content_buffer_preallocation",
+        scratch.pages.len(),
+        page_buffer_reserved_bytes,
+        "pre-size per-page content, annotation, and structure-mark buffers",
+        None,
+    );
+    if scratch.pages.is_empty() {
+        scratch.pages.push(empty_page_content());
+    }
+    let page_stream_bytes = match &precompressed {
+        Some(streams) => streams.iter().map(|stream| stream.bytes.len()).sum(),
+        None => scratch.pages.iter().map(|page| page.stream.len()).sum(),
+    };
+    profiler.record_since(
+        "page_content_stream_generation",
+        scratch.pages.len(),
+        page_stream_bytes,
+        "generate page drawing operators, annotations, outlines, and structure marks",
+        stream_generation_started,
+    );
+    check_retained_ceiling(
+        emit.max_retained_bytes,
+        &scratch.pages,
+        precompressed.as_deref().unwrap_or(&[]),
+        subsets,
+        images,
+    )?;
+    pdf_emit_phase(
+        emit.verbose,
+        "pages_ready",
+        scratch.pages.len(),
+        if precompressed.is_some() {
+            "compressed=eager"
+        } else {
+            "compressed=batch"
+        },
+    );
+    Ok(SerializedPages {
+        pages: scratch.pages,
+        outlines: scratch.outlines,
+        precompressed,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_page_content(
+    placed: &[Placed<'_>],
+    page_idx: usize,
+    page: PageGeom,
+    palette: &Palette,
+    opts: &PdfOptions,
+    faces: &Faces,
+    subsets: &[EmbeddedFace],
+    subset_lookup: &EmbeddedFaceLookup,
+    shaped_cache: &ShapedRunCache,
+    heading_meta: &BTreeMap<u32, HeadingMeta>,
+    image_index: &BTreeMap<&str, usize>,
+    scratch: &mut RenderScratch,
+) -> (PageContent, usize) {
+    let capacity = estimate_page_content_capacity(placed);
+    let bg_capacity = capacity.background_bytes;
+    let body_capacity = capacity.body_bytes;
+    let annot_capacity = capacity.link_annotations;
+    let mark_capacity = capacity.marks;
+    let reserved = bg_capacity
+        .saturating_add(body_capacity)
+        .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
+        .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
+    let mut bg = String::with_capacity(bg_capacity);
+    let mut shadings = Vec::new();
+    let mut alpha_states = BTreeSet::new();
+    let mut page_resources = SvgPageResources {
+        shadings: &mut shadings,
+        alpha_states: &mut alpha_states,
+    };
+    let mut annots = Vec::with_capacity(annot_capacity);
+    let mut marks = Vec::with_capacity(mark_capacity);
+    let mut next_mcid = 0usize;
+
+    let mut quote_acc = if capacity.quote_bars == 0 {
+        BTreeMap::new()
+    } else {
+        quote_extents(placed)
+    };
+    for (bar_x, top_y, bot_y) in quote_acc.values() {
+        append_page_background_rounded_rect_fill(
+            &mut bg,
+            bar_x - QUOTE_BG_PAD_X,
+            bot_y - QUOTE_BG_PAD_V,
+            page.right_x(),
+            top_y + QUOTE_BG_PAD_V,
+            3.0,
+            palette.quote_bg,
+        );
+    }
+
+    for p in placed {
+        if !p.line.shade {
+            continue;
+        }
+        let size = p.line.size;
+        let top_y = p.y + size * 0.92;
+        let bot_y = p.y - size * 0.40;
+        append_page_background_rounded_rect_fill(
+            &mut bg,
+            p.line.rule_x,
+            bot_y,
+            page.right_x(),
+            top_y,
+            0.0,
+            palette.table_stripe,
+        );
+    }
+
+    let mut i = 0;
+    while i < placed.len() {
+        let Some(first) = placed.get(i) else { break };
+        let gid = first.line.bg;
+        if gid == 0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while placed.get(j).is_some_and(|p| p.line.bg == gid) {
+            j += 1;
+        }
+        if let (Some(head), Some(tail)) = (placed.get(i), placed.get(j.saturating_sub(1))) {
+            let size = head.line.size;
+            let x_text = head.line.segs.first().map_or(page.left, |s| s.x);
+            let x0 = x_text - CODE_PAD_X;
+            let x1 = page.right_x();
+            let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
+            let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
+            append_page_background_rounded_rect_fill(
+                &mut bg,
+                x0,
+                bot_y,
+                x1,
+                top_y,
+                PANEL_RADIUS,
+                palette.code_panel_bg,
+            );
+        }
+        i = j.max(i + 1);
+    }
+
+    if capacity.has_mono_chips() {
+        for p in placed {
+            if p.line.bg != 0 || p.line.rule {
+                continue;
+            }
+            for seg in &p.line.segs {
+                if seg.slot != F_MONO || seg.text.trim().is_empty() {
+                    continue;
+                }
+                let cx0 = seg.x - CHIP_PAD_X;
+                let cx1 = seg.x + seg.width + CHIP_PAD_X;
+                let cy0 = p.y - p.line.size * 0.26;
+                let cy1 = p.y + p.line.size * 0.74;
+                append_page_background_rounded_rect_fill(
+                    &mut bg,
+                    cx0,
+                    cy0,
+                    cx1,
+                    cy1,
+                    CHIP_RADIUS,
+                    palette.code_chip_bg,
+                );
+            }
+        }
+    }
+
+    let mut body = finish_page_content_stream(bg, body_capacity);
+    let mut current_fill = Fill::Black;
+    append_rgb_fill_operator(&mut body, palette.fg);
+    let mut tbl_group: Option<u32> = None;
+    let mut tbl_row: u32 = 0;
+    let mut prev_table_kind: Option<FlowKind> = None;
+    for p in placed {
+        let line = p.line;
+        let y = p.y;
+        if line.flow.kind == FlowKind::Heading
+            && line.flow.group != 0
+            && scratch.seen_heading_groups.insert(line.flow.group)
+            && let Some(meta) = heading_meta.get(&line.flow.group)
+        {
+            scratch.outlines.push(OutlineEntry {
+                id: meta.id.clone(),
+                title: meta.title.clone(),
+                page_index: page_idx,
+                y: (y + line.size * 0.9).min(page.top_y()),
+            });
+        }
+        if line.rule {
+            let x2 = page.right_x();
+            let (rr, rg, rb) = if line.flow.kind == FlowKind::Rule {
+                palette.hr
+            } else {
+                palette.rule
+            };
+            append_artifact_rule_stroke(
+                &mut body,
+                (rr, rg, rb),
+                0.7,
+                line.rule_x,
+                y + line.size * 0.5,
+                x2,
+            );
+        } else if !line.table_cols.is_empty() {
+            match tbl_group {
+                Some(g) if g == line.flow.group => {
+                    let into_body = line.flow.kind == FlowKind::TableRow
+                        && prev_table_kind != Some(FlowKind::TableRow);
+                    if line.flow.index == 0 || into_body {
+                        tbl_row += 1;
+                    }
+                }
+                _ => {
+                    tbl_group = Some(line.flow.group);
+                    tbl_row = 0;
+                }
+            }
+            prev_table_kind = Some(line.flow.kind);
+            let header = line.flow.kind == FlowKind::TableHeader;
+            let cell_tag = if header { "TH" } else { "TD" };
+            let prefix = container_prefix(line);
+            for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
+                if seg.text.is_empty() {
+                    continue;
+                }
+                let mut path = clone_prefix_with_extra(&prefix, 3);
+                path.push(SElem {
+                    key: SKey::Table(line.flow.group),
+                    tag: "Table",
+                });
+                path.push(SElem {
+                    key: SKey::TableRow(line.flow.group, tbl_row),
+                    tag: "TR",
+                });
+                path.push(SElem {
+                    key: SKey::TableCell(line.flow.group, tbl_row, col),
+                    tag: cell_tag,
+                });
+                append_marked_content_begin(&mut body, cell_tag, next_mcid);
+                draw_seg(
+                    &mut body,
+                    &mut annots,
+                    &mut current_fill,
+                    next_mcid,
+                    seg,
+                    line.size,
+                    y,
+                    subsets,
+                    subset_lookup,
+                    faces,
+                    shaped_cache,
+                    palette,
+                );
+                body.push_str("EMC\n");
+                marks.push(StructMark {
+                    mcid: next_mcid,
+                    path,
+                    alt: None,
+                    bbox: None,
+                });
+                next_mcid += 1;
+            }
+        } else {
+            let first_visible_seg = first_visible_segment_index(line);
+            let marked = line.image.is_some() || first_visible_seg.is_some();
+            let owner = next_mcid;
+            if marked {
+                let leaf = leaf_elem(line);
+                append_marked_content_begin(&mut body, leaf.tag, next_mcid);
+                let mut path = container_prefix_with_extra(line, 1);
+                path.push(leaf);
+                let (alt, bbox) = if let Some(image) = &line.image {
+                    let x0 = line.rule_x;
+                    let y1 = y + image.height_pt;
+                    (
+                        Some(pdf_image_alt_text(image)),
+                        Some([x0, y, x0 + image.width_pt, y1]),
+                    )
+                } else {
+                    (None, None)
+                };
+                marks.push(StructMark {
+                    mcid: next_mcid,
+                    path,
+                    alt,
+                    bbox,
+                });
+                next_mcid += 1;
+            }
+            if let Some(image) = &line.image {
+                if image.image.vector.is_some() {
+                    draw_svg_image(
+                        &mut body,
+                        &mut annots,
+                        image,
+                        line.rule_x,
+                        y,
+                        image_index,
+                        &mut page_resources,
+                        subsets,
+                        subset_lookup,
+                        faces,
+                        shaped_cache,
+                    );
+                } else if let Some(idx) = image_index.get(image.image.key.as_str()) {
+                    append_image_xobject_do(
+                        &mut body,
+                        *idx,
+                        image.width_pt,
+                        image.height_pt,
+                        line.rule_x,
+                        y,
+                    );
+                }
+            }
+            if let Some(seg_start) = first_visible_seg {
+                for seg in &line.segs[seg_start..] {
+                    draw_seg(
+                        &mut body,
+                        &mut annots,
+                        &mut current_fill,
+                        owner,
+                        seg,
+                        line.size,
+                        y,
+                        subsets,
+                        subset_lookup,
+                        faces,
+                        shaped_cache,
+                        palette,
+                    );
+                }
+            }
+            if marked {
+                body.push_str("EMC\n");
+            }
+        }
+    }
+
+    if !quote_acc.is_empty() {
+        body.push_str("/Artifact BMC\n");
+        flush_quote_bars(&mut body, &mut quote_acc, palette.quote_bar);
+        body.push_str("EMC\n");
+    }
+
+    if opts.page_numbers {
+        let footer_text = format!("{}", page_idx + 1);
+        let size = 9.0;
+        let width = faces.shaped_width_points(F_BODY, &footer_text, size);
+        let x = page.left + (page.content_w - width) / 2.0;
+        let y = (page.bottom / 2.0).max(18.0);
+        let footer_seg = Seg {
+            x,
+            slot: F_BODY,
+            text: footer_text,
+            link: None,
+            fill: Fill::Muted,
+            strike: false,
+            task: None,
+            width,
+        };
+        append_marked_content_begin(&mut body, "Artifact", next_mcid);
+        draw_seg(
+            &mut body,
+            &mut annots,
+            &mut current_fill,
+            next_mcid,
+            &footer_seg,
+            size,
+            y,
+            subsets,
+            subset_lookup,
+            faces,
+            shaped_cache,
+            palette,
+        );
+        body.push_str("EMC\n");
+    }
+
+    (
+        PageContent {
+            stream: body,
+            shadings,
+            alpha_states,
+            annots,
+            marks,
+        },
+        reserved,
+    )
+}
+
 
 /// Identity of a structure element, used to share a container across the
 /// consecutive marks that belong to it (e.g. every cell of one table row reuses
@@ -24929,16 +25347,11 @@ fn flexed_gap(gap: f32) -> f32 {
 }
 
 fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>> {
-    if lines.is_empty() {
-        return vec![Vec::new()];
-    }
-
     let mut pages = Vec::new();
     let mut start = 0usize;
-    while start < lines.len() {
-        let (end, shrink_from) = choose_page_break_with_void_control(lines, start, page);
-        pages.push(place_lines_shrunk(lines, start, end, page, shrink_from));
-        start = end;
+    let mut emitted_any = false;
+    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
+        pages.push(placed);
     }
     pages
 }
@@ -26368,12 +26781,17 @@ fn append_pdf_parent_tree_object<F>(
     out.extend_from_slice(b"] >>\nendobj\n");
 }
 
-fn append_pdf_stream_dict(out: &mut Vec<u8>, stream: &PdfStream<'_>) {
+fn append_pdf_stream_dict(
+    out: &mut Vec<u8>,
+    byte_len: usize,
+    flate_decode: bool,
+    decoded_len: usize,
+) {
     out.extend_from_slice(b"<< /Length ");
-    append_decimal_usize(out, stream.bytes.len());
-    if stream.flate_decode {
+    append_decimal_usize(out, byte_len);
+    if flate_decode {
         out.extend_from_slice(b" /Filter /FlateDecode /DL ");
-        append_decimal_usize(out, stream.decoded_len);
+        append_decimal_usize(out, decoded_len);
     }
     out.extend_from_slice(b" >>");
 }
@@ -27057,6 +27475,7 @@ fn parse_four_ascii_digits(bytes: &[u8]) -> Option<u16> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_pdf(
     pages: &[PageContent],
     outlines: &[OutlineEntry],
@@ -27066,6 +27485,7 @@ fn build_pdf(
     page_geom: PageGeom,
     pdf_a: crate::PdfASettings,
     profiler: &mut PdfProfiler,
+    precompressed: Option<Vec<OwnedPdfStream>>,
 ) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
     let p = pages.len();
@@ -27209,7 +27629,13 @@ fn build_pdf(
         String::new()
     };
 
-    let page_streams = compress_page_streams(pages, profiler);
+    let page_streams: Vec<OwnedPdfStream> = match precompressed {
+        Some(streams) => streams,
+        None => compress_page_streams(pages, profiler)
+            .into_iter()
+            .map(own_page_stream)
+            .collect(),
+    };
     let page_stream_bytes = page_streams
         .iter()
         .map(|stream| stream.bytes.len())
@@ -27313,7 +27739,12 @@ fn build_pdf(
     for (i, stream) in page_streams.iter().enumerate() {
         offsets[content_obj(i)] = buf.len();
         append_pdf_object_header(&mut buf, content_obj(i));
-        append_pdf_stream_dict(&mut buf, stream);
+        append_pdf_stream_dict(
+            &mut buf,
+            stream.bytes.len(),
+            stream.flate_decode,
+            stream.decoded_len,
+        );
         buf.extend_from_slice(b"\nstream\n");
         buf.extend_from_slice(stream.bytes.as_ref());
         buf.extend_from_slice(b"\nendstream\nendobj\n");
@@ -27863,10 +28294,14 @@ fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
         }
         ci += count;
     }
+    // Pre-size the TJ buffer: each glyph emits 4 hex digits, and a kerned pair
+    // can add '>', a sign, up to 3 digits, and '<' between glyphs, so 10 bytes
+    // per glyph plus the "[<"/">]" brackets covers the worst case.
+    let pdf_tj = String::with_capacity(shaped.len().saturating_mul(10).saturating_add(8));
     ShapedRun {
         glyphs: shaped,
         ligatures: lig_uni,
-        pdf_tj: String::new(),
+        pdf_tj,
     }
 }
 
@@ -31190,9 +31625,14 @@ mod pdf_writer_tests {
             flate_decode: true,
         };
         let mut out = Vec::new();
-        append_pdf_stream_dict(&mut out, &raw);
+        append_pdf_stream_dict(&mut out, raw.bytes.len(), raw.flate_decode, raw.decoded_len);
         out.push(b'\n');
-        append_pdf_stream_dict(&mut out, &compressed);
+        append_pdf_stream_dict(
+            &mut out,
+            compressed.bytes.len(),
+            compressed.flate_decode,
+            compressed.decoded_len,
+        );
 
         assert_eq!(
             out,

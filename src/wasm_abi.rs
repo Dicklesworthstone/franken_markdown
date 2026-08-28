@@ -386,7 +386,13 @@ fn pdf_options_configured(
 /// Reject non-finite host floats up front so the deterministic clamps in
 /// [`crate::theme::TypeScale::resolve`] never see NaN/inf.
 fn finite_f32(value: Option<f64>) -> Option<f32> {
-    value.filter(|v| v.is_finite()).map(|v| v as f32)
+    value.and_then(|v| {
+        if !v.is_finite() {
+            return None;
+        }
+        let f = v as f32;
+        f.is_finite().then_some(f)
+    })
 }
 
 fn options_with_font_and_dark_mode(

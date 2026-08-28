@@ -233,6 +233,36 @@ fn render_pdf_configured_multi_embeds_every_supplied_image() {
 }
 
 #[test]
+fn render_pdf_configured_multi_drops_non_finite_and_f32_overflow_sizes() {
+    // f64-finite but f32-overflow (1e39) and NaN must not reach TypeScale.
+    let out = render_pdf_configured_multi(
+        "# Size\n\nbody",
+        None,
+        None,
+        None,
+        None,
+        Some(1_700_000_000.0),
+        false,
+        false,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Some(1e39),
+        Some(f64::NAN),
+        Some(f64::INFINITY),
+        false,
+    )
+    .expect("overflow typography is ignored, not fatal");
+    assert!(out.bytes().starts_with(b"%PDF-"));
+}
+
+#[test]
 fn render_pdf_configured_with_assets_treats_blank_image_slot_as_no_asset() {
     // An empty destination AND empty bytes mean "no image asset": the render
     // must succeed with the markdown image falling back to alt text (no image

@@ -259,6 +259,31 @@ fn wasm_package_gate_rejects_unsafe_run_ids_before_cleanup() -> TestResult {
 }
 
 #[test]
+fn wasm_package_gate_prints_signed_delta_against_the_last_ratchet() -> TestResult {
+    // smif.2: a budget bump without a measured previous size cannot print a
+    // delta. The gate must keep PREVIOUS_* next to BUDGET_* and log both the
+    // signed delta and a per-check PASS/FAIL line.
+    let script = fs::read_to_string("scripts/check-wasm-package.sh")?;
+    for needle in [
+        "PREVIOUS_RAW=",
+        "PREVIOUS_GZIP=",
+        "BUDGET_RAW=",
+        "BUDGET_GZIP=",
+        "delta vs last ratchet",
+        "smif.2.size.raw",
+        "smif.2.size.gzip",
+        "check id=",
+    ] {
+        assert!(
+            script.contains(needle),
+            "wasm-package: check id=smif.2.source subject={needle} outcome=FAIL"
+        );
+        eprintln!("wasm-package: check id=smif.2.source subject={needle} outcome=PASS");
+    }
+    Ok(())
+}
+
+#[test]
 fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult {
     for (script, marker) in [
         (

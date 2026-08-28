@@ -55,7 +55,7 @@ double from being introduced without this kind of justification.
 | CommonMark conformance (ratcheted) | Parser/emitter spec match, floor can only rise | `scripts/commonmark-conformance.sh` |
 | Determinism | Byte-identical output across repeated runs | `scripts/check-determinism.sh` |
 | Clean-room policy | Zero-dep core, no banned crates, no `unsafe`, batch isolation | `scripts/check-policy.sh` |
-| WASM core + package | `--no-default-features` + wasm32 build, headless render, native parity | `scripts/check-wasm-core.sh`, `scripts/check-wasm-package.sh` |
+| WASM core + package | `--no-default-features` + wasm32 build, headless render, native parity, size ratchet (raw/gzip/brotli + signed delta vs last measured ratchet) | `scripts/check-wasm-core.sh`, `scripts/check-wasm-package.sh` |
 | CLI output contract | stdout=data / stderr=diagnostics, JSON envelopes, exit codes | `scripts/cli-output-contract.sh`, `tests/cli_contract.rs` |
 | Coverage (ratcheted floor) | Line/region/branch coverage across all feature configs | `scripts/coverage.sh` |
 | Property + metamorphic | Cross-cutting invariants over generated inputs (injection-safety, determinism, PDF structure) | `tests/parser_metamorphic.rs` (via `cargo test`) |

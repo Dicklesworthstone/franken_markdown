@@ -2,7 +2,7 @@
 //! is the single shared entrypoint for both the long-name binary and the short
 //! `fmd` alias.
 
-use std::io::{Error, ErrorKind as IoErrorKind, Read, Write};
+use std::io::{Error, ErrorKind as IoErrorKind, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -339,7 +339,8 @@ pub fn main() -> ExitCode {
         Err(err) => return handle_parse_error(err),
     };
     let json = cli.json;
-    let _no_color = cli.no_color;
+
+    let no_color = cli.no_color;
     let no_config = cli.no_config;
     if cli.robot_triage {
         return print_robot_triage();
@@ -355,7 +356,7 @@ pub fn main() -> ExitCode {
         Some(Command::Config(args)) => run_config(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
-        Some(Command::Verify(args)) => run_verify(args, json),
+        Some(Command::Verify(args)) => run_verify(args, json, no_color),
         None => {
             let mut cmd = Cli::command();
             if cmd.print_long_help().is_err() {
@@ -626,7 +627,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
 /// internal-anchor audit, render warnings, horizontal overflow findings, and
 /// a content digest (beads yo83.1-3). Exit codes: 0 clean, 1 findings, 2/66
 /// usage/input errors, 70 font load failure.
-fn run_verify(args: VerifyArgs, global_json: bool) -> ExitCode {
+fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     let json = global_json || args.json;
     let Some(path_str) = args.input.to_str() else {
         return fail_json(
@@ -653,7 +654,23 @@ fn run_verify(args: VerifyArgs, global_json: bool) -> ExitCode {
             json,
         );
     };
-    emit_stdout(&crate::verify::to_json(&report));
+    if json {
+        // JSON contract: stdout carries the report, nothing else. The schema
+        // is pinned by golden fixtures and must stay caret-free.
+        emit_stdout(&crate::verify::to_json(&report));
+    } else {
+        // Human mode: caret blocks for each finding pointing back into the
+        // source markdown. Color follows the standard env policy, with
+        // --no-color forcing Never so scripted runs never get ANSI.
+        let mode = if no_color {
+            crate::caret::ColorMode::Never
+        } else {
+            crate::caret::ColorMode::from_env()
+        };
+        let style = crate::caret::style_for_stderr(mode, std::io::stderr().is_terminal(), None);
+        let human = crate::verify::to_human(&report, &src, Some(path_str), style);
+        emit_stdout(&human);
+    }
     if report.verdict == "clean" {
         ExitCode::SUCCESS
     } else {

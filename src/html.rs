@@ -981,7 +981,10 @@ fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
                         walk(&item.blocks, state, entries);
                     }
                 }
-                Block::FootnoteDefinition { blocks: inner, .. } => walk(inner, state, entries),
+                // Footnote definitions are skipped in the body walk and rendered
+                // later from a live suffix map. Walking them here would consume
+                // heading ids the body headings never receive.
+                Block::FootnoteDefinition { .. } => {}
                 _ => {}
             }
         }
@@ -1000,10 +1003,12 @@ fn toc_marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
         return None;
     };
     let trimmed = text.trim();
+    // Try `[[…]]` first, then `[…]`. A `?` on `strip_prefix("[[")` would
+    // return None for `[TOC]` and never reach the single-bracket arm.
     let inner = trimmed
-        .strip_prefix("[[")?
-        .strip_suffix("]]")
-        .or_else(|| trimmed.strip_prefix('[')?.strip_suffix(']'))?
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
         .trim_start_matches('_')
         .trim_end_matches('_')
         .to_ascii_lowercase();
@@ -1027,30 +1032,43 @@ fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
     }
     out.push_str("<nav class=\"toc\"><ul>\n");
     let mut prev_level = filtered[0].level;
-    let mut open = 1usize;
+    let mut open_uls = 1usize;
+    let mut open_item = false;
     for entry in &filtered {
-        while entry.level > prev_level && open < 8 {
-            out.push_str("<ul>\n");
-            open += 1;
-            prev_level += 1;
+        if open_item && entry.level <= prev_level {
+            out.push_str("</li>\n");
+            open_item = false;
         }
-        while entry.level < prev_level && open > 1 {
-            out.push_str("</li>\n</ul></li>\n");
-            open -= 1;
+        while open_uls > 1 && prev_level > entry.level {
+            out.push_str("</ul></li>\n");
+            open_uls -= 1;
             prev_level -= 1;
+        }
+        while prev_level < entry.level && open_uls < 8 {
+            if !open_item {
+                out.push_str("<li>\n");
+            }
+            out.push_str("<ul>\n");
+            open_uls += 1;
+            prev_level += 1;
+            open_item = false;
         }
         out.push_str("<li><a href=\"#");
         push_escaped_attr(&entry.id, out);
         out.push_str("\">");
         out.push_str(&escape_text(&entry.text));
-        out.push_str("</a>\n");
+        out.push_str("</a>");
+        open_item = true;
         prev_level = entry.level;
     }
-    while open > 0 {
-        out.push_str("</li>\n</ul>");
-        open -= 1;
+    if open_item {
+        out.push_str("</li>\n");
     }
-    out.push_str("</nav>\n");
+    while open_uls > 1 {
+        out.push_str("</ul></li>\n");
+        open_uls -= 1;
+    }
+    out.push_str("</ul></nav>\n");
 }
 
 /// Validate and split a GitHub alert: a blockquote whose first block is a
@@ -1130,15 +1148,21 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     // The refs are 'a (borrowed from the document), so cloning the pair list
     // is cheap and independent of the later &mut state borrows.
     let defs = state.footnote_defs.clone();
-    let order = state.footnote_order.clone();
     out.push_str("<section class=\"footnotes\">\n<ol>\n");
-    for (idx, id) in order.iter().enumerate() {
+    // Walk by index so a reference discovered while rendering a note body
+    // (GFM: notes can cite other notes) is appended and emitted too. Cloning
+    // `footnote_order` first dropped those nested ids: `href="#fn-2"` with
+    // no matching `<li>`.
+    let mut idx = 0usize;
+    while idx < state.footnote_order.len() {
+        let id = state.footnote_order[idx].clone();
         let number = idx + 1;
-        let Some((_, blocks)) = defs.iter().find(|(def_id, _)| def_id == id) else {
+        idx += 1;
+        let Some((_, blocks)) = defs.iter().find(|(def_id, _)| *def_id == id.as_str()) else {
             continue;
         };
         out.push_str("<li id=\"fn-");
-        push_escaped_attr(id, out);
+        push_escaped_attr(&id, out);
         out.push_str("\">");
         render_blocks(blocks, out, opts, state);
         out.push_str(" <a class=\"footnote-backref\" href=\"#fnref-");
@@ -2232,6 +2256,45 @@ mod tests {
         assert!(html.contains("href=\"#alpha-2\""), "collision suffix id");
         // The heading itself carries the same id the TOC links to.
         assert!(html.contains("id=\"alpha-2\""), "collision id on heading");
+    }
+
+    #[test]
+    fn single_bracket_toc_marker_is_recognized() {
+        let doc = crate::parse_markdown("[TOC]\n\n# Alpha\n");
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("<nav class=\"toc\">"), "nav emitted: {html}");
+        assert!(html.contains("href=\"#alpha\""), "{html}");
+        assert!(
+            !html.contains("<p>[TOC]</p>"),
+            "single-bracket marker must not remain as a paragraph: {html}"
+        );
+    }
+
+    #[test]
+    fn footnote_cited_only_from_another_note_still_gets_a_list_item() {
+        let doc = crate::parse_markdown("See[^1].\n\n[^1]: also[^2]\n[^2]: nested\n");
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("id=\"fn-1\""), "{html}");
+        assert!(html.contains("id=\"fn-2\""), "nested note missing: {html}");
+        assert!(html.contains("nested"), "nested note body dropped: {html}");
+        assert!(html.contains("href=\"#fn-2\""), "{html}");
+    }
+
+    #[test]
+    #[test]
+    fn toc_nav_closes_sibling_items_and_wraps_skipped_levels() {
+        let doc = crate::parse_markdown("[[TOC]]\n\n# A\n\n# B\n\n### C\n");
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("<nav class=\"toc\">"), "{html}");
+        assert!(
+            !html.contains("</a>\n<li>"),
+            "same-level items must close the previous <li>: {html}"
+        );
+        assert!(
+            !html.contains("<ul>\n<ul>"),
+            "a skipped heading level must not nest <ul> in <ul>: {html}"
+        );
+        assert!(html.contains("</li>\n<li>"), "sibling close: {html}");
     }
 
     #[test]

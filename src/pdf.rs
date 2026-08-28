@@ -15270,6 +15270,15 @@ struct TableCellMeasureLine {
     spaces: Vec<f32>,
     min_content: f32,
     max_content: f32,
+    /// Exact replica of the sequential `current` accumulation in
+    /// `table_measure_line_wrap_stats` (same addition order and grouping), so
+    /// the single-row fast path there can reuse it bit-identically.
+    fit_width: f32,
+    /// Largest break-decision value `(current + space) + word` across the
+    /// line's words, computed with the same grouping the wrap-stats loop uses.
+    /// When this is `<= width`, that loop provably emits a single row with no
+    /// split words, letting the fast path skip the per-word simulation.
+    fit_break_max: f32,
 }
 
 fn table_cell_measure(
@@ -15308,14 +15317,33 @@ fn table_cell_measure(
         }
 
         let word_width = text_width_cached(&tok.text, size, tok.slot, faces, width_cache);
-        if !line.words.is_empty() {
+        let space_width = if !line.words.is_empty() {
             let space_width = pending_space.take().unwrap_or(0.0);
             line.spaces.push(space_width);
             line.max_content += space_width;
-        }
+            space_width
+        } else {
+            0.0
+        };
         line.words.push(word_width);
         line.max_content += word_width;
         line.min_content = line.min_content.max(word_width);
+        // Mirror `table_measure_line_wrap_stats`' sequential accumulation and
+        // break-decision arithmetic exactly (same order, same float grouping)
+        // so its single-row fast path can trust these two fields verbatim.
+        let chosen_space = if line.fit_width > 0.0 {
+            space_width
+        } else {
+            0.0
+        };
+        line.fit_break_max = line
+            .fit_break_max
+            .max((line.fit_width + chosen_space) + word_width);
+        line.fit_width = if line.fit_width > 0.0 {
+            line.fit_width + (chosen_space + word_width)
+        } else {
+            line.fit_width + word_width
+        };
     }
 
     if wrap_perf_enabled() {
@@ -15592,6 +15620,22 @@ fn table_measure_line_wrap_stats(line: &TableCellMeasureLine, width: f32) -> Tab
     }
 
     let width = width.max(1.0);
+    // Single-row fast path: `fit_break_max` is the largest break-decision
+    // value `(current + space) + word` the loop below would examine, computed
+    // with identical float grouping during measurement. When it is `<= width`,
+    // no break and no split can trigger (every word width is `<=` its decision
+    // value), so the greedy simulation provably ends with one visual line, no
+    // split penalty, and the trailing ragged penalty on the exact `fit_width`
+    // accumulation. Bit-identical to running the loop, at O(1) instead of
+    // O(words).
+    if line.fit_width > 0.0 && line.fit_break_max <= width {
+        return TableMeasureWrapStats {
+            visual_lines: 1,
+            split_penalty: 0.0,
+            ragged_penalty: table_ragged_line_penalty(line.fit_width, width),
+        };
+    }
+
     let mut visual_lines = 1usize;
     let mut split_penalty = 0.0;
     let mut ragged_penalty = 0.0;

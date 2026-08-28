@@ -19371,6 +19371,12 @@ fn serialize_pages_chunked(
     let mut page_idx = 0usize;
     let mut page_buffer_reserved_bytes = 0usize;
     let mut zlib_scratch = crate::compress::ZlibCompressScratch::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut cumulative_stream_bytes = 0usize;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut pipeline: Option<ChunkedCompressPipeline> = None;
+    #[cfg(target_arch = "wasm32")]
+    let mut pipeline: Option<std::convert::Infallible> = None;
     while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
         let (mut content, reserved) = generate_page_content(
             &placed,
@@ -19387,11 +19393,35 @@ fn serialize_pages_chunked(
             &mut scratch,
         );
         page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
-        let stream = page_stream(&content.stream, &mut zlib_scratch);
-        let owned = own_page_stream(stream);
-        content.stream = String::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            cumulative_stream_bytes += content.stream.len();
+            if pipeline.is_none()
+                && cumulative_stream_bytes >= CHUNKED_COMPRESS_POOL_MIN_BYTES
+            {
+                pipeline = ChunkedCompressPipeline::spawn(chunked_compress_worker_count());
+            }
+        }
+        match pipeline.as_mut() {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(pipeline) => {
+                // The uncompressed stream moves to a worker; the main thread
+                // proceeds to lay out the next page while DEFLATE runs.
+                let stream = std::mem::take(&mut content.stream);
+                pipeline.submit(page_idx, stream, &mut compressed);
+            }
+            None => {
+                let stream = page_stream(&content.stream, &mut zlib_scratch);
+                let owned = own_page_stream(stream);
+                content.stream = String::new();
+                compressed.push(owned);
+            }
+        }
         scratch.pages.push(content);
-        compressed.push(owned);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(pipeline) = pipeline.as_mut() {
+            pipeline.drain_ready(&mut compressed);
+        }
         check_retained_ceiling(
             emit.max_retained_bytes,
             &scratch.pages,
@@ -19401,6 +19431,10 @@ fn serialize_pages_chunked(
         )?;
         page_idx += 1;
         pdf_emit_phase(emit.verbose, "page", page_idx, "mode=chunked");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(pipeline) = pipeline.as_mut() {
+        pipeline.finish(&mut compressed);
     }
     profiler.record_since(
         "pagination",
@@ -19420,6 +19454,221 @@ fn serialize_pages_chunked(
         profiler,
     )
 }
+/// Maximum worker threads for chunked per-page stream compression. Each
+/// worker holds one page stream plus its hash scratch at a time, so the pool
+/// adds at most `CHUNKED_COMPRESS_MAX_WORKERS` in-flight page streams of
+/// memory — far below the all-pages-retained peak the chunked emitter exists
+/// to avoid.
+#[cfg(not(target_arch = "wasm32"))]
+const CHUNKED_COMPRESS_MAX_WORKERS: usize = 4;
+
+/// Minimum cumulative uncompressed page-stream bytes before spawning the
+/// bounded compression pool, mirroring the sequential-mode gate in
+/// [`compress_page_streams_inner`]: smaller renders lose more to thread
+/// startup than parallel DEFLATE recovers.
+#[cfg(not(target_arch = "wasm32"))]
+const CHUNKED_COMPRESS_POOL_MIN_BYTES: usize = 256 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn chunked_compress_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(CHUNKED_COMPRESS_MAX_WORKERS)
+}
+
+/// Shared work queue for the bounded chunked-compression pool. Multiple
+/// workers pop from one FIFO deque; the main thread closes the queue to
+/// release them.
+#[cfg(not(target_arch = "wasm32"))]
+struct ChunkedCompressWorkQueue {
+    state: std::sync::Mutex<ChunkedCompressWorkState>,
+    ready: std::sync::Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ChunkedCompressWorkState {
+    closed: bool,
+    pending: std::collections::VecDeque<(usize, String)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ChunkedCompressWorkQueue {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(ChunkedCompressWorkState {
+                closed: false,
+                pending: std::collections::VecDeque::new(),
+            }),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    fn push(&self, item: (usize, String)) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.push_back(item);
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        drop(state);
+        self.ready.notify_all();
+    }
+
+}
+
+/// Pull page streams off the shared work queue, compress each with a
+/// thread-private scratch, and return it tagged with its page index. The
+/// main thread reassembles results strictly in page order, so the emitted
+/// PDF bytes are identical to inline compression; only wall-clock overlaps.
+#[cfg(not(target_arch = "wasm32"))]
+fn compress_pool_worker(
+    queue: std::sync::Arc<ChunkedCompressWorkQueue>,
+    result_tx: std::sync::mpsc::Sender<(usize, OwnedPdfStream)>,
+) {
+    let mut scratch = crate::compress::ZlibCompressScratch::new();
+    loop {
+        let item = {
+            let mut state = queue
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            loop {
+                if let Some(item) = state.pending.pop_front() {
+                    break item;
+                }
+                if state.closed {
+                    return;
+                }
+                state = queue
+                    .ready
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        };
+        let owned = own_page_stream(page_stream(&item.1, &mut scratch));
+        if result_tx.send((item.0, owned)).is_err() {
+            break;
+        }
+    }
+}
+
+/// Bounded worker pool that overlaps per-page stream DEFLATE with the main
+/// thread's pagination of the NEXT page. Chunked emission keeps peak RSS low
+/// by never retaining every uncompressed page stream; the pool preserves that
+/// bound: at most one page stream per worker exists outside the main thread,
+/// and nothing is ever added to the page-ordered `compressed` vector out of
+/// order.
+#[cfg(not(target_arch = "wasm32"))]
+struct ChunkedCompressPipeline {
+    queue: std::sync::Arc<ChunkedCompressWorkQueue>,
+    result_rx: std::sync::mpsc::Receiver<(usize, OwnedPdfStream)>,
+    in_flight_cap: usize,
+    submitted: usize,
+    drained: usize,
+    done: std::collections::BTreeMap<usize, OwnedPdfStream>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ChunkedCompressPipeline {
+    fn spawn(workers: usize) -> Option<Self> {
+        let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let mut spawned = 0usize;
+        for _ in 0..workers {
+            let worker_queue = std::sync::Arc::clone(&queue);
+            let worker_tx = result_tx.clone();
+            if std::thread::Builder::new()
+                .name("fmd-pdf-page-compress".to_string())
+                .spawn(move || compress_pool_worker(worker_queue, worker_tx))
+                .is_ok()
+            {
+                spawned += 1;
+            }
+        }
+        if spawned == 0 {
+            return None;
+        }
+        Some(Self {
+            in_flight_cap: spawned,
+            queue,
+            result_rx,
+            submitted: 0,
+            drained: 0,
+            done: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Hand one page stream to the pool. While the in-flight cap is
+    /// saturated, block until the next in-order result drains.
+    fn submit(&mut self, page_idx: usize, stream: String, out: &mut Vec<OwnedPdfStream>) {
+        if self.submitted > self.drained && self.submitted - self.drained >= self.in_flight_cap {
+            self.drain_next(out);
+        }
+        self.queue.push((page_idx, stream));
+        self.submitted += 1;
+    }
+
+    /// Non-blocking drain of every result that has already completed, in page
+    /// order. Pages still in flight are not counted by the caller's
+    /// `check_retained_ceiling` probe; the authoritative ceiling check in
+    /// [`finish_serialized_pages`] runs after [`Self::finish`] drains
+    /// everything, and in-flight bytes are bounded by `in_flight_cap` pages.
+    fn drain_ready(&mut self, out: &mut Vec<OwnedPdfStream>) {
+        if self.submitted == self.drained {
+            return;
+        }
+        while let Ok((page_idx, owned)) = self.result_rx.try_recv() {
+            self.done.insert(page_idx, owned);
+            while let Some(owned) = self.done.remove(&self.drained) {
+                out.push(owned);
+                self.drained += 1;
+            }
+        }
+    }
+
+    /// Blocking in-order drain of the next result. Requires a live pool.
+    fn drain_next(&mut self, out: &mut Vec<OwnedPdfStream>) {
+        loop {
+            if let Some(owned) = self.done.remove(&self.drained) {
+                out.push(owned);
+                self.drained += 1;
+                return;
+            }
+            let (page_idx, owned) = self
+                .result_rx
+                .recv()
+                .expect("page content stream compression worker terminated unexpectedly");
+            self.done.insert(page_idx, owned);
+        }
+    }
+
+    /// Drain every submitted page so `compressed` is complete and in page
+    /// order, then release the workers by closing the work queue.
+    fn finish(&mut self, out: &mut Vec<OwnedPdfStream>) {
+        while self.submitted > self.drained {
+            self.drain_next(out);
+        }
+        self.queue.close();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ChunkedCompressPipeline {
+    fn drop(&mut self) {
+        self.queue.close();
+    }
+}
+
 
 #[allow(clippy::too_many_arguments)]
 fn finish_serialized_pages(

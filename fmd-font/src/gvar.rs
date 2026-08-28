@@ -39,6 +39,9 @@ struct GvarHeader {
 }
 
 pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
+    if !weight.is_finite() {
+        return None;
+    }
     if !font.has_glyf_outlines() {
         return None;
     }
@@ -1714,6 +1717,11 @@ mod tests {
             "gk3v.gvar.hmtx-900",
             "peak moves right phantom +100 → advance 600",
             peak.advance_width(0) == 600,
+        );
+        log_check(
+            "gk3v.gvar.nan-weight",
+            "NaN/inf weight does not instance",
+            font.instance(f32::NAN).is_none() && font.instance(f32::INFINITY).is_none(),
         );
     }
 

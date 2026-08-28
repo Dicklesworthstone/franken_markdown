@@ -18595,10 +18595,16 @@ fn serialize(
                 lig_uni.insert(new, s);
             }
         }
+        let mut map_lookup = vec![0u16; usize::from(source.num_glyphs)];
+        for (&old, &new) in &map {
+            if let Some(slot) = map_lookup.get_mut(usize::from(old)) {
+                *slot = new;
+            }
+        }
         for shaped in slot_cache.values_mut() {
             append_kerned_tj_with_spacing(
                 &mut shaped.pdf_tj,
-                &map,
+                &map_lookup,
                 source,
                 face.kern.as_ref(),
                 &shaped.glyphs,
@@ -18619,7 +18625,7 @@ fn serialize(
             font,
             kern: face.kern.clone().into_owned(),
             lig: face.lig.clone().into_owned(),
-            map,
+            map_lookup,
             cmap_chars: keep,
             lig_uni,
         });
@@ -23846,7 +23852,7 @@ fn draw_svg_text(
             Some(2),
             slot,
             matrix,
-            &face.map,
+            &face.map_lookup,
             source,
             &face.kern,
             shaped,
@@ -23872,7 +23878,7 @@ fn draw_svg_text(
                             None,
                             slot,
                             matrix,
-                            &face.map,
+                            &face.map_lookup,
                             source,
                             &face.kern,
                             shaped,
@@ -23897,7 +23903,7 @@ fn draw_svg_text(
                             Some(1),
                             slot,
                             matrix,
-                            &face.map,
+                            &face.map_lookup,
                             source,
                             &face.kern,
                             shaped,
@@ -23987,7 +23993,7 @@ fn append_svg_text_operator(
     render_mode: Option<u8>,
     slot: u8,
     matrix: SvgTextMatrix,
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
@@ -24025,7 +24031,7 @@ fn append_svg_text_operator(
     body.push_str(" Tm ");
     append_kerned_tj_with_spacing(
         body,
-        map,
+        map_lookup,
         source,
         kern,
         shaped,
@@ -24344,7 +24350,7 @@ fn draw_seg(
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
         append_invisible_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped, cached_tj,
+            body, seg.slot, size, seg.x, y, &face.map_lookup, source, &face.kern, shaped, cached_tj,
         );
     } else {
         if seg.fill != *current_fill {
@@ -24353,7 +24359,7 @@ fn draw_seg(
             *current_fill = seg.fill;
         }
         append_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map, source, &face.kern, shaped, cached_tj,
+            body, seg.slot, size, seg.x, y, &face.map_lookup, source, &face.kern, shaped, cached_tj,
         );
     }
     // Strikethrough: a thin stroke through the run's middle, in the text's own
@@ -25621,8 +25627,9 @@ struct EmbeddedFace {
     kern: Kerning,
     /// GSUB ligatures of the SOURCE face, applied to shape content lines.
     lig: Ligatures,
-    /// Source glyph id -> subset (renumbered) glyph id.
-    map: BTreeMap<u16, u16>,
+    /// Direct-index source glyph id -> subset (renumbered) glyph id; entries
+    /// for source gids absent from the subset are 0 (`.notdef`).
+    map_lookup: Vec<u16>,
     /// Sorted document characters retained in the subset cmap.
     cmap_chars: Vec<char>,
     /// Subset glyph id -> its source characters, for ligature glyphs that no
@@ -27494,14 +27501,14 @@ fn collect_shaped_run_glyphs(
 /// kerning (looked up on the original ids) inserted between glyphs.
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn kerned_tj(map: &BTreeMap<u16, u16>, source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
-    kerned_tj_with_spacing(map, source, kern, shaped, 0, 0)
+fn kerned_tj(map_lookup: &[u16], source: &Font, kern: &Kerning, shaped: &[u16]) -> String {
+    kerned_tj_with_spacing(map_lookup, source, kern, shaped, 0, 0)
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn kerned_tj_with_spacing(
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
@@ -27511,7 +27518,7 @@ fn kerned_tj_with_spacing(
     let mut out = String::with_capacity(shaped.len().saturating_mul(4).saturating_add(4));
     append_kerned_tj_with_spacing(
         &mut out,
-        map,
+        map_lookup,
         source,
         kern,
         shaped,
@@ -27523,7 +27530,7 @@ fn kerned_tj_with_spacing(
 
 fn append_kerned_tj_with_spacing(
     out: &mut String,
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
@@ -27535,7 +27542,7 @@ fn append_kerned_tj_with_spacing(
         .then(|| (source.glyph_index(' '), source.glyph_index('\u{00a0}')));
     out.push_str("[<");
     for (i, &g) in shaped.iter().enumerate() {
-        append_hex_u16(out, map.get(&g).copied().unwrap_or(0));
+        append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
         if let Some(&next) = shaped.get(i + 1) {
             let k = kern.pair(g, next);
             let kern_adjust = if k != 0 {
@@ -27582,14 +27589,14 @@ fn append_text_segment_operator(
     size: f32,
     x: f32,
     y: f32,
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
     cached_tj: Option<&str>,
 ) {
     append_text_segment_operator_with_render_mode(
-        body, slot, size, x, y, map, source, kern, shaped, cached_tj, None,
+        body, slot, size, x, y, map_lookup, source, kern, shaped, cached_tj, None,
     );
 }
 
@@ -27600,7 +27607,7 @@ fn append_invisible_text_segment_operator(
     size: f32,
     x: f32,
     y: f32,
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
@@ -27612,7 +27619,7 @@ fn append_invisible_text_segment_operator(
         size,
         x,
         y,
-        map,
+        map_lookup,
         source,
         kern,
         shaped,
@@ -27628,7 +27635,7 @@ fn append_text_segment_operator_with_render_mode(
     size: f32,
     x: f32,
     y: f32,
-    map: &BTreeMap<u16, u16>,
+    map_lookup: &[u16],
     source: &Font,
     kern: &Kerning,
     shaped: &[u16],
@@ -27652,7 +27659,7 @@ fn append_text_segment_operator_with_render_mode(
     if let Some(tj) = cached_tj {
         body.push_str(tj);
     } else {
-        append_kerned_tj_with_spacing(body, map, source, kern, shaped, 0, 0);
+        append_kerned_tj_with_spacing(body, map_lookup, source, kern, shaped, 0, 0);
     }
     body.push_str(" TJ");
     if render_mode.is_some() {
@@ -30855,12 +30862,10 @@ mod pdf_writer_tests {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
         let shaped = shape_run(&face.font, &face.lig, "AVATAR");
-        let map = shaped
-            .glyphs
-            .iter()
-            .copied()
-            .map(|glyph| (glyph, glyph))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
+        for &g in &shaped.glyphs {
+            map[usize::from(g)] = g;
+        }
 
         let mut streamed = String::new();
         append_text_segment_operator(
@@ -30909,12 +30914,10 @@ mod pdf_writer_tests {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
         let shaped = shape_run(&face.font, &face.lig, "A V A");
-        let map = shaped
-            .glyphs
-            .iter()
-            .copied()
-            .map(|glyph| (glyph, glyph))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
+        for &g in &shaped.glyphs {
+            map[usize::from(g)] = g;
+        }
         let matrix = SvgTextMatrix {
             a: 1.25,
             b: -0.5,

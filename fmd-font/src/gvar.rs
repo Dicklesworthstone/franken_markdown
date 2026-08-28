@@ -53,15 +53,19 @@ pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
 
     let mut glyf_bytes = Vec::new();
     let mut loca: Vec<u32> = vec![0];
+    let mut hmtx = Vec::with_capacity(font.num_glyphs as usize);
     for gid in 0..font.num_glyphs {
-        let bytes = instance_glyph(font, Some(&parsed), gid, &location)
-            .or_else(|| font.glyph_data(gid).map(|s| s.to_vec()))
-            .unwrap_or_default();
+        let (bytes, aw, lsb) = instance_glyph(font, Some(&parsed), gid, &location).unwrap_or((
+            font.glyph_data(gid).map(|s| s.to_vec()).unwrap_or_default(),
+            font.advance_width(gid),
+            font.left_side_bearing(gid),
+        ));
         glyf_bytes.extend_from_slice(&bytes);
         loca.push(u32::try_from(glyf_bytes.len()).ok()?);
+        hmtx.push((aw, lsb));
     }
     let loca_bytes = encode_loca(&loca);
-    let assembled = rebuild_static(font, glyf_bytes, loca_bytes)?;
+    let assembled = rebuild_static(font, glyf_bytes, loca_bytes, Some(&hmtx))?;
     Font::parse(assembled).ok()
 }
 
@@ -157,23 +161,20 @@ fn instance_glyph(
     gvar: Option<&GvarHeader>,
     gid: u16,
     location: &[f32],
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, u16, i16)> {
     let data = font.glyph_data(gid).unwrap_or(&[]);
     if data.is_empty() {
-        return Some(Vec::new());
+        return Some((
+            Vec::new(),
+            font.advance_width(gid),
+            font.left_side_bearing(gid),
+        ));
     }
     let n_contours = be_i16(data, 0)?;
     if n_contours >= 0 {
-        instance_simple(
-            font.raw_bytes(),
-            data,
-            n_contours as usize,
-            gvar,
-            gid,
-            location,
-        )
+        instance_simple(font, data, n_contours as usize, gvar, gid, location)
     } else {
-        instance_composite(font.raw_bytes(), data, gvar, gid, location)
+        instance_composite(font, data, gvar, gid, location)
     }
 }
 
@@ -260,38 +261,50 @@ fn coord_delta(data: &[u8], p: &mut usize, f: u8, short: u8, same_or_pos: u8) ->
 }
 
 fn instance_simple(
-    font_bytes: &[u8],
+    font: &Font,
     data: &[u8],
     n_contours: usize,
     gvar: Option<&GvarHeader>,
     gid: u16,
     location: &[f32],
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, u16, i16)> {
     let mut simple = decode_simple(data, n_contours)?;
+    let mut phantoms = default_phantoms(&simple.points, font, gid);
     if let Some(gvar) = gvar {
         apply_store(
-            font_bytes,
+            font.raw_bytes(),
             gvar,
             gid,
             location,
             &mut simple.points,
             Some(simple.contour_ends.as_slice()),
-            true,
+            Some(&mut phantoms),
         );
     }
-    Some(encode_simple(&simple))
+    let bytes = encode_simple(&simple);
+    let (aw, lsb) = hmtx_from_phantoms(&simple.points, &phantoms);
+    Some((bytes, aw, lsb))
 }
 
 fn instance_composite(
-    font_bytes: &[u8],
+    font: &Font,
     data: &[u8],
     gvar: Option<&GvarHeader>,
     gid: u16,
     location: &[f32],
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, u16, i16)> {
     let n_comp = count_components(data)?;
+    let xmin = i32::from(be_i16(data, 2).unwrap_or(0));
+    let ymin = i32::from(be_i16(data, 4).unwrap_or(0));
+    let ymax = i32::from(be_i16(data, 8).unwrap_or(0));
+    let lsb = i32::from(font.left_side_bearing(gid));
+    let aw = i32::from(font.advance_width(gid));
     // Variation points: 4 phantoms + one (x,y) origin per component.
     let mut pts = vec![(0i32, 0i32); PHANTOMS + n_comp];
+    pts[0] = (xmin - lsb, 0);
+    pts[1] = (xmin - lsb + aw, 0);
+    pts[2] = (0, ymax);
+    pts[3] = (0, ymin);
     // Seed component origins from the glyph record.
     let mut p = 10usize;
     for slot in pts.iter_mut().skip(PHANTOMS) {
@@ -307,7 +320,15 @@ fn instance_composite(
     }
     if let Some(gvar) = gvar {
         // `pts` already holds 4 phantoms + per-component origins.
-        apply_store(font_bytes, gvar, gid, location, &mut pts, None, false);
+        apply_store(
+            font.raw_bytes(),
+            gvar,
+            gid,
+            location,
+            &mut pts,
+            None,
+            None,
+        );
     }
     // Rewrite XY args.
     let mut out = data.to_vec();
@@ -330,7 +351,32 @@ fn instance_composite(
             break;
         }
     }
-    Some(out)
+    let xmin = i32::from(be_i16(data, 2).unwrap_or(0));
+    let dummy = [(xmin, 0)];
+    let (aw, lsb) = hmtx_from_phantoms(&dummy, &[pts[0], pts[1], pts[2], pts[3]]);
+    Some((out, aw, lsb))
+}
+
+fn default_phantoms(points: &[(i32, i32)], font: &Font, gid: u16) -> [(i32, i32); 4] {
+    let (xmin, ymin, _, ymax) = bbox(points);
+    let lsb = i32::from(font.left_side_bearing(gid));
+    let aw = i32::from(font.advance_width(gid));
+    let xmin = i32::from(xmin);
+    [
+        (xmin - lsb, 0),
+        (xmin - lsb + aw, 0),
+        (0, i32::from(ymax)),
+        (0, i32::from(ymin)),
+    ]
+}
+
+fn hmtx_from_phantoms(outline: &[(i32, i32)], phantoms: &[(i32, i32)]) -> (u16, i16) {
+    let p0 = phantoms.first().copied().unwrap_or((0, 0));
+    let p1 = phantoms.get(1).copied().unwrap_or(p0);
+    let (xmin, _, _, _) = bbox(outline);
+    let aw = (p1.0 - p0.0).clamp(0, i32::from(u16::MAX)) as u16;
+    let lsb = (i32::from(xmin) - p0.0).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    (aw, lsb)
 }
 
 fn count_components(data: &[u8]) -> Option<usize> {
@@ -411,7 +457,7 @@ fn apply_store(
     location: &[f32],
     points: &mut [(i32, i32)],
     contours: Option<&[u16]>,
-    extra_phantoms: bool,
+    phantom_pts: Option<&mut [(i32, i32); 4]>,
 ) {
     let gid_us = gid as usize;
     let Some(&start) = gvar.glyph_data_off.get(gid_us) else {
@@ -427,9 +473,10 @@ fn apply_store(
         return;
     };
     // Simple glyphs store only on-curve points; the four phantoms live past
-    // `points.len()`. Composites already prepend phantoms, so n_var is the
-    // vector length — adding PHANTOMS again makes all-points tuples over-read.
-    let n_var = if extra_phantoms {
+    // `points.len()` (`phantom_pts` is Some). Composites already prepend
+    // phantoms, so n_var is the vector length — adding PHANTOMS again makes
+    // all-points tuples over-read.
+    let n_var = if phantom_pts.is_some() {
         points.len().saturating_add(PHANTOMS)
     } else {
         points.len()
@@ -445,6 +492,7 @@ fn apply_store(
         contours,
         n_var,
         shared_idx.as_deref(),
+        phantom_pts,
     );
 }
 
@@ -455,6 +503,7 @@ fn apply_tuples(
     contours: Option<&[u16]>,
     n_var: usize,
     shared_idx: Option<&[usize]>,
+    phantom_pts: Option<&mut [(i32, i32); 4]>,
 ) {
     let n_real = points.len();
     let mut acc_x = vec![0.0f32; n_var];
@@ -509,6 +558,15 @@ fn apply_tuples(
         let dy = acc_y.get(i).copied().unwrap_or(0.0).round() as i32;
         pt.0 = pt.0.saturating_add(dx);
         pt.1 = pt.1.saturating_add(dy);
+    }
+    if let Some(ph) = phantom_pts {
+        let base = points.len();
+        for (i, slot) in ph.iter_mut().enumerate() {
+            let dx = acc_x.get(base + i).copied().unwrap_or(0.0).round() as i32;
+            let dy = acc_y.get(base + i).copied().unwrap_or(0.0).round() as i32;
+            slot.0 = slot.0.saturating_add(dx);
+            slot.1 = slot.1.saturating_add(dy);
+        }
     }
 }
 
@@ -684,6 +742,9 @@ fn skip_packed_points(d: &[u8], cursor: &mut usize, end: usize) -> Option<()> {
         let take = run.min(count - seen);
         let stride = if words { 2 } else { 1 };
         *cursor = cursor.checked_add(take.checked_mul(stride)?)?;
+        if *cursor > end {
+            return None;
+        }
         seen = seen.checked_add(take)?;
     }
     Some(())
@@ -957,7 +1018,21 @@ fn encode_loca(offs: &[u32]) -> Vec<u8> {
     o
 }
 
-fn rebuild_static(font: &Font, glyf: Vec<u8>, loca: Vec<u8>) -> Option<Vec<u8>> {
+fn encode_hmtx(metrics: &[(u16, i16)]) -> Vec<u8> {
+    let mut t = Vec::with_capacity(metrics.len().saturating_mul(4));
+    for &(aw, lsb) in metrics {
+        t.extend_from_slice(&aw.to_be_bytes());
+        t.extend_from_slice(&lsb.to_be_bytes());
+    }
+    t
+}
+
+fn rebuild_static(
+    font: &Font,
+    glyf: Vec<u8>,
+    loca: Vec<u8>,
+    hmtx_metrics: Option<&[(u16, i16)]>,
+) -> Option<Vec<u8>> {
     let src = font.raw_bytes();
     let num_tables = be_u16(src, 4)? as usize;
     let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
@@ -965,7 +1040,13 @@ fn rebuild_static(font: &Font, glyf: Vec<u8>, loca: Vec<u8>) -> Option<Vec<u8>> 
         let rec = off_mul(12, i, 16)?;
         let mut tag = [0u8; 4];
         tag.copy_from_slice(src.get(rec..rec.checked_add(4)?)?);
-        if &tag == b"fvar" || &tag == b"avar" || &tag == b"gvar" {
+        if &tag == b"fvar"
+            || &tag == b"avar"
+            || &tag == b"gvar"
+            || &tag == b"HVAR"
+            || &tag == b"VVAR"
+            || &tag == b"MVAR"
+        {
             continue;
         }
         if &tag == b"glyf" {
@@ -974,6 +1055,21 @@ fn rebuild_static(font: &Font, glyf: Vec<u8>, loca: Vec<u8>) -> Option<Vec<u8>> 
         }
         if &tag == b"loca" {
             tables.push((tag, loca.clone()));
+            continue;
+        }
+        if &tag == b"hmtx" {
+            if let Some(metrics) = hmtx_metrics {
+                tables.push((tag, encode_hmtx(metrics)));
+                continue;
+            }
+        }
+        if &tag == b"hhea" {
+            let (o, l) = find_table_full(src, b"hhea")?;
+            let mut hhea = src.get(o..off(o, l)?)?.to_vec();
+            if hmtx_metrics.is_some() && hhea.len() >= 36 {
+                hhea[34..36].copy_from_slice(&font.num_glyphs.to_be_bytes());
+            }
+            tables.push((tag, hhea));
             continue;
         }
         if &tag == b"head" {
@@ -1567,6 +1663,57 @@ mod tests {
             "gk3v.gvar.iup-ends",
             "touched endpoints stay 0 and 200",
             pts.points[0] == (0, 0) && pts.points[2] == (200, 0),
+        );
+    }
+
+    #[test]
+    fn instance_rewrites_hmtx_from_phantom_deltas() {
+        // 3 outline points + 4 phantoms; private point 4 is the right phantom.
+        // +100 x at peak must become advance 600 (default hmtx is 500).
+        let glyph = triangle_glyph();
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(glyph.len()).unwrap());
+        let mut payload = vec![1, 0, 4, 0x80];
+        payload.extend_from_slice(&100i16.to_be_bytes());
+        payload.push(0x00);
+        let mut gvd = Vec::new();
+        push16(&mut gvd, 1);
+        push16(&mut gvd, 0);
+        push16(&mut gvd, u16::try_from(payload.len()).unwrap());
+        push16(&mut gvd, EMBEDDED_PEAK | PRIVATE_POINTS);
+        push_i16(&mut gvd, f32_to_f2dot14(1.0));
+        let data_off = gvd.len();
+        gvd[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+        gvd.extend_from_slice(&payload);
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(1)),
+            (b"hhea", hhea_table(1)),
+            (b"hmtx", hmtx(1)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyph),
+            (b"fvar", fvar_wght()),
+            (b"gvar", build_gvar_table(&gvd)),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("phantom VF");
+        log_check(
+            "gk3v.gvar.hmtx-default",
+            "uninstanced advance is 500",
+            font.advance_width(0) == 500,
+        );
+        let def = font.instance(400.0).expect("default");
+        let peak = font.instance(900.0).expect("peak");
+        log_check(
+            "gk3v.gvar.hmtx-400",
+            "default location keeps advance 500",
+            def.advance_width(0) == 500,
+        );
+        log_check(
+            "gk3v.gvar.hmtx-900",
+            "peak moves right phantom +100 → advance 600",
+            peak.advance_width(0) == 600,
         );
     }
 

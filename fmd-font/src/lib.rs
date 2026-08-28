@@ -2175,7 +2175,6 @@ impl Ligatures {
     /// Callers shaping ASCII text use this to prove `substitute` is an identity
     /// for a given string: if no glyph in the string starts a rule, the
     /// substitution is a no-op.
-    #[must_use]
     pub fn rule_start_glyphs(&self) -> impl Iterator<Item = &u16> {
         self.rules.keys()
     }

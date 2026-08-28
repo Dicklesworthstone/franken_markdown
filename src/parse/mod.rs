@@ -397,7 +397,7 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
 
     'blocks: while i < lines.len() {
         let line = lines[i].text;
-        if line.trim().is_empty() {
+        if is_blank_line(line) {
             i += 1;
             continue;
         }
@@ -463,7 +463,7 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
         }
 
         let start = i;
-        while i < lines.len() && !lines[i].text.trim().is_empty() {
+        while i < lines.len() && !is_blank_line(lines[i].text) {
             if i > start && setext_underline(lines[i].text).is_some() {
                 spans.push(span_for_lines(&lines, start, i + 1));
                 i += 1;
@@ -619,7 +619,7 @@ fn table_ends_at(lines: &[&str], end: usize) -> bool {
     let mut first_pipe_row = end;
     while first_pipe_row > 0 {
         let previous = lines[first_pipe_row - 1];
-        if previous.trim().is_empty() || !previous.contains('|') {
+        if is_blank_line(previous) || !previous.contains('|') {
             break;
         }
         first_pipe_row -= 1;
@@ -637,7 +637,7 @@ fn table_ends_at(lines: &[&str], end: usize) -> bool {
 }
 
 fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
-    start < lines.len() && !lines[start].trim().is_empty() && lines[start].contains('|')
+    start < lines.len() && !is_blank_line(lines[start]) && lines[start].contains('|')
 }
 
 fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, ReferenceMap) {
@@ -716,7 +716,7 @@ fn collect_link_reference_metadata_into(
 
     while i < lines.len() {
         let line = lines[i];
-        if line.trim().is_empty() {
+        if is_blank_line(line) {
             in_paragraph = false;
             i += 1;
             continue;
@@ -883,7 +883,7 @@ fn push_consumed_reference_range(consumed: &mut ConsumedReferenceLines, range: R
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn reference_collector_plain_line_fast_path(line: &str) -> Option<bool> {
-    if line.trim().is_empty() {
+    if is_blank_line(line) {
         return Some(false);
     }
     reference_collector_plain_nonblank_line_fast_path(line)
@@ -968,7 +968,7 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     let mut i = 2;
     while i < lines.len() {
         let line = text(&lines[i]);
-        if line.trim().is_empty() || !line.contains('|') {
+        if is_blank_line(line) || !line.contains('|') {
             break;
         }
         i += 1;
@@ -989,7 +989,7 @@ fn line_is_paragraph_text(line: &str) -> bool {
 }
 
 fn line_is_paragraph_text_with_scan(line: &str, scan: ParserLineScan) -> bool {
-    if line.trim().is_empty() {
+    if is_blank_line(line) {
         return false;
     }
 
@@ -1044,7 +1044,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
     let mut in_paragraph = false;
     while i < lines.len() {
         let line = lines[i];
-        if line.trim().is_empty() {
+        if is_blank_line(line) {
             in_paragraph = false;
             i += 1;
             continue;
@@ -1320,7 +1320,7 @@ fn parse_blocks_with_refs_profiled(
     let mut i = 0;
     'blocks: while i < lines.len() {
         let line = lines[i];
-        let trimmed = line.trim();
+        let trimmed = trim_space_tab(line);
         if trimmed.is_empty() {
             i += 1;
             continue;
@@ -1404,7 +1404,7 @@ fn parse_blocks_with_refs_profiled(
             let mut used = 1usize;
             while i + used < lines.len() {
                 let cont = lines[i + used];
-                if cont.trim().is_empty() || leading_spaces(cont) < 4 {
+                if is_blank_line(cont) || leading_spaces(cont) < 4 {
                     break;
                 }
                 text.push(' ');
@@ -1542,7 +1542,7 @@ fn parse_blocks_with_refs_profiled(
                 i += 1;
                 continue;
             }
-            let trimmed = line.trim();
+            let trimmed = trim_space_tab(line);
             if trimmed.is_empty() {
                 break;
             }
@@ -2018,7 +2018,7 @@ fn setext_underline(line: &str) -> Option<u8> {
     if leading_spaces(line) > 3 {
         return None;
     }
-    setext_underline_trimmed(line.trim())
+    setext_underline_trimmed(trim_space_tab(line))
 }
 
 fn setext_underline_trimmed(t: &str) -> Option<u8> {
@@ -2040,7 +2040,7 @@ fn is_thematic_break(line: &str) -> bool {
     if leading_spaces(line) > 3 {
         return false;
     }
-    thematic_break_trimmed(line.trim())
+    thematic_break_trimmed(trim_space_tab(line))
 }
 
 fn thematic_break_trimmed(t: &str) -> bool {
@@ -2098,7 +2098,7 @@ fn parse_indented_code(lines: &[&str]) -> (String, usize) {
     let used = indented_code_extent(lines, |line| *line);
     let mut code = String::new();
     for line in lines.iter().take(used) {
-        if line.trim().is_empty() {
+        if is_blank_line(line) {
             code.push('\n');
         } else {
             code.push_str(strip_n(line, 4));
@@ -2112,9 +2112,9 @@ fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
     let mut i = 0usize;
     while i < lines.len() {
         let line = text(&lines[i]);
-        if line.trim().is_empty() {
+        if is_blank_line(line) {
             let mut next = i + 1;
-            while next < lines.len() && text(&lines[next]).trim().is_empty() {
+            while next < lines.len() && is_blank_line(text(&lines[next])) {
                 next += 1;
             }
             if next >= lines.len() || !indented_code_start(text(&lines[next])) {
@@ -2157,13 +2157,13 @@ fn blockquote_marker_start(line: &str) -> bool {
 /// open paragraph text and the continuation line would not itself start a new
 /// block. `prev` is the previously collected (already `>`-stripped) quote line.
 fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
-    if line.trim().is_empty() {
+    if is_blank_line(line) {
         return false;
     }
     // Only an OPEN paragraph can be lazily continued: the previous quoted line
     // must be plain paragraph text, not a blank or another block's opener.
     let prev_is_open_paragraph = prev.is_some_and(|p| {
-        !p.trim().is_empty()
+        !is_blank_line(p)
             && !is_thematic_break(p)
             && atx_heading(p).is_none()
             && open_fence(p).is_none()
@@ -2291,7 +2291,7 @@ fn html_block_end<T>(
         }
         HtmlBlockEnd::Blank => {
             let mut k = start + 1;
-            while k < lines.len() && !text(&lines[k]).trim().is_empty() {
+            while k < lines.len() && !is_blank_line(text(&lines[k])) {
                 k += 1;
             }
             k
@@ -2666,9 +2666,9 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         i += 1;
 
         while i < lines.len() {
-            if lines[i].trim().is_empty() {
+            if is_blank_line(lines[i]) {
                 let mut j = i + 1;
-                while j < lines.len() && lines[j].trim().is_empty() {
+                while j < lines.len() && is_blank_line(lines[j]) {
                     j += 1;
                 }
                 if j < lines.len()
@@ -2719,14 +2719,12 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 if !prev_is_list_item
                     && list_marker(stripped)
                         .is_some_and(|marker| marker.ordered && marker.start != 1)
-                    && item_lines
-                        .last()
-                        .is_some_and(|prev| !prev.trim().is_empty())
+                    && item_lines.last().is_some_and(|prev| !is_blank_line(prev))
                 {
                     item_lines.push("");
                 }
                 item_lines.push(stripped);
-            } else if item_lines.last().is_some_and(|prev| prev.trim().is_empty()) {
+            } else if item_lines.last().is_some_and(|prev| is_blank_line(prev)) {
                 // A blank line separates this unindented line from the item, so
                 // there is no open paragraph to lazily continue: it begins a new
                 // top-level block and ends the list. (CommonMark lazy continuation
@@ -3025,7 +3023,7 @@ fn parse_table_profiled(
     let mut rows = Vec::new();
     let mut row_cells = Vec::with_capacity(cols);
     let mut i = 2;
-    while i < lines.len() && !lines[i].trim().is_empty() && lines[i].contains('|') {
+    while i < lines.len() && !is_blank_line(lines[i]) && lines[i].contains('|') {
         split_table_row_into(lines[i], &mut row_cells);
         let mut cells: Vec<Vec<Inline>> = row_cells
             .iter()
@@ -4647,6 +4645,12 @@ fn strip_fence_indent(line: &str, n: usize) -> &str {
 
 fn trim_space_tab(s: &str) -> &str {
     trim_start_space_tab(trim_end_space_tab(s))
+}
+
+/// CommonMark blank line: only U+0020 and U+0009. Unicode `trim()` also strips
+/// NBSP/Zs and would drop a line that is only `\u{00A0}`.
+fn is_blank_line(line: &str) -> bool {
+    trim_space_tab(line).is_empty()
 }
 
 fn trim_start_space_tab(s: &str) -> &str {
@@ -6295,5 +6299,44 @@ mod footnote_tests {
             ["a\"b"],
             "def must not be ingested as a link ref: {doc:?}"
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod commonmark_blank_line_tests {
+    use super::*;
+    use crate::ast::{Block, Inline};
+
+    #[test]
+    fn nbsp_only_line_is_not_skipped_as_blank() {
+        let doc = crate::parse_markdown("alpha\n\n\u{00A0}\n\nbeta\n");
+        let paras: Vec<String> = doc
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(inlines) => Some(
+                    inlines
+                        .iter()
+                        .filter_map(|inl| match inl {
+                            Inline::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            paras.iter().any(|p| p.contains('\u{00A0}')),
+            "NBSP-only line must remain as paragraph text, not a blank: {doc:?}"
+        );
+        assert_eq!(paras.len(), 3, "alpha / NBSP / beta: {doc:?}");
+    }
+
+    #[test]
+    fn trailing_nbsp_does_not_make_a_thematic_break() {
+        assert!(!is_thematic_break("---\u{00A0}"));
+        assert!(is_thematic_break("---  "));
     }
 }

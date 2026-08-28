@@ -5,16 +5,17 @@
 //! (c) spanned parse: spans in-bounds and non-decreasing
 //! (d) double-render byte identity (HTML always; PDF on a subset)
 //!
-//! Counts: 10_000 parse/span docs (cheap); 2_000 HTML; 200 PDF. Override with
-//! `FMD_PROPTEST_N`. Failures print `seed=` plus a source prefix.
+//! Counts: 10_000 parse/span docs (cheap); 2_000 HTML; 200 PDF. `FMD_PROPTEST_N`
+//! shrinks each count for smoke runs (values above the default are capped so a
+//! huge env value cannot explode CI). Failures print `seed=` plus a source prefix.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use franken_markdown::{
-    ADVERSARIES, GenOptions, HtmlOptions, PdfOptions, SourceSpan, adversarial, generate,
-    parse_markdown, parse_markdown_spanned, render_html_document, render_pdf_document,
+    adversarial, generate, parse_markdown, parse_markdown_spanned, render_html_document,
+    render_pdf_document, GenOptions, HtmlOptions, PdfOptions, SourceSpan, ADVERSARIES,
 };
 
 const PARSE_N: u64 = 10_000;
@@ -42,6 +43,7 @@ fn n_from_env(default: u64) -> u64 {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(default)
+        .min(default)
 }
 
 fn opts() -> GenOptions {
@@ -70,13 +72,22 @@ fn span_ok(span: SourceSpan, src: &str) -> bool {
 }
 
 /// Visible text inside `<main class="fmd">`.
+///
+/// Missing wrappers panic instead of falling back to the full document (CSS
+/// and chrome would then be re-parsed as Markdown).
 fn article_text(html: &str) -> String {
     const OPEN: &str = "<main class=\"fmd\">";
     const CLOSE: &str = "</main>";
-    let start = html.find(OPEN).map(|i| i + OPEN.len()).unwrap_or(0);
-    let rest = html.get(start..).unwrap_or("");
-    let end = rest.find(CLOSE).unwrap_or(rest.len());
-    html_text(rest.get(..end).unwrap_or(""))
+    let start = html
+        .find(OPEN)
+        .unwrap_or_else(|| panic!("html missing {OPEN}"));
+    let rest = html
+        .get(start + OPEN.len()..)
+        .unwrap_or_else(|| panic!("html truncated after {OPEN}"));
+    let end = rest
+        .rfind(CLOSE)
+        .unwrap_or_else(|| panic!("html missing {CLOSE}"));
+    html_text(&rest[..end])
 }
 
 fn is_block_tag(name: &str) -> bool {
@@ -108,6 +119,8 @@ fn is_block_tag(name: &str) -> bool {
             | "dl"
             | "dt"
             | "dd"
+            | "aside"
+            | "nav"
     )
 }
 
@@ -269,6 +282,24 @@ fn check_pdf_determinism(src: &str, seed: &str) {
     }
 }
 
+/// Byte window around `mid` that is always a valid UTF-8 substring.
+fn utf8_window(s: &str, mid: usize, before: usize, after: usize) -> &str {
+    let mid = mid.min(s.len());
+    let mut lo = mid.saturating_sub(before);
+    let mut hi = mid.saturating_add(after).min(s.len());
+    while lo < s.len() && !s.is_char_boundary(lo) {
+        lo += 1;
+    }
+    while hi > 0 && !s.is_char_boundary(hi) {
+        hi -= 1;
+    }
+    if lo > hi {
+        ""
+    } else {
+        &s[lo..hi]
+    }
+}
+
 fn first_text_diff(a: &str, b: &str) -> String {
     let mut ia = a.char_indices();
     let mut ib = b.char_indices();
@@ -276,26 +307,25 @@ fn first_text_diff(a: &str, b: &str) -> String {
         match (ia.next(), ib.next()) {
             (Some((_, ca)), Some((_, cb))) if ca == cb => continue,
             (Some((i, ca)), Some((_, cb))) => {
-                let lo = i.saturating_sub(40);
                 return format!(
                     "text_len {} vs {} at byte {i} {ca:?} vs {cb:?} left={:?} right={:?}",
                     a.len(),
                     b.len(),
-                    a.get(lo..(i + 40).min(a.len())).unwrap_or(""),
-                    b.get(lo..(i + 40).min(b.len())).unwrap_or("")
+                    utf8_window(a, i, 40, 40),
+                    utf8_window(b, i, 40, 40)
                 );
             }
             (None, None) => return format!("texts equal len={}", a.len()),
             (Some((i, _)), None) => {
                 return format!(
                     "text2 shorter at {i} extra_left={:?}",
-                    &a[i..a.len().min(i + 40)]
+                    utf8_window(a, i, 0, 40)
                 );
             }
             (None, Some((i, _))) => {
                 return format!(
                     "text1 shorter at {i} extra_right={:?}",
-                    &b[i..b.len().min(i + 40)]
+                    utf8_window(b, i, 0, 40)
                 );
             }
         }
@@ -354,30 +384,59 @@ fn check_round_trip_converge(src: &str, seed: &str) {
 }
 
 fn load_committed_seeds() -> Vec<(String, String)> {
-    let raw = std::fs::read_to_string(SEEDS_PATH).unwrap_or_default();
+    let raw = std::fs::read_to_string(SEEDS_PATH)
+        .unwrap_or_else(|err| panic!("read {SEEDS_PATH}: {err}"));
+    // Split on `\n` only so a committed `\r` (the crlf-heading seed) is not
+    // eaten the way `str::lines` would. Header detection still accepts a
+    // trailing `\r` in case the fixture file itself is checked out as CRLF.
     let mut out = Vec::new();
-    let mut name = String::from("anon");
-    let mut buf = String::new();
-    for line in raw.lines() {
-        if let Some(rest) = line.strip_prefix("=== ") {
+    let mut current: Option<(String, String)> = None;
+    for line in raw.split('\n') {
+        let header = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(rest) = header.strip_prefix("=== ") {
             if let Some(label) = rest.strip_suffix(" ===") {
-                if (!buf.is_empty() || (out.is_empty() && !name.is_empty()))
-                    && !(name == "anon" && buf.is_empty())
-                {
-                    out.push((name.clone(), buf.clone()));
+                if let Some(prev) = current.take() {
+                    out.push(prev);
                 }
-                name = label.trim().to_owned();
-                buf.clear();
+                current = Some((label.trim().to_owned(), String::new()));
                 continue;
             }
         }
-        if !buf.is_empty() {
-            buf.push('\n');
+        if let Some((_, buf)) = current.as_mut() {
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(line);
         }
-        buf.push_str(line);
     }
-    out.push((name, buf));
+    if let Some(prev) = current {
+        out.push(prev);
+    }
     out
+}
+
+#[test]
+fn utf8_window_stays_on_char_boundaries() {
+    let s = "🦀ab";
+    // Byte 1 sits inside the 4-byte crab emoji.
+    let w = utf8_window(s, 1, 0, 40);
+    assert_ok(
+        "utf8-window",
+        "mid-emoji",
+        std::str::from_utf8(w.as_bytes()).is_ok() && s.contains(w),
+        w,
+    );
+}
+
+#[test]
+fn html_text_table_cells_keep_separators() {
+    let t = html_text("<table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>");
+    assert_ok(
+        "html-text-table",
+        "cells",
+        t.contains('a') && t.contains('b') && t.contains(' ') && !t.contains("ab"),
+        &t,
+    );
 }
 
 #[test]
@@ -386,14 +445,44 @@ fn committed_regression_seeds() {
     assert_ok(
         "corpus-nonempty",
         SEEDS_PATH,
-        seeds.len() >= 5,
+        seeds.len() >= 11,
         &format!("n={}", seeds.len()),
     );
+    let names: Vec<&str> = seeds.iter().map(|(n, _)| n.as_str()).collect();
+    assert_ok(
+        "corpus-crlf-name",
+        "crlf-heading",
+        names.contains(&"crlf-heading"),
+        &format!("names={names:?}"),
+    );
+    assert_ok(
+        "corpus-nul-name",
+        "nul-in-prose",
+        names.contains(&"nul-in-prose"),
+        &format!("names={names:?}"),
+    );
     for (name, src) in &seeds {
+        if name == "crlf-heading" {
+            assert_ok(
+                "corpus-crlf-bytes",
+                name,
+                src.contains('\r'),
+                &format!("bytes={:?}", src.as_bytes()),
+            );
+        }
+        if name == "nul-in-prose" {
+            assert_ok(
+                "corpus-nul-bytes",
+                name,
+                src.contains('\0'),
+                &format!("len={}", src.len()),
+            );
+        }
         check_no_panic(src, name);
         check_spans(src, name);
         check_html_determinism(src, name);
         check_round_trip_converge(src, name);
+        check_pdf_determinism(src, name);
     }
 }
 
@@ -427,7 +516,7 @@ fn parse_span_invariants_over_generated_corpus() {
 
 #[test]
 fn html_no_panic_and_determinism() {
-    let n = n_from_env(HTML_N).min(HTML_N);
+    let n = n_from_env(HTML_N);
     let opts = opts();
     eprintln!("md_proptest phase=html n={n}");
     for seed in 0..n {
@@ -436,12 +525,18 @@ fn html_no_panic_and_determinism() {
         check_no_panic(&src, &label);
         check_html_determinism(&src, &label);
     }
+    for kind in ADVERSARIES {
+        let src = adversarial(*kind, 2048);
+        let label = format!("adv-{}", kind.name());
+        check_no_panic(&src, &label);
+        check_html_determinism(&src, &label);
+    }
     log_check("html-summary", &format!("n={n}"), "PASS");
 }
 
 #[test]
 fn html_round_trip_converges() {
-    let n = n_from_env(ROUND_N).min(ROUND_N);
+    let n = n_from_env(ROUND_N);
     let opts = opts();
     eprintln!("md_proptest phase=round_trip n={n}");
     for seed in 0..n {
@@ -455,12 +550,17 @@ fn html_round_trip_converges() {
             &fail_blob(&label, &src),
         );
     }
+    for kind in ADVERSARIES {
+        let src = adversarial(*kind, 2048);
+        let label = format!("adv-{}", kind.name());
+        check_round_trip_converge(&src, &label);
+    }
     log_check("round-trip-summary", &format!("n={n}"), "PASS");
 }
 
 #[test]
 fn pdf_determinism_subset() {
-    let n = n_from_env(PDF_N).min(PDF_N);
+    let n = n_from_env(PDF_N);
     let opts = opts();
     eprintln!("md_proptest phase=pdf n={n}");
     for seed in 0..n {

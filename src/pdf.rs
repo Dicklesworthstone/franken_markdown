@@ -27476,7 +27476,10 @@ fn append_pdf_tounicode_stream_object(
     append_decimal_usize(out, cmap.len());
     out.extend_from_slice(b" >>\nstream\n");
     out.extend_from_slice(cmap.as_bytes());
-    out.extend_from_slice(b"endstream\nendobj\n");
+    // ISO 32000: an EOL separates the stream data from `endstream`; without it
+    // strict readers (veraPDF, ISO 19005-2 clause 6.1.7.1) count the cmap's own
+    // trailing newline as that separator and see Length = actual + 1.
+    out.extend_from_slice(b"\nendstream\nendobj\n");
 }
 
 fn append_pdf_parent_tree_object<F>(
@@ -31906,7 +31909,7 @@ mod pdf_writer_tests {
         legacy_offsets[7] = legacy.len();
         legacy.extend_from_slice(
             format!(
-                "7 0 obj\n<< /Length {len} >>\nstream\n{cmap}endstream\nendobj\n",
+                "7 0 obj\n<< /Length {len} >>\nstream\n{cmap}\nendstream\nendobj\n",
                 len = cmap.len(),
             )
             .as_bytes(),

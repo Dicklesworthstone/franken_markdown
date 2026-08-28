@@ -91,9 +91,15 @@ pub struct TableFenceCandidateScan {
 /// Find the first byte that could matter to Markdown parsing.
 #[must_use]
 pub fn find_any_special_byte(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .iter()
-        .position(|&byte| is_markdown_special_byte(byte))
+    find_needles(
+        bytes,
+        |word| {
+            word.to_ne_bytes()
+                .iter()
+                .any(|&byte| is_markdown_special_byte(byte))
+        },
+        is_markdown_special_byte,
+    )
 }
 
 /// Find the first byte that must be escaped in HTML text-node output.
@@ -111,7 +117,17 @@ pub fn find_html_escape(bytes: &[u8]) -> Option<usize> {
 /// Find the first byte that must be escaped in a PDF literal string.
 #[must_use]
 pub fn find_pdf_escape(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&byte| is_pdf_escape_byte(byte))
+    find_needles(
+        bytes,
+        |word| {
+            word_contains_byte(word, b'(')
+                || word_contains_byte(word, b')')
+                || word_contains_byte(word, b'\\')
+                || word_contains_byte(word, b'\r')
+                || word_contains_byte(word, b'\n')
+        },
+        is_pdf_escape_byte,
+    )
 }
 
 /// Run the shared byte candidate scanners in one scalar pass.
@@ -293,7 +309,7 @@ const fn is_html_escape_byte(byte: u8) -> bool {
 }
 
 fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
-    find_by_word_scan(
+    find_needles(
         bytes,
         |word| {
             word_contains_byte(word, a)
@@ -305,7 +321,7 @@ fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
 }
 
 fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
-    find_by_word_scan(
+    find_needles(
         bytes,
         |word| {
             word_contains_byte(word, a)
@@ -315,6 +331,72 @@ fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
         },
         |byte| byte == a || byte == b || byte == c || byte == d,
     )
+}
+
+/// Chunked first-index scan at 32 (AVX2 width), 16 (NEON/SSE2 width), or 8
+/// bytes. Uses safe SWAR on copied lanes — no raw pointers, no `unsafe`.
+/// LLVM typically lowers the 16/32-byte copies to NEON/AVX2 on those targets.
+fn find_needles(
+    bytes: &[u8],
+    word_matches: impl Fn(u64) -> bool,
+    byte_matches: impl Fn(u8) -> bool,
+) -> Option<usize> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            find_by_chunk32(bytes, &word_matches, &byte_matches)
+        } else {
+            find_by_chunk16(bytes, &word_matches, &byte_matches)
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        find_by_chunk16(bytes, &word_matches, &byte_matches)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        find_by_word_scan(bytes, word_matches, byte_matches)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn find_by_chunk32(
+    bytes: &[u8],
+    word_matches: &impl Fn(u64) -> bool,
+    byte_matches: &impl Fn(u8) -> bool,
+) -> Option<usize> {
+    let mut chunks = bytes.chunks_exact(32);
+    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+        if chunk32_hot(chunk, word_matches) {
+            let base = chunk_idx * 32;
+            return chunk
+                .iter()
+                .position(|&byte| byte_matches(byte))
+                .map(|rel| base + rel);
+        }
+    }
+    let base = bytes.len() - chunks.remainder().len();
+    find_by_chunk16(chunks.remainder(), word_matches, byte_matches).map(|rel| base + rel)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn find_by_chunk16(
+    bytes: &[u8],
+    word_matches: &impl Fn(u64) -> bool,
+    byte_matches: &impl Fn(u8) -> bool,
+) -> Option<usize> {
+    let mut chunks = bytes.chunks_exact(16);
+    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+        if chunk16_hot(chunk, word_matches) {
+            let base = chunk_idx * 16;
+            return chunk
+                .iter()
+                .position(|&byte| byte_matches(byte))
+                .map(|rel| base + rel);
+        }
+    }
+    let base = bytes.len() - chunks.remainder().len();
+    find_by_word_scan(chunks.remainder(), word_matches, byte_matches).map(|rel| base + rel)
 }
 
 fn find_by_word_scan(
@@ -340,6 +422,20 @@ fn find_by_word_scan(
         .iter()
         .position(|&byte| byte_matches(byte))
         .map(|rel| base + rel)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn chunk16_hot(chunk: &[u8], word_matches: impl Fn(u64) -> bool) -> bool {
+    let mut lo = [0u8; 8];
+    let mut hi = [0u8; 8];
+    lo.copy_from_slice(&chunk[..8]);
+    hi.copy_from_slice(&chunk[8..16]);
+    word_matches(u64::from_ne_bytes(lo)) || word_matches(u64::from_ne_bytes(hi))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn chunk32_hot(chunk: &[u8], word_matches: impl Fn(u64) -> bool) -> bool {
+    chunk16_hot(&chunk[..16], &word_matches) || chunk16_hot(&chunk[16..32], &word_matches)
 }
 
 fn word_contains_byte(word: u64, byte: u8) -> bool {

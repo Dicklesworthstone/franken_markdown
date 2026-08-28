@@ -242,7 +242,7 @@ fn measure_document(doc: Doc<'_>, args: &Args) -> Result<Vec<ShareRow>, String> 
     if doc.measure_pdf {
         let mut pdf_p95 = Vec::with_capacity(args.outer);
         for _ in 0..args.outer {
-            let sample = measure(args.html_iters.max(1).min(5), || {
+            let sample = measure(args.html_iters.clamp(1, 5), || {
                 let parsed = parse_markdown(doc.source);
                 match render_pdf_document(&parsed, &pdf_opts) {
                     Ok(pdf) => black_box(pdf.len()),
@@ -264,7 +264,8 @@ fn measure_document(doc: Doc<'_>, args: &Args) -> Result<Vec<ShareRow>, String> 
         ]))?;
     }
 
-    let scanners: [(&str, fn(&[u8]) -> Option<usize>); 3] = [
+    type ScannerFn = fn(&[u8]) -> Option<usize>;
+    let scanners: [(&str, ScannerFn); 3] = [
         ("find_html_text_escape", find_html_text_escape),
         ("find_html_escape", find_html_escape),
         ("find_any_special_byte", find_any_special_byte),
@@ -343,11 +344,10 @@ fn share_record(row: &ShareRow) -> String {
 }
 
 fn share_bp(scanner_ns: u128, e2e_ns: u128) -> u128 {
-    if e2e_ns == 0 {
-        0
-    } else {
-        scanner_ns.saturating_mul(10_000) / e2e_ns
-    }
+    scanner_ns
+        .saturating_mul(10_000)
+        .checked_div(e2e_ns)
+        .unwrap_or(0)
 }
 
 fn fingerprint_record() -> Result<String, String> {

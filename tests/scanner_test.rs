@@ -215,3 +215,78 @@ fn markdown_line_scanner_starter_flags_match_parser_block_precedence() {
     let indented_list_text = scan_markdown_line("    - code, not list");
     assert!(!indented_list_text.maybe_list_marker);
 }
+
+fn log_check(id: &str, subject: &str, outcome: &str) {
+    eprintln!("scanner_test: check id={id} subject={subject} outcome={outcome}");
+}
+
+#[test]
+fn chunked_scanners_match_oracle_at_every_alignment_and_chunk_edge() {
+    let needles = [b'&', b'<', b'>', b'"', b'(', b')', b'\\', b'\n', b'#'];
+    let mut cases: Vec<Vec<u8>> = Vec::new();
+    for &n in &needles {
+        cases.push(vec![n]);
+        cases.push(vec![n; 32]);
+        for len in 0..=40 {
+            let mut buf = vec![b'z'; len];
+            if len > 0 {
+                buf[len - 1] = n;
+                cases.push(buf.clone());
+                buf[0] = n;
+                cases.push(buf);
+            } else {
+                cases.push(buf);
+            }
+        }
+        for align in 0..32 {
+            let mut buf = vec![b'z'; 64];
+            buf[align] = n;
+            cases.push(buf);
+        }
+    }
+    for (idx, case) in cases.iter().enumerate() {
+        assert_byte_scanners(case);
+        if idx % 50 == 49 {
+            log_check("chunk-align", &format!("batch={}", idx + 1), "PASS");
+        }
+    }
+    log_check("chunk-align", &format!("n={}", cases.len()), "PASS");
+}
+
+#[test]
+fn chunked_scanners_match_oracle_for_lcg_adversarial_buffers() {
+    let mut state: u64 = 0xC0FF_EE12_3456_789A;
+    let mut fail = 0usize;
+    for i in 0..400 {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let len = ((state >> 33) as usize % 96) + 1;
+        let mut buf = Vec::with_capacity(len);
+        for _ in 0..len {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            buf.push((state >> 33) as u8);
+        }
+        let before = fail;
+        if find_any_special_byte(&buf) != naive_markdown_special(&buf) {
+            fail += 1;
+        }
+        if find_html_text_escape(&buf) != naive_html_text_escape(&buf) {
+            fail += 1;
+        }
+        if find_html_escape(&buf) != naive_html_escape(&buf) {
+            fail += 1;
+        }
+        if find_pdf_escape(&buf) != naive_pdf_escape(&buf) {
+            fail += 1;
+        }
+        if fail != before {
+            log_check("lcg", &format!("i={i} len={len}"), "FAIL");
+            assert_byte_scanners(&buf);
+        }
+    }
+    log_check("lcg", "n=400", if fail == 0 { "PASS" } else { "FAIL" });
+    assert_eq!(fail, 0);
+}

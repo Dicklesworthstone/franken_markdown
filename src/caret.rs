@@ -144,6 +144,84 @@ pub fn render_parse_diagnostic(
     render_caret(source, diag.span, file, &diag.message, diag.severity, style)
 }
 
+/// Render every parse diagnostic, separated by a blank line.
+///
+/// This is the parse-path chokepoint for 9wse.2: callers (CLI, verify, tests)
+/// format diagnostics here instead of inventing a second caret layout.
+#[must_use]
+pub fn render_parse_diagnostics(
+    source: &str,
+    file: Option<&str>,
+    diagnostics: &[ParseDiagnostic],
+    style: CaretStyle,
+) -> String {
+    let mut out = String::new();
+    for (i, diag) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&render_parse_diagnostic(diag, source, file, style));
+    }
+    out
+}
+
+/// Render a caret for an arbitrary byte range (config lines, math `Span`).
+///
+/// `fmd-math::MathError` carries a byte span; convert with
+/// [`SourceSpan::new`]`(err.span().start, err.span().end)` and pass the
+/// `Display` text as `message`. The root crate does not depend on `fmd-math`,
+/// so this is the shared adapter.
+#[must_use]
+pub fn render_byte_range(
+    source: &str,
+    start: usize,
+    end: usize,
+    file: Option<&str>,
+    message: &str,
+    severity: DiagnosticSeverity,
+    style: CaretStyle,
+) -> String {
+    render_caret(
+        source,
+        SourceSpan::new(start, end),
+        file,
+        message,
+        severity,
+        style,
+    )
+}
+
+/// Byte span of 1-based line `line_no` in `source` (the whole line, no newline).
+#[must_use]
+pub fn span_of_line(source: &str, line_no: usize) -> SourceSpan {
+    if line_no == 0 {
+        return SourceSpan::default();
+    }
+    let mut current = 1usize;
+    let mut start = 0usize;
+    for (i, ch) in source.char_indices() {
+        if current == line_no && (ch == '\n' || i + ch.len_utf8() == source.len()) {
+            let end = if ch == '\n' { i } else { source.len() };
+            return SourceSpan::new(start, end);
+        }
+        if ch == '\n' {
+            current = current.saturating_add(1);
+            start = i.saturating_add(1);
+        }
+    }
+    SourceSpan::new(start, source.len())
+}
+
+/// Stderr caret style from a resolved [`ColorMode`].
+#[must_use]
+pub fn style_for_stderr(mode: ColorMode, is_tty: bool, columns: Option<usize>) -> CaretStyle {
+    CaretStyle {
+        color: mode.enabled(is_tty),
+        columns,
+        context_lines: 1,
+    }
+}
+
 /// Display column (0-based) of `byte_off` inside `line`.
 #[must_use]
 pub fn byte_to_col(line: &str, byte_off: usize) -> usize {

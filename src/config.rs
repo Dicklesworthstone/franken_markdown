@@ -6,7 +6,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::caret::{CaretStyle, render_caret, span_of_line};
 use crate::file_write::{OutputFile, write_outputs_staged};
+use crate::span::DiagnosticSeverity;
 use crate::{DarkModePolicy, FontFamily, PageMargins, Theme};
 
 /// Supported config keys.
@@ -45,6 +47,40 @@ impl fmt::Display for ConfigError {
             Self::Parse(msg) => f.write_str(msg),
         }
     }
+}
+
+impl ConfigError {
+    /// Caret block for a parse error against the config source.
+    ///
+    /// [`Display`] stays the short `line N: …` message so `--json` envelopes
+    /// that interpolate `{e}` remain byte-identical. Human paths call this.
+    #[must_use]
+    pub fn render_caret(
+        &self,
+        source: &str,
+        file: Option<&str>,
+        style: CaretStyle,
+    ) -> Option<String> {
+        let ConfigError::Parse(msg) = self else {
+            return None;
+        };
+        let line_no = parse_line_number(msg)?;
+        let span = span_of_line(source, line_no);
+        Some(render_caret(
+            source,
+            span,
+            file,
+            msg,
+            DiagnosticSeverity::Error,
+            style,
+        ))
+    }
+}
+
+fn parse_line_number(msg: &str) -> Option<usize> {
+    let rest = msg.strip_prefix("line ")?;
+    let digits = rest.split(':').next()?;
+    digits.parse().ok()
 }
 
 impl From<std::io::Error> for ConfigError {

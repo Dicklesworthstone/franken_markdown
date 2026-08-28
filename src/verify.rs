@@ -10,7 +10,9 @@
 
 use crate::PdfOptions;
 use crate::ast::Document;
+use crate::caret::{CaretStyle, render_caret};
 use crate::pdf::{RenderWarning, audit_anchors, render_warnings, verification_text_layer};
+use crate::span::{DiagnosticSeverity, SourceSpan};
 
 /// Report schema version (bump on any breaking shape change).
 pub const SCHEMA_VERSION: &str = "1";
@@ -116,6 +118,68 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
     let body = to_json_body(&report);
     report.digest = fnv1a64(body.as_bytes());
     Some(report)
+}
+
+/// Human-mode verify report: caret blocks for findings that map back into
+/// `source`, plus a one-line summary. JSON consumers must keep using
+/// [`to_json`] — this never writes to stdout and does not change the JSON
+/// schema.
+#[must_use]
+pub fn to_human(
+    report: &VerifyReport,
+    source: &str,
+    file: Option<&str>,
+    style: CaretStyle,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "fmd verify: {} ({} page(s), {} finding(s))\n",
+        report.verdict,
+        report.page_count,
+        report.findings.len()
+    ));
+    for finding in &report.findings {
+        out.push('\n');
+        if let Some(span) = finding_span(source, finding) {
+            out.push_str(&render_caret(
+                source,
+                span,
+                file,
+                &format!("{}: {}", finding.code, finding.detail),
+                DiagnosticSeverity::Error,
+                style,
+            ));
+        } else {
+            out.push_str(&format!("error: {}: {}\n", finding.code, finding.detail));
+        }
+    }
+    out
+}
+
+fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
+    // Overflow details end with `: {run text}`. Unresolved anchors are `#id`.
+    if finding.code == "overflow" {
+        if let Some((_, text)) = finding.detail.rsplit_once(": ") {
+            return find_source_span(source, text);
+        }
+    }
+    if finding.code == "unresolved_anchor" {
+        let rest = finding.detail.split_once('#')?.1;
+        let id = rest.split_whitespace().next()?.trim_end_matches(['.', ',']);
+        let needle = format!("](#{id})");
+        return find_source_span(source, &needle)
+            .or_else(|| find_source_span(source, &format!("#{id}")))
+            .or_else(|| find_source_span(source, id));
+    }
+    None
+}
+
+fn find_source_span(source: &str, needle: &str) -> Option<SourceSpan> {
+    if needle.is_empty() {
+        return None;
+    }
+    let start = source.find(needle)?;
+    Some(SourceSpan::new(start, start.saturating_add(needle.len())))
 }
 
 /// Serialize the report to JSON (including the digest). Deterministic.

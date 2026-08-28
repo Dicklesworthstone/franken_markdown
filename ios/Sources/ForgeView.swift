@@ -9,7 +9,14 @@ private enum ForgeLane: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+private enum AuxiliaryPanel: String, Identifiable {
+    case outline = "Outline"
+    case inspect = "Press Settings"
+    var id: Self { self }
+}
+
 struct ForgeView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var renderer = MarkdownRendererModel()
     @State private var lane: ForgeLane = .write
     @State private var editorFocused = false
@@ -21,6 +28,7 @@ struct ForgeView: View {
     @State private var isExporting = false
     @State private var exportStatusMessage: String?
     @State private var showCopiedAlert = false
+    @State private var auxiliaryPanel: AuxiliaryPanel?
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
@@ -33,8 +41,10 @@ struct ForgeView: View {
                 LaboratoryBackground()
                 VStack(spacing: 14) {
                     masthead
-                    if geometry.size.width >= 820 {
+                    if geometry.size.width >= 1_180 {
                         wideForge
+                    } else if geometry.size.width >= 760 {
+                        regularForge
                     } else {
                         compactForge
                     }
@@ -65,6 +75,28 @@ struct ForgeView: View {
             if let url = exportItemUrl {
                 ShareActivityView(activityItems: [url])
             }
+        }
+        .sheet(item: $auxiliaryPanel) { panel in
+            NavigationStack {
+                ZStack {
+                    LaboratoryBackground()
+                    Group {
+                        switch panel {
+                        case .outline: outlinePanel
+                        case .inspect: inspectorPanel
+                        }
+                    }
+                    .padding(16)
+                }
+                .navigationTitle(panel.rawValue)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { auxiliaryPanel = nil }
+                    }
+                }
+            }
+            .preferredColorScheme(.dark)
         }
         .overlay(alignment: .top) {
             if showCopiedAlert {
@@ -137,6 +169,29 @@ struct ForgeView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
             }
 
+            if horizontalSizeClass == .regular {
+                Menu {
+                    Button {
+                        auxiliaryPanel = .outline
+                    } label: {
+                        Label("Document Outline", systemImage: "list.bullet.indent")
+                    }
+                    Button {
+                        auxiliaryPanel = .inspect
+                    } label: {
+                        Label("Press Settings", systemImage: "slider.horizontal.3")
+                    }
+                } label: {
+                    Label("Tools", systemImage: "wrench.and.screwdriver")
+                        .font(.system(size: Lab.size(11), weight: .bold, design: .monospaced))
+                        .foregroundStyle(Lab.text)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+                }
+            }
+
             Button {
                 triggerPdfExport()
             } label: {
@@ -207,6 +262,15 @@ struct ForgeView: View {
                 .frame(minWidth: 360, maxWidth: .infinity)
             inspectorPanel
                 .frame(width: 260)
+        }
+    }
+
+    private var regularForge: some View {
+        HStack(spacing: 14) {
+            editorPanel
+                .frame(minWidth: 320, maxWidth: .infinity)
+            previewPanel
+                .frame(minWidth: 360, maxWidth: .infinity)
         }
     }
 

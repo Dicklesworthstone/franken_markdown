@@ -180,7 +180,8 @@ private enum MarkdownLexicalHighlighter {
                 apply(color: marker, to: storage, range: match.range(at: 3))
                 apply(color: marker, to: storage, range: match.range(at: 4))
                 apply(color: emphasis, font: italicFont(), to: storage, range: match.range(at: 5))
-            } else if line.contains("|") {
+            } else if line.trimmingCharacters(in: .whitespaces).hasPrefix("|")
+                        && line.trimmingCharacters(in: .whitespaces).hasSuffix("|") {
                 highlightTable(source, storage: storage, range: lineRange)
             } else {
                 highlightInline(source, storage: storage, range: lineRange)
@@ -236,14 +237,22 @@ private enum MarkdownLexicalHighlighter {
             guard match.range.length <= 220, !intersects(match.range, protected) else { return }
             apply(color: marker, to: storage, range: match.range(at: 1))
             apply(color: bold, font: font(.bold), to: storage, range: match.range(at: 2))
-            apply(color: marker, to: storage, range: match.range(at: 3))
+            let closing = NSRange(
+                location: NSMaxRange(match.range) - match.range(at: 1).length,
+                length: match.range(at: 1).length
+            )
+            apply(color: marker, to: storage, range: closing)
             protected.append(match.range)
         }
         enumerate(emphasisRegex, source: source, range: range) { match in
             guard match.range.length <= 160, !intersects(match.range, protected) else { return }
             apply(color: marker, to: storage, range: match.range(at: 1))
             apply(color: emphasis, font: italicFont(), to: storage, range: match.range(at: 2))
-            apply(color: marker, to: storage, range: match.range(at: 3))
+            let closing = NSRange(
+                location: NSMaxRange(match.range) - match.range(at: 1).length,
+                length: match.range(at: 1).length
+            )
+            apply(color: marker, to: storage, range: closing)
             protected.append(match.range)
         }
         enumerate(strikeRegex, source: source, range: range) { match in
@@ -322,8 +331,8 @@ private enum MarkdownLexicalHighlighter {
     private static let inlineCodeRegex = regex(#"(`+)([^`\n]|[^`\n][\s\S]*?[^`\n])\1(?!`)"#)
     private static let linkRegex = regex(#"(!?\[)([^\]\n]*)(\]\()([^)\n]*)(\))"#)
     private static let autolinkRegex = regex(#"<https?://[^>\s]+>"#)
-    private static let boldRegex = regex(#"(\*\*|__)(?!\s)([\s\S]*?\S)(\*\*|__)"#)
-    private static let emphasisRegex = regex(#"(\*|_)(?![\s*_])([^*_\n]*?\S)(\*|_)"#)
+    private static let boldRegex = regex(#"(\*\*|__)(?!\s)([\s\S]*?\S)\1"#)
+    private static let emphasisRegex = regex(#"(\*|_)(?![\s*_])([^*_\n]*?\S)\1"#)
     private static let strikeRegex = regex(#"(~~)(?!\s)([\s\S]*?\S)(~~)"#)
 }
 

@@ -57,6 +57,7 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("export async function renderPdf"));
     assert!(js.contains("export async function createRenderer"));
     assert!(js.contains("renderHtmlConfiguredWithFonts"));
+    assert!(js.contains("renderHtmlConfiguredMulti"));
     // The wrapper renders PDFs (with any number of images) through the multi
     // entry point; the single-image ABI functions remain in the Rust crate.
     assert!(js.contains("renderPdfConfiguredMulti"));
@@ -105,7 +106,7 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(dts.contains("weight?: number"));
     assert!(dts.contains("font_slot_weight: \"css_1_to_1000_variable_wght\""));
     assert!(dts.contains("bytes: Uint8Array"));
-    assert!(dts.contains("PNG and SVG assets are supported in PDF output"));
+    assert!(dts.contains("PNG and SVG are supported in HTML and PDF output"));
     assert!(dts.contains("fontAssets?: FmdFontAsset[]"));
     assert!(dts.contains("pdfImages?: FmdPdfImageAsset[]"));
     assert!(dts.contains("image_assets: \"png_svg_v0_host_supplied_bytes\""));

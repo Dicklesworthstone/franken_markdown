@@ -12,9 +12,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::wasm_abi::{
-    capabilities, render_html, render_html_configured, render_html_configured_with_fonts,
-    render_pdf, render_pdf_configured, render_pdf_configured_multi,
-    render_pdf_configured_with_assets, render_pdf_configured_with_image,
+    capabilities, render_html, render_html_configured, render_html_configured_multi,
+    render_html_configured_with_fonts, render_pdf, render_pdf_configured,
+    render_pdf_configured_multi, render_pdf_configured_with_assets,
+    render_pdf_configured_with_image,
 };
 use franken_markdown::{FontFamily, fonts, fonts::FontStyle};
 
@@ -46,6 +47,10 @@ fn capabilities_returns_the_browser_contract_json() {
     let json = capabilities();
     assert!(json.contains("\"schema\":\"fmd-wasm-capabilities-v1\""));
     assert!(json.contains("\"outputs\":[\"html\",\"pdf\"]"));
+    assert!(
+        json.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""),
+        "HTML and PDF both accept host-supplied image bytes: {json}"
+    );
 }
 
 #[test]
@@ -141,6 +146,36 @@ fn render_html_configured_with_fonts_accepts_real_font_bytes() {
     .expect("custom font html");
     let html = String::from_utf8(out.bytes()).unwrap();
     assert!(html.contains("@font-face"));
+}
+
+#[test]
+fn render_html_configured_multi_inlines_host_png_as_data_uri() {
+    let png = tiny_rgb_png();
+    let lengths = vec![png.len() as u32];
+    let out = render_html_configured_multi(
+        "![Chart](chart.png)\n",
+        None,
+        None,
+        None,
+        None,
+        false,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        vec!["chart.png".to_string()],
+        png,
+        lengths,
+    )
+    .expect("html with host image");
+    let html = String::from_utf8(out.bytes()).unwrap();
+    assert!(
+        html.contains("data:image/png;base64,"),
+        "host PNG must inline as a data URI, got {html}"
+    );
+    assert!(html.contains("alt=\"Chart\""), "{html}");
 }
 
 #[test]

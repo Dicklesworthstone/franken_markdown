@@ -12,7 +12,7 @@ export interface FmdDiagnostic {
 export interface FmdPdfImageAsset {
   /** Markdown image destination, for example `images/chart.png` from `![Chart](images/chart.png)`. */
   destination: string;
-  /** Browser-supplied image bytes. PNG and SVG assets are supported in PDF output. */
+  /** Browser-supplied image bytes. PNG and SVG are supported in HTML and PDF output. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
 }
 
@@ -54,7 +54,7 @@ export interface FmdRenderOptions {
   headingScale?: number;
   /** Nominal table cell size override in points; clamped to [5, base]. */
   tableFontSize?: number;
-  /** Host-supplied PDF image bytes; any number of assets may be supplied per render call. */
+  /** Host-supplied image bytes (HTML data URIs and PDF embedding); any number per render. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */
   fontAssets?: FmdFontAsset[];
@@ -80,6 +80,7 @@ export interface FmdCapabilities {
     mime_type: "text/html; charset=utf-8";
     self_contained: boolean;
     custom_css_utf8: boolean;
+    image_assets: "png_svg_v0_host_supplied_bytes";
     font_assets: "ttf_v0_host_supplied_bytes";
     font_slot_weight: "css_1_to_1000_variable_wght";
   };

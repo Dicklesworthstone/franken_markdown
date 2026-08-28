@@ -2,6 +2,7 @@ import initWasm, {
   capabilities as wasmCapabilities,
   renderHtmlConfigured,
   renderHtmlConfiguredWithFonts,
+  renderHtmlConfiguredMulti,
   renderPdfConfiguredMulti
 } from "./pkg/franken_markdown.js";
 
@@ -26,7 +27,38 @@ export async function capabilities() {
 
 export async function renderHtml(markdown, options = {}) {
   await init();
+  const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
+  if (pdfImages.length > 0) {
+    const destinations = pdfImages.map((image) => image.destination);
+    const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
+    const totalBytes = pdfImages.reduce((sum, image) => sum + image.bytes.length, 0);
+    const flatBytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const image of pdfImages) {
+      flatBytes.set(image.bytes, offset);
+      offset += image.bytes.length;
+    }
+    return normalizeResult(
+      renderHtmlConfiguredMulti(
+        String(markdown),
+        stringOption(options.font),
+        darkModeOption(options.darkMode),
+        verbatimOption(options.title),
+        verbatimOption(options.customCss),
+        Boolean(options.allowRawHtml),
+        fontBytesForSlot(fontAssets, "body-regular"),
+        fontBytesForSlot(fontAssets, "body-bold"),
+        fontBytesForSlot(fontAssets, "body-italic"),
+        fontBytesForSlot(fontAssets, "body-bold-italic"),
+        fontBytesForSlot(fontAssets, "mono-regular"),
+        fontWeightsForSlots(fontAssets),
+        destinations,
+        flatBytes,
+        lengths
+      )
+    );
+  }
   if (fontAssets.length > 0) {
     return normalizeResult(
       renderHtmlConfiguredWithFonts(

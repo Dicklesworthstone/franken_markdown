@@ -331,8 +331,8 @@ fn render_block<'a, 'b>(
     }
 }
 
-fn render_list<'a>(
-    list: &'a List,
+fn render_list<'a, 'b>(
+    list: &'b List,
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
@@ -383,8 +383,8 @@ fn render_list<'a>(
     out.push_str(">\n");
 }
 
-fn render_table<'a>(
-    table: &'a crate::ast::Table,
+fn render_table<'a, 'b>(
+    table: &'b crate::ast::Table,
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,

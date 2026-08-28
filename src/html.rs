@@ -2238,7 +2238,7 @@ mod tests {
         let doc = crate::parse_markdown(
             "> [!NOTE]\n> Useful details.\n\n> [!WARNING]\n> Careful **here**.\n",
         );
-        let html = render(&doc, &crate::HtmlOptions::default()).unwrap();
+        let html = render(&doc, &crate::HtmlOptions::default());
         assert!(html.contains("callout-note"), "{html}");
         assert!(html.contains("callout-warning"), "{html}");
         assert!(html.contains("Useful details."));
@@ -2251,7 +2251,7 @@ mod tests {
     #[test]
     fn unknown_alert_tag_degrades_to_plain_blockquote() {
         let doc = crate::parse_markdown("> [!SURLY]\n> not a tag\n");
-        let html = render(&doc, &crate::HtmlOptions::default()).unwrap();
+        let html = render(&doc, &crate::HtmlOptions::default());
         assert!(html.contains("<blockquote>"));
         assert!(html.contains("[!SURLY]"), "unknown tag stays literal");
         assert!(!html.contains("<aside class=\"callout"), "no callout markup");

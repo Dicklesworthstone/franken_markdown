@@ -60,6 +60,51 @@ fn config_show_json_uses_defaults_and_env_path_when_missing() {
 }
 
 #[test]
+fn config_set_get_emoji_strategy_persists_and_is_discoverable() {
+    // Peer y5i9.2 registered the key but omitted get/show/save plumbing, so
+    // `fmd config get emoji_strategy` looked like an unknown key and `config set`
+    // dropped the value on write. The key must round-trip through the CLI.
+    let config = temp_file("emoji-strategy", "conf");
+    let _ = fs::remove_file(&config);
+
+    let get_default = fmd_with_config(&["config", "get", "emoji_strategy"], &config);
+    assert!(
+        get_default.status.success(),
+        "default get must succeed, stderr={}",
+        text(&get_default.stderr)
+    );
+    assert_eq!(text(&get_default.stdout).trim(), "warning");
+
+    let set = fmd_with_config(
+        &["config", "set", "emoji_strategy", "drawn", "--json"],
+        &config,
+    );
+    assert!(set.status.success(), "stderr={}", text(&set.stderr));
+    let set_out = text(&set.stdout);
+    assert!(set_out.contains("\"event\":\"config_set\""));
+    assert!(set_out.contains("\"value\":\"drawn\""));
+
+    let stored = fs::read_to_string(&config).expect("set must write the config file");
+    assert!(
+        stored.contains("emoji_strategy=drawn"),
+        "persisted file must keep the key, got {stored:?}"
+    );
+
+    let get = fmd_with_config(&["config", "get", "emoji_strategy", "--json"], &config);
+    assert!(get.status.success());
+    assert!(text(&get.stdout).contains("\"value\":\"drawn\""));
+
+    let show = fmd_with_config(&["config", "show"], &config);
+    assert!(show.status.success());
+    assert!(
+        text(&show.stdout).contains("emoji_strategy: drawn"),
+        "human show must list the key, got {}",
+        text(&show.stdout)
+    );
+
+    let _ = fs::remove_file(config);
+}
+
 fn config_set_get_and_render_use_persistent_default_font() {
     let config = temp_file("font", "conf");
     let html_path = temp_file("serif", "html");
@@ -438,6 +483,17 @@ fn get_resolved_covers_every_key_and_unknown_returns_none() {
     assert_eq!(cfg.get_resolved("margin_right_pt").as_deref(), Some("20.5"));
     assert_eq!(cfg.get_resolved("margin_bottom_pt").as_deref(), Some("30"));
     assert_eq!(cfg.get_resolved("margin_left_pt").as_deref(), Some("40"));
+    assert_eq!(
+        cfg.get_resolved("emoji_strategy").as_deref(),
+        Some("warning"),
+        "unset emoji_strategy must resolve, not look like an unknown key"
+    );
+    for &key in CONFIG_KEYS {
+        assert!(
+            cfg.get_resolved(key).is_some(),
+            "get_resolved({key}) is None; fmd config get would report unknown key"
+        );
+    }
     // Key normalization: hyphenated/upper-case keys resolve identically.
     assert_eq!(cfg.get_resolved("MARGIN-TOP-PT").as_deref(), Some("10"));
     // Unknown key resolves to None.
@@ -475,6 +531,10 @@ fn to_file_string_serializes_all_fields_and_round_trips() {
     ] {
         assert!(serialized.contains(expected), "missing line {expected:?}");
     }
+    assert!(
+        !serialized.contains("emoji_strategy="),
+        "unset emoji_strategy must stay implicit so v1 files stay byte-stable, got {serialized:?}"
+    );
     // Serializing then parsing yields an identical config.
     let reparsed = FmdConfig::parse(&serialized).expect("serialized config must parse");
     assert_eq!(reparsed, cfg);

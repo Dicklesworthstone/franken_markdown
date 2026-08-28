@@ -229,6 +229,8 @@ impl FmdConfig {
             "margin_right_pt" => Some(json_num(theme.page.margins.right_pt)),
             "margin_bottom_pt" => Some(json_num(theme.page.margins.bottom_pt)),
             "margin_left_pt" => Some(json_num(theme.page.margins.left_pt)),
+            // Unset is the v1 default: renderer and CLI both treat it as warning.
+            "emoji_strategy" => Some(self.emoji_strategy.unwrap_or_default().as_str().to_string()),
             _ => None,
         }
     }
@@ -260,7 +262,8 @@ impl FmdConfig {
             .unwrap_or_else(|| "null".to_string());
         format!(
             "{{\"font\":\"{}\",\"dark_mode\":\"{}\",\"custom_css\":{},\"page_size\":\"{}\",\
-             \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}}}}",
+             \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}},\
+             \"emoji_strategy\":\"{}\"}}",
             theme.font.as_str(),
             theme.dark_mode.as_str(),
             custom_css,
@@ -269,6 +272,7 @@ impl FmdConfig {
             json_num(theme.page.margins.right_pt),
             json_num(theme.page.margins.bottom_pt),
             json_num(theme.page.margins.left_pt),
+            self.emoji_strategy.unwrap_or_default().as_str(),
         )
     }
 
@@ -323,6 +327,11 @@ impl FmdConfig {
             out.push('\n');
             out.push_str("margin_left_pt=");
             out.push_str(&json_num(margins.left_pt));
+            out.push('\n');
+        }
+        if let Some(strategy) = self.emoji_strategy {
+            out.push_str("emoji_strategy=");
+            out.push_str(strategy.as_str());
             out.push('\n');
         }
         Ok(out)
@@ -534,10 +543,6 @@ mod tests {
             caret.contains("dark_mode=bogus"),
             "gutter should show the bad key=value, got {caret:?}"
         );
-        assert!(
-            caret.contains("dark_mode=bogus"),
-            "gutter should show the bad key=value, got {caret:?}"
-        );
     }
 
     #[test]
@@ -612,6 +617,47 @@ mod tests {
         assert!(
             CONFIG_KEYS.contains(&"emoji_strategy"),
             "emoji_strategy must be in CONFIG_KEYS for fmd config show and the unknown-key error"
+        );
+    }
+
+    #[test]
+    fn every_config_key_resolves_and_emoji_strategy_round_trips() {
+        // `fmd config get` treats None as "unknown key". Every CONFIG_KEYS
+        // entry must therefore resolve, including the default (unset) case.
+        let default = FmdConfig::default();
+        for &key in CONFIG_KEYS {
+            assert!(
+                default.get_resolved(key).is_some(),
+                "get_resolved({key}) must not look like an unknown key"
+            );
+        }
+        assert_eq!(
+            default.get_resolved("emoji_strategy").as_deref(),
+            Some("warning"),
+            "unset emoji_strategy resolves to the v1 default"
+        );
+
+        let mut cfg = FmdConfig::default();
+        cfg.set_key_value("emoji_strategy", "drawn")
+            .expect("drawn is a documented value");
+        assert_eq!(cfg.emoji_strategy, Some(EmojiStrategy::Drawn));
+        assert_eq!(cfg.get_resolved("emoji_strategy").as_deref(), Some("drawn"));
+        let serialized = cfg.try_to_file_string().expect("representable");
+        assert!(
+            serialized.contains("emoji_strategy=drawn\n"),
+            "set values must persist, got {serialized:?}"
+        );
+        let reparsed = FmdConfig::parse(&serialized).expect("serialized config must parse");
+        assert_eq!(reparsed.emoji_strategy, Some(EmojiStrategy::Drawn));
+        assert!(
+            cfg.to_json().contains("\"emoji_strategy\":\"drawn\""),
+            "JSON show/get envelopes must name the resolved strategy, got {}",
+            cfg.to_json()
+        );
+        assert!(
+            default.to_json().contains("\"emoji_strategy\":\"warning\""),
+            "JSON default must name the v1 strategy, got {}",
+            default.to_json()
         );
     }
 }

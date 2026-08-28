@@ -32,10 +32,9 @@ one value is honored in v1.
 | `noto_subset` | accepted, not honored | Reserved for a future curated Noto Sans Symbols / Noto Emoji subset. The size cost must be measured first; a small subset is feasible but every added face is a multi-KB cost against the WASM size budget. |
 | `drawn`       | accepted, not honored | Reserved for a future per-glyph vector-drawing path (fmd-math's `drawn.rs` precedent). Out of scope until a benchmark proves the cost is acceptable in the hot path. |
 
-The parser does not reject unknown values; it falls back to `warning` and
-emits a render warning. The intent is to make the policy machine-readable
-(agents and CI can branch on the value) while never silently changing the
-rendered output.
+Unknown values are a parse error that names the three legal selectors. The
+intent is to make the policy machine-readable (agents and CI can branch on
+the value) without silently substituting a default a caller did not ask for.
 
 ## Why "warning-only" is the right v1
 

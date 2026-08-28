@@ -225,6 +225,8 @@ struct ForgeView: View {
                     .padding(.vertical, 7)
                     .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
             if horizontalSizeClass == .regular {
@@ -239,6 +241,8 @@ struct ForgeView: View {
                         .padding(.vertical, 7)
                         .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 #else
                 Menu {
@@ -276,6 +280,8 @@ struct ForgeView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .background(LinearGradient(colors: [Lab.amber, Lab.amber.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .disabled(isExporting)
 
@@ -291,6 +297,8 @@ struct ForgeView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .background(LinearGradient(colors: [Lab.cyan, Lab.cyan.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .disabled(isExporting)
         }
@@ -309,6 +317,7 @@ struct ForgeView: View {
         .padding(.vertical, 9)
         .background(Color.black.opacity(0.38), in: Capsule())
         .overlay(Capsule().stroke(statusColor.opacity(0.28)))
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var compactForge: some View {

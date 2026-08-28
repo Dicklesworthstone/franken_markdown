@@ -27,8 +27,8 @@ use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
     FORCED_BREAK_PENALTY, FontSize, Glue, HyphenLang, Hyphenator, LayoutUnit, LineBreak,
     ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph_into, classify_script, cjk_break_allowed,
-    cjk_break_glue, cjk_break_prohibited, default_interword_glue, is_breakable_whitespace,
+    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
+    cjk_break_prohibited, classify_script, default_interword_glue, is_breakable_whitespace,
     is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
@@ -155,7 +155,15 @@ const F_SYMBOL: u8 = 6;
 /// The optional CJK fallback face (Han/Kana/Hangul routing). Layout routes CJK
 /// characters here when the style slot lacks the glyph and the CJK face is loaded.
 const F_CJK: u8 = 7;
-const SLOTS: [u8; 7] = [F_BODY, F_BOLD, F_ITALIC, F_MONO, F_BOLDITALIC, F_SYMBOL, F_CJK];
+const SLOTS: [u8; 7] = [
+    F_BODY,
+    F_BOLD,
+    F_ITALIC,
+    F_MONO,
+    F_BOLDITALIC,
+    F_SYMBOL,
+    F_CJK,
+];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 
 /// A positioned run of single-face text within a laid-out line.

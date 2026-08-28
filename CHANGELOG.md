@@ -45,9 +45,11 @@ Scope window: 2026-06-26 through 2026-08-28.
 | 2026-08-24 | TeX-math + font factoring release | `v0.4.0` ships clean-room TeX-mathematics layout (`fmd-math`), factored font crate (`fmd-font` `v0.2.0`), UAX #14 CJK line breaking, expanded math symbol fallbacks, and configurable typography |
 | 2026-08-25 → 2026-08-28 | Unreleased (0.4.1-dev) | MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, and TOC foundation |
 
-## Unreleased (2026-08-25 → 2026-08-28)
+## 0.4.1 - 2026-08-28
 
-Development on `main` post-`v0.4.0`.
+Feature and hardening release on `main` post-`v0.4.0` (201 commits): document
+navigation, WOFF1 embedding, watch/PDF-A surfaces, and a reality-check-driven
+build/CI hardening wave.
 
 ### Delivered capability
 
@@ -55,7 +57,21 @@ Development on `main` post-`v0.4.0`.
 - Multi-language hyphenation (`38re`): TeX pattern tables and Knuth-Liang hyphenation for German (`de`), French (`fr`), Spanish (`es`), and Dutch (`nl`).
 - GFM-plus definition lists (`ryu4`): `<dl>`, `<dt>`, `<dd>` in HTML and PDF layout, `--profile gfm-plus` validation.
 - Caret diagnostics (`9wse`): accurate line/column caret reporting for parse warnings and syntax errors.
-- Table of Contents (`byqs`): HTML TOC emission with depth controls and marker support.
+- Table of Contents (`byqs`): HTML TOC emission with depth controls and marker support, plus a PDF contents page with dot leaders and linked page numbers via two-pass layout convergence.
+- PDF document outline bookmarks generated from the Markdown heading hierarchy.
+- WOFF1 embedded font subsets in HTML output (`ge1t`): per-document subsets wrapped in the renderer's own deterministic DEFLATE container, 18.4% smaller showcase HTML, `--html-font-format ttf|woff1` opt-out; byte-deterministic and browser-verified.
+- `fmd watch <dir>`: per-file recursive Markdown watching.
+- PDF/A-2b identification (XMP + sRGB OutputIntent) with `--pdf-a 2b` / `--pdf-a-strict` and a veraPDF CI validation gate.
+- Chunked PDF page emission with monolithic byte parity, plus a bounded thread pool for per-page stream compression.
+- `fmd doctor fonts`: corpus glyph-coverage auditor with stable JSON output.
+- Universal iOS/Mac Catalyst app scaffold with live-highlighting editor, outline navigation, and PDF/HTML export bridge.
+
+### Reality-check hardening wave (2026-08-28)
+
+- Version/distribution truth: `main` identifies as 0.4.1 (v0.4.0 shipped to GitHub Releases and crates.io on 2026-08-24/25); README status table and this changelog corrected to match the registries.
+- Toolchain pinned to dated `nightly-2026-08-25` with the rationale restored; `wasm32-unknown-unknown` declared in `rust-toolchain.toml` so every host/worker auto-provisions it.
+- Gate scripts (commonmark-conformance, check-claim-discipline, check-wasm-package) now survive rch offload: host-executable binary checks plus local-rebuild fallback when a wrong-OS artifact or an offload refusal would otherwise false-fail the gate.
+- Ratchets: CommonMark floor 379 → 381 (measured), wasm size budget 4.3M raw / 1.9M gzip with documented history.
 
 ## 0.4.0 - 2026-08-24
 

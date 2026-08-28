@@ -49,8 +49,8 @@ static SUBSET_TAIL: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_SUBSET_TAIL").is_some());
 static TAIL_NOPAIR: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOPAIR").is_some());
-static TAIL_NOHEX: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOHEX").is_some());
+static TAIL_NOGLYPH: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOGLYPH").is_some());
 
 #[cfg(not(target_arch = "wasm32"))]
 fn subset_tail_enabled() -> bool {
@@ -27846,7 +27846,10 @@ fn widths_array(font: &Font) -> String {
 /// can keep the ligated text selectable).
 fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
     let chars: Vec<char> = text.chars().collect();
-    let gids: Vec<u16> = chars.iter().map(|&c| source.glyph_index(c)).collect();
+    let gids: Vec<u16> = chars
+        .iter()
+        .map(|&c| if *TAIL_NOGLYPH { 0 } else { source.glyph_index(c) })
+        .collect();
     let mut shaped = Vec::with_capacity(gids.len());
     let mut lig_uni = Vec::new();
     let mut ci = 0;
@@ -27922,7 +27925,11 @@ fn append_kerned_tj_with_spacing(
         .then(|| (source.glyph_index(' '), source.glyph_index('\u{00a0}')));
     out.push_str("[<");
     for (i, &g) in shaped.iter().enumerate() {
-        append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
+        if *TAIL_NOHEX {
+            out.push_str("<0000>");
+        } else {
+            append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
+        }
         if let Some(&next) = shaped.get(i + 1) {
             let k = if *TAIL_NOPAIR { 0 } else { kern.pair(g, next) };
             let kern_adjust = if k != 0 {

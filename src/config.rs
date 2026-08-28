@@ -21,6 +21,12 @@ pub const CONFIG_KEYS: &[&str] = &[
     "margin_right_pt",
     "margin_bottom_pt",
     "margin_left_pt",
+    // Forward-compatible policy hook (bead y5i9.2). The default
+    // `warning` strategy is honored today; the other two are accepted
+    // in input and resolved to `warning` so the policy is machine-
+    // readable without changing default behavior. See
+    // `docs/EMOJI_FALLBACK.md`.
+    "emoji_strategy",
 ];
 
 /// Native CLI configuration. Every field is optional; unresolved values come
@@ -31,6 +37,12 @@ pub struct FmdConfig {
     pub dark_mode: Option<DarkModePolicy>,
     pub custom_css: Option<PathBuf>,
     pub margins: Option<PageMargins>,
+    /// Resolved emoji + symbol fallback strategy (bead y5i9.2). `None`
+    /// means "use the v1 default", which the renderer treats as
+    /// `EmojiStrategy::Warning`. Stored as the resolved enum (not a raw
+    /// string) so the JSON / `config show` output is normalized and a
+    /// future `noto_subset` or `drawn` strategy just adds a new variant.
+    pub emoji_strategy: Option<EmojiStrategy>,
 }
 
 /// Config read/parse/write error.
@@ -182,6 +194,13 @@ impl FmdConfig {
             "margin_right_pt" => self.set_margin(|m, v| m.right_pt = v, value)?,
             "margin_bottom_pt" => self.set_margin(|m, v| m.bottom_pt = v, value)?,
             "margin_left_pt" => self.set_margin(|m, v| m.left_pt = v, value)?,
+            "emoji_strategy" => {
+                // Accepted values: warning, noto_subset, drawn (and common
+                // synonyms). All three are stored; only `Warning` is
+                // currently acted on by the renderer. See
+                // `docs/EMOJI_FALLBACK.md` for the policy.
+                self.emoji_strategy = Some(parse_emoji_strategy(value)?);
+            }
             _ => {
                 return Err(format!(
                     "unknown config key `{key}`; supported keys: {}",
@@ -356,6 +375,51 @@ fn parse_dark_mode(value: &str) -> std::result::Result<DarkModePolicy, String> {
     }
 }
 
+/// Emoji + symbol fallback policy (bead y5i9.2). See `docs/EMOJI_FALLBACK.md`
+/// for the full ADR; in short, only `Warning` is honored today and the
+/// other variants are reserved forward-compatibly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmojiStrategy {
+    /// Render `.notdef` and emit a `missing_glyphs` warning. The v1
+    /// default and the only strategy honored today.
+    #[default]
+    Warning,
+    /// Reserved for a future curated Noto Sans Symbols / Noto Emoji
+    /// subset. Accepted on input so the policy is machine-readable;
+    /// resolves to `Warning` until the bundled face lands.
+    NotoSubset,
+    /// Reserved for a future per-glyph vector-drawing path (fmd-math's
+    /// `drawn.rs` precedent). Resolves to `Warning` until a benchmark
+    /// proves the hot-path cost is acceptable.
+    Drawn,
+}
+
+impl EmojiStrategy {
+    /// Stable machine selector for robot/JSON output. The strings are
+    /// the values the CLI accepts in `key=value` form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::NotoSubset => "noto_subset",
+            Self::Drawn => "drawn",
+        }
+    }
+}
+
+fn parse_emoji_strategy(value: &str) -> std::result::Result<EmojiStrategy, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "warning" | "warn" => Ok(EmojiStrategy::Warning),
+        "noto" | "noto_subset" | "noto-emoji" | "noto-emoji-subset" => {
+            Ok(EmojiStrategy::NotoSubset)
+        }
+        "drawn" | "draw" | "vector" => Ok(EmojiStrategy::Drawn),
+        _ => Err(
+            "emoji_strategy must be one of `warning`, `noto_subset`, or `drawn`"
+                .to_string(),
+        ),
+    }
+}
 fn normalize_key(key: &str) -> String {
     key.trim().replace('-', "_").to_ascii_lowercase()
 }
@@ -412,7 +476,8 @@ fn json_escape(s: &str) -> String {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::json_num;
+    use super::{ConfigError, FmdConfig, json_num};
+    use crate::caret::CaretStyle;
 
     #[test]
     fn json_num_folds_non_finite_to_zero() {
@@ -423,5 +488,29 @@ mod tests {
         assert_eq!(json_num(f32::NEG_INFINITY), "0");
         assert_eq!(json_num(72.0), "72");
         assert_eq!(json_num(0.5), "0.5");
+    }
+
+    #[test]
+    fn parse_error_caret_follows_lone_cr_line_endings() {
+        let src = "font=sans\rdark_mode=bogus";
+        let err = FmdConfig::parse(src).unwrap_err();
+        match &err {
+            ConfigError::Parse(msg) => assert!(
+                msg.starts_with("line 2:"),
+                "str::lines counts CR-separated keys as two lines, got {msg}"
+            ),
+            other => panic!("expected parse error, got {other:?}"),
+        }
+        let caret = err
+            .render_caret(src, Some("fmd.toml"), CaretStyle::default())
+            .expect("parse errors produce a caret");
+        assert!(
+            caret.contains("fmd.toml:2:"),
+            "caret must point at the second CR-separated line, got {caret:?}"
+        );
+        assert!(
+            caret.contains("dark_mode=bogus"),
+            "gutter should show the bad key=value, got {caret:?}"
+        );
     }
 }

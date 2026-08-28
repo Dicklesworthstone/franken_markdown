@@ -567,7 +567,122 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 /// one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
-    pdf::render(doc, opts)
+    let doc = transform_footnotes_for_pdf(doc);
+    pdf::render(&doc, opts)
+}
+
+/// Convert `Block::FootnoteDefinition` nodes and `Inline::FootnoteRef`
+/// references into a trailing "Notes" section with numbered entries, so the
+/// PDF render surfaces footnotes without per-surface changes.
+///
+/// The HTML renderer handles footnotes natively via the notes `<section>`;
+/// this transform is PDF-only (called from `render_pdf_document`).
+fn transform_footnotes_for_pdf(doc: &Document) -> Document {
+    use crate::ast::{Block, Inline};
+
+    // Pass 1: collect definitions (id -> content blocks) and assign numbers
+    // by first-reference appearance.
+    let mut defs: Vec<(String, Vec<Block>)> = Vec::new();
+    let mut numbers: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    fn collect_defs_and_numbers(
+        blocks: &[Block],
+        defs: &mut Vec<(String, Vec<Block>)>,
+        numbers: &mut std::collections::BTreeMap<String, usize>,
+    ) {
+        for block in blocks {
+            match block {
+                Block::FootnoteDefinition { id, blocks: inner } => {
+                    if !numbers.contains_key(id.as_str()) {
+                        let n = numbers.len() + 1;
+                        numbers.insert(id.clone(), n);
+                    }
+                    defs.push((id.clone(), inner.clone()));
+                }
+                Block::BlockQuote(inner) => collect_defs_and_numbers(inner, defs, numbers),
+                Block::List(list) => {
+                    for item in &list.items {
+                        collect_defs_and_numbers(&item.blocks, defs, numbers);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    collect_defs_and_numbers(&doc.blocks, &mut defs, &mut numbers);
+
+    // Pass 2: rewrite the block tree — strip FootnoteDefinitions, rewrite
+    // FootnoteRef to numbered text, append the notes section.
+    fn rewrite_blocks(
+        blocks: &[Block],
+        numbers: &std::collections::BTreeMap<String, usize>,
+        defs: &[(String, Vec<Block>)],
+    ) -> Vec<Block> {
+        let mut out = Vec::new();
+        for block in blocks {
+            match block {
+                Block::FootnoteDefinition { .. } => {} // moved to the notes section
+                Block::Paragraph(inlines) => {
+                    out.push(Block::Paragraph(rewrite_inlines(inlines, numbers)));
+                }
+                Block::Heading { level, inlines } => {
+                    out.push(Block::Heading { level: *level, inlines: rewrite_inlines(inlines, numbers) });
+                }
+                Block::BlockQuote(inner) => {
+                    out.push(Block::BlockQuote(rewrite_blocks(inner, numbers, defs)));
+                }
+                Block::List(list) => {
+                    let mut new_list = list.clone();
+                    for item in &mut new_list.items {
+                        item.blocks = rewrite_blocks(&item.blocks, numbers, defs);
+                    }
+                    out.push(Block::List(new_list));
+                }
+                other => out.push(other.clone()),
+            }
+        }
+        out
+    }
+
+    fn rewrite_inlines(
+        inlines: &[Inline],
+        numbers: &std::collections::BTreeMap<String, usize>,
+    ) -> Vec<Inline> {
+        inlines
+            .iter()
+            .map(|inl| match inl {
+                Inline::FootnoteRef { id } => {
+                    let n = numbers.get(id.as_str()).copied().unwrap_or(0);
+                    Inline::Text(format!("[{n}]"))
+                }
+                Inline::Emphasis(c) => Inline::Emphasis(rewrite_inlines(c, numbers)),
+                Inline::Strong(c) => Inline::Strong(rewrite_inlines(c, numbers)),
+                Inline::Strikethrough(c) => Inline::Strikethrough(rewrite_inlines(c, numbers)),
+                Inline::Link { dest, title, content } => {
+                    Inline::Link { dest: dest.clone(), title: title.clone(), content: rewrite_inlines(content, numbers) }
+                }
+                other => other.clone(),
+            })
+            .collect()
+    }
+
+    let mut blocks = rewrite_blocks(&doc.blocks, &numbers, &defs);
+
+    // Synthesize the notes section.
+    if !defs.is_empty() {
+        blocks.push(Block::Heading { level: 2, inlines: vec![Inline::Text("Notes".to_string())] });
+        for (def_id, def_blocks) in &defs {
+            let n = numbers.get(def_id.as_str()).copied().unwrap_or(0);
+            for block in def_blocks {
+                if let Block::Paragraph(inlines) = block {
+                    let mut numbered = vec![Inline::Text(format!("[{n}] "))];
+                    numbered.extend(inlines.iter().cloned());
+                    blocks.push(Block::Paragraph(numbered));
+                }
+            }
+        }
+    }
+
+    Document { blocks }
 }
 
 /// Render an already-parsed document to PDF bytes and collect per-stage timing.

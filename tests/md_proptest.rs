@@ -10,11 +10,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use franken_markdown::{
-    adversarial, generate, parse_markdown, parse_markdown_spanned, render_html_document,
-    render_pdf_document, GenOptions, HtmlOptions, PdfOptions, SourceSpan, ADVERSARIES,
+    ADVERSARIES, GenOptions, HtmlOptions, PdfOptions, SourceSpan, adversarial, generate,
+    parse_markdown, parse_markdown_spanned, render_html_document, render_pdf_document,
 };
 
 const PARSE_N: u64 = 10_000;

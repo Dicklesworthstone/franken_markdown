@@ -60,7 +60,7 @@ fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
     let n = a.len().min(b.len());
     (0..n)
         .find(|&i| a[i] != b[i])
-        .or_else(|| if a.len() == b.len() { None } else { Some(n) })
+        .or(if a.len() == b.len() { None } else { Some(n) })
 }
 
 fn assert_bytes_eq(id: &str, subject: &str, chunked: &[u8], monolithic: &[u8]) {

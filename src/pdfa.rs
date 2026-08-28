@@ -82,11 +82,7 @@ impl PdfASettings {
     /// Extra PDF objects appended after Info/SMask when this profile is on.
     #[must_use]
     pub const fn extra_object_count(self) -> usize {
-        if self.mode.is_a2b() {
-            3
-        } else {
-            0
-        }
+        if self.mode.is_a2b() { 3 } else { 0 }
     }
 }
 
@@ -352,6 +348,7 @@ fn write_s15f16(out: &mut [u8], v: f64) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     fn log_check(id: &str, subject: &str, ok: bool) {

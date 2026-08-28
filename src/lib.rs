@@ -712,7 +712,6 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
     fn rewrite_blocks(
         blocks: &[Block],
         numbers: &std::collections::BTreeMap<String, usize>,
-        defs: &[(String, Vec<Block>)],
     ) -> Vec<Block> {
         let mut out = Vec::new();
         for block in blocks {
@@ -722,15 +721,18 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
                     out.push(Block::Paragraph(rewrite_inlines(inlines, numbers)));
                 }
                 Block::Heading { level, inlines } => {
-                    out.push(Block::Heading { level: *level, inlines: rewrite_inlines(inlines, numbers) });
+                    out.push(Block::Heading {
+                        level: *level,
+                        inlines: rewrite_inlines(inlines, numbers),
+                    });
                 }
                 Block::BlockQuote(inner) => {
-                    out.push(Block::BlockQuote(rewrite_blocks(inner, numbers, defs)));
+                    out.push(Block::BlockQuote(rewrite_blocks(inner, numbers)));
                 }
                 Block::List(list) => {
                     let mut new_list = list.clone();
                     for item in &mut new_list.items {
-                        item.blocks = rewrite_blocks(&item.blocks, numbers, defs);
+                        item.blocks = rewrite_blocks(&item.blocks, numbers);
                     }
                     out.push(Block::List(new_list));
                 }
@@ -738,8 +740,16 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
                     let mut new_items = Vec::with_capacity(items.len());
                     for item in items {
                         new_items.push(crate::ast::DefinitionItem {
-                            terms: item.terms.iter().map(|t| rewrite_inlines(t, numbers)).collect(),
-                            definitions: item.definitions.iter().map(|d| rewrite_inlines(d, numbers)).collect(),
+                            terms: item
+                                .terms
+                                .iter()
+                                .map(|t| rewrite_inlines(t, numbers))
+                                .collect(),
+                            definitions: item
+                                .definitions
+                                .iter()
+                                .map(|d| rewrite_inlines(d, numbers))
+                                .collect(),
                         });
                     }
                     out.push(Block::DefinitionList(new_items));
@@ -764,19 +774,28 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
                 Inline::Emphasis(c) => Inline::Emphasis(rewrite_inlines(c, numbers)),
                 Inline::Strong(c) => Inline::Strong(rewrite_inlines(c, numbers)),
                 Inline::Strikethrough(c) => Inline::Strikethrough(rewrite_inlines(c, numbers)),
-                Inline::Link { dest, title, content } => {
-                    Inline::Link { dest: dest.clone(), title: title.clone(), content: rewrite_inlines(content, numbers) }
-                }
+                Inline::Link {
+                    dest,
+                    title,
+                    content,
+                } => Inline::Link {
+                    dest: dest.clone(),
+                    title: title.clone(),
+                    content: rewrite_inlines(content, numbers),
+                },
                 other => other.clone(),
             })
             .collect()
     }
 
-    let mut blocks = rewrite_blocks(&doc.blocks, &numbers, &defs);
+    let mut blocks = rewrite_blocks(&doc.blocks, &numbers);
 
     // Synthesize the notes section.
     if !defs.is_empty() {
-        blocks.push(Block::Heading { level: 2, inlines: vec![Inline::Text("Notes".to_string())] });
+        blocks.push(Block::Heading {
+            level: 2,
+            inlines: vec![Inline::Text("Notes".to_string())],
+        });
         for (def_id, def_blocks) in &defs {
             let n = numbers.get(def_id.as_str()).copied().unwrap_or(0);
             for block in def_blocks {

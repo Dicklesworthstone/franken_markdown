@@ -15,6 +15,13 @@
 //!
 //! Artifact: tests/artifacts/perf/scanner-gate-<ts>/ per
 //! docs/PERFORMANCE_ARTIFACT_SCHEMA.md (fmd-perf-artifact-v1).
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::ptr_arg,
+    clippy::format_in_format_args
+)]
 
 use std::fs;
 use std::time::Instant;

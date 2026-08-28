@@ -1402,7 +1402,8 @@ fn parse_blocks_with_refs_profiled(
                 blocks.push(Block::MathBlock(code));
                 i += 1;
                 continue;
-            } else if trimmed == "$$" || (trimmed.starts_with("$$") && !trimmed[2..].contains("$$")) {
+            } else if trimmed == "$$" || (trimmed.starts_with("$$") && !trimmed[2..].contains("$$"))
+            {
                 let mut code = String::new();
                 let initial = trimmed[2..].trim();
                 if !initial.is_empty() {
@@ -1416,8 +1417,8 @@ fn parse_blocks_with_refs_profiled(
                     if t == "$$" {
                         used += 1;
                         break;
-                    } else if t.ends_with("$$") {
-                        let inner = t[..t.len() - 2].trim_end();
+                    } else if let Some(inner) = t.strip_suffix("$$") {
+                        let inner = inner.trim_end();
                         if !inner.is_empty() {
                             code.push_str(inner);
                             code.push('\n');
@@ -2629,8 +2630,7 @@ fn parse_definition_list_profiled(
                 && !trim_space_tab(lines[term_cand]).is_empty()
                 && !is_definition_marker(lines[term_cand])
             {
-                let scan =
-                    BlockStartScan::new(lines[term_cand], trim_space_tab(lines[term_cand]));
+                let scan = BlockStartScan::new(lines[term_cand], trim_space_tab(lines[term_cand]));
                 if scanned_paragraph_interrupt(scan) {
                     break;
                 }
@@ -6659,6 +6659,7 @@ mod footnote_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod commonmark_blank_line_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::ast::{Block, Inline};
 

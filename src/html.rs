@@ -1157,7 +1157,7 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
     let Some(Inline::Text(text)) = inlines.first() else {
         return None;
     };
-    let trimmed = text.trim_start_matches(|c: char| c == ' ' || c == '\t');
+    let trimmed = text.trim_start_matches([' ', '\t']);
     let rest = trimmed.strip_prefix("[!")?;
     let close = rest.find(']')?;
     let tag_raw = rest[..close].to_ascii_lowercase();
@@ -2313,6 +2313,7 @@ strong { font-weight: 680; }
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 

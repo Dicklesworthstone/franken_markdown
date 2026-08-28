@@ -2267,10 +2267,9 @@ fn collect_text(blocks: &[Block], out: &mut String) {
 fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
     for inline in inlines {
         match inline {
-            Inline::Text(t)
-            | Inline::Code(t)
-            | Inline::Math(t)
-            | Inline::DisplayMath(t) => out.push_str(t),
+            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
+                out.push_str(t)
+            }
             Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 collect_text_inlines(c, out);
@@ -3462,12 +3461,7 @@ fn layout_definition_list(
     for item in items {
         for term in &item.terms {
             let mut toks = Vec::new();
-            tokenize(term, false, false, false, None, &mut toks);
-            for tok in &mut toks {
-                if tok.slot == F_BODY {
-                    tok.slot = F_BOLD;
-                }
-            }
+            tokenize(term, true, false, false, None, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
@@ -15622,7 +15616,6 @@ fn build_cell_line_owned(
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
 ) -> CellWrapLine {
-
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
         let text = token_visible_text(&t);
@@ -16851,7 +16844,9 @@ fn tokenize(
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
-            Inline::Math(t) | Inline::DisplayMath(t) => push_text_tokens(t, F_MONO, strike, link, out),
+            Inline::Math(t) | Inline::DisplayMath(t) => {
+                push_text_tokens(t, F_MONO, strike, link, out)
+            }
         }
     }
 }
@@ -17579,7 +17574,9 @@ fn hyphenator_for_word_with_doc_lang(word: &str, doc_lang: Option<&str>) -> Hyph
     if let Some(tag) = doc_lang {
         let choice = crate::layout::resolve_hyphen_lang(tag);
         let word_hyphenator = hyphenator_for_word(word);
-        if word_hyphenator.lang() == HyphenLang::English && choice.hyphenator().lang() != HyphenLang::English {
+        if word_hyphenator.lang() == HyphenLang::English
+            && choice.hyphenator().lang() != HyphenLang::English
+        {
             choice.hyphenator()
         } else {
             word_hyphenator
@@ -19569,9 +19566,7 @@ fn serialize_pages_chunked(
         #[cfg(not(target_arch = "wasm32"))]
         {
             cumulative_stream_bytes += content.stream.len();
-            if pipeline.is_none()
-                && cumulative_stream_bytes >= CHUNKED_COMPRESS_POOL_MIN_BYTES
-            {
+            if pipeline.is_none() && cumulative_stream_bytes >= CHUNKED_COMPRESS_POOL_MIN_BYTES {
                 pipeline =
                     ChunkedCompressPipeline::spawn(chunked_compress_worker_count(), page_idx);
             }
@@ -19705,7 +19700,6 @@ impl ChunkedCompressWorkQueue {
         drop(state);
         self.ready.notify_all();
     }
-
 }
 
 /// Pull page streams off the shared work queue, compress each with a
@@ -19826,10 +19820,9 @@ impl ChunkedCompressPipeline {
                 self.drained += 1;
                 return;
             }
-            let (page_idx, owned) = self
-                .result_rx
-                .recv()
-                .expect("page content stream compression worker terminated unexpectedly");
+            let Ok((page_idx, owned)) = self.result_rx.recv() else {
+                break;
+            };
             self.done.insert(page_idx, owned);
         }
     }
@@ -19850,7 +19843,6 @@ impl Drop for ChunkedCompressPipeline {
         self.queue.close();
     }
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn finish_serialized_pages(
@@ -20259,7 +20251,6 @@ fn generate_page_content(
         reserved,
     )
 }
-
 
 /// Identity of a structure element, used to share a container across the
 /// consecutive marks that belong to it (e.g. every cell of one table row reuses
@@ -28658,9 +28649,7 @@ fn annotation_dict(
         LinkTarget::Uri(uri) => {
             let drop_action = crate::pdfa::check_uri_action(pdf_a, uri)?;
             if drop_action {
-                format!(
-                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>"
-                )
+                format!("<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>")
             } else {
                 format!(
                     "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags} \
@@ -28726,7 +28715,13 @@ fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
     let chars: Vec<char> = text.chars().collect();
     let gids: Vec<u16> = chars
         .iter()
-        .map(|&c| if *TAIL_NOGLYPH { 0 } else { source.glyph_index(c) })
+        .map(|&c| {
+            if *TAIL_NOGLYPH {
+                0
+            } else {
+                source.glyph_index(c)
+            }
+        })
         .collect();
     let mut shaped = Vec::with_capacity(gids.len());
     let mut lig_uni = Vec::new();
@@ -29320,9 +29315,8 @@ mod pdf_writer_tests {
         container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
         fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
-        hyphenator_for_word_with_doc_lang, kerned_tj,
-        kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
-        layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        hyphenator_for_word_with_doc_lang, kerned_tj, kerned_tj_with_spacing, layout_inlines,
+        layout_inlines_greedy, layout_simple_text_paragraph, layout_table, layout_table_uncached,
         line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
         parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
@@ -32310,8 +32304,12 @@ mod pdf_writer_tests {
         // With explicit doc_lang, German is used for ASCII German words.
         let de_doc = hyphenator_for_word_with_doc_lang("Donaudampfschiffahrt", Some("de"));
         assert_eq!(de_doc.lang().as_str(), "de");
-        let de_doc_pts = de_doc.hyphenation_points("Donaudampfschiffahrt", de_doc.default_options());
-        assert!(!de_doc_pts.is_empty(), "German hyphenator must hyphenate Donaudampfschiffahrt");
+        let de_doc_pts =
+            de_doc.hyphenation_points("Donaudampfschiffahrt", de_doc.default_options());
+        assert!(
+            !de_doc_pts.is_empty(),
+            "German hyphenator must hyphenate Donaudampfschiffahrt"
+        );
         let de_h = hyphenator_for_word("übermäßig");
         let pts = de_h.hyphenation_points("übermäßig", de_h.default_options());
         assert!(

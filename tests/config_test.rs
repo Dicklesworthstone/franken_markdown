@@ -105,6 +105,7 @@ fn config_set_get_emoji_strategy_persists_and_is_discoverable() {
     let _ = fs::remove_file(config);
 }
 
+#[test]
 fn config_set_get_and_render_use_persistent_default_font() {
     let config = temp_file("font", "conf");
     let html_path = temp_file("serif", "html");

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use franken_markdown::{
     HtmlOptions, PdfOptions, Profile,
     ast::{Block, Inline},
@@ -18,7 +20,10 @@ Term 1
             assert_eq!(items[0].terms.len(), 1);
             assert_eq!(items[0].terms[0], vec![Inline::Text("Term 1".to_string())]);
             assert_eq!(items[0].definitions.len(), 1);
-            assert_eq!(items[0].definitions[0], vec![Inline::Text("Definition 1".to_string())]);
+            assert_eq!(
+                items[0].definitions[0],
+                vec![Inline::Text("Definition 1".to_string())]
+            );
         }
         other => panic!("Expected DefinitionList, got {other:?}"),
     }
@@ -79,7 +84,10 @@ Markdown
     match &doc.blocks[0] {
         Block::DefinitionList(items) => {
             assert_eq!(items.len(), 1);
-            assert_eq!(items[0].terms[0], vec![Inline::Text("Markdown".to_string())]);
+            assert_eq!(
+                items[0].terms[0],
+                vec![Inline::Text("Markdown".to_string())]
+            );
             assert_eq!(
                 items[0].definitions[0],
                 vec![Inline::Text(

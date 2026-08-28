@@ -241,7 +241,6 @@ pub fn expand_md_directory(dir: &Path) -> Vec<PathBuf> {
     acc
 }
 
-
 /// Local `](dest)` / image destinations that exist as files under `base_dir`.
 #[must_use]
 pub fn referenced_local_paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {
@@ -752,7 +751,6 @@ mod tests {
             found.is_empty(),
         );
     }
-
 
     #[test]
     fn referenced_local_paths_skips_urls_and_missing_files() {

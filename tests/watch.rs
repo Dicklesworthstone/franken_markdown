@@ -49,7 +49,7 @@ fn rename_into_place_then_css_extra_are_watched() {
     std::fs::write(&md, "# a\n").unwrap();
     std::fs::write(&css, "body{}\n").unwrap();
     let clock = FakeClock::new();
-    let paths = collect_watch_paths(&md, &[css.clone()]);
+    let paths = collect_watch_paths(&md, std::slice::from_ref(&css));
     let mut w = PollWatcher::new(paths, Duration::ZERO, clock);
     std::fs::write(&tmp, "# b\n").unwrap();
     std::fs::rename(&tmp, &md).unwrap();

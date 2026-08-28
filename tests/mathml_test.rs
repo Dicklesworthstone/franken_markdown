@@ -1,6 +1,11 @@
-use franken_markdown::{
-    HtmlOptions, parse_markdown, render_html, render_html_document,
-};
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::field_reassign_with_default
+)]
+
+use franken_markdown::{HtmlOptions, parse_markdown, render_html, render_html_document};
 
 #[test]
 fn test_inline_math_renders_mathml() {
@@ -13,7 +18,10 @@ fn test_inline_math_renders_mathml() {
         html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">"),
         "should contain inline <math>: {html}"
     );
-    assert!(html.contains("<msup>"), "should contain power superscript <msup>");
+    assert!(
+        html.contains("<msup>"),
+        "should contain power superscript <msup>"
+    );
     assert!(html.contains("<mi>a</mi>"), "should contain variable a");
     assert!(html.contains("<mi>b</mi>"), "should contain variable b");
     assert!(html.contains("<mi>c</mi>"), "should contain variable c");
@@ -30,7 +38,10 @@ fn test_display_math_renders_block_mathml() {
         html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">"),
         "should contain display block <math>: {html}"
     );
-    assert!(html.contains("<msubsup>"), "should contain integral sub/sup");
+    assert!(
+        html.contains("<msubsup>"),
+        "should contain integral sub/sup"
+    );
     assert!(html.contains("<mi>∞</mi>"), "should contain infinity");
 }
 
@@ -57,7 +68,10 @@ fn test_escaped_dollar_does_not_trigger_math() {
     let opts = HtmlOptions::default();
     let html = render_html_document(&doc, &opts).expect("render html document");
 
-    assert!(!html.contains("<math"), "escaped dollar must not produce mathml");
+    assert!(
+        !html.contains("<math"),
+        "escaped dollar must not produce mathml"
+    );
     assert!(html.contains("$100"));
     assert!(html.contains("$10"));
 }
@@ -70,8 +84,13 @@ fn test_html_custom_lang_attribute() {
     opts.lang = Some("de".to_string());
     let html = render_html_document(&doc, &opts).expect("render html document");
 
-    assert!(html.contains("<html lang=\"de\">"), "html lang attribute must match: {html}");
-    assert!(html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">"));
+    assert!(
+        html.contains("<html lang=\"de\">"),
+        "html lang attribute must match: {html}"
+    );
+    assert!(
+        html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">")
+    );
 }
 
 #[test]

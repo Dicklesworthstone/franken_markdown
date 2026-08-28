@@ -15,6 +15,8 @@
 //! on which font weights the document uses, so byte-level HTML round-trip
 //! does not converge by design.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use franken_markdown::{HtmlOptions, parse_markdown, render_html_document};
 
 // ---------------------------------------------------------------------------

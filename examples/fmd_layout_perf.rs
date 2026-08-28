@@ -403,9 +403,7 @@ fn collect_blocks_text(blocks: &[Block], out: &mut Vec<String>) {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
                 push_nonempty(out, inline_text(inlines));
             }
-            Block::CodeBlock { code, .. }
-            | Block::HtmlBlock(code)
-            | Block::MathBlock(code) => {
+            Block::CodeBlock { code, .. } | Block::HtmlBlock(code) | Block::MathBlock(code) => {
                 for line in code.lines() {
                     push_nonempty(out, line.to_string());
                 }

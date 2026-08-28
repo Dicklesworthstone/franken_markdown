@@ -1,7 +1,7 @@
 //! q6xc.1: PDF/A-2b XMP + OutputIntent + ICC plumbing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::{render_pdf, render_pdf_pdfa, PdfASettings, PdfOptions};
+use franken_markdown::{PdfASettings, PdfOptions, render_pdf, render_pdf_pdfa};
 
 fn log_check(id: &str, subject: &str, ok: bool) {
     eprintln!(

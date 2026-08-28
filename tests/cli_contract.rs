@@ -530,9 +530,10 @@ fn pdf_render_writes_valid_mvp_pdf_and_json_status_to_stderr() {
     assert!(pdf.starts_with(b"%PDF-1.7\n"));
     assert!(pdf.ends_with(b"%%EOF\n"));
     assert!(pdf.windows(b"startxref".len()).any(|w| w == b"startxref"));
-    assert!(pdf
-        .windows(b"/Type /Catalog".len())
-        .any(|w| w == b"/Type /Catalog"));
+    assert!(
+        pdf.windows(b"/Type /Catalog".len())
+            .any(|w| w == b"/Type /Catalog")
+    );
     assert!(pdf.len() > 500);
 
     let _ = fs::remove_file(out_path);
@@ -2183,7 +2184,7 @@ fn gk3v4_vf_hostile_fvar_axis_clamps_cleanly() {
     let vf_path = temp_file("gk3v4-hostile", "ttf");
     fs::write(
         &vf_path,
-        &franken_markdown::text::variable_triangle_fixture(),
+        franken_markdown::text::variable_triangle_fixture(),
     )
     .unwrap();
     let vf_s = vf_path.display().to_string();

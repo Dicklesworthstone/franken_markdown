@@ -25,6 +25,7 @@
 
 #[cfg(feature = "bundled-faces")]
 pub mod bundled;
+mod gvar;
 pub mod outline;
 
 /// Hard ceiling on how many glyphs a single OpenType layout structure may
@@ -186,7 +187,7 @@ pub(crate) fn be_u16(d: &[u8], o: usize) -> Option<u16> {
 pub(crate) fn be_i16(d: &[u8], o: usize) -> Option<i16> {
     be_u16(d, o).map(|v| v as i16)
 }
-fn be_u32(d: &[u8], o: usize) -> Option<u32> {
+pub(crate) fn be_u32(d: &[u8], o: usize) -> Option<u32> {
     let bytes = d.get(o..o.checked_add(4)?)?;
     Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
@@ -205,11 +206,11 @@ fn f2dot14(v: i16) -> f32 {
     f32::from(v) / 16384.0
 }
 
-fn off(base: usize, delta: usize) -> Option<usize> {
+pub(crate) fn off(base: usize, delta: usize) -> Option<usize> {
     base.checked_add(delta)
 }
 
-fn off_mul(base: usize, index: usize, stride: usize) -> Option<usize> {
+pub(crate) fn off_mul(base: usize, index: usize, stride: usize) -> Option<usize> {
     base.checked_add(index.checked_mul(stride)?)
 }
 
@@ -234,7 +235,7 @@ fn write_u16(d: &mut [u8], off: usize, v: u16) -> Option<()> {
 }
 
 /// Write a big-endian `u32` at `off` into a mutable buffer, bounds-checked.
-fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
+pub(crate) fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
     let b = v.to_be_bytes();
     let dst = d.get_mut(off..off.checked_add(4)?)?;
     dst.copy_from_slice(&b);
@@ -243,7 +244,7 @@ fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
 
 /// sfnt table checksum: the wrapping `u32` sum of the table's bytes read as
 /// big-endian 32-bit words, with the final partial word zero-padded.
-fn table_checksum(d: &[u8]) -> u32 {
+pub(crate) fn table_checksum(d: &[u8]) -> u32 {
     let mut sum: u32 = 0;
     let mut chunks = d.chunks_exact(4);
     for c in &mut chunks {
@@ -263,7 +264,7 @@ fn find_table(d: &[u8], tag: &[u8; 4]) -> Option<usize> {
 }
 
 /// Locate a table by tag, returning `(offset, length)`.
-fn find_table_full(d: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+pub(crate) fn find_table_full(d: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
     let num_tables = be_u16(d, 4)? as usize;
     for i in 0..num_tables {
         let rec = off_mul(12, i, 16)?;
@@ -669,6 +670,23 @@ impl Font {
             n = avar_map(maps, n);
         }
         Some(n)
+    }
+
+    /// Instance this face at CSS `font-weight` `weight` on the `wght` axis.
+    ///
+    /// Applies `gvar` tuple deltas (packed point numbers, packed deltas, IUP)
+    /// and returns a **static** TrueType font: `fvar`/`avar`/`gvar` are
+    /// dropped, `glyf`/`loca` hold the frozen outlines. `None` when the font
+    /// has no `wght` axis, no TrueType outlines, or a table is unreadable.
+    ///
+    /// The same `weight` twice yields identical bytes.
+    #[must_use]
+    pub fn instance(&self, weight: f32) -> Option<Font> {
+        crate::gvar::instance_font(self, weight)
+    }
+
+    pub(crate) fn raw_bytes(&self) -> &[u8] {
+        &self.data
     }
 
     /// The `[start, end)` byte range of glyph `gid` within the `glyf` table.

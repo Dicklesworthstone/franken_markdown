@@ -414,10 +414,7 @@ fn parse_emoji_strategy(value: &str) -> std::result::Result<EmojiStrategy, Strin
             Ok(EmojiStrategy::NotoSubset)
         }
         "drawn" | "draw" | "vector" => Ok(EmojiStrategy::Drawn),
-        _ => Err(
-            "emoji_strategy must be one of `warning`, `noto_subset`, or `drawn`"
-                .to_string(),
-        ),
+        _ => Err("emoji_strategy must be one of `warning`, `noto_subset`, or `drawn`".to_string()),
     }
 }
 fn normalize_key(key: &str) -> String {
@@ -476,8 +473,9 @@ fn json_escape(s: &str) -> String {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{ConfigError, FmdConfig, json_num};
+    use super::{CONFIG_KEYS, ConfigError, EmojiStrategy, FmdConfig, json_num};
     use crate::caret::CaretStyle;
+
 
     #[test]
     fn json_num_folds_non_finite_to_zero() {
@@ -536,6 +534,85 @@ mod tests {
         assert!(
             caret.contains("dark_mode=bogus"),
             "gutter should show the bad key=value, got {caret:?}"
+        );
+        assert!(
+            caret.contains("dark_mode=bogus"),
+            "gutter should show the bad key=value, got {caret:?}"
+        );
+    }
+
+    #[test]
+    fn emoji_strategy_parses_all_documented_values() {
+        // bead y5i9.2: `emoji_strategy` is the forward-compat policy hook.
+        // All three documented values must parse; an unknown value must
+        // fail loudly (no silent default).
+        let cases = [
+            ("warning", EmojiStrategy::Warning),
+            ("warn", EmojiStrategy::Warning),
+            ("noto_subset", EmojiStrategy::NotoSubset),
+            ("noto-emoji", EmojiStrategy::NotoSubset),
+            ("drawn", EmojiStrategy::Drawn),
+            ("vector", EmojiStrategy::Drawn),
+        ];
+        for (raw, expected) in cases {
+            let cfg = FmdConfig::parse(&format!("emoji_strategy={raw}")).expect(raw);
+            assert_eq!(
+                cfg.emoji_strategy,
+                Some(expected),
+                "{raw} must resolve to {expected:?}"
+            );
+            assert_eq!(cfg.emoji_strategy.unwrap().as_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn emoji_strategy_default_is_none_so_renderer_uses_warning() {
+        // The config is Optional. When unset, the renderer falls back to
+        // `EmojiStrategy::Warning` (the v1 default), preserving the
+        // existing behavior so a missing config does not change output.
+        let cfg = FmdConfig::default();
+        assert!(
+            cfg.emoji_strategy.is_none(),
+            "default config must not pin emoji_strategy (v1 default = warning)"
+        );
+        // as_str() round-trips so a future JSON / robot envelope can
+        // surface the effective strategy.
+        assert_eq!(EmojiStrategy::default().as_str(), "warning");
+        assert_eq!(EmojiStrategy::Warning.as_str(), "warning");
+        assert_eq!(EmojiStrategy::NotoSubset.as_str(), "noto_subset");
+        assert_eq!(EmojiStrategy::Drawn.as_str(), "drawn");
+    }
+
+    #[test]
+    fn emoji_strategy_rejects_unknown_values_loudly() {
+        // The "no silent behavior change" rule means a typo must NOT
+        // resolve to a fallback. The error names the valid values so an
+        // agent or human can fix it in one round trip.
+        let err = FmdConfig::parse("emoji_strategy=bogus").unwrap_err();
+        let ConfigError::Parse(msg) = &err else {
+            panic!("expected ConfigError::Parse, got {err:?}");
+        };
+        assert!(
+            msg.contains("emoji_strategy"),
+            "error names the key, got {msg}"
+        );
+        assert!(msg.contains("warning"), "error lists `warning`, got {msg}");
+        assert!(
+            msg.contains("noto_subset"),
+            "error lists `noto_subset`, got {msg}"
+        );
+        assert!(msg.contains("drawn"), "error lists `drawn`, got {msg}");
+    }
+
+    #[test]
+    fn emoji_strategy_is_in_config_keys_registry() {
+        // The robot/docs contract: `fmd config show` and the
+        // `unknown config key` error both surface every supported key.
+        // Adding the field to the struct without the registry entry would
+        // be a regression on the discoverability contract.
+        assert!(
+            CONFIG_KEYS.contains(&"emoji_strategy"),
+            "emoji_strategy must be in CONFIG_KEYS for fmd config show and the unknown-key error"
         );
     }
 }

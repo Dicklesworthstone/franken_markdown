@@ -40,6 +40,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
     let mut state = RenderState {
         footnote_defs: collect_footnote_defs(&doc.blocks),
+        toc_entries: collect_toc_entries(&doc.blocks),
         ..RenderState::default()
     };
     render_blocks(&doc.blocks, &mut html, opts, &mut state);
@@ -88,6 +89,15 @@ fn first_heading_text(doc: &Document) -> Option<String> {
     })
 }
 
+/// One TOC row: heading level, plain text, and the anchor id the heading
+/// will receive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TocEntry {
+    pub level: u8,
+    pub text: String,
+    pub id: String,
+}
+
 #[derive(Default)]
 struct RenderState<'a> {
     /// Keys are every emitted heading id. Values are the next suffix to try
@@ -100,6 +110,10 @@ struct RenderState<'a> {
     footnote_numbers: BTreeMap<String, usize>,
     /// Footnote ids in number order (insertion order of first reference).
     footnote_order: Vec<String>,
+    /// Pre-computed heading inventory (level, plain text, anchor id) in
+    /// document order — used by the TOC marker. Ids are produced by the same
+    /// fresh-state walk the heading renderer performs, so they match exactly.
+    toc_entries: Vec<TocEntry>,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
     /// Bounded per-render cache for repeated non-consecutive code blocks.
@@ -257,6 +271,11 @@ fn render_block<'a>(
             out.push_str(">\n");
         }
         Block::Paragraph(inlines) => {
+            if let Some(max_depth) = toc_marker_depth(inlines) {
+                // TOC marker: replace the paragraph with the generated nav.
+                push_toc_nav(&state.toc_entries, max_depth, out);
+                return;
+            }
             out.push_str("<p>");
             render_inlines(inlines, out, opts, state);
             out.push_str("</p>\n");
@@ -912,6 +931,112 @@ fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
     } else if c == ' ' || c == '-' || c == '_' {
         *pending_dash = true;
     }
+}
+
+/// Walk blocks in document order collecting headings (container-aware,
+/// mirroring the block renderer's recursion) and compute each heading's
+/// anchor id with a fresh collision-suffix state — the exact walk the
+/// heading renderer performs, so ids match render-time assignment.
+fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
+    // Uses a throwaway RenderState so the TOC's anchor ids are produced by
+    // the SAME assignment code the heading renderer runs — identical ids by
+    // construction, no mirror to drift.
+    let mut state = RenderState::default();
+    let mut entries = Vec::new();
+    fn walk(
+        blocks: &[Block],
+        state: &mut RenderState<'_>,
+        entries: &mut Vec<TocEntry>,
+    ) {
+        for block in blocks {
+            match block {
+                Block::Heading { level, inlines } => {
+                    let mut plain = String::new();
+                    push_inlines_to_plain(inlines, &mut plain);
+                    let mut id = String::new();
+                    state.push_heading_id_from_inlines(inlines, &mut id);
+                    entries.push(TocEntry {
+                        level: *level,
+                        text: plain,
+                        id,
+                    });
+                }
+                Block::BlockQuote(inner) => walk(inner, state, entries),
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, state, entries);
+                    }
+                }
+                Block::FootnoteDefinition { blocks: inner, .. } => walk(inner, state, entries),
+                _ => {}
+            }
+        }
+    }
+    walk(blocks, &mut state, &mut entries);
+    entries
+}
+
+/// Detect a TOC marker paragraph: a single text inline matching
+/// `[[TOC]]` / `[TOC]` / `[[_TOC_]]` (case-insensitive), with an optional
+/// `:N` max-depth suffix on the bracketed form (`[[TOC:2]]` = depth 2+).
+/// Returns the maximum heading level to include, counting relative to the
+/// shallowest heading present (None = not a marker).
+fn toc_marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
+    let [Inline::Text(text)] = inlines else {
+        return None;
+    };
+    let trimmed = text.trim();
+    let inner = trimmed
+        .strip_prefix("[[")?
+        .strip_suffix("]]")
+        .or_else(|| trimmed.strip_prefix('[')?.strip_suffix(']'))?
+        .trim_start_matches('_')
+        .trim_end_matches('_')
+        .to_ascii_lowercase();
+    let inner = inner.strip_prefix("toc")?;
+    if inner.is_empty() {
+        return Some(None);
+    }
+    let depth = inner.strip_prefix(':')?.trim().parse::<u8>().ok()?;
+    (depth >= 1).then_some(Some(depth))
+}
+
+/// Nested-list TOC emission from pre-computed entries.
+fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
+    let filtered: Vec<&TocEntry> = entries
+        .iter()
+        .filter(|e| max_depth.is_none_or(|max| e.level <= max))
+        .collect();
+    if filtered.is_empty() {
+        // No headings match the depth window: emit nothing.
+        return;
+    }
+    out.push_str("<nav class=\"toc\"><ul>\n");
+    let mut prev_level = filtered[0].level;
+    let mut open = 1usize;
+    for entry in &filtered {
+        while entry.level > prev_level && open < 8 {
+            out.push_str("<ul>\n");
+            open += 1;
+            prev_level += 1;
+        }
+        while entry.level < prev_level && open > 1 {
+            out.push_str("</li>\n</ul></li>\n");
+            open -= 1;
+            prev_level -= 1;
+        }
+        out.push_str("<li><a href=\"#");
+        out.push_str(&escape_text(&entry.id));
+        out.push_str("\">");
+        out.push_str(&escape_text(&entry.text));
+        out.push_str("</a>\n");
+        prev_level = entry.level;
+    }
+    while open > 0 {
+        out.push_str("</li>\n</ul>");
+        open -= 1;
+    }
+    out.push_str("</nav>\n");
 }
 
 /// Collect GFM footnote definitions in document order (container-aware), for
@@ -1974,6 +2099,26 @@ strong { font-weight: 680; }
     text-decoration: none;
     margin-left: 0.25em;
   }
+  nav.toc {
+    background: var(--fmd-bg, inherit);
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 0.75em 1em;
+  }
+  nav.toc ul {
+    list-style: none;
+    padding-left: 1.25em;
+    margin: 0.25em 0;
+  }
+  nav.toc > ul {
+    padding-left: 0;
+  }
+  nav.toc a {
+    text-decoration: none;
+  }
+  nav.toc a:hover {
+    text-decoration: underline;
+  }
 }"#;
 
 #[cfg(test)]
@@ -2000,6 +2145,39 @@ mod tests {
         assert!(!html.contains("[^1]"), "literal marker must not survive");
         // Definition content renders exactly once (the section), never in flow.
         assert_eq!(html.matches("<p>First note.</p>").count(), 1);
+    }
+
+    #[test]
+    fn toc_marker_emits_nav_with_real_anchor_ids() {
+        let doc = crate::parse_markdown(
+            "[[TOC]]\n\n# Alpha\n\ntext\n\n## Beta\n\nmore\n\n# Alpha\n",
+        );
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("<nav class=\"toc\">"), "nav emitted: {html}");
+        // Three headings in order; collision suffix on the second Alpha.
+        assert!(html.contains("href=\"#alpha\""), "first alpha id");
+        assert!(html.contains("href=\"#beta\""), "beta id");
+        assert!(html.contains("href=\"#alpha-2\""), "collision suffix id");
+        // The heading itself carries the same id the TOC links to.
+        assert!(html.contains("id=\"alpha-2\""), "collision id on heading");
+    }
+
+    #[test]
+    fn toc_depth_marker_filters_levels() {
+        let doc = crate::parse_markdown("[[TOC:1]]\n\n# One\n\n## Two\n\n### Three\n");
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("<nav class=\"toc\">"));
+        assert!(html.contains("href=\"#one\""));
+        assert!(!html.contains("href=\"#two\""), "depth filter excludes h2");
+    }
+
+    #[test]
+    fn toc_absent_without_marker() {
+        let doc = crate::parse_markdown("# Just a heading\n\nbody\n");
+        let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(!html.contains("nav class=\"toc\""), "no nav without marker");
+        // Heading ids still assigned for anchors.
+        assert!(html.contains("id=\"just-a-heading\""));
     }
 
     #[test]

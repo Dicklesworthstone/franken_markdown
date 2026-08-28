@@ -39,6 +39,7 @@ pub mod layout;
 pub mod md_gen;
 pub mod parse;
 pub mod pdf;
+pub mod pdfa;
 pub mod scanner;
 pub mod span;
 /// The font subsystem, factored into the `fmd-font` workspace crate
@@ -74,6 +75,7 @@ pub use error::{RenderError, Result};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{PdfProfile, PdfStageSummary, RenderWarning, render_warnings};
+pub use pdfa::{PdfAMode, PdfASettings};
 pub use scanner::{
     ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
     classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
@@ -568,7 +570,32 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
     let doc = transform_footnotes_for_pdf(doc);
-    pdf::render(&doc, opts)
+    pdf::render(&doc, opts, PdfASettings::OFF)
+}
+
+/// Render a document to PDF with PDF/A-2b identification (XMP + sRGB
+/// OutputIntent). [`PdfASettings::OFF`] is identical to [`render_pdf_document`].
+///
+/// # Errors
+/// See [`render_pdf_document`]. Strict mode also returns
+/// [`RenderError::InvalidInput`] with a `pdf_a_*` code for constructs PDF/A-2b
+/// cannot carry (currently `javascript:` and `file:` URI actions).
+pub fn render_pdf_document_pdfa(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: PdfASettings,
+) -> Result<Vec<u8>> {
+    opts.font_assets.validate()?;
+    let doc = transform_footnotes_for_pdf(doc);
+    pdf::render(&doc, opts, pdf_a)
+}
+
+/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_pdfa`].
+///
+/// # Errors
+/// See [`render_pdf_document_pdfa`].
+pub fn render_pdf_pdfa(src: &str, opts: &PdfOptions, pdf_a: PdfASettings) -> Result<Vec<u8>> {
+    render_pdf_document_pdfa(&parse_markdown(src), opts, pdf_a)
 }
 
 /// Convert `Block::FootnoteDefinition` nodes and `Inline::FootnoteRef`

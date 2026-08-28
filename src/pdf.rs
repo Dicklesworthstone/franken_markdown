@@ -1947,8 +1947,8 @@ impl ParagraphPolicy {
 /// # Errors
 /// Infallible in practice (the bundled fonts always parse); returns [`Result`]
 /// to leave room for future validation without a signature change.
-pub fn render(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
-    render_inner(doc, opts, false).map(|profile| profile.bytes)
+pub fn render(doc: &Document, opts: &PdfOptions, pdf_a: crate::PdfASettings) -> Result<Vec<u8>> {
+    render_inner(doc, opts, pdf_a, false).map(|profile| profile.bytes)
 }
 
 /// Render a document to PDF bytes while collecting stage-level attribution.
@@ -1960,7 +1960,7 @@ pub fn render(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
 /// # Errors
 /// See [`render`].
 pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
-    render_inner(doc, opts, true)
+    render_inner(doc, opts, crate::PdfASettings::OFF, true)
 }
 
 /// A non-fatal diagnostic about a PDF render: content that was *degraded* rather
@@ -2225,7 +2225,12 @@ fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
     }
 }
 
-fn render_inner(doc: &Document, opts: &PdfOptions, profiled: bool) -> Result<PdfProfile> {
+fn render_inner(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    profiled: bool,
+) -> Result<PdfProfile> {
     let mut profiler = if profiled {
         PdfProfiler::enabled()
     } else {
@@ -2248,7 +2253,7 @@ fn render_inner(doc: &Document, opts: &PdfOptions, profiled: bool) -> Result<Pdf
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let bytes = serialize(&lines, opts, &faces, page, &mut profiler)?;
+    let bytes = serialize(&lines, opts, &faces, page, pdf_a, &mut profiler)?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -18708,6 +18713,7 @@ fn serialize(
     opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
+    pdf_a: crate::PdfASettings,
     profiler: &mut PdfProfiler,
 ) -> Result<Vec<u8>> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
@@ -19371,6 +19377,7 @@ fn serialize(
         &images,
         opts,
         page,
+        pdf_a,
         profiler,
     )
 }

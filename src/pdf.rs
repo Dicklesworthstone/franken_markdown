@@ -15381,6 +15381,8 @@ fn build_cell_line_owned(
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
 ) -> CellWrapLine {
+    let _perf_t = layout_perf::Timer::new(layout_perf::WRAP_BUILD);
+
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
         let text = token_visible_text(&t);
@@ -15421,6 +15423,7 @@ fn wrap_cell_styled(
     let mut lines = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0;
+    let _perf_t = layout_perf::Timer::new(layout_perf::WRAP_TOTAL);
     let mut pending: Option<Tok> = None;
     for t in toks {
         if t.hard_break {
@@ -16001,7 +16004,9 @@ pub mod layout_perf {
     pub const PARA_TOKENIZE: usize = 15;
     pub const COL_COSTS: usize = 16;
     pub const COL_DP: usize = 17;
-    const NAMES: [&str; 18] = [
+    pub const WRAP_BUILD: usize = 18;
+    pub const WRAP_TOTAL: usize = 19;
+    const NAMES: [&str; 20] = [
         "heading_total",
         "para_block_total",
         "code_total",
@@ -16020,9 +16025,11 @@ pub mod layout_perf {
         "para_tokenize",
         "col_costs",
         "col_dp",
+        "wrap_build",
+        "wrap_total",
     ];
-    static NS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
-    static COUNTS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
+    static NS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
+    static COUNTS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
 
     fn enabled() -> bool {
         #[cfg(target_arch = "wasm32")]

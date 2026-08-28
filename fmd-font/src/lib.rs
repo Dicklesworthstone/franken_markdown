@@ -28,6 +28,14 @@ pub mod bundled;
 mod gvar;
 pub mod outline;
 
+/// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak
+/// +50 x on point 0). Host-font / CLI / WASM tests use this; it is not a
+/// design face. ASCII `U+0020..=U+007E` map to glyph 0.
+#[must_use]
+pub fn variable_triangle_fixture() -> Vec<u8> {
+    gvar::variable_triangle_fixture()
+}
+
 /// Hard ceiling on how many glyphs a single OpenType layout structure may
 /// enumerate. A font cannot contain more than 65 536 glyphs, so a well-formed
 /// Coverage / ligature / pair table never exceeds this. It bounds the work an
@@ -685,8 +693,15 @@ impl Font {
         crate::gvar::instance_font(self, weight)
     }
 
-    pub(crate) fn raw_bytes(&self) -> &[u8] {
+    /// Current sfnt bytes. After [`Self::instance`], this is the static
+    /// instanced face (`fvar`/`avar`/`gvar` dropped).
+    #[must_use]
+    pub fn as_sfnt(&self) -> &[u8] {
         &self.data
+    }
+
+    pub(crate) fn raw_bytes(&self) -> &[u8] {
+        self.as_sfnt()
     }
 
     /// The `[start, end)` byte range of glyph `gid` within the `glyf` table.

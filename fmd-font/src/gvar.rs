@@ -971,6 +971,156 @@ fn assemble_sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Tiny OFL `wght` variable face: one triangle glyph, peak gvar +50 x on p0.
+/// ASCII printable characters map to glyph 0 so host-font tests can embed it.
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
+pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
+    let glyph = encode_simple(&SimpleGlyph {
+        points: vec![(0, 0), (100, 0), (50, 100)],
+        on_curve: vec![true, true, true],
+        contour_ends: vec![2],
+    });
+    let mut loca = Vec::new();
+    loca.extend_from_slice(&0u32.to_be_bytes());
+    loca.extend_from_slice(&(glyph.len() as u32).to_be_bytes());
+    let tables: Vec<([u8; 4], Vec<u8>)> = vec![
+        (*b"head", fixture_head()),
+        (*b"maxp", fixture_maxp(1)),
+        (*b"hhea", fixture_hhea(1)),
+        (*b"hmtx", fixture_hmtx(1)),
+        (*b"cmap", fixture_cmap_ascii()),
+        (*b"loca", loca),
+        (*b"glyf", glyph),
+        (*b"fvar", fixture_fvar_wght()),
+        (*b"gvar", fixture_gvar_move_p0()),
+    ];
+    assemble_sfnt(&tables).unwrap_or_default()
+}
+
+fn fixture_head() -> Vec<u8> {
+    let mut t = vec![0u8; 54];
+    t[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    t[50..52].copy_from_slice(&1u16.to_be_bytes());
+    t
+}
+
+fn fixture_maxp(n: u16) -> Vec<u8> {
+    let mut t = vec![0u8; 6];
+    t[4..6].copy_from_slice(&n.to_be_bytes());
+    t
+}
+
+fn fixture_hhea(n: u16) -> Vec<u8> {
+    let mut t = vec![0u8; 36];
+    t[4..6].copy_from_slice(&700i16.to_be_bytes());
+    t[6..8].copy_from_slice(&(-200i16).to_be_bytes());
+    t[8..10].copy_from_slice(&50i16.to_be_bytes());
+    t[34..36].copy_from_slice(&n.to_be_bytes());
+    t
+}
+
+fn fixture_hmtx(n: u16) -> Vec<u8> {
+    let mut t = Vec::new();
+    for _ in 0..n {
+        t.extend_from_slice(&500u16.to_be_bytes());
+        t.extend_from_slice(&0i16.to_be_bytes());
+    }
+    t
+}
+
+fn fixture_cmap_ascii() -> Vec<u8> {
+    // Format 4, one segment covering U+0020..=U+007E → glyph 0 (idDelta = -0x20).
+    let mut t = Vec::new();
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&1u16.to_be_bytes());
+    t.extend_from_slice(&3u16.to_be_bytes());
+    t.extend_from_slice(&1u16.to_be_bytes());
+    t.extend_from_slice(&12u32.to_be_bytes());
+    t.extend_from_slice(&4u16.to_be_bytes());
+    t.extend_from_slice(&32u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&4u16.to_be_bytes());
+    t.extend_from_slice(&4u16.to_be_bytes());
+    t.extend_from_slice(&1u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&0x007Eu16.to_be_bytes());
+    t.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&0x0020u16.to_be_bytes());
+    t.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    t.extend_from_slice(&(-0x20i16).to_be_bytes());
+    t.extend_from_slice(&1i16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn fixture_fvar_wght() -> Vec<u8> {
+    let mut t = Vec::new();
+    t.extend_from_slice(&1u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&16u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&1u16.to_be_bytes());
+    t.extend_from_slice(&20u16.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&4u16.to_be_bytes());
+    t.extend_from_slice(b"wght");
+    let to_fixed = |v: f32| (f64::from(v) * 65536.0).round() as i32;
+    t.extend_from_slice(&to_fixed(100.0).to_be_bytes());
+    t.extend_from_slice(&to_fixed(400.0).to_be_bytes());
+    t.extend_from_slice(&to_fixed(900.0).to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes());
+    t.extend_from_slice(&256u16.to_be_bytes());
+    t
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
+fn fixture_gvar_move_p0() -> Vec<u8> {
+    let mut payload = vec![1, 0, 0, 0x80];
+    payload.extend_from_slice(&50i16.to_be_bytes());
+    payload.push(0x00);
+    let mut gvd = Vec::new();
+    gvd.extend_from_slice(&1u16.to_be_bytes());
+    gvd.extend_from_slice(&0u16.to_be_bytes());
+    gvd.extend_from_slice(&0u16.to_be_bytes()); // data offset placeholder
+    gvd.extend_from_slice(&(EMBEDDED_PEAK | PRIVATE_POINTS).to_be_bytes());
+    let peak = (1.0_f32 * 16384.0).round() as i16;
+    gvd.extend_from_slice(&peak.to_be_bytes());
+    let data_off = gvd.len() as u16;
+    gvd[2..4].copy_from_slice(&data_off.to_be_bytes());
+    gvd.extend_from_slice(&payload);
+    let mut table = Vec::new();
+    table.extend_from_slice(&1u16.to_be_bytes());
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&1u16.to_be_bytes());
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&20u32.to_be_bytes());
+    table.extend_from_slice(&1u16.to_be_bytes());
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&20u32.to_be_bytes());
+    let array_bytes = 4usize;
+    let start_words = (array_bytes / 2) as u16;
+    let end_words = (array_bytes + gvd.len()).div_ceil(2) as u16;
+    table.extend_from_slice(&start_words.to_be_bytes());
+    table.extend_from_slice(&end_words.to_be_bytes());
+    table.extend_from_slice(&gvd);
+    if table.len() % 2 != 0 {
+        table.push(0);
+    }
+    table
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {

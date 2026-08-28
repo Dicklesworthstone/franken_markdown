@@ -47,3 +47,17 @@ scheduled job runs 30 s per target. A crash fails the job and uploads
 This is the README-dev surface for m7fs.1. The engine's existing deterministic
 LCG harness (`tests/parser_fuzz.rs`) stays; it is not a substitute for
 coverage-guided search.
+
+## Crash triage (m7fs.2)
+
+Runbook: `fuzz/README.md`. Pipeline drill (injected `!PANIC!` marker, no
+engine panic required):
+
+```bash
+scripts/fuzz-triage.sh --self-test
+scripts/fuzz-triage.sh --drill
+cargo test --test fuzz_triage -- --nocapture
+```
+
+Minimized nightly crashes other than `drill.bin` live in
+`tests/fixtures/fuzz-regressions/` and are replayed under `catch_unwind`.

@@ -161,7 +161,13 @@ fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
     // `pt: ` so a colon inside the run text is kept as part of the needle.
     if finding.code == "overflow" {
         if let Some((_, text)) = finding.detail.split_once("pt: ") {
-            return find_source_span(source, text);
+            return find_source_span(source, text).or_else(|| {
+                // Dictionary hyphenation appends a synthetic `-` that is not in
+                // the Markdown; strip it so the caret can still find the run.
+                text.strip_suffix('-')
+                    .filter(|stem| !stem.is_empty())
+                    .and_then(|stem| find_source_span(source, stem))
+            });
         }
     }
     if finding.code == "unresolved_anchor" {
@@ -364,6 +370,17 @@ mod tests {
             None,
             "must not highlight an ATX heading that happens to match the id"
         );
+    }
+
+    #[test]
+    fn overflow_span_strips_synthetic_hyphen() {
+        let finding = VerifyFinding {
+            code: "overflow",
+            detail: "page 1 run exceeds the right margin by 1.250pt: hyphenation-".to_string(),
+        };
+        let src = "see hyphenation in the source\n";
+        let span = finding_span(src, &finding).expect("span");
+        assert_eq!(&src[span.start..span.end], "hyphenation");
     }
 
     #[test]

@@ -25,10 +25,10 @@ use crate::error::Result;
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
-    FORCED_BREAK_PENALTY, FontSize, Glue, HyphenationOptions, Hyphenator, LayoutUnit, LineBreak,
-    ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
-    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
-    cjk_break_prohibited, default_interword_glue, is_breakable_whitespace, is_cjk_char,
+    FORCED_BREAK_PENALTY, FontSize, Glue, Hyphenator, LayoutUnit, LineBreak, ParagraphItem,
+    ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units, advance_to_layout_units,
+    break_paragraph_into, cjk_break_allowed, cjk_break_glue, cjk_break_prohibited,
+    default_interword_glue, is_breakable_whitespace, is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -1860,9 +1860,9 @@ struct PdfWordContext<'a> {
     fs: FontSize,
     faces: &'a Faces,
     policy: ParagraphPolicy,
-    hyphenator: &'a Hyphenator,
     /// Per-document hyphenation cache (bead qw1.7.1); shared via `&RefCell` so
-    /// this `Copy` context can still read/insert.
+    /// this `Copy` context can still read/insert. Keys include the language
+    /// tag so mixed-script paragraphs cannot reuse English points for German.
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
     width_cache: &'a RefCell<WidthCache>,
 }
@@ -2987,6 +2987,7 @@ impl LayoutCx<'_> {
         line_width: LayoutUnit,
         policy: ParagraphPolicy,
     ) {
+        let _perf_t = layout_perf::Timer::new(layout_perf::PARA_BREAK);
         self.paragraph_scratch
             .set_expansion_permilli(policy.expansion_permilli());
         break_paragraph_into(
@@ -3011,6 +3012,16 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let _perf_t = layout_perf::Timer::new(match block {
+        Block::Heading { .. } => layout_perf::HEADING,
+        Block::Paragraph(_) => layout_perf::PARA_BLOCK,
+        Block::CodeBlock { .. } => layout_perf::CODE,
+        Block::BlockQuote(_) => layout_perf::QUOTE,
+        Block::List(_) => layout_perf::LIST,
+        Block::Table(_) => layout_perf::TABLE,
+        Block::HtmlBlock(_) => layout_perf::HTML,
+        Block::FootnoteDefinition { .. } | Block::ThematicBreak => layout_perf::OTHER,
+    });
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
@@ -3055,9 +3066,13 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 layout_simple_text_paragraph(text, indent, out, cx, group);
                 return;
             }
-            let mut toks = Vec::new();
-            tokenize(inlines, false, false, false, None, &mut toks);
-            apply_symbol_fallback(&mut toks, cx.faces);
+            let toks = {
+                let _perf_tok = layout_perf::Timer::new(layout_perf::PARA_TOKENIZE);
+                let mut toks = Vec::new();
+                tokenize(inlines, false, false, false, None, &mut toks);
+                apply_symbol_fallback(&mut toks, cx.faces);
+                toks
+            };
             let group = cx.alloc_flow();
             layout_inlines(
                 toks,
@@ -3256,6 +3271,7 @@ fn layout_simple_text_paragraph(
     cx: &mut LayoutCx<'_>,
     group: u32,
 ) {
+    let _perf_t = layout_perf::Timer::new(layout_perf::SIMPLE_PARA);
     let left = cx.page.left + indent;
     let size = cx.type_scale.body;
     let gap_after = 7.0;
@@ -15656,17 +15672,19 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         return widths;
     }
 
-    let costs: Vec<Vec<f32>> = columns
-        .iter()
-        .map(|column| {
-            (0..=extra_units)
-                .map(|units| {
-                    table_column_badness(column, TABLE_MIN_COL_WIDTH + units as f32 * unit)
-                })
-                .collect()
-        })
-        .collect();
-
+    let costs: Vec<Vec<f32>> = {
+        let _perf_t = layout_perf::Timer::new(layout_perf::COL_COSTS);
+        columns
+            .iter()
+            .map(|column| {
+                (0..=extra_units)
+                    .map(|units| {
+                        table_column_badness(column, TABLE_MIN_COL_WIDTH + units as f32 * unit)
+                    })
+                    .collect()
+            })
+            .collect()
+    };
     // Min-plus DP over per-column extra units. `values[c]` holds the best
     // cumulative badness after placing columns 0..c (with `values[0]` the
     // zero-width start state). Parents are reconstructed afterwards from the
@@ -15675,6 +15693,7 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
     // strict-`<` update: for a given column and total, the first `used` (in
     // ascending order) whose `base + cost` equals the stored minimum is
     // exactly the parent the inline update kept.
+    let _perf_dp = layout_perf::Timer::new(layout_perf::COL_DP);
     let mut values: Vec<Vec<f32>> = Vec::with_capacity(ncol + 1);
     let mut start = vec![f32::INFINITY; extra_units + 1];
     start[0] = 0.0;
@@ -15695,6 +15714,7 @@ fn allocate_table_column_widths(columns: &[TableColumnMetrics], target: f32) -> 
         }
         values.push(next);
     }
+    drop(_perf_dp);
 
     if !values[ncol][extra_units].is_finite() {
         let mut widths = vec![target / ncol as f32; ncol];
@@ -15869,15 +15889,24 @@ pub mod wrap_perf {
 }
 
 fn wrap_perf_enabled() -> bool {
-    use std::sync::atomic::{AtomicU8, Ordering};
-    static STATE: AtomicU8 = AtomicU8::new(0);
-    match STATE.load(Ordering::Relaxed) {
-        1 => false,
-        2 => true,
-        _ => {
-            let on = std::env::var_os("FMD_WRAP_PERF").is_some();
-            STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-            on
+    // The PDF core must compile and run on wasm32 without env or Instant.
+    // Keep the env latch on native CLI builds only.
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        static STATE: AtomicU8 = AtomicU8::new(0);
+        match STATE.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let on = std::env::var_os("FMD_WRAP_PERF").is_some();
+                STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+                on
+            }
         }
     }
 }
@@ -15906,7 +15935,110 @@ fn wrap_perf_tok_hash(toks: &[Tok]) -> u64 {
     hash
 }
 
-// END TEMP PERF INSTRUMENTATION
+pub mod layout_perf {
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+    use std::time::Instant;
+
+    pub const HEADING: usize = 0;
+    pub const PARA_BLOCK: usize = 1;
+    pub const CODE: usize = 2;
+    pub const QUOTE: usize = 3;
+    pub const LIST: usize = 4;
+    pub const TABLE: usize = 5;
+    pub const HTML: usize = 6;
+    pub const OTHER: usize = 7;
+    pub const SIMPLE_PARA: usize = 8;
+    pub const PARA_BUILD: usize = 9;
+    pub const PARA_BREAK: usize = 10;
+    pub const PARA_EMIT: usize = 11;
+    pub const TABLE_ROWLINES: usize = 12;
+    pub const ALIGN_INFER: usize = 13;
+    pub const COL_ALLOC: usize = 14;
+    pub const PARA_TOKENIZE: usize = 15;
+    pub const COL_COSTS: usize = 16;
+    pub const COL_DP: usize = 17;
+    const NAMES: [&str; 18] = [
+        "heading_total",
+        "para_block_total",
+        "code_total",
+        "quote_total",
+        "list_total",
+        "table_total",
+        "html_total",
+        "other_total",
+        "simple_para_total",
+        "para_build",
+        "para_break",
+        "para_emit",
+        "table_rowlines",
+        "table_align_infer",
+        "table_col_alloc",
+        "para_tokenize",
+        "col_costs",
+        "col_dp",
+    ];
+    static NS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
+    static COUNTS: [AtomicU64; 18] = [const { AtomicU64::new(0) }; 18];
+
+    fn enabled() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static STATE: AtomicU8 = AtomicU8::new(0);
+            match STATE.load(Ordering::Relaxed) {
+                1 => false,
+                2 => true,
+                _ => {
+                    let on = std::env::var_os("FMD_LAYOUT_PERF").is_some();
+                    STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+                    on
+                }
+            }
+        }
+    }
+
+    pub struct Timer(usize, Option<Instant>);
+
+    impl Timer {
+        #[inline]
+        #[must_use]
+        pub fn new(idx: usize) -> Self {
+            Timer(idx, enabled().then(Instant::now))
+        }
+    }
+    impl Drop for Timer {
+        #[inline]
+        fn drop(&mut self) {
+            if let Some(t) = self.1 {
+                NS[self.0].fetch_add(
+                    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                COUNTS[self.0].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn summary() -> String {
+        let mut out = String::from("FMD_LAYOUT_PERF sub-stage attribution (2-iter totals):\n");
+        for i in 0..NAMES.len() {
+            let ns = NS[i].load(Ordering::Relaxed);
+            let count = COUNTS[i].load(Ordering::Relaxed);
+            out.push_str(&format!(
+                "  {:<22} {:>8.1} ms  {:>8} calls\n",
+                NAMES[i],
+                ns as f64 / 1_000_000.0,
+                count
+            ));
+        }
+        out
+    }
+}
+// END TEMP PASS6 LAYOUT SUB-STAGE INSTRUMENTATION
 fn layout_table(
     table: &Table,
     indent: f32,
@@ -16133,7 +16265,10 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         }
     }
 
-    let colw = allocate_table_column_widths(&columns, target);
+    let colw = {
+        let _perf_t = layout_perf::Timer::new(layout_perf::COL_ALLOC);
+        allocate_table_column_widths(&columns, target)
+    };
 
     // Text-left x for each column (inset by half a gutter).
     let mut tx = Vec::with_capacity(ncol);
@@ -16150,6 +16285,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         }
         is_numeric_cell_text(&text)
     };
+    let _perf_align = layout_perf::Timer::new(layout_perf::ALIGN_INFER);
     let inferred_align: Vec<Align> = (0..ncol)
         .map(|k| {
             if table.align.get(k).copied().unwrap_or(Align::None) != Align::None {
@@ -16177,8 +16313,10 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         })
         .collect();
+    drop(_perf_align);
 
     let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
+        let _perf_rows = layout_perf::Timer::new(layout_perf::TABLE_ROWLINES);
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -16792,12 +16930,10 @@ fn build_paragraph<'a>(
 ) -> BuiltParagraph {
     let mut built = BuiltParagraph::with_capacity(toks.len().saturating_add(1));
     let mut word: Vec<Tok> = Vec::new();
-    let hyphenator = Hyphenator::english();
     let word_cx = PdfWordContext {
         fs,
         faces,
         policy,
-        hyphenator: &hyphenator,
         hyphen_cache,
         width_cache,
     };
@@ -16962,7 +17098,7 @@ fn pdf_ascii_alphabetic_word_break_points(len: usize, dict: &[usize]) -> Vec<Pdf
 fn pdf_dictionary_break_points(len: usize, dict: &[usize]) -> Vec<PdfBreakPoint> {
     let mut points: Vec<PdfBreakPoint> = dict
         .iter()
-        .filter(|&&at| at >= 2 && len - at >= 2)
+        .filter(|&&at| at >= 2 && at <= len.saturating_sub(2))
         .map(|&at| PdfBreakPoint {
             at,
             penalty: 50,
@@ -17000,7 +17136,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
     let mut prev = 0usize;
     for point in points {
         let mut at = prev + FORCED_BREAK_CHUNK;
-        while at < point.at && len - at >= 2 && at >= 2 {
+        while at < point.at && at >= 2 && at <= len.saturating_sub(2) {
             filled.push(PdfBreakPoint {
                 at,
                 penalty: EMERGENCY_BREAK_PENALTY,
@@ -17014,7 +17150,7 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
     }
 
     let mut at = prev + FORCED_BREAK_CHUNK;
-    while at < len && len - at >= 2 && at >= 2 {
+    while at < len && at >= 2 && at <= len.saturating_sub(2) {
         filled.push(PdfBreakPoint {
             at,
             penalty: EMERGENCY_BREAK_PENALTY,
@@ -17032,7 +17168,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     }
 
     let stats = pdf_word_stats(word);
-    let needs_dictionary = cx.policy.hyphenate && stats.ascii_alphabetic;
+    let needs_dictionary = cx.policy.hyphenate && !stats.cjk && stats.hyphenable;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
     // A CJK run has to be examined at any length: five ideographs in a narrow
     // table column still need somewhere to break, and the length-gated
@@ -17045,30 +17181,26 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let dict_points = if needs_dictionary {
         let plain = pdf_word_plain_text(word, stats.byte_len);
         let plain = plain.as_ref();
-        // Hyphenation points are case-independent and depend only on the word's
-        // letters, so the lowercase word is a sound cache key (opts are always the
-        // default here). A cache hit returns exactly what the hyphenator would
-        // compute, so output stays byte-identical. To avoid an allocation on the
-        // common all-lowercase lookup, only fold case when an uppercase letter is
-        // present.
-        let key: std::borrow::Cow<'_, str> = if plain.bytes().any(|b| b.is_ascii_uppercase()) {
-            std::borrow::Cow::Owned(plain.to_ascii_lowercase())
+        let hyphenator = hyphenator_for_word(plain);
+        let opts = hyphenator.default_options();
+        // Language-prefixed key: "die" must not reuse English points under de.
+        let folded = if stats.ascii_alphabetic {
+            if plain.bytes().any(|b| b.is_ascii_uppercase()) {
+                std::borrow::Cow::Owned(plain.to_ascii_lowercase())
+            } else {
+                std::borrow::Cow::Borrowed(plain)
+            }
         } else {
-            std::borrow::Cow::Borrowed(plain)
+            std::borrow::Cow::Owned(plain.to_lowercase())
         };
-        let cached = cx.hyphen_cache.borrow().get(key.as_ref()).cloned();
+        let key = format!("{}:{folded}", hyphenator.lang().as_str());
+        let cached = cx.hyphen_cache.borrow().get(key.as_str()).cloned();
         cached.unwrap_or_else(|| {
-            let pts = cx
-                .hyphenator
-                .hyphenation_points(plain, HyphenationOptions::default());
-            // Only cache words that actually hyphenate. A non-hyphenating word gains
-            // nothing from caching, so skipping the insert (no key clone, no map entry)
-            // keeps unique / non-hyphenating corpora from paying any cache cost — they
-            // do not regress — while repeated hyphenating words still hit.
+            let pts = hyphenator.hyphenation_points(plain, opts);
             if !pts.is_empty() {
                 let mut cache = cx.hyphen_cache.borrow_mut();
                 if cache.len() < HYPHEN_CACHE_MAX {
-                    cache.insert(key.into_owned(), pts.clone());
+                    cache.insert(key, pts.clone());
                 }
             }
             pts
@@ -17077,7 +17209,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         Vec::new()
     };
 
-    let points = if needs_dictionary {
+    let points = if needs_dictionary && stats.ascii_alphabetic {
         pdf_ascii_alphabetic_word_break_points(stats.char_len, &dict_points)
     } else {
         let chars = pdf_word_chars(word, stats.char_len);
@@ -17141,6 +17273,9 @@ struct PdfWordStats {
     char_len: usize,
     byte_len: usize,
     ascii_alphabetic: bool,
+    /// Letters (any script) and apostrophes only — dictionary hyphenation
+    /// candidates, including `übermäßig` which is not ASCII.
+    hyphenable: bool,
     /// The word holds at least one CJK character, so it may carry UAX #14
     /// break opportunities regardless of its length.
     cjk: bool,
@@ -17151,6 +17286,7 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         char_len: 0,
         byte_len: 0,
         ascii_alphabetic: true,
+        hyphenable: true,
         cjk: false,
     };
     for tok in word {
@@ -17169,13 +17305,59 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
         if ascii {
             stats.char_len += bytes.len();
             stats.ascii_alphabetic &= ascii_alphabetic;
+            stats.hyphenable &= ascii_alphabetic
+                || tok
+                    .text
+                    .bytes()
+                    .all(|b| b.is_ascii_alphabetic() || b == b'\'');
         } else {
             stats.char_len += tok.text.chars().count();
             stats.ascii_alphabetic = false;
             stats.cjk |= tok.text.chars().any(is_cjk_char);
+            stats.hyphenable &= tok.text.chars().all(pdf_hyphen_letter);
         }
     }
+    stats.hyphenable &= stats.char_len >= 4;
     stats
+}
+
+fn pdf_hyphen_letter(c: char) -> bool {
+    c.is_alphabetic() || c == '\'' || c == '\u{2019}'
+}
+
+/// Pick a Liang pattern set from distinctive letters. Unknown/ASCII words
+/// stay on English so existing English PDFs stay byte-identical.
+///
+/// Shared `é` is treated as French (load-bearing for `développement` /
+/// `nécessaire`); Spanish still wins on `ñ`/`á`/`í`/`ó`/`ú`. `ü` is German
+/// unless a Spanish-exclusive letter is also present (`pingüino`).
+fn hyphenator_for_word(word: &str) -> Hyphenator {
+    let mut german_exclusive = false;
+    let mut german_ue = false;
+    let mut french = false;
+    let mut spanish = false;
+    for c in word.chars() {
+        match c {
+            'ß' | 'ä' | 'ö' | 'Ä' | 'Ö' => german_exclusive = true,
+            'ü' | 'Ü' => german_ue = true,
+            'ç' | 'Ç' | 'œ' | 'Œ' | 'æ' | 'Æ' | 'à' | 'â' | 'è' | 'é' | 'ê' | 'ë' | 'î' | 'ï'
+            | 'ô' | 'ù' | 'û' | 'ÿ' | 'À' | 'Â' | 'È' | 'É' | 'Ê' | 'Ë' | 'Î' | 'Ï' | 'Ô' | 'Ù'
+            | 'Û' => french = true,
+            'ñ' | 'Ñ' | 'á' | 'í' | 'ó' | 'ú' | 'Á' | 'Í' | 'Ó' | 'Ú' => spanish = true,
+            _ => {}
+        }
+    }
+    if german_exclusive || (german_ue && !spanish) {
+        Hyphenator::german()
+    } else if spanish && !french {
+        Hyphenator::spanish()
+    } else if french {
+        Hyphenator::french()
+    } else if spanish {
+        Hyphenator::spanish()
+    } else {
+        Hyphenator::english()
+    }
 }
 
 fn pdf_word_string(word: &[Tok], byte_len: usize) -> String {
@@ -17335,14 +17517,17 @@ fn layout_inlines(
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
     let policy = ParagraphPolicy::for_flow(flow.kind);
-    let built = build_paragraph(
-        &toks,
-        fs,
-        cx.faces,
-        policy,
-        &cx.hyphen_cache,
-        &cx.width_cache,
-    );
+    let built = {
+        let _perf_t = layout_perf::Timer::new(layout_perf::PARA_BUILD);
+        build_paragraph(
+            &toks,
+            fs,
+            cx.faces,
+            policy,
+            &cx.hyphen_cache,
+            &cx.width_cache,
+        )
+    };
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
     if !built.has_boxes {
@@ -17359,6 +17544,7 @@ fn layout_inlines(
         return;
     }
 
+    let _perf_t = layout_perf::Timer::new(layout_perf::PARA_EMIT);
     let n = cx.line_breaks.len();
     for i in 0..n {
         let lb = cx.line_breaks[i];
@@ -24350,7 +24536,16 @@ fn draw_seg(
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
         append_invisible_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map_lookup, source, &face.kern, shaped, cached_tj,
+            body,
+            seg.slot,
+            size,
+            seg.x,
+            y,
+            &face.map_lookup,
+            source,
+            &face.kern,
+            shaped,
+            cached_tj,
         );
     } else {
         if seg.fill != *current_fill {
@@ -24359,7 +24554,16 @@ fn draw_seg(
             *current_fill = seg.fill;
         }
         append_text_segment_operator(
-            body, seg.slot, size, seg.x, y, &face.map_lookup, source, &face.kern, shaped, cached_tj,
+            body,
+            seg.slot,
+            size,
+            seg.x,
+            y,
+            &face.map_lookup,
+            source,
+            &face.kern,
+            shaped,
+            cached_tj,
         );
     }
     // Strikethrough: a thin stroke through the run's middle, in the text's own
@@ -28050,10 +28254,11 @@ mod pdf_writer_tests {
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
-        fnv1a64_update_bytewise_reference, font_size_of, kerned_tj, kerned_tj_with_spacing,
-        layout_inlines, layout_inlines_greedy, layout_simple_text_paragraph, layout_table,
-        layout_table_uncached, line_has_visible_content, measure_word, normalize_svg_text_node,
-        parse_svg_attrs, parse_svg_background_color_token, parse_svg_baseline_shift,
+        fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word, kerned_tj,
+        kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
+        layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
+        parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
         parse_svg_marker_body, parse_svg_path_data, parse_svg_reusable_body_elements,
@@ -31009,6 +31214,36 @@ mod pdf_writer_tests {
         assert_eq!(
             out,
             "0.100 0.250 1.000 RG 0.66 w 12.50 700.25 m 42.00 700.25 l S\n"
+        );
+    }
+
+    #[test]
+    fn hyphenator_for_word_picks_german_french_spanish_from_letters() {
+        assert_eq!(hyphenator_for_word("hyphenation").lang().as_str(), "en");
+        assert_eq!(hyphenator_for_word("übermäßig").lang().as_str(), "de");
+        assert_eq!(hyphenator_for_word("français").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("développement").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("nécessaire").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("café").lang().as_str(), "fr");
+        assert_eq!(hyphenator_for_word("español").lang().as_str(), "es");
+        assert_eq!(hyphenator_for_word("constitución").lang().as_str(), "es");
+        // ü alone is German; ü + a Spanish exclusive letter (í) is Spanish.
+        assert_eq!(hyphenator_for_word("pingüino").lang().as_str(), "de");
+        assert_eq!(hyphenator_for_word("lingüística").lang().as_str(), "es");
+        let de = hyphenator_for_word("Donaudampfschiffahrt");
+        // ASCII German still English at the word level (no distinctive letters).
+        assert_eq!(de.lang().as_str(), "en");
+        let de_h = hyphenator_for_word("übermäßig");
+        let pts = de_h.hyphenation_points("übermäßig", de_h.default_options());
+        assert!(
+            !pts.is_empty(),
+            "German patterns must hyphenate übermäßig, got {pts:?}"
+        );
+        let fr_h = hyphenator_for_word("développement");
+        let fr_pts = fr_h.hyphenation_points("développement", fr_h.default_options());
+        assert!(
+            !fr_pts.is_empty(),
+            "French patterns must hyphenate développement, got {fr_pts:?}"
         );
     }
 

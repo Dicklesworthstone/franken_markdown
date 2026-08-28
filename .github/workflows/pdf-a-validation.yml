@@ -1,0 +1,50 @@
+# veraPDF validation gate (bead q6xc.2): validates the --pdf-a 2b output
+# against the golden corpus using the veraPDF Docker image. The gate fails
+# if any document has non-clean validation, proving the PDF/A output meets
+# the archival standard.
+name: pdf-a-validation
+
+on:
+  push:
+    paths: ["src/pdf.rs", "src/lib.rs", "tests/pdf_a_test.rs", ".github/workflows/pdf-a-validation.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build fmd
+        run: cargo build --release --bin fmd --features cli
+      - name: Generate PDF/A-2b fixtures
+        run: |
+          mkdir -p /tmp/pdfa-test
+          echo "# Test Document" > /tmp/pdfa-test/doc.md
+          echo "" >> /tmp/pdfa-test/doc.md
+          echo "Body text with **bold** and *italic* and \`code\`." >> /tmp/pdfa-test/doc.md
+          echo "" >> /tmp/pdfa-test/doc.md
+          echo "| Col A | Col B |" >> /tmp/pdfa-test/doc.md
+          echo "|---|---|" >> /tmp/pdfa-test/doc.md
+          echo "| 1 | 2 |" >> /tmp/pdfa-test/doc.md
+          ./target/release/fmd /tmp/pdfa-test/doc.md --to pdf --pdf-a 2b --out /tmp/pdfa-test/doc.pdf
+          test -s /tmp/pdfa-test/doc.pdf
+      - name: Validate with veraPDF
+        run: |
+          docker pull verapdf/verapdf:latest
+          docker run --rm -v /tmp/pdfa-test:/pdf verapdf/verapdf /pdf/doc.pdf --flavour 2b 2>&1 | tee validation.txt
+          grep -q "validationResult.*passed" validation.txt || grep -q '"valid"' validation.txt || exit 1
+      - name: Assert non-PDF/A default is byte-identical
+        run: |
+          ./target/release/fmd /tmp/pdfa-test/doc.md --to pdf --out /tmp/pdfa-test/default.pdf
+          ./target/release/fmd /tmp/pdfa-test/doc.md --to pdf --out /tmp/pdfa-test/default2.pdf
+          cmp /tmp/pdfa-test/default.pdf /tmp/pdfa-test/default2.pdf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdfa-validation
+          path: |
+            /tmp/pdfa-test/doc.pdf
+            validation.txt

@@ -93,7 +93,7 @@ batch = ["cli", "dep:asupersync"]
 # First-party: the factored font subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own). `crate::text` re-exports it, so
 # the engine surface is unchanged.
-fmd-font = { path = "fmd-font", version = "0.2.0", features = ["bundled-faces"] }
+fmd-font = { path = "fmd-font", version = "0.3.0", features = ["bundled-faces"] }
 # First-party: the factored math subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own).
 fmd-math = { path = "fmd-math", version = "0.1.0" }

@@ -497,8 +497,12 @@ fn apply_tuples(
         }
     }
     if let Some(ends) = contours {
-        iup(&mut acc_x, &touched, ends, n_real);
-        iup(&mut acc_y, &touched, ends, n_real);
+        // IUP interpolates in *outline coordinate* space, not point-index
+        // space. `points` still holds default locations here.
+        let orig_x: Vec<i32> = points.iter().map(|p| p.0).collect();
+        let orig_y: Vec<i32> = points.iter().map(|p| p.1).collect();
+        iup(&mut acc_x, &touched, ends, n_real, &orig_x);
+        iup(&mut acc_y, &touched, ends, n_real, &orig_y);
     }
     for (i, pt) in points.iter_mut().enumerate() {
         let dx = acc_x.get(i).copied().unwrap_or(0.0).round() as i32;
@@ -779,9 +783,9 @@ fn unpack_delta_run(d: &[u8], cursor: &mut usize, end: usize, n: usize) -> Optio
     Some(out)
 }
 
-/// IUP: for each contour, interpolate untouched coordinates between the
-/// nearest touched neighbours (OpenType `gvar` IUP semantics).
-fn iup(delta: &mut [f32], touched: &[bool], ends: &[u16], n_real: usize) {
+/// IUP: for each contour, interpolate untouched deltas between the nearest
+/// touched neighbours using **default outline coordinates** (OpenType `gvar`).
+fn iup(delta: &mut [f32], touched: &[bool], ends: &[u16], n_real: usize, orig: &[i32]) {
     if n_real == 0 || ends.is_empty() {
         return;
     }
@@ -791,12 +795,12 @@ fn iup(delta: &mut [f32], touched: &[bool], ends: &[u16], n_real: usize) {
         if end >= n_real || start > end {
             break;
         }
-        iup_contour(delta, touched, start, end);
+        iup_contour(delta, touched, orig, start, end);
         start = end.saturating_add(1);
     }
 }
 
-fn iup_contour(delta: &mut [f32], touched: &[bool], start: usize, end: usize) {
+fn iup_contour(delta: &mut [f32], touched: &[bool], orig: &[i32], start: usize, end: usize) {
     let n = end.saturating_sub(start).saturating_add(1);
     if n == 0 {
         return;
@@ -828,40 +832,40 @@ fn iup_contour(delta: &mut [f32], touched: &[bool], start: usize, end: usize) {
         let b = w[1];
         let da = delta.get(a).copied().unwrap_or(0.0);
         let db = delta.get(b).copied().unwrap_or(0.0);
+        let oa = orig.get(a).copied().unwrap_or(0);
+        let ob = orig.get(b).copied().unwrap_or(0);
         if a == b {
             continue;
         }
-        // Walk forward from a to b around the contour.
         let mut i = next_in(a, start, end);
-        let span = dist_in(a, b, start, end);
-        let mut step = 1usize;
-        while i != b && step <= n {
+        let mut guard = 0usize;
+        while i != b && guard <= n {
             if !touched.get(i).copied().unwrap_or(false) {
-                let t = if span == 0 {
-                    0.0
-                } else {
-                    step as f32 / span as f32
-                };
+                let oi = orig.get(i).copied().unwrap_or(0);
                 if let Some(slot) = delta.get_mut(i) {
-                    *slot = da + (db - da) * t;
+                    *slot = iup_delta(oa, oi, ob, da, db);
                 }
             }
             i = next_in(i, start, end);
-            step += 1;
+            guard += 1;
         }
+    }
+}
+
+/// Coordinate-space IUP between touched endpoints `a` and `b`.
+fn iup_delta(oa: i32, oi: i32, ob: i32, da: f32, db: f32) -> f32 {
+    let (lo, hi) = if oa <= ob { (oa, ob) } else { (ob, oa) };
+    if oa != ob && oi >= lo && oi <= hi {
+        da + (db - da) * ((oi - oa) as f32 / (ob - oa) as f32)
+    } else if (oi - oa).unsigned_abs() <= (oi - ob).unsigned_abs() {
+        da
+    } else {
+        db
     }
 }
 
 fn next_in(i: usize, start: usize, end: usize) -> usize {
     if i >= end { start } else { i + 1 }
-}
-
-fn dist_in(a: usize, b: usize, start: usize, end: usize) -> usize {
-    if b >= a {
-        b - a
-    } else {
-        (end - a) + (b - start) + 1
-    }
 }
 
 fn encode_simple(g: &SimpleGlyph) -> Vec<u8> {
@@ -1510,6 +1514,59 @@ mod tests {
             "gk3v.gvar.shared",
             "shared packed points still +50 x at peak",
             p0.points[0] == (50, 0),
+        );
+    }
+
+    #[test]
+    fn iup_interpolates_in_outline_coordinates_not_point_index() {
+        // p0=(0,0) dx=0, p1=(10,0) untouched, p2=(100,0) dx=100.
+        // Index IUP would give p1 dx=50; coordinate IUP gives dx=10.
+        let glyph = encode_simple(&SimpleGlyph {
+            points: vec![(0, 0), (10, 0), (100, 0)],
+            on_curve: vec![true, true, true],
+            contour_ends: vec![2],
+        });
+        let mut loca = Vec::new();
+        push32(&mut loca, 0);
+        push32(&mut loca, u32::try_from(glyph.len()).unwrap());
+        // Private points 0 and 2: count=2, ctrl run of 2 byte deltas 0 then 2.
+        let mut payload = vec![2, 1, 0, 2];
+        payload.push(0x81); // two x words
+        payload.extend_from_slice(&0i16.to_be_bytes());
+        payload.extend_from_slice(&100i16.to_be_bytes());
+        payload.push(1); // two y zeros
+        let mut gvd = Vec::new();
+        push16(&mut gvd, 1);
+        push16(&mut gvd, 0);
+        push16(&mut gvd, u16::try_from(payload.len()).unwrap());
+        push16(&mut gvd, EMBEDDED_PEAK | PRIVATE_POINTS);
+        push_i16(&mut gvd, f32_to_f2dot14(1.0));
+        let data_off = gvd.len();
+        gvd[2..4].copy_from_slice(&(data_off as u16).to_be_bytes());
+        gvd.extend_from_slice(&payload);
+        let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head_table()),
+            (b"maxp", maxp_table(1)),
+            (b"hhea", hhea_table(1)),
+            (b"hmtx", hmtx(1)),
+            (b"cmap", cmap4()),
+            (b"loca", loca),
+            (b"glyf", glyph),
+            (b"fvar", fvar_wght()),
+            (b"gvar", build_gvar_table(&gvd)),
+        ];
+        let font = Font::parse(sfnt(&tables)).expect("iup VF");
+        let peak = font.instance(900.0).expect("peak");
+        let pts = decode_simple(peak.glyph_data(0).unwrap(), 1).unwrap();
+        log_check(
+            "gk3v.gvar.iup-coord",
+            "p1 x is 20 (coord lerp), not 60 (index lerp)",
+            pts.points[1] == (20, 0),
+        );
+        log_check(
+            "gk3v.gvar.iup-ends",
+            "touched endpoints stay 0 and 200",
+            pts.points[0] == (0, 0) && pts.points[2] == (200, 0),
         );
     }
 

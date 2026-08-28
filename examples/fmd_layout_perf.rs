@@ -403,7 +403,9 @@ fn collect_blocks_text(blocks: &[Block], out: &mut Vec<String>) {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
                 push_nonempty(out, inline_text(inlines));
             }
-            Block::CodeBlock { code, .. } | Block::HtmlBlock(code) => {
+            Block::CodeBlock { code, .. }
+            | Block::HtmlBlock(code)
+            | Block::MathBlock(code) => {
                 for line in code.lines() {
                     push_nonempty(out, line.to_string());
                 }
@@ -418,6 +420,16 @@ fn collect_blocks_text(blocks: &[Block], out: &mut Vec<String>) {
                 push_nonempty(out, inline_cells_text(&table.head));
                 for row in &table.rows {
                     push_nonempty(out, inline_cells_text(row));
+                }
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        push_nonempty(out, inline_text(term));
+                    }
+                    for def in &item.definitions {
+                        push_nonempty(out, inline_text(def));
+                    }
                 }
             }
             Block::FootnoteDefinition { blocks, .. } => collect_blocks_text(blocks, out),
@@ -438,7 +450,11 @@ fn inline_text(inlines: &[Inline]) -> String {
     let mut out = String::new();
     for inline in inlines {
         match inline {
-            Inline::Text(text) | Inline::Code(text) | Inline::Html(text) => out.push_str(text),
+            Inline::Text(text)
+            | Inline::Code(text)
+            | Inline::Html(text)
+            | Inline::Math(text)
+            | Inline::DisplayMath(text) => out.push_str(text),
             Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
                 out.push_str(&inline_text(inner));
             }

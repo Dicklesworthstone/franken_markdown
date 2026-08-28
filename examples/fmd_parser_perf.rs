@@ -273,8 +273,23 @@ fn count_block(block: &Block) -> AstCounts {
             }
             AstCounts { blocks: 0, inlines }
         }
+        Block::DefinitionList(items) => {
+            let mut inlines = 0;
+            for item in items {
+                for term in &item.terms {
+                    inlines += count_inlines(term);
+                }
+                for def in &item.definitions {
+                    inlines += count_inlines(def);
+                }
+            }
+            AstCounts { blocks: 0, inlines }
+        }
         Block::FootnoteDefinition { blocks, .. } => count_blocks(blocks),
-        Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => AstCounts {
+        Block::CodeBlock { .. }
+        | Block::ThematicBreak
+        | Block::HtmlBlock(_)
+        | Block::MathBlock(_) => AstCounts {
             blocks: 0,
             inlines: 0,
         },
@@ -307,6 +322,8 @@ fn count_inlines(inlines: &[Inline]) -> usize {
             } => count_inlines(children),
             Inline::Text(_)
             | Inline::Code(_)
+            | Inline::Math(_)
+            | Inline::DisplayMath(_)
             | Inline::Image { .. }
             | Inline::FootnoteRef { .. }
             | Inline::SoftBreak

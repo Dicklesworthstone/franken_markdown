@@ -22,22 +22,26 @@ fn collect_markdown(root: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
         if path.is_dir() {
             // Skip regenerable / vendored / VCS trees so the soak stays fast and
             // deterministic (and never recurses into rendered artifacts).
+            let path_str = path.to_string_lossy();
             if matches!(
                 name.as_ref(),
                 "target"
-                    | ".git"
-                    | ".beads"
                     | "node_modules"
                     | "pkg"
                     | "scratch"
                     | "target-local"
                     | "beads_compliance_audit"
-            ) || name.starts_with(".rch")
+                    | "artifacts"
+            ) || name.starts_with("rch")
                 || name.starts_with("target")
-                || path.ends_with("tests/artifacts")
+                || path_str.contains("artifacts")
+                || path_str.contains("fuzz/corpus")
             {
                 continue;
             }

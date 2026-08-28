@@ -25,10 +25,10 @@ use crate::error::Result;
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{self, Tok as HighlightTok};
 use crate::layout::{
-    FORCED_BREAK_PENALTY, FontSize, Glue, Hyphenator, LayoutUnit, LineBreak, ParagraphItem,
-    ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units, advance_to_layout_units,
-    break_paragraph_into, cjk_break_allowed, cjk_break_glue, cjk_break_prohibited,
-    default_interword_glue, is_breakable_whitespace, is_cjk_char,
+    FORCED_BREAK_PENALTY, FontSize, Glue, HyphenLang, Hyphenator, LayoutUnit, LineBreak,
+    ParagraphItem, ParagraphLayoutScratch, Penalty, TextBox, adjustment_to_layout_units,
+    advance_to_layout_units, break_paragraph_into, cjk_break_allowed, cjk_break_glue,
+    cjk_break_prohibited, default_interword_glue, is_breakable_whitespace, is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
@@ -1908,6 +1908,7 @@ struct PdfWordContext<'a> {
     fs: FontSize,
     faces: &'a Faces,
     policy: ParagraphPolicy,
+    doc_lang: Option<&'a str>,
     /// Per-document hyphenation cache (bead qw1.7.1); shared via `&RefCell` so
     /// this `Copy` context can still read/insert. Keys include the language
     /// tag so mixed-script paragraphs cannot reuse English points for German.
@@ -2182,6 +2183,16 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
                     collect_image_dests(&item.blocks, out);
                 }
             }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        collect_image_dests_inlines(term, out);
+                    }
+                    for def in &item.definitions {
+                        collect_image_dests_inlines(def, out);
+                    }
+                }
+            }
             Block::Table(table) => {
                 for cell in &table.head {
                     collect_image_dests_inlines(cell, out);
@@ -2192,7 +2203,10 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
                     }
                 }
             }
-            Block::CodeBlock { .. } | Block::ThematicBreak | Block::HtmlBlock(_) => {}
+            Block::CodeBlock { .. }
+            | Block::ThematicBreak
+            | Block::HtmlBlock(_)
+            | Block::MathBlock(_) => {}
         }
     }
 }
@@ -2216,12 +2230,22 @@ fn collect_text(blocks: &[Block], out: &mut String) {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
                 collect_text_inlines(inlines, out);
             }
-            Block::CodeBlock { code, .. } => out.push_str(code),
+            Block::CodeBlock { code, .. } | Block::MathBlock(code) => out.push_str(code),
             Block::BlockQuote(inner) => collect_text(inner, out),
             Block::FootnoteDefinition { blocks: inner, .. } => collect_text(inner, out),
             Block::List(list) => {
                 for item in &list.items {
                     collect_text(&item.blocks, out);
+                }
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        collect_text_inlines(term, out);
+                    }
+                    for def in &item.definitions {
+                        collect_text_inlines(def, out);
+                    }
                 }
             }
             Block::Table(table) => {
@@ -2243,7 +2267,10 @@ fn collect_text(blocks: &[Block], out: &mut String) {
 fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
     for inline in inlines {
         match inline {
-            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::Text(t)
+            | Inline::Code(t)
+            | Inline::Math(t)
+            | Inline::DisplayMath(t) => out.push_str(t),
             Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 collect_text_inlines(c, out);
@@ -2585,6 +2612,16 @@ fn collect_pdf_footnote_ref_order(blocks: &[Block]) -> Vec<String> {
                 Block::List(list) => {
                     for item in &list.items {
                         walk_blocks(&item.blocks, order, seen);
+                    }
+                }
+                Block::DefinitionList(items) => {
+                    for item in items {
+                        for term in &item.terms {
+                            walk_inlines(term, order, seen);
+                        }
+                        for def in &item.definitions {
+                            walk_inlines(def, order, seen);
+                        }
                     }
                 }
                 Block::Table(table) => {
@@ -3011,6 +3048,10 @@ fn table_layout_inline_key(
             add_table_layout_key_bytes(inline_bytes, html.len())?;
             Some(TableLayoutInlineKey::Html(html.clone()))
         }
+        Inline::Math(code) | Inline::DisplayMath(code) => {
+            add_table_layout_key_bytes(inline_bytes, code.len())?;
+            Some(TableLayoutInlineKey::Code(code.clone()))
+        }
     }
 }
 
@@ -3341,6 +3382,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             gap(out, 3.0);
         }
         Block::List(list) => layout_list(list, indent, out, cx),
+        Block::DefinitionList(items) => layout_definition_list(items, indent, out, cx),
         Block::Table(table) => {
             let group = cx.alloc_flow();
             layout_table(table, indent, group, out, cx);
@@ -3368,6 +3410,24 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 image: None,
             });
         }
+        Block::MathBlock(math_text) => {
+            let mut toks = Vec::new();
+            push_text_tokens(math_text, F_MONO, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
+            let group = cx.alloc_flow();
+            layout_inlines(
+                toks,
+                indent + 12.0,
+                11.0,
+                7.0,
+                out,
+                cx,
+                FlowSpec {
+                    group,
+                    kind: FlowKind::Paragraph,
+                },
+            );
+        }
         Block::HtmlBlock(html) => {
             // PDF has no raw-HTML passthrough mode. Preserve the Markdown source
             // text instead of deleting it; HTML output remains responsible for
@@ -3381,6 +3441,60 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 indent,
                 11.0,
                 7.0,
+                out,
+                cx,
+                FlowSpec {
+                    group,
+                    kind: FlowKind::Paragraph,
+                },
+            );
+        }
+    }
+}
+
+fn layout_definition_list(
+    items: &[crate::ast::DefinitionItem],
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) {
+    let def_indent = indent + 14.0;
+    for item in items {
+        for term in &item.terms {
+            let mut toks = Vec::new();
+            tokenize(term, false, false, false, None, &mut toks);
+            for tok in &mut toks {
+                if tok.slot == F_BODY {
+                    tok.slot = F_BOLD;
+                }
+            }
+            apply_symbol_fallback(&mut toks, cx.faces);
+            let group = cx.alloc_flow();
+            layout_inlines(
+                toks,
+                indent,
+                cx.type_scale.body,
+                2.0,
+                out,
+                cx,
+                FlowSpec {
+                    group,
+                    kind: FlowKind::Paragraph,
+                },
+            );
+        }
+        for (def_idx, def) in item.definitions.iter().enumerate() {
+            let mut toks = Vec::new();
+            tokenize(def, false, false, false, None, &mut toks);
+            apply_symbol_fallback(&mut toks, cx.faces);
+            let group = cx.alloc_flow();
+            let is_last = def_idx + 1 == item.definitions.len();
+            let gap_after = if is_last { 6.0 } else { 2.0 };
+            layout_inlines(
+                toks,
+                def_indent,
+                cx.type_scale.body,
+                gap_after,
                 out,
                 cx,
                 FlowSpec {
@@ -16737,6 +16851,7 @@ fn tokenize(
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
+            Inline::Math(t) | Inline::DisplayMath(t) => push_text_tokens(t, F_MONO, strike, link, out),
         }
     }
 }
@@ -16809,6 +16924,47 @@ fn subscript_phonetic_fallback(c: char) -> Option<char> {
         '\u{209A}' => Some('p'), // ₚ
         '\u{209B}' => Some('s'), // ₛ
         '\u{209C}' => Some('t'), // ₜ
+        // Superscripts and phonetic modifier letters
+        '\u{2070}' => Some('0'), // ⁰
+        '\u{00B9}' => Some('1'), // ¹
+        '\u{00B2}' => Some('2'), // ²
+        '\u{00B3}' => Some('3'), // ³
+        '\u{2074}' => Some('4'), // ⁴
+        '\u{2075}' => Some('5'), // ⁵
+        '\u{2076}' => Some('6'), // ⁶
+        '\u{2077}' => Some('7'), // ⁷
+        '\u{2078}' => Some('8'), // ⁸
+        '\u{2079}' => Some('9'), // ⁹
+        '\u{207A}' => Some('+'), // ⁺
+        '\u{207B}' => Some('-'), // ⁻
+        '\u{207C}' => Some('='), // ⁼
+        '\u{207D}' => Some('('), // ⁽
+        '\u{207E}' => Some(')'), // ⁾
+        '\u{2071}' => Some('i'), // ⁱ
+        '\u{207F}' => Some('n'), // ⁿ
+        '\u{1D43}' => Some('a'), // ᵃ
+        '\u{1D47}' => Some('b'), // ᵇ
+        '\u{1D9C}' => Some('c'), // ᶜ
+        '\u{1D48}' => Some('d'), // ᵈ
+        '\u{1D49}' => Some('e'), // ᵉ
+        '\u{1DA0}' => Some('f'), // ᶠ
+        '\u{1D4D}' => Some('g'), // ᵍ
+        '\u{02B0}' => Some('h'), // ʰ
+        '\u{02B2}' => Some('j'), // ʲ
+        '\u{1D4F}' => Some('k'), // ᵏ
+        '\u{02E1}' => Some('l'), // ˡ
+        '\u{1D50}' => Some('m'), // ᵐ
+        '\u{1D52}' => Some('o'), // ᵒ
+        '\u{1D56}' => Some('p'), // ᵖ
+        '\u{02B3}' => Some('r'), // ʳ
+        '\u{02E2}' => Some('s'), // ˢ
+        '\u{1D57}' => Some('t'), // ᵗ
+        '\u{1D58}' => Some('u'), // ᵘ
+        '\u{1D5B}' => Some('v'), // ᵛ
+        '\u{02B7}' => Some('w'), // ʷ
+        '\u{02E3}' => Some('x'), // ˣ
+        '\u{02B8}' => Some('y'), // ʸ
+        '\u{1DBB}' => Some('z'), // ᶻ
         _ => None,
     }
 }
@@ -17016,6 +17172,7 @@ fn build_paragraph<'a>(
     fs: FontSize,
     faces: &'a Faces,
     policy: ParagraphPolicy,
+    doc_lang: Option<&'a str>,
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
     width_cache: &'a RefCell<WidthCache>,
 ) -> BuiltParagraph {
@@ -17025,6 +17182,7 @@ fn build_paragraph<'a>(
         fs,
         faces,
         policy,
+        doc_lang,
         hyphen_cache,
         width_cache,
     };
@@ -17272,7 +17430,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let dict_points = if needs_dictionary {
         let plain = pdf_word_plain_text(word, stats.byte_len);
         let plain = plain.as_ref();
-        let hyphenator = hyphenator_for_word(plain);
+        let hyphenator = hyphenator_for_word_with_doc_lang(plain, cx.doc_lang);
         let opts = hyphenator.default_options();
         // Language-prefixed key: "die" must not reuse English points under de.
         let folded = if stats.ascii_alphabetic {
@@ -17414,6 +17572,21 @@ fn pdf_word_stats(word: &[Tok]) -> PdfWordStats {
 
 fn pdf_hyphen_letter(c: char) -> bool {
     c.is_alphabetic() || c == '\'' || c == '\u{2019}'
+}
+
+/// Select a hyphenator for `word`, taking optional document language into account.
+fn hyphenator_for_word_with_doc_lang(word: &str, doc_lang: Option<&str>) -> Hyphenator {
+    if let Some(tag) = doc_lang {
+        let choice = crate::layout::resolve_hyphen_lang(tag);
+        let word_hyphenator = hyphenator_for_word(word);
+        if word_hyphenator.lang() == HyphenLang::English && choice.hyphenator().lang() != HyphenLang::English {
+            choice.hyphenator()
+        } else {
+            word_hyphenator
+        }
+    } else {
+        hyphenator_for_word(word)
+    }
 }
 
 /// Pick a Liang pattern set from distinctive letters. Unknown/ASCII words
@@ -17654,6 +17827,7 @@ fn layout_inlines(
         fs,
         cx.faces,
         policy,
+        cx.opts.lang.as_deref(),
         &cx.hyphen_cache,
         &cx.width_cache,
     );
@@ -17730,6 +17904,7 @@ fn layout_prefixed_inlines(
         fs,
         cx.faces,
         policy,
+        cx.opts.lang.as_deref(),
         &cx.hyphen_cache,
         &cx.width_cache,
     );
@@ -19375,8 +19550,6 @@ fn serialize_pages_chunked(
     let mut cumulative_stream_bytes = 0usize;
     #[cfg(not(target_arch = "wasm32"))]
     let mut pipeline: Option<ChunkedCompressPipeline> = None;
-    #[cfg(target_arch = "wasm32")]
-    let mut pipeline: Option<std::convert::Infallible> = None;
     while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
         let (mut content, reserved) = generate_page_content(
             &placed,
@@ -19399,11 +19572,12 @@ fn serialize_pages_chunked(
             if pipeline.is_none()
                 && cumulative_stream_bytes >= CHUNKED_COMPRESS_POOL_MIN_BYTES
             {
-                pipeline = ChunkedCompressPipeline::spawn(chunked_compress_worker_count());
+                pipeline =
+                    ChunkedCompressPipeline::spawn(chunked_compress_worker_count(), page_idx);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
         match pipeline.as_mut() {
-            #[cfg(not(target_arch = "wasm32"))]
             Some(pipeline) => {
                 // The uncompressed stream moves to a worker; the main thread
                 // proceeds to lay out the next page while DEFLATE runs.
@@ -19416,6 +19590,14 @@ fn serialize_pages_chunked(
                 content.stream = String::new();
                 compressed.push(owned);
             }
+        }
+        // wasm32 has no worker pool: compress each page stream inline.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let stream = page_stream(&content.stream, &mut zlib_scratch);
+            let owned = own_page_stream(stream);
+            content.stream = String::new();
+            compressed.push(owned);
         }
         scratch.pages.push(content);
         #[cfg(not(target_arch = "wasm32"))]
@@ -19580,7 +19762,7 @@ struct ChunkedCompressPipeline {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ChunkedCompressPipeline {
-    fn spawn(workers: usize) -> Option<Self> {
+    fn spawn(workers: usize, initial_page: usize) -> Option<Self> {
         let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let mut spawned = 0usize;
@@ -19602,8 +19784,8 @@ impl ChunkedCompressPipeline {
             in_flight_cap: spawned,
             queue,
             result_rx,
-            submitted: 0,
-            drained: 0,
+            submitted: initial_page,
+            drained: initial_page,
             done: std::collections::BTreeMap::new(),
         })
     }
@@ -27879,7 +28061,21 @@ fn build_pdf(
     };
 
     let page_streams: Vec<OwnedPdfStream> = match precompressed {
-        Some(streams) => streams,
+        Some(streams) => {
+            let total_input = pages.iter().map(|page| page.stream.len()).sum::<usize>();
+            let compressed_bytes = streams
+                .iter()
+                .map(|stream| stream.bytes.len())
+                .sum::<usize>();
+            profiler.record_since(
+                "page_stream_compression",
+                total_input,
+                compressed_bytes,
+                "encode page content streams and apply FlateDecode when it wins",
+                profiler.checkpoint(),
+            );
+            streams
+        }
         None => compress_page_streams(pages, profiler)
             .into_iter()
             .map(own_page_stream)
@@ -29123,7 +29319,8 @@ mod pdf_writer_tests {
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
         container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
-        fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word, kerned_tj,
+        fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
+        hyphenator_for_word_with_doc_lang, kerned_tj,
         kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
         layout_simple_text_paragraph, layout_table, layout_table_uncached,
         line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
@@ -30392,6 +30589,7 @@ mod pdf_writer_tests {
             fs,
             &faces,
             ParagraphPolicy::RAGGED,
+            None,
             &cache,
             &width_cache,
         );
@@ -30456,7 +30654,7 @@ mod pdf_writer_tests {
         ];
 
         for (case_idx, (toks, policy)) in cases.into_iter().enumerate() {
-            let built = build_paragraph(&toks, fs, &faces, policy, &cache, &width_cache);
+            let built = build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache);
             let scanned = built
                 .items
                 .iter()
@@ -30491,7 +30689,7 @@ mod pdf_writer_tests {
         ] {
             let mut toks = Vec::new();
             push_text_tokens(text, F_BODY, false, None, &mut toks);
-            let built = build_paragraph(&toks, fs, &faces, policy, &cache, &width_cache);
+            let built = build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache);
             let boxes: Vec<_> = built
                 .items
                 .iter()
@@ -30570,6 +30768,7 @@ mod pdf_writer_tests {
             fs,
             &faces,
             ParagraphPolicy::TEX_PARAGRAPH,
+            None,
             &cache,
             &width_cache,
         );
@@ -30605,6 +30804,7 @@ mod pdf_writer_tests {
             fs,
             &faces,
             ParagraphPolicy::RAGGED,
+            None,
             &cache,
             &width_cache,
         );
@@ -32107,6 +32307,11 @@ mod pdf_writer_tests {
         let de = hyphenator_for_word("Donaudampfschiffahrt");
         // ASCII German still English at the word level (no distinctive letters).
         assert_eq!(de.lang().as_str(), "en");
+        // With explicit doc_lang, German is used for ASCII German words.
+        let de_doc = hyphenator_for_word_with_doc_lang("Donaudampfschiffahrt", Some("de"));
+        assert_eq!(de_doc.lang().as_str(), "de");
+        let de_doc_pts = de_doc.hyphenation_points("Donaudampfschiffahrt", de_doc.default_options());
+        assert!(!de_doc_pts.is_empty(), "German hyphenator must hyphenate Donaudampfschiffahrt");
         let de_h = hyphenator_for_word("übermäßig");
         let pts = de_h.hyphenation_points("übermäßig", de_h.default_options());
         assert!(
@@ -36475,7 +36680,11 @@ fn push_plain_inlines(inlines: &[Inline], out: &mut String, links: &mut Vec<Stri
     for inl in inlines {
         match inl {
             Inline::FootnoteRef { .. } => {}
-            Inline::Text(t) | Inline::Code(t) | Inline::Html(t) => out.push_str(t),
+            Inline::Text(t)
+            | Inline::Code(t)
+            | Inline::Html(t)
+            | Inline::Math(t)
+            | Inline::DisplayMath(t) => out.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_plain_inlines(c, out, links);
             }
@@ -36554,6 +36763,16 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
                 Block::List(list) => {
                     for item in &list.items {
                         collect_links(&item.blocks, audit, ids);
+                    }
+                }
+                Block::DefinitionList(items) => {
+                    for item in items {
+                        for term in &item.terms {
+                            audit_inline_fragment_links(term, audit, ids);
+                        }
+                        for def in &item.definitions {
+                            audit_inline_fragment_links(def, audit, ids);
+                        }
                     }
                 }
                 Block::FootnoteDefinition { blocks: inner, .. } => {

@@ -236,8 +236,8 @@ impl<'a> RenderState<'a> {
     }
 }
 
-fn render_blocks<'a>(
-    blocks: &'a [Block],
+fn render_blocks<'a, 'b>(
+    blocks: &'b [Block],
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
@@ -251,8 +251,8 @@ fn initial_body_capacity(blocks: usize) -> usize {
     blocks.saturating_mul(4096).min(4 * 1024 * 1024)
 }
 
-fn render_block<'a>(
-    block: &'a Block,
+fn render_block<'a, 'b>(
+    block: &'b Block,
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
@@ -296,8 +296,8 @@ fn render_block<'a>(
             }
             out.push_str("</code></pre>\n");
         }
-        Block::BlockQuote(inner) => match alert_kind(inner) {
-            Some((tag, label)) => {
+        Block::BlockQuote(inner) => match alert_body(inner) {
+            Some((tag, label, body)) => {
                 // GitHub alert: the [!TAG] marker line becomes the callout
                 // title; the remaining blocks render as the body. The tag
                 // line itself is consumed (GFM puts it alone on its line).
@@ -306,7 +306,7 @@ fn render_block<'a>(
                 out.push_str("\">\n<p class=\"callout-title\">");
                 out.push_str(label);
                 out.push_str("</p>\n");
-                render_blocks(&inner[1..], out, opts, state);
+                render_blocks(&body, out, opts, state);
                 out.push_str("</aside>\n");
             }
             None => {
@@ -314,7 +314,7 @@ fn render_block<'a>(
                 render_blocks(inner, out, opts, state);
                 out.push_str("</blockquote>\n");
             }
-        }
+        },
         Block::List(list) => render_list(list, out, opts, state),
         Block::Table(table) => render_table(table, out, opts, state),
         Block::ThematicBreak => out.push_str("<hr>\n"),
@@ -957,11 +957,7 @@ fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
     // construction, no mirror to drift.
     let mut state = RenderState::default();
     let mut entries = Vec::new();
-    fn walk(
-        blocks: &[Block],
-        state: &mut RenderState<'_>,
-        entries: &mut Vec<TocEntry>,
-    ) {
+    fn walk(blocks: &[Block], state: &mut RenderState<'_>, entries: &mut Vec<TocEntry>) {
         for block in blocks {
             match block {
                 Block::Heading { level, inlines } => {
@@ -1083,6 +1079,53 @@ fn alert_kind(inner: &[Block]) -> Option<(&'static str, &'static str)> {
     }
     let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
     Some((tag, label))
+}
+
+/// Validate and split a GitHub alert: a blockquote whose first block is a
+/// paragraph starting with `[!TAG]` (NOTE/TIP/IMPORTANT/WARNING/CAUTION,
+/// case-insensitive). Returns the css tag, the human label, and the body
+/// blocks: the marker paragraph minus its marker prefix, plus any following
+/// blocks. Unknown tags and non-conforming shapes return None (plain quote).
+fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>)> {
+    const TAGS: [(&str, &str); 5] = [
+        ("note", "Note"),
+        ("tip", "Tip"),
+        ("important", "Important"),
+        ("warning", "Warning"),
+        ("caution", "Caution"),
+    ];
+    let first = inner.first()?;
+    let Block::Paragraph(inlines) = first else {
+        return None;
+    };
+    let Some(Inline::Text(text)) = inlines.first() else {
+        return None;
+    };
+    let trimmed = text.trim_start();
+    let rest = trimmed.strip_prefix("[!")?;
+    let close = rest.find(']')?;
+    let tag_raw = rest[..close].to_ascii_lowercase();
+    let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
+
+    // Body: the marker line's trailing text (if any), the paragraph's other
+    // inlines, then the blockquote's remaining blocks.
+    let tail = rest[close + 1..].trim_start().to_string();
+    let mut body_inlines: Vec<Inline> = Vec::new();
+    if !tail.is_empty() {
+        body_inlines.push(Inline::Text(tail));
+    }
+    body_inlines.extend_from_slice(&inlines[1..]);
+    // Drop a leading soft break right after the marker line: the title and
+    // the body are visually separated by the callout styling.
+    if matches!(body_inlines.first(), Some(Inline::SoftBreak)) {
+        body_inlines.remove(0);
+    }
+    let mut body: Vec<Block> = Vec::new();
+    if !body_inlines.is_empty() {
+        body.push(Block::Paragraph(body_inlines));
+    }
+    body.extend_from_slice(&inner[1..]);
+    Some((*tag, *label, body))
 }
 
 /// Collect GFM footnote definitions in document order (container-aware), for
@@ -2211,9 +2254,8 @@ mod tests {
 
     #[test]
     fn toc_marker_emits_nav_with_real_anchor_ids() {
-        let doc = crate::parse_markdown(
-            "[[TOC]]\n\n# Alpha\n\ntext\n\n## Beta\n\nmore\n\n# Alpha\n",
-        );
+        let doc =
+            crate::parse_markdown("[[TOC]]\n\n# Alpha\n\ntext\n\n## Beta\n\nmore\n\n# Alpha\n");
         let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
         assert!(html.contains("<nav class=\"toc\">"), "nav emitted: {html}");
         // Three headings in order; collision suffix on the second Alpha.
@@ -2231,6 +2273,12 @@ mod tests {
         assert!(html.contains("<nav class=\"toc\">"));
         assert!(html.contains("href=\"#one\""));
         assert!(!html.contains("href=\"#two\""), "depth filter excludes h2");
+    }
+
+    #[test]
+    fn debug_alert_parse_dump() {
+        let doc = crate::parse_markdown("> [!NOTE]\n> Useful details.\n");
+        println!("{:#?}", doc.blocks);
     }
 
     #[test]
@@ -2254,7 +2302,10 @@ mod tests {
         let html = render(&doc, &crate::HtmlOptions::default());
         assert!(html.contains("<blockquote>"));
         assert!(html.contains("[!SURLY]"), "unknown tag stays literal");
-        assert!(!html.contains("<aside class=\"callout"), "no callout markup");
+        assert!(
+            !html.contains("<aside class=\"callout"),
+            "no callout markup"
+        );
     }
 
     #[test]

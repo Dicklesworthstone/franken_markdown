@@ -223,8 +223,9 @@ pub fn expand_md_directory(dir: &Path) -> Vec<PathBuf> {
             if file_type.is_dir() {
                 walk(acc, &path)?;
             } else if file_type.is_file()
-                && std::path::Path::new(&name_str)
-                    .extension()
+                && name_str
+                    .rsplit('.')
+                    .next()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
             {
                 acc.push(path);

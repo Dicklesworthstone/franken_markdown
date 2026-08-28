@@ -648,9 +648,9 @@ fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, R
 }
 
 /// Detect a GFM footnote definition start: `[^id]: content`. Returns the id
-/// and the inline content after the colon. The id must be non-empty with no
-/// whitespace, brackets, or HTML/PDF delimiter characters (those would break
-/// `id="fn-…"` / `href="#fn-…"` if only text-escaped, and PDF string literals).
+/// and the inline content after the colon. Ids follow GFM (non-empty, no
+/// whitespace or brackets) plus a byte cap; HTML/PDF delimiter characters are
+/// allowed so a `[^a"b]: dest` line is not stolen as a link-reference definition.
 fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("[^")?;
@@ -676,15 +676,17 @@ fn footnote_definition_marker(line: &str) -> bool {
     is_safe_footnote_id(id) && rest[close + 1..].starts_with(':')
 }
 
-/// Footnote ids that are safe in HTML attributes and PDF strings.
+/// GFM footnote ids: non-empty, no whitespace, no brackets.
 ///
-/// GFM is more permissive (anything but whitespace). We additionally reject
-/// ASCII controls and the characters that would break `id="…"` / `href="#…"`
-/// when the HTML path uses text-escaping, or PDF literal strings. Length is
+/// ASCII controls are also rejected (they are never useful ids). Length is
 /// capped so a hostile `[^aaaa…]:` cannot allocate unbounded id copies.
+/// Characters that are special in HTML attributes or PDF strings (`" < >`
+/// etc.) are allowed here; emitters must attribute-escape. Rejecting them in
+/// the parser made `[^a"b]: dest` a link-reference definition and deleted the
+/// note.
 fn is_safe_footnote_id(id: &str) -> bool {
-    const MAX_FOOTNOTE_ID_CHARS: usize = 128;
-    if id.is_empty() || id.chars().count() > MAX_FOOTNOTE_ID_CHARS {
+    const MAX_FOOTNOTE_ID_BYTES: usize = 128;
+    if id.is_empty() || id.len() > MAX_FOOTNOTE_ID_BYTES {
         return false;
     }
     id.chars().all(is_safe_footnote_id_char)
@@ -694,10 +696,7 @@ fn is_safe_footnote_id_char(c: char) -> bool {
     if c.is_whitespace() || (c as u32) < 0x20 || c == '\u{7f}' {
         return false;
     }
-    !matches!(
-        c,
-        '[' | ']' | '"' | '\'' | '<' | '>' | '&' | '`' | '\\' | '(' | ')'
-    )
+    !matches!(c, '[' | ']')
 }
 
 fn collect_link_reference_metadata_into(
@@ -3137,8 +3136,8 @@ fn record_plain_inline_parse(
 }
 
 /// Parse a GFM footnote-reference id starting at `start` (just past `[^`).
-/// Returns (id, index-past-the-closing-`]`) when the id is non-empty and
-/// contains no whitespace, `[`, `]`, or control characters.
+/// Returns (id, index-past-the-closing-`]`) when the id is a GFM-legal id
+/// (non-empty, no whitespace/`[`/`]`, no ASCII controls, ≤128 bytes).
 fn parse_footnote_ref_id(bytes: &[char], start: usize) -> Option<(String, usize)> {
     let mut id = String::new();
     let mut i = start;
@@ -6228,10 +6227,13 @@ mod footnote_tests {
         assert!(scan_footnote_definition("[^]: empty id").is_none());
         assert!(scan_footnote_definition("[^1] no colon").is_none());
         assert!(scan_footnote_definition("[^has space]: x").is_none());
-        assert!(scan_footnote_definition("[^a\"b]: x").is_none());
-        assert!(scan_footnote_definition("[^a<b]: x").is_none());
-        assert!(scan_footnote_definition("[^a(b]: x").is_none());
         assert!(scan_footnote_definition("plain text").is_none());
+        let (id, content) = scan_footnote_definition("[^a\"b]: the note").unwrap();
+        assert_eq!(id, "a\"b");
+        assert_eq!(content, "the note");
+        let (id, content) = scan_footnote_definition("[^a<b]: x").unwrap();
+        assert_eq!(id, "a<b");
+        assert_eq!(content, "x");
     }
 
     #[test]
@@ -6245,7 +6247,9 @@ mod footnote_tests {
         let chars: Vec<char> = "] rest".chars().collect();
         assert!(parse_footnote_ref_id(&chars, 0).is_none());
         let chars: Vec<char> = "a\"b]".chars().collect();
-        assert!(parse_footnote_ref_id(&chars, 0).is_none());
+        let (id, next) = parse_footnote_ref_id(&chars, 0).unwrap();
+        assert_eq!(id, "a\"b");
+        assert_eq!(next, 4);
     }
 
     #[test]
@@ -6261,22 +6265,35 @@ mod footnote_tests {
     }
 
     #[test]
-    fn footnote_ids_with_html_or_pdf_delimiters_stay_literal() {
-        let doc = crate::parse_markdown("see[^a\"b] and [^a<b] here\n");
-        fn has_footnote_ref(blocks: &[Block]) -> bool {
-            blocks.iter().any(|block| match block {
-                Block::Paragraph(inlines) | Block::Heading { inlines, .. } => inlines
-                    .iter()
-                    .any(|inl| matches!(inl, Inline::FootnoteRef { .. })),
-                Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-                    has_footnote_ref(inner)
-                }
-                _ => false,
+    fn quoted_footnote_id_is_not_stolen_as_a_link_reference() {
+        // A denylist that rejected `"` made `[^a"b]: the note` a CommonMark
+        // link-reference definition (`[^a"b]` label, dest `the note`) and
+        // deleted the footnote from the document.
+        let doc = crate::parse_markdown("see[^a\"b].\n\n[^a\"b]: the note\n");
+        let refs: Vec<&str> = doc
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(inlines) => inlines.iter().find_map(|inl| match inl {
+                    Inline::FootnoteRef { id } => Some(id.as_str()),
+                    _ => None,
+                }),
+                _ => None,
             })
-        }
-        assert!(
-            !has_footnote_ref(&doc.blocks),
-            "quote/angle ids must not parse as footnote refs: {doc:?}"
+            .collect();
+        assert_eq!(refs, ["a\"b"], "ref must parse as a footnote: {doc:?}");
+        let defs: Vec<&str> = doc
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::FootnoteDefinition { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            defs,
+            ["a\"b"],
+            "def must not be ingested as a link ref: {doc:?}"
         );
     }
 }

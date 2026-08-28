@@ -299,9 +299,14 @@ fn locate(source: &str, lines: &[(usize, usize)], byte: usize) -> (usize, usize)
     if lines.is_empty() {
         return (0, 0);
     }
+    // Each displayed line owns `[start, next_start)` — the visible text plus
+    // its terminator (`\n` or `\r\n`). The terminator is excluded from the
+    // printed range, but a diagnostic that lands on those bytes still belongs
+    // to this line. Matching on `end` alone is wrong for CRLF: `end` points at
+    // `\r`, so the following `\n` would fall through to the next line.
     for (i, &(a, b)) in lines.iter().enumerate() {
-        let last = i + 1 == lines.len();
-        if byte < b || (byte == b && last) || (byte >= a && byte < b) || (byte == b && !last) {
+        let line_limit = lines.get(i + 1).map_or(source.len(), |&(next, _)| next);
+        if byte < line_limit || i + 1 == lines.len() {
             let rel = byte.saturating_sub(a).min(b.saturating_sub(a));
             let text = source.get(a..b).unwrap_or("");
             return (i, byte_to_col(text, rel));
@@ -481,7 +486,8 @@ fn push_usize(out: &mut String, n: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{byte_to_col, display_width};
+    use super::{byte_to_col, display_width, line_ranges, locate, render_caret, span_of_line};
+    use crate::span::{DiagnosticSeverity, SourceSpan};
 
     #[test]
     fn combining_mark_is_zero_width() {
@@ -497,5 +503,55 @@ mod tests {
         assert_eq!(byte_to_col("a中b", 0), 0);
         assert_eq!(byte_to_col("a中b", 1), 1);
         assert_eq!(byte_to_col("a中b", "a中".len()), 3);
+    }
+
+    #[test]
+    fn line_ranges_strip_cr_from_displayed_text() {
+        assert_eq!(line_ranges("a\nb"), vec![(0, 1), (2, 3)]);
+        assert_eq!(line_ranges("a\r\nb"), vec![(0, 1), (3, 4)]);
+        assert_eq!(line_ranges("a\r\n"), vec![(0, 1)]);
+        assert_eq!(span_of_line("a\r\nb", 1), SourceSpan::new(0, 1));
+        assert_eq!(span_of_line("a\r\nb", 2), SourceSpan::new(3, 4));
+    }
+
+    #[test]
+    fn locate_maps_crlf_terminator_bytes_to_the_preceding_line() {
+        let lf = "a\nb";
+        let crlf = "a\r\nb";
+        let lf_lines = line_ranges(lf);
+        let crlf_lines = line_ranges(crlf);
+        // Visible 'a' is line 0 on both endings.
+        assert_eq!(locate(lf, &lf_lines, 0), (0, 0));
+        assert_eq!(locate(crlf, &crlf_lines, 0), (0, 0));
+        // The newline itself belongs to line 0 (column past the last glyph).
+        assert_eq!(locate(lf, &lf_lines, 1), (0, 1));
+        assert_eq!(locate(crlf, &crlf_lines, 1), (0, 1)); // `\r`
+        assert_eq!(locate(crlf, &crlf_lines, 2), (0, 1)); // `\n` after `\r`
+        // Second-line content.
+        assert_eq!(locate(lf, &lf_lines, 2), (1, 0));
+        assert_eq!(locate(crlf, &crlf_lines, 3), (1, 0));
+    }
+
+    #[test]
+    fn render_caret_on_crlf_newline_stays_on_the_same_logical_line() {
+        let source = "alpha\r\nbeta\n";
+        // Byte 6 is the `\n` of the first line's `\r\n` (after `alpha\r`).
+        let block = render_caret(
+            source,
+            SourceSpan::new(6, 7),
+            Some("note.md"),
+            "here",
+            DiagnosticSeverity::Error,
+            super::CaretStyle::default(),
+        );
+        assert!(
+            block.starts_with("note.md:1:"),
+            "CRLF newline must not jump to line 2, got {block:?}"
+        );
+        assert!(block.contains("alpha"), "gutter should show the first line");
+        assert!(
+            !block.contains("note.md:2:"),
+            "must not report the following line as the span line: {block:?}"
+        );
     }
 }

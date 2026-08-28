@@ -2357,7 +2357,175 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         code_highlight_spans: Vec::new(),
     };
     layout_blocks(blocks, 0.0, &mut out, &mut cx);
+    layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
     out
+}
+
+/// GFM footnote definitions are skipped in the body walk (same as HTML). The
+/// HTML emitter then writes a trailing notes section; without that here the
+/// definition content was silently dropped. Emit referenced notes after the
+/// body, labeled with the source id so they stay correlated with `[^{id}]`
+/// markers produced by [`tokenize`].
+fn layout_pdf_footnote_notes(blocks: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let defs = collect_pdf_footnote_defs(blocks);
+    if defs.is_empty() {
+        return;
+    }
+    let order = collect_pdf_footnote_ref_order(blocks);
+    let mut emitted = false;
+    for id in &order {
+        let Some(inner) = defs
+            .iter()
+            .find(|(def_id, _)| *def_id == id.as_str())
+            .map(|(_, body)| *body)
+        else {
+            continue;
+        };
+        if !emitted {
+            gap(out, 10.0);
+            emitted = true;
+        }
+        match inner {
+            [Block::Paragraph(inlines), rest @ ..] => {
+                let mut prefixed = Vec::with_capacity(inlines.len() + 1);
+                prefixed.push(Inline::Text(format!("[^{id}]: ")));
+                prefixed.extend(inlines.iter().cloned());
+                layout_block(&Block::Paragraph(prefixed), 0.0, out, cx);
+                layout_blocks(rest, 0.0, out, cx);
+            }
+            _ => {
+                layout_block(
+                    &Block::Paragraph(vec![Inline::Text(format!("[^{id}]:"))]),
+                    0.0,
+                    out,
+                    cx,
+                );
+                layout_blocks(inner, 0.0, out, cx);
+            }
+        }
+    }
+}
+
+fn collect_pdf_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
+    let mut defs = Vec::new();
+    fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
+        for block in blocks {
+            match block {
+                Block::FootnoteDefinition { id, blocks: inner } => {
+                    defs.push((id.as_str(), inner.as_slice()));
+                }
+                Block::BlockQuote(inner) => walk(inner, defs),
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, defs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(blocks, &mut defs);
+    defs
+}
+
+fn collect_pdf_footnote_ref_order(blocks: &[Block]) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    fn walk_blocks(blocks: &[Block], order: &mut Vec<String>, seen: &mut BTreeSet<String>) {
+        for block in blocks {
+            match block {
+                Block::FootnoteDefinition { .. } => {}
+                Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
+                    walk_inlines(inlines, order, seen);
+                }
+                Block::BlockQuote(inner) => walk_blocks(inner, order, seen),
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk_blocks(&item.blocks, order, seen);
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in &table.head {
+                        walk_inlines(cell, order, seen);
+                    }
+                    for row in &table.rows {
+                        for cell in row {
+                            walk_inlines(cell, order, seen);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk_inlines(inlines: &[Inline], order: &mut Vec<String>, seen: &mut BTreeSet<String>) {
+        for inl in inlines {
+            match inl {
+                Inline::FootnoteRef { id } => {
+                    if seen.insert(id.clone()) {
+                        order.push(id.clone());
+                    }
+                }
+                Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                    walk_inlines(c, order, seen);
+                }
+                Inline::Link { content, .. } => walk_inlines(content, order, seen),
+                _ => {}
+            }
+        }
+    }
+    walk_blocks(blocks, &mut order, &mut seen);
+    order
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod pdf_footnote_layout_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::{tokenize, verification_text_layer};
+    use crate::PdfOptions;
+    use crate::ast::Inline;
+
+    #[test]
+    fn tokenize_keeps_gfm_footnote_ref_markers() {
+        let inlines = [
+            Inline::Text("Hi".into()),
+            Inline::FootnoteRef { id: "1".into() },
+        ];
+        let mut toks = Vec::new();
+        tokenize(&inlines, false, false, false, None, &mut toks);
+        let text: String = toks.iter().map(|t| t.text.as_str()).collect();
+        assert!(text.contains("[^1]"), "{text:?}");
+    }
+
+    #[test]
+    fn audit_anchors_walks_table_cells() {
+        let doc = crate::parse_markdown("# T\n\n| a |\n| --- |\n| [bad](#nope) |\n");
+        let audit = super::audit_anchors(&doc);
+        assert!(
+            audit.unresolved.iter().any(|t| t == "nope"),
+            "table-cell fragment must be audited: {audit:?}"
+        );
+    }
+
+    #[test]
+    fn footnote_definition_content_reaches_the_text_layer() {
+        let doc = crate::parse_markdown("Hi[^1]\n\n[^1]: Secret note.\n");
+        let layer = verification_text_layer(&doc, &PdfOptions::default()).expect("fonts load");
+        let joined: String = layer
+            .pages
+            .iter()
+            .flat_map(|page| page.runs.iter())
+            .map(|run| run.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("[^1]"), "ref marker missing: {joined:?}");
+        assert!(
+            joined.contains("Secret note"),
+            "definition content dropped: {joined:?}"
+        );
+    }
 }
 
 /// Bound on the per-document hyphenation cache (distinct lowercase words). Beyond
@@ -16297,7 +16465,17 @@ fn tokenize(
 ) {
     for inl in inlines {
         match inl {
-            Inline::FootnoteRef { .. } => {}
+            Inline::FootnoteRef { id } => {
+                // Until PDF has HTML-style numbered superscripts, keep the GFM
+                // marker visible. Dropping the variant deleted the citation.
+                push_text_tokens(
+                    &format!("[^{id}]"),
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                );
+            }
             Inline::Text(t) => push_text_tokens(t, slot_of(bold, italic, false), strike, link, out),
             Inline::Code(t) => push_text_tokens(t, F_MONO, strike, link, out),
             Inline::Strong(c) => tokenize(c, true, italic, strike, link, out),
@@ -35189,6 +35367,25 @@ fn push_plain_inlines(inlines: &[Inline], out: &mut String, links: &mut Vec<Stri
     }
 }
 
+fn audit_inline_fragment_links(
+    inlines: &[Inline],
+    audit: &mut AnchorAudit,
+    ids: &BTreeSet<String>,
+) {
+    let mut plain = String::new();
+    let mut links = Vec::new();
+    push_plain_inlines(inlines, &mut plain, &mut links);
+    for dest in links {
+        if let Some(target) = dest.strip_prefix('#') {
+            if ids.contains(target) {
+                audit.resolved += 1;
+            } else if !audit.unresolved.iter().any(|u| u == target) {
+                audit.unresolved.push(target.to_string());
+            }
+        }
+    }
+}
+
 pub fn audit_anchors(doc: &Document) -> AnchorAudit {
     let mut state = HeadingIdState::default();
     let mut ids: BTreeSet<String> = BTreeSet::new();
@@ -35209,6 +35406,9 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
                         collect_ids(&item.blocks, state, ids);
                     }
                 }
+                Block::FootnoteDefinition { blocks: inner, .. } => {
+                    collect_ids(inner, state, ids);
+                }
                 _ => {}
             }
         }
@@ -35226,23 +35426,25 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
         for block in blocks {
             match block {
                 Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-                    let mut plain = String::new();
-                    let mut links = Vec::new();
-                    push_plain_inlines(inlines, &mut plain, &mut links);
-                    for dest in links {
-                        if let Some(target) = dest.strip_prefix('#') {
-                            if ids.contains(target) {
-                                audit.resolved += 1;
-                            } else if !audit.unresolved.iter().any(|u| u == target) {
-                                audit.unresolved.push(target.to_string());
-                            }
-                        }
-                    }
+                    audit_inline_fragment_links(inlines, audit, ids);
                 }
                 Block::BlockQuote(inner) => collect_links(inner, audit, ids),
                 Block::List(list) => {
                     for item in &list.items {
                         collect_links(&item.blocks, audit, ids);
+                    }
+                }
+                Block::FootnoteDefinition { blocks: inner, .. } => {
+                    collect_links(inner, audit, ids);
+                }
+                Block::Table(table) => {
+                    for cell in &table.head {
+                        audit_inline_fragment_links(cell, audit, ids);
+                    }
+                    for row in &table.rows {
+                        for cell in row {
+                            audit_inline_fragment_links(cell, audit, ids);
+                        }
                     }
                 }
                 _ => {}

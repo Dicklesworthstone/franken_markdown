@@ -117,23 +117,23 @@ struct RenderState<'a> {
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
     /// Bounded per-render cache for repeated non-consecutive code blocks.
-    highlight_cache: Vec<HighlightCacheEntry<'a>>,
+    highlight_cache: Vec<HighlightCacheEntry>,
     highlight_cache_next: usize,
     /// Bounded per-render cache for repeated link/image destinations.
-    url_cache: Vec<UrlCacheEntry<'a>>,
+    url_cache: Vec<UrlCacheEntry>,
     url_cache_next: usize,
 }
 
-struct HighlightCacheEntry<'a> {
-    lang: &'a str,
-    code: &'a str,
+struct HighlightCacheEntry {
+    lang: String,
+    code: String,
     rendered_html: String,
 }
 
-struct UrlCacheEntry<'a> {
+struct UrlCacheEntry {
     context: UrlContext,
-    raw_url: &'a str,
-    safe_url: Option<&'a str>,
+    raw_url: String,
+    was_safe: bool,
 }
 
 const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
@@ -176,7 +176,7 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    fn highlight_code(&mut self, lang: &'a str, code: &'a str, out: &mut String) {
+    fn highlight_code(&mut self, lang: &str, code: &str, out: &mut String) {
         if let Some(entry) = self
             .highlight_cache
             .iter()
@@ -196,10 +196,10 @@ impl<'a> RenderState<'a> {
         self.remember_highlight(lang, code, rendered_html);
     }
 
-    fn remember_highlight(&mut self, lang: &'a str, code: &'a str, rendered_html: String) {
+    fn remember_highlight(&mut self, lang: &str, code: &str, rendered_html: String) {
         let entry = HighlightCacheEntry {
-            lang,
-            code,
+            lang: lang.to_string(),
+            code: code.to_string(),
             rendered_html,
         };
         if self.highlight_cache.len() < HIGHLIGHT_CACHE_MAX_ENTRIES {
@@ -211,20 +211,24 @@ impl<'a> RenderState<'a> {
         self.highlight_cache_next = (self.highlight_cache_next + 1) % HIGHLIGHT_CACHE_MAX_ENTRIES;
     }
 
-    fn safe_url_cached(&mut self, url: &'a str, context: UrlContext) -> Option<&'a str> {
+    fn safe_url_cached<'u>(&mut self, url: &'u str, context: UrlContext) -> Option<&'u str> {
         if let Some(entry) = self
             .url_cache
             .iter()
             .find(|entry| entry.context == context && entry.raw_url == url)
         {
-            return entry.safe_url;
+            return if entry.was_safe {
+                safe_url(url, context)
+            } else {
+                None
+            };
         }
 
         let safe = safe_url(url, context);
         let entry = UrlCacheEntry {
             context,
-            raw_url: url,
-            safe_url: safe,
+            raw_url: url.to_string(),
+            was_safe: safe.is_some(),
         };
         if self.url_cache.len() < URL_CACHE_MAX_ENTRIES {
             self.url_cache.push(entry);
@@ -404,14 +408,14 @@ fn render_table<'a, 'b>(
     out.push_str("</div>\n");
 }
 
-fn render_table_cells<'a>(
-    cells: &'a [Vec<Inline>],
+fn render_table_cells(
+    cells: &[Vec<Inline>],
     align: &[Align],
     open: &str,
     close: &str,
     out: &mut String,
     opts: &HtmlOptions,
-    state: &mut RenderState<'a>,
+    state: &mut RenderState<'_>,
 ) {
     let aligned_len = cells.len().min(align.len());
     let (aligned_cells, unaligned_cells) = cells.split_at(aligned_len);
@@ -439,11 +443,11 @@ fn align_attr(a: Align) -> &'static str {
     }
 }
 
-fn render_inlines<'a>(
-    inlines: &'a [Inline],
+fn render_inlines(
+    inlines: &[Inline],
     out: &mut String,
     opts: &HtmlOptions,
-    state: &mut RenderState<'a>,
+    state: &mut RenderState<'_>,
 ) {
     for inl in inlines {
         match inl {
@@ -817,12 +821,12 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-fn wrap<'a>(
+fn wrap(
     out: &mut String,
     tag: &str,
-    content: &'a [Inline],
+    content: &[Inline],
     opts: &HtmlOptions,
-    state: &mut RenderState<'a>,
+    state: &mut RenderState<'_>,
 ) {
     out.push('<');
     out.push_str(tag);
@@ -1036,7 +1040,7 @@ fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
             prev_level -= 1;
         }
         out.push_str("<li><a href=\"#");
-        out.push_str(&escape_text(&entry.id));
+        push_escaped_attr(&entry.id, out);
         out.push_str("\">");
         out.push_str(&escape_text(&entry.text));
         out.push_str("</a>\n");
@@ -1047,38 +1051,6 @@ fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
         open -= 1;
     }
     out.push_str("</nav>\n");
-}
-
-/// Detect a GitHub alert: a blockquote whose first block is a paragraph
-/// starting with `[!TAG]` (NOTE/TIP/IMPORTANT/WARNING/CAUTION,
-/// case-insensitive) on its own line. Returns the css modifier and the human
-/// label. Unknown tags and non-conforming shapes return None (plain quote).
-fn alert_kind(inner: &[Block]) -> Option<(&'static str, &'static str)> {
-    const TAGS: [(&str, &str); 5] = [
-        ("note", "Note"),
-        ("tip", "Tip"),
-        ("important", "Important"),
-        ("warning", "Warning"),
-        ("caution", "Caution"),
-    ];
-    let first = inner.first()?;
-    let Block::Paragraph(inlines) = first else {
-        return None;
-    };
-    let Some(Inline::Text(text)) = inlines.first() else {
-        return None;
-    };
-    let trimmed = text.trim_start();
-    let rest = trimmed.strip_prefix("[!")?;
-    let close = rest.find(']')?;
-    let tag_raw = rest[..close].to_ascii_lowercase();
-    // The marker line must carry nothing but the tag (GFM: content follows on
-    // the next lines).
-    if !rest[close + 1..].trim().is_empty() {
-        return None;
-    }
-    let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
-    Some((tag, label))
 }
 
 /// Validate and split a GitHub alert: a blockquote whose first block is a
@@ -1107,16 +1079,12 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
     let tag_raw = rest[..close].to_ascii_lowercase();
     let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
 
-    // Body: the marker line's trailing text (if any), the paragraph's other
-    // inlines, then the blockquote's remaining blocks.
     let tail = rest[close + 1..].trim_start().to_string();
     let mut body_inlines: Vec<Inline> = Vec::new();
     if !tail.is_empty() {
         body_inlines.push(Inline::Text(tail));
     }
     body_inlines.extend_from_slice(&inlines[1..]);
-    // Drop a leading soft break right after the marker line: the title and
-    // the body are visually separated by the callout styling.
     if matches!(body_inlines.first(), Some(Inline::SoftBreak)) {
         body_inlines.remove(0);
     }
@@ -1170,7 +1138,7 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
             continue;
         };
         out.push_str("<li id=\"fn-");
-        out.push_str(&escape_text(id));
+        push_escaped_attr(id, out);
         out.push_str("\">");
         render_blocks(blocks, out, opts, state);
         out.push_str(" <a class=\"footnote-backref\" href=\"#fnref-");
@@ -1208,7 +1176,7 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
         out.push('"');
     }
     out.push_str("><a href=\"#fn-");
-    out.push_str(&escape_text(id));
+    push_escaped_attr(id, out);
     out.push_str("\">");
     push_u64(out, number as u64);
     out.push_str("</a></sup>");
@@ -2273,12 +2241,6 @@ mod tests {
         assert!(html.contains("<nav class=\"toc\">"));
         assert!(html.contains("href=\"#one\""));
         assert!(!html.contains("href=\"#two\""), "depth filter excludes h2");
-    }
-
-    #[test]
-    fn debug_alert_parse_dump() {
-        let doc = crate::parse_markdown("> [!NOTE]\n> Useful details.\n");
-        println!("{:#?}", doc.blocks);
     }
 
     #[test]

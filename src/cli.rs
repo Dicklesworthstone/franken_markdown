@@ -1179,27 +1179,36 @@ fn report_font_pin_warnings(assets: &FontAssets, json: bool) {
         let Some(weight) = assets.slot_weight(slot) else {
             continue;
         };
-        let instanced = assets.resolved_bytes(slot).and_then(|bytes| {
-            crate::text::Font::parse(bytes.to_vec())
-                .ok()
-                .and_then(|font| font.instance(f32::from(weight)))
-        });
-        if instanced.is_none() {
-            let warning = RenderWarning::FontWeightIgnoredStatic {
-                slot: slot.as_str().to_string(),
-                weight,
-            };
-            if json {
-                eprintln!(
-                    "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
-                    warning.code(),
-                    json_escape(&warning.message())
-                );
-            } else {
-                eprintln!("fmd: warning: {}", warning.message());
-            }
+        if !font_pin_failed_to_instance(assets, slot, weight) {
+            continue;
+        }
+        let warning = RenderWarning::FontWeightIgnoredStatic {
+            slot: slot.as_str().to_string(),
+            weight,
+        };
+        if json {
+            eprintln!(
+                "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                warning.code(),
+                json_escape(&warning.message())
+            );
+        } else {
+            eprintln!("fmd: warning: {}", warning.message());
         }
     }
+}
+
+/// True when this slot has host (or VF-shared) bytes and `Font::instance`
+/// could not produce a face at `weight`. A pin with no host bytes is a
+/// no-op on the bundled path — not a static-face ignore.
+fn font_pin_failed_to_instance(assets: &FontAssets, slot: FontAssetSlot, weight: u16) -> bool {
+    let Some(bytes) = assets.resolved_bytes(slot) else {
+        return false;
+    };
+    crate::text::Font::parse(bytes.to_vec())
+        .ok()
+        .and_then(|font| font.instance(f32::from(weight)))
+        .is_none()
 }
 
 fn report_font_assets(assets: &FontAssets) {
@@ -1993,6 +2002,42 @@ mod overwrite_guard_tests {
         // be overwritten, so the guard stays out of the way.
         let outputs = [PathBuf::from("out.html")];
         assert!(find_input_overwrite(Some("/no/such/fmd/input/doc.md"), &outputs).is_none());
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod font_pin_warning_tests {
+    use super::font_pin_failed_to_instance;
+    use crate::{FontAssetSlot, FontAssets};
+
+    #[test]
+    fn pin_without_host_bytes_is_not_a_static_ignore() {
+        let mut assets = FontAssets::default();
+        assets
+            .set_slot_weight(FontAssetSlot::BodyRegular, 650)
+            .unwrap();
+        assert!(
+            !font_pin_failed_to_instance(&assets, FontAssetSlot::BodyRegular, 650),
+            "no host face: the pin is unused, not ignored on a static face"
+        );
+    }
+
+    #[test]
+    fn static_host_face_is_a_failed_instance() {
+        let bytes =
+            crate::fonts::body_bytes(crate::FontFamily::Sans, crate::fonts::FontStyle::Regular)
+                .to_vec();
+        let assets = FontAssets::default()
+            .with_slot(FontAssetSlot::BodyRegular, bytes)
+            .unwrap()
+            .with_slot_weight(FontAssetSlot::BodyRegular, 650)
+            .unwrap();
+        assert!(
+            font_pin_failed_to_instance(&assets, FontAssetSlot::BodyRegular, 650),
+            "bundled Plex is static; a 650 pin must not instance"
+        );
     }
 }
 

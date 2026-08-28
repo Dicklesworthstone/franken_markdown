@@ -679,7 +679,7 @@ pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
     while let Some(word) = words.next() {
         hyphenator.hyphenation_points_into_scratch(
             word,
-            HyphenationOptions::default(),
+            hyphenator.default_options(),
             &mut scratch.hyphen_points,
             &mut scratch.hyphen_lower,
             &mut scratch.hyphen_dotted,
@@ -704,6 +704,40 @@ pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
     }));
 }
 
+/// Convert [`Hyphenator`] points (character offsets into `word`) into byte
+/// offsets so callers can slice without panicking on non-ASCII letters.
+fn hyphen_char_points_to_byte_offsets(word: &str, points: &[usize]) -> Vec<usize> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let mut wanted: Vec<usize> = points.iter().copied().filter(|&p| p > 0).collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut out = Vec::with_capacity(wanted.len());
+    let mut wi = 0usize;
+    let mut char_i = 0usize;
+    for (byte_i, _) in word.char_indices() {
+        while wi < wanted.len() && wanted[wi] == char_i {
+            out.push(byte_i);
+            wi += 1;
+        }
+        if wi == wanted.len() {
+            return out;
+        }
+        char_i += 1;
+    }
+    while wi < wanted.len() {
+        if wanted[wi] == char_i {
+            out.push(word.len());
+        }
+        wi += 1;
+    }
+    out
+}
+
 fn push_hyphenated_word_items_from_points<M: PairMetrics>(
     out: &mut Vec<ParagraphItem>,
     metrics: &M,
@@ -712,14 +746,13 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
     hyphen_width: LayoutUnit,
     points: &[usize],
 ) {
-    // Byte offsets where the word may break: dictionary hyphens (which render a
-    // `-`) merged with CJK opportunities (which render nothing). A word cannot
-    // hold both — the hyphenator only answers for ASCII-alphabetic words — but
-    // merging keeps the two sources independent.
-    let mut splits: Vec<(usize, bool)> = points
-        .iter()
-        .filter(|&&point| point > 0)
-        .map(|&point| (point.min(word.len()), true))
+    // Dictionary hyphens (which render a `-`) are character offsets from the
+    // hyphenator; CJK opportunities (which render nothing) are already byte
+    // offsets from `char_indices`. Convert the former before merging so a
+    // word like "Bäckerei" is sliced on character boundaries, not mid-code-unit.
+    let mut splits: Vec<(usize, bool)> = hyphen_char_points_to_byte_offsets(word, points)
+        .into_iter()
+        .map(|byte| (byte, true))
         .collect();
     let mut prev: Option<char> = None;
     for (idx, ch) in word.char_indices() {
@@ -1775,6 +1808,12 @@ fn find_or_insert_child(nodes: &mut Vec<BuildHyphenNode>, node_idx: usize, key: 
 }
 
 fn is_hyphen_letter(ch: char) -> bool {
+    // CJK ideographs are Unicode alphabetic, but Liang patterns are Latin.
+    // Treating them as hyphen letters mixed character-index points with CJK
+    // byte-index breaks. Apostrophe is a letter in the French pattern set.
+    if is_cjk_char(ch) {
+        return false;
+    }
     ch.is_alphabetic() || ch == '\'' || ch == '\u{2019}'
 }
 
@@ -2908,10 +2947,11 @@ mod hyphen_and_break_edge_tests {
 
     use super::{
         AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
-        FontSize, Glue, HyphenPattern, LayoutUnit, PairMetrics, ParagraphItem,
-        ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle, append_styled_word_chunk,
-        break_paragraph, break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
-        insert_hyphen_pattern, push_hyphenated_word_items_from_points, trailing_forced_fit_break,
+        FontSize, Glue, HyphenLang, HyphenPattern, Hyphenator, LayoutUnit, PairMetrics,
+        ParagraphItem, ParagraphLayoutScratch, Penalty, StyledText, TextBox, TextStyle,
+        append_styled_word_chunk, break_paragraph, break_paragraph_into, build_hyphen_trie,
+        insert_encoded_hyphen_pattern, insert_hyphen_pattern,
+        push_hyphenated_word_items_from_points, trailing_forced_fit_break,
     };
 
     /// Deterministic flat metrics: every char advances 500/1000 em, no kerning.
@@ -2996,6 +3036,36 @@ mod hyphen_and_break_edge_tests {
                 hyphen_penalty,
             ]
         );
+    }
+
+    #[test]
+    fn unicode_hyphen_points_slice_on_character_boundaries() {
+        // German "Bäckerei" hyphenates at character offsets 2 and 5. Byte
+        // index 2 sits inside `ä` (U+00E4), so treating those points as bytes
+        // panics on the slice. The items must be "Bä" / "cke" / "rei".
+        let size = FontSize::from_points(10);
+        let hyphen_width = LayoutUnit::from_milli_points(2_500);
+        let word = "Bäckerei";
+        let points =
+            Hyphenator::german().hyphenation_points(word, HyphenLang::German.default_options());
+        assert_eq!(points.as_slice(), &[2, 5]);
+        let mut out = Vec::new();
+        push_hyphenated_word_items_from_points(
+            &mut out,
+            &FlatMetrics,
+            word,
+            size,
+            hyphen_width,
+            &points,
+        );
+        let texts: Vec<&str> = out
+            .iter()
+            .filter_map(|item| match item {
+                ParagraphItem::Box(b) => Some(b.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["Bä", "cke", "rei"]);
     }
 
     #[test]

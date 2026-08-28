@@ -165,16 +165,18 @@ fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
         }
     }
     if finding.code == "unresolved_anchor" {
-        let rest = finding.detail.split_once('#')?.1;
-        let id = rest.split_whitespace().next()?.trim_end_matches(['.', ',']);
+        // Detail is `internal link target #{id} matches no heading`. Do not
+        // split on the first `#` then take the next word — an empty fragment
+        // (`[x](#)`) produced the id "matches", and a bare `#{id}` search
+        // highlights ATX headings.
+        const PREFIX: &str = "internal link target #";
+        const SUFFIX: &str = " matches no heading";
+        let rest = finding.detail.strip_prefix(PREFIX)?;
+        let id = rest.strip_suffix(SUFFIX).unwrap_or(rest);
         if id.is_empty() {
             return None;
         }
-        // Prefer the markdown link form so we don't highlight an unrelated
-        // occurrence of the same identifier in body prose.
-        let needle = format!("](#{id})");
-        return find_source_span(source, &needle)
-            .or_else(|| find_source_span(source, &format!("#{id}")));
+        return find_source_span(source, &format!("](#{id})"));
     }
     None
 }
@@ -333,6 +335,35 @@ mod tests {
         a.verdict = "clean";
         let body_b = to_json_body(&a);
         assert_ne!(fnv1a64(body_a.as_bytes()), fnv1a64(body_b.as_bytes()));
+    }
+
+    #[test]
+    fn unresolved_anchor_span_does_not_invent_id_matches() {
+        let empty = VerifyFinding {
+            code: "unresolved_anchor",
+            detail: "internal link target # matches no heading".to_string(),
+        };
+        assert_eq!(
+            finding_span("see [x](#) and [y](#matches)", &empty),
+            None,
+            "empty fragment must not highlight the word 'matches'"
+        );
+        let nope = VerifyFinding {
+            code: "unresolved_anchor",
+            detail: "internal link target #nope matches no heading".to_string(),
+        };
+        let src = "see [x](#t) and [bad](#nope)\n";
+        let span = finding_span(src, &nope).expect("span");
+        assert_eq!(&src[span.start..span.end], "](#nope)");
+        let heading_only = VerifyFinding {
+            code: "unresolved_anchor",
+            detail: "internal link target #T matches no heading".to_string(),
+        };
+        assert_eq!(
+            finding_span("# T\n\nsee [x](#missing)\n", &heading_only),
+            None,
+            "must not highlight an ATX heading that happens to match the id"
+        );
     }
 
     #[test]

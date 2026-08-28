@@ -283,3 +283,47 @@ fn watch_measure_tiny_doc_emits_p95_under_budget() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn watch_measure_fifty_headings_p95_under_150ms() {
+    let dir = fresh_dir("measure-50");
+    let md = dir.join("doc.md");
+    let html = dir.join("doc.html");
+    let mut src = String::from("# Watch latency fixture\n\n");
+    for i in 1..=50 {
+        src.push_str(&format!(
+            "# Heading {i}\n\nParagraph {i} with enough words to give the HTML renderer a real page of work to do on every rebuild.\n\n"
+        ));
+    }
+    std::fs::write(&md, src).unwrap();
+    let out = fmd(&[
+        "watch",
+        md.to_str().unwrap(),
+        "--out",
+        html.to_str().unwrap(),
+        "--serve",
+        "--measure",
+        "21",
+        "--interval",
+        "1",
+        "--no-config",
+        "--json",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    log_check(
+        "j3e0.3.fifty.samples",
+        "21 sample events",
+        stderr.matches("\"event\":\"sample\"").count() == 21,
+    );
+    log_check(
+        "j3e0.3.fifty.exit",
+        "p95 <= 150ms (process exit 0)",
+        out.status.success(),
+    );
+    log_check(
+        "j3e0.3.fifty.verdict",
+        "measure summary verdict pass",
+        stderr.contains("\"verdict\":\"pass\""),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

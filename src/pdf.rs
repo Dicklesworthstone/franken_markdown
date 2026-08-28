@@ -43,6 +43,48 @@ type PdfStageStart = std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 type PdfStageStart = ();
 
+// TEMPORARY PASS-7 INSTRUMENTATION (FMD_SUBSET_TAIL) — fully reverted before landing.
+#[cfg(not(target_arch = "wasm32"))]
+static SUBSET_TAIL: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("FMD_SUBSET_TAIL").is_some());
+
+#[cfg(not(target_arch = "wasm32"))]
+fn subset_tail_enabled() -> bool {
+    *SUBSET_TAIL
+}
+
+#[cfg(target_arch = "wasm32")]
+fn subset_tail_enabled() -> bool {
+    false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn subset_tail_now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn subset_tail_since(t: std::time::Instant, acc: &mut u128) {
+    *acc += t.elapsed().as_nanos();
+}
+#[cfg(target_arch = "wasm32")]
+fn subset_tail_now() -> () {}
+#[cfg(target_arch = "wasm32")]
+fn subset_tail_since(t: (), acc: &mut u128) {
+    let _ = (t, acc);
+}
+
+fn subset_tail_slot_name(slot: u8) -> &'static str {
+    match slot {
+        F_BODY => "body",
+        F_BOLD => "bold",
+        F_ITALIC => "italic",
+        F_MONO => "mono",
+        F_BOLDITALIC => "bolditalic",
+        F_SYMBOL => "symbol",
+        _ => "other",
+    }
+}
+
 const MIN_PAGE_DIM: f32 = 80.0;
 const MIN_CONTENT_DIM: f32 = 40.0;
 const PAGE_STREAM_COMPRESSION_MIN: usize = 4096;
@@ -18709,6 +18751,12 @@ fn serialize(
         let face = faces.face(slot);
         let source = face.font.as_ref();
         let lig = face.lig.as_ref();
+        let tail = subset_tail_enabled();
+        let mut tail_shape_ns = 0u128;
+        let mut tail_subset_ns = 0u128;
+        let mut tail_reparse_ns = 0u128;
+        let mut tail_tj_ns = 0u128;
+        let mut tail_misses = 0usize;
         let collect_started = profiler.checkpoint();
         let mut chars: BTreeSet<char> = BTreeSet::new();
         let mut shaped_glyphs: BTreeSet<u16> = BTreeSet::new();
@@ -18730,7 +18778,15 @@ fn serialize(
                 chars.extend(text.chars());
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += text.len();
-                let shaped = shape_run(source, lig, text);
+                let shaped = if tail {
+                    tail_misses += 1;
+                    let t0 = subset_tail_now();
+                    let s = shape_run(source, lig, text);
+                    subset_tail_since(t0, &mut tail_shape_ns);
+                    s
+                } else {
+                    shape_run(source, lig, text)
+                };
                 collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
                 slot_cache.insert(text.to_string(), shaped);
             }
@@ -18743,22 +18799,57 @@ fn serialize(
             collect_started,
         );
         let keep: Vec<char> = chars.into_iter().collect();
-        // Seed the subset with the chars' glyphs (so the cmap resolves) plus the
+        let tail_keep = keep.len();
         // shaped glyphs (which add ligature glyphs no character maps to).
         let mut seed: Vec<u16> = Vec::with_capacity(keep.len().saturating_add(shaped_glyphs.len()));
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let Some((bytes, map)) = source.subset_glyphs(&seed, &keep) else {
-            return Err(RenderError::PdfGeneration(
-                "an embedded font could not be subset",
-            ));
+        let (bytes, map) = if tail {
+            let t0 = subset_tail_now();
+            let r = source.subset_glyphs(&seed, &keep);
+            subset_tail_since(t0, &mut tail_subset_ns);
+            match r {
+                Some(v) => v,
+                None => {
+                    return Err(RenderError::PdfGeneration(
+                        "an embedded font could not be subset",
+                    ));
+                }
+            }
+        } else {
+            match source.subset_glyphs(&seed, &keep) {
+                Some(v) => v,
+                None => {
+                    return Err(RenderError::PdfGeneration(
+                        "an embedded font could not be subset",
+                    ));
+                }
+            }
         };
-        let Ok(font) = Font::parse(bytes.clone()) else {
-            return Err(RenderError::PdfGeneration(
-                "a subset font could not be re-parsed",
-            ));
+        let font = if tail {
+            let t0 = subset_tail_now();
+            let r = Font::parse(bytes.clone());
+            subset_tail_since(t0, &mut tail_reparse_ns);
+            match r {
+                Ok(f) => f,
+                Err(_) => {
+                    return Err(RenderError::PdfGeneration(
+                        "a subset font could not be re-parsed",
+                    ));
+                }
+            }
+        } else {
+            match Font::parse(bytes.clone()) {
+                Ok(f) => f,
+                Err(_) => {
+                    return Err(RenderError::PdfGeneration(
+                        "a subset font could not be re-parsed",
+                    ));
+                }
+            }
         };
+        let tail_bytes = bytes.len();
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
         for (src, s) in lig_src_uni {
@@ -18772,16 +18863,32 @@ fn serialize(
                 *slot = new;
             }
         }
-        for shaped in slot_cache.values_mut() {
-            append_kerned_tj_with_spacing(
-                &mut shaped.pdf_tj,
-                &map_lookup,
-                source,
-                face.kern.as_ref(),
-                &shaped.glyphs,
-                0,
-                0,
-            );
+        if tail {
+            let t0 = subset_tail_now();
+            for shaped in slot_cache.values_mut() {
+                append_kerned_tj_with_spacing(
+                    &mut shaped.pdf_tj,
+                    &map_lookup,
+                    source,
+                    face.kern.as_ref(),
+                    &shaped.glyphs,
+                    0,
+                    0,
+                );
+            }
+            subset_tail_since(t0, &mut tail_tj_ns);
+        } else {
+            for shaped in slot_cache.values_mut() {
+                append_kerned_tj_with_spacing(
+                    &mut shaped.pdf_tj,
+                    &map_lookup,
+                    source,
+                    face.kern.as_ref(),
+                    &shaped.glyphs,
+                    0,
+                    0,
+                );
+            }
         }
         profiler.record_since(
             "font_subsetting",
@@ -18800,6 +18907,14 @@ fn serialize(
             cmap_chars: keep,
             lig_uni,
         });
+        if tail {
+            eprintln!(
+                "FMD_SUBSET_TAIL slot={slot} face={} segments={segment_count} misses={tail_misses} text_bytes={text_bytes} keep={tail_keep} seed={} subset_bytes={tail_bytes} num_glyphs={} shape_ns={tail_shape_ns} subset_ns={tail_subset_ns} reparse_ns={tail_reparse_ns} tj_ns={tail_tj_ns}",
+                subset_tail_slot_name(slot),
+                seed.len(),
+                source.num_glyphs,
+            );
+        }
     }
     let subset_lookup = EmbeddedFaceLookup::new(&subsets);
     profiler.record_since(

@@ -1,5 +1,5 @@
-bytes=25973
-fingerprint=51a8d9b078c01e60
+bytes=26490
+fingerprint=0c950fb856189019
 --- body ---
 <main class="fmd">
 <pre><code class="language-rust"><span class="tok-kw">fn</span> <span class="tok-fn">main</span><span class="tok-pn">(</span><span class="tok-pn">)</span> <span class="tok-pn">{</span>

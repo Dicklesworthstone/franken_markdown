@@ -69,6 +69,7 @@ pub mod batch;
 
 pub use ast::Document;
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
+pub use compress::zlib_decompress;
 pub use error::{RenderError, Result};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};

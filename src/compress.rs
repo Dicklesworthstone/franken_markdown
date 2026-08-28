@@ -600,7 +600,7 @@ pub(crate) fn zlib_compress_with_scratch(
 /// up memory; decoding stops with `None` if the output would exceed it. The zlib
 /// header, trailer checksum, and DEFLATE block integrity are all validated.
 /// Returns `None` on any malformed input — it never panics.
-pub(crate) fn zlib_decompress(data: &[u8], max_out: usize) -> Option<Vec<u8>> {
+pub fn zlib_decompress(data: &[u8], max_out: usize) -> Option<Vec<u8>> {
     // zlib header: CMF, FLG (2 bytes), then the DEFLATE body, then a 4-byte
     // big-endian Adler-32 of the uncompressed bytes.
     let trailer_start = data.len().checked_sub(4)?;

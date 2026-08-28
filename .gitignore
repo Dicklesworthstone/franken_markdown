@@ -104,3 +104,9 @@ tests/artifacts/visual/
 # Duplicate of fmd-font/fonts/ left at the repo root after the crate split.
 /fonts/
 .skill-loop-progress.md
+
+# cargo-fuzz isolated crate (m7fs.1). Seed corpora are tracked; run products are not.
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+tests/artifacts/fuzz/

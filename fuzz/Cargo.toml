@@ -1,0 +1,48 @@
+# Isolated cargo-fuzz crate (m7fs.1). NOT a workspace member of the engine:
+# libfuzzer-sys must never appear in `cargo tree --no-default-features` or
+# the default graph. The empty [workspace] table makes this directory its
+# own root so `cargo build --manifest-path fuzz/Cargo.toml` does not try to
+# join ../Cargo.toml.
+#
+# Justification for libfuzzer-sys: nightly coverage-guided fuzzing of the
+# three trust boundaries (Markdown render, font parse/subset, zlib inflate).
+# The engine crate stays zero-dep; this package is compiled only by
+# `scripts/fuzz-smoke.sh` and `.github/workflows/fuzz.yml`.
+
+[package]
+name = "fmd-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license-file = "../LICENSE"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+franken_markdown = { path = "..", default-features = false }
+fmd-font = { path = "../fmd-font" }
+
+[workspace]
+
+[[bin]]
+name = "fuzz_markdown_render"
+path = "fuzz_targets/fuzz_markdown_render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_font_subset"
+path = "fuzz_targets/fuzz_font_subset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_zlib"
+path = "fuzz_targets/fuzz_zlib.rs"
+test = false
+doc = false
+bench = false

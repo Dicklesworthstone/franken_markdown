@@ -21,9 +21,9 @@ use crate::watch::{
     sse_reload_event,
 };
 use crate::{
-    FontAssetSlot, FontAssets, FontFamily, HtmlOptions, PdfAMode, PdfASettings, PdfImageAsset,
-    PdfOptions, RenderError, RenderWarning, Theme, parse_markdown, render_html_document,
-    render_pdf_document, render_pdf_document_pdfa, render_warnings,
+    FontAssetSlot, FontAssets, FontFamily, HtmlFontFormat, HtmlOptions, PdfAMode, PdfASettings,
+    PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme, parse_markdown,
+    render_html_document, render_pdf_document, render_pdf_document_pdfa, render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -243,6 +243,10 @@ struct RenderArgs {
     /// Maximum heading depth for table of contents (default: 3).
     #[arg(long)]
     toc_depth: Option<u8>,
+    /// Font container format for embedded HTML font subsets: woff1 (default,
+    /// ~half the bytes, every modern browser) or ttf (raw subset bytes).
+    #[arg(long, value_enum)]
+    html_font_format: Option<HtmlFontFormatArg>,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -414,6 +418,21 @@ enum FontArg {
     Serif,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum HtmlFontFormatArg {
+    Ttf,
+    Woff1,
+}
+
+impl From<HtmlFontFormatArg> for HtmlFontFormat {
+    fn from(f: HtmlFontFormatArg) -> Self {
+        match f {
+            HtmlFontFormatArg::Ttf => HtmlFontFormat::Ttf,
+            HtmlFontFormatArg::Woff1 => HtmlFontFormat::Woff1,
+        }
+    }
+}
+
 impl From<FontArg> for FontFamily {
     fn from(f: FontArg) -> Self {
         match f {
@@ -476,6 +495,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         allow_html: false,
         toc: false,
         toc_depth: None,
+        html_font_format: None,
         pdf_line_numbers: false,
         pdf_page_numbers: false,
         pdf_base_font_size: None,
@@ -933,6 +953,7 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
         profile: None,
         toc: false,
         toc_depth: None,
+        html_font_format: HtmlFontFormat::default(),
     };
     render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
@@ -1178,6 +1199,10 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             profile,
             toc: args.toc,
             toc_depth: args.toc_depth,
+            html_font_format: args
+                .html_font_format
+                .map(HtmlFontFormat::from)
+                .unwrap_or_default(),
         };
         match render_html_document(&doc, &opts) {
             Ok(html) => Some(html.into_bytes()),
@@ -1447,6 +1472,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         profile: None,
         toc: false,
         toc_depth: None,
+        html_font_format: HtmlFontFormat::default(),
     };
     let pdf = PdfOptions {
         theme,

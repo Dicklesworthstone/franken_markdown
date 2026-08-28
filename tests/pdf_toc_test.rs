@@ -52,9 +52,11 @@ Some background information.
 
 Detailed methodology.
 "#;
-    let mut opts = PdfOptions::default();
-    opts.toc = true;
-    opts.toc_depth = Some(2);
+    let opts = PdfOptions {
+        toc: true,
+        toc_depth: Some(2),
+        ..PdfOptions::default()
+    };
     let bytes = render_pdf(md, &opts).expect("render_pdf failed");
 
     assert!(bytes.starts_with(b"%PDF-1.7"));

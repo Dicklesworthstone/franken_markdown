@@ -52,6 +52,7 @@ pub use fmd_font as text;
 pub use fmd_math as math;
 pub mod theme;
 pub mod wasm;
+pub mod woff1;
 
 #[cfg(feature = "wasm-bindgen")]
 pub mod wasm_abi;
@@ -94,6 +95,40 @@ pub use theme::{
     CodeTheme, DarkModePolicy, FontFamily, MonoFontFamily, PageMargins, PageSize, PageStyle, Theme,
     ThemeColors, ThemeSpacing,
 };
+
+/// Font container format for embedded `@font-face` subsets in HTML output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HtmlFontFormat {
+    /// Raw TrueType subset bytes (`data:font/ttf`). Widest compatibility with
+    /// non-browser tools that sniff the payload.
+    Ttf,
+    /// WOFF1-wrapped subset (`data:font/woff`) compressed with the renderer's
+    /// own deterministic DEFLATE. ~45–55% smaller on the bundled faces and
+    /// supported by every modern browser. Default since 0.4.1 (bead ge1t).
+    #[default]
+    Woff1,
+}
+
+impl HtmlFontFormat {
+    /// Stable CLI/config spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ttf" | "truetype" => Some(Self::Ttf),
+            "woff" | "woff1" => Some(Self::Woff1),
+            _ => None,
+        }
+    }
+
+    /// Stable CLI/config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ttf => "ttf",
+            Self::Woff1 => "woff1",
+        }
+    }
+}
 
 /// Crate version exposed for embedders that need renderer provenance.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -472,6 +507,9 @@ pub struct HtmlOptions {
     pub toc: bool,
     /// Maximum heading depth for table of contents (e.g. 1..=6).
     pub toc_depth: Option<u8>,
+    /// Font container format for embedded subsets. WOFF1 (the default) is
+    /// byte-deterministic and ~half the bytes of raw TTF subsets.
+    pub html_font_format: HtmlFontFormat,
 }
 
 /// Options for the PDF renderer.

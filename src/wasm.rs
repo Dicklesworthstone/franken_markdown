@@ -7,8 +7,8 @@
 //! theme, HTML, or PDF behavior.
 
 use crate::{
-    DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlOptions,
-    PdfImageAsset, PdfOptions, RenderError, Result, Theme, parse_markdown_spanned,
+    DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlFontFormat,
+    HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, Theme, parse_markdown_spanned,
     render_html_document, render_pdf_document, render_warnings,
 };
 
@@ -327,6 +327,7 @@ impl WasmRenderOptions {
             profile: self.profile,
             toc: self.toc,
             toc_depth: self.toc_depth,
+            html_font_format: HtmlFontFormat::default(),
         }
     }
 

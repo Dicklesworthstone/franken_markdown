@@ -1458,7 +1458,7 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 /// The default, dependency-free, gorgeous stylesheet.
 fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
     let theme = &opts.theme;
-    let embedded = embedded_font_css(doc, theme, &opts.font_assets);
+    let embedded = embedded_font_css(doc, theme, &opts.font_assets, opts.html_font_format);
     let body_font = if embedded.has_body {
         format!("\"FMD Body\", {}", theme.body_font_stack())
     } else {
@@ -1747,7 +1747,12 @@ struct HtmlFontFace<'a> {
     instance_weight: Option<u16>,
 }
 
-fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) -> EmbeddedFontCss {
+fn embedded_font_css(
+    doc: &Document,
+    theme: &Theme,
+    font_assets: &FontAssets,
+    format: crate::HtmlFontFormat,
+) -> EmbeddedFontCss {
     let mut usage = collect_font_usage(doc);
     usage.add_stability_seed();
 
@@ -1762,6 +1767,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "400",
         body_font_face(font_assets, theme.font, FontStyle::Regular),
         &usage.body_regular,
+        format,
     );
     has_body |= !usage.body_regular.is_empty();
 
@@ -1772,6 +1778,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "700",
         body_font_face(font_assets, theme.font, FontStyle::Bold),
         &usage.body_bold,
+        format,
     );
     has_body |= !usage.body_bold.is_empty();
 
@@ -1782,6 +1789,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "400",
         body_font_face(font_assets, theme.font, FontStyle::Italic),
         &usage.body_italic,
+        format,
     );
     has_body |= !usage.body_italic.is_empty();
 
@@ -1792,6 +1800,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "700",
         body_font_face(font_assets, theme.font, FontStyle::BoldItalic),
         &usage.body_bold_italic,
+        format,
     );
     has_body |= !usage.body_bold_italic.is_empty();
 
@@ -1802,6 +1811,7 @@ fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) ->
         "400",
         mono_font_face(font_assets, FontStyle::Regular),
         &usage.mono,
+        format,
     );
     has_mono |= !usage.mono.is_empty();
 
@@ -1986,6 +1996,7 @@ fn push_font_face(
     weight: &str,
     font_face: HtmlFontFace<'_>,
     chars: &FontCharSet,
+    format: crate::HtmlFontFormat,
 ) {
     if chars.is_empty() {
         return;
@@ -2004,7 +2015,18 @@ fn push_font_face(
             parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
-    let encoded_len = base64_encoded_len(subset.len());
+    // WOFF1 wraps the subset in the renderer's own deterministic DEFLATE
+    // (src/compress.rs); encoding only fails on malformed sfnt, which the
+    // validated bundled/host faces cannot produce — the TTF arm is the
+    // deterministic fallback, never a silent content change.
+    let (payload, mime, format_hint) = match format {
+        crate::HtmlFontFormat::Woff1 => match crate::woff1::encode_woff1(&subset) {
+            Ok(woff) => (woff, "font/woff", "woff"),
+            Err(_) => (subset.clone(), "font/ttf", "truetype"),
+        },
+        crate::HtmlFontFormat::Ttf => (subset.clone(), "font/ttf", "truetype"),
+    };
+    let encoded_len = base64_encoded_len(payload.len());
     css.reserve(font_face_css_capacity(
         family.len(),
         style.len(),
@@ -2018,9 +2040,13 @@ fn push_font_face(
     css.push_str(style);
     css.push_str(";\n  font-weight: ");
     css.push_str(weight);
-    css.push_str(";\n  font-display: swap;\n  src: url(\"data:font/ttf;base64,");
-    push_base64_encoded(css, &subset);
-    css.push_str("\") format(\"truetype\");\n}\n");
+    css.push_str(";\n  font-display: swap;\n  src: url(\"data:");
+    css.push_str(mime);
+    css.push_str(";base64,");
+    push_base64_encoded(css, &payload);
+    css.push_str("\") format(\"");
+    css.push_str(format_hint);
+    css.push_str("\");\n}\n");
 }
 
 fn font_face_css_capacity(

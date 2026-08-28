@@ -476,7 +476,6 @@ mod tests {
     use super::{CONFIG_KEYS, ConfigError, EmojiStrategy, FmdConfig, json_num};
     use crate::caret::CaretStyle;
 
-
     #[test]
     fn json_num_folds_non_finite_to_zero() {
         // `fmd config show --json` must always parse; a non-finite margin would

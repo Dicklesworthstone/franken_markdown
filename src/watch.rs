@@ -407,7 +407,6 @@ pub fn sse_reload_event() -> &'static str {
     "data: reload\n\n"
 }
 
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -601,10 +600,7 @@ mod tests {
     // ===============================================================
 
     fn req(path: &str) -> Vec<u8> {
-        format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: test\r\n\r\n"
-        )
-        .into_bytes()
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: test\r\n\r\n").into_bytes()
     }
 
     #[test]

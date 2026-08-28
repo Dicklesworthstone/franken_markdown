@@ -644,6 +644,7 @@ dependencies = [
  "asupersync",
  "clap",
  "fmd-font",
+ "fmd-math",
  "wasm-bindgen",
 ]
 

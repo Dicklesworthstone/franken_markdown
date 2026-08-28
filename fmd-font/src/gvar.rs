@@ -980,14 +980,54 @@ fn assemble_sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Option<Vec<u8>> {
     clippy::cast_possible_wrap
 )]
 pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
+    fn push16(out: &mut Vec<u8>, v: u16) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn push_i16(out: &mut Vec<u8>, v: i16) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn push32(out: &mut Vec<u8>, v: u32) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
     let glyph = encode_simple(&SimpleGlyph {
         points: vec![(0, 0), (100, 0), (50, 100)],
         on_curve: vec![true, true, true],
         contour_ends: vec![2],
     });
     let mut loca = Vec::new();
-    loca.extend_from_slice(&0u32.to_be_bytes());
-    loca.extend_from_slice(&(glyph.len() as u32).to_be_bytes());
+    push32(&mut loca, 0);
+    push32(&mut loca, glyph.len() as u32);
+    // Identical gvar to the gk3v.2 unit-test builder (private p0 +50 x at peak).
+    let mut payload = vec![1, 0, 0, 0x80];
+    payload.extend_from_slice(&50i16.to_be_bytes());
+    payload.push(0x00);
+    let mut gvd = Vec::new();
+    push16(&mut gvd, 1);
+    push16(&mut gvd, 0);
+    push16(&mut gvd, payload.len() as u16);
+    push16(&mut gvd, EMBEDDED_PEAK | PRIVATE_POINTS);
+    push_i16(&mut gvd, (1.0_f32 * 16384.0).round() as i16);
+    let data_off = gvd.len() as u16;
+    gvd[2..4].copy_from_slice(&data_off.to_be_bytes());
+    gvd.extend_from_slice(&payload);
+    let mut gvar = Vec::new();
+    push16(&mut gvar, 1);
+    push16(&mut gvar, 0);
+    push16(&mut gvar, 1);
+    push16(&mut gvar, 0);
+    push32(&mut gvar, 20);
+    push16(&mut gvar, 1);
+    push16(&mut gvar, 0);
+    push32(&mut gvar, 20);
+    let array_bytes = 4usize;
+    let start_words = (array_bytes / 2) as u16;
+    let end_words = (array_bytes + gvd.len()).div_ceil(2) as u16;
+    push16(&mut gvar, start_words);
+    push16(&mut gvar, end_words);
+    gvar.extend_from_slice(&gvd);
+    if gvar.len() % 2 != 0 {
+        gvar.push(0);
+    }
     let tables: Vec<([u8; 4], Vec<u8>)> = vec![
         (*b"head", fixture_head()),
         (*b"maxp", fixture_maxp(1)),
@@ -997,7 +1037,7 @@ pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
         (*b"loca", loca),
         (*b"glyf", glyph),
         (*b"fvar", fixture_fvar_wght()),
-        (*b"gvar", fixture_gvar_move_p0()),
+        (*b"gvar", gvar),
     ];
     assemble_sfnt(&tables).unwrap_or_default()
 }
@@ -1086,41 +1126,6 @@ fn fixture_fvar_wght() -> Vec<u8> {
     clippy::cast_precision_loss,
     clippy::cast_possible_wrap
 )]
-fn fixture_gvar_move_p0() -> Vec<u8> {
-    let mut payload = vec![1, 0, 0, 0x80];
-    payload.extend_from_slice(&50i16.to_be_bytes());
-    payload.push(0x00);
-    let mut gvd = Vec::new();
-    gvd.extend_from_slice(&1u16.to_be_bytes());
-    gvd.extend_from_slice(&0u16.to_be_bytes());
-    gvd.extend_from_slice(&0u16.to_be_bytes()); // data offset placeholder
-    gvd.extend_from_slice(&(EMBEDDED_PEAK | PRIVATE_POINTS).to_be_bytes());
-    let peak = (1.0_f32 * 16384.0).round() as i16;
-    gvd.extend_from_slice(&peak.to_be_bytes());
-    let data_off = gvd.len() as u16;
-    gvd[2..4].copy_from_slice(&data_off.to_be_bytes());
-    gvd.extend_from_slice(&payload);
-    let mut table = Vec::new();
-    table.extend_from_slice(&1u16.to_be_bytes());
-    table.extend_from_slice(&0u16.to_be_bytes());
-    table.extend_from_slice(&1u16.to_be_bytes());
-    table.extend_from_slice(&0u16.to_be_bytes());
-    table.extend_from_slice(&20u32.to_be_bytes());
-    table.extend_from_slice(&1u16.to_be_bytes());
-    table.extend_from_slice(&0u16.to_be_bytes());
-    table.extend_from_slice(&20u32.to_be_bytes());
-    let array_bytes = 4usize;
-    let start_words = (array_bytes / 2) as u16;
-    let end_words = (array_bytes + gvd.len()).div_ceil(2) as u16;
-    table.extend_from_slice(&start_words.to_be_bytes());
-    table.extend_from_slice(&end_words.to_be_bytes());
-    table.extend_from_slice(&gvd);
-    if table.len() % 2 != 0 {
-        table.push(0);
-    }
-    table
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
@@ -1279,6 +1284,24 @@ mod tests {
             if ok { "PASS" } else { "FAIL" }
         );
         assert!(ok, "{id}: {subject}");
+    }
+
+    #[test]
+    fn fixture_peak_moves_like_the_unit_builder() {
+        let font = Font::parse(variable_triangle_fixture()).expect("fixture parses");
+        let def = font.instance(400.0).expect("400");
+        let mid = font.instance(650.0).expect("650");
+        let peak = font.instance(900.0).expect("900");
+        let d0 = decode_simple(def.glyph_data(0).unwrap(), 1).unwrap();
+        let m0 = decode_simple(mid.glyph_data(0).unwrap(), 1).unwrap();
+        let p0 = decode_simple(peak.glyph_data(0).unwrap(), 1).unwrap();
+        log_check("gk3v.3.fix.default", "p0 origin", d0.points[0] == (0, 0));
+        log_check("gk3v.3.fix.peak", "peak +50 x", p0.points[0] == (50, 0));
+        log_check(
+            "gk3v.3.fix.mid",
+            "650 differs from 400",
+            m0.points[0] != d0.points[0],
+        );
     }
 
     fn variable_triangle() -> Font {

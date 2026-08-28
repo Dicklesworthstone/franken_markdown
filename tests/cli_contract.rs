@@ -1911,6 +1911,19 @@ fn pdf_font_and_weight_flags_instance_variable_faces() {
             && stderr_650.contains("\"weight\":650")
             && stderr_650.contains("\"event\":\"font_assets\""),
     );
+    let inst_400 = franken_markdown::text::Font::parse(vf.clone())
+        .unwrap()
+        .instance(400.0)
+        .expect("fixture instances at 400");
+    let inst_650 = franken_markdown::text::Font::parse(vf)
+        .unwrap()
+        .instance(650.0)
+        .expect("fixture instances at 650");
+    log_check(
+        "gk3v.3.cli.inst.diff",
+        "raw instance 400 differs from 650",
+        inst_400.as_sfnt() != inst_650.as_sfnt(),
+    );
     let bytes_400 = fs::read(&out_400).unwrap();
     let bytes_650 = fs::read(&out_650).unwrap();
     log_check(

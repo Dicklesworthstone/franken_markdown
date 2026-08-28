@@ -207,20 +207,35 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
 }
 
 fn emit_run(w: &mut Writer, items: &[Node], style: Style, color: Option<&str>, size: Option<f64>) {
-    if items.is_empty() {
-        return;
-    }
-    let marker_at = items.iter().position(|n| is_remainder_marker(&n.kind));
-    match marker_at {
-        None => emit_styled_siblings(w, items, style, color, size),
-        Some(0) => {
-            let (next_style, next_color, next_size) =
-                apply_marker(&items[0].kind, style, color, size);
-            emit_run(w, &items[1..], next_style, next_color, next_size);
-        }
-        Some(k) => {
-            emit_styled_siblings(w, &items[..k], style, color, size);
-            emit_run(w, &items[k..], style, color, size);
+    // Remainder markers (`\color`, `\displaystyle`, …) are siblings, not
+    // nested groups. Walking them recursively is O(markers) stack frames, so
+    // a long run of `\color{red}` would overflow. Fold style in a loop.
+    let mut items = items;
+    let mut style = style;
+    let mut color = color;
+    let mut size = size;
+    while !items.is_empty() {
+        let marker_at = items.iter().position(|n| is_remainder_marker(&n.kind));
+        match marker_at {
+            None => {
+                emit_styled_siblings(w, items, style, color, size);
+                return;
+            }
+            Some(0) => {
+                let Some((first, rest)) = items.split_first() else {
+                    return;
+                };
+                let (next_style, next_color, next_size) =
+                    apply_marker(&first.kind, style, color, size);
+                style = next_style;
+                color = next_color;
+                size = next_size;
+                items = rest;
+            }
+            Some(k) => {
+                emit_styled_siblings(w, &items[..k], style, color, size);
+                items = &items[k..];
+            }
         }
     }
 }

@@ -302,6 +302,32 @@ const POOL: &[&str] = &[
 ];
 
 #[test]
+fn remainder_marker_run_serializes_without_stack_overflow() {
+    // Sibling `\color` markers used to recurse one frame each in emit_run.
+    let mut tex = String::new();
+    for _ in 0..4_096 {
+        tex.push_str("\\color{red}");
+    }
+    tex.push('x');
+    let node = parse(&tex).unwrap_or_else(|e| panic!("parse long color run: {e}"));
+    let xml = to_mathml(&node, false);
+    assert_ok(
+        "mathml-color-run-x",
+        "4096 markers then x",
+        xml.contains('x'),
+        &xml,
+    );
+    if let Err(e) = mathml_well_formed(&xml) {
+        log_check("mathml-color-run-wf", "4096 markers", "FAIL");
+        panic!(
+            "well-formedness: {e}\n xml prefix: {}",
+            &xml[..xml.len().min(200)]
+        );
+    }
+    log_check("mathml-color-run-wf", "4096 markers", "PASS");
+}
+
+#[test]
 fn chaos_parse_then_mathml_never_panics_and_stays_well_formed() {
     let mut rng = Lcg(0x4A7B_0000_F00D);
     let mut parsed = 0u32;

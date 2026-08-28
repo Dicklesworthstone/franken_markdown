@@ -323,11 +323,15 @@ impl Theme {
         match self.font {
             FontFamily::Sans => {
                 "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \
-                 \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif"
+                 \"Helvetica Neue\", Arial, \"Noto Sans\", \"Noto Sans CJK SC\", \
+                 \"Noto Sans CJK JP\", \"Noto Sans CJK KR\", \"PingFang SC\", \
+                 \"Hiragino Sans\", \"Malgun Gothic\", sans-serif"
             }
             FontFamily::Serif => {
                 "\"Source Serif 4\", Newsreader, \"Iowan Old Style\", \"Apple Garamond\", \
-                 Georgia, Cambria, \"Times New Roman\", Times, serif"
+                 Georgia, Cambria, \"Times New Roman\", Times, \"Noto Serif CJK SC\", \
+                 \"Noto Serif CJK JP\", \"Noto Serif CJK KR\", \"Source Han Serif\", \
+                 \"Songti SC\", \"YuMincho\", serif"
             }
         }
     }

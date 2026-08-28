@@ -56,6 +56,34 @@ fn serif_theme_keeps_the_high_quality_serif_stack() {
 
     assert!(html.contains("Source Serif 4"));
     assert!(html.contains("Newsreader"));
+    for name in [
+        "Noto Serif CJK SC",
+        "Noto Serif CJK JP",
+        "Noto Serif CJK KR",
+        "Source Han Serif",
+    ] {
+        let outcome = if html.contains(name) { "PASS" } else { "FAIL" };
+        eprintln!("check=serif-cjk-stack subject={name:?} outcome={outcome}");
+        assert!(html.contains(name), "serif CSS must name {name}");
+    }
+}
+
+#[test]
+fn sans_theme_font_stack_names_cjk_fallbacks() {
+    let html = render_html("# Title", &HtmlOptions::default()).unwrap();
+    for name in [
+        "Noto Sans",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK KR",
+        "PingFang SC",
+        "Hiragino Sans",
+        "Malgun Gothic",
+    ] {
+        let outcome = if html.contains(name) { "PASS" } else { "FAIL" };
+        eprintln!("check=sans-cjk-stack subject={name:?} outcome={outcome}");
+        assert!(html.contains(name), "sans CSS must name {name}");
+    }
 }
 
 #[test]

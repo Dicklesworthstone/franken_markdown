@@ -11,8 +11,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::{
-    FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Theme,
-    parse_markdown, render_html_document, render_pdf_document, render_warnings,
+    FontAssetSlot, FontAssets, FontFamily, HtmlOptions, PdfImageAsset, PdfOptions, RenderError,
+    Theme, parse_markdown, render_html_document, render_pdf_document, render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -199,6 +199,20 @@ struct RenderArgs {
     /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
+    /// Host TrueType face for a renderer slot as SLOT=PATH. Repeatable.
+    /// SLOT is body-regular, body-bold, body-italic, body-bold-italic, or
+    /// mono-regular. Applies to both HTML and PDF so the two stay coherent.
+    /// Variable `wght` faces instance at the slot's pinned weight (see
+    /// `--pdf-font-weight`); static faces ignore the pin. When body-bold is
+    /// omitted and body-regular is a variable face, bold instances from that
+    /// same file at weight 700.
+    #[arg(long = "pdf-font", value_name = "SLOT=PATH")]
+    pdf_fonts: Vec<String>,
+    /// Pin CSS font-weight for a host font slot. Repeatable. Bare WEIGHT pins
+    /// body-regular; SLOT=WEIGHT pins one slot. Range 1..=1000. Static faces
+    /// ignore the pin (stderr warning `font_weight_ignored_static`).
+    #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]
+    pdf_font_weights: Vec<String>,
     /// Maximum bytes accepted for each explicit PDF image or auto-loaded local
     /// HTML/PDF image file before rendering.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
@@ -433,6 +447,14 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
+    let font_assets = match load_host_font_assets(&args.pdf_fonts, &args.pdf_font_weights) {
+        Ok(assets) => assets,
+        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+    };
+    if json {
+        report_font_assets(&font_assets);
+    }
     let doc = parse_markdown(&src);
     let mut image_destinations = Vec::new();
     collect_image_destinations(&doc.blocks, &mut image_destinations);
@@ -501,7 +523,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             title: args.title.clone(),
             custom_css: custom_css.clone(),
             allow_raw_html: args.allow_html,
-            font_assets: FontAssets::default(),
+            font_assets: font_assets.clone(),
             image_assets: html_image_assets,
         };
         match render_html_document(&doc, &opts) {
@@ -525,7 +547,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             heading_scale: args.pdf_heading_scale,
             table_font_size: args.pdf_table_font_size,
             image_assets: pdf_image_assets,
-            font_assets: FontAssets::default(),
+            font_assets: font_assets.clone(),
         };
         match render_pdf_document(&doc, &opts) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -1041,6 +1063,109 @@ fn size_limit_error(label: &str, observed: u64, max_bytes: u64, flag: &str) -> E
 enum PdfImageError {
     Usage(String),
     Input(String),
+}
+
+enum HostFontError {
+    Usage(String),
+    Input(String),
+}
+
+fn load_host_font_assets(
+    fonts: &[String],
+    weights: &[String],
+) -> std::result::Result<FontAssets, HostFontError> {
+    let mut assets = FontAssets::default();
+    for spec in fonts {
+        let (slot, path) = parse_pdf_font_spec(spec).map_err(HostFontError::Usage)?;
+        let bytes = std::fs::read(&path).map_err(|e| {
+            HostFontError::Input(format!(
+                "reading {} font from {}: {e}",
+                slot.as_str(),
+                path.display()
+            ))
+        })?;
+        assets
+            .set_slot(slot, bytes)
+            .map_err(|e| HostFontError::Input(e.to_string()))?;
+    }
+    for spec in weights {
+        let (slot, weight) = parse_pdf_font_weight_spec(spec).map_err(HostFontError::Usage)?;
+        assets
+            .set_slot_weight(slot, weight)
+            .map_err(|e| HostFontError::Usage(e.to_string()))?;
+    }
+    Ok(assets)
+}
+
+fn parse_pdf_font_spec(spec: &str) -> std::result::Result<(FontAssetSlot, PathBuf), String> {
+    let Some((slot_s, path)) = spec.split_once('=') else {
+        return Err(format!(
+            "invalid --pdf-font {spec:?}; expected SLOT=PATH, for example --pdf-font body-regular=./Body.ttf"
+        ));
+    };
+    let slot = FontAssetSlot::parse(slot_s).ok_or_else(|| {
+        format!(
+            "unknown --pdf-font slot '{}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular",
+            slot_s.trim()
+        )
+    })?;
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("invalid --pdf-font: PATH must not be blank".to_string());
+    }
+    Ok((slot, PathBuf::from(path)))
+}
+
+fn parse_pdf_font_weight_spec(spec: &str) -> std::result::Result<(FontAssetSlot, u16), String> {
+    let spec = spec.trim();
+    if let Some((slot_s, weight_s)) = spec.split_once('=') {
+        let slot = FontAssetSlot::parse(slot_s).ok_or_else(|| {
+            format!(
+                "unknown --pdf-font-weight slot '{}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular",
+                slot_s.trim()
+            )
+        })?;
+        return Ok((slot, parse_css_weight(weight_s)?));
+    }
+    Ok((FontAssetSlot::BodyRegular, parse_css_weight(spec)?))
+}
+
+fn parse_css_weight(raw: &str) -> std::result::Result<u16, String> {
+    let trimmed = raw.trim();
+    let weight = trimmed
+        .parse::<u16>()
+        .map_err(|_| format!("invalid --pdf-font-weight {trimmed:?}; expected integer 1..=1000"))?;
+    if (1..=1000).contains(&weight) {
+        Ok(weight)
+    } else {
+        Err(format!(
+            "invalid --pdf-font-weight {weight}; CSS font-weight is 1..=1000"
+        ))
+    }
+}
+
+fn report_font_assets(assets: &FontAssets) {
+    let mut slots = 0u32;
+    for slot in FontAssetSlot::ALL {
+        if assets.slot_bytes(slot).is_some() {
+            slots += 1;
+        }
+        if let Some(weight) = assets.slot_weight(slot) {
+            eprintln!(
+                "{{\"ok\":true,\"event\":\"font_instance\",\"slot\":\"{}\",\"weight\":{}}}",
+                slot.as_str(),
+                weight
+            );
+        }
+    }
+    if slots == 0
+        && FontAssetSlot::ALL
+            .iter()
+            .all(|&s| assets.slot_weight(s).is_none())
+    {
+        return;
+    }
+    eprintln!("{{\"ok\":true,\"event\":\"font_assets\",\"phase\":\"load\",\"slots\":{slots}}}");
 }
 
 fn read_pdf_image_assets(
@@ -1646,7 +1771,7 @@ fn run_doctor(json: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --to pdf --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --to pdf --json\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_379_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -1661,7 +1786,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd config show --json\n  fmd config set font serif --json\n  fmd --no-config README.md --out README.html\n  fmd capabilities --json\n  fmd doctor --json\n  fmd --robot-triage\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact), selectable text, and FlateDecode-compressed large page streams; deeper page-builder polish is still planned.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at the pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.",
     )
 }
 

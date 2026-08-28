@@ -6188,3 +6188,50 @@ mod table_row_split_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used)]
+mod footnote_tests {
+    use super::*;
+
+    #[test]
+    fn scan_footnote_definition_extracts_id_and_content() {
+        let (id, content) = scan_footnote_definition("[^1]: First note.").unwrap();
+        assert_eq!(id, "1");
+        assert_eq!(content, "First note.");
+    }
+
+    #[test]
+    fn scan_footnote_definition_rejects_malformed() {
+        assert!(scan_footnote_definition("[]: no id").is_none());
+        assert!(scan_footnote_definition("[^]: empty id").is_none());
+        assert!(scan_footnote_definition("[^1] no colon").is_none());
+        assert!(scan_footnote_definition("[^has space]: x").is_none());
+        assert!(scan_footnote_definition("plain text").is_none());
+    }
+
+    #[test]
+    fn parse_footnote_ref_id_requires_closing_bracket() {
+        let chars: Vec<char> = "1] rest".chars().collect();
+        let (id, next) = parse_footnote_ref_id(&chars, 0).unwrap();
+        assert_eq!(id, "1");
+        assert_eq!(next, 2);
+        let chars: Vec<char> = "1 no close".chars().collect();
+        assert!(parse_footnote_ref_id(&chars, 0).is_none());
+        let chars: Vec<char> = "] rest".chars().collect();
+        assert!(parse_footnote_ref_id(&chars, 0).is_none());
+    }
+
+    #[test]
+    fn footnote_definition_blocks_are_recognized_in_documents() {
+        let doc = crate::parse_markdown("note[^1].\n\n[^1]: First note.\n");
+        let defs: Vec<&Block> = doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, Block::FootnoteDefinition { .. }))
+            .collect();
+        assert_eq!(defs.len(), 1, "definition block present");
+        assert!(matches!(doc.blocks.first(), Some(Block::Paragraph(_))));
+    }
+}

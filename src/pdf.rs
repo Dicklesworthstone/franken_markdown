@@ -1356,8 +1356,8 @@ struct PdfFontFace<'a> {
 }
 
 impl Face {
-    fn load(slot: FontAssetSlot, face: PdfFontFace<'_>) -> Result<Self> {
-        let (font, kern, lig) = load_pdf_face_parts(slot, face)?;
+    fn load(slot: FontAssetSlot, face: PdfFontFace<'_>, weight: u16) -> Result<Self> {
+        let (font, kern, lig) = load_pdf_face_parts(slot, face, weight)?;
         Ok(Self { font, kern, lig })
     }
 
@@ -1507,26 +1507,32 @@ fn nonnegative_finite(value: f32, fallback: f32) -> f32 {
 impl Faces {
     fn load(opts: &PdfOptions) -> Result<Self> {
         let fam = opts.theme.font;
+        let assets = &opts.font_assets;
         Ok(Self {
             body: Face::load(
                 FontAssetSlot::BodyRegular,
-                body_font_face(&opts.font_assets, fam, FontStyle::Regular),
+                body_font_face(assets, fam, FontStyle::Regular),
+                assets.effective_weight(FontAssetSlot::BodyRegular),
             )?,
             bold: Face::load(
                 FontAssetSlot::BodyBold,
-                body_font_face(&opts.font_assets, fam, FontStyle::Bold),
+                body_font_face(assets, fam, FontStyle::Bold),
+                assets.effective_weight(FontAssetSlot::BodyBold),
             )?,
             italic: Face::load(
                 FontAssetSlot::BodyItalic,
-                body_font_face(&opts.font_assets, fam, FontStyle::Italic),
+                body_font_face(assets, fam, FontStyle::Italic),
+                assets.effective_weight(FontAssetSlot::BodyItalic),
             )?,
             bolditalic: Face::load(
                 FontAssetSlot::BodyBoldItalic,
-                body_font_face(&opts.font_assets, fam, FontStyle::BoldItalic),
+                body_font_face(assets, fam, FontStyle::BoldItalic),
+                assets.effective_weight(FontAssetSlot::BodyBoldItalic),
             )?,
             mono: Face::load(
                 FontAssetSlot::MonoRegular,
-                mono_font_face(&opts.font_assets, FontStyle::Regular),
+                mono_font_face(assets, FontStyle::Regular),
+                assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
         })
@@ -1580,37 +1586,23 @@ fn body_font_face(
     family: crate::FontFamily,
     style: FontStyle,
 ) -> PdfFontFace<'_> {
-    match style {
-        FontStyle::Regular => pdf_font_face(
-            font_assets.body_regular.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-            || fonts::body_layout_tables(family, style).ok(),
-        ),
-        FontStyle::Bold => pdf_font_face(
-            font_assets.body_bold.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-            || fonts::body_layout_tables(family, style).ok(),
-        ),
-        FontStyle::Italic => pdf_font_face(
-            font_assets.body_italic.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-            || fonts::body_layout_tables(family, style).ok(),
-        ),
-        FontStyle::BoldItalic => pdf_font_face(
-            font_assets.body_bold_italic.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-            || fonts::body_layout_tables(family, style).ok(),
-        ),
-    }
+    let slot = match style {
+        FontStyle::Regular => FontAssetSlot::BodyRegular,
+        FontStyle::Bold => FontAssetSlot::BodyBold,
+        FontStyle::Italic => FontAssetSlot::BodyItalic,
+        FontStyle::BoldItalic => FontAssetSlot::BodyBoldItalic,
+    };
+    pdf_font_face(
+        font_assets.resolved_bytes(slot),
+        || fonts::body_bytes(family, style),
+        || fonts::body_font(family, style).ok(),
+        || fonts::body_layout_tables(family, style).ok(),
+    )
 }
 
 fn mono_font_face(font_assets: &FontAssets, style: FontStyle) -> PdfFontFace<'_> {
     pdf_font_face(
-        font_assets.mono_regular.as_deref(),
+        font_assets.resolved_bytes(FontAssetSlot::MonoRegular),
         || fonts::mono_bytes(style),
         || fonts::mono_font(style).ok(),
         || fonts::mono_layout_tables(style).ok(),
@@ -1640,6 +1632,7 @@ fn pdf_font_face<'a>(
 fn load_pdf_face_parts(
     slot: FontAssetSlot,
     face: PdfFontFace<'_>,
+    weight: u16,
 ) -> Result<(
     Cow<'static, Font>,
     Cow<'static, Kerning>,
@@ -1665,26 +1658,10 @@ fn load_pdf_face_parts(
             Cow::Owned(font.gsub_ligatures()),
         ));
     }
-    let font = parse_face(slot, face.bytes)?;
+    let font = crate::instance_host_font(slot, face.bytes, weight)?;
     let kern = font.gpos_kerning();
     let lig = font.gsub_ligatures();
     Ok((Cow::Owned(font), Cow::Owned(kern), Cow::Owned(lig)))
-}
-
-fn parse_face(slot: FontAssetSlot, bytes: &[u8]) -> Result<Font> {
-    let font = Font::parse(bytes.to_vec()).map_err(|err| {
-        RenderError::InvalidInput(format!(
-            "{} font bytes are not a supported TrueType font: {err}",
-            slot.as_str()
-        ))
-    })?;
-    if !font.has_glyf_outlines() {
-        return Err(RenderError::InvalidInput(format!(
-            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
-            slot.as_str()
-        )));
-    }
-    Ok(font)
 }
 
 /// Resolve a font slot from inline style flags.
@@ -1881,6 +1858,9 @@ pub enum RenderWarning {
     /// `count` characters had no glyph in the embedded fonts and were rendered
     /// as `.notdef` boxes (and are not selectable). `sample` shows a few.
     MissingGlyphs { count: usize, sample: String },
+    /// A CSS `font-weight` pin was set for a slot whose face has no `wght`
+    /// axis. The static outlines were used unchanged.
+    FontWeightIgnoredStatic { slot: String, weight: u16 },
 }
 
 impl RenderWarning {
@@ -1891,6 +1871,7 @@ impl RenderWarning {
             Self::UnresolvedImage(_) => "unresolved_image",
             Self::UnsupportedImage(_) => "unsupported_image",
             Self::MissingGlyphs { .. } => "missing_glyphs",
+            Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
         }
     }
 
@@ -1908,6 +1889,10 @@ impl RenderWarning {
             Self::MissingGlyphs { count, sample } => format!(
                 "{count} character(s) have no glyph in the embedded fonts and were rendered \
                  as .notdef boxes (e.g. {sample:?})"
+            ),
+            Self::FontWeightIgnoredStatic { slot, weight } => format!(
+                "{slot} font-weight {weight} ignored: the face has no wght axis \
+                 (static faces keep their outlines; pin a variable font or drop --pdf-font-weight)"
             ),
         }
     }
@@ -1988,6 +1973,23 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
             warnings.push(RenderWarning::MissingGlyphs {
                 count: missing,
                 sample,
+            });
+        }
+    }
+
+    for slot in FontAssetSlot::ALL {
+        let Some(weight) = opts.font_assets.slot_weight(slot) else {
+            continue;
+        };
+        let has_wght = opts.font_assets.resolved_bytes(slot).is_some_and(|bytes| {
+            Font::parse(bytes.to_vec())
+                .ok()
+                .is_some_and(|font| font.instance_bounds(*b"wght").is_some())
+        });
+        if !has_wght {
+            warnings.push(RenderWarning::FontWeightIgnoredStatic {
+                slot: slot.as_str().to_string(),
+                weight,
             });
         }
     }
@@ -15066,6 +15068,12 @@ fn table_cell_measure(
         );
         wrap_perf::add_measure(ns, 1, Some(key));
     }
+
+    // Finish the trailing measure line before returning. This call was
+    // accidentally dropped when instrumentation landed (be09034); without it
+    // single-line cells never push their line into `cell.lines`, leaving
+    // min/max content at zero and degrading column allocation.
+    finish_table_measure_line(&mut cell, &mut line);
     cell
 }
 

@@ -8230,6 +8230,7 @@ fn pdf_accepts_supplied_bundled_font_assets() {
         body_italic: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::Italic).to_vec()),
         body_bold_italic: Some(fonts::body_bytes(FontFamily::Sans, FontStyle::BoldItalic).to_vec()),
         mono_regular: Some(fonts::mono_bytes(FontStyle::Regular).to_vec()),
+        ..franken_markdown::FontAssets::default()
     };
     let opts = PdfOptions {
         font_assets: assets,

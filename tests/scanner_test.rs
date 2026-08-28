@@ -222,7 +222,7 @@ fn log_check(id: &str, subject: &str, outcome: &str) {
 
 #[test]
 fn chunked_scanners_match_oracle_at_every_alignment_and_chunk_edge() {
-    let needles = [b'&', b'<', b'>', b'"', b'(', b')', b'\\', b'\n', b'#'];
+    let needles = *b"&<>\"()\\\n#";
     let mut cases: Vec<Vec<u8>> = Vec::new();
     for &n in &needles {
         cases.push(vec![n]);

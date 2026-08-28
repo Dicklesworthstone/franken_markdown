@@ -217,6 +217,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"pdf_image_assets\":\"available_png_svg_v0\""));
     assert!(stdout.contains("--pdf-line-numbers"));
     assert!(stdout.contains("--pdf-image"));
+    assert!(stdout.contains("--pdf-font"));
+    assert!(stdout.contains("--pdf-font-weight"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
     assert!(stdout.contains("\"knuth_plass_pdf\":\"available\""));
@@ -260,6 +262,8 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("GSUB ligatures"));
     assert!(stdout.contains("--pdf-line-numbers"));
     assert!(stdout.contains("--pdf-image"));
+    assert!(stdout.contains("--pdf-font"));
+    assert!(stdout.contains("--pdf-font-weight"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("--max-input-bytes"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
@@ -1793,6 +1797,164 @@ fn json_envelopes_escape_control_and_quote_characters() {
         "escaped carriage return missing: {stderr}"
     );
     assert!(stderr.contains("e\\tf"), "escaped tab missing: {stderr}");
+}
+
+fn log_check(id: &str, subject: &str, ok: bool) {
+    eprintln!(
+        "check id={id} subject={subject} outcome={}",
+        if ok { "PASS" } else { "FAIL" }
+    );
+    assert!(ok, "{id}: {subject}");
+}
+
+#[test]
+fn pdf_font_and_weight_flags_instance_variable_faces() {
+    let vf = franken_markdown::text::variable_triangle_fixture();
+    let font_path = temp_file("gk3v3-vf", "ttf");
+    fs::write(&font_path, &vf).unwrap();
+    let font_s = font_path.display().to_string();
+    let mapping = format!("body-regular={font_s}");
+
+    let help = fmd(&["render", "--help"]);
+    let help_txt = text(&help.stdout);
+    log_check(
+        "gk3v.3.cli.help",
+        "render help lists --pdf-font and --pdf-font-weight",
+        help_txt.contains("--pdf-font") && help_txt.contains("--pdf-font-weight"),
+    );
+
+    let bad_spec = fmd(&[
+        "--text",
+        "Hello",
+        "--to",
+        "pdf",
+        "--pdf-font",
+        "not-a-font.ttf",
+        "--out",
+        &temp_file("gk3v3-bad", "pdf").display().to_string(),
+        "--json",
+    ]);
+    log_check(
+        "gk3v.3.cli.usage",
+        "SLOT=PATH required",
+        bad_spec.status.code() == Some(64) && text(&bad_spec.stderr).contains("expected SLOT=PATH"),
+    );
+
+    let missing = fmd(&[
+        "--text",
+        "Hello",
+        "--to",
+        "pdf",
+        "--pdf-font",
+        "body-regular=/no/such/face.ttf",
+        "--out",
+        &temp_file("gk3v3-miss", "pdf").display().to_string(),
+        "--json",
+    ]);
+    log_check(
+        "gk3v.3.cli.missing",
+        "missing font file is input error 66",
+        missing.status.code() == Some(66),
+    );
+
+    let out_400 = temp_file("gk3v3-400", "pdf");
+    let out_650 = temp_file("gk3v3-650", "pdf");
+    let out_400_s = out_400.display().to_string();
+    let out_650_s = out_650.display().to_string();
+    let run_400 = fmd_with_env(
+        &[
+            "--text",
+            "Hello variable",
+            "--to",
+            "pdf",
+            "--pdf-font",
+            &mapping,
+            "--pdf-font-weight",
+            "400",
+            "--out",
+            &out_400_s,
+            "--json",
+        ],
+        &[("SOURCE_DATE_EPOCH", "1700000000")],
+    );
+    let run_650 = fmd_with_env(
+        &[
+            "--text",
+            "Hello variable",
+            "--to",
+            "pdf",
+            "--pdf-font",
+            &mapping,
+            "--pdf-font-weight",
+            "650",
+            "--out",
+            &out_650_s,
+            "--json",
+        ],
+        &[("SOURCE_DATE_EPOCH", "1700000000")],
+    );
+    log_check(
+        "gk3v.3.cli.400.ok",
+        "weight 400 render succeeds",
+        run_400.status.success(),
+    );
+    log_check(
+        "gk3v.3.cli.650.ok",
+        "weight 650 render succeeds",
+        run_650.status.success(),
+    );
+    let stderr_650 = text(&run_650.stderr);
+    log_check(
+        "gk3v.3.cli.json.instance",
+        "json stderr logs font_instance at 650",
+        stderr_650.contains("\"event\":\"font_instance\"")
+            && stderr_650.contains("\"weight\":650")
+            && stderr_650.contains("\"event\":\"font_assets\""),
+    );
+    let bytes_400 = fs::read(&out_400).unwrap();
+    let bytes_650 = fs::read(&out_650).unwrap();
+    log_check(
+        "gk3v.3.cli.pdf.diff",
+        "embedded subset at 400 differs from 650",
+        bytes_400 != bytes_650 && bytes_650.starts_with(b"%PDF-"),
+    );
+
+    let static_path = temp_file("gk3v3-static", "ttf");
+    fs::write(
+        &static_path,
+        franken_markdown::fonts::body_bytes(
+            franken_markdown::FontFamily::Sans,
+            franken_markdown::fonts::FontStyle::Regular,
+        ),
+    )
+    .unwrap();
+    let static_out = temp_file("gk3v3-static-out", "pdf");
+    let static_map = format!("body-regular={}", static_path.display());
+    let static_run = fmd(&[
+        "--text",
+        "Hello",
+        "--to",
+        "pdf",
+        "--pdf-font",
+        &static_map,
+        "--pdf-font-weight",
+        "650",
+        "--out",
+        &static_out.display().to_string(),
+        "--json",
+    ]);
+    let static_err = text(&static_run.stderr);
+    log_check(
+        "gk3v.3.cli.static.warn",
+        "static face warns font_weight_ignored_static",
+        static_run.status.success() && static_err.contains("font_weight_ignored_static"),
+    );
+
+    let _ = fs::remove_file(&font_path);
+    let _ = fs::remove_file(&out_400);
+    let _ = fs::remove_file(&out_650);
+    let _ = fs::remove_file(&static_path);
+    let _ = fs::remove_file(&static_out);
 }
 
 // ---------------------------------------------------------------------------

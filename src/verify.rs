@@ -72,6 +72,9 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
             RenderWarning::MissingGlyphs { count, sample } => {
                 format!("{count} character(s) have no glyph in any bundled face (sample: {sample})")
             }
+            RenderWarning::FontWeightIgnoredStatic { slot, weight } => {
+                format!("{slot} font-weight {weight} ignored on a static face")
+            }
         };
         findings.push(VerifyFinding {
             code: warning.code(),

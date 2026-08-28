@@ -20,7 +20,7 @@
 use franken_markdown::fonts::{FontStyle, load_body};
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FontSize, INF_PENALTY, LayoutUnit, PairMetrics,
-    ParagraphItem, break_paragraph, paragraph_items_from_text,
+    ParagraphItem, ScriptKind, break_paragraph, classify_script, paragraph_items_from_text,
 };
 use franken_markdown::theme::FontFamily;
 use franken_markdown::{PdfOptions, Theme, render_pdf};
@@ -502,5 +502,66 @@ fn pdf_ascii_paragraph_geometry_is_unchanged() {
             (60.0, 6, 60.0),
         ],
         "Latin wrapping, justification, and hyphenation must not move"
+    );
+}
+
+/// Boundary table for the j04s.1 font-fallback classifier. Both sides of
+/// every published range must classify correctly so a later FACE_CJK
+/// router cannot silently drop a script.
+#[test]
+fn script_kind_boundary_codepoints() {
+    let cases: &[(&str, char, ScriptKind)] = &[
+        ("han-ext-a-lo", '\u{33FF}', ScriptKind::Latin),
+        ("han-ext-a-start", '\u{3400}', ScriptKind::Han),
+        ("han-ext-a-end", '\u{4DBF}', ScriptKind::Han),
+        ("han-ext-a-hi", '\u{4DC0}', ScriptKind::Latin),
+        ("han-unified-start", '\u{4E00}', ScriptKind::Han),
+        ("han-unified-end", '\u{9FFF}', ScriptKind::Han),
+        ("han-unified-hi", '\u{A000}', ScriptKind::Latin),
+        ("kana-lo", '\u{303F}', ScriptKind::Latin),
+        ("kana-start", '\u{3040}', ScriptKind::Kana),
+        ("kana-end", '\u{30FF}', ScriptKind::Kana),
+        ("kana-hi", '\u{3100}', ScriptKind::Latin),
+        ("hangul-syll-lo", '\u{ABFF}', ScriptKind::Latin),
+        ("hangul-syll-start", '\u{AC00}', ScriptKind::Hangul),
+        ("hangul-syll-end", '\u{D7AF}', ScriptKind::Hangul),
+        ("jamo-lo", '\u{10FF}', ScriptKind::Latin),
+        ("jamo-start", '\u{1100}', ScriptKind::Hangul),
+        ("jamo-end", '\u{11FF}', ScriptKind::Hangul),
+        ("jamo-hi", '\u{1200}', ScriptKind::Latin),
+        ("jamo-ext-a-lo", '\u{A95F}', ScriptKind::Latin),
+        ("jamo-ext-a-start", '\u{A960}', ScriptKind::Hangul),
+        ("jamo-ext-a-end", '\u{A97C}', ScriptKind::Hangul),
+        ("jamo-ext-b-start", '\u{D7B0}', ScriptKind::Hangul),
+        ("jamo-ext-b-end", '\u{D7FB}', ScriptKind::Hangul),
+        ("jamo-ext-b-hi", '\u{D7FC}', ScriptKind::Latin),
+        ("fullwidth-lo", '\u{FF00}', ScriptKind::Latin),
+        ("fullwidth-start", '\u{FF01}', ScriptKind::Fullwidth),
+        ("fullwidth-end", '\u{FF60}', ScriptKind::Fullwidth),
+        ("fullwidth-hi", '\u{FF61}', ScriptKind::Latin),
+        ("ascii-latin", 'A', ScriptKind::Latin),
+        ("han-sample", '漢', ScriptKind::Han),
+        ("kana-sample", 'あ', ScriptKind::Kana),
+        ("hangul-sample", '한', ScriptKind::Hangul),
+        ("fullwidth-sample", '\u{FF21}', ScriptKind::Fullwidth),
+    ];
+    let mut failed = 0usize;
+    for (id, ch, expected) in cases {
+        let got = classify_script(*ch);
+        let outcome = if got == *expected { "PASS" } else { "FAIL" };
+        if got != *expected {
+            failed += 1;
+        }
+        eprintln!(
+            "check={id} subject=U+{:04X} expected={} got={} outcome={outcome}",
+            *ch as u32,
+            expected.as_str(),
+            got.as_str()
+        );
+        assert_eq!(got, *expected, "{id} U+{:04X}", *ch as u32);
+    }
+    eprintln!(
+        "check=script-kind-table subject=n={} failed={failed} outcome=PASS",
+        cases.len()
     );
 }

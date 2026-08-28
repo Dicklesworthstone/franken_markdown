@@ -104,6 +104,15 @@ pub enum FontAssetSlot {
 }
 
 impl FontAssetSlot {
+    /// All renderer slots, in stable order.
+    pub const ALL: [Self; 5] = [
+        Self::BodyRegular,
+        Self::BodyBold,
+        Self::BodyItalic,
+        Self::BodyBoldItalic,
+        Self::MonoRegular,
+    ];
+
     /// Parse stable browser/config spelling.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
@@ -130,6 +139,17 @@ impl FontAssetSlot {
             Self::MonoRegular => "mono-regular",
         }
     }
+
+    /// CSS `font-weight` used when the slot has no explicit pin.
+    ///
+    /// Regular / italic / mono default to 400; bold / bold-italic default to 700.
+    #[must_use]
+    pub const fn default_weight(self) -> u16 {
+        match self {
+            Self::BodyBold | Self::BodyBoldItalic => 700,
+            Self::BodyRegular | Self::BodyItalic | Self::MonoRegular => 400,
+        }
+    }
 }
 
 /// Optional caller-supplied TrueType font bytes for renderer font slots.
@@ -137,6 +157,13 @@ impl FontAssetSlot {
 /// Missing slots use the bundled deterministic fonts. Supplied slots must be
 /// parseable TrueType/sfnt fonts with `glyf` outlines so the HTML and PDF paths
 /// can subset them without filesystem, fontconfig, or global mutable state.
+///
+/// Per-slot `*_weight` pins CSS `font-weight` for **variable** host faces
+/// (`wght` axis). The HTML/PDF loaders instance the face at that location and
+/// embed the resulting static glyf. Static faces ignore the pin (a
+/// [`RenderWarning::FontWeightIgnoredStatic`] is recorded). When `body_bold` is
+/// empty and `body_regular` is a `wght` variable face, bold resolves from that
+/// same file at the bold slot's effective weight (default 700).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FontAssets {
     pub body_regular: Option<Vec<u8>>,
@@ -144,6 +171,16 @@ pub struct FontAssets {
     pub body_italic: Option<Vec<u8>>,
     pub body_bold_italic: Option<Vec<u8>>,
     pub mono_regular: Option<Vec<u8>>,
+    /// Pinned CSS font-weight for [`FontAssetSlot::BodyRegular`]. `None` → 400.
+    pub body_regular_weight: Option<u16>,
+    /// Pinned CSS font-weight for [`FontAssetSlot::BodyBold`]. `None` → 700.
+    pub body_bold_weight: Option<u16>,
+    /// Pinned CSS font-weight for [`FontAssetSlot::BodyItalic`]. `None` → 400.
+    pub body_italic_weight: Option<u16>,
+    /// Pinned CSS font-weight for [`FontAssetSlot::BodyBoldItalic`]. `None` → 700.
+    pub body_bold_italic_weight: Option<u16>,
+    /// Pinned CSS font-weight for [`FontAssetSlot::MonoRegular`]. `None` → 400.
+    pub mono_regular_weight: Option<u16>,
 }
 
 impl FontAssets {
@@ -174,17 +211,79 @@ impl FontAssets {
     pub fn set_slot(&mut self, slot: FontAssetSlot, bytes: impl Into<Vec<u8>>) -> Result<()> {
         let bytes = bytes.into();
         validate_font_asset(slot, &bytes)?;
-        match slot {
-            FontAssetSlot::BodyRegular => self.body_regular = Some(bytes),
-            FontAssetSlot::BodyBold => self.body_bold = Some(bytes),
-            FontAssetSlot::BodyItalic => self.body_italic = Some(bytes),
-            FontAssetSlot::BodyBoldItalic => self.body_bold_italic = Some(bytes),
-            FontAssetSlot::MonoRegular => self.mono_regular = Some(bytes),
-        }
+        *self.bytes_mut(slot) = Some(bytes);
         Ok(())
     }
 
-    /// Validate all populated slots.
+    /// Return a copy with a CSS `font-weight` pin for `slot`.
+    ///
+    /// Variable (`wght`) host faces instance at this location. Static faces
+    /// ignore the pin. Valid range is 1..=1000 (CSS `font-weight`).
+    ///
+    /// # Errors
+    /// Returns [`RenderError::InvalidInput`] when `weight` is outside 1..=1000.
+    pub fn with_slot_weight(mut self, slot: FontAssetSlot, weight: u16) -> Result<Self> {
+        self.set_slot_weight(slot, weight)?;
+        Ok(self)
+    }
+
+    /// Pin CSS `font-weight` for `slot`.
+    ///
+    /// # Errors
+    /// See [`Self::with_slot_weight`].
+    pub fn set_slot_weight(&mut self, slot: FontAssetSlot, weight: u16) -> Result<()> {
+        validate_font_weight(slot, weight)?;
+        *self.weight_mut(slot) = Some(weight);
+        Ok(())
+    }
+
+    /// Explicit pin for `slot`, if any.
+    #[must_use]
+    pub fn slot_weight(&self, slot: FontAssetSlot) -> Option<u16> {
+        match slot {
+            FontAssetSlot::BodyRegular => self.body_regular_weight,
+            FontAssetSlot::BodyBold => self.body_bold_weight,
+            FontAssetSlot::BodyItalic => self.body_italic_weight,
+            FontAssetSlot::BodyBoldItalic => self.body_bold_italic_weight,
+            FontAssetSlot::MonoRegular => self.mono_regular_weight,
+        }
+    }
+
+    /// Pin if set, otherwise [`FontAssetSlot::default_weight`].
+    #[must_use]
+    pub fn effective_weight(&self, slot: FontAssetSlot) -> u16 {
+        self.slot_weight(slot).unwrap_or(slot.default_weight())
+    }
+
+    /// Caller-supplied bytes for `slot`, without variable-font sharing.
+    #[must_use]
+    pub fn slot_bytes(&self, slot: FontAssetSlot) -> Option<&[u8]> {
+        match slot {
+            FontAssetSlot::BodyRegular => self.body_regular.as_deref(),
+            FontAssetSlot::BodyBold => self.body_bold.as_deref(),
+            FontAssetSlot::BodyItalic => self.body_italic.as_deref(),
+            FontAssetSlot::BodyBoldItalic => self.body_bold_italic.as_deref(),
+            FontAssetSlot::MonoRegular => self.mono_regular.as_deref(),
+        }
+    }
+
+    /// Bytes used to load `slot`: own bytes, or `body_regular` when this is
+    /// the bold slot, bold is empty, and regular is a `wght` variable face.
+    #[must_use]
+    pub fn resolved_bytes(&self, slot: FontAssetSlot) -> Option<&[u8]> {
+        if let Some(bytes) = self.slot_bytes(slot) {
+            return Some(bytes);
+        }
+        if slot == FontAssetSlot::BodyBold {
+            let regular = self.body_regular.as_deref()?;
+            if font_bytes_have_wght(regular) {
+                return Some(regular);
+            }
+        }
+        None
+    }
+
+    /// Validate all populated slots and weight pins.
     ///
     /// This also protects callers who construct [`FontAssets`] directly instead
     /// of using [`Self::set_slot`].
@@ -192,21 +291,35 @@ impl FontAssets {
     /// # Errors
     /// Returns [`RenderError::InvalidInput`] for the first malformed slot.
     pub fn validate(&self) -> Result<()> {
-        for (slot, bytes) in [
-            (FontAssetSlot::BodyRegular, self.body_regular.as_deref()),
-            (FontAssetSlot::BodyBold, self.body_bold.as_deref()),
-            (FontAssetSlot::BodyItalic, self.body_italic.as_deref()),
-            (
-                FontAssetSlot::BodyBoldItalic,
-                self.body_bold_italic.as_deref(),
-            ),
-            (FontAssetSlot::MonoRegular, self.mono_regular.as_deref()),
-        ] {
-            if let Some(bytes) = bytes {
+        for slot in FontAssetSlot::ALL {
+            if let Some(bytes) = self.slot_bytes(slot) {
                 validate_font_asset(slot, bytes)?;
+            }
+            if let Some(weight) = self.slot_weight(slot) {
+                validate_font_weight(slot, weight)?;
             }
         }
         Ok(())
+    }
+
+    fn bytes_mut(&mut self, slot: FontAssetSlot) -> &mut Option<Vec<u8>> {
+        match slot {
+            FontAssetSlot::BodyRegular => &mut self.body_regular,
+            FontAssetSlot::BodyBold => &mut self.body_bold,
+            FontAssetSlot::BodyItalic => &mut self.body_italic,
+            FontAssetSlot::BodyBoldItalic => &mut self.body_bold_italic,
+            FontAssetSlot::MonoRegular => &mut self.mono_regular,
+        }
+    }
+
+    fn weight_mut(&mut self, slot: FontAssetSlot) -> &mut Option<u16> {
+        match slot {
+            FontAssetSlot::BodyRegular => &mut self.body_regular_weight,
+            FontAssetSlot::BodyBold => &mut self.body_bold_weight,
+            FontAssetSlot::BodyItalic => &mut self.body_italic_weight,
+            FontAssetSlot::BodyBoldItalic => &mut self.body_bold_italic_weight,
+            FontAssetSlot::MonoRegular => &mut self.mono_regular_weight,
+        }
     }
 }
 
@@ -244,6 +357,47 @@ fn validate_font_asset(slot: FontAssetSlot, bytes: &[u8]) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_font_weight(slot: FontAssetSlot, weight: u16) -> Result<()> {
+    if !(1..=1000).contains(&weight) {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font-weight {weight} is out of range; CSS font-weight is 1..=1000",
+            slot.as_str()
+        )));
+    }
+    Ok(())
+}
+
+fn font_bytes_have_wght(bytes: &[u8]) -> bool {
+    text::Font::parse(bytes.to_vec())
+        .ok()
+        .is_some_and(|font| font.instance_bounds(*b"wght").is_some())
+}
+
+/// Parse host font bytes and, when they carry a `wght` axis, instance at
+/// `weight`. Static faces are returned unchanged (the pin is ignored).
+pub(crate) fn instance_host_font(
+    slot: FontAssetSlot,
+    bytes: &[u8],
+    weight: u16,
+) -> Result<text::Font> {
+    let font = text::Font::parse(bytes.to_vec()).map_err(|err| {
+        RenderError::InvalidInput(format!(
+            "{} font bytes are not a supported TrueType font: {err}",
+            slot.as_str()
+        ))
+    })?;
+    if !font.has_glyf_outlines() {
+        return Err(RenderError::InvalidInput(format!(
+            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
+            slot.as_str()
+        )));
+    }
+    if font.instance_bounds(*b"wght").is_none() {
+        return Ok(font);
+    }
+    Ok(font.instance(f32::from(weight)).unwrap_or(font))
 }
 
 /// Options for the all-in-one HTML renderer.

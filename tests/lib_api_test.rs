@@ -365,3 +365,183 @@ fn render_warnings_include_svg_image_text_missing_glyphs() {
         "SVG label text should participate in missing-glyph warnings: {warns:?}"
     );
 }
+
+fn log_check(id: &str, subject: &str, ok: bool) {
+    eprintln!(
+        "check id={id} subject={subject} outcome={}",
+        if ok { "PASS" } else { "FAIL" }
+    );
+    assert!(ok, "{id}: {subject}");
+}
+
+#[test]
+fn font_assets_weight_pins_instance_variable_faces_and_ignore_static() {
+    use franken_markdown::{
+        PdfOptions, RenderWarning, parse_markdown, render_pdf, render_warnings,
+    };
+
+    let vf = franken_markdown::text::variable_triangle_fixture();
+    log_check(
+        "gk3v.3.vf.parse",
+        "fixture has wght axis",
+        franken_markdown::text::Font::parse(vf.clone())
+            .unwrap()
+            .instance_bounds(*b"wght")
+            .is_some(),
+    );
+
+    let err = FontAssets::default()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 0)
+        .unwrap_err();
+    log_check(
+        "gk3v.3.weight.zero",
+        "weight 0 rejected",
+        err.to_string().contains("out of range"),
+    );
+    let err = FontAssets::default()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 1001)
+        .unwrap_err();
+    log_check(
+        "gk3v.3.weight.hi",
+        "weight 1001 rejected",
+        err.to_string().contains("out of range"),
+    );
+
+    let at_400 = FontAssets::default()
+        .with_slot(FontAssetSlot::BodyRegular, vf.clone())
+        .unwrap()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 400)
+        .unwrap();
+    let at_650 = FontAssets::default()
+        .with_slot(FontAssetSlot::BodyRegular, vf.clone())
+        .unwrap()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 650)
+        .unwrap();
+    let pdf_400 = render_pdf(
+        "Hello variable",
+        &PdfOptions {
+            font_assets: at_400.clone(),
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let pdf_650 = render_pdf(
+        "Hello variable",
+        &PdfOptions {
+            font_assets: at_650.clone(),
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let pdf_650_b = render_pdf(
+        "Hello variable",
+        &PdfOptions {
+            font_assets: at_650,
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    log_check(
+        "gk3v.3.pdf.pin.diff",
+        "PDF subset at 400 differs from 650",
+        pdf_400 != pdf_650,
+    );
+    log_check(
+        "gk3v.3.pdf.pin.det",
+        "PDF subset at 650 is deterministic",
+        pdf_650 == pdf_650_b,
+    );
+
+    let html_400 = franken_markdown::render_html(
+        "Hello variable",
+        &franken_markdown::HtmlOptions {
+            font_assets: at_400,
+            ..franken_markdown::HtmlOptions::default()
+        },
+    )
+    .unwrap();
+    let html_650 = franken_markdown::render_html(
+        "Hello variable",
+        &franken_markdown::HtmlOptions {
+            font_assets: FontAssets::default()
+                .with_slot(
+                    FontAssetSlot::BodyRegular,
+                    franken_markdown::text::variable_triangle_fixture(),
+                )
+                .unwrap()
+                .with_slot_weight(FontAssetSlot::BodyRegular, 650)
+                .unwrap(),
+            ..franken_markdown::HtmlOptions::default()
+        },
+    )
+    .unwrap();
+    log_check(
+        "gk3v.3.html.pin.diff",
+        "HTML embedded subset at 400 differs from 650",
+        html_400 != html_650 && html_650.contains("@font-face"),
+    );
+
+    // Bold slot empty + VF regular → bold instances from the same file.
+    let shared = FontAssets::default()
+        .with_slot(FontAssetSlot::BodyRegular, vf)
+        .unwrap();
+    log_check(
+        "gk3v.3.share.bytes",
+        "bold resolves to regular VF bytes",
+        shared.resolved_bytes(FontAssetSlot::BodyBold).is_some()
+            && shared.slot_bytes(FontAssetSlot::BodyBold).is_none(),
+    );
+    let plain = render_pdf(
+        "Hello",
+        &PdfOptions {
+            font_assets: shared.clone(),
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let bold = render_pdf(
+        "**Hello**",
+        &PdfOptions {
+            font_assets: shared,
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    log_check(
+        "gk3v.3.share.bold",
+        "bold markdown from shared VF differs from regular",
+        plain != bold,
+    );
+
+    // Static bundled-style host face: pin is ignored and warned.
+    let static_assets = FontAssets::default()
+        .with_slot(
+            FontAssetSlot::BodyRegular,
+            real_font(FontAssetSlot::BodyRegular).to_vec(),
+        )
+        .unwrap()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 650)
+        .unwrap();
+    let warns = render_warnings(
+        &parse_markdown("Hello"),
+        &PdfOptions {
+            font_assets: static_assets,
+            ..PdfOptions::default()
+        },
+    );
+    log_check(
+        "gk3v.3.static.warn",
+        "static face emits font_weight_ignored_static",
+        warns.iter().any(|w| {
+            matches!(
+                w,
+                RenderWarning::FontWeightIgnoredStatic { weight: 650, .. }
+            ) && w.code() == "font_weight_ignored_static"
+        }),
+    );
+}

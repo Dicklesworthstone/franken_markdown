@@ -1039,6 +1039,72 @@ pub fn cjk_break_prohibited(left: char, right: char) -> bool {
     (l.cjk || r.cjk) && cjk_pair_prohibited(l.class, r.class)
 }
 
+// ---------------------------------------------------------------------------
+// Per-script font-fallback routing (j04s.1)
+// ---------------------------------------------------------------------------
+
+/// Coarse script class used by face-selection fallback (Han / Kana / Hangul).
+///
+/// Distinct from [`cjk_break_allowed`]'s UAX #14 classes: those decide *where*
+/// a line may break, this decides *which face* should draw the glyph. The
+/// classifier is range-only (no Unicode tables, no deps) so it stays in the
+/// same style as the existing CJK line-break table and compiles on wasm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptKind {
+    /// Default: Latin letters, symbols, everything not in a CJK range.
+    /// Stay on the primary style face, then the symbol-fallback face.
+    Latin,
+    /// CJK Unified Ideographs (`U+4E00–U+9FFF`) and Extension A (`U+3400–U+4DBF`).
+    Han,
+    /// Hiragana and Katakana (`U+3040–U+30FF`).
+    Kana,
+    /// Hangul syllables (`U+AC00–U+D7AF`) and conjoining jamo.
+    Hangul,
+    /// Fullwidth forms (`U+FF01–U+FF60`) that belong on a CJK face.
+    Fullwidth,
+}
+
+impl ScriptKind {
+    /// True when a CJK fallback face should be consulted before the
+    /// missing-glyph / symbol-fallback path.
+    #[must_use]
+    pub const fn wants_cjk_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::Han | Self::Kana | Self::Hangul | Self::Fullwidth
+        )
+    }
+
+    /// Stable doctor/JSON spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Latin => "latin",
+            Self::Han => "han",
+            Self::Kana => "kana",
+            Self::Hangul => "hangul",
+            Self::Fullwidth => "fullwidth",
+        }
+    }
+}
+
+/// Classify one character into a font-fallback script bucket.
+///
+/// Ranges match the j04s.1 roster: Han, Kana, Hangul (+ jamo), fullwidth.
+/// Anything else is [`ScriptKind::Latin`] so Latin-only documents never
+/// consult a CJK face.
+#[must_use]
+pub const fn classify_script(ch: char) -> ScriptKind {
+    let cp = ch as u32;
+    match cp {
+        0x4E00..=0x9FFF | 0x3400..=0x4DBF => ScriptKind::Han,
+        0x3040..=0x30FF => ScriptKind::Kana,
+        0xAC00..=0xD7AF | 0x1100..=0x11FF | 0xA960..=0xA97C | 0xD7B0..=0xD7FB => ScriptKind::Hangul,
+        0xFF01..=0xFF60 => ScriptKind::Fullwidth,
+        _ => ScriptKind::Latin,
+    }
+}
+
 /// Hyphenation controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HyphenationOptions {
@@ -1071,9 +1137,53 @@ pub struct HyphenException {
     points: &'static [usize],
 }
 
+/// Which Liang pattern set a [`Hyphenator`] applies.
+///
+/// English is the default (byte-identical with the historical path). German,
+/// French, Dutch, and Spanish are the 38re.1 roster; unknown tags stay on
+/// English at the call site (38re.2) rather than here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HyphenLang {
+    English,
+    German,
+    French,
+    Dutch,
+    Spanish,
+}
+
+impl HyphenLang {
+    /// Stable doctor/JSON spelling (`en`, `de`, `fr`, `nl`, `es`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Dutch => "nl",
+            Self::Spanish => "es",
+        }
+    }
+
+    /// TeX `\lefthyphenmin` / `\righthyphenmin` for this language.
+    #[must_use]
+    pub const fn default_options(self) -> HyphenationOptions {
+        match self {
+            Self::English => HyphenationOptions {
+                min_left: 2,
+                min_right: 3,
+            },
+            Self::German | Self::French | Self::Dutch | Self::Spanish => HyphenationOptions {
+                min_left: 2,
+                min_right: 2,
+            },
+        }
+    }
+}
+
 /// Dependency-free Liang-style hyphenator.
 #[derive(Debug, Clone, Copy)]
 pub struct Hyphenator {
+    lang: HyphenLang,
     encoded_patterns: &'static str,
     exceptions: &'static [HyphenException],
 }
@@ -1085,9 +1195,76 @@ impl Hyphenator {
     #[must_use]
     pub const fn english() -> Self {
         Self {
+            lang: HyphenLang::English,
             encoded_patterns: EN_US_TEX_PATTERNS,
             exceptions: ENGLISH_EXCEPTIONS,
         }
+    }
+
+    /// German (reformed 1996/2006) hyphenator. TeX `hyph-de-1996` patterns.
+    #[must_use]
+    pub const fn german() -> Self {
+        Self {
+            lang: HyphenLang::German,
+            encoded_patterns: DE_1996_TEX_PATTERNS,
+            exceptions: &[],
+        }
+    }
+
+    /// French hyphenator. TeX `hyph-fr` patterns.
+    #[must_use]
+    pub const fn french() -> Self {
+        Self {
+            lang: HyphenLang::French,
+            encoded_patterns: FR_TEX_PATTERNS,
+            exceptions: &[],
+        }
+    }
+
+    /// Dutch hyphenator. TeX `hyph-nl` patterns.
+    #[must_use]
+    pub const fn dutch() -> Self {
+        Self {
+            lang: HyphenLang::Dutch,
+            encoded_patterns: NL_TEX_PATTERNS,
+            exceptions: &[],
+        }
+    }
+
+    /// Spanish hyphenator. TeX `hyph-es` patterns.
+    #[must_use]
+    pub const fn spanish() -> Self {
+        Self {
+            lang: HyphenLang::Spanish,
+            encoded_patterns: ES_TEX_PATTERNS,
+            exceptions: &[],
+        }
+    }
+
+    /// Resolve a BCP-47-ish tag to a hyphenator. Unknown tags return `None`
+    /// so the caller can warn and fall back to English (38re.2).
+    #[must_use]
+    pub fn for_tag(tag: &str) -> Option<Self> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "en" | "en-us" | "en-gb" | "eng" | "english" => Some(Self::english()),
+            "de" | "de-de" | "de-1996" | "de-at" | "german" | "ngerman" => Some(Self::german()),
+            "fr" | "fra" | "fre" | "french" => Some(Self::french()),
+            "nl" | "nld" | "dut" | "dutch" => Some(Self::dutch()),
+            "es" | "spa" | "spanish" | "espanol" => Some(Self::spanish()),
+            _ => None,
+        }
+    }
+
+    /// Language this hyphenator was built for.
+    #[must_use]
+    pub const fn lang(self) -> HyphenLang {
+        self.lang
+    }
+
+    /// Language-specific hyphenation minima.
+    #[must_use]
+    pub const fn default_options(self) -> HyphenationOptions {
+        self.lang.default_options()
     }
 
     /// Number of encoded TeX pattern tokens in this hyphenator.
@@ -1099,7 +1276,9 @@ impl Hyphenator {
     /// Return legal hyphenation points as character offsets in `word`.
     #[must_use]
     pub fn hyphenation_points(&self, word: &str, opts: HyphenationOptions) -> Vec<usize> {
-        if word.len() > opts.min_left.saturating_add(opts.min_right) {
+        if self.lang == HyphenLang::English
+            && word.len() > opts.min_left.saturating_add(opts.min_right)
+        {
             if let Some(points) = english_exception_points(word) {
                 #[cfg(debug_assertions)]
                 debug_assert!(english_exception_table_matches_direct_lookup(
@@ -1155,6 +1334,22 @@ impl Hyphenator {
         lower.clear();
         dotted.clear();
         scores.clear();
+        if self.lang == HyphenLang::English {
+            self.hyphenate_ascii(word, opts, out, lower, dotted, scores);
+        } else {
+            self.hyphenate_unicode(word, opts, out, scores);
+        }
+    }
+
+    fn hyphenate_ascii(
+        &self,
+        word: &str,
+        opts: HyphenationOptions,
+        out: &mut Vec<usize>,
+        lower: &mut String,
+        dotted: &mut Vec<u8>,
+        scores: &mut Vec<u8>,
+    ) {
         if word.len() <= opts.min_left.saturating_add(opts.min_right) {
             return;
         }
@@ -1187,8 +1382,58 @@ impl Hyphenator {
         dotted.push(b'.');
 
         scores.resize(dotted.len() + 1, 0);
-        english_hyphen_trie().apply(dotted, scores);
+        self.trie().apply(dotted, scores);
         extend_hyphen_points_from_scores(out, scores, len, opts);
+    }
+
+    /// Liang hyphenation for languages whose pattern letters are not ASCII.
+    ///
+    /// Points are character offsets, matching the English API. Apostrophe is
+    /// a letter in the French pattern set (`2'2`).
+    fn hyphenate_unicode(
+        &self,
+        word: &str,
+        opts: HyphenationOptions,
+        out: &mut Vec<usize>,
+        scores: &mut Vec<u8>,
+    ) {
+        let mut units = 0usize;
+        for ch in word.chars() {
+            if !is_hyphen_letter(ch) {
+                return;
+            }
+            units += 1;
+        }
+        if units <= opts.min_left.saturating_add(opts.min_right) {
+            return;
+        }
+
+        let mut cps = Vec::with_capacity(units + 2);
+        cps.push(u32::from(b'.'));
+        for ch in word.chars() {
+            let ch = if ch == '\u{2019}' { '\'' } else { ch };
+            for lower in ch.to_lowercase() {
+                cps.push(lower as u32);
+            }
+        }
+        cps.push(u32::from(b'.'));
+        let char_len = cps.len().saturating_sub(2);
+        if char_len <= opts.min_left.saturating_add(opts.min_right) {
+            return;
+        }
+        scores.resize(cps.len() + 1, 0);
+        self.trie().apply_keys(&cps, scores);
+        extend_hyphen_points_from_scores(out, scores, char_len, opts);
+    }
+
+    fn trie(self) -> &'static HyphenTrie {
+        match self.lang {
+            HyphenLang::English => english_hyphen_trie(),
+            HyphenLang::German => german_hyphen_trie(),
+            HyphenLang::French => french_hyphen_trie(),
+            HyphenLang::Dutch => dutch_hyphen_trie(),
+            HyphenLang::Spanish => spanish_hyphen_trie(),
+        }
     }
 
     fn extend_exception_points(
@@ -1247,6 +1492,10 @@ fn english_exception_points(word: &str) -> Option<&'static [usize]> {
 }
 
 const EN_US_TEX_PATTERNS: &str = include_str!("../data/hyph-en-us.patterns");
+const DE_1996_TEX_PATTERNS: &str = include_str!("../data/hyph-de-1996.patterns");
+const FR_TEX_PATTERNS: &str = include_str!("../data/hyph-fr.patterns");
+const NL_TEX_PATTERNS: &str = include_str!("../data/hyph-nl.patterns");
+const ES_TEX_PATTERNS: &str = include_str!("../data/hyph-es.patterns");
 
 const ENGLISH_EXCEPTIONS: &[HyphenException] = &[
     HyphenException {
@@ -1336,19 +1585,35 @@ struct HyphenTrieNode {
 
 #[derive(Debug, Clone, Copy)]
 struct HyphenTrieEdge {
-    byte: u8,
+    key: u32,
     target: u32,
 }
 
 impl HyphenTrie {
     fn apply(&self, word: &[u8], scores: &mut [u8]) {
         for start in 0..word.len() {
-            let Some(mut node) = self.child(0, word[start]) else {
+            let Some(mut node) = self.child(0, u32::from(word[start])) else {
                 continue;
             };
             self.apply_terminal_values(node, start, scores);
             for &byte in &word[start + 1..] {
-                let Some(next) = self.child(node, byte) else {
+                let Some(next) = self.child(node, u32::from(byte)) else {
+                    break;
+                };
+                node = next;
+                self.apply_terminal_values(node, start, scores);
+            }
+        }
+    }
+
+    fn apply_keys(&self, word: &[u32], scores: &mut [u8]) {
+        for start in 0..word.len() {
+            let Some(mut node) = self.child(0, word[start]) else {
+                continue;
+            };
+            self.apply_terminal_values(node, start, scores);
+            for &key in &word[start + 1..] {
+                let Some(next) = self.child(node, key) else {
                     break;
                 };
                 node = next;
@@ -1368,24 +1633,24 @@ impl HyphenTrie {
         }
     }
 
-    fn child(&self, node_idx: u32, byte: u8) -> Option<u32> {
+    fn child(&self, node_idx: u32, key: u32) -> Option<u32> {
         let node = self.nodes.get(node_idx as usize)?;
         let start = node.first_edge as usize;
         let end = start.saturating_add(node.edge_count as usize);
         let edges = self.edges.get(start..end)?;
         if edges.len() <= 4 {
             for edge in edges {
-                if edge.byte == byte {
+                if edge.key == key {
                     return Some(edge.target);
                 }
-                if edge.byte > byte {
+                if edge.key > key {
                     return None;
                 }
             }
             return None;
         }
         edges
-            .binary_search_by_key(&byte, |edge| edge.byte)
+            .binary_search_by_key(&key, |edge| edge.key)
             .ok()
             .and_then(|idx| edges.get(idx).map(|edge| edge.target))
     }
@@ -1403,7 +1668,7 @@ impl HyphenTrie {
 
 #[derive(Debug, Default)]
 struct BuildHyphenNode {
-    children: Vec<(u8, usize)>,
+    children: Vec<(u32, usize)>,
     values: Vec<u8>,
 }
 
@@ -1415,6 +1680,26 @@ fn english_hyphen_trie() -> &'static HyphenTrie {
             EN_US_TEX_PATTERNS.split_ascii_whitespace(),
         )
     })
+}
+
+fn german_hyphen_trie() -> &'static HyphenTrie {
+    static TRIE: OnceLock<HyphenTrie> = OnceLock::new();
+    TRIE.get_or_init(|| build_hyphen_trie(&[], DE_1996_TEX_PATTERNS.split_ascii_whitespace()))
+}
+
+fn french_hyphen_trie() -> &'static HyphenTrie {
+    static TRIE: OnceLock<HyphenTrie> = OnceLock::new();
+    TRIE.get_or_init(|| build_hyphen_trie(&[], FR_TEX_PATTERNS.split_ascii_whitespace()))
+}
+
+fn dutch_hyphen_trie() -> &'static HyphenTrie {
+    static TRIE: OnceLock<HyphenTrie> = OnceLock::new();
+    TRIE.get_or_init(|| build_hyphen_trie(&[], NL_TEX_PATTERNS.split_ascii_whitespace()))
+}
+
+fn spanish_hyphen_trie() -> &'static HyphenTrie {
+    static TRIE: OnceLock<HyphenTrie> = OnceLock::new();
+    TRIE.get_or_init(|| build_hyphen_trie(&[], ES_TEX_PATTERNS.split_ascii_whitespace()))
 }
 
 fn build_hyphen_trie<'a>(
@@ -1434,16 +1719,19 @@ fn build_hyphen_trie<'a>(
 fn insert_encoded_hyphen_pattern(nodes: &mut Vec<BuildHyphenNode>, pattern: &str) {
     let mut letters = Vec::with_capacity(pattern.len());
     let mut values = vec![0u8];
-    for byte in pattern.bytes() {
-        if byte.is_ascii_digit() {
+    for mut ch in pattern.chars() {
+        if ch == '\u{2019}' {
+            ch = '\'';
+        }
+        if ch.is_ascii_digit() {
             if let Some(slot) = values.get_mut(letters.len()) {
-                *slot = byte.saturating_sub(b'0');
+                *slot = (ch as u8).saturating_sub(b'0');
             }
         } else {
             if letters.len() == 64 {
                 return;
             }
-            letters.push(byte);
+            letters.push(ch as u32);
             if values.len() < letters.len() + 1 {
                 values.push(0);
             }
@@ -1452,33 +1740,42 @@ fn insert_encoded_hyphen_pattern(nodes: &mut Vec<BuildHyphenNode>, pattern: &str
     if letters.is_empty() {
         return;
     }
-    insert_hyphen_pattern(nodes, &letters, &values);
+    insert_hyphen_pattern_keys(nodes, &letters, &values);
 }
 
 fn insert_hyphen_pattern(nodes: &mut Vec<BuildHyphenNode>, letters: &[u8], values: &[u8]) {
+    let keys: Vec<u32> = letters.iter().map(|&b| u32::from(b)).collect();
+    insert_hyphen_pattern_keys(nodes, &keys, values);
+}
+
+fn insert_hyphen_pattern_keys(nodes: &mut Vec<BuildHyphenNode>, letters: &[u32], values: &[u8]) {
     if letters.is_empty() || values.len() != letters.len() + 1 {
         return;
     }
     let mut node_idx = 0usize;
-    for &byte in letters {
-        let next_idx = find_or_insert_child(nodes, node_idx, byte);
+    for &key in letters {
+        let next_idx = find_or_insert_child(nodes, node_idx, key);
         node_idx = next_idx;
     }
     merge_hyphen_values(&mut nodes[node_idx].values, values);
 }
 
-fn find_or_insert_child(nodes: &mut Vec<BuildHyphenNode>, node_idx: usize, byte: u8) -> usize {
+fn find_or_insert_child(nodes: &mut Vec<BuildHyphenNode>, node_idx: usize, key: u32) -> usize {
     if let Some((_, child_idx)) = nodes[node_idx]
         .children
         .iter()
-        .find(|(existing, _)| *existing == byte)
+        .find(|(existing, _)| *existing == key)
     {
         return *child_idx;
     }
     let child_idx = nodes.len();
     nodes.push(BuildHyphenNode::default());
-    nodes[node_idx].children.push((byte, child_idx));
+    nodes[node_idx].children.push((key, child_idx));
     child_idx
+}
+
+fn is_hyphen_letter(ch: char) -> bool {
+    ch.is_alphabetic() || ch == '\'' || ch == '\u{2019}'
 }
 
 fn merge_hyphen_values(out: &mut Vec<u8>, values: &[u8]) {
@@ -1502,10 +1799,10 @@ fn flatten_hyphen_trie(build_nodes: Vec<BuildHyphenNode>) -> HyphenTrie {
 
         let first_edge = edges.len();
         let mut children = node.children;
-        children.sort_unstable_by_key(|(byte, _)| *byte);
-        for (byte, target) in children {
+        children.sort_unstable_by_key(|(key, _)| *key);
+        for (key, target) in children {
             edges.push(HyphenTrieEdge {
-                byte,
+                key,
                 target: clamp_usize_to_u32(target),
             });
         }
@@ -3003,6 +3300,91 @@ mod hyphen_and_break_edge_tests {
                 line.natural_width <= LayoutUnit::from_points(100),
                 "without credit no line may exceed the measure"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_kind_tests {
+    use super::{ScriptKind, classify_script};
+
+    fn check(id: &str, ch: char, expected: ScriptKind) {
+        let got = classify_script(ch);
+        let outcome = if got == expected { "PASS" } else { "FAIL" };
+        eprintln!(
+            "check={id} subject=U+{:04X} ({ch:?}) expected={} got={} outcome={outcome}",
+            ch as u32,
+            expected.as_str(),
+            got.as_str()
+        );
+        assert_eq!(got, expected, "{id}: U+{:04X} {ch:?}", ch as u32);
+    }
+
+    #[test]
+    fn classify_script_boundary_table() {
+        // Both sides of every range in the j04s.1 classifier.
+        check("han-ext-a-lo", '\u{33FF}', ScriptKind::Latin);
+        check("han-ext-a-start", '\u{3400}', ScriptKind::Han);
+        check("han-ext-a-end", '\u{4DBF}', ScriptKind::Han);
+        check("han-ext-a-hi", '\u{4DC0}', ScriptKind::Latin);
+        check("han-unified-lo", '\u{4DFF}', ScriptKind::Latin);
+        check("han-unified-start", '\u{4E00}', ScriptKind::Han);
+        check("han-unified-end", '\u{9FFF}', ScriptKind::Han);
+        check("han-unified-hi", '\u{A000}', ScriptKind::Latin);
+
+        check("kana-lo", '\u{303F}', ScriptKind::Latin);
+        check("kana-start", '\u{3040}', ScriptKind::Kana);
+        check("kana-hiragana", 'あ', ScriptKind::Kana);
+        check("kana-katakana", 'ア', ScriptKind::Kana);
+        check("kana-end", '\u{30FF}', ScriptKind::Kana);
+        check("kana-hi", '\u{3100}', ScriptKind::Latin);
+
+        check("hangul-syll-lo", '\u{ABFF}', ScriptKind::Latin);
+        check("hangul-syll-start", '\u{AC00}', ScriptKind::Hangul);
+        check("hangul-syll-ga", '가', ScriptKind::Hangul);
+        check("hangul-syll-end", '\u{D7AF}', ScriptKind::Hangul);
+        check("hangul-jamo-b-start", '\u{D7B0}', ScriptKind::Hangul);
+        check("hangul-jamo-b-end", '\u{D7FB}', ScriptKind::Hangul);
+        check("hangul-jamo-b-hi", '\u{D7FC}', ScriptKind::Latin);
+        check("hangul-jamo-lo", '\u{10FF}', ScriptKind::Latin);
+        check("hangul-jamo-start", '\u{1100}', ScriptKind::Hangul);
+        check("hangul-jamo-end", '\u{11FF}', ScriptKind::Hangul);
+        check("hangul-jamo-hi", '\u{1200}', ScriptKind::Latin);
+        check("hangul-jamo-a-lo", '\u{A95F}', ScriptKind::Latin);
+        check("hangul-jamo-a-start", '\u{A960}', ScriptKind::Hangul);
+        check("hangul-jamo-a-end", '\u{A97C}', ScriptKind::Hangul);
+        check("hangul-jamo-a-hi", '\u{A97D}', ScriptKind::Latin);
+
+        check("fw-lo", '\u{FF00}', ScriptKind::Latin);
+        check("fw-start", '\u{FF01}', ScriptKind::Fullwidth);
+        check("fw-end", '\u{FF60}', ScriptKind::Fullwidth);
+        check("fw-hi", '\u{FF61}', ScriptKind::Latin);
+
+        check("latin-ascii", 'A', ScriptKind::Latin);
+        check("latin-digit", '7', ScriptKind::Latin);
+        check("han-sample", '中', ScriptKind::Han);
+    }
+
+    #[test]
+    fn wants_cjk_fallback_matches_non_latin() {
+        for (kind, want) in [
+            (ScriptKind::Latin, false),
+            (ScriptKind::Han, true),
+            (ScriptKind::Kana, true),
+            (ScriptKind::Hangul, true),
+            (ScriptKind::Fullwidth, true),
+        ] {
+            let outcome = if kind.wants_cjk_fallback() == want {
+                "PASS"
+            } else {
+                "FAIL"
+            };
+            eprintln!(
+                "check=wants-cjk subject={} expected={want} got={} outcome={outcome}",
+                kind.as_str(),
+                kind.wants_cjk_fallback()
+            );
+            assert_eq!(kind.wants_cjk_fallback(), want, "{}", kind.as_str());
         }
     }
 }

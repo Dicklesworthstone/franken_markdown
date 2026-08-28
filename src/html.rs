@@ -12,7 +12,7 @@ use crate::fonts::{self, FontStyle};
 use crate::highlight::{Span, Tok, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
-use crate::{FontAssets, HtmlOptions};
+use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
@@ -972,9 +972,9 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
     let has_def = state.footnote_defs.iter().any(|(def_id, _)| *def_id == id);
     if !has_def {
-        out.push_str("<sup class=\"footnote-ref\">[^");
+        out.push_str("[^");
         out.push_str(&escape_text(id));
-        out.push_str("]</sup>");
+        out.push(']');
         return;
     }
     let next_number = state.footnote_numbers.len() + 1;
@@ -1444,6 +1444,10 @@ struct EmbeddedFontCss {
 struct HtmlFontFace<'a> {
     bytes: &'a [u8],
     parsed: Option<&'static Font>,
+    slot: FontAssetSlot,
+    /// `Some` for host-supplied (or VF-shared) bytes: instance at this CSS
+    /// weight when the face has a `wght` axis. Bundled static faces are `None`.
+    instance_weight: Option<u16>,
 }
 
 fn embedded_font_css(doc: &Document, theme: &Theme, font_assets: &FontAssets) -> EmbeddedFontCss {
@@ -1516,40 +1520,35 @@ fn body_font_face(
     family: crate::FontFamily,
     style: FontStyle,
 ) -> HtmlFontFace<'_> {
-    match style {
-        FontStyle::Regular => html_font_face(
-            font_assets.body_regular.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-        ),
-        FontStyle::Bold => html_font_face(
-            font_assets.body_bold.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-        ),
-        FontStyle::Italic => html_font_face(
-            font_assets.body_italic.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-        ),
-        FontStyle::BoldItalic => html_font_face(
-            font_assets.body_bold_italic.as_deref(),
-            || fonts::body_bytes(family, style),
-            || fonts::body_font(family, style).ok(),
-        ),
-    }
+    let slot = match style {
+        FontStyle::Regular => FontAssetSlot::BodyRegular,
+        FontStyle::Bold => FontAssetSlot::BodyBold,
+        FontStyle::Italic => FontAssetSlot::BodyItalic,
+        FontStyle::BoldItalic => FontAssetSlot::BodyBoldItalic,
+    };
+    html_font_face(
+        slot,
+        font_assets.resolved_bytes(slot),
+        font_assets.effective_weight(slot),
+        || fonts::body_bytes(family, style),
+        || fonts::body_font(family, style).ok(),
+    )
 }
 
 fn mono_font_face(font_assets: &FontAssets, style: FontStyle) -> HtmlFontFace<'_> {
     html_font_face(
-        font_assets.mono_regular.as_deref(),
+        FontAssetSlot::MonoRegular,
+        font_assets.resolved_bytes(FontAssetSlot::MonoRegular),
+        font_assets.effective_weight(FontAssetSlot::MonoRegular),
         || fonts::mono_bytes(style),
         || fonts::mono_font(style).ok(),
     )
 }
 
 fn html_font_face<'a>(
+    slot: FontAssetSlot,
     custom_bytes: Option<&'a [u8]>,
+    weight: u16,
     default_bytes: impl FnOnce() -> &'static [u8],
     default_font: impl FnOnce() -> Option<&'static Font>,
 ) -> HtmlFontFace<'a> {
@@ -1557,10 +1556,14 @@ fn html_font_face<'a>(
         Some(bytes) => HtmlFontFace {
             bytes,
             parsed: None,
+            slot,
+            instance_weight: Some(weight),
         },
         None => HtmlFontFace {
             bytes: default_bytes(),
             parsed: default_font(),
+            slot,
+            instance_weight: None,
         },
     }
 }
@@ -1684,9 +1687,12 @@ fn push_font_face(
         .parsed
         .and_then(|font| font.subset(&keep))
         .or_else(|| {
-            Font::parse(font_face.bytes.to_vec())
-                .ok()
-                .and_then(|font| font.subset(&keep))
+            let parsed = if let Some(weight) = font_face.instance_weight {
+                instance_host_font(font_face.slot, font_face.bytes, weight).ok()
+            } else {
+                Font::parse(font_face.bytes.to_vec()).ok()
+            };
+            parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
     let encoded_len = base64_encoded_len(subset.len());
@@ -1989,7 +1995,7 @@ mod tests {
         assert!(html.contains("<section class=\"footnotes\">"));
         assert!(html.contains("First note."));
         assert!(html.contains("Second with <em>em</em>."));
-        assert_eq!(html.matches("footnote-backref").count(), 2);
+        assert_eq!(html.matches("class=\"footnote-backref\"").count(), 2);
         assert!(html.contains("id=\"fn-1\"") && html.contains("id=\"fn-two\""));
         assert!(!html.contains("[^1]"), "literal marker must not survive");
         // Definition content renders exactly once (the section), never in flow.
@@ -2002,7 +2008,7 @@ mod tests {
         let html = super::render(&doc, &crate::HtmlOptions::default());
         assert!(html.contains("[^nope]"), "unmatched refs stay literal");
         assert!(
-            !html.contains("footnotes"),
+            !html.contains("<section class=\"footnotes\">"),
             "no section without definitions"
         );
     }

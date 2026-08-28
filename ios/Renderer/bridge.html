@@ -21,8 +21,10 @@
 
     function withRenderedFontScale(html, rawScale) {
       const parsed = Number(rawScale);
-      const scale = Number.isFinite(parsed) ? Math.min(1.6, Math.max(0.7, parsed)) : 1;
-      const override = `<style id="fmd-host-text-size">:root{--fmd-base:${16 * scale}px!important}</style>`;
+      const scale = Number.isFinite(parsed) ? Math.min(2.0, Math.max(0.5, parsed)) : 1;
+      const basePx = Math.round(16 * scale);
+      const measurePx = Math.round(760 * scale);
+      const override = `<style id="fmd-host-text-size">:root{--fmd-base:${basePx}px!important;--fmd-measure:${measurePx}px!important}</style>`;
       return String(html).replace('</head>', `${override}</head>`);
     }
 

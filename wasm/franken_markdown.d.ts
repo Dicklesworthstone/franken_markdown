@@ -50,6 +50,10 @@ export interface FmdRenderOptions {
   pageNumbers?: boolean;
   /** Base body size override in points (clamped by the core to [6, 24]). */
   baseFontSize?: number;
+  /** Uniform typographic scale factor (e.g. 1.125 = 112.5% / Large) or preset name ('xs' | 'sm' | 'compact' | 'md' | 'lg' | 'xl' | '2xl' | 'huge'). Scales both HTML and PDF uniformly. */
+  fontScale?: number | string;
+  /** Alias for fontScale. */
+  typeSize?: number | string;
   /** Per-step heading ratio, e.g. 1.25 (Major Third); clamped to [1.05, 2]. */
   headingScale?: number;
   /** Nominal table cell size override in points; clamped to [5, base]. */

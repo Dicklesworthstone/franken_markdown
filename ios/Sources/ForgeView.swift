@@ -15,6 +15,50 @@ private enum AuxiliaryPanel: String, Identifiable {
     var id: Self { self }
 }
 
+private enum TypeScalePresetStep: String, CaseIterable, Identifiable {
+    case extraSmall = "XS"
+    case small = "SM"
+    case medium = "MD"
+    case large = "LG"
+    case extraLarge = "XL"
+    case huge = "2XL"
+
+    var id: Self { self }
+
+    var scale: Double {
+        switch self {
+        case .extraSmall: 0.75
+        case .small: 0.875
+        case .medium: 1.0
+        case .large: 1.125
+        case .extraLarge: 1.25
+        case .huge: 1.5
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .extraSmall: "XS · 75%"
+        case .small: "SM · 87.5%"
+        case .medium: "MD · 100%"
+        case .large: "LG · 112.5%"
+        case .extraLarge: "XL · 125%"
+        case .huge: "2XL · 150%"
+        }
+    }
+
+    static func closest(to scale: Double) -> Self {
+        allCases.min(by: { abs($0.scale - scale) < abs($1.scale - scale) }) ?? .medium
+    }
+
+    func next(delta: Int) -> Self {
+        let all = Self.allCases
+        guard let idx = all.firstIndex(of: self) else { return self }
+        let target = min(all.count - 1, max(0, idx + delta))
+        return all[target]
+    }
+}
+
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
@@ -483,42 +527,45 @@ struct ForgeView: View {
     }
 
     private var renderFontSizeControl: some View {
-        HStack(spacing: 8) {
+        let currentStep = TypeScalePresetStep.closest(to: renderFontScale)
+        return HStack(spacing: 8) {
             Button {
-                renderFontScale = clampedRenderFontScale(renderFontScale - 0.1)
+                let nextStep = currentStep.next(delta: -1)
+                renderFontScale = nextStep.scale
             } label: {
                 Image(systemName: "textformat.size.smaller")
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.bordered)
-            .disabled(renderFontScale <= 0.7)
-            .accessibilityLabel("Decrease rendered text size")
+            .disabled(currentStep == .extraSmall)
+            .accessibilityLabel("Decrease rendered type size to smaller preset")
 
             Button {
                 renderFontScale = 1.0
             } label: {
-                Text("\(Int((renderFontScale * 100).rounded()))%")
+                Text(currentStep.label)
                     .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
-                    .frame(minWidth: 48)
+                    .frame(minWidth: 88)
             }
             .buttonStyle(.bordered)
-            .accessibilityLabel("Rendered text size \(Int((renderFontScale * 100).rounded())) percent. Reset to 100 percent")
+            .accessibilityLabel("Rendered type size \(currentStep.label). Tap to reset to standard size")
 
             Button {
-                renderFontScale = clampedRenderFontScale(renderFontScale + 0.1)
+                let nextStep = currentStep.next(delta: 1)
+                renderFontScale = nextStep.scale
             } label: {
                 Image(systemName: "textformat.size.larger")
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.bordered)
-            .disabled(renderFontScale >= 1.6)
-            .accessibilityLabel("Increase rendered text size")
+            .disabled(currentStep == .huge)
+            .accessibilityLabel("Increase rendered type size to larger preset")
         }
         .tint(Lab.emerald)
     }
 
     private func clampedRenderFontScale(_ value: Double) -> Double {
-        min(1.6, max(0.7, (value * 10).rounded() / 10))
+        TypeScalePresetStep.closest(to: value).scale
     }
 
     private var characterCount: Int {

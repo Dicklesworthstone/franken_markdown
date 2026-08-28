@@ -2748,3 +2748,93 @@ fn batch_strict_mode_maps_failure_kinds_to_documented_exit_codes() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn font_scale_presets_scale_html_typography_cleanly() {
+    let input = temp_file("font-scale-in", "md");
+    fs::write(&input, "# Scaled Heading\n\nBody paragraph text.").unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // Large (1.125x -> 18px base / 855px measure)
+    let out_lg = temp_file("font-scale-lg", "html");
+    let res = fmd(&[
+        input_s,
+        "--font-scale",
+        "lg",
+        "--out",
+        out_lg.to_str().unwrap(),
+    ]);
+    assert_eq!(res.status.code(), Some(0), "stderr: {}", text(&res.stderr));
+    let html_lg = fs::read_to_string(&out_lg).unwrap();
+    assert!(html_lg.contains("--fmd-base: 18px"));
+    assert!(html_lg.contains("--fmd-measure: 855px"));
+
+    // Extra Small (0.75x -> 12px base / 570px measure) via alias --type-size
+    let out_xs = temp_file("font-scale-xs", "html");
+    let res_xs = fmd(&[
+        input_s,
+        "--type-size",
+        "xs",
+        "--out",
+        out_xs.to_str().unwrap(),
+    ]);
+    assert_eq!(res_xs.status.code(), Some(0), "stderr: {}", text(&res_xs.stderr));
+    let html_xs = fs::read_to_string(&out_xs).unwrap();
+    assert!(html_xs.contains("--fmd-base: 12px"));
+    assert!(html_xs.contains("--fmd-measure: 570px"));
+
+    // Percentage notation 125% -> 20px base / 950px measure
+    let out_pct = temp_file("font-scale-pct", "html");
+    let res_pct = fmd(&[
+        input_s,
+        "--font-scale",
+        "125%",
+        "--out",
+        out_pct.to_str().unwrap(),
+    ]);
+    assert_eq!(res_pct.status.code(), Some(0), "stderr: {}", text(&res_pct.stderr));
+    let html_pct = fs::read_to_string(&out_pct).unwrap();
+    assert!(html_pct.contains("--fmd-base: 20px"));
+    assert!(html_pct.contains("--fmd-measure: 950px"));
+
+    // Invalid scale returns usage error (64)
+    let out_err = fmd(&[
+        input_s,
+        "--font-scale",
+        "invalid_size",
+        "--out",
+        out_pct.to_str().unwrap(),
+    ]);
+    assert_eq!(out_err.status.code(), Some(64), "stderr: {}", text(&out_err.stderr));
+    assert!(text(&out_err.stderr).contains("unknown font scale"));
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(out_lg);
+    let _ = fs::remove_file(out_xs);
+    let _ = fs::remove_file(out_pct);
+}
+
+#[test]
+fn font_scale_presets_render_pdf_successfully() {
+    let input = temp_file("font-scale-pdf-in", "md");
+    fs::write(&input, "# PDF Typography Test\n\nTesting scaled body and table text.\n\n| Col A | Col B |\n| --- | --- |\n| Cell 1 | Cell 2 |").unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let out_pdf = temp_file("font-scale-out", "pdf");
+    let res = fmd(&[
+        input_s,
+        "--to",
+        "pdf",
+        "--font-scale",
+        "1.25",
+        "--out",
+        out_pdf.to_str().unwrap(),
+    ]);
+    assert_eq!(res.status.code(), Some(0), "stderr: {}", text(&res.stderr));
+    let pdf_bytes = fs::read(&out_pdf).unwrap();
+    assert!(pdf_bytes.starts_with(b"%PDF-1.7"));
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(out_pdf);
+}
+

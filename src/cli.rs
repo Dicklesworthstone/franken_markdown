@@ -21,9 +21,10 @@ use crate::watch::{
     sse_reload_event,
 };
 use crate::{
-    FontAssetSlot, FontAssets, FontFamily, HtmlFontFormat, HtmlOptions, PdfAMode, PdfASettings,
-    PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme, parse_markdown,
-    render_html_document, render_pdf_document, render_pdf_document_pdfa, render_warnings,
+    FontAssetSlot, FontAssets, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
+    PdfASettings, PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme, TypeScalePreset,
+    parse_markdown, render_html_document, render_pdf_document, render_pdf_document_pdfa,
+    render_warnings,
 };
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;

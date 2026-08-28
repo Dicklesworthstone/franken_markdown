@@ -294,9 +294,9 @@ pub fn route_for(req: &[u8]) -> Route {
     let Ok(text) = std::str::from_utf8(req) else {
         return Route::NotFound;
     };
-    // Request-line: `METHOD SP PATH SP HTTP/1.x CRLF`
-    let mut lines = text.split("\r\n");
-    let Some(request_line) = lines.next() else {
+    // `str::lines` treats LF, CRLF, and lone CR as record breaks, matching
+    // what browsers and curl actually send.
+    let Some(request_line) = text.lines().next() else {
         return Route::NotFound;
     };
     let mut parts = request_line.split(' ');
@@ -305,17 +305,16 @@ pub fn route_for(req: &[u8]) -> Route {
     if method != "GET" {
         return Route::NotFound;
     }
+    // Strip the query before the traversal walk so `/?x=../y` is still `/`.
+    let path = path.split('?').next().unwrap_or(path);
     if !path.starts_with('/') {
         return Route::NotFound;
     }
-    // Disallow `..` path components (hard traversal reject).
     for seg in path.split('/') {
         if seg == ".." {
             return Route::NotFound;
         }
     }
-    // Route. No query string handling in v1.
-    let path = path.split('?').next().unwrap_or(path);
     if path == "/" {
         Route::Index
     } else if path == "/events" {
@@ -367,13 +366,15 @@ pub fn render_response(route: Route, html: &str, events_header: &str) -> Vec<u8>
 /// file change is observed.
 #[must_use]
 pub fn sse_preamble() -> String {
+    // EventSource is a long-lived stream. `Connection: close` tells HTTP/1.1
+    // intermediaries the response is done; keep-alive is the correct signal.
     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-     Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+     Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n"
         .to_string()
 }
 
 fn inject_reload_snippet(html: &str) -> String {
-    if let Some(idx) = html.rfind("</body>") {
+    if let Some(idx) = rfind_body_close(html) {
         let mut out = String::with_capacity(html.len() + RELOAD_SNIPPET.len());
         out.push_str(&html[..idx]);
         out.push_str(RELOAD_SNIPPET);
@@ -385,6 +386,23 @@ fn inject_reload_snippet(html: &str) -> String {
         out.push_str(RELOAD_SNIPPET);
         out
     }
+}
+
+/// Last `</body>` in `html`, ASCII-case-insensitive. Tag bytes are ASCII so
+/// the returned index is always a UTF-8 char boundary.
+fn rfind_body_close(html: &str) -> Option<usize> {
+    const NEEDLE: &[u8] = b"</body>";
+    let bytes = html.as_bytes();
+    if bytes.len() < NEEDLE.len() {
+        return None;
+    }
+    let mut last = None;
+    for i in 0..=bytes.len() - NEEDLE.len() {
+        if bytes[i..i + NEEDLE.len()].eq_ignore_ascii_case(NEEDLE) {
+            last = Some(i);
+        }
+    }
+    last
 }
 
 /// Bind a `TcpListener` on 127.0.0.1 with the OS-chosen port and return
@@ -723,6 +741,42 @@ mod tests {
             "j3e0.2.events.content_type",
             "Content-Type: text/event-stream",
             text.contains("Content-Type: text/event-stream"),
+        );
+        log_check(
+            "j3e0.2.events.keep_alive",
+            "SSE stream uses Connection: keep-alive",
+            text.contains("Connection: keep-alive") && !text.contains("Connection: close"),
+        );
+    }
+
+    #[test]
+    fn injects_reload_snippet_before_uppercase_body_close() {
+        let html = "<HTML><BODY><p>hi</p></BODY></HTML>";
+        let resp = render_response(Route::Index, html, "");
+        let text = std::str::from_utf8(&resp).expect("utf-8");
+        log_check(
+            "j3e0.2.index.upper_body",
+            "snippet injected before </BODY>",
+            text.find("EventSource").unwrap() < text.find("</BODY>").unwrap(),
+        );
+    }
+
+    #[test]
+    fn route_for_accepts_lf_only_request_line() {
+        let req = b"GET /events HTTP/1.1\nHost: 127.0.0.1\n\n";
+        log_check(
+            "j3e0.2.route.lf",
+            "LF-only GET /events -> Events",
+            route_for(req) == Route::Events,
+        );
+    }
+
+    #[test]
+    fn route_for_query_does_not_trigger_traversal_reject() {
+        log_check(
+            "j3e0.2.route.query-dots",
+            "GET /?x=../y -> Index",
+            route_for(&req("/?x=../y")) == Route::Index,
         );
     }
 

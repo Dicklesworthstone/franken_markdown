@@ -2569,9 +2569,7 @@ fn table_layout_inline_key(
 ) -> Option<TableLayoutInlineKey> {
     add_table_layout_key_node(inline_nodes)?;
     match inline {
-        Inline::FootnoteRef { id } => {
-            Some(TableLayoutInlineKey::Text(format!("[^{id}]")))
-        }
+        Inline::FootnoteRef { id } => Some(TableLayoutInlineKey::Text(format!("[^{id}]"))),
         Inline::Text(text) => {
             add_table_layout_key_bytes(inline_bytes, text.len())?;
             Some(TableLayoutInlineKey::Text(text.clone()))
@@ -15059,7 +15057,9 @@ fn table_cell_measure(
     }
 
     if wrap_perf_enabled() {
-        let ns = t0.map_or(0, |t| u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let ns = t0.map_or(0, |t| {
+            u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        });
         let key = (
             wrap_perf_tok_hash(toks),
             u64::from(size.to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15),
@@ -15564,9 +15564,7 @@ pub mod wrap_perf {
 
     fn note_key(store: &Mutex<Option<HashSet<(u64, u64)>>>, key: (u64, u64)) {
         if let Ok(mut guard) = store.lock() {
-            guard
-                .get_or_insert_with(HashSet::new)
-                .insert(key);
+            guard.get_or_insert_with(HashSet::new).insert(key);
         }
     }
 
@@ -15809,14 +15807,13 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         })
         .collect();
     if perf {
-        let cells = u64::try_from(
-            head_toks.len() + row_toks.iter().map(Vec::len).sum::<usize>(),
-        )
-        .unwrap_or(u64::MAX);
-        let ns = t_tok.map_or(0, |t| u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let cells = u64::try_from(head_toks.len() + row_toks.iter().map(Vec::len).sum::<usize>())
+            .unwrap_or(u64::MAX);
+        let ns = t_tok.map_or(0, |t| {
+            u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        });
         wrap_perf::add_tokenize(ns, cells);
     }
-
 
     // Measure min-content, max-content, and wrap-cost inputs once per cell so
     // the allocator can search candidate widths without reshaping text inside
@@ -35004,7 +35001,11 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
             let (text, x, overshoot) = if line.rule {
                 (String::new(), line.rule_x, None)
             } else {
-                let text = line.segs.iter().map(|s| s.text.as_str()).collect::<String>();
+                let text = line
+                    .segs
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>();
                 let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
                 (text, x, line_overshoot(line, &page))
             };
@@ -35017,7 +35018,10 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
                 overshoot,
             });
         }
-        out_pages.push(VerifyPage { number: idx + 1, runs });
+        out_pages.push(VerifyPage {
+            number: idx + 1,
+            runs,
+        });
     }
     Some(VerifyTextLayer {
         page_count: out_pages.len(),
@@ -35082,7 +35086,10 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
     // Pass 2: audit every inline link target against the assigned ids.
     // (Links inside headings are audited here too; their text was already
     // consumed by pass 1's slug computation.)
-    let mut audit = AnchorAudit { resolved: 0, unresolved: Vec::new() };
+    let mut audit = AnchorAudit {
+        resolved: 0,
+        unresolved: Vec::new(),
+    };
     fn collect_links(blocks: &[Block], audit: &mut AnchorAudit, ids: &BTreeSet<String>) {
         for block in blocks {
             match block {

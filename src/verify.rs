@@ -8,11 +8,9 @@
 //! The JSON contract (schema version 1) is pinned by golden fixtures; any
 //! shape change bumps [`SCHEMA_VERSION`].
 
-use crate::ast::Document;
-use crate::pdf::{
-    audit_anchors, render_warnings, verification_text_layer, RenderWarning, VerifyTextLayer,
-};
 use crate::PdfOptions;
+use crate::ast::Document;
+use crate::pdf::{RenderWarning, audit_anchors, render_warnings, verification_text_layer};
 
 /// Report schema version (bump on any breaking shape change).
 pub const SCHEMA_VERSION: &str = "1";
@@ -71,11 +69,14 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
             RenderWarning::UnsupportedImage(dest) => {
                 format!("image asset {dest} could not be decoded; rendered as alt text")
             }
-            RenderWarning::MissingGlyphs { count, sample } => format!(
-                "{count} character(s) have no glyph in any bundled face (sample: {sample})"
-            ),
+            RenderWarning::MissingGlyphs { count, sample } => {
+                format!("{count} character(s) have no glyph in any bundled face (sample: {sample})")
+            }
         };
-        findings.push(VerifyFinding { code: warning.code(), detail });
+        findings.push(VerifyFinding {
+            code: warning.code(),
+            detail,
+        });
     }
     for page in &layer.pages {
         for run in &page.runs {
@@ -91,7 +92,11 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
         }
     }
 
-    let verdict = if findings.is_empty() { "clean" } else { "findings" };
+    let verdict = if findings.is_empty() {
+        "clean"
+    } else {
+        "findings"
+    };
     let mut report = VerifyReport {
         schema_version: SCHEMA_VERSION,
         target: "pdf",
@@ -115,7 +120,10 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
 pub fn to_json(report: &VerifyReport) -> String {
     let body = to_json_body(report);
     let digest_hex = format!("{:016x}", report.digest);
-    body.replace("\"digest\":\"\"", &format!("\"digest\":\"fnv1a64:{digest_hex}\""))
+    body.replace(
+        "\"digest\":\"\"",
+        &format!("\"digest\":\"fnv1a64:{digest_hex}\""),
+    )
 }
 
 fn to_json_body(report: &VerifyReport) -> String {
@@ -212,11 +220,7 @@ fn json_num(value: f32) -> String {
     if s.ends_with('.') {
         s.pop();
     }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "0".to_string() } else { s }
 }
 
 fn fnv1a64(data: &[u8]) -> u64 {
@@ -233,6 +237,7 @@ fn fnv1a64(data: &[u8]) -> u64 {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]

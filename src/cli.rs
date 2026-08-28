@@ -593,7 +593,6 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     ExitCode::SUCCESS
 }
 
-
 /// `fmd verify` — render through the same layout+pagination pipeline the PDF
 /// writer uses and emit a stable-schema JSON report: per-page text runs,
 /// internal-anchor audit, render warnings, horizontal overflow findings, and

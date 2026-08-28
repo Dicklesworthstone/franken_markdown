@@ -15952,7 +15952,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     // (hash, size_bits) — size widened to u64 to match
                     // add_wrap's key tuple (fixes a compile error in the
                     // in-flight FMD_TABLE_PERF instrumentation).
-                    wrap_perf::add_wrap(ns, 1, Some((key.0, u64::from(key.1))));
+                    wrap_perf::add_wrap(ns, 1, Some((key.0, key.1)));
                 }
                 wrapped_cell
             })
@@ -26172,6 +26172,7 @@ fn compress_page_streams<'a>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::expect_used)]
 fn compress_page_streams_inner(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())

@@ -48,6 +48,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Render a Markdown file (or stdin) to HTML and/or PDF.
     Render(RenderArgs),

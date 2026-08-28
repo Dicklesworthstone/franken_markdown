@@ -34,9 +34,13 @@ jobs:
           test -s /tmp/pdfa-test/doc.pdf
       - name: Validate with veraPDF
         run: |
-          docker pull verapdf/verapdf:latest
-          docker run --rm -v /tmp/pdfa-test:/pdf verapdf/verapdf /pdf/doc.pdf --flavour 2b 2>&1 | tee validation.txt
-          grep -q "validationResult.*passed" validation.txt || grep -q '"valid"' validation.txt || exit 1
+          # The old verapdf/verapdf Docker Hub repo was removed upstream; the
+          # supported image is verapdf/cli (mount point /data, CLI argv first).
+          docker pull verapdf/cli:latest
+          docker run --rm -v /tmp/pdfa-test:/data verapdf/cli --flavour 2b /data/doc.pdf > validation.txt 2>&1 || true
+          # Accept the XML report (isCompliant="true"), JSON (isCompliant:true),
+          # and the legacy "passed" phrasing across veraPDF versions.
+          grep -qE 'isCompliant="true"|"isCompliant":\s*true|validationResult.*passed' validation.txt || { cat validation.txt; exit 1; }
       - name: Assert non-PDF/A default is byte-identical
         run: |
           ./target/release/fmd /tmp/pdfa-test/doc.md --to pdf --out /tmp/pdfa-test/default.pdf

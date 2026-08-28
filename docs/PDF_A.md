@@ -3,11 +3,9 @@
 Delta of ISO 19005-2 (PDF/A-2b) against current `fmd` PDF emission, plus what
 `--pdf-a 2b` (library: [`PdfASettings::a2b`](../src/pdfa.rs)) actually writes.
 
-The CLI flag `--pdf-a 2b` is the intended agent-facing spelling. This bead lands
-the engine hook first (`render_pdf_pdfa` / `render_pdf_document_pdfa`) because
-`src/cli.rs` was exclusively reserved by another agent at implementation time.
-Wire the clap flag to `PdfASettings` when that lock is free; the objects below
-do not depend on clap.
+CLI: `fmd README.md --to pdf --pdf-a 2b --out README.pdf`. Add `--pdf-a-strict`
+to fail closed on `javascript:` / `file:` URI actions (named `pdf_a_*` errors).
+Library: `render_pdf_pdfa(..., PdfASettings::a2b())`.
 
 ## Requirement vs current emission
 
@@ -59,6 +57,5 @@ so a Markdown `[x](javascript:…)` document still renders. The helper
 ## Known gaps (not this bead)
 
 - CIDSet streams on subset CIDFonts (veraPDF common fail) — q6xc.2
-- CLI `--pdf-a 2b` / `--pdf-a-strict` clap flags — blocked on `src/cli.rs`
 - Full sRGB TRC / larger ICC — only if q6xc.2 measurement says so
 - PDF/A-2a structure completeness / PDF/UA — different epics

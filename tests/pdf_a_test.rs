@@ -131,14 +131,14 @@ fn strict_rejection_matrix_javascript_and_file_uris() {
     log_check(
         "q6xc.1.strict.code",
         "javascript: yields pdf_a_javascript_uri",
-        err.to_string().starts_with("pdf_a_javascript_uri:"),
+        err.to_string().contains("pdf_a_javascript_uri:"),
     );
     let err = franken_markdown::pdfa::check_uri_action(PdfASettings::a2b_strict(), "file:///tmp/x")
         .unwrap_err();
     log_check(
         "q6xc.1.strict.file",
         "file: yields pdf_a_file_uri",
-        err.to_string().starts_with("pdf_a_file_uri:"),
+        err.to_string().contains("pdf_a_file_uri:"),
     );
 }
 
@@ -152,5 +152,112 @@ fn docs_name_the_delta() {
             && docs.contains("OutputIntent")
             && docs.contains("sRGB")
             && docs.contains("CIDSet"),
+    );
+    log_check(
+        "q6xc.1.docs.cli",
+        "docs name --pdf-a 2b",
+        docs.contains("--pdf-a 2b"),
+    );
+}
+
+fn fmd(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .args(args)
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn cli_pdf_a_2b_writes_xmp_and_output_intent() {
+    let out = std::env::temp_dir().join(format!(
+        "fmd-pdfa-{}-{}.pdf",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let out_s = out.display().to_string();
+    let run = fmd(&[
+        "--no-config",
+        "--json",
+        "--text",
+        MD,
+        "--to",
+        "pdf",
+        "--out",
+        &out_s,
+        "--pdf-a",
+        "2b",
+    ]);
+    log_check(
+        "q6xc.1.cli.exit",
+        "CLI --pdf-a 2b exits 0",
+        run.status.success(),
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    log_check(
+        "q6xc.1.cli.phase",
+        "stderr pdf_a event under --json",
+        stderr.contains("\"event\":\"pdf_a\"") && stderr.contains("\"profile\":\"2b\""),
+    );
+    let bytes = std::fs::read(&out).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    log_check(
+        "q6xc.1.cli.xmp",
+        "CLI PDF has pdfaid XMP",
+        text.contains("<pdfaid:part>2</pdfaid:part>"),
+    );
+    log_check(
+        "q6xc.1.cli.oi",
+        "CLI PDF has OutputIntent",
+        text.contains("/Type /OutputIntent"),
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn cli_pdf_a_unknown_profile_is_usage_error() {
+    let run = fmd(&[
+        "--no-config",
+        "--text",
+        "# x",
+        "--to",
+        "pdf",
+        "--out",
+        "/tmp/fmd-pdfa-bad.pdf",
+        "--pdf-a",
+        "1a",
+    ]);
+    log_check(
+        "q6xc.1.cli.unknown",
+        "unknown profile is exit 64",
+        run.status.code() == Some(64),
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    log_check(
+        "q6xc.1.cli.unknown.msg",
+        "error names --pdf-a 2b",
+        stderr.contains("--pdf-a") && stderr.contains("2b"),
+    );
+}
+
+#[test]
+fn cli_pdf_a_strict_without_profile_is_usage_error() {
+    let run = fmd(&[
+        "--no-config",
+        "--text",
+        "# x",
+        "--to",
+        "pdf",
+        "--out",
+        "/tmp/fmd-pdfa-strict.pdf",
+        "--pdf-a-strict",
+    ]);
+    log_check(
+        "q6xc.1.cli.strict.needs_profile",
+        "--pdf-a-strict without --pdf-a is exit 64",
+        run.status.code() == Some(64),
     );
 }

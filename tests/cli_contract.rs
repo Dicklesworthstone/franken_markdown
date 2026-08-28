@@ -219,6 +219,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--pdf-font"));
     assert!(stdout.contains("--pdf-font-weight"));
+    assert!(stdout.contains("--pdf-a"));
+    assert!(stdout.contains("\"pdf_a_2b\":\"available\""));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
     assert!(
@@ -276,6 +278,7 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("--pdf-image"));
     assert!(stdout.contains("--pdf-font"));
     assert!(stdout.contains("--pdf-font-weight"));
+    assert!(stdout.contains("--pdf-a"));
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("--max-input-bytes"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
@@ -527,10 +530,9 @@ fn pdf_render_writes_valid_mvp_pdf_and_json_status_to_stderr() {
     assert!(pdf.starts_with(b"%PDF-1.7\n"));
     assert!(pdf.ends_with(b"%%EOF\n"));
     assert!(pdf.windows(b"startxref".len()).any(|w| w == b"startxref"));
-    assert!(
-        pdf.windows(b"/Type /Catalog".len())
-            .any(|w| w == b"/Type /Catalog")
-    );
+    assert!(pdf
+        .windows(b"/Type /Catalog".len())
+        .any(|w| w == b"/Type /Catalog"));
     assert!(pdf.len() > 500);
 
     let _ = fs::remove_file(out_path);
@@ -1831,8 +1833,10 @@ fn pdf_font_and_weight_flags_instance_variable_faces() {
     let help_txt = text(&help.stdout);
     log_check(
         "gk3v.3.cli.help",
-        "render help lists --pdf-font and --pdf-font-weight",
-        help_txt.contains("--pdf-font") && help_txt.contains("--pdf-font-weight"),
+        "render help lists --pdf-font, --pdf-font-weight, and --pdf-a",
+        help_txt.contains("--pdf-font")
+            && help_txt.contains("--pdf-font-weight")
+            && help_txt.contains("--pdf-a"),
     );
 
     let bad_spec = fmd(&[

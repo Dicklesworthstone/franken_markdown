@@ -21,6 +21,16 @@ repository for parser tests (`gk3v.1`). It is not a design face.
 | `fvar` | One `wght` axis, user space 100 / 400 / 900, two named instances (Regular=400, Bold=700) with PostScript name IDs |
 | `avar` | Identity map `(-1,-1), (0,0), (1,1)` |
 
+`FmdTestVF.ttf` has **no** `glyf`/`gvar`. Outline instancing, mixed-weight PDF,
+and cmap-shared bbox L∞ comparisons use `fmd_font::variable_triangle_fixture()`
+(built in `fmd-font/src/gvar.rs`). Dump it for CLI e2e with:
+
+```bash
+FMD_DUMP_TRIANGLE_VF=/tmp/FmdTriangleVF.ttf cargo test -p fmd-font dump_triangle_vf_when_requested -- --exact
+```
+
+The method and size report live in [`docs/VARIABLE_FONTS.md`](../../../docs/VARIABLE_FONTS.md).
+
 Regenerate (does not overwrite this directory; copies from `/tmp`):
 
 ```bash

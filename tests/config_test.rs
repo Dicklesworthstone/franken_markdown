@@ -403,6 +403,7 @@ fn to_theme_overlays_font_dark_mode_and_margins() {
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: None,
         margins: Some(margins),
+        emoji_strategy: None,
     };
     let theme = cfg.to_theme();
     assert_eq!(theme.font, FontFamily::Serif);
@@ -427,6 +428,7 @@ fn get_resolved_covers_every_key_and_unknown_returns_none() {
             bottom_pt: 30.0,
             left_pt: 40.0,
         }),
+        emoji_strategy: None,
     };
     assert_eq!(cfg.get_resolved("font").as_deref(), Some("serif"));
     assert_eq!(cfg.get_resolved("dark_mode").as_deref(), Some("disabled"));
@@ -459,6 +461,7 @@ fn to_file_string_serializes_all_fields_and_round_trips() {
             bottom_pt: 54.5,
             left_pt: 36.0,
         }),
+        emoji_strategy: None,
     };
     let serialized = cfg.to_file_string();
     for expected in [

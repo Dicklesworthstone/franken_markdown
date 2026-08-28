@@ -1429,10 +1429,8 @@ impl Face {
             if upm != 0 {
                 for l in 0usize..128 {
                     for r in 0usize..128 {
-                        kern[l * 128 + r] = i32::from(
-                            self.kern.pair(glyph_ids[l], glyph_ids[r]),
-                        ) * 1000
-                            / upm;
+                        kern[l * 128 + r] =
+                            i32::from(self.kern.pair(glyph_ids[l], glyph_ids[r])) * 1000 / upm;
                     }
                 }
             }
@@ -1457,10 +1455,8 @@ impl Face {
         for (idx, &b) in bytes.iter().enumerate() {
             total += advance_to_layout_units(tables.advances[b as usize], size);
             if let Some(&next) = bytes.get(idx + 1) {
-                total += adjustment_to_layout_units(
-                    tables.kern[b as usize * 128 + next as usize],
-                    size,
-                );
+                total +=
+                    adjustment_to_layout_units(tables.kern[b as usize * 128 + next as usize], size);
             }
         }
         total.max(LayoutUnit::ZERO)
@@ -1469,7 +1465,9 @@ impl Face {
     fn shaped_width(&self, text: &str, size: FontSize) -> LayoutUnit {
         let bytes = text.as_bytes();
         if bytes.iter().all(|&b| b < 128)
-            && !bytes.iter().any(|&b| self.ascii_tables().lig_start[b as usize])
+            && !bytes
+                .iter()
+                .any(|&b| self.ascii_tables().lig_start[b as usize])
         {
             return self.shaped_width_ascii(bytes, size, self.ascii_tables());
         }
@@ -1970,8 +1968,9 @@ impl RenderWarning {
                  as .notdef boxes (e.g. {sample:?})"
             ),
             Self::FontWeightIgnoredStatic { slot, weight } => format!(
-                "{slot} font-weight {weight} ignored: the face has no wght axis \
-                 (static faces keep their outlines; pin a variable font or drop --pdf-font-weight)"
+                "{slot} font-weight {weight} did not instance: the face has no wght axis, \
+                 or instancing failed and default outlines were kept \
+                 (pin a variable font, or drop --pdf-font-weight)"
             ),
         }
     }
@@ -2060,12 +2059,12 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         let Some(weight) = opts.font_assets.slot_weight(slot) else {
             continue;
         };
-        let has_wght = opts.font_assets.resolved_bytes(slot).is_some_and(|bytes| {
+        let instanced = opts.font_assets.resolved_bytes(slot).and_then(|bytes| {
             Font::parse(bytes.to_vec())
                 .ok()
-                .is_some_and(|font| font.instance_bounds(*b"wght").is_some())
+                .and_then(|font| font.instance(f32::from(weight)))
         });
-        if !has_wght {
+        if instanced.is_none() {
             warnings.push(RenderWarning::FontWeightIgnoredStatic {
                 slot: slot.as_str().to_string(),
                 weight,
@@ -27888,7 +27887,6 @@ mod pdf_writer_tests {
     use crate::{PdfOptions, ThemeColors};
     use std::borrow::Cow;
     use std::collections::BTreeSet;
-
 
     #[test]
     fn ascii_fast_path_is_bit_identical_to_general_shaping() -> crate::Result<()> {

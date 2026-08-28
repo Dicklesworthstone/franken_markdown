@@ -1074,7 +1074,10 @@ fn fixture_hmtx(n: u16) -> Vec<u8> {
 }
 
 fn fixture_cmap_ascii() -> Vec<u8> {
-    // Format 4, one segment covering U+0020..=U+007E → glyph 0 (idDelta = -0x20).
+    // Format 4: map U+0020 (space) to glyph 0. Every other character is
+    // unmapped and `Font::glyph_index` returns `.notdef` (also gid 0). A
+    // range 0x20..=0x7E with idDelta = -0x20 would send 'A' to gid 33, which
+    // this 1-glyph face does not have.
     let mut t = Vec::new();
     t.extend_from_slice(&0u16.to_be_bytes());
     t.extend_from_slice(&1u16.to_be_bytes());
@@ -1088,7 +1091,7 @@ fn fixture_cmap_ascii() -> Vec<u8> {
     t.extend_from_slice(&4u16.to_be_bytes());
     t.extend_from_slice(&1u16.to_be_bytes());
     t.extend_from_slice(&0u16.to_be_bytes());
-    t.extend_from_slice(&0x007Eu16.to_be_bytes());
+    t.extend_from_slice(&0x0020u16.to_be_bytes());
     t.extend_from_slice(&0xFFFFu16.to_be_bytes());
     t.extend_from_slice(&0u16.to_be_bytes());
     t.extend_from_slice(&0x0020u16.to_be_bytes());
@@ -1289,6 +1292,11 @@ mod tests {
     #[test]
     fn fixture_peak_moves_like_the_unit_builder() {
         let font = Font::parse(variable_triangle_fixture()).expect("fixture parses");
+        log_check(
+            "gk3v.3.fix.cmap",
+            "space and letters resolve to gid 0",
+            font.glyph_index(' ') == 0 && font.glyph_index('A') == 0 && font.glyph_index('H') == 0,
+        );
         let def = font.instance(400.0).expect("400");
         let mid = font.instance(650.0).expect("650");
         let peak = font.instance(900.0).expect("900");

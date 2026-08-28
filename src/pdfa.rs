@@ -82,7 +82,11 @@ impl PdfASettings {
     /// Extra PDF objects appended after Info/SMask when this profile is on.
     #[must_use]
     pub const fn extra_object_count(self) -> usize {
-        if self.mode.is_a2b() { 3 } else { 0 }
+        if self.mode.is_a2b() {
+            3
+        } else {
+            0
+        }
     }
 }
 
@@ -228,6 +232,7 @@ fn push_xml_escaped(out: &mut String, s: &str) {
 /// full sRGB piecewise function). This is an OutputIntent identifier profile,
 /// not a color.org `sRGB2014.icc` binary.
 #[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub fn compact_srgb_icc() -> Vec<u8> {
     // Tag table: desc, cprt, wtpt, rXYZ, gXYZ, bXYZ, rTRC, gTRC, bTRC.
     const TAG_COUNT: u32 = 9;
@@ -273,9 +278,9 @@ pub fn compact_srgb_icc() -> Vec<u8> {
     out[12..16].copy_from_slice(b"mntr");
     out[16..20].copy_from_slice(b"RGB ");
     out[20..24].copy_from_slice(b"XYZ ");
-    // profile date 2026-01-01 00:00:00
+    // profile date 2026-01-01 00:00:00 (ICC dateTimeNumber)
     out[24..36].copy_from_slice(&[
-        0, 7, 0xEA, 0, 1, 0, 1, 0, 0, 0, 0, 0,
+        0x07, 0xEA, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
     out[36..40].copy_from_slice(b"acsp");
     // illuminant D50 in header (s15Fixed16)
@@ -335,6 +340,7 @@ fn curv_gamma_22() -> Vec<u8> {
     t
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn s15f16(v: f64) -> [u8; 4] {
     let n = (v * 65536.0).round() as i32;
     n.to_be_bytes()

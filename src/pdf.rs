@@ -47,6 +47,10 @@ type PdfStageStart = ();
 #[cfg(not(target_arch = "wasm32"))]
 static SUBSET_TAIL: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_SUBSET_TAIL").is_some());
+static TAIL_NOPAIR: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOPAIR").is_some());
+static TAIL_NOHEX: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOHEX").is_some());
 
 #[cfg(not(target_arch = "wasm32"))]
 fn subset_tail_enabled() -> bool {
@@ -26103,6 +26107,21 @@ fn append_pdf_object_str(out: &mut Vec<u8>, offsets: &mut [usize], object_id: us
     out.extend_from_slice(b"\nendobj\n");
 }
 
+fn append_pdf_stream_obj(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
+    dict: &str,
+    data: &[u8],
+) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(dict.as_bytes());
+    out.extend_from_slice(b"\nstream\n");
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+}
+
 struct PdfPageObjectParts<'a> {
     object_id: usize,
     media_w: &'a str,
@@ -27043,6 +27062,7 @@ fn build_pdf(
     images: &[PdfImageData],
     opts: &PdfOptions,
     page_geom: PageGeom,
+    pdf_a: crate::PdfASettings,
     profiler: &mut PdfProfiler,
 ) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
@@ -27164,7 +27184,12 @@ fn build_pdf(
             .collect()
     };
     let n_smask = smask_for_image.iter().filter(|s| s.is_some()).count();
-    let total_objs = info_obj + n_smask;
+    let n_pdfa = pdf_a.extra_object_count();
+    let pdfa_base = info_obj + n_smask + 1;
+    let icc_obj = pdfa_base;
+    let output_intent_obj = pdfa_base + 1;
+    let metadata_obj = pdfa_base + 2;
+    let total_objs = info_obj + n_smask + n_pdfa;
 
     let outline_root_ref = if outline_count == 0 {
         String::new()
@@ -27173,6 +27198,11 @@ fn build_pdf(
     };
     let structure_root_ref = if tagged {
         format!(" /MarkInfo << /Marked true >> /StructTreeRoot {struct_root_obj} 0 R /Lang (en-US)")
+    } else {
+        String::new()
+    };
+    let pdfa_catalog_ref = if pdf_a.mode.is_a2b() {
+        crate::pdfa::catalog_extras(metadata_obj, output_intent_obj)
     } else {
         String::new()
     };
@@ -27211,7 +27241,9 @@ fn build_pdf(
         &mut buf,
         &mut offsets,
         1,
-        &format!("<< /Type /Catalog /Pages 2 0 R{outline_root_ref}{structure_root_ref} >>"),
+        &format!(
+            "<< /Type /Catalog /Pages 2 0 R{outline_root_ref}{structure_root_ref}{pdfa_catalog_ref} >>"
+        ),
     );
 
     let mut kids = String::with_capacity(p.saturating_mul(8));
@@ -27430,7 +27462,7 @@ fn build_pdf(
             let struct_parent = annot_struct_parent
                 .get(page_index)
                 .and_then(|keys| keys.get(local_index).copied().flatten());
-            let body = annotation_dict(annot, &dest_by_id, page_obj, struct_parent);
+            let body = annotation_dict(annot, &dest_by_id, page_obj, struct_parent, pdf_a)?;
             append_pdf_object_str(
                 &mut buf,
                 &mut offsets,
@@ -27541,6 +27573,31 @@ fn build_pdf(
              {title_entry}{author_entry} >>"
         ),
     );
+
+    if pdf_a.mode.is_a2b() {
+        let icc = crate::pdfa::compact_srgb_icc();
+        append_pdf_stream_obj(
+            &mut buf,
+            &mut offsets,
+            icc_obj,
+            &format!("<< /N 3 /Length {} >>", icc.len()),
+            &icc,
+        );
+        append_pdf_object_str(
+            &mut buf,
+            &mut offsets,
+            output_intent_obj,
+            &crate::pdfa::output_intent_body(icc_obj),
+        );
+        let xmp = crate::pdfa::xmp_packet(&title, &author, opts.metadata_epoch_seconds);
+        append_pdf_stream_obj(
+            &mut buf,
+            &mut offsets,
+            metadata_obj,
+            &format!("<< /Type /Metadata /Subtype /XML /Length {} >>", xmp.len()),
+            &xmp,
+        );
+    }
 
     if offsets.iter().skip(1).any(|&offset| offset == 0) {
         return Err(RenderError::PdfGeneration(
@@ -27702,7 +27759,8 @@ fn annotation_dict(
     dest_by_id: &BTreeMap<&str, &OutlineEntry>,
     page_obj: impl Fn(usize) -> usize,
     struct_parent: Option<usize>,
-) -> String {
+    pdf_a: crate::PdfASettings,
+) -> Result<String> {
     let rect = format!(
         "[{} {} {} {}]",
         pdf_num(annot.rect.x0),
@@ -27716,26 +27774,37 @@ fn annotation_dict(
     let sp = struct_parent
         .map(|key| format!(" /StructParent {key}"))
         .unwrap_or_default();
-    match &annot.target {
-        LinkTarget::Uri(uri) => format!(
-            "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] \
-             /A << /S /URI /URI {uri} >>{sp} >>",
-            uri = pdf_text_string(uri),
-        ),
+    // PDF/A-2b: Print flag (bit 3 = 4) required on annotations.
+    let flags = if pdf_a.mode.is_a2b() { " /F 4" } else { "" };
+    Ok(match &annot.target {
+        LinkTarget::Uri(uri) => {
+            let drop_action = crate::pdfa::check_uri_action(pdf_a, uri)?;
+            if drop_action {
+                format!(
+                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>"
+                )
+            } else {
+                format!(
+                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags} \
+                     /A << /S /URI /URI {uri} >>{sp} >>",
+                    uri = pdf_text_string(uri),
+                )
+            }
+        }
         LinkTarget::Fragment(id) => {
             let Some(dest) = dest_by_id.get(id.as_str()) else {
-                return format!(
-                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{sp} >>"
-                );
+                return Ok(format!(
+                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>"
+                ));
             };
             format!(
-                "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0] \
+                "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags} \
                  /Dest [{page} 0 R /XYZ null {y} null]{sp} >>",
                 page = page_obj(dest.page_index),
                 y = pdf_num(dest.y),
             )
         }
-    }
+    })
 }
 
 /// FontDescriptor metrics in 1/1000 em.
@@ -27855,7 +27924,7 @@ fn append_kerned_tj_with_spacing(
     for (i, &g) in shaped.iter().enumerate() {
         append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
         if let Some(&next) = shaped.get(i + 1) {
-            let k = kern.pair(g, next);
+            let k = if *TAIL_NOPAIR { 0 } else { kern.pair(g, next) };
             let kern_adjust = if k != 0 {
                 // A TJ number shifts the next glyph left by number/1000 em, so a
                 // tightening (negative) kern becomes a positive number.

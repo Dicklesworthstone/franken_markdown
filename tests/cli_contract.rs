@@ -2778,7 +2778,12 @@ fn font_scale_presets_scale_html_typography_cleanly() {
         "--out",
         out_xs.to_str().unwrap(),
     ]);
-    assert_eq!(res_xs.status.code(), Some(0), "stderr: {}", text(&res_xs.stderr));
+    assert_eq!(
+        res_xs.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_xs.stderr)
+    );
     let html_xs = fs::read_to_string(&out_xs).unwrap();
     assert!(html_xs.contains("--fmd-base: 12px"));
     assert!(html_xs.contains("--fmd-measure: 570px"));
@@ -2792,7 +2797,12 @@ fn font_scale_presets_scale_html_typography_cleanly() {
         "--out",
         out_pct.to_str().unwrap(),
     ]);
-    assert_eq!(res_pct.status.code(), Some(0), "stderr: {}", text(&res_pct.stderr));
+    assert_eq!(
+        res_pct.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_pct.stderr)
+    );
     let html_pct = fs::read_to_string(&out_pct).unwrap();
     assert!(html_pct.contains("--fmd-base: 20px"));
     assert!(html_pct.contains("--fmd-measure: 950px"));
@@ -2805,7 +2815,12 @@ fn font_scale_presets_scale_html_typography_cleanly() {
         "--out",
         out_pct.to_str().unwrap(),
     ]);
-    assert_eq!(out_err.status.code(), Some(64), "stderr: {}", text(&out_err.stderr));
+    assert_eq!(
+        out_err.status.code(),
+        Some(64),
+        "stderr: {}",
+        text(&out_err.stderr)
+    );
     assert!(text(&out_err.stderr).contains("unknown font scale"));
 
     let _ = fs::remove_file(input);
@@ -2837,4 +2852,3 @@ fn font_scale_presets_render_pdf_successfully() {
     let _ = fs::remove_file(input);
     let _ = fs::remove_file(out_pdf);
 }
-

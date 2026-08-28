@@ -839,13 +839,25 @@ mod type_scale_tests {
 
     #[test]
     fn type_scale_presets_parse_and_scale_cleanly() {
-        assert_eq!(TypeScalePreset::parse("xs"), Some(TypeScalePreset::ExtraSmall));
+        assert_eq!(
+            TypeScalePreset::parse("xs"),
+            Some(TypeScalePreset::ExtraSmall)
+        );
         assert_eq!(TypeScalePreset::parse("sm"), Some(TypeScalePreset::Small));
-        assert_eq!(TypeScalePreset::parse("compact"), Some(TypeScalePreset::Small));
+        assert_eq!(
+            TypeScalePreset::parse("compact"),
+            Some(TypeScalePreset::Small)
+        );
         assert_eq!(TypeScalePreset::parse("md"), Some(TypeScalePreset::Medium));
-        assert_eq!(TypeScalePreset::parse("default"), Some(TypeScalePreset::Medium));
+        assert_eq!(
+            TypeScalePreset::parse("default"),
+            Some(TypeScalePreset::Medium)
+        );
         assert_eq!(TypeScalePreset::parse("lg"), Some(TypeScalePreset::Large));
-        assert_eq!(TypeScalePreset::parse("xl"), Some(TypeScalePreset::ExtraLarge));
+        assert_eq!(
+            TypeScalePreset::parse("xl"),
+            Some(TypeScalePreset::ExtraLarge)
+        );
         assert_eq!(TypeScalePreset::parse("2xl"), Some(TypeScalePreset::Huge));
 
         for preset in TypeScalePreset::ALL {
@@ -859,9 +871,21 @@ mod type_scale_tests {
 
     #[test]
     fn font_scale_parsing_handles_percentages_and_numbers() {
-        assert_eq!(FontScale::parse("125%"), Some(FontScale::Preset(TypeScalePreset::ExtraLarge)));
-        assert_eq!(FontScale::parse("75%"), Some(FontScale::Preset(TypeScalePreset::ExtraSmall)));
-        assert_eq!(FontScale::parse("1.5"), Some(FontScale::Preset(TypeScalePreset::Huge)));
-        assert_eq!(FontScale::parse("18px"), Some(FontScale::Preset(TypeScalePreset::Large)));
+        assert_eq!(
+            FontScale::parse("125%"),
+            Some(FontScale::Preset(TypeScalePreset::ExtraLarge))
+        );
+        assert_eq!(
+            FontScale::parse("75%"),
+            Some(FontScale::Preset(TypeScalePreset::ExtraSmall))
+        );
+        assert_eq!(
+            FontScale::parse("1.5"),
+            Some(FontScale::Preset(TypeScalePreset::Huge))
+        );
+        assert_eq!(
+            FontScale::parse("18px"),
+            Some(FontScale::Preset(TypeScalePreset::Large))
+        );
     }
 }

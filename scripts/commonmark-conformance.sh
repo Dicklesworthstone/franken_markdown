@@ -46,7 +46,19 @@ if [ -n "${FMD_BIN:-}" ]; then
   BIN="$FMD_BIN"
 else
   echo "commonmark-conformance: building fmd (release)"
-  cargo build --release --quiet --bin fmd
+  # The build must not abort under `set -e` before the host-executable check
+  # below can engage (an rch offload can fail outright or copy back a wrong-OS
+  # binary); on build failure, retry locally via the shim bypass.
+  if ! cargo build --release --quiet --bin fmd; then
+    echo "commonmark-conformance: remote-routed build failed; building locally"
+    RCH_CARGO_WRAPPER_BYPASS=1 cargo build --release --quiet --bin fmd
+  fi
+  BIN="$CARGO_TARGET_DIR/release/fmd"
+fi
+
+if [ ! -x "$BIN" ] || ! "$BIN" --version >/dev/null 2>&1; then
+  echo "commonmark-conformance: binary at $BIN not executable on host; rebuilding locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --release --quiet --bin fmd
   BIN="$CARGO_TARGET_DIR/release/fmd"
 fi
 

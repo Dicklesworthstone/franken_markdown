@@ -45,7 +45,20 @@ mkdir -p "$ART"
 if [ -n "$FMD_BIN" ]; then
   : # use the override as-is
 else
-  cargo build --quiet
+  # Same failure wrap as the other gates: an rch offload can fail outright
+  # under `set -e` before the host-executable check below can engage.
+  if ! cargo build --quiet; then
+    echo "check-claim-discipline: remote-routed build failed; building locally"
+    RCH_CARGO_WRAPPER_BYPASS=1 cargo build --quiet
+  fi
+  BIN="${CARGO_TARGET_DIR:-target}/debug/fmd"
+  [ -x "$BIN" ] || BIN="target/debug/fmd"
+  FMD_BIN="$BIN"
+fi
+
+if [ ! -x "$FMD_BIN" ] || ! "$FMD_BIN" --version >/dev/null 2>&1; then
+  echo "check-claim-discipline: binary at $FMD_BIN not executable on host; rebuilding locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --quiet
   BIN="${CARGO_TARGET_DIR:-target}/debug/fmd"
   [ -x "$BIN" ] || BIN="target/debug/fmd"
   FMD_BIN="$BIN"

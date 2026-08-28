@@ -815,9 +815,9 @@ Honest about what the renderer does not do yet.
   features are reported as structured render warnings rather than silently
   pretending to match a browser.
 - **CommonMark coverage is partial and measured.** Against the official
-  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **379/652
-  examples match** after normalizing fmd's styled HTML (64.1% of the 591 in-scope
-  examples; the 61 raw-HTML examples are intentional non-goals, since fmd escapes
+  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **381/652
+  examples match** after normalizing fmd's styled HTML (64.8% of the 588 in-scope
+  examples; the 64 raw-HTML examples are intentional non-goals, since fmd escapes
   raw HTML by default). This is a ratcheted floor: CI fails if it drops.
 - **HTML font subsets are TTF data URLs, not WOFF2.** Output is deterministic and
   portable; smaller WOFF2 subsets are future work.

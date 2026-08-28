@@ -170,7 +170,14 @@ fi
 # Native binary for the parity oracle (debug is fine: output is deterministic).
 log "build native fmd (parity oracle)"
 host_target="$(rustc -vV | sed -n 's|host: ||p')"
-cargo build --quiet --bin fmd --target "$host_target"
+# The build must not abort under `set -e` before the host-executable check can
+# engage: an rch offload can fail outright (no same-OS worker for a darwin
+# target) or copy back a wrong-OS binary. Both paths fall through to the
+# local-bypass rebuild below.
+if ! cargo build --quiet --bin fmd --target "$host_target"; then
+  log "remote-routed fmd build failed; building the parity oracle locally"
+  RCH_CARGO_WRAPPER_BYPASS=1 cargo build --quiet --bin fmd --target "$host_target"
+fi
 fmd="$CARGO_TARGET_DIR/$host_target/debug/fmd"
 if [ ! -x "$fmd" ] && [ -x "$CARGO_TARGET_DIR/debug/fmd" ]; then
   fmd="$CARGO_TARGET_DIR/debug/fmd"

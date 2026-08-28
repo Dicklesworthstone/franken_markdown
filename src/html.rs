@@ -296,10 +296,24 @@ fn render_block<'a>(
             }
             out.push_str("</code></pre>\n");
         }
-        Block::BlockQuote(inner) => {
-            out.push_str("<blockquote>\n");
-            render_blocks(inner, out, opts, state);
-            out.push_str("</blockquote>\n");
+        Block::BlockQuote(inner) => match alert_kind(inner) {
+            Some((tag, label)) => {
+                // GitHub alert: the [!TAG] marker line becomes the callout
+                // title; the remaining blocks render as the body. The tag
+                // line itself is consumed (GFM puts it alone on its line).
+                out.push_str("<aside class=\"callout callout-");
+                out.push_str(tag);
+                out.push_str("\">\n<p class=\"callout-title\">");
+                out.push_str(label);
+                out.push_str("</p>\n");
+                render_blocks(&inner[1..], out, opts, state);
+                out.push_str("</aside>\n");
+            }
+            None => {
+                out.push_str("<blockquote>\n");
+                render_blocks(inner, out, opts, state);
+                out.push_str("</blockquote>\n");
+            }
         }
         Block::List(list) => render_list(list, out, opts, state),
         Block::Table(table) => render_table(table, out, opts, state),
@@ -1037,6 +1051,38 @@ fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
         open -= 1;
     }
     out.push_str("</nav>\n");
+}
+
+/// Detect a GitHub alert: a blockquote whose first block is a paragraph
+/// starting with `[!TAG]` (NOTE/TIP/IMPORTANT/WARNING/CAUTION,
+/// case-insensitive) on its own line. Returns the css modifier and the human
+/// label. Unknown tags and non-conforming shapes return None (plain quote).
+fn alert_kind(inner: &[Block]) -> Option<(&'static str, &'static str)> {
+    const TAGS: [(&str, &str); 5] = [
+        ("note", "Note"),
+        ("tip", "Tip"),
+        ("important", "Important"),
+        ("warning", "Warning"),
+        ("caution", "Caution"),
+    ];
+    let first = inner.first()?;
+    let Block::Paragraph(inlines) = first else {
+        return None;
+    };
+    let Some(Inline::Text(text)) = inlines.first() else {
+        return None;
+    };
+    let trimmed = text.trim_start();
+    let rest = trimmed.strip_prefix("[!")?;
+    let close = rest.find(']')?;
+    let tag_raw = rest[..close].to_ascii_lowercase();
+    // The marker line must carry nothing but the tag (GFM: content follows on
+    // the next lines).
+    if !rest[close + 1..].trim().is_empty() {
+        return None;
+    }
+    let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
+    Some((tag, label))
 }
 
 /// Collect GFM footnote definitions in document order (container-aware), for
@@ -2119,6 +2165,22 @@ strong { font-weight: 680; }
   nav.toc a:hover {
     text-decoration: underline;
   }
+  aside.callout {
+    border: 1px solid #d0d7de;
+    border-left-width: 4px;
+    border-radius: 6px;
+    padding: 0.5em 1em;
+    margin: 1em 0;
+  }
+  aside.callout p.callout-title {
+    font-weight: 600;
+    margin: 0 0 0.25em 0;
+  }
+  aside.callout-note { border-left-color: #0969da; }
+  aside.callout-tip { border-left-color: #1a7f37; }
+  aside.callout-important { border-left-color: #8250df; }
+  aside.callout-warning { border-left-color: #9a6700; }
+  aside.callout-caution { border-left-color: #cf222e; }
 }"#;
 
 #[cfg(test)]
@@ -2169,6 +2231,30 @@ mod tests {
         assert!(html.contains("<nav class=\"toc\">"));
         assert!(html.contains("href=\"#one\""));
         assert!(!html.contains("href=\"#two\""), "depth filter excludes h2");
+    }
+
+    #[test]
+    fn github_alerts_render_as_callouts_with_typed_bodies() {
+        let doc = crate::parse_markdown(
+            "> [!NOTE]\n> Useful details.\n\n> [!WARNING]\n> Careful **here**.\n",
+        );
+        let html = render(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("callout-note"), "{html}");
+        assert!(html.contains("callout-warning"), "{html}");
+        assert!(html.contains("Useful details."));
+        assert!(html.contains("Careful <strong>here</strong>."));
+        assert!(html.contains("<p class=\"callout-title\">Note</p>"));
+        assert!(!html.contains("[!NOTE]"), "marker consumed");
+        assert!(!html.contains("[!WARNING]"), "marker consumed");
+    }
+
+    #[test]
+    fn unknown_alert_tag_degrades_to_plain_blockquote() {
+        let doc = crate::parse_markdown("> [!SURLY]\n> not a tag\n");
+        let html = render(&doc, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("<blockquote>"));
+        assert!(html.contains("[!SURLY]"), "unknown tag stays literal");
+        assert!(!html.contains("<aside class=\"callout"), "no callout markup");
     }
 
     #[test]

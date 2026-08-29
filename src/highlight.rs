@@ -1850,9 +1850,8 @@ mod char_classifier_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod keyword_table_tests {
     use super::{
-        BOOL_KW, CSS_KW, C_KW, C_TY, GO_KW, GO_TY, JSON_KW, JS_KW, JS_TY, KwTable, MERMAID_KW,
-        MERMAID_TY, PS_KW, PY_KW, PY_TY, RUST_KW, RUST_TY, SH_KW, SQL_KW, SQL_TY, Tok, YAML_KW,
-        highlight, lexer,
+        BOOL_KW, CSS_KW, JSON_KW, JS_TY, KwTable, MERMAID_KW, MERMAID_TY, YAML_KW, highlight,
+        lexer,
     };
 
     fn flip_ascii_case(word: &str) -> String {

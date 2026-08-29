@@ -1513,10 +1513,13 @@ fn url_scheme(url: &str) -> UrlScheme<'_> {
         }
         if byte == b':' {
             let scheme = &url[..idx];
-            if skipped_gap || !valid_url_scheme(scheme) {
+            if skipped_gap {
                 return UrlScheme::Suspicious;
             }
-            return UrlScheme::Scheme(scheme);
+            if valid_url_scheme(scheme) {
+                return UrlScheme::Scheme(scheme);
+            }
+            return UrlScheme::None;
         }
         if byte.is_ascii_whitespace() || byte.is_ascii_control() {
             skipped_gap = true;

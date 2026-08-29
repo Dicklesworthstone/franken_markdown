@@ -43,16 +43,46 @@ const INLINE_PARSE_CACHE_MIN_BYTES: usize = 16;
 const INLINE_PARSE_CACHE_MAX_KEY_BYTES: usize = 4096;
 const INLINE_PARSE_CACHE_MAX_ENTRIES: usize = 512;
 const INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES: usize = 128 * 1024;
+/// Cap on distinct first-sighting hashes tracked for two-hit admission. When
+/// reached, the tracker clears wholesale so late repeats in long documents
+/// can still qualify after a fresh pair of sightings.
+const INLINE_PARSE_CACHE_MAX_TRACKED_HASHES: usize = INLINE_PARSE_CACHE_MAX_ENTRIES;
 
 #[derive(Default)]
 struct InlineParseCache {
     entries: BTreeMap<String, Vec<Inline>>,
     total_key_bytes: usize,
+    // Two-hit admission: most documents contain few repeated paragraphs, so a
+    // first sighting would otherwise pay the insert-side deep clone of the
+    // parsed tree (key `to_string` + `inlines.to_vec()`) for a hit that never
+    // comes. `entries` therefore only unlocks for a text whose FNV-1a-64 hash
+    // was already seen once in this document; first sightings are recorded in
+    // this bounded flat hash list (no per-text allocation, no key retention).
+    // Hash collisions can only cause a spurious admission (one wasted insert),
+    // never a wrong lookup, because `entries` stays keyed by the exact text.
+    seen_hashes: Vec<u64>,
 }
 
 impl InlineParseCache {
     fn get(&self, text: &str) -> Option<Vec<Inline>> {
         self.entries.get(text).cloned()
+    }
+
+    /// Two-hit admission gate: `false` on a text's first sighting (the parse
+    /// result must not be stored yet), `true` from the second sighting on,
+    /// which makes the caller's `insert` eligible. The second sighting still
+    /// parses — by the time a repeat is known, the first tree is gone — so the
+    /// earliest possible hit moves to the third sighting.
+    fn admit(&mut self, text: &str) -> bool {
+        let hash = inline_cache_text_hash(text);
+        if self.seen_hashes.contains(&hash) {
+            return true;
+        }
+        if self.seen_hashes.len() >= INLINE_PARSE_CACHE_MAX_TRACKED_HASHES {
+            self.seen_hashes.clear();
+        }
+        self.seen_hashes.push(hash);
+        false
     }
 
     fn insert(&mut self, text: &str, inlines: &[Inline]) {
@@ -72,6 +102,20 @@ impl InlineParseCache {
 
 fn inline_cache_size_allows(text: &str) -> bool {
     text.len() >= INLINE_PARSE_CACHE_MIN_BYTES && text.len() <= INLINE_PARSE_CACHE_MAX_KEY_BYTES
+}
+
+/// FNV-1a 64-bit admission hash — the same construction used for content
+/// fingerprints elsewhere in the crate (batch, compress, verify). Used for
+/// admission only: a collision costs one pointless insert, never a false hit.
+fn inline_cache_text_hash(text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in text.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 /// Parsed document plus parser stage attribution.
@@ -3424,7 +3468,7 @@ fn parse_inlines_with_refs_profiled(
         parse_inlines_with_refs_profiled_uncached(text, refs, profiler, started, needs_full_parse);
     profiler.inline_parse_depth -= 1;
 
-    if cacheable {
+    if cacheable && profiler.inline_cache.admit(text) {
         profiler.inline_cache.insert(text, &inlines);
     }
 
@@ -6451,8 +6495,9 @@ mod line_split_tests {
 mod inline_helper_branch_tests {
     use super::{
         INLINE_PARSE_CACHE_MAX_ENTRIES, INLINE_PARSE_CACHE_MAX_KEY_BYTES,
-        INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache,
-        collect_inline_chars_from_text, inline_cache_size_allows, inline_http_scheme_before_colon,
+        INLINE_PARSE_CACHE_MAX_TRACKED_HASHES, INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES,
+        INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache, collect_inline_chars_from_text,
+        inline_cache_size_allows, inline_cache_text_hash, inline_http_scheme_before_colon,
         is_email_autolink, is_intraword_underscore_run, parse_angle_link_destination,
         parse_bare_url_autolink, reference_collector_ordered_marker_candidate,
     };
@@ -6532,6 +6577,45 @@ mod inline_helper_branch_tests {
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
         full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())]);
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn inline_parse_cache_admits_only_on_second_sighting() {
+        let mut cache = InlineParseCache::default();
+        let key = "0123456789abcdef";
+        assert!(!cache.admit(key), "first sighting must not admit");
+        assert!(
+            cache.entries.is_empty(),
+            "nothing may be stored before admission"
+        );
+        assert!(cache.admit(key), "second sighting admits");
+        cache.insert(key, &[Inline::Text("stored".to_string())]);
+        assert_eq!(
+            cache.get(key),
+            Some(vec![Inline::Text("stored".to_string())])
+        );
+
+        let other = "another sixteen";
+        assert!(!cache.admit(other), "a different text starts fresh");
+        assert!(cache.admit(other));
+
+        let mut full = InlineParseCache::default();
+        full.seen_hashes = vec![inline_cache_text_hash(key); INLINE_PARSE_CACHE_MAX_TRACKED_HASHES];
+        assert!(
+            full.admit(key),
+            "a tracked hash still admits at tracker capacity"
+        );
+        assert_eq!(
+            full.seen_hashes.len(),
+            INLINE_PARSE_CACHE_MAX_TRACKED_HASHES,
+            "the admission hit path must not grow the tracker"
+        );
+        let fresh = "a-fresh-sixteen";
+        assert!(
+            !full.admit(fresh),
+            "an untracked hash at capacity clears the tracker and starts fresh"
+        );
+        assert!(full.admit(fresh));
     }
 
     #[test]

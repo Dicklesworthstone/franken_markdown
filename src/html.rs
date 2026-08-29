@@ -2027,6 +2027,7 @@ fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_font_face(
     css: &mut String,
     family: &str,

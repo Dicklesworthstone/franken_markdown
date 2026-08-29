@@ -16,8 +16,8 @@
 //! the deterministic zlib path, and every computed field derives only from the
 //! input bytes. Same input ⇒ identical output bytes.
 
-use crate::{RenderError, Result};
 use crate::compress::{ZlibCompressScratch, zlib_compress_with_scratch};
+use crate::{RenderError, Result};
 
 const WOFF_SIGNATURE: u32 = 0x774F_4646; // "wOFF"
 const WOFF_HEADER_LEN: usize = 44;
@@ -315,7 +315,8 @@ mod tests {
             let fresh = encode_woff1(face).expect("fresh encode");
             let reused = encode_woff1_with_scratch(face, &mut scratch).expect("reused encode");
             assert_eq!(
-                reused, fresh,
+                reused,
+                fresh,
                 "reused-scratch woff1 must be byte-identical for face len {}",
                 face.len()
             );

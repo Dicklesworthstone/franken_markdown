@@ -688,10 +688,7 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
 /// Byte-identical to [`zlib_compress`] for every input regardless of prior
 /// use (see [`ZlibCompressScratch`] for the invariant); sharing a scratch
 /// over many calls only skips per-call table (re)allocation and regrowth.
-pub fn zlib_compress_with_scratch(
-    data: &[u8],
-    scratch: &mut ZlibCompressScratch,
-) -> Vec<u8> {
+pub fn zlib_compress_with_scratch(data: &[u8], scratch: &mut ZlibCompressScratch) -> Vec<u8> {
     let stored_len = deflate_stored_len(data.len());
     let fixed = deflate_fixed_with_scratch(data, Some(stored_len), scratch);
     let use_stored = !fixed.complete || stored_len < fixed.body.len();

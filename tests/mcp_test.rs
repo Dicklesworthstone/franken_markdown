@@ -220,10 +220,26 @@ fn mcp_error_on_unknown_tool() {
 fn mcp_sequential_calls_session_stream() {
     let mut stream_buf = Vec::new();
     for i in 1..=10 {
-        let msg = format!(
-            r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"fmd.render_html","arguments":{{"markdown":"# Document {}"}}}}}}"#,
-            i, i
+        let mut args = BTreeMap::new();
+        args.insert(
+            "markdown".to_string(),
+            JsonValue::String(format!("# Document {i}")),
         );
+        let mut params = BTreeMap::new();
+        params.insert(
+            "name".to_string(),
+            JsonValue::String("fmd.render_html".to_string()),
+        );
+        params.insert("arguments".to_string(), JsonValue::Object(args));
+        let mut req = BTreeMap::new();
+        req.insert("jsonrpc".to_string(), JsonValue::String("2.0".to_string()));
+        req.insert("id".to_string(), JsonValue::Number(i as f64));
+        req.insert(
+            "method".to_string(),
+            JsonValue::String("tools/call".to_string()),
+        );
+        req.insert("params".to_string(), JsonValue::Object(params));
+        let msg = JsonValue::Object(req).to_json_string();
         write_frame(&mut stream_buf, &msg).expect("write frame");
     }
 

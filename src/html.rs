@@ -2105,7 +2105,7 @@ fn font_face_css_capacity(
 }
 
 #[allow(dead_code)]
-pub(crate) fn base64_encode(bytes: &[u8]) -> String {
+pub fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(base64_encoded_len(bytes.len()));
     push_base64_encoded(&mut out, bytes);
     out

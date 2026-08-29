@@ -2301,6 +2301,11 @@ pub struct ParagraphLayoutScratch {
     /// 15 (±1.5%); justified emitters apply the matching compression, so a
     /// caller rendering purely ragged text should set this to 0.
     expansion_permilli: u16,
+    /// Enable gradual adjacent demerits (Verna DocEng '25): replaces the
+    /// coarse 4-class binary fitness check with a linear penalty proportional
+    /// to the fine-grained LSAR difference. Default false — classic KP
+    /// behavior, byte-identical output.
+    gradual_demerits: bool,
 }
 
 impl Default for ParagraphLayoutScratch {
@@ -2689,7 +2694,10 @@ fn trailing_forced_fit_break(
             candidate.flagged,
             None,
             fitness,
+            None,
+            0,
         ),
+        fitness_milli: 0,
     })
 }
 
@@ -2962,6 +2970,7 @@ fn greedy_break_paragraph_into(
                     badness: candidate_badness(prev, prev_metrics, line_width),
                     fitness: candidate_fitness(prev, prev_metrics, line_width),
                     demerits: 0,
+                    fitness_milli: 0,
                 });
                 start = prev.next;
                 segment = metrics.segment_metrics(start, candidate, true);
@@ -2976,6 +2985,7 @@ fn greedy_break_paragraph_into(
                 badness: candidate_badness(candidate, segment, line_width),
                 fitness: candidate_fitness(candidate, segment, line_width),
                 demerits: 0,
+                fitness_milli: 0,
             });
             start = candidate.next;
             last_candidate = None;
@@ -2993,6 +3003,7 @@ fn greedy_break_paragraph_into(
             badness: candidate_badness(candidate, metrics, line_width),
             fitness: candidate_fitness(candidate, metrics, line_width),
             demerits: 0,
+            fitness_milli: 0,
         });
     }
 }

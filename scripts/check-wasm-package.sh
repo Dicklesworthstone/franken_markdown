@@ -59,8 +59,8 @@ log_check() {
 #            expanded superscript/phonetic glyph fallbacks,
 #            MathML block/inline wiring & caret diagnostics.
 #   0.4.2 (complete mobile document lab)
-#          measured raw=4,491,290 gzip=1,967,839 brotli=1,467,465
-#          budget 4,600,000 / 2,050,000 (+340,409 raw / +119,687 gzip)
+#          measured raw=4,493,062 gzip=1,968,860 brotli=1,467,773
+#          budget 4,600,000 / 2,050,000 (+342,181 raw / +120,708 gzip)
 #          Shipped contributors now reachable from the WASM/mobile ABI:
 #            SVG poster + EPUB + self-hosting HTML exporters; semantic AST diff;
 #            document intelligence/search/accessibility; transclusion-aware book
@@ -68,8 +68,8 @@ log_check() {
 #
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=4491290
-PREVIOUS_GZIP=1967839
+PREVIOUS_RAW=4493062
+PREVIOUS_GZIP=1968860
 BUDGET_RAW=4600000
 BUDGET_GZIP=2050000
 

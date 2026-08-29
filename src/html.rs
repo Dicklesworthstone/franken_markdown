@@ -1660,6 +1660,8 @@ struct FontUsage {
     body_italic: FontCharSet,
     body_bold_italic: FontCharSet,
     mono: FontCharSet,
+    /// Shared pure word→mask memo for every charset's bulk `extend_text`.
+    word_memo: CharsetWordMemo,
 }
 
 #[derive(Default)]
@@ -1681,21 +1683,59 @@ impl FontCharSet {
         }
     }
 
-    fn extend_text(&mut self, text: &str) {
-        let mut mask = 0u128;
-        for (idx, &byte) in text.as_bytes().iter().enumerate() {
-            if byte.is_ascii() {
-                mask |= ascii_char_mask(byte);
-            } else {
-                self.ascii_mask |= mask;
-                for ch in text[idx..].chars() {
-                    self.insert(ch);
-                }
-                return;
+    /// Fold every character of `text` into the charset: ASCII bytes via the
+    /// bitset, non-ASCII chars into the ordered set. Contract-preserving bulk
+    /// form: pure-ASCII 8-byte words are folded through `memo` (a pure
+    /// word→mask cache), and after each non-ASCII char the bulk ASCII scan
+    /// resumes instead of degrading to per-char inserts for the whole tail.
+    /// The resulting bitset and `non_ascii` set are identical to the per-char
+    /// reference for identical input, whatever the memo state.
+    fn extend_text(&mut self, text: &str, memo: &mut CharsetWordMemo) {
+        if text.len() < CHARSET_MEMO_MIN_TEXT {
+            for ch in text.chars() {
+                self.insert(ch);
             }
+            return;
         }
-        self.ascii_mask |= mask;
+        memo.ensure();
+        let mut rest = text;
+        'segments: while !rest.is_empty() {
+            let bytes = rest.as_bytes();
+            let mut mask = 0u128;
+            let mut words = 0usize;
+            for chunk in bytes.chunks_exact(8) {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(chunk);
+                let word = u64::from_le_bytes(buf);
+                if word & NON_ASCII_BYTES != 0 {
+                    break;
+                }
+                mask |= memo.word_mask(word);
+                words += 1;
+            }
+            for (offset, &byte) in bytes[words * 8..].iter().enumerate() {
+                if byte.is_ascii() {
+                    mask |= ascii_char_mask(byte);
+                } else {
+                    self.ascii_mask |= mask;
+                    let pos = words * 8 + offset;
+                    // `pos` sits on a UTF-8 lead byte (first non-ASCII byte of
+                    // a char-boundary-aligned segment), so this is always
+                    // `Some`; the `None` arm is an unreachable safety valve.
+                    let ch = match rest[pos..].chars().next() {
+                        Some(ch) => ch,
+                        None => return,
+                    };
+                    self.non_ascii.insert(ch);
+                    rest = &rest[pos + ch.len_utf8()..];
+                    continue 'segments;
+                }
+            }
+            self.ascii_mask |= mask;
+            return;
+        }
     }
+
 
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1716,6 +1756,55 @@ impl FontCharSet {
         }
         chars.extend(self.non_ascii.iter().copied());
         chars
+    }
+}
+
+/// Every byte of `word` has the high bit set — mask for "word contains a
+/// non-ASCII byte".
+const NON_ASCII_BYTES: u64 = 0x8080_8080_8080_8080;
+
+/// Runs shorter than this never touch the word memo (the per-char fold is
+/// already cheap for them and they must not trigger the memo allocation).
+const CHARSET_MEMO_MIN_TEXT: usize = 16;
+
+/// Direct-mapped memo for the pure function "OR of `ascii_char_mask(byte)`
+/// over the 8 bytes of an all-ASCII word". Entries store `!word` as the key
+/// so an all-zero (freshly `alloc_zeroed`) slot never matches: a stored word
+/// is always < 2^63 (its top byte is ASCII), hence `!word` always has the top
+/// bit set and can never equal 0. Pure-function cache: hits and misses fold
+/// the exact same mask, so charset contents and ordering are unaffected.
+#[derive(Default)]
+struct CharsetWordMemo {
+    keys: Box<[u64]>,
+    vals: Box<[u128]>,
+}
+
+impl CharsetWordMemo {
+    const BITS: u32 = 12;
+    const LEN: usize = 1 << Self::BITS;
+
+    #[inline]
+    fn ensure(&mut self) {
+        if self.keys.is_empty() {
+            self.keys = vec![0u64; Self::LEN].into_boxed_slice();
+            self.vals = vec![0u128; Self::LEN].into_boxed_slice();
+        }
+    }
+
+    #[inline]
+    fn word_mask(&mut self, word: u64) -> u128 {
+        let idx =
+            (word.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - Self::BITS)) as usize;
+        let stored = !word;
+        if self.keys[idx] != stored {
+            let mut bits = 0u128;
+            for &byte in word.to_le_bytes().iter() {
+                bits |= ascii_char_mask(byte);
+            }
+            self.keys[idx] = stored;
+            self.vals[idx] = bits;
+        }
+        self.vals[idx]
     }
 }
 
@@ -1923,11 +2012,17 @@ impl FontUsage {
     }
 
     fn add_body_text(&mut self, text: &str, style: InlineStyle) {
-        self.body_slot(style).extend_text(text);
+        let slot = match (style.bold, style.italic) {
+            (false, false) => &mut self.body_regular,
+            (true, false) => &mut self.body_bold,
+            (false, true) => &mut self.body_italic,
+            (true, true) => &mut self.body_bold_italic,
+        };
+        slot.extend_text(text, &mut self.word_memo);
     }
 
     fn add_mono_text(&mut self, text: &str) {
-        self.mono.extend_text(text);
+        self.mono.extend_text(text, &mut self.word_memo);
     }
 
     fn add_soft_break(&mut self, style: InlineStyle) {
@@ -1935,19 +2030,20 @@ impl FontUsage {
     }
 
     fn add_stability_seed(&mut self) {
-        add_seed_if_used(&mut self.body_regular);
-        add_seed_if_used(&mut self.body_bold);
-        add_seed_if_used(&mut self.body_italic);
-        add_seed_if_used(&mut self.body_bold_italic);
-        add_seed_if_used(&mut self.mono);
+        let memo = &mut self.word_memo;
+        add_seed_if_used(&mut self.body_regular, memo);
+        add_seed_if_used(&mut self.body_bold, memo);
+        add_seed_if_used(&mut self.body_italic, memo);
+        add_seed_if_used(&mut self.body_bold_italic, memo);
+        add_seed_if_used(&mut self.mono, memo);
     }
 }
 
-fn add_seed_if_used(chars: &mut FontCharSet) {
+fn add_seed_if_used(chars: &mut FontCharSet, memo: &mut CharsetWordMemo) {
     if chars.is_empty() {
         return;
     }
-    chars.extend_text(HTML_FONT_SEED);
+    chars.extend_text(HTML_FONT_SEED, memo);
 }
 
 fn collect_font_usage(doc: &Document) -> FontUsage {
@@ -2411,6 +2507,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::ast::{Block, Document, Inline};
+    use crate::html::CharsetWordMemo;
 
     #[test]
     fn footnotes_render_refs_notes_section_and_backrefs() {
@@ -2769,7 +2866,8 @@ mod tests {
             fast.insert(ch);
             btree.insert(ch);
         }
-        fast.extend_text("ba\t");
+        let mut memo = CharsetWordMemo::default();
+        fast.extend_text("ba\t", &mut memo);
         btree.extend("ba\t".chars());
 
         let expected: Vec<char> = btree.into_iter().collect();
@@ -2778,6 +2876,7 @@ mod tests {
 
     #[test]
     fn font_char_set_extend_text_matches_per_char_reference() {
+        let mut memo = CharsetWordMemo::default();
         for text in [
             "",
             "Plain ASCII text 123 !?",
@@ -2785,18 +2884,47 @@ mod tests {
             "é",
             "ASCII prefix then Café — and emoji \u{1F600}",
             "Unicode first Ω then ASCII tail",
+            "长 ASCII 与 CJK 交替 tail resumes bulk after every char",
+            "word-boundary straé ddle: multibyte at an 8-byte seam",
             HTML_FONT_SEED,
         ] {
             let mut fast = FontCharSet::default();
             let mut reference = FontCharSet::default();
 
-            fast.extend_text(text);
+            fast.extend_text(text, &mut memo);
             reference.extend_text_slow_reference(text);
 
             assert_eq!(fast.ascii_mask, reference.ascii_mask, "text {text:?}");
             assert_eq!(fast.non_ascii, reference.non_ascii, "text {text:?}");
             assert_eq!(fast.to_chars(), reference.to_chars(), "text {text:?}");
         }
+    }
+
+    #[test]
+    fn font_char_set_extend_text_accumulates_and_survives_memo_collisions() {
+        // One shared memo across many runs: repeated runs must hit the memo,
+        // and >4096 distinct words must force direct-mapped collisions —
+        // both must stay invisible in the accumulated charset.
+        let mut fast = FontCharSet::default();
+        let mut reference = FontCharSet::default();
+        let mut memo = CharsetWordMemo::default();
+        let mut stream: Vec<String> = Vec::new();
+        for i in 0..6000u32 {
+            stream.push(format!("{i:08} padded run {i:06}x"));
+        }
+        // Repeat earlier runs so memo hits dominate some passes.
+        for i in 0..500u32 {
+            stream.push(format!("{i:08} padded run {i:06}x"));
+        }
+        stream.push("tail with — em dash and “quotes” then more ASCII text".to_string());
+        stream.push("长段中文夹 ASCII 内容继续 bulk resume".to_string());
+        for text in &stream {
+            fast.extend_text(text, &mut memo);
+            reference.extend_text_slow_reference(text);
+        }
+        assert_eq!(fast.ascii_mask, reference.ascii_mask);
+        assert_eq!(fast.non_ascii, reference.non_ascii);
+        assert_eq!(fast.to_chars(), reference.to_chars());
     }
 
     #[test]

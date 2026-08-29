@@ -615,6 +615,13 @@ pub struct PdfOptions {
     /// line — the two-line seed of a vertical whitespace channel ("river").
     /// Default false — classic behavior, byte-identical output.
     pub river_penalty: bool,
+    /// Opt-in Plass-style optimal pagination (Plass & Li, 1981): replace the
+    /// greedy per-page breaker with a document-wide DP that minimizes the
+    /// total of the same void-badness + keep-penalty costs the greedy path
+    /// applies per page. Better page fills and fewer stranded headings when
+    /// content is tight; O(lines × page-window) per render. Default false —
+    /// greedy pagination, byte-identical output.
+    pub optimal_pagination: bool,
 }
 
 impl PdfOptions {

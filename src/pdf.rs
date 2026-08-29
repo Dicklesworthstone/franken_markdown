@@ -20395,6 +20395,7 @@ fn next_placed_page<'a>(
     start: &mut usize,
     page: PageGeom,
     emitted_any: &mut bool,
+    plan: Option<&PageBreakPlan>,
 ) -> Option<Vec<Placed<'a>>> {
     if lines.is_empty() {
         if *emitted_any {
@@ -20406,7 +20407,12 @@ fn next_placed_page<'a>(
     if *start >= lines.len() {
         return None;
     }
-    let (end, shrink_from) = choose_page_break_with_void_control(lines, *start, page);
+    let (end, shrink_from) = match plan {
+        // The DP already accounts void globally; per-page void refit would
+        // fight the plan, so no shrink pass runs on the planned path.
+        Some(plan) => (plan.end_for(*start), None),
+        None => choose_page_break_with_void_control(lines, *start, page),
+    };
     let placed = place_lines_shrunk(lines, *start, end, page, shrink_from);
     *start = end;
     *emitted_any = true;
@@ -20479,11 +20485,18 @@ fn serialize_pages_monolithic(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
 ) -> Result<SerializedPages> {
+    let optimal_plan;
+    let plan = if opts.optimal_pagination {
+        optimal_plan = optimal_page_breaks(lines, page);
+        Some(&optimal_plan)
+    } else {
+        None
+    };
     let pages_placed = profiler.measure(
         "pagination",
         lines.len(),
-        "place laid-out lines onto PDF pages with simple keep/widow rules",
-        || paginate_lines(lines, page),
+        "place laid-out lines onto PDF pages (greedy or Plass-optimal)",
+        || paginate_lines_with(lines, page, plan),
         |_| 0,
     );
     pdf_emit_phase(
@@ -20550,10 +20563,17 @@ fn serialize_pages_chunked(
     let mut page_buffer_reserved_bytes = 0usize;
     let mut zlib_scratch = crate::compress::ZlibCompressScratch::new();
     #[cfg(not(target_arch = "wasm32"))]
-    let mut cumulative_stream_bytes = 0usize;
-    #[cfg(not(target_arch = "wasm32"))]
     let mut pipeline: Option<ChunkedCompressPipeline> = None;
-    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut cumulative_stream_bytes = 0usize;
+    let optimal_plan;
+    let plan = if opts.optimal_pagination {
+        optimal_plan = optimal_page_breaks(lines, page);
+        Some(&optimal_plan)
+    } else {
+        None
+    };
+    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
         let (mut content, reserved) = generate_page_content(
             &placed,
             page_idx,
@@ -26793,10 +26813,18 @@ fn flexed_gap(gap: f32) -> f32 {
 }
 
 fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>> {
+    paginate_lines_with(lines, page, None)
+}
+
+fn paginate_lines_with<'a>(
+    lines: &'a [Line],
+    page: PageGeom,
+    plan: Option<&PageBreakPlan>,
+) -> Vec<Vec<Placed<'a>>> {
     let mut pages = Vec::new();
     let mut start = 0usize;
     let mut emitted_any = false;
-    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any) {
+    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
         pages.push(placed);
     }
     pages
@@ -26848,6 +26876,104 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     }
 
     best.max(start + 1).min(lines.len())
+}
+
+/// Precomputed page-break plan from the Plass-style pagination DP (opt-in
+/// via `PdfOptions::optimal_pagination`).
+///
+/// The greedy path scores each page in isolation (`choose_page_break` picks
+/// the locally cheapest end within its fit window). This DP instead minimizes
+/// the document-total of the SAME cost — quadratic void badness plus the
+/// `break_penalty` aesthetics — over all legal page partitions:
+///
+/// `best[j] = min over page starts i` of `best[i] + page_cost(i, j)`
+///
+/// Parity invariants with the greedy path, deliberately preserved:
+/// - the first line of a page is always placeable (guaranteed progress, even
+///   taller than the page);
+/// - a `page_break_before` line forces the previous page to end exactly
+///   before it (edges may not span a forced boundary);
+/// - the final page carries no void/penalty cost (the greedy path
+///   early-returns without scoring the last segment);
+/// - per-page capacity subtracts repeated-table-header height, computed per
+///   page start exactly as the greedy walk does.
+///
+/// `break_penalty` depends only on the candidate index, so it is precomputed
+/// once for every index and each DP edge costs O(1).
+struct PageBreakPlan {
+    /// Sorted page end indices (exclusive), starting with the first page's
+    /// end; the last entry is always `lines.len()`.
+    ends: Vec<usize>,
+}
+
+impl PageBreakPlan {
+    fn end_for(&self, start: usize) -> usize {
+        // First boundary strictly after `start`; the last entry covers the tail.
+        match self.ends.binary_search(&start) {
+            Ok(pos) => self.ends[pos + 1],
+            Err(pos) => self.ends[pos],
+        }
+    }
+}
+
+fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
+    let n = lines.len();
+    let mut ends = Vec::new();
+    if n == 0 {
+        return PageBreakPlan { ends };
+    }
+    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+    // Precompute break penalties once (they depend only on the index).
+    let mut penalties = vec![0.0f32; n + 1];
+    for j in 0..=n {
+        penalties[j] = break_penalty(lines, j);
+    }
+    let inf = f32::INFINITY;
+    let mut best = vec![inf; n + 1];
+    let mut prev = vec![usize::MAX; n + 1];
+    best[0] = 0.0;
+    for i in 0..n {
+        if best[i] == inf {
+            continue;
+        }
+        let capacity =
+            (full_capacity - repeated_table_header_height(lines, i)).max(MIN_CONTENT_DIM);
+        let mut used = 0.0f32;
+        // Walk the fit window exactly like the greedy loop: the first line
+        // is unconditional; later lines require cumulative fit and no forced
+        // boundary at their index.
+        let mut j = i;
+        while j < n {
+            let line = &lines[j];
+            if j > i && (line.page_break_before || used + line_leading(line) > capacity) {
+                break;
+            }
+            used += line_leading(line) + line.gap_after;
+            j += 1;
+            // Edge i -> j: page is lines[i..j). Final page is unpenalized,
+            // mirroring the greedy early-return for the last segment.
+            let cost = if j == n {
+                0.0
+            } else {
+                let remaining = (capacity - used).max(0.0);
+                (remaining / capacity.max(1.0)).powi(2) * 10_000.0 + penalties[j]
+            };
+            let total = best[i] + cost;
+            if total < best[j] {
+                best[j] = total;
+                prev[j] = i;
+            }
+        }
+    }
+    // Reconstruct boundaries from the end. best[n] is always finite because
+    // every page start can place at least one line.
+    let mut boundary = n;
+    while boundary > 0 {
+        ends.push(boundary);
+        boundary = prev[boundary];
+    }
+    ends.reverse();
+    PageBreakPlan { ends }
 }
 
 /// 45d2.4: wrapper around [`choose_page_break`] adding global-void budgeting.

@@ -372,6 +372,12 @@ struct RenderArgs {
     /// Works for justified and ragged text. Default off — classic behavior.
     #[arg(long = "typography-antiriver")]
     typography_antiriver: bool,
+    /// Plass-style optimal pagination (Plass & Li, 1981): replace greedy
+    /// per-page breaking with a document-wide DP minimizing total void
+    /// badness plus keep-penalties. Better page fills under tight content;
+    /// default off — greedy pagination.
+    #[arg(long = "pdf-optimal-pagination")]
+    pdf_optimal_pagination: bool,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -677,6 +683,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         microtype: Default::default(),
         typography_homogeneous: false,
         typography_antiriver: false,
+        pdf_optimal_pagination: false,
         json: args.json,
     }
 }
@@ -1480,6 +1487,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             microtype: args.microtype.into(),
             gradual_demerits: args.typography_homogeneous,
             river_penalty: args.typography_antiriver,
+            optimal_pagination: args.pdf_optimal_pagination,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render

@@ -400,6 +400,7 @@ impl WasmRenderOptions {
             microtype: self.microtype,
             gradual_demerits: false,
             river_penalty: false,
+            optimal_pagination: false,
         }
     }
 }

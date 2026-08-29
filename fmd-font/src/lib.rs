@@ -250,15 +250,25 @@ pub(crate) fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
     Some(())
 }
 
-/// sfnt table checksum: the wrapping `u32` sum of the table's bytes read as
-/// big-endian 32-bit words, with the final partial word zero-padded.
 pub(crate) fn table_checksum(d: &[u8]) -> u32 {
     let mut sum: u32 = 0;
-    let mut chunks = d.chunks_exact(4);
-    for c in &mut chunks {
+    let mut chunks16 = d.chunks_exact(16);
+    for c in &mut chunks16 {
+        let w0 = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        let w1 = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
+        let w2 = u32::from_be_bytes([c[8], c[9], c[10], c[11]]);
+        let w3 = u32::from_be_bytes([c[12], c[13], c[14], c[15]]);
+        sum = sum
+            .wrapping_add(w0)
+            .wrapping_add(w1)
+            .wrapping_add(w2)
+            .wrapping_add(w3);
+    }
+    let mut chunks4 = chunks16.remainder().chunks_exact(4);
+    for c in &mut chunks4 {
         sum = sum.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
     }
-    let rem = chunks.remainder();
+    let rem = chunks4.remainder();
     if !rem.is_empty() {
         let mut buf = [0u8; 4];
         buf[..rem.len()].copy_from_slice(rem);
@@ -1082,7 +1092,7 @@ impl Font {
         let n_u16 = u16::try_from(n).ok()?;
 
         // --- 3. Rebuild glyf + loca (long offsets) --------------------------
-        let mut glyf_bytes: Vec<u8> = Vec::new();
+        let mut glyf_bytes: Vec<u8> = Vec::with_capacity(n.saturating_mul(64));
         let mut loca: Vec<u32> = Vec::with_capacity(n.checked_add(1)?);
         for &old in &old_gids {
             loca.push(u32::try_from(glyf_bytes.len()).ok()?);
@@ -1090,8 +1100,9 @@ impl Font {
             glyf_bytes.extend_from_slice(&gb);
             // Pad each glyph to a 4-byte multiple so the next glyph (and every
             // long-loca offset) is word-aligned.
-            while glyf_bytes.len() % 4 != 0 {
-                glyf_bytes.push(0);
+            let rem = glyf_bytes.len() % 4;
+            if rem != 0 {
+                glyf_bytes.resize(glyf_bytes.len() + (4 - rem), 0);
             }
         }
         loca.push(u32::try_from(glyf_bytes.len()).ok()?);

@@ -40395,9 +40395,11 @@ mod shaped_cache_tests {
 
         // Behavior equality: both caches answer identically everywhere.
         assert_eq!(collect_old(&refs), collect_new(&refs));
-        assert_eq!(lookup_old(&refs, &old), lookup_new(&refs, &new));
-        assert_eq!(lookup_old(&refs, &old), refs.len());
-
+        // The lookup maps hold exactly the base texts; footer-42 was never
+        // inserted there, so hits = refs whose text is in base.
+        let expected_hits = refs.iter().filter(|t| base.contains(t)).count();
+        assert_eq!(lookup_old(&refs, &old), expected_hits);
+        assert_eq!(lookup_new(&refs, &new), expected_hits);
         let mut old_ns = [0u128; 9];
         let mut new_ns = [0u128; 9];
         for round in 0..9 {
@@ -40545,7 +40547,7 @@ mod table_alloc_optimality_tests {
                     synth_column(&[&[1000.0]], 50.0, 1.5),
                     synth_column(&[&[650.0, 450.0]], 50.0, 1.0),
                 ],
-                420.0,
+                140.0,
             ),
             (
                 vec![

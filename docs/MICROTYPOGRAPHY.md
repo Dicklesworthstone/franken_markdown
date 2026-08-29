@@ -95,3 +95,28 @@ contract that wiring will honor.
   change break decisions (violating byte-determinism) or rest on an invalid
   monotonicity proof. The line DP is also not on the critical path (rank 4 /
   7.5 ms per the perf gate), so the speedup would buy nothing user-visible.
+
+## Multi-objective breaking + constrained tables (Unreleased)
+
+- **Pareto line breaking** (`--typography-pareto`, opt-in): the KP search
+  keeps bounded per-candidate fronts of non-dominated states over two demerit
+  dimensions — structure (badness², fitness-class + gradual spacing, rivers,
+  overflow) and hyphenation (break penalties, flagged-flag adjacency) —
+  instead of one scalar winner. The final pick stays min-scalar, so the
+  scalar total can never exceed the classic path's; the sweep in
+  `tests/pareto_test.rs` (280+ hyphenation-bearing fixtures) confirms
+  dominance everywhere and measures where the fronts actually change the
+  chosen breaks. Measured result on this cost model: the classic scalar DP is
+  already optimal on most real fixtures — pareto is a strict safety net for
+  class-mismatch cases, not a change agent.
+- **Constrained table layout (Marx & Stuckey, practical core)**: the column
+  allocator (`allocate_table_column_widths`) is a min-plus DP over the
+  discretized extra-width grid minimizing total height-sensitive wrap badness
+  subject to the hard constraints (sum == budget, per-column minimum floor).
+  `table_alloc_optimality_tests` (in src/pdf.rs) prove the DP's output
+  matches EXHAUSTIVE enumeration of every legal grid allocation (with the
+  identical sub-unit finish pass) on synthetic multi-column fixtures — the
+  optimality certificate for the shipped algorithm. Full M&S profile
+  automata for max-based row heights remain future work; the shipped
+  surrogate (sum of per-column extra-line² penalties) is the standard
+  practical stand-in.

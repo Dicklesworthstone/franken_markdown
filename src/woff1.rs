@@ -141,14 +141,14 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>> {
     // Per the WOFF spec, a table whose compressed form is not smaller is
     // stored raw (compLength == origLength).
     let last_idx = tables.len() - 1;
-    let mut payloads: Vec<(Vec<u8>, u32)> = Vec::with_capacity(tables.len());
+    let mut payloads: Vec<(std::borrow::Cow<'_, [u8]>, u32)> = Vec::with_capacity(tables.len());
     for (idx, table) in tables.iter().enumerate() {
         let raw = slice_table(sfnt, *table, idx == last_idx)?;
         let compressed = zlib_compress(raw);
         if compressed.len() < raw.len() {
-            payloads.push((compressed, u32_len(raw)?));
+            payloads.push((std::borrow::Cow::Owned(compressed), u32_len(raw)?));
         } else {
-            payloads.push((raw.to_vec(), u32_len(raw)?));
+            payloads.push((std::borrow::Cow::Borrowed(raw), u32_len(raw)?));
         }
     }
 

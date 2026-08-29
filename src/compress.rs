@@ -233,18 +233,12 @@ impl Adler32 {
         }
     }
 
-    #[inline(always)]
-    fn update_byte(&mut self, byte: u8) {
-        self.s1 += u32::from(byte);
-        self.s2 += self.s1;
-        self.pending += 1;
-        if self.pending == ADLER_NMAX {
-            self.s1 %= ADLER_MOD;
-            self.s2 %= ADLER_MOD;
-            self.pending = 0;
-        }
-    }
-
+    /// Feed `slice` into the rolling Adler-32 state in byte order. Splitting
+    /// one logical byte stream into several `update_slice` calls (literal
+    /// runs, match runs) yields exactly the per-byte accumulation result:
+    /// within a pending window the sums grow monotonically and the modulo is
+    /// deferred to the window end either way, so only the byte sequence (not
+    /// the call boundaries) determines the final value.
     fn update_slice(&mut self, mut slice: &[u8]) {
         while !slice.is_empty() {
             let available = ADLER_NMAX - self.pending;
@@ -465,8 +459,12 @@ fn deflate_fixed_with_scratch(
                     complete: false,
                 };
             }
-            adler.update_byte(b);
         }
+        // All n < MIN_MATCH bytes are literals — one contiguous run, so one
+        // batched update replaces the per-byte feeding. Any abort above
+        // returns the full `adler32(data)` recompute, so the incremental
+        // state is never observed mid-loop.
+        adler.update_slice(data);
         emit_litlen(&mut bw, 256);
         bw.finish();
         return FixedDeflate {
@@ -529,7 +527,11 @@ impl ChainIdx for usize {
 /// while inserting every position into the chains, then closes the
 /// fixed-Huffman block. Takes ownership of `bw`/`adler` so the abort paths
 /// can return the partial body exactly like the pre-tables paths in
-/// `deflate_fixed_with_scratch`.
+/// `deflate_fixed_with_scratch`. Contiguous literal bytes are accumulated
+/// into the Adler-32 state as one run per match-delimited segment
+/// (`update_slice`), flushed when a match interrupts the run and at stream
+/// end — byte order is all that matters, so the checksum is the per-byte
+/// feeding's exact value.
 fn deflate_fixed_lz77<Idx: ChainIdx>(
     data: &[u8],
     mut bw: BitWriter,
@@ -550,6 +552,10 @@ fn deflate_fixed_lz77<Idx: ChainIdx>(
     };
 
     let mut pos = 0usize;
+    // Start of the currently open literal run, flushed through
+    // `update_slice` when a match interrupts it or the stream ends. `None`
+    // while matches are being emitted.
+    let mut lit_start: Option<usize> = None;
     while pos < n {
         let mut best_len = 0usize;
         let mut best_dist = 0usize;
@@ -601,6 +607,14 @@ fn deflate_fixed_lz77<Idx: ChainIdx>(
                 };
             }
             let end = pos + best_len;
+            // The open literal run ends where the match begins: feed its
+            // bytes, then the match bytes. Adler-32 accumulates strictly in
+            // byte order, and `update_slice` over a byte sequence equals the
+            // per-byte feeding (see the method doc), so batching literal
+            // runs between matches leaves the checksum identical.
+            if let Some(run) = lit_start.take() {
+                adler.update_slice(&data[run..pos]);
+            }
             adler.update_slice(&data[pos..end]);
             let mut k = pos;
             while k < end {
@@ -611,6 +625,7 @@ fn deflate_fixed_lz77<Idx: ChainIdx>(
         } else {
             debug_assert!(pos < n);
             let b = data[pos];
+            lit_start.get_or_insert(pos);
             emit_literal(&mut bw, b);
             if fixed_body_exceeds_limit(&bw, abort_after_body_len) {
                 return FixedDeflate {
@@ -619,10 +634,13 @@ fn deflate_fixed_lz77<Idx: ChainIdx>(
                     complete: false,
                 };
             }
-            adler.update_byte(b);
             insert(&mut *head, &mut *prev, pos);
             pos += 1;
         }
+    }
+    // Stream ended inside a literal run: flush its remaining bytes.
+    if let Some(run) = lit_start.take() {
+        adler.update_slice(&data[run..pos]);
     }
 
     // End-of-block symbol, then pad final byte with zeros.
@@ -1351,7 +1369,7 @@ mod tests {
             let via_u32 =
                 deflate_fixed_with_scratch(data, None, &mut ZlibCompressScratch::new());
             let mut bw = BitWriter::with_capacity(fixed_body_capacity_hint(data.len(), None));
-            let mut adler = Adler32::new();
+            let adler = Adler32::new();
             // Block header: BFINAL = 1, BTYPE = 01, exactly as the wrapper
             // writes before handing off to the table phase.
             bw.write_bits(1, 1);
@@ -1392,6 +1410,145 @@ mod tests {
             lcg.as_slice(),
         ] {
             assert_eq!(deflate_fixed(data).adler32, adler32(data));
+        }
+    }
+
+    #[test]
+    fn adler_literal_run_batching_matches_per_byte_feeding() {
+        // Oracle 1: the per-byte feeding this change replaced (the old
+        // update_byte + finish body, verbatim), carrying the raw
+        // (s1, s2, pending) state so window boundaries are visible.
+        fn per_byte_state(
+            bytes: &[u8],
+            (mut s1, mut s2, mut pending): (u32, u32, usize),
+        ) -> (u32, u32, usize) {
+            for &b in bytes {
+                s1 += u32::from(b);
+                s2 += s1;
+                pending += 1;
+                if pending == ADLER_NMAX {
+                    s1 %= ADLER_MOD;
+                    s2 %= ADLER_MOD;
+                    pending = 0;
+                }
+            }
+            (s1, s2, pending)
+        }
+        // Oracle 2: its finish().
+        fn per_byte_finish(bytes: &[u8]) -> u32 {
+            let (mut s1, mut s2, pending) = per_byte_state(bytes, (1, 0, 0));
+            if pending != 0 {
+                s1 %= ADLER_MOD;
+                s2 %= ADLER_MOD;
+            }
+            (s2 << 16) | s1
+        }
+
+        let mut lcg = Vec::with_capacity(24_000);
+        let mut state: u64 = 0x8bad_f00d_5eed_beef;
+        for _ in 0..24_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            lcg.push((state >> 33) as u8);
+        }
+
+        // (a) Primitive equivalence: update_slice per segment == per-byte
+        // feeding, with segment boundaries straddling the NMAX reduction
+        // window (5552) in every alignment — just below, exactly at, just
+        // above, several windows in one segment, and 1-byte segments.
+        let seg_lists: [&[usize]; 11] = [
+            &[],
+            &[0],
+            &[1, 1, 1, 1],
+            &[16, 16, 16, 3],
+            &[5551],
+            &[5552],
+            &[5553],
+            &[5550, 3, 5552, 1],
+            &[5551, 7, 5553],
+            &[11104],
+            &[5552, 5552, 5552, 2],
+        ];
+        for segs in seg_lists {
+            let total: usize = segs.iter().sum();
+            let bytes = &lcg[..total];
+            let mut batched = Adler32::new();
+            let mut oracle = (1u32, 0u32, 0usize);
+            let mut off = 0usize;
+            for &len in segs {
+                batched.update_slice(&bytes[off..off + len]);
+                oracle = per_byte_state(&bytes[off..off + len], oracle);
+                assert_eq!(
+                    (batched.s1, batched.s2, batched.pending),
+                    oracle,
+                    "state diverged after segment len {len} of {segs:?}"
+                );
+                off += len;
+            }
+            let finished = batched.finish();
+            assert_eq!(finished, per_byte_finish(bytes), "finish {segs:?}");
+            assert_eq!(finished, adler32(bytes), "reference scan {segs:?}");
+        }
+
+        let mut mixed: Vec<u8> = Vec::with_capacity(20_000);
+        mixed.extend_from_slice(&lcg[..6000]);
+        let snippet: Vec<u8> = lcg[..258].to_vec();
+        mixed.extend_from_slice(&snippet); // match interrupts the open run
+        mixed.extend_from_slice(&lcg[6000..7000]);
+        let snippet2: Vec<u8> = mixed[..300].to_vec();
+        mixed.extend_from_slice(&snippet2); // second interruption
+        mixed.extend_from_slice(&lcg[7000..12_000]); // trailing literals
+        let tail_reps = lcg[..258].repeat(24); // long match stretch
+        mixed.extend_from_slice(&tail_reps);
+
+        // The mixed payload must actually emit matches (literal runs
+        // interrupted mid-run), else the flush-at-match path is untested:
+        // with ~6.7 KiB of match-covered bytes the fixed body comes out
+        // clearly below the input length, unlike a literals-only payload.
+        let fixed_mixed =
+            deflate_fixed_with_scratch(&mixed, None, &mut ZlibCompressScratch::new());
+        assert!(fixed_mixed.complete);
+        assert!(
+            fixed_mixed.body.len() < mixed.len(),
+            "mixed payload must be match-bearing (body {} vs input {})",
+            fixed_mixed.body.len(),
+            mixed.len()
+        );
+
+        let mut scratch = ZlibCompressScratch::new();
+        for data in [
+            &b""[..],
+            &b"a"[..],
+            &b"ab"[..],
+            &b"abc"[..],
+            lcg.as_slice(),
+            mixed.as_slice(),
+        ] {
+            let fixed = deflate_fixed_with_scratch(data, None, &mut scratch);
+            assert!(fixed.complete);
+            assert_eq!(
+                fixed.adler32,
+                per_byte_finish(data),
+                "batched literal runs diverged for len {}",
+                data.len()
+            );
+            assert_eq!(fixed.adler32, adler32(data));
+            // Scratch-reuse harness: reused and fresh compression must stay
+            // byte-identical, and the zlib trailer must carry the reference
+            // checksum on every path (fixed when complete, abort recompute
+            // when the stored-block fallback wins).
+            let fresh = zlib_compress(data);
+            let reused = zlib_compress_with_scratch(data, &mut scratch);
+            assert_eq!(reused, fresh, "len {}", data.len());
+            let a = adler32(data);
+            let tail = &fresh[fresh.len() - 4..];
+            assert_eq!(
+                tail,
+                &[(a >> 24) as u8, (a >> 16) as u8, (a >> 8) as u8, a as u8],
+                "zlib trailer len {}",
+                data.len()
+            );
+            let got = inflate(&fresh).expect("inflate");
+            assert_eq!(got, data, "roundtrip len {}", data.len());
         }
     }
 

@@ -437,13 +437,12 @@ fn rfind_body_close(html: &str) -> Option<usize> {
     if bytes.len() < NEEDLE.len() {
         return None;
     }
-    let mut last = None;
-    for i in 0..=bytes.len() - NEEDLE.len() {
+    for i in (0..=bytes.len() - NEEDLE.len()).rev() {
         if bytes[i..i + NEEDLE.len()].eq_ignore_ascii_case(NEEDLE) {
-            last = Some(i);
+            return Some(i);
         }
     }
-    last
+    None
 }
 
 /// Bind a `TcpListener` on 127.0.0.1 with the OS-chosen port and return

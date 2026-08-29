@@ -31,6 +31,7 @@
 pub mod ast;
 pub mod caret;
 pub mod compress;
+pub mod doc_stats;
 pub mod error;
 pub mod fonts;
 pub mod highlight;
@@ -75,6 +76,9 @@ pub mod batch;
 pub use ast::{DefinitionItem, Document};
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use compress::zlib_decompress;
+pub use doc_stats::{
+    DocFinding, DocumentStats, DocumentStructure, OutlineHeading, compute_doc_stats,
+};
 pub use error::{RenderError, Result};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};

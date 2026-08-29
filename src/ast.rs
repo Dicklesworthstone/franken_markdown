@@ -138,3 +138,53 @@ pub enum Inline {
     /// Inline display mathematics (`$$…$$`).
     DisplayMath(String),
 }
+
+/// Try to interpret the blocks of a `BlockQuote` as a GitHub Flavored Markdown alert
+/// (e.g. `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`).
+/// Returns `Some((tag, label, body_blocks))` on match, or `None` if plain quote.
+#[must_use]
+pub fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>)> {
+    const TAGS: [(&str, &str); 5] = [
+        ("note", "Note"),
+        ("tip", "Tip"),
+        ("important", "Important"),
+        ("warning", "Warning"),
+        ("caution", "Caution"),
+    ];
+    let first = inner.first()?;
+    let Block::Paragraph(inlines) = first else {
+        return None;
+    };
+    let Some(Inline::Text(text)) = inlines.first() else {
+        return None;
+    };
+    let trimmed = text.trim_start_matches([' ', '\t']);
+    let rest = trimmed.strip_prefix("[!")?;
+    let close = rest.find(']')?;
+    let tag_raw = rest[..close].to_ascii_lowercase();
+    let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
+
+    // GFM: the first line is only the marker (optional trailing space/tab).
+    // Same-line prose (`> [!NOTE] urgent`) stays a normal blockquote so the
+    // text is not swallowed into a false callout.
+    if !rest[close + 1..].bytes().all(|b| b == b' ' || b == b'\t') {
+        return None;
+    }
+    if inlines.len() > 1 && !matches!(inlines[1], Inline::SoftBreak | Inline::HardBreak) {
+        return None;
+    }
+    let mut body_inlines: Vec<Inline> = Vec::new();
+    body_inlines.extend_from_slice(&inlines[1..]);
+    if matches!(
+        body_inlines.first(),
+        Some(Inline::SoftBreak | Inline::HardBreak)
+    ) {
+        body_inlines.remove(0);
+    }
+    let mut body: Vec<Block> = Vec::new();
+    if !body_inlines.is_empty() {
+        body.push(Block::Paragraph(body_inlines));
+    }
+    body.extend_from_slice(&inner[1..]);
+    Some((*tag, *label, body))
+}

@@ -3677,16 +3677,45 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             gap(out, CODE_BLOCK_GAP_AFTER);
         }
         Block::BlockQuote(inner) => {
-            let start = out.len();
-            gap(out, 4.0);
-            layout_blocks(inner, indent + 18.0, out, cx);
-            let bar_x = cx.page.left + indent + 6.0; // sits in the reserved 18pt gutter
-            if let Some(lines) = out.get_mut(start..) {
-                for line in lines {
-                    line.quote_bars.push((start, bar_x)); // `start` = unique quote id
+            if let Some((_tag, label, body)) = crate::ast::alert_body(inner) {
+                let start = out.len();
+                gap(out, 4.0);
+                let group = cx.alloc_flow();
+                let mut title_toks = Vec::new();
+                push_text_tokens(label, F_BOLD, false, None, &mut title_toks);
+                apply_symbol_fallback(&mut title_toks, cx.faces);
+                layout_inlines(
+                    title_toks,
+                    indent + 18.0,
+                    cx.type_scale.body,
+                    3.0,
+                    out,
+                    cx,
+                    FlowSpec {
+                        group,
+                        kind: FlowKind::Heading,
+                    },
+                );
+                layout_blocks(&body, indent + 18.0, out, cx);
+                let bar_x = cx.page.left + indent + 6.0;
+                if let Some(lines) = out.get_mut(start..) {
+                    for line in lines {
+                        line.quote_bars.push((start, bar_x));
+                    }
                 }
+                gap(out, 3.0);
+            } else {
+                let start = out.len();
+                gap(out, 4.0);
+                layout_blocks(inner, indent + 18.0, out, cx);
+                let bar_x = cx.page.left + indent + 6.0; // sits in the reserved 18pt gutter
+                if let Some(lines) = out.get_mut(start..) {
+                    for line in lines {
+                        line.quote_bars.push((start, bar_x)); // `start` = unique quote id
+                    }
+                }
+                gap(out, 3.0);
             }
-            gap(out, 3.0);
         }
         Block::List(list) => layout_list(list, indent, out, cx),
         Block::DefinitionList(items) => layout_definition_list(items, indent, out, cx),

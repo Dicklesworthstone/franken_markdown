@@ -95,48 +95,16 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         markdown.lines().count()
     };
 
-    let mut words = 0;
-    let mut characters = 0;
-    let mut sentences = 0;
-    let mut syllables = 0;
-
-    let mut structure = DocumentStructure::default();
-    let mut outline = Vec::new();
-    let mut code_langs_set = BTreeSet::new();
-
-    let mut defined_anchors: BTreeSet<String> = BTreeSet::new();
-    let mut slug_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut referenced_anchors: Vec<(String, String)> = Vec::new(); // (slug, link_text)
-    let mut footnote_defs_set = BTreeSet::new();
-    let mut footnote_refs_set = BTreeSet::new();
-
-    let mut last_heading_level: Option<u8> = None;
-    let mut findings = Vec::new();
-
-    walk_blocks_for_stats(
-        &doc.blocks,
-        &mut words,
-        &mut characters,
-        &mut sentences,
-        &mut syllables,
-        &mut structure,
-        &mut outline,
-        &mut code_langs_set,
-        &mut defined_anchors,
-        &mut slug_counts,
-        &mut referenced_anchors,
-        &mut footnote_defs_set,
-        &mut footnote_refs_set,
-        &mut last_heading_level,
-        &mut findings,
-    );
-
-    structure.code_languages = code_langs_set.into_iter().collect();
+    let mut collector = StatsCollector::default();
+    collector.walk_blocks(&doc.blocks);
+    collector.structure.code_languages = collector.code_langs_set.into_iter().collect();
 
     // Check for broken internal anchors (e.g. [Link](#missing-target))
-    for (anchor, link_text) in &referenced_anchors {
-        if !defined_anchors.contains(anchor) && !footnote_defs_set.contains(anchor) {
-            findings.push(DocFinding {
+    for (anchor, link_text) in &collector.referenced_anchors {
+        if !collector.defined_anchors.contains(anchor)
+            && !collector.footnote_defs_set.contains(anchor)
+        {
+            collector.findings.push(DocFinding {
                 severity: "warning",
                 code: "broken_internal_anchor",
                 message: format!(
@@ -148,9 +116,9 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     }
 
     // Check for undefined footnote references
-    for fref in &footnote_refs_set {
-        if !footnote_defs_set.contains(fref) {
-            findings.push(DocFinding {
+    for fref in &collector.footnote_refs_set {
+        if !collector.footnote_defs_set.contains(fref) {
+            collector.findings.push(DocFinding {
                 severity: "warning",
                 code: "undefined_footnote",
                 message: format!(
@@ -162,9 +130,9 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     }
 
     // Check for unreferenced footnote definitions
-    for fdef in &footnote_defs_set {
-        if !footnote_refs_set.contains(fdef) {
-            findings.push(DocFinding {
+    for fdef in &collector.footnote_defs_set {
+        if !collector.footnote_refs_set.contains(fdef) {
+            collector.findings.push(DocFinding {
                 severity: "info",
                 code: "unreferenced_footnote_def",
                 message: format!("footnote definition '[^{}]:' is never referenced", fdef),
@@ -173,18 +141,22 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     }
 
     // Sentence count sanity floor
-    let effective_sentences = sentences.max(if words > 0 { 1 } else { 0 });
-    let effective_words = words.max(if effective_sentences > 0 { 1 } else { 0 });
-    let effective_syllables = syllables.max(effective_words);
+    let effective_sentences = collector
+        .sentences
+        .max(if collector.words > 0 { 1 } else { 0 });
+    let effective_words = collector
+        .words
+        .max(if effective_sentences > 0 { 1 } else { 0 });
+    let effective_syllables = collector.syllables.max(effective_words);
 
-    let reading_time_secs = ((words as f32) / (220.0 / 60.0)).round() as u32;
-    let speaking_time_secs = ((words as f32) / (130.0 / 60.0)).round() as u32;
+    let reading_time_secs = ((collector.words as f32) / (220.0 / 60.0)).round() as u32;
+    let speaking_time_secs = ((collector.words as f32) / (130.0 / 60.0)).round() as u32;
 
-    let (flesch_reading_ease, flesch_kincaid_grade, reading_ease_label) = if words == 0 {
+    let (flesch_reading_ease, flesch_kincaid_grade, reading_ease_label) = if collector.words == 0 {
         (100.0, 0.0, "N/A")
     } else {
-        let w_per_s = (words as f32) / (effective_sentences as f32);
-        let syl_per_w = (effective_syllables as f32) / (words as f32);
+        let w_per_s = (collector.words as f32) / (effective_sentences as f32);
+        let syl_per_w = (effective_syllables as f32) / (collector.words as f32);
 
         let fre = 206.835 - (1.015 * w_per_s) - (84.6 * syl_per_w);
         let fkg = (0.39 * w_per_s) + (11.8 * syl_per_w) - 15.59;
@@ -211,8 +183,8 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     DocumentStats {
         bytes,
         lines,
-        words,
-        characters,
+        words: collector.words,
+        characters: collector.characters,
         sentences: effective_sentences,
         syllables: effective_syllables,
         reading_time_secs,
@@ -220,390 +192,245 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         flesch_reading_ease,
         flesch_kincaid_grade,
         reading_ease_label,
-        structure,
-        outline,
-        findings,
+        structure: collector.structure,
+        outline: collector.outline,
+        findings: collector.findings,
     }
 }
 
-fn walk_blocks_for_stats(
-    blocks: &[Block],
-    words: &mut usize,
-    characters: &mut usize,
-    sentences: &mut usize,
-    syllables: &mut usize,
-    structure: &mut DocumentStructure,
-    outline: &mut Vec<OutlineHeading>,
-    code_langs_set: &mut BTreeSet<String>,
-    defined_anchors: &mut BTreeSet<String>,
-    slug_counts: &mut BTreeMap<String, usize>,
-    referenced_anchors: &mut Vec<(String, String)>,
-    footnote_defs_set: &mut BTreeSet<String>,
-    footnote_refs_set: &mut BTreeSet<String>,
-    last_heading_level: &mut Option<u8>,
-    findings: &mut Vec<DocFinding>,
-) {
-    for block in blocks {
-        match block {
-            Block::Heading { level, inlines } => {
-                let lvl = (*level as usize).clamp(1, 6);
-                structure.headings_total += 1;
-                structure.headings_by_level[lvl - 1] += 1;
+#[derive(Default)]
+struct StatsCollector {
+    words: usize,
+    characters: usize,
+    sentences: usize,
+    syllables: usize,
+    structure: DocumentStructure,
+    outline: Vec<OutlineHeading>,
+    code_langs_set: BTreeSet<String>,
+    defined_anchors: BTreeSet<String>,
+    slug_counts: BTreeMap<String, usize>,
+    referenced_anchors: Vec<(String, String)>,
+    footnote_defs_set: BTreeSet<String>,
+    footnote_refs_set: BTreeSet<String>,
+    last_heading_level: Option<u8>,
+    findings: Vec<DocFinding>,
+}
 
-                if let Some(prev) = *last_heading_level {
-                    if *level > prev + 1 {
-                        findings.push(DocFinding {
-                            severity: "warning",
-                            code: "heading_hierarchy_skip",
-                            message: format!(
-                                "heading level H{} follows H{} (skipped H{})",
-                                level,
-                                prev,
-                                prev + 1
-                            ),
-                        });
-                    }
-                }
-                *last_heading_level = Some(*level);
+impl StatsCollector {
+    fn walk_blocks(&mut self, blocks: &[Block]) {
+        for block in blocks {
+            match block {
+                Block::Heading { level, inlines } => {
+                    let lvl = (*level as usize).clamp(1, 6);
+                    self.structure.headings_total += 1;
+                    self.structure.headings_by_level[lvl - 1] += 1;
 
-                let plain_text = inlines_to_plain(inlines);
-                if plain_text.trim().is_empty() {
-                    findings.push(DocFinding {
-                        severity: "warning",
-                        code: "empty_heading",
-                        message: format!("heading at level H{} has no text content", level),
-                    });
-                }
-
-                let base_slug = slug_from_text(&plain_text);
-                let full_slug = if let Some(count) = slug_counts.get_mut(&base_slug) {
-                    *count += 1;
-                    let suffixed = format!("{}-{}", base_slug, *count - 1);
-                    findings.push(DocFinding {
-                        severity: "info",
-                        code: "duplicate_heading_slug",
-                        message: format!(
-                            "duplicate heading text '{}' generated collision anchor '#{}'",
-                            plain_text, suffixed
-                        ),
-                    });
-                    suffixed
-                } else {
-                    slug_counts.insert(base_slug.clone(), 1);
-                    base_slug
-                };
-
-                defined_anchors.insert(full_slug.clone());
-                outline.push(OutlineHeading {
-                    level: *level,
-                    text: plain_text,
-                    slug: full_slug,
-                });
-
-                analyze_inlines(
-                    inlines,
-                    words,
-                    characters,
-                    sentences,
-                    syllables,
-                    structure,
-                    referenced_anchors,
-                    footnote_refs_set,
-                );
-                // Headings are typically sentences/standalone thoughts
-                *sentences += 1;
-            }
-            Block::Paragraph(inlines) => {
-                structure.paragraphs += 1;
-                analyze_inlines(
-                    inlines,
-                    words,
-                    characters,
-                    sentences,
-                    syllables,
-                    structure,
-                    referenced_anchors,
-                    footnote_refs_set,
-                );
-            }
-            Block::CodeBlock { lang, code } => {
-                structure.code_blocks += 1;
-                if let Some(l) = lang {
-                    let cleaned = l.trim().to_ascii_lowercase();
-                    if !cleaned.is_empty() {
-                        code_langs_set.insert(cleaned);
-                    }
-                }
-                *characters += code.chars().filter(|c| !c.is_whitespace()).count();
-            }
-            Block::BlockQuote(inner) => {
-                if let Some((tag, _label, body)) = crate::ast::alert_body(inner) {
-                    structure.callouts_total += 1;
-                    *structure
-                        .callouts_by_kind
-                        .entry(tag.to_string())
-                        .or_insert(0) += 1;
-                    walk_blocks_for_stats(
-                        &body,
-                        words,
-                        characters,
-                        sentences,
-                        syllables,
-                        structure,
-                        outline,
-                        code_langs_set,
-                        defined_anchors,
-                        slug_counts,
-                        referenced_anchors,
-                        footnote_defs_set,
-                        footnote_refs_set,
-                        last_heading_level,
-                        findings,
-                    );
-                } else {
-                    structure.blockquotes += 1;
-                    walk_blocks_for_stats(
-                        inner,
-                        words,
-                        characters,
-                        sentences,
-                        syllables,
-                        structure,
-                        outline,
-                        code_langs_set,
-                        defined_anchors,
-                        slug_counts,
-                        referenced_anchors,
-                        footnote_defs_set,
-                        footnote_refs_set,
-                        last_heading_level,
-                        findings,
-                    );
-                }
-            }
-            Block::List(list) => {
-                structure.lists += 1;
-                for item in &list.items {
-                    structure.list_items += 1;
-                    if let Some(checked) = item.task {
-                        structure.task_items_total += 1;
-                        if checked {
-                            structure.task_items_completed += 1;
+                    if let Some(prev) = self.last_heading_level {
+                        if *level > prev + 1 {
+                            self.findings.push(DocFinding {
+                                severity: "warning",
+                                code: "heading_hierarchy_skip",
+                                message: format!(
+                                    "heading level H{} follows H{} (skipped H{})",
+                                    level,
+                                    prev,
+                                    prev + 1
+                                ),
+                            });
                         }
                     }
-                    walk_blocks_for_stats(
-                        &item.blocks,
-                        words,
-                        characters,
-                        sentences,
-                        syllables,
-                        structure,
-                        outline,
-                        code_langs_set,
-                        defined_anchors,
-                        slug_counts,
-                        referenced_anchors,
-                        footnote_defs_set,
-                        footnote_refs_set,
-                        last_heading_level,
-                        findings,
-                    );
+                    self.last_heading_level = Some(*level);
+
+                    let plain_text = inlines_to_plain(inlines);
+                    if plain_text.trim().is_empty() {
+                        self.findings.push(DocFinding {
+                            severity: "warning",
+                            code: "empty_heading",
+                            message: format!("heading at level H{} has no text content", level),
+                        });
+                    }
+
+                    let base_slug = slug_from_text(&plain_text);
+                    let full_slug = if let Some(count) = self.slug_counts.get_mut(&base_slug) {
+                        *count += 1;
+                        let suffixed = format!("{}-{}", base_slug, *count - 1);
+                        self.findings.push(DocFinding {
+                            severity: "info",
+                            code: "duplicate_heading_slug",
+                            message: format!(
+                                "duplicate heading text '{}' generated collision anchor '#{}'",
+                                plain_text, suffixed
+                            ),
+                        });
+                        suffixed
+                    } else {
+                        self.slug_counts.insert(base_slug.clone(), 1);
+                        base_slug
+                    };
+
+                    self.defined_anchors.insert(full_slug.clone());
+                    self.outline.push(OutlineHeading {
+                        level: *level,
+                        text: plain_text,
+                        slug: full_slug,
+                    });
+
+                    self.analyze_inlines(inlines);
+                    // Headings are typically sentences/standalone thoughts
+                    self.sentences += 1;
                 }
-            }
-            Block::Table(table) => {
-                structure.tables += 1;
-                structure.table_rows += table.rows.len() + 1; // head + body rows
-                for cell in &table.head {
-                    structure.table_cells += 1;
-                    analyze_inlines(
-                        cell,
-                        words,
-                        characters,
-                        sentences,
-                        syllables,
-                        structure,
-                        referenced_anchors,
-                        footnote_refs_set,
-                    );
+                Block::Paragraph(inlines) => {
+                    self.structure.paragraphs += 1;
+                    self.analyze_inlines(inlines);
                 }
-                for row in &table.rows {
-                    for cell in row {
-                        structure.table_cells += 1;
-                        analyze_inlines(
-                            cell,
-                            words,
-                            characters,
-                            sentences,
-                            syllables,
-                            structure,
-                            referenced_anchors,
-                            footnote_refs_set,
-                        );
+                Block::CodeBlock { lang, code } => {
+                    self.structure.code_blocks += 1;
+                    if let Some(l) = lang {
+                        let cleaned = l.trim().to_ascii_lowercase();
+                        if !cleaned.is_empty() {
+                            self.code_langs_set.insert(cleaned);
+                        }
+                    }
+                    self.characters += code.chars().filter(|c| !c.is_whitespace()).count();
+                }
+                Block::BlockQuote(inner) => {
+                    if let Some((tag, _label, body)) = crate::ast::alert_body(inner) {
+                        self.structure.callouts_total += 1;
+                        *self
+                            .structure
+                            .callouts_by_kind
+                            .entry(tag.to_string())
+                            .or_insert(0) += 1;
+                        self.walk_blocks(&body);
+                    } else {
+                        self.structure.blockquotes += 1;
+                        self.walk_blocks(inner);
+                    }
+                }
+                Block::List(list) => {
+                    self.structure.lists += 1;
+                    for item in &list.items {
+                        self.structure.list_items += 1;
+                        if let Some(checked) = item.task {
+                            self.structure.task_items_total += 1;
+                            if checked {
+                                self.structure.task_items_completed += 1;
+                            }
+                        }
+                        self.walk_blocks(&item.blocks);
+                    }
+                }
+                Block::Table(table) => {
+                    self.structure.tables += 1;
+                    self.structure.table_rows += table.rows.len() + 1; // head + body rows
+                    for cell in &table.head {
+                        self.structure.table_cells += 1;
+                        self.analyze_inlines(cell);
+                    }
+                    for row in &table.rows {
+                        for cell in row {
+                            self.structure.table_cells += 1;
+                            self.analyze_inlines(cell);
+                        }
+                    }
+                }
+                Block::ThematicBreak => {}
+                Block::HtmlBlock(html) => {
+                    self.characters += html.chars().filter(|c| !c.is_whitespace()).count();
+                }
+                Block::FootnoteDefinition { id, blocks } => {
+                    self.structure.footnote_definitions += 1;
+                    self.footnote_defs_set.insert(id.clone());
+                    self.walk_blocks(blocks);
+                }
+                Block::MathBlock(math) => {
+                    self.structure.math_blocks += 1;
+                    self.characters += math.chars().filter(|c| !c.is_whitespace()).count();
+                }
+                Block::DefinitionList(items) => {
+                    for item in items {
+                        for term in &item.terms {
+                            self.analyze_inlines(term);
+                        }
+                        for def in &item.definitions {
+                            self.analyze_inlines(def);
+                        }
                     }
                 }
             }
-            Block::ThematicBreak => {}
-            Block::HtmlBlock(html) => {
-                *characters += html.chars().filter(|c| !c.is_whitespace()).count();
-            }
-            Block::FootnoteDefinition { id, blocks } => {
-                structure.footnote_definitions += 1;
-                footnote_defs_set.insert(id.clone());
-                walk_blocks_for_stats(
-                    blocks,
-                    words,
-                    characters,
-                    sentences,
-                    syllables,
-                    structure,
-                    outline,
-                    code_langs_set,
-                    defined_anchors,
-                    slug_counts,
-                    referenced_anchors,
-                    footnote_defs_set,
-                    footnote_refs_set,
-                    last_heading_level,
-                    findings,
-                );
-            }
-            Block::MathBlock(math) => {
-                structure.math_blocks += 1;
-                *characters += math.chars().filter(|c| !c.is_whitespace()).count();
-            }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for term in &item.terms {
-                        analyze_inlines(
-                            term,
-                            words,
-                            characters,
-                            sentences,
-                            syllables,
-                            structure,
-                            referenced_anchors,
-                            footnote_refs_set,
-                        );
+        }
+    }
+
+    fn analyze_inlines(&mut self, inlines: &[Inline]) {
+        for inline in inlines {
+            match inline {
+                Inline::Text(t) => {
+                    self.process_prose_text(t);
+                }
+                Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
+                    self.analyze_inlines(inner);
+                }
+                Inline::Code(code) => {
+                    self.characters += code.chars().filter(|c| !c.is_whitespace()).count();
+                    self.process_prose_text(code);
+                }
+                Inline::Link { dest, content, .. } => {
+                    self.structure.links_total += 1;
+                    if let Some(anchor) = dest.strip_prefix('#') {
+                        self.structure.links_internal_anchors += 1;
+                        let link_text = inlines_to_plain(content);
+                        self.referenced_anchors
+                            .push((anchor.to_string(), link_text));
+                    } else {
+                        self.structure.links_external += 1;
                     }
-                    for def in &item.definitions {
-                        analyze_inlines(
-                            def,
-                            words,
-                            characters,
-                            sentences,
-                            syllables,
-                            structure,
-                            referenced_anchors,
-                            footnote_refs_set,
-                        );
-                    }
+                    self.analyze_inlines(content);
+                }
+                Inline::Image { alt, .. } => {
+                    self.structure.images += 1;
+                    self.process_prose_text(alt);
+                }
+                Inline::SoftBreak | Inline::HardBreak => {}
+                Inline::Html(h) => {
+                    self.characters += h.chars().filter(|c| !c.is_whitespace()).count();
+                }
+                Inline::FootnoteRef { id } => {
+                    self.structure.footnote_references += 1;
+                    self.footnote_refs_set.insert(id.clone());
+                }
+                Inline::Math(m) | Inline::DisplayMath(m) => {
+                    self.structure.math_inlines += 1;
+                    self.characters += m.chars().filter(|c| !c.is_whitespace()).count();
                 }
             }
         }
     }
-}
 
-fn analyze_inlines(
-    inlines: &[Inline],
-    words: &mut usize,
-    characters: &mut usize,
-    sentences: &mut usize,
-    syllables: &mut usize,
-    structure: &mut DocumentStructure,
-    referenced_anchors: &mut Vec<(String, String)>,
-    footnote_refs_set: &mut BTreeSet<String>,
-) {
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => {
-                process_prose_text(t, words, characters, sentences, syllables);
-            }
-            Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-                analyze_inlines(
-                    inner,
-                    words,
-                    characters,
-                    sentences,
-                    syllables,
-                    structure,
-                    referenced_anchors,
-                    footnote_refs_set,
-                );
-            }
-            Inline::Code(code) => {
-                *characters += code.chars().filter(|c| !c.is_whitespace()).count();
-                process_prose_text(code, words, characters, sentences, syllables);
-            }
-            Inline::Link { dest, content, .. } => {
-                structure.links_total += 1;
-                if let Some(anchor) = dest.strip_prefix('#') {
-                    structure.links_internal_anchors += 1;
-                    let link_text = inlines_to_plain(content);
-                    referenced_anchors.push((anchor.to_string(), link_text));
-                } else {
-                    structure.links_external += 1;
-                }
-                analyze_inlines(
-                    content,
-                    words,
-                    characters,
-                    sentences,
-                    syllables,
-                    structure,
-                    referenced_anchors,
-                    footnote_refs_set,
-                );
-            }
-            Inline::Image { alt, .. } => {
-                structure.images += 1;
-                process_prose_text(alt, words, characters, sentences, syllables);
-            }
-            Inline::SoftBreak | Inline::HardBreak => {}
-            Inline::Html(h) => {
-                *characters += h.chars().filter(|c| !c.is_whitespace()).count();
-            }
-            Inline::FootnoteRef { id } => {
-                structure.footnote_references += 1;
-                footnote_refs_set.insert(id.clone());
-            }
-            Inline::Math(m) | Inline::DisplayMath(m) => {
-                structure.math_inlines += 1;
-                *characters += m.chars().filter(|c| !c.is_whitespace()).count();
+    fn process_prose_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            if !ch.is_whitespace() {
+                self.characters += 1;
             }
         }
-    }
-}
 
-fn process_prose_text(
-    text: &str,
-    words: &mut usize,
-    characters: &mut usize,
-    sentences: &mut usize,
-    syllables: &mut usize,
-) {
-    for ch in text.chars() {
-        if !ch.is_whitespace() {
-            *characters += 1;
+        for word in text.split_whitespace() {
+            let trimmed: String = word
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '\'')
+                .collect();
+            if !trimmed.is_empty() {
+                self.words += 1;
+                self.syllables += count_syllables_in_word(&trimmed);
+            }
         }
-    }
 
-    for word in text.split_whitespace() {
-        let trimmed: String = word
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '\'')
-            .collect();
-        if !trimmed.is_empty() {
-            *words += 1;
-            *syllables += count_syllables_in_word(&trimmed);
-        }
-    }
-
-    // Sentence detection based on terminal punctuation
-    let bytes = text.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'.' || b == b'?' || b == b'!' {
-            if i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace() {
-                *sentences += 1;
+        // Sentence detection based on terminal punctuation
+        let bytes = text.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if (b == b'.' || b == b'?' || b == b'!')
+                && (i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace())
+            {
+                self.sentences += 1;
             }
         }
     }
@@ -661,7 +488,7 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
             | Inline::Math(t)
             | Inline::DisplayMath(t) => s.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                s.push_str(&inlines_to_plain(c))
+                s.push_str(&inlines_to_plain(c));
             }
             Inline::Link { content, .. } => s.push_str(&inlines_to_plain(content)),
             Inline::Image { alt, .. } => s.push_str(alt),
@@ -833,7 +660,7 @@ impl DocumentStats {
             })
             .collect();
         out.push_str(&finding_items.join(","));
-        out.push_str("]");
+        out.push(']');
 
         out.push('}');
         out

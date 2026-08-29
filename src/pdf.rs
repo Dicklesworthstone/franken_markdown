@@ -20058,6 +20058,7 @@ fn serialize(
             } else {
                 chars.extend(text.chars());
                 shape_cache_misses += 1;
+                shape_cache_miss_bytes += text.len();
                 let shaped = if tail {
                     tail_misses += 1;
                     let t0 = subset_tail_now();
@@ -31693,6 +31694,155 @@ mod pdf_writer_tests {
             measure_word(std::slice::from_ref(&tok), fs, &faces),
             crate::layout::advance_to_layout_units(face.glyph_advance_1000(shaped.glyphs[0]), fs),
             "PDF layout measurement should use the ligature glyph's own advance"
+        );
+        Ok(())
+    }
+
+    /// Verbatim pre-pass-10 `shape_run` (three fresh allocations per segment)
+    /// kept as the reference for the differential and perf tests below.
+    fn shape_run_reference(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
+        let chars: Vec<char> = text.chars().collect();
+        let gids: Vec<u16> = chars
+            .iter()
+            .map(|&c| {
+                if *TAIL_NOGLYPH {
+                    0
+                } else {
+                    source.glyph_index(c)
+                }
+            })
+            .collect();
+        let mut shaped = Vec::with_capacity(gids.len());
+        let mut lig_uni = Vec::new();
+        let mut ci = 0;
+        for (gid, count) in lig.substitute_with_spans(&gids) {
+            shaped.push(gid);
+            if count > 1 {
+                let s: String = chars.get(ci..ci + count).unwrap_or(&[]).iter().collect();
+                lig_uni.push((gid, s));
+            }
+            ci += count;
+        }
+        let pdf_tj = String::with_capacity(shaped.len().saturating_mul(10).saturating_add(8));
+        ShapedRun {
+            glyphs: shaped,
+            ligatures: lig_uni,
+            pdf_tj,
+        }
+    }
+
+    #[test]
+    fn shape_run_scratch_routes_match_reference_bit_for_bit() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let corpora = [
+            "",
+            "fi",
+            "fluff",
+            "office waffle",
+            "AVATAR",
+            "A V A",
+            "the quick brown fox jumps over the lazy dog 0123456789 !?()",
+            "café über naïve — em dash …",
+            "日本語テキスト and English mixed",
+            "→ ← ∞ ∑",
+            "f",
+            "ff",
+            "fj",
+            "affix affligate difficult",
+        ];
+        // One scratch reused across every face and text, exactly like the
+        // render's segment-cache builder loop.
+        let mut scratch = ShapeScratch::default();
+        for slot in SLOTS {
+            let face = faces.face(slot);
+            let source = face.font.as_ref();
+            let lig = face.lig.as_ref();
+            let tables = face.ascii_tables();
+            for text in corpora {
+                let reference = shape_run_reference(source, lig, text);
+                let fresh = shape_run(source, lig, tables, text);
+                let reused = shape_run_with_scratch(source, lig, tables, text, &mut scratch);
+                for run in [fresh, reused] {
+                    assert_eq!(
+                        run.glyphs, reference.glyphs,
+                        "glyphs differ slot={slot} text={text:?}"
+                    );
+                    assert_eq!(
+                        run.ligatures, reference.ligatures,
+                        "ligatures differ slot={slot} text={text:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "perf micro: cargo test --profile release-perf -- --ignored shape_run_scratch_perf"]
+    fn shape_run_scratch_perf_reference_vs_table_fast_path() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        // Shaped-unique segment corpus: mostly plain ASCII words (fast route),
+        // a ligature-bearing slice (general route), and some non-ASCII runs.
+        let words = [
+            "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "paragraph",
+            "sentence", "renders", "stream", "output", "bytes", "AVATAR", "checksum",
+            "office", "waffle", "fluff", "difficult", "affix", "café", "über", "日本語",
+        ];
+        let slots = [F_BODY, F_BOLD, F_MONO];
+        let corpus: Vec<(u8, &str)> = slots
+            .iter()
+            .flat_map(|&slot| words.iter().map(move |&w| (slot, w)))
+            .collect();
+
+        let run_ref = |corpus: &[(u8, &str)]| {
+            let mut sink = 0usize;
+            for &(slot, text) in corpus {
+                let face = faces.face(slot);
+                let run = shape_run_reference(face.font.as_ref(), face.lig.as_ref(), text);
+                sink += run.glyphs.len() + run.ligatures.len();
+            }
+            sink
+        };
+        let run_new = |corpus: &[(u8, &str)]| {
+            let mut sink = 0usize;
+            // One scratch for the whole corpus, mirroring the render loop.
+            let mut scratch = ShapeScratch::default();
+            for &(slot, text) in corpus {
+                let face = faces.face(slot);
+                let run = shape_run_with_scratch(
+                    face.font.as_ref(),
+                    face.lig.as_ref(),
+                    face.ascii_tables(),
+                    text,
+                    &mut scratch,
+                );
+                sink += run.glyphs.len() + run.ligatures.len();
+            }
+            sink
+        };
+
+        // Interleaved paired rounds under ambient load.
+        let mut ref_ns: Vec<u128> = Vec::new();
+        let mut new_ns: Vec<u128> = Vec::new();
+        for _ in 0..9 {
+            let t = std::time::Instant::now();
+            let a = run_ref(&corpus);
+            let d_ref = t.elapsed().as_nanos();
+            let t = std::time::Instant::now();
+            let b = run_new(&corpus);
+            let d_new = t.elapsed().as_nanos();
+            assert_eq!(a, b, "same sink");
+            ref_ns.push(d_ref);
+            new_ns.push(d_new);
+        }
+        ref_ns.sort();
+        new_ns.sort();
+        println!(
+            "shape_run {} unique segments (3 slots, mixed routes): reference {} ns vs tables+scratch {} ns ({:+.1}%)",
+            corpus.len(),
+            ref_ns[4],
+            new_ns[4],
+            (new_ns[4] as f64 - ref_ns[4] as f64) / ref_ns[4] as f64 * 100.0
         );
         Ok(())
     }

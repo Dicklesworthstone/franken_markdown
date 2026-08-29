@@ -676,6 +676,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         microtype: Default::default(),
         typography_homogeneous: false,
+        typography_antiriver: false,
         json: args.json,
     }
 }

@@ -2357,6 +2357,17 @@ impl Ligatures {
     #[must_use]
     pub fn substitute_with_spans(&self, gids: &[u16]) -> Vec<(u16, usize)> {
         let mut out = Vec::with_capacity(gids.len());
+        self.substitute_with_spans_into(gids, &mut out);
+        out
+    }
+
+    /// Into-scratch [`Ligatures::substitute_with_spans`]: identical decisions
+    /// and output, but appends into a caller-owned buffer (cleared first) so
+    /// repeat shapers reuse one allocation across runs instead of returning a
+    /// fresh `Vec` per call.
+    pub fn substitute_with_spans_into(&self, gids: &[u16], out: &mut Vec<(u16, usize)>) {
+        out.clear();
+        out.reserve(gids.len());
         let mut i = 0;
         while i < gids.len() {
             let mut applied = false;
@@ -2376,7 +2387,6 @@ impl Ligatures {
                 i += 1;
             }
         }
-        out
     }
 }
 

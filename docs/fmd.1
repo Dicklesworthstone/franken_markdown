@@ -1,0 +1,166 @@
+.TH FMD 1 "August 2026" "fmd" "User Commands"
+.SH NAME
+fmd \- Fast, clean-room, dependency-lean Markdown to HTML & PDF renderer
+.SH SYNOPSIS
+.B fmd
+[\fISUBCOMMAND\fR] [\fIOPTIONS\fR]
+.br
+.B fmd
+[\fIINPUT\fR] [\fB\-o\fR \fIOUT\fR] [\fB\-\-to\fR \fIhtml|pdf|both|epub|svg\fR] [\fIOPTIONS\fR]
+.br
+.B fmd
+\fB\-\-text\fR \fI'# Hello'\fR [\fB\-o\fR \fIOUT\fR]
+.SH DESCRIPTION
+.B fmd
+(franken_markdown) is a standalone CLI and pure-Rust library for rendering Markdown
+into beautiful, self-contained HTML, compact deterministic PDF with embedded font subsets,
+EPUB 3 e-books, and vector SVG posters.
+.PP
+It requires zero native system browser engines (no Headless Chrome, Chromium, or WebKit),
+zero fontconfig or C library dependencies, and strictly forbids unsafe code.
+.SH SUBCOMMANDS
+.TP
+\fBrender\fR [\fIINPUT\fR]
+Render a Markdown file (or stdin via \fB\-\fR) to HTML, PDF, EPUB, or SVG.
+If the subcommand is omitted, \fBrender\fR is executed by default.
+.TP
+\fBcapabilities\fR [\fB\-\-json\fR]
+Print the machine-readable command, output format, exit code, and feature contract.
+.TP
+\fBrobot\-docs\fR [\fBguide\fR]
+Print in-tool reference documentation formatted for coding agents and automated tools.
+.TP
+\fBverify\fR \fIINPUT\fR [\fB\-\-a11y\fR] [\fB\-\-links\fR] [\fB\-\-json\fR]
+Audit a document's rendered text layer, internal headings and anchor integrity,
+accessibility warnings, and horizontal margin overflow.
+.TP
+\fBwatch\fR \fIINPUT\fR \fB\-o\fR \fIOUT\fR [\fB\-\-serve\fR] [\fB\-\-interval\fR \fIMS\fR]
+Watch a Markdown file and its referenced assets for changes, automatically re-rendering
+and optionally serving an auto-reloading loopback preview.
+.TP
+\fBdoctor\fR [\fBfonts\fR \fB\-\-corpus\fR \fIDIR\fR] [\fB\-\-json\fR]
+Check local runtime capabilities, health status, and corpus glyph coverage against bundled fonts.
+.TP
+\fBconfig\fR [\fBshow\fR|\fBget\fR \fIKEY\fR|\fBset\fR \fIKEY\fR \fIVALUE\fR|\fBpath\fR]
+Inspect or modify native configuration options (stored at \fI~/.config/fmd/config\fR).
+.TP
+\fBstats\fR [\fIINPUT\fR|\fB\-\-text\fR \fITEXT\fR] [\fB\-\-json\fR]
+Analyze document intelligence: word and character counts, reading/speaking time,
+Flesch readability score, and heading outline hierarchy.
+.TP
+\fBdiff\fR \fIOLD_FILE\fR \fINEW_FILE\fR [\fB\-o\fR \fIOUT\fR] [\fB\-\-json\fR]
+Perform structural semantic AST diffing between two documents and render a visual change report.
+.TP
+\fBbook\fR \fIDIR\fR [\fB\-o\fR \fIOUT_DIR\fR] [\fB\-\-to\fR \fIhtml|pdf|both\fR]
+Assemble a multi-file directory into a unified multi-page HTML documentation site or single PDF book.
+.TP
+\fBbatch\fR \fIINPUTS...\fR [\fB\-\-out\-dir\fR \fIDIR\fR] [\fB\-\-to\fR \fITARGET\fR] [\fB\-\-workers\fR \fIN\fR]
+Render many Markdown documents concurrently under a bounded worker pool and memory budget.
+.SH GLOBAL OPTIONS
+.TP
+\fB\-\-json\fR
+Emit structured JSON on stdout (or status receipts on stderr during renders).
+.TP
+\fB\-\-no\-color\fR
+Disable decorative terminal styling and color output.
+.TP
+\fB\-\-no\-config\fR
+Bypass persistent configuration files for reproducible, config-free execution.
+.TP
+\fB\-\-robot\-triage\fR
+Print a single-shot JSON envelope containing health status, quick commands, and next actions.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help information.
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version information.
+.SH RENDER OPTIONS
+.TP
+\fB\-\-to\fR \fIhtml|pdf|both|epub|svg\fR
+Select output format (default: \fBhtml\fR).
+.TP
+\fB\-o\fR, \fB\-\-out\fR \fIPATH\fR
+Specify destination file path. \fB\-\fR writes HTML or SVG directly to stdout.
+.TP
+\fB\-\-font\fR \fIsans|serif\fR
+Set default body typography family (default: \fBsans\fR).
+.TP
+\fB\-\-font\-scale\fR, \fB\-\-type\-size\fR \fISCALE\fR
+Uniform typographic scaling preset (\fBxs\fR, \fBsm\fR, \fBmd\fR, \fBlg\fR, \fBxl\fR, \fB2xl\fR),
+percentage (\fB125%\fR), multiplier (\fB1.125\fR), or size (\fB18px\fR, \fB12pt\fR).
+.TP
+\fB\-\-fit\-to\-pages\fR, \fB\-\-target\-pages\fR \fIPAGES\fR
+Adaptive binary-search solver to fit PDF content strictly within \fIPAGES\fR page budget.
+.TP
+\fB\-\-microtype\fR \fIoff|protrusion|expansion|all\fR
+Opt-in microtypography for justified PDF paragraphs: optical-margin hanging punctuation and font expansion.
+.TP
+\fB\-\-typography\-homogeneous\fR
+Enable gradual adjacent demerits in Knuth-Plass optimal paragraph breaking.
+.TP
+\fB\-\-interactive\-html\fR, \fB\-\-self\-hosting\fR
+Generate a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.
+.TP
+\fB\-\-toc\fR
+Generate a table of contents.
+.TP
+\fB\-\-toc\-depth\fR \fIN\fR
+Maximum heading level depth included in table of contents (default: 3).
+.TP
+\fB\-\-pdf\-line\-numbers\fR
+Display line numbers in PDF fenced code blocks.
+.TP
+\fB\-\-pdf\-page\-numbers\fR
+Render running page numbers centered in the PDF bottom margin.
+.TP
+\fB\-\-pdf\-a\fR \fI2b\fR
+Produce PDF/A-2b compliant archive with embedded sRGB ICC profile and XMP metadata packet.
+.TP
+\fB\-\-pdf\-a\-strict\fR
+Fail closed on non-conformable PDF/A constructs (e.g. javascript/file URI schemes).
+.TP
+\fB\-\-allow\-html\fR
+Pass raw HTML markup through without escaping.
+.TP
+\fB\-\-css\fR \fIFILE\fR
+Replace the default stylesheet with custom CSS.
+.SH EXIT STATUS
+.TP
+\fB0\fR
+Success.
+.TP
+\fB64\fR
+Command-line usage error or invalid flag arguments.
+.TP
+\fB66\fR
+Input error (e.g. missing file, unreadable asset, or oversized input bytes).
+.TP
+\fB70\fR
+Rendering error (e.g. font loading failure).
+.TP
+\fB73\fR
+Output file error (e.g. cannot create directory or write target file).
+.TP
+\fB74\fR
+Stdout write error (e.g. broken pipe).
+.SH EXAMPLES
+.TP
+Render a document to self-contained HTML:
+.B fmd README.md \-o README.html
+.TP
+Render a document to high-quality PDF with page numbers:
+.B fmd README.md \-\-to pdf \-\-pdf\-page\-numbers \-o README.pdf
+.TP
+Render raw Markdown text from stdin to stdout:
+.B echo '# Hello World' | fmd \- \-o \-
+.TP
+Compare two versions of a document and output visual diff:
+.B fmd diff v1.md v2.md \-o diff.html
+.TP
+Verify accessibility and anchor links in a document:
+.B fmd verify document.md \-\-a11y \-\-json
+.SH AUTHORS
+Jeffrey Emanuel and contributors.
+.SH SEE ALSO
+https://github.com/Dicklesworthstone/franken_markdown

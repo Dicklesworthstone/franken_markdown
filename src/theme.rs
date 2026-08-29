@@ -699,6 +699,9 @@ impl FontScale {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
         if let Some(preset) = TypeScalePreset::parse(trimmed) {
             return Some(Self::Preset(preset));
         }
@@ -706,6 +709,20 @@ impl FontScale {
             if let Ok(val) = pct.trim().parse::<f32>() {
                 if val.is_finite() && val > 0.0 {
                     return Some(Self::from_factor(val / 100.0));
+                }
+            }
+        }
+        if let Some(rem) = trimmed.strip_suffix("rem") {
+            if let Ok(val) = rem.trim().parse::<f32>() {
+                if val.is_finite() && val > 0.0 {
+                    return Some(Self::from_factor(val));
+                }
+            }
+        }
+        if let Some(em) = trimmed.strip_suffix("em") {
+            if let Ok(val) = em.trim().parse::<f32>() {
+                if val.is_finite() && val > 0.0 {
+                    return Some(Self::from_factor(val));
                 }
             }
         }
@@ -734,6 +751,9 @@ impl FontScale {
     /// Construct a font scale from a custom float factor.
     #[must_use]
     pub fn from_factor(factor: f32) -> Self {
+        if !factor.is_finite() || factor <= 0.0 {
+            return Self::Preset(TypeScalePreset::Medium);
+        }
         let clamped = factor.clamp(0.5, 3.0);
         for preset in TypeScalePreset::ALL {
             if (preset.scale_factor() - clamped).abs() < 1e-4 {
@@ -748,7 +768,13 @@ impl FontScale {
     pub fn scale_factor(self) -> f32 {
         match self {
             Self::Preset(p) => p.scale_factor(),
-            Self::Factor(f) => f.clamp(0.5, 3.0),
+            Self::Factor(f) => {
+                if f.is_finite() && f > 0.0 {
+                    f.clamp(0.5, 3.0)
+                } else {
+                    1.0
+                }
+            }
         }
     }
 
@@ -757,9 +783,10 @@ impl FontScale {
     pub fn html_base_px(self) -> f32 {
         match self {
             Self::Preset(p) => p.html_base_px() as f32,
-            Self::Factor(f) => {
-                let raw = 16.0 * f.clamp(0.5, 3.0);
-                raw.round().max(8.0)
+            Self::Factor(_) => {
+                let factor = self.scale_factor();
+                let raw = 16.0 * factor;
+                raw.round().clamp(8.0, 48.0)
             }
         }
     }
@@ -769,8 +796,9 @@ impl FontScale {
     pub fn pdf_base_pt(self) -> f32 {
         match self {
             Self::Preset(p) => p.pdf_base_pt(),
-            Self::Factor(f) => {
-                (11.0 * f.clamp(0.5, 3.0)).clamp(BASE_FONT_SIZE_MIN_PT, BASE_FONT_SIZE_MAX_PT)
+            Self::Factor(_) => {
+                let factor = self.scale_factor();
+                (11.0 * factor).clamp(BASE_FONT_SIZE_MIN_PT, BASE_FONT_SIZE_MAX_PT)
             }
         }
     }
@@ -887,5 +915,35 @@ mod type_scale_tests {
             FontScale::parse("18px"),
             Some(FontScale::Preset(TypeScalePreset::Large))
         );
+        assert_eq!(
+            FontScale::parse("1.25rem"),
+            Some(FontScale::Preset(TypeScalePreset::ExtraLarge))
+        );
+        assert_eq!(
+            FontScale::parse("0.75em"),
+            Some(FontScale::Preset(TypeScalePreset::ExtraSmall))
+        );
+    }
+
+    #[test]
+    fn font_scale_non_finite_inputs_gracefully_default() {
+        assert_eq!(
+            FontScale::from_factor(f32::NAN),
+            FontScale::Preset(TypeScalePreset::Medium)
+        );
+        assert_eq!(
+            FontScale::from_factor(f32::INFINITY),
+            FontScale::Preset(TypeScalePreset::Medium)
+        );
+        assert_eq!(
+            FontScale::from_factor(0.0),
+            FontScale::Preset(TypeScalePreset::Medium)
+        );
+        assert_eq!(
+            FontScale::from_factor(-1.5),
+            FontScale::Preset(TypeScalePreset::Medium)
+        );
+        assert_eq!(FontScale::parse(""), None);
+        assert_eq!(FontScale::parse("   "), None);
     }
 }

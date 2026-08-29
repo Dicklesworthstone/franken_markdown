@@ -1,8 +1,6 @@
 import initWasm, {
   capabilities as wasmCapabilities,
-  renderHtmlConfigured,
-  renderHtmlConfiguredWithFonts,
-  renderHtmlConfiguredMulti,
+  renderHtmlConfiguredAdvanced,
   renderPdfConfiguredMulti
 } from "./pkg/franken_markdown.js";
 
@@ -29,62 +27,34 @@ export async function renderHtml(markdown, options = {}) {
   await init();
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
-  if (pdfImages.length > 0) {
-    const destinations = pdfImages.map((image) => image.destination);
-    const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
-    const totalBytes = pdfImages.reduce((sum, image) => sum + image.bytes.length, 0);
-    const flatBytes = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const image of pdfImages) {
-      flatBytes.set(image.bytes, offset);
-      offset += image.bytes.length;
-    }
-    return normalizeResult(
-      renderHtmlConfiguredMulti(
-        String(markdown),
-        stringOption(options.font),
-        darkModeOption(options.darkMode),
-        verbatimOption(options.title),
-        verbatimOption(options.customCss),
-        Boolean(options.allowRawHtml),
-        fontBytesForSlot(fontAssets, "body-regular"),
-        fontBytesForSlot(fontAssets, "body-bold"),
-        fontBytesForSlot(fontAssets, "body-italic"),
-        fontBytesForSlot(fontAssets, "body-bold-italic"),
-        fontBytesForSlot(fontAssets, "mono-regular"),
-        fontWeightsForSlots(fontAssets),
-        destinations,
-        flatBytes,
-        lengths
-      )
-    );
-  }
-  if (fontAssets.length > 0) {
-    return normalizeResult(
-      renderHtmlConfiguredWithFonts(
-        String(markdown),
-        stringOption(options.font),
-        darkModeOption(options.darkMode),
-        verbatimOption(options.title),
-        verbatimOption(options.customCss),
-        Boolean(options.allowRawHtml),
-        fontBytesForSlot(fontAssets, "body-regular"),
-        fontBytesForSlot(fontAssets, "body-bold"),
-        fontBytesForSlot(fontAssets, "body-italic"),
-        fontBytesForSlot(fontAssets, "body-bold-italic"),
-        fontBytesForSlot(fontAssets, "mono-regular"),
-        fontWeightsForSlots(fontAssets)
-      )
-    );
+  const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
+  const destinations = pdfImages.map((image) => image.destination);
+  const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
+  const totalBytes = pdfImages.reduce((sum, image) => sum + image.bytes.length, 0);
+  const flatBytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const image of pdfImages) {
+    flatBytes.set(image.bytes, offset);
+    offset += image.bytes.length;
   }
   return normalizeResult(
-    renderHtmlConfigured(
+    renderHtmlConfiguredAdvanced(
       String(markdown),
       stringOption(options.font),
       darkModeOption(options.darkMode),
       verbatimOption(options.title),
       verbatimOption(options.customCss),
-      Boolean(options.allowRawHtml)
+      Boolean(options.allowRawHtml),
+      fontScale,
+      fontBytesForSlot(fontAssets, "body-regular"),
+      fontBytesForSlot(fontAssets, "body-bold"),
+      fontBytesForSlot(fontAssets, "body-italic"),
+      fontBytesForSlot(fontAssets, "body-bold-italic"),
+      fontBytesForSlot(fontAssets, "mono-regular"),
+      fontWeightsForSlots(fontAssets),
+      destinations,
+      flatBytes,
+      lengths
     )
   );
 }
@@ -93,6 +63,8 @@ export async function renderPdf(markdown, options = {}) {
   await init();
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
+  const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
+  const baseFontSize = numberOption(options.baseFontSize) ?? (fontScale !== undefined ? 11 * fontScale : undefined);
 
   // Flatten any number of images into the three parallel arrays the core ABI
   // accepts (wasm-bindgen cannot pass a Vec<Vec<u8>>): a destination per image,
@@ -126,7 +98,7 @@ export async function renderPdf(markdown, options = {}) {
       fontBytesForSlot(fontAssets, "body-bold-italic"),
       fontBytesForSlot(fontAssets, "mono-regular"),
       fontWeightsForSlots(fontAssets),
-      numberOption(options.baseFontSize),
+      baseFontSize,
       numberOption(options.headingScale),
       numberOption(options.tableFontSize),
       Boolean(options.pageNumbers)
@@ -266,6 +238,92 @@ function numberOption(value) {
     throw new TypeError("typography overrides must be finite numbers");
   }
   return value;
+}
+
+function fontScaleOption(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new TypeError("fontScale must be a positive finite number");
+    }
+    return Math.min(3.0, Math.max(0.5, value));
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    switch (trimmed) {
+      case "xs":
+      case "x-small":
+      case "extra-small":
+      case "extrasmall":
+      case "tiny":
+        return 0.75;
+      case "sm":
+      case "small":
+      case "compact":
+        return 0.875;
+      case "md":
+      case "medium":
+      case "normal":
+      case "default":
+      case "regular":
+      case "standard":
+        return 1.0;
+      case "lg":
+      case "large":
+      case "comfortable":
+        return 1.125;
+      case "xl":
+      case "x-large":
+      case "extra-large":
+      case "extralarge":
+        return 1.25;
+      case "2xl":
+      case "xxl":
+      case "huge":
+      case "display":
+        return 1.5;
+      default:
+        break;
+    }
+    if (trimmed.endsWith("%")) {
+      const parsed = parseFloat(trimmed.slice(0, -1));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(3.0, Math.max(0.5, parsed / 100));
+      }
+    }
+    if (trimmed.endsWith("rem")) {
+      const parsed = parseFloat(trimmed.slice(0, -3));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(3.0, Math.max(0.5, parsed));
+      }
+    }
+    if (trimmed.endsWith("em")) {
+      const parsed = parseFloat(trimmed.slice(0, -2));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(3.0, Math.max(0.5, parsed));
+      }
+    }
+    if (trimmed.endsWith("px")) {
+      const parsed = parseFloat(trimmed.slice(0, -2));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(3.0, Math.max(0.5, parsed / 16));
+      }
+    }
+    if (trimmed.endsWith("pt")) {
+      const parsed = parseFloat(trimmed.slice(0, -2));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(3.0, Math.max(0.5, parsed / 11));
+      }
+    }
+    const parsed = parseFloat(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(3.0, Math.max(0.5, parsed));
+    }
+    throw new TypeError(`unknown fontScale '${value}'. Valid choices: xs, sm, md, lg, xl, 2xl, or a number/percentage.`);
+  }
+  throw new TypeError("fontScale must be a number or string");
 }
 function pdfImagesOption(value) {
   if (value === undefined || value === null) {

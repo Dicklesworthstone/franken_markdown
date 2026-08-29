@@ -56,8 +56,9 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("export async function renderHtml"));
     assert!(js.contains("export async function renderPdf"));
     assert!(js.contains("export async function createRenderer"));
-    assert!(js.contains("renderHtmlConfiguredWithFonts"));
-    assert!(js.contains("renderHtmlConfiguredMulti"));
+    // One additive advanced ABI keeps HTML font scale, fonts, and images on a
+    // single Rust-owned rendering path while preserving the older exports.
+    assert!(js.contains("renderHtmlConfiguredAdvanced"));
     // The wrapper renders PDFs (with any number of images) through the multi
     // entry point; the single-image ABI functions remain in the Rust crate.
     assert!(js.contains("renderPdfConfiguredMulti"));
@@ -93,11 +94,15 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(js.contains("numberOption(options.headingScale)"));
     assert!(js.contains("numberOption(options.tableFontSize)"));
     assert!(js.contains("typography overrides must be finite numbers"));
+    assert!(js.contains("fontScaleOption"));
+    assert!(js.contains("options.fontScale ?? options.typeSize"));
 
     assert!(dts.contains("export interface FmdRenderOutput"));
     assert!(dts.contains("export type FmdDarkMode"));
     assert!(dts.contains("darkMode?: FmdDarkMode"));
     assert!(dts.contains("baseFontSize?: number"));
+    assert!(dts.contains("fontScale?: number | string"));
+    assert!(dts.contains("typeSize?: number | string"));
     assert!(dts.contains("headingScale?: number"));
     assert!(dts.contains("tableFontSize?: number"));
     assert!(dts.contains("export interface FmdPdfImageAsset"));

@@ -2807,6 +2807,24 @@ fn font_scale_presets_scale_html_typography_cleanly() {
     assert!(html_pct.contains("--fmd-base: 20px"));
     assert!(html_pct.contains("--fmd-measure: 950px"));
 
+    // CSS units notation 1.25rem -> 20px base / 950px measure
+    let out_rem = temp_file("font-scale-rem", "html");
+    let res_rem = fmd(&[
+        input_s,
+        "--font-scale",
+        "1.25rem",
+        "--out",
+        out_rem.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        res_rem.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_rem.stderr)
+    );
+    let html_rem = fs::read_to_string(&out_rem).unwrap();
+    assert!(html_rem.contains("--fmd-base: 20px"));
+
     // Invalid scale returns usage error (64)
     let out_err = fmd(&[
         input_s,
@@ -2827,6 +2845,7 @@ fn font_scale_presets_scale_html_typography_cleanly() {
     let _ = fs::remove_file(out_lg);
     let _ = fs::remove_file(out_xs);
     let _ = fs::remove_file(out_pct);
+    let _ = fs::remove_file(out_rem);
 }
 
 #[test]

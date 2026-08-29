@@ -206,6 +206,65 @@ pub fn render_html_configured_multi(
         .map_err(render_error_to_js)
 }
 
+/// Render Markdown to self-contained HTML with the complete browser option
+/// set, including the core-owned uniform typographic scale.
+///
+/// This additive entry point keeps the original narrow ABI stable while giving
+/// the ergonomic JavaScript wrapper one canonical path for fonts, images, and
+/// type scale. The scale is interpreted by [`WasmRenderOptions`] and therefore
+/// changes the Rust-generated theme rather than patching the returned HTML.
+///
+/// # Errors
+/// Returns a JavaScript error when parallel image arrays are inconsistent, a
+/// font asset is invalid, the scale is not positive and finite, or rendering
+/// fails.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderHtmlConfiguredAdvanced)]
+pub fn render_html_configured_advanced(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    custom_css: Option<String>,
+    allow_raw_html: bool,
+    font_scale: Option<f64>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.title = nonempty_verbatim(title);
+    options.custom_css = nonempty_verbatim(custom_css);
+    options.allow_raw_html = allow_raw_html;
+    options.font_scale = positive_f32(font_scale, "fontScale")?;
+    for (destination, bytes) in
+        split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
+            .map_err(JsValue::from_str)?
+    {
+        options = options
+            .with_pdf_image_asset(destination.to_string(), bytes.to_vec())
+            .map_err(render_error_to_js)?;
+    }
+    apply_font_assets(
+        &mut options,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+    )?;
+    apply_font_weights(&mut options, &font_weights)?;
+    wasm::render_html(markdown, &options)
+        .map(render_result)
+        .map_err(render_error_to_js)
+}
+
 /// Render Markdown to PDF with browser package options.
 ///
 /// # Errors
@@ -445,6 +504,25 @@ fn finite_f32(value: Option<f64>) -> Option<f32> {
         let f = v as f32;
         f.is_finite().then_some(f)
     })
+}
+
+fn positive_f32(
+    value: Option<f64>,
+    option_name: &str,
+) -> std::result::Result<Option<f32>, JsValue> {
+    let Some(value) = value else { return Ok(None) };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(JsValue::from_str(&format!(
+            "{option_name} must be a positive finite number"
+        )));
+    }
+    let value = value as f32;
+    if !value.is_finite() {
+        return Err(JsValue::from_str(&format!(
+            "{option_name} must fit in a finite 32-bit float"
+        )));
+    }
+    Ok(Some(value))
 }
 
 fn options_with_font_and_dark_mode(

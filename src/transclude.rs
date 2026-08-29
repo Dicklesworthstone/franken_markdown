@@ -40,7 +40,7 @@ const MAX_DEPTH: usize = 16;
 /// - `include_depth`: nesting exceeded `MAX_DEPTH`.
 pub fn expand_includes(
     src: &str,
-    resolver: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
+    resolver: &dyn Fn(&str, &str) -> Option<String>,
 ) -> Result<String> {
     let mut stack = Vec::new();
     expand_inner(src, resolver, &mut stack, 0, "<input>")
@@ -48,7 +48,7 @@ pub fn expand_includes(
 
 fn expand_inner(
     src: &str,
-    resolver: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
+    resolver: &dyn Fn(&str, &str) -> Option<String>,
     stack: &mut Vec<String>,
     depth: usize,
     origin: &str,
@@ -85,20 +85,14 @@ fn expand_inner(
                     chain.join(" -> ")
                 )));
             }
-            let content = match resolver(path, origin) {
-                Ok(Some(content)) => content,
-                Ok(None) => {
-                    let mut chain = stack.clone();
-                    chain.push(path.to_string());
-                    return Err(RenderError::InvalidInput(format!(
-                        "include_missing: cannot read {} (chain: {})",
-                        path,
-                        chain.join(" -> ")
-                    )));
-                }
-                Err(reason) => {
-                    return Err(RenderError::InvalidInput(reason));
-                }
+            let Some(content) = resolver(path, origin) else {
+                let mut chain = stack.clone();
+                chain.push(path.to_string());
+                return Err(RenderError::InvalidInput(format!(
+                    "include_missing: cannot read {} (chain: {})",
+                    path,
+                    chain.join(" -> ")
+                )));
             };
             stack.push(path.to_string());
             let expanded = expand_inner(&content, resolver, stack, depth + 1, path)?;
@@ -120,14 +114,12 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn resolver(
-        files: &[(&str, &str)],
-    ) -> impl Fn(&str, &str) -> std::result::Result<Option<String>, String> {
+    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> Option<String> {
         let map: BTreeMap<String, String> = files
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        move |p: &str, _origin: &str| Ok(map.get(p).cloned())
+        move |p: &str, _origin: &str| map.get(p).cloned()
     }
 
     #[test]
@@ -187,7 +179,7 @@ mod tests {
             })
             .collect();
         let map: BTreeMap<String, String> = files.into_iter().collect();
-        let r = move |p: &str, _o: &str| Ok(map.get(p).cloned());
+        let r = move |p: &str, _o: &str| map.get(p).cloned();
         let err = expand_includes("{{#include d0.md}}\n", &r).unwrap_err();
         assert!(err.to_string().contains("include_depth"), "{err}");
     }

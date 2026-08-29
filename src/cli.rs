@@ -2803,13 +2803,9 @@ fn expand_file_includes(
         };
         match std::fs::read(&path) {
             Ok(bytes) if (bytes.len() as u64) <= max_input_bytes => {
-                Ok(String::from_utf8(bytes).ok())
+                String::from_utf8(bytes).ok()
             }
-            Ok(_) => Err(format!(
-                "include '{}' exceeds max input bytes limit",
-                path.display()
-            )),
-            Err(e) => Err(format!("reading include '{}': {e}", path.display())),
+            _ => None,
         }
     })
     .map_err(|e| e.to_string())

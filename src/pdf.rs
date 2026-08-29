@@ -1944,16 +1944,22 @@ struct PdfWordContext<'a> {
 struct ParagraphPolicy {
     hyphenate: bool,
     justify: bool,
+    /// Opt-in microtypography (bead 544o): optical-margin protrusion policy
+    /// carried to per-box precomputation. DISABLED by default; default output
+    /// stays byte-identical.
+    microtype: crate::layout::MicrotypeOptions,
 }
 
 impl ParagraphPolicy {
     const RAGGED: Self = Self {
         hyphenate: false,
         justify: false,
+        microtype: crate::layout::MicrotypeOptions::DISABLED,
     };
     const TEX_PARAGRAPH: Self = Self {
         hyphenate: true,
         justify: true,
+        microtype: crate::layout::MicrotypeOptions::DISABLED,
     };
 
     /// Glyph-expansion credit the line breaker may assume (±permilli of box
@@ -2309,6 +2315,62 @@ fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
     }
 }
 
+fn fit_to_target_pages(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: &Faces,
+    target_pages: usize,
+) -> (PdfOptions, PageGeom) {
+    let base_page = PageGeom::from_theme(&opts.theme);
+    let initial_lines = layout(&doc.blocks, opts, faces, base_page);
+    let initial_pages = paginate_lines(&initial_lines, base_page).len();
+
+    if initial_pages <= target_pages {
+        return (opts.clone(), base_page);
+    }
+
+    let mut low = 0.50f32;
+    let mut high = 1.00f32;
+    let mut best_opts = opts.clone();
+    let mut best_page = base_page;
+
+    for _ in 0..14 {
+        let mid = (low + high) / 2.0;
+        let mut candidate_opts = opts.clone();
+
+        let base_pt = opts.base_font_size.unwrap_or(11.0);
+        let new_base = (base_pt * mid).clamp(6.0, 24.0);
+        candidate_opts.base_font_size = Some(new_base);
+
+        if let Some(tbl_pt) = opts.table_font_size {
+            candidate_opts.table_font_size = Some((tbl_pt * mid).clamp(5.0, new_base));
+        }
+
+        let margin_scale = mid.max(0.80);
+        let orig_margins = opts.theme.page.margins;
+        candidate_opts.theme.page.margins = crate::theme::PageMargins {
+            top_pt: (orig_margins.top_pt * margin_scale).max(36.0),
+            bottom_pt: (orig_margins.bottom_pt * margin_scale).max(36.0),
+            left_pt: (orig_margins.left_pt * margin_scale).max(36.0),
+            right_pt: (orig_margins.right_pt * margin_scale).max(36.0),
+        };
+
+        let candidate_page = PageGeom::from_theme(&candidate_opts.theme);
+        let lines = layout(&doc.blocks, &candidate_opts, faces, candidate_page);
+        let pages = paginate_lines(&lines, candidate_page).len();
+
+        if pages <= target_pages {
+            best_opts = candidate_opts;
+            best_page = candidate_page;
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    (best_opts, best_page)
+}
+
 fn render_inner(
     doc: &Document,
     opts: &PdfOptions,
@@ -2321,7 +2383,6 @@ fn render_inner(
     } else {
         PdfProfiler::disabled()
     };
-    let page = PageGeom::from_theme(&opts.theme);
     let faces = profiler.measure(
         "font_load",
         5,
@@ -2329,16 +2390,33 @@ fn render_inner(
         || Faces::load(opts),
         |result| usize::from(result.is_ok()),
     )?;
+    let (effective_opts, page) = if let Some(target_pages) = opts.fit_to_pages {
+        if target_pages > 0 {
+            fit_to_target_pages(doc, opts, &faces, target_pages)
+        } else {
+            (opts.clone(), PageGeom::from_theme(&opts.theme))
+        }
+    } else {
+        (opts.clone(), PageGeom::from_theme(&opts.theme))
+    };
     let lines = profiler.measure(
         "layout",
         doc.blocks.len(),
         "block layout, text measuring, and paragraph line breaking",
-        || layout(&doc.blocks, opts, &faces, page),
+        || layout(&doc.blocks, &effective_opts, &faces, page),
         |_| 0,
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let bytes = serialize(&lines, opts, &faces, page, pdf_a, emit, &mut profiler)?;
+    let bytes = serialize(
+        &lines,
+        &effective_opts,
+        &faces,
+        page,
+        pdf_a,
+        emit,
+        &mut profiler,
+    )?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -17755,7 +17833,14 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     // table column still need somewhere to break, and the length-gated
     // long-token machinery below would never look at them.
     if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk {
-        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
+        push_pdf_word_box(
+            built,
+            word,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+            cx.policy.microtype,
+        );
         return;
     }
 
@@ -17797,7 +17882,14 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         pdf_word_break_points(&chars, &dict_points)
     };
     if points.is_empty() {
-        push_pdf_word_box(built, word, cx.fs, cx.faces, cx.width_cache);
+        push_pdf_word_box(
+            built,
+            word,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+            cx.policy.microtype,
+        );
         return;
     }
 
@@ -17809,7 +17901,14 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
                 // A natural inter-character break: zero-width stretchable glue,
                 // nothing drawn, and no token group so the justifier charges its
                 // share to the ideograph on its left.
-                push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
+                push_pdf_word_box_from_vec(
+                    built,
+                    part,
+                    cx.fs,
+                    cx.faces,
+                    cx.width_cache,
+                    cx.policy.microtype,
+                );
                 built.items.push(ParagraphItem::Glue(cjk_break_glue(cx.fs)));
                 built.item_toks.push(TokGroup::empty());
                 built.break_toks.push(None);
@@ -17831,7 +17930,14 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
             } else {
                 (None, LayoutUnit::ZERO)
             };
-            push_pdf_word_box_from_vec(built, part, cx.fs, cx.faces, cx.width_cache);
+            push_pdf_word_box_from_vec(
+                built,
+                part,
+                cx.fs,
+                cx.faces,
+                cx.width_cache,
+                cx.policy.microtype,
+            );
             built.items.push(ParagraphItem::Penalty(Penalty {
                 width: penalty_width,
                 penalty: point.penalty,
@@ -17844,7 +17950,14 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
 
     let tail = splitter.take_to(stats.char_len);
     if !tail.is_empty() {
-        push_pdf_word_box_from_vec(built, tail, cx.fs, cx.faces, cx.width_cache);
+        push_pdf_word_box_from_vec(
+            built,
+            tail,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+            cx.policy.microtype,
+        );
     }
     word.clear();
 }
@@ -18029,6 +18142,7 @@ fn push_pdf_word_box(
     fs: FontSize,
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
+    microtype: crate::layout::MicrotypeOptions,
 ) {
     if toks.is_empty() {
         return;
@@ -18040,6 +18154,7 @@ fn push_pdf_word_box(
         text: String::new(),
         runs: Default::default(),
         width,
+        protrusion: word_protrusion(toks, fs, microtype),
     }));
     built.item_toks.push(TokGroup::take_from(toks));
     built.break_toks.push(None);
@@ -18052,6 +18167,7 @@ fn push_pdf_word_box_from_vec(
     fs: FontSize,
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
+    microtype: crate::layout::MicrotypeOptions,
 ) {
     if toks.is_empty() {
         return;
@@ -18061,10 +18177,26 @@ fn push_pdf_word_box_from_vec(
         text: String::new(),
         runs: Default::default(),
         width,
+        protrusion: word_protrusion(&toks, fs, microtype),
     }));
     built.item_toks.push(TokGroup::from_vec(toks));
     built.break_toks.push(None);
     built.has_boxes = true;
+}
+
+/// Per-box optical-margin protrusion for the breaker (microtype, opt-in).
+/// Reads only the word's boundary characters — never joins the text.
+fn word_protrusion(
+    toks: &[Tok],
+    fs: FontSize,
+    microtype: crate::layout::MicrotypeOptions,
+) -> crate::layout::Protrusion {
+    crate::layout::protrusion_for_boundary_chars(
+        toks.first().and_then(|t| t.text.chars().next()),
+        toks.last().and_then(|t| t.text.chars().next_back()),
+        fs,
+        microtype,
+    )
 }
 
 /// Cuts a word's tokens into consecutive character ranges in one forward pass.
@@ -18155,7 +18287,15 @@ fn layout_inlines(
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
-    let policy = ParagraphPolicy::for_flow(flow.kind);
+    let mut policy = ParagraphPolicy::for_flow(flow.kind);
+    // Microtypography is justified-paragraph-only (ragged flows get nothing,
+    // mirroring the expansion-credit rule): the solver must never produce a
+    // line whose fit depends on an effect the emitter does not apply.
+    policy.microtype = if policy.justify {
+        cx.opts.microtype
+    } else {
+        crate::layout::MicrotypeOptions::DISABLED
+    };
     let built = build_paragraph(
         &toks,
         fs,
@@ -18192,7 +18332,29 @@ fn layout_inlines(
             &mut cx.glue_adjustments,
             &mut cx.line_toks,
         );
-        let segs = build_segs_adjusted(&cx.line_toks, left, size, cx.faces, Some(&cx.width_cache));
+        // Microtype (opt-in): when the breaker admitted this line partly on the
+        // first box's left optical-margin protrusion, the emitter must actually
+        // hang it — shift the line start left by that protrusion so the drawn
+        // result matches the fit decision.
+        let line_left = if policy.microtype.protrusion {
+            let first_box_left = built.items[lb.start..]
+                .iter()
+                .find_map(|item| match item {
+                    ParagraphItem::Box(b) => Some(b.protrusion.left),
+                    _ => None,
+                })
+                .unwrap_or(crate::layout::LayoutUnit::ZERO);
+            left - first_box_left.to_points_f32()
+        } else {
+            left
+        };
+        let segs = build_segs_adjusted(
+            &cx.line_toks,
+            line_left,
+            size,
+            cx.faces,
+            Some(&cx.width_cache),
+        );
         out.push(Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
@@ -27576,8 +27738,8 @@ fn append_decimal_u64_string(out: &mut String, value: u64) {
             break;
         }
     }
-    for &byte in &buf[pos..] {
-        out.push(byte as char);
+    if let Ok(s) = std::str::from_utf8(&buf[pos..]) {
+        out.push_str(s);
     }
 }
 
@@ -27593,8 +27755,8 @@ fn append_decimal_usize_string(out: &mut String, value: usize) {
             break;
         }
     }
-    for &byte in &buf[pos..] {
-        out.push(byte as char);
+    if let Ok(s) = std::str::from_utf8(&buf[pos..]) {
+        out.push_str(s);
     }
 }
 
@@ -27898,9 +28060,15 @@ fn append_pdf_fixed(out: &mut String, value: f32, scale: u64) {
     out.push('.');
     let frac = abs % scale;
     let mut divisor = scale / 10;
-    while divisor > 0 {
-        out.push((b'0' + ((frac / divisor) % 10) as u8) as char);
+    let mut frac_buf = [0u8; 8];
+    let mut f_pos = 0;
+    while divisor > 0 && f_pos < frac_buf.len() {
+        frac_buf[f_pos] = b'0' + ((frac / divisor) % 10) as u8;
+        f_pos += 1;
         divisor /= 10;
+    }
+    if let Ok(s) = std::str::from_utf8(&frac_buf[..f_pos]) {
+        out.push_str(s);
     }
 }
 
@@ -36800,6 +36968,7 @@ mod coverage_gap_tests {
             text: String::new(),
             runs: crate::layout::StyledText::default(),
             width: LayoutUnit::from_milli_points(20000),
+            protrusion: Default::default(),
         });
         let interword = ParagraphItem::Glue(Glue {
             width: LayoutUnit::from_milli_points(1000),
@@ -36810,6 +36979,7 @@ mod coverage_gap_tests {
             text: String::new(),
             runs: crate::layout::StyledText::default(),
             width: LayoutUnit::from_milli_points(30000),
+            protrusion: Default::default(),
         });
         vec![box_a, interword, box_b]
     }

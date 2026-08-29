@@ -398,6 +398,7 @@ impl WasmRenderOptions {
             toc_depth: self.toc_depth,
             fit_to_pages: self.fit_to_pages,
             microtype: self.microtype,
+            gradual_demerits: false,
         }
     }
 }

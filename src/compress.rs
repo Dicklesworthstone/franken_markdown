@@ -347,14 +347,25 @@ struct FixedDeflate {
 /// tests via `#[path]`, e.g. `zip.rs`) can name it; behavior is unchanged.
 #[derive(Debug)]
 pub struct ZlibCompressScratch {
-    head: Vec<usize>,
-    prev: Vec<usize>,
+    /// Hash-chain heads: `base + position` of the newest insert per bucket.
+    /// u32 (not usize) halves the fill/clear and cache footprint of every
+    /// chain walk; the entry domain guard below keeps positions in range.
+    head: Vec<u32>,
+    /// `base + position` of the previous insert at the same bucket, indexed
+    /// by position — same u32 representation.
+    prev: Vec<u32>,
     /// Generation base for the current call: `head`/`prev` entries store
     /// `base + position`, and every entry from an earlier call (or a virgin
     /// zero fill) is strictly less than `base`, so the chain walk's single
     /// `cand >= base` test invalidates them exactly like a NONE entry in a
     /// freshly reset table — with no per-call reset sweep at all.
-    base: usize,
+    ///
+    /// Accumulated in u64 so the base itself can never wrap on any target
+    /// (wasm32 included); entries stay u32 because `fixed_tables` resets the
+    /// tables whenever `base + input_len` would leave the u32 entry domain —
+    /// the pass-3 wasm32 base-wrap guard, made explicit and target-
+    /// independent.
+    base: u64,
 }
 
 impl ZlibCompressScratch {
@@ -379,10 +390,16 @@ impl ZlibCompressScratch {
     /// would expose. LZ77 decisions read `head`/`prev` only at lookup time and
     /// every `prev[c]` read is preceded by the `insert` that wrote it in the
     /// same call, so the emitted DEFLATE stream is byte-identical to a
-    /// fresh-scratch run while skipping the 256 KiB table sweep per call.
-    /// (`input_len >= MIN_MATCH` whenever this runs, so `base` never stalls.)
-    fn fixed_tables(&mut self, input_len: usize) -> (usize, &mut [usize], &mut [usize]) {
-        if self.head.len() != HASH_SIZE || self.base.checked_add(input_len).is_none() {
+    /// fresh-scratch run while skipping the 128 KiB head sweep per call.
+    fn fixed_tables(&mut self, input_len: usize) -> (u32, &mut [u32], &mut [u32]) {
+        // The largest entry this call can store is base + input_len - 1; a
+        // u32 table needs that to stay <= u32::MAX. Inputs at or above 4 GiB
+        // never reach here (`deflate_fixed_with_scratch` routes them to the
+        // usize-table path), so this reset only fires for a long-lived
+        // scratch whose accumulated base approaches 2^32 — the wrap hazard
+        // the pass-3 `checked_add` guard covered on 32-bit targets, now
+        // explicit and target-independent.
+        if self.head.len() != HASH_SIZE || self.base + input_len as u64 > u32::MAX as u64 + 1 {
             self.head.clear();
             self.head.resize(HASH_SIZE, 0);
             self.base = 1;
@@ -390,10 +407,10 @@ impl ZlibCompressScratch {
         if self.prev.len() < input_len {
             self.prev.resize(input_len, 0);
         }
-        let base = self.base;
+        let base = self.base as u32;
         // Next call's base clears every global this call can store
         // (base + input_len - 1 at most).
-        self.base = base + input_len;
+        self.base += input_len as u64;
         (base, &mut self.head, &mut self.prev)
     }
 }
@@ -458,13 +475,77 @@ fn deflate_fixed_with_scratch(
             complete: true,
         };
     }
-    let (base, head, prev) = scratch.fixed_tables(n);
-    let insert = |head: &mut [usize], prev: &mut [usize], p: usize| {
+    if n <= u32::MAX as usize {
+        let (base, head, prev) = scratch.fixed_tables(n);
+        deflate_fixed_lz77::<u32>(data, bw, adler, abort_after_body_len, base, head, prev)
+    } else {
+        // Single input at or beyond 4 GiB (64-bit targets only; the CLI caps
+        // inputs at 64 MiB, and wasm32 cannot even address such a slice):
+        // `base + position` leaves the u32 domain even from a fresh base of
+        // 1, so run the identical loop over fresh usize tables. The scratch
+        // is bypassed entirely — its invariant (stale entries < base) is
+        // untouched, so later calls stay byte-identical to fresh tables.
+        let mut head = vec![0usize; HASH_SIZE];
+        let mut prev = vec![0usize; n];
+        deflate_fixed_lz77::<usize>(data, bw, adler, abort_after_body_len, 1, &mut head, &mut prev)
+    }
+}
+
+/// Index arithmetic for LZ77 hash-chain entries, which store `base +
+/// position`. The u32 instantiation is the hot path: it halves the zero-fill
+/// of `head`/`prev` and the cache footprint of every chain-walk load
+/// (`cand = prev[cand - base]`). The usize instantiation is the >=4 GiB
+/// fallback (see `deflate_fixed_with_scratch`). Both drive the loop to
+/// identical decisions; only the entry width differs.
+trait ChainIdx: Copy + Ord {
+    /// `self + position`. Callers guarantee the sum stays inside the index
+    /// domain (the `fixed_tables` guard / usize fallback enforce it).
+    fn add_pos(self, p: usize) -> Self;
+    /// `self - base` as a position; `self >= base` holds at every call site.
+    fn sub_base(self, base: Self) -> usize;
+}
+
+impl ChainIdx for u32 {
+    fn add_pos(self, p: usize) -> Self {
+        self + p as u32
+    }
+    fn sub_base(self, base: Self) -> usize {
+        (self - base) as usize
+    }
+}
+
+impl ChainIdx for usize {
+    fn add_pos(self, p: usize) -> Self {
+        self + p
+    }
+    fn sub_base(self, base: Self) -> usize {
+        self - base
+    }
+}
+
+/// Greedy LZ77 match loop over the hash-chain tables, shared by both index
+/// representations (one body = one decision procedure, so the u32 hot path
+/// and the >=4 GiB usize fallback cannot diverge). Emits literals/matches
+/// while inserting every position into the chains, then closes the
+/// fixed-Huffman block. Takes ownership of `bw`/`adler` so the abort paths
+/// can return the partial body exactly like the pre-tables paths in
+/// `deflate_fixed_with_scratch`.
+fn deflate_fixed_lz77<Idx: ChainIdx>(
+    data: &[u8],
+    mut bw: BitWriter,
+    mut adler: Adler32,
+    abort_after_body_len: Option<usize>,
+    base: Idx,
+    head: &mut [Idx],
+    prev: &mut [Idx],
+) -> FixedDeflate {
+    let n = data.len();
+    let insert = |head: &mut [Idx], prev: &mut [Idx], p: usize| {
         if p + MIN_MATCH <= n {
             let h = hash3(data, p);
             let old = head[h];
             prev[p] = old;
-            head[h] = base + p;
+            head[h] = base.add_pos(p);
         }
     };
 
@@ -484,7 +565,7 @@ fn deflate_fixed_with_scratch(
             // replaces the `pos - cand` distance computation the local-
             // position form needed anyway, so the walk gains no work.
             while cand >= base && chain > 0 {
-                let c = cand - base;
+                let c = cand.sub_base(base);
                 if c >= pos {
                     break;
                 }
@@ -1222,6 +1303,66 @@ mod tests {
                 "scratch compression must be byte-identical for len {}",
                 data.len()
             );
+        }
+    }
+
+    #[test]
+    fn scratch_tables_reset_at_u32_entry_domain_edge() {
+        let mut s = ZlibCompressScratch::new();
+        // First call sizes the head table and starts the base accumulator.
+        let (b1, h1, p1) = s.fixed_tables(1000);
+        assert_eq!(b1, 1);
+        assert_eq!(h1.len(), HASH_SIZE);
+        assert_eq!(p1.len(), 1000);
+
+        // base + input_len == 2^32 exactly is still in-domain: the largest
+        // stored entry is base + input_len - 1 == u32::MAX.
+        s.base = u32::MAX as u64 + 1 - 500;
+        let (b2, _, _) = s.fixed_tables(500);
+        assert_eq!(u64::from(b2), u32::MAX as u64 + 1 - 500);
+
+        // One past the edge must reset to a zeroed head and base 1 — the u32
+        // analogue of the pass-3 32-bit base-wrap guard.
+        s.base = u32::MAX as u64 + 2 - 500;
+        let (b3, h3, _) = s.fixed_tables(500);
+        assert_eq!(b3, 1);
+        assert!(h3.iter().all(|&v| v == 0));
+        // ...and the very next call carries on without another reset.
+        let (b4, _, _) = s.fixed_tables(1000);
+        assert_eq!(b4, 501);
+    }
+
+    #[test]
+    fn lz77_usize_fallback_matches_u32_tables_byte_for_byte() {
+        // The >=4 GiB fallback (usize tables) shares the generic loop; pin
+        // its decisions to the u32 path WITHOUT a 4 GiB allocation: the
+        // generic function only requires base + len to fit the index domain,
+        // so run the usize instantiation on ordinary inputs and demand the
+        // identical DEFLATE body, adler, and completion flag.
+        let repeated = "deflate-u32-indices fallback probe. ".repeat(300);
+        let mut lcg = Vec::with_capacity(50_000);
+        let mut state: u64 = 0x0db1_a5ee_d00d_feed;
+        for _ in 0..50_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            lcg.push((state >> 32) as u8);
+        }
+        let payloads: [&[u8]; 3] = [b"abcabcabc", repeated.as_bytes(), lcg.as_slice()];
+        for data in payloads {
+            let via_u32 =
+                deflate_fixed_with_scratch(data, None, &mut ZlibCompressScratch::new());
+            let mut bw = BitWriter::with_capacity(fixed_body_capacity_hint(data.len(), None));
+            let mut adler = Adler32::new();
+            // Block header: BFINAL = 1, BTYPE = 01, exactly as the wrapper
+            // writes before handing off to the table phase.
+            bw.write_bits(1, 1);
+            bw.write_bits(0b01, 2);
+            let mut head = vec![0usize; HASH_SIZE];
+            let mut prev = vec![0usize; data.len()];
+            let via_usize =
+                deflate_fixed_lz77::<usize>(data, bw, adler, None, 1, &mut head, &mut prev);
+            assert_eq!(via_usize.body, via_u32.body, "len {}", data.len());
+            assert_eq!(via_usize.adler32, via_u32.adler32);
+            assert!(via_usize.complete && via_u32.complete);
         }
     }
 

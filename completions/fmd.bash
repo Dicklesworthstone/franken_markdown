@@ -5,7 +5,7 @@ _fmd() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="render capabilities robot-docs verify watch doctor config stats diff book batch help"
+    local subcommands="render capabilities robot-docs verify watch doctor config stats diff book batch mcp help"
     local global_flags="--json --no-color --no-config --robot-triage --help -h --version -V"
 
     # Find the current subcommand if one has already been specified
@@ -14,7 +14,7 @@ _fmd() {
     while [[ $i -lt $cword ]]; do
         local word="${words[i]}"
         case "$word" in
-            render|capabilities|robot-docs|verify|watch|doctor|config|stats|diff|book|batch|help)
+            render|capabilities|robot-docs|verify|watch|doctor|config|stats|diff|book|batch|mcp|help)
                 cmd="$word"
                 break
                 ;;
@@ -275,6 +275,14 @@ _fmd() {
                     ;;
                 *)
                     _filedir
+                    return 0
+                    ;;
+            esac
+            ;;
+        mcp)
+            case "$cur" in
+                -*)
+                    COMPREPLY=($(compgen -W "--max-input-bytes --json --no-color --no-config --robot-triage --help -h --version -V" -- "$cur"))
                     return 0
                     ;;
             esac

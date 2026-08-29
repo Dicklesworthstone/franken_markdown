@@ -60,3 +60,38 @@ protrusion at box construction (where the font size is known) and storing it on
 `TextBox` — a broad, opt-in change to be made when a quality pass justifies
 enabling microtypography by default. The design and deltas above are the
 contract that wiring will honor.
+
+## Adjacent techniques (Unreleased)
+
+- **River-seed demerits** (`--typography-antiriver`, opt-in): the KP inner
+  loop penalizes a candidate whose previous line's last drawn inter-word
+  space aligns (within 1% of the measure, natural-width prefix sums) with a
+  space in the candidate line — the two-line seed of a whitespace river.
+  Flat cost `1_000` per seeded edge; applies to ragged flows too.
+  `tests/river_penalty_test.rs` pins: off = classic byte-identical, on never
+  increases detected seeds across a fixed corpus, on is live.
+- **Plass optimal pagination** (`--pdf-optimal-pagination`, opt-in): a
+  document-wide DP over page partitions minimizing the total of the same
+  void-badness + keep-penalty cost the greedy breaker applies per page
+  (Plass & Li, 1981). Forced boundaries stay hard constraints; the final
+  page stays unpenalized; break penalties are precomputed per index so each
+  edge is O(1). `plass_pagination_tests` (in src/pdf.rs) pin legality,
+  total-cost dominance over greedy, and a crafted myopia fixture where the
+  DP strictly wins by trading void on one page for a kept-together block on
+  the next.
+- **SMAWK-accelerated line breaking — evaluated, deliberately NOT
+  implemented.** SMAWK's O(n) total-fit DP requires the edge-cost matrix to
+  be totally monotone (equivalently, the cost satisfies the concave
+  quadrangle inequality). Three of our cost terms violate that premise by
+  construction: (1) the flagged-hyphenation interaction
+  `10_000·flag(i)·flag(j)` has non-monotone 0/1 flags (hyphen points
+  alternate), so cross-differences take both signs; (2) overfull lines pay a
+  deliberately *graded finite* `1e9 + overflow-scaled` cost so overflowing
+  tokens self-isolate — a non-monotone ∞-substitute that breaks the
+  feasibility-window nesting SMAWK relies on; (3) fitness-class adjacency
+  makes the true objective chain-dependent (cost of edge (i,j) depends on
+  the fitness of the line ending at i), and the class-stratified parallel-DP
+  reformulation still inherits (1) and (2). Implementing SMAWK would either
+  change break decisions (violating byte-determinism) or rest on an invalid
+  monotonicity proof. The line DP is also not on the critical path (rank 4 /
+  7.5 ms per the perf gate), so the speedup would buy nothing user-visible.

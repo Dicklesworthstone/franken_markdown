@@ -35,6 +35,7 @@ _fmd() {
                 'diff:Compare two Markdown documents and render semantic visual diff'
                 'book:Assemble a directory of Markdown files into an HTML site and/or PDF book'
                 'batch:Render many Markdown inputs in parallel under a bounded worker budget'
+                'mcp:Run Model Context Protocol (MCP) stdio server exposing tools for agents'
                 'help:Print help for a subcommand'
             )
             _describe -t subcommands 'fmd subcommand' subcommands
@@ -154,6 +155,11 @@ _fmd() {
                         '--mem-budget=[Soft memory ceiling in bytes]:bytes:' \
                         '--timeout=[Wall-clock deadline in seconds]:seconds:' \
                         '*:input files:_files'
+                    ;;
+                mcp)
+                    _arguments \
+                        $global_opts \
+                        '--max-input-bytes=[Maximum Markdown input bytes per tool call]:bytes:'
                     ;;
             esac
             ;;

@@ -56,6 +56,9 @@ Assemble a multi-file directory into a unified multi-page HTML documentation sit
 .TP
 \fBbatch\fR \fIINPUTS...\fR [\fB\-\-out\-dir\fR \fIDIR\fR] [\fB\-\-to\fR \fITARGET\fR] [\fB\-\-workers\fR \fIN\fR]
 Render many Markdown documents concurrently under a bounded worker pool and memory budget.
+.TP
+\fBmcp\fR [\fB\-\-max\-input\-bytes\fR \fIBYTES\fR]
+Run Model Context Protocol (MCP) stdio server over JSON-RPC 2.0 exposing render, verify, and capabilities tools for AI coding agents.
 .SH GLOBAL OPTIONS
 .TP
 \fB\-\-json\fR

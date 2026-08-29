@@ -1,7 +1,7 @@
 # Fish completion for fmd (franken_markdown CLI)
 # Generated and maintained for fmd. Pinned by tests/completions_drift_test.rs.
 
-set -l subcommands render capabilities robot-docs verify watch doctor config stats diff book batch help
+set -l subcommands render capabilities robot-docs verify watch doctor config stats diff book batch mcp help
 
 # Disable file completions by default for the command
 complete -c fmd -f
@@ -26,6 +26,7 @@ complete -c fmd -n "__fish_use_subcommand" -a stats -d "Analyze document intelli
 complete -c fmd -n "__fish_use_subcommand" -a diff -d "Compare two Markdown documents and render semantic visual diff"
 complete -c fmd -n "__fish_use_subcommand" -a book -d "Assemble a directory of Markdown files into an HTML site and/or PDF book"
 complete -c fmd -n "__fish_use_subcommand" -a batch -d "Render many Markdown inputs in parallel under a bounded worker budget"
+complete -c fmd -n "__fish_use_subcommand" -a mcp -d "Run Model Context Protocol (MCP) stdio server exposing tools for agents"
 
 # Subcommand: render
 complete -c fmd -n "__fish_seen_subcommand_from render" -F
@@ -119,3 +120,6 @@ complete -c fmd -n "__fish_seen_subcommand_from batch" -l workers -d "Worker cap
 complete -c fmd -n "__fish_seen_subcommand_from batch" -l batch-mode -a "interactive throughput" -d "Sizing mode"
 complete -c fmd -n "__fish_seen_subcommand_from batch" -l mem-budget -d "Soft memory ceiling in bytes"
 complete -c fmd -n "__fish_seen_subcommand_from batch" -l timeout -d "Wall-clock deadline in seconds"
+
+# Subcommand: mcp
+complete -c fmd -n "__fish_seen_subcommand_from mcp" -l max-input-bytes -d "Maximum Markdown input bytes accepted"

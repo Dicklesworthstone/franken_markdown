@@ -48,6 +48,7 @@ fn all_subcommands_are_present_in_completions_and_man() {
         "diff",
         "book",
         "batch",
+        "mcp",
     ];
 
     let bash = fs::read_to_string("completions/fmd.bash").expect("read bash");

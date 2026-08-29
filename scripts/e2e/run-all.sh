@@ -21,6 +21,7 @@ RUN_ID="${1:-run-all}"
 # validated before any directory is removed or expensive work starts.
 SUITES=(cli-surface render-matrix error-paths sota-typography diagrams doc-intelligence epub-pdfa book)
 [ "${E2E_SKIP_BATCH:-0}" != "1" ] && SUITES+=(batch-orchestration)
+[ -f scripts/e2e/mcp.sh ] && SUITES+=(mcp)
 [ -f scripts/e2e/wasm-browser.sh ] && SUITES+=(wasm-browser)
 [ -f scripts/e2e/parity.sh ] && [ "${E2E_RUN_PARITY:-0}" = "1" ] && SUITES+=(parity)
 [ -f scripts/e2e/installer.sh ] && [ "${E2E_RUN_INSTALLER:-0}" = "1" ] && SUITES+=(installer)
@@ -39,7 +40,7 @@ log() { printf '%s\n' "$*" | tee -a "$LOG"; }
 # Build the fmd binary once; the suites honor FMD_BIN and skip their own builds.
 log "run-all: building fmd (release) once for all suites"
 export FMD_TARGET_DIR="${FMD_TARGET_DIR:-$REPO_ROOT/target/fmd-checks}"
-if ! ( RCH_SHIM_LOCAL_IDE=1 PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$FMD_TARGET_DIR" cargo build --release --quiet --bin fmd --features batch ); then
+if ! ( RCH_SHIM_LOCAL_IDE=1 PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$FMD_TARGET_DIR" cargo build --release --quiet --bin fmd --features batch,mcp ); then
   log "run-all: FAILED to build fmd"
   exit 66
 fi

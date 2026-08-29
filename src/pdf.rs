@@ -240,6 +240,9 @@ struct Line {
     shade: bool,
     /// Vertical-list metadata used by the page builder.
     flow: FlowMark,
+    /// This line must start a new page (book chapter breaks, j0o4).
+    /// choose_page_break treats it as a forced boundary.
+    page_break_before: bool,
     /// Tagged-PDF list membership: the full ancestor chain of enclosing lists,
     /// outermost first, so a deeply nested list line carries every `/L`→`/LI`
     /// level above it. Empty for non-list lines. Set by [`layout_list`].
@@ -1411,14 +1414,129 @@ struct Face {
     /// advances, and a dense 128x128 pair-adjustment table, plus a per-byte
     /// flag marking chars that start a ligature rule (so `substitute` can be
     /// skipped only when provably an identity). Values are identical to what
-    /// the general path computes, so results are bit-for-bit equal.
-    ascii: std::sync::OnceLock<AsciiWidthTables>,
+    /// the general path computes, so results are bit-for-bit equal. When every
+    /// face part is borrowed from the bundled-font registry statics, the
+    /// tables are memoized process-wide (see [`ascii_tables_for_parts`]) so
+    /// repeat renders reuse one `Arc` instead of rebuilding 128 cmap lookups
+    /// and 16,384 `Kerning::pair` probes per face.
+    ascii: std::sync::OnceLock<std::sync::Arc<AsciiWidthTables>>,
 }
 
 struct AsciiWidthTables {
     advances: [u32; 128],
     kern: Box<[i32]>,
     lig_start: [bool; 128],
+}
+
+/// Content identity of a face whose three parts are all borrowed from the
+/// bundled-font registry statics (see `fonts.rs`). A registry static lives for
+/// the whole process and is never mutated through `&`, so its address is a
+/// faithful identity: equal addresses mean the exact same
+/// `Font`/`Kerning`/`Ligatures` objects, and [`AsciiWidthTables`] is a pure
+/// function of those objects, so a memo hit returns bit-identical values.
+/// Faces with any owned part (host-supplied bytes, re-parsed per render) are
+/// never keyed here — their heap addresses are not stable across renders —
+/// so they keep building locally, exactly as before this cache existed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AsciiTableKey {
+    font: usize,
+    kern: usize,
+    lig: usize,
+}
+
+/// Upper bound on memoized faces. The registry exposes ~11 distinct static
+/// triples (2 families x 4 body styles + mono + symbol), so the cap is
+/// belt-and-braces against future registry growth; eviction is FIFO and the
+/// cache only ever holds registry-backed entries, never host font data.
+const ASCII_TABLE_CACHE_CAP: usize = 32;
+
+static ASCII_TABLE_CACHE: std::sync::Mutex<Vec<(AsciiTableKey, std::sync::Arc<AsciiWidthTables>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The ASCII fast tables for a face, memoized process-wide when every part is
+/// borrowed from the registry. The first render of a bundled face builds and
+/// inserts; every later `Faces::load` (one per render, 6+ faces each) reuses
+/// the cached tables instead of rebuilding them. A poisoned lock simply skips
+/// the memo (build-only cost, never a correctness risk), and concurrent first
+/// builds of the same key produce equal tables, with insert re-checked so
+// `&Cow` is load-bearing: the `Cow::Borrowed` match below is what
+// distinguishes registry-backed faces (memoizable by pointer identity) from
+// per-render owned faces. `&Font` per clippy::ptr_arg would delete that.
+#[allow(clippy::ptr_arg)]
+fn ascii_tables_for_parts(
+    font: &Cow<'static, Font>,
+    kern: &Cow<'static, Kerning>,
+    lig: &Cow<'static, Ligatures>,
+) -> std::sync::Arc<AsciiWidthTables> {
+    if let (Cow::Borrowed(font), Cow::Borrowed(kern), Cow::Borrowed(lig)) = (font, kern, lig) {
+        let key = AsciiTableKey {
+            font: std::ptr::from_ref(font).addr(),
+            kern: std::ptr::from_ref(kern).addr(),
+            lig: std::ptr::from_ref(lig).addr(),
+        };
+        if let Ok(cache) = ASCII_TABLE_CACHE.lock() {
+            if let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key) {
+                return std::sync::Arc::clone(tables);
+            }
+        }
+        let tables = std::sync::Arc::new(build_ascii_tables(font, kern, lig));
+        if let Ok(mut cache) = ASCII_TABLE_CACHE.lock() {
+            if let Some((_, cached)) = cache.iter().find(|&&(k, _)| k == key) {
+                return std::sync::Arc::clone(cached);
+            }
+            if cache.len() >= ASCII_TABLE_CACHE_CAP {
+                cache.remove(0);
+            }
+            cache.push((key, std::sync::Arc::clone(&tables)));
+        }
+        return tables;
+    }
+    std::sync::Arc::new(build_ascii_tables(
+        font.as_ref(),
+        kern.as_ref(),
+        lig.as_ref(),
+    ))
+}
+
+/// Build the ASCII fast tables from a face's parts: 128 cmap glyph ids with
+/// their 1/1000-em advances, the dense 128x128 kern matrix, and the per-byte
+/// ligature-start flags. This is the original per-face computation, unchanged;
+/// only where the result is stored differs.
+fn build_ascii_tables(font: &Font, kern: &Kerning, lig: &Ligatures) -> AsciiWidthTables {
+    let mut advances = [0u32; 128];
+    let mut lig_start = [false; 128];
+    let rule_start_glyphs: std::collections::BTreeSet<u16> =
+        lig.rule_start_glyphs().copied().collect();
+    let mut glyph_ids = [0u16; 128];
+    for b in 0usize..128 {
+        let glyph = font.glyph_index(b as u8 as char);
+        glyph_ids[b] = glyph;
+        advances[b] = glyph_advance_1000(font, glyph);
+        lig_start[b] = rule_start_glyphs.contains(&glyph);
+    }
+    let upm = i32::from(font.units_per_em);
+    let mut kern_pairs = vec![0i32; 128 * 128];
+    if upm != 0 {
+        for l in 0usize..128 {
+            for r in 0usize..128 {
+                kern_pairs[l * 128 + r] =
+                    i32::from(kern.pair(glyph_ids[l], glyph_ids[r])) * 1000 / upm;
+            }
+        }
+    }
+    AsciiWidthTables {
+        advances,
+        kern: kern_pairs.into_boxed_slice(),
+        lig_start,
+    }
+}
+
+/// Advance of `glyph` in 1/1000-em (PDF text space) units for `font`.
+fn glyph_advance_1000(font: &Font, glyph: u16) -> u32 {
+    if font.units_per_em == 0 {
+        return 0;
+    }
+    font.advance_width(glyph) as u32 * 1000 / font.units_per_em as u32
 }
 
 #[derive(Clone, Copy)]
@@ -1462,10 +1580,7 @@ impl Face {
     }
 
     fn glyph_advance_1000(&self, glyph: u16) -> u32 {
-        if self.font.units_per_em == 0 {
-            return 0;
-        }
-        self.font.advance_width(glyph) as u32 * 1000 / self.font.units_per_em as u32
+        glyph_advance_1000(&self.font, glyph)
     }
 
     fn glyph_index(&self, ch: char) -> u16 {
@@ -1473,34 +1588,8 @@ impl Face {
     }
 
     fn ascii_tables(&self) -> &AsciiWidthTables {
-        self.ascii.get_or_init(|| {
-            let mut advances = [0u32; 128];
-            let mut lig_start = [false; 128];
-            let rule_start_glyphs: std::collections::BTreeSet<u16> =
-                self.lig.rule_start_glyphs().copied().collect();
-            let mut glyph_ids = [0u16; 128];
-            for b in 0usize..128 {
-                let glyph = self.font.glyph_index(b as u8 as char);
-                glyph_ids[b] = glyph;
-                advances[b] = self.glyph_advance_1000(glyph);
-                lig_start[b] = rule_start_glyphs.contains(&glyph);
-            }
-            let upm = i32::from(self.font.units_per_em);
-            let mut kern = vec![0i32; 128 * 128];
-            if upm != 0 {
-                for l in 0usize..128 {
-                    for r in 0usize..128 {
-                        kern[l * 128 + r] =
-                            i32::from(self.kern.pair(glyph_ids[l], glyph_ids[r])) * 1000 / upm;
-                    }
-                }
-            }
-            AsciiWidthTables {
-                advances,
-                kern: kern.into_boxed_slice(),
-                lig_start,
-            }
-        })
+        self.ascii
+            .get_or_init(|| ascii_tables_for_parts(&self.font, &self.kern, &self.lig))
     }
 
     /// Fast path for pure-ASCII text whose bytes provably cannot start a
@@ -2239,7 +2328,8 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
             Block::CodeBlock { .. }
             | Block::ThematicBreak
             | Block::HtmlBlock(_)
-            | Block::MathBlock(_) => {}
+            | Block::MathBlock(_)
+            | Block::PageBreak => {}
         }
     }
 }
@@ -2292,7 +2382,7 @@ fn collect_text(blocks: &[Block], out: &mut String) {
                 }
             }
             Block::HtmlBlock(html) => out.push_str(html),
-            Block::ThematicBreak => {}
+            Block::ThematicBreak | Block::PageBreak => {}
         }
     }
 }
@@ -2810,6 +2900,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs,
+            page_break_before: false,
             image: None,
         });
     }
@@ -2824,6 +2915,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let type_scale = opts.type_scale();
         let mut cx = LayoutCx {
             opts,
+            pending_page_break: false,
             type_scale,
             faces,
             page,
@@ -2859,6 +2951,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let type_scale = opts.type_scale();
         let mut cx = LayoutCx {
             opts,
+            pending_page_break: false,
             type_scale,
             faces,
             page,
@@ -3491,6 +3584,9 @@ struct ListFrame {
 
 struct LayoutCx<'a> {
     opts: &'a PdfOptions,
+    /// Set by Block::PageBreak (book chapters, j0o4): the NEXT line produced
+    /// gets page_break_before, forcing a page boundary in choose_page_break.
+    pending_page_break: bool,
     type_scale: crate::theme::TypeScale,
     faces: &'a Faces,
     page: PageGeom,
@@ -3578,7 +3674,14 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
             injected_toc = true;
             layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
         }
+        let before = out.len();
         layout_block(block, indent, out, cx);
+        // A PageBreak marker targets the first line of the FOLLOWING block
+        // (the chapter start), so the boundary lands before the new chapter.
+        if cx.pending_page_break && out.len() > before {
+            out[before].page_break_before = true;
+            cx.pending_page_break = false;
+        }
     }
 }
 
@@ -3714,6 +3817,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         list_path: Vec::new(),
                         table_cols: Vec::new(),
                         segs,
+                        page_break_before: false,
                         image: None,
                     });
                 }
@@ -3755,6 +3859,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     list_path: Vec::new(),
                     table_cols: Vec::new(),
                     segs,
+                    page_break_before: false,
                     image: None,
                 });
             }
@@ -3813,6 +3918,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             out.push(Line {
                 size: 6.0,
                 gap_after: 8.0,
+                page_break_before: false,
                 rule: true,
                 rule_x: cx.page.left + indent,
                 quote_bars: Vec::new(),
@@ -3869,6 +3975,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     kind: FlowKind::Paragraph,
                 },
             );
+        }
+        Block::PageBreak => {
+            cx.pending_page_break = true;
         }
     }
 }
@@ -3993,6 +4102,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
     out.push(Line {
         size: 3.0,
         gap_after,
+        page_break_before: false,
         rule: true,
         rule_x: page.left + indent,
         quote_bars: Vec::new(),
@@ -4042,6 +4152,7 @@ fn layout_standalone_image(
     let group = cx.alloc_flow();
     out.push(Line {
         size: (height_pt / 1.32).max(1.0),
+        page_break_before: false,
         gap_after: 7.0,
         rule: false,
         rule_x: cx.page.left + indent,
@@ -17051,6 +17162,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 list_path: Vec::new(),
                 table_cols: cols,
                 segs,
+                page_break_before: false,
                 image: None,
             });
         }
@@ -17076,6 +17188,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         list_path: Vec::new(),
         table_cols: Vec::new(),
         segs: Vec::new(),
+        page_break_before: false,
         image: None,
     };
 
@@ -18392,6 +18505,7 @@ fn layout_inlines(
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs,
+            page_break_before: false,
             image: None,
         });
     }
@@ -18432,6 +18546,7 @@ fn layout_prefixed_inlines(
 
     if !built.has_boxes {
         out.push(Line {
+            page_break_before: false,
             size: spec.size,
             gap_after: spec.gap_after,
             rule: false,
@@ -18506,6 +18621,7 @@ fn layout_prefixed_inlines(
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs,
+            page_break_before: false,
             image: None,
         });
     }
@@ -18569,6 +18685,7 @@ fn layout_inlines_greedy(
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs,
+            page_break_before: false,
             image: None,
         });
     }
@@ -21453,6 +21570,7 @@ mod font_slot_text_refs_tests {
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs,
+            page_break_before: false,
             image,
         }
     }
@@ -26328,15 +26446,27 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     let capacity =
         (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
     let mut used = 0.0f32;
+
+    // Forced boundaries (book chapter breaks, j0o4): a line flagged
+    // page_break_before must start a new page. When the next forced boundary
+    // falls within this page's capacity, end the page there regardless of
+    // scoring; a boundary beyond capacity is a later page's concern.
+    let first_forced = (start + 1..lines.len()).find(|&i| lines[i].page_break_before);
     let mut last_fit = start;
 
     for (idx, line) in lines.iter().enumerate().skip(start) {
         let leading = line_leading(line);
-        if idx > start && used + leading > capacity {
+        if idx > start && (line.page_break_before || used + leading > capacity) {
             break;
         }
         used += leading + line.gap_after;
         last_fit = idx + 1;
+    }
+
+    if let Some(forced) = first_forced
+        && forced <= last_fit
+    {
+        return forced;
     }
 
     if last_fit <= start + 1 || last_fit >= lines.len() {
@@ -26371,6 +26501,11 @@ fn choose_page_break_with_void_control(
 ) -> (usize, Option<usize>) {
     let baseline_end = choose_page_break(lines, start, page);
     if baseline_end >= lines.len() {
+        return (baseline_end, None);
+    }
+    // A forced boundary (chapter break) is never refit: pulling content up
+    // past it would merge chapters onto one page.
+    if (start + 1..=baseline_end.min(lines.len() - 1)).any(|i| lines[i].page_break_before) {
         return (baseline_end, None);
     }
 
@@ -26771,6 +26906,7 @@ mod keep_with_next_tests {
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs: Vec::new(),
+            page_break_before: false,
             image: None,
         }
     }
@@ -26987,6 +27123,7 @@ mod void_budget_tests {
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs: Vec::new(),
+            page_break_before: false,
             image: None,
         }
     }
@@ -30015,6 +30152,7 @@ mod pdf_writer_tests {
                     width: 0.0,
                 })
                 .collect(),
+            page_break_before: false,
             image: None,
         }
     }
@@ -30034,6 +30172,7 @@ mod pdf_writer_tests {
     fn test_layout_cx<'a>(opts: &'a PdfOptions, faces: &'a Faces, page: PageGeom) -> LayoutCx<'a> {
         LayoutCx {
             opts,
+            pending_page_break: false,
             type_scale: opts.type_scale(),
             faces,
             page,
@@ -31458,6 +31597,7 @@ mod pdf_writer_tests {
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
                 segs,
+                page_break_before: false,
                 image: None,
             }
         }
@@ -31621,6 +31761,7 @@ mod pdf_writer_tests {
                 list_path,
                 table_cols: Vec::new(),
                 segs: Vec::new(),
+                page_break_before: false,
                 image: None,
             }
         }
@@ -34805,6 +34946,7 @@ mod table_wrap_tests {
         let page = test_page();
         let mut cx = LayoutCx {
             opts: &opts,
+            pending_page_break: false,
             type_scale: opts.type_scale(),
             faces: &faces,
             page,
@@ -35502,6 +35644,7 @@ mod coverage_gap_tests {
             list_path: Vec::new(),
             table_cols: Vec::new(),
             segs: Vec::new(),
+            page_break_before: false,
             image: None,
         };
         paragraph_cache.insert_if_room(key.clone(), vec![line.clone()]);
@@ -36810,6 +36953,7 @@ mod coverage_gap_tests {
     ) -> LayoutCx<'a> {
         LayoutCx {
             opts,
+            pending_page_break: false,
             type_scale: opts.type_scale(),
             faces,
             page,

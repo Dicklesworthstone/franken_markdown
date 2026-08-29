@@ -3749,8 +3749,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 let n = run_len(bytes, i, '`');
                 if let Some(end) = find_code_close(bytes, i + n, '`', n) {
                     flush(&mut buf, &mut els);
-                    let inner: String = bytes[i + n..end].iter().collect();
-                    els.push(InlineEl::Node(Inline::Code(normalize_code_span(&inner))));
+                    els.push(InlineEl::Node(Inline::Code(normalize_code_span(
+                        &bytes[i + n..end],
+                    ))));
                     i = end + n;
                 } else {
                     for _ in 0..n {
@@ -4375,14 +4376,36 @@ fn find_code_close(chars: &[char], from: usize, ch: char, n: usize) -> Option<us
     None
 }
 
-fn normalize_code_span(s: &str) -> String {
+fn normalize_code_span(chars: &[char]) -> String {
     // CommonMark: collapse internal line endings to spaces; strip one leading and
     // trailing space if the span is not all spaces.
-    let s = s.replace('\n', " ");
-    if s.len() >= 2 && s.starts_with(' ') && s.ends_with(' ') && s.trim() != "" {
-        s[1..s.len() - 1].to_string()
+    //
+    // Single-collect discipline: the span String is materialized exactly once,
+    // straight from the char slice. The strip guard mirrors the old
+    // post-`replace` test exactly: `replace` mapped each '\n' (1 UTF-8 byte) to
+    // ' ' (1 byte), so a first/last '\n' is a first/last ' ' afterwards, the
+    // byte-strip `s[1..len-1]` of the replaced string equals this char-strip,
+    // and '\n' -> ' ' preserves every char's whitespace class, so
+    // `s.trim() != ""` equals `any(!char::is_whitespace)`. Clean spans (no '\n',
+    // no strip — the common shape) collect with zero extra passes; newline
+    // spans fold '\n' -> ' ' during the collect, byte-identical to
+    // `str::replace` because each newline is exactly one byte becoming exactly
+    // one byte (runs are not collapsed: one space per newline, as before).
+    let strip = chars.len() >= 2
+        && matches!(chars[0], ' ' | '\n')
+        && matches!(chars[chars.len() - 1], ' ' | '\n')
+        && chars.iter().any(|c| !c.is_whitespace());
+    let body = if strip {
+        &chars[1..chars.len() - 1]
     } else {
-        s
+        chars
+    };
+    if body.contains(&'\n') {
+        body.iter()
+            .map(|&c| if c == '\n' { ' ' } else { c })
+            .collect()
+    } else {
+        body.iter().collect()
     }
 }
 
@@ -7162,6 +7185,88 @@ mod bracket_tests {
         assert!(h("[text](/u)").contains("<a href=\"/u\">text</a>"));
         assert!(h("[**b** t](/u)").contains("<a href=\"/u\"><strong>b</strong> t</a>"));
         assert!(h("[![img](i.png)](page)").contains("<a href=\"page\"><img"));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod code_span_normalize_tests {
+    use super::normalize_code_span;
+    use crate::{HtmlOptions, render_html};
+
+    // The pre-single-collect implementation, kept verbatim as the oracle:
+    // replace every '\n' with one space, then strip a single leading/trailing
+    // space when the span is not all whitespace.
+    fn oracle(s: &str) -> String {
+        let s = s.replace('\n', " ");
+        if s.len() >= 2 && s.starts_with(' ') && s.ends_with(' ') && s.trim() != "" {
+            s[1..s.len() - 1].to_string()
+        } else {
+            s
+        }
+    }
+
+    fn check(s: &str) {
+        let chars: Vec<char> = s.chars().collect();
+        assert_eq!(normalize_code_span(&chars), oracle(s), "input {s:?}");
+    }
+
+    #[test]
+    fn normalize_code_span_matches_replace_semantics_across_all_shapes() {
+        let shapes = [
+            "", " ", "  ", "   ", "\n", "\n\n", " \n ", "\t", "\t \t", " \t ",
+            "a", " a", "a ", " a ", "  a  ", "  a", "a  ", "a\t", "\ta",
+            "code", "foo bar baz", "x", "a b c d e f",
+            "a\nb", "a\n\nb", "a\n\n\nb", "line1\nline2\nline3", "\na", "a\n", "\na\n",
+            " a\nb ", " \na ", " a\n ", " \n\n ", "\n a \n", " \n\na\n\n ", "\n \n \n",
+            " a b ", "  `x`  ", " tab\tsep ", "\ta\nb\t",
+            "héllo wörld", " aé ", " é ", "é", "emoji 🎉 here", " 🎉 ", "🎉\n🎉",
+            "a\u{00a0}b", " a\u{00a0} ", "é\nö", " é\nö ",
+            "  spaces  and\nnewlines  mixed  ",
+        ];
+        for s in shapes {
+            check(s);
+        }
+        // Long spans and dense newline runs.
+        check(&"identifier_with_a_rather_long_name_1234567890".repeat(8));
+        check(&"alpha\n".repeat(64));
+        check(&format!(" {} ", "content\nline".repeat(32)));
+
+        // Exhaustive sweep over a small alphabet (letters, space, newline,
+        // multibyte, tab): every string of length 0..=6 hits every shape class
+        // boundary (clean / newline / strip / newline+strip / all-whitespace,
+        // including multibyte and tab adjacency at both strip edges).
+        let alphabet = ['a', ' ', '\n', 'é', '\t'];
+        let mut count = 0usize;
+        for len in 0..=6usize {
+            let total = alphabet.len().pow(len as u32);
+            for mut idx in 0..total {
+                let mut s = String::new();
+                for _ in 0..len {
+                    s.push(alphabet[idx % alphabet.len()]);
+                    idx /= alphabet.len();
+                }
+                check(&s);
+                count += 1;
+            }
+        }
+        assert!(count > 15_000, "sweep size {count}");
+    }
+
+    #[test]
+    fn normalize_code_span_shapes_render_end_to_end() {
+        let h = |s: &str| render_html(s, &HtmlOptions::default()).unwrap_or_default();
+        assert!(h("`code`").contains("<code>code</code>"));
+        assert!(h("` a `").contains("<code>a</code>"));
+        assert!(h("`a\nb`").contains("<code>a b</code>"));
+        assert!(h("` a\nb `").contains("<code>a b</code>"));
+        // Every newline becomes exactly one space, never merged with neighbors.
+        // (A blank line cannot occur inside one paragraph span: the block
+        // splitter ends the paragraph first — multi-newline runs are still
+        // pinned by the oracle sweep above.)
+        assert!(h("`a\nx\nb`").contains("<code>a x b</code>"));
+        // All-space spans are preserved verbatim (strip guard needs non-blank).
+        assert!(h("`   `").contains("<code>   </code>"));
     }
 }
 

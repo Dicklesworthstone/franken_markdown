@@ -41,6 +41,21 @@ jobs:
           # Accept the XML report (isCompliant="true"), JSON (isCompliant:true),
           # and the legacy "passed" phrasing across veraPDF versions.
           grep -qE 'isCompliant="true"|"isCompliant":\s*true|validationResult.*passed' validation.txt || { cat validation.txt; exit 1; }
+      # PDF/UA-1 tagged-structure leg (bead 8b3i): the same verapdf/cli image
+      # validates the tagged PDF every render already emits. UA1 has known
+      # partial-support gaps (docs/PDF_ACCESSIBILITY.md), so the gate ratchets
+      # on failedRules: a committed baseline caps the known-bad count; worse
+      # fails CI, better tightens the baseline deliberately on review.
+      # tests/fixtures/pdfua-baseline.txt holds the current measured count.
+      - name: Validate PDF/UA-1 tagged structure (ratcheted baseline)
+        run: |
+          docker run --rm -v /tmp/pdfa-test:/data verapdf/cli --flavour ua1 /data/doc.pdf > ua-validation.txt 2>&1 || true
+          failed=$(grep -oE 'failedRules="[0-9]+"' ua-validation.txt | grep -oE '[0-9]+' | head -1)
+          failed=${failed:-999}
+          baseline=$(tr -dc '0-9' < tests/fixtures/pdfua-baseline.txt)
+          echo "pdfua failedRules=$failed baseline=$baseline"
+          grep -oE 'clause="[^"]+" testNumber="[0-9]+" status="failed"' ua-validation.txt | sort | uniq -c | sort -rn | head -20 || true
+          [ "$failed" -le "$baseline" ] || { echo "PDF/UA regression: $failed > $baseline"; exit 1; }
       - name: Assert non-PDF/A default is byte-identical
         run: |
           ./target/release/fmd /tmp/pdfa-test/doc.md --to pdf --out /tmp/pdfa-test/default.pdf
@@ -52,3 +67,4 @@ jobs:
           path: |
             /tmp/pdfa-test/doc.pdf
             validation.txt
+            ua-validation.txt

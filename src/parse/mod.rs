@@ -158,8 +158,9 @@ struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
     // Reuse only outer inline handoffs. Recursive link/image/strike text is
-    // assembled into temporary strings and participates in link-containment
-    // checks, so it intentionally bypasses this per-parse cache.
+    // parsed in place on the parent's char buffer and participates in
+    // link-containment checks, so it intentionally bypasses this per-parse
+    // cache (admission stays depth-0 only).
     inline_cache: InlineParseCache,
     inline_parse_depth: usize,
     /// Current block-nesting recursion depth, used to bound deeply-nested
@@ -1824,7 +1825,7 @@ fn parse_lines_as_inlines(
             let chars = collect_inline_chars_from_lines(lines, scan.byte_len);
             (
                 parse_inlines_chars_with_refs_profiled(
-                    chars,
+                    &chars,
                     scan.byte_len,
                     refs,
                     profiler,
@@ -3486,7 +3487,7 @@ fn parse_inlines_with_refs_profiled_uncached(
         return record_plain_inline_parse(text, profiler, started);
     }
     let bytes = collect_inline_chars_from_text(text);
-    parse_inlines_chars_with_refs_profiled(bytes, text.len(), refs, profiler, started)
+    parse_inlines_chars_with_refs_profiled(&bytes, text.len(), refs, profiler, started)
 }
 
 fn record_plain_inline_parse(
@@ -3513,6 +3514,65 @@ fn record_plain_inline_parse(
         started,
     );
     inlines
+}
+
+/// Nested-inline entry for spans that already exist as a slice of the parent
+/// run's char buffer (link text, reference-link text, strikethrough inner).
+/// Behaves exactly like `parse_inlines_with_refs_profiled` at depth > 0 — no
+/// cache consult or insert (admission is depth-0 only) — while skipping the
+/// collect-to-String + re-decode round-trip through
+/// `collect_inline_chars_from_text`.
+fn parse_inlines_chars_nested(
+    chars: &[char],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Inline> {
+    let started = profiler.checkpoint();
+    profiler.inline_parse_depth += 1;
+    let inlines = if !inline_chars_needs_full_parse(chars) {
+        record_plain_inline_chars_parse(chars, profiler, started)
+    } else {
+        let byte_len = inline_chars_byte_len(chars, profiler.enabled);
+        parse_inlines_chars_with_refs_profiled(chars, byte_len, refs, profiler, started)
+    };
+    profiler.inline_parse_depth -= 1;
+    inlines
+}
+
+fn record_plain_inline_chars_parse(
+    chars: &[char],
+    profiler: &mut ParseProfiler,
+    started: Option<ParseStageStart>,
+) -> Vec<Inline> {
+    let inlines = if chars.is_empty() {
+        Vec::new()
+    } else {
+        vec![Inline::Text(chars.iter().collect())]
+    };
+    let char_count = if profiler.enabled {
+        chars.len()
+    } else {
+        0
+    };
+    profiler.record_since(
+        "inline_parse",
+        char_count,
+        inline_chars_byte_len(chars, profiler.enabled),
+        inlines.len(),
+        INLINE_PARSE_NOTES,
+        started,
+    );
+    inlines
+}
+
+/// Byte length of a char slice — the `str::len` of the equivalent text —
+/// computed only when the profiler needs it for its stage ledger.
+fn inline_chars_byte_len(chars: &[char], enabled: bool) -> usize {
+    if enabled {
+        chars.iter().map(|c| c.len_utf8()).sum()
+    } else {
+        0
+    }
 }
 
 /// Parse a GFM footnote-reference id starting at `start` (just past `[^`).
@@ -3577,8 +3637,47 @@ fn inline_www_prefix_before_dot(bytes: &[u8], dot: usize) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"www"))
 }
 
+/// Char-slice mirror of `inline_text_needs_full_parse` so nested inline spans
+/// can be gated without materializing a String. Equivalent by construction:
+/// every special byte is ASCII (UTF-8 never embeds ASCII bytes inside multibyte
+/// sequences, so byte equality and char equality agree), and the `://`/`www`
+/// checks are pure ASCII window comparisons at the same positions.
+fn inline_chars_needs_full_parse(chars: &[char]) -> bool {
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if matches!(
+            c,
+            '\\' | '\n' | '\r' | '`' | '!' | '[' | '<' | '&' | '~' | '*' | '_' | '@' | '$'
+        ) {
+            return true;
+        }
+        if c == ':'
+            && chars.get(i + 1) == Some(&'/')
+            && chars.get(i + 2) == Some(&'/')
+            && inline_chars_http_scheme_before_colon(chars, i)
+        {
+            return true;
+        }
+        if c == '.' && inline_chars_www_prefix_before_dot(chars, i) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn inline_chars_http_scheme_before_colon(chars: &[char], colon: usize) -> bool {
+    (colon >= 4 && starts_with_ascii_chars_ignore_case(chars, colon - 4, b"http"))
+        || (colon >= 5 && starts_with_ascii_chars_ignore_case(chars, colon - 5, b"https"))
+}
+
+fn inline_chars_www_prefix_before_dot(chars: &[char], dot: usize) -> bool {
+    dot >= 3 && starts_with_ascii_chars_ignore_case(chars, dot - 3, b"www")
+}
+
 fn parse_inlines_chars_with_refs_profiled(
-    bytes: Vec<char>,
+    bytes: &[char],
     byte_len: usize,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
@@ -3632,8 +3731,8 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '`' => {
-                let n = run_len(&bytes, i, '`');
-                if let Some(end) = find_code_close(&bytes, i + n, '`', n) {
+                let n = run_len(bytes, i, '`');
+                if let Some(end) = find_code_close(bytes, i + n, '`', n) {
                     flush(&mut buf, &mut els);
                     let inner: String = bytes[i + n..end].iter().collect();
                     els.push(InlineEl::Node(Inline::Code(normalize_code_span(&inner))));
@@ -3646,9 +3745,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
-                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(&bytes));
+                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
                 if let Some((alt, dest, title, next)) =
-                    parse_link_like(&bytes, i + 1, pairs, refs, profiler)
+                    parse_link_like(bytes, i + 1, pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -3658,7 +3757,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i + 1, pairs, refs, profiler)
+                    parse_reference_link_like(bytes, i + 1, pairs, refs, profiler)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -3676,7 +3775,7 @@ fn parse_inlines_chars_with_refs_profiled(
                 // GFM footnote reference: [^id] where id has no spaces or
                 // brackets. Emits FootnoteRef; the renderer numbers it and
                 // drops refs whose id has no definition (post-parse pass).
-                match parse_footnote_ref_id(&bytes, i + 2) {
+                match parse_footnote_ref_id(bytes, i + 2) {
                     Some((id, next)) => {
                         flush(&mut buf, &mut els);
                         els.push(InlineEl::Node(Inline::FootnoteRef { id }));
@@ -3694,9 +3793,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 // exempt — their description is flattened to alt text — so this
                 // guard applies only to the link-forming paths, not the `!` image
                 // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
-                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(&bytes));
+                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
                 if let Some((content, dest, title, next)) =
-                    parse_link_like(&bytes, i, pairs, refs, profiler)
+                    parse_link_like(bytes, i, pairs, refs, profiler)
                         .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);
@@ -3707,7 +3806,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(&bytes, i, pairs, refs, profiler)
+                    parse_reference_link_like(bytes, i, pairs, refs, profiler)
                         .filter(|(content, ..)| !contains_link(content))
                 {
                     flush(&mut buf, &mut els);
@@ -3717,7 +3816,7 @@ fn parse_inlines_chars_with_refs_profiled(
                         content,
                     }));
                     i = next;
-                } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
+                } else if let Some((html, next)) = parse_inline_html(bytes, i) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
@@ -3727,7 +3826,7 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '<' => {
-                if let Some((label, dest, next)) = parse_autolink(&bytes, i) {
+                if let Some((label, dest, next)) = parse_autolink(bytes, i) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -3735,7 +3834,7 @@ fn parse_inlines_chars_with_refs_profiled(
                         content: vec![Inline::Text(label)],
                     }));
                     i = next;
-                } else if let Some((html, next)) = parse_inline_html(&bytes, i) {
+                } else if let Some((html, next)) = parse_inline_html(bytes, i) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
@@ -3745,7 +3844,7 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '&' => {
-                if let Some((decoded, next)) = parse_character_reference(&bytes, i) {
+                if let Some((decoded, next)) = parse_character_reference(bytes, i) {
                     buf.push_str(&decoded);
                     i = next;
                 } else {
@@ -3754,9 +3853,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '$' => {
-                let n = run_len(&bytes, i, '$');
+                let n = run_len(bytes, i, '$');
                 if n >= 2 {
-                    if let Some((inner, next)) = parse_math_delim(&bytes, i, 2) {
+                    if let Some((inner, next)) = parse_math_delim(bytes, i, 2) {
                         flush(&mut buf, &mut els);
                         els.push(InlineEl::Node(Inline::DisplayMath(inner)));
                         i = next;
@@ -3764,7 +3863,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }
                 }
                 if n == 1 {
-                    if let Some((inner, next)) = parse_math_delim(&bytes, i, 1) {
+                    if let Some((inner, next)) = parse_math_delim(bytes, i, 1) {
                         flush(&mut buf, &mut els);
                         els.push(InlineEl::Node(Inline::Math(inner)));
                         i = next;
@@ -3774,11 +3873,11 @@ fn parse_inlines_chars_with_refs_profiled(
                 buf.push(c);
                 i += 1;
             }
-            '~' if run_len(&bytes, i, '~') >= 2 => {
-                if let Some((inner, next)) = parse_delim(&bytes, i, '~', 2) {
+            '~' if run_len(bytes, i, '~') >= 2 => {
+                if let Some((start, end, next)) = parse_delim(bytes, i, '~', 2) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Strikethrough(
-                        parse_inlines_with_refs_profiled(&inner, refs, profiler),
+                        parse_inlines_chars_nested(&bytes[start..end], refs, profiler),
                     )));
                     i = next;
                 } else {
@@ -3792,7 +3891,7 @@ fn parse_inlines_chars_with_refs_profiled(
                 // actual pairing into emphasis/strong is deferred to
                 // `resolve_emphasis` (the delimiter-stack pass) so that nested and
                 // overlapping runs resolve correctly.
-                let n = run_len(&bytes, i, c);
+                let n = run_len(bytes, i, c);
                 let before = i.checked_sub(1).map(|idx| bytes[idx]);
                 let after = bytes.get(i + n).copied();
                 let (can_open, can_close) = emphasis_flanking(before, after, c);
@@ -3816,14 +3915,14 @@ fn parse_inlines_chars_with_refs_profiled(
             }
             _ => {
                 let mut bare_autolink = None;
-                if inline_chars_maybe_bare_url_start(&bytes, i) {
-                    bare_autolink = parse_bare_url_autolink(&bytes, i);
+                if inline_chars_maybe_bare_url_start(bytes, i) {
+                    bare_autolink = parse_bare_url_autolink(bytes, i);
                 }
                 if bare_autolink.is_none()
                     && maybe_bare_email
                     && inline_char_maybe_bare_email_start(c)
                 {
-                    bare_autolink = parse_bare_email_autolink(&bytes, i);
+                    bare_autolink = parse_bare_email_autolink(bytes, i);
                 }
                 if let Some((label, dest, next)) = bare_autolink {
                     flush(&mut buf, &mut els);
@@ -4272,9 +4371,9 @@ fn normalize_code_span(s: &str) -> String {
     }
 }
 
-/// Parse a balanced delimiter run `<ch>{want} ... <ch>{want}` returning the inner
-/// text and the index just past the close.
-fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(String, usize)> {
+/// Parse a balanced delimiter run `<ch>{want} ... <ch>{want}` returning the
+/// inner text's char range plus the index just past the close.
+fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(usize, usize, usize)> {
     let open_run = run_len(chars, i, ch);
     if open_run < want {
         return None;
@@ -4293,8 +4392,7 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(Strin
                 && chars[j - 1] != ' '
                 && !is_intraword_underscore_run(chars, j, run)
             {
-                let inner: String = chars[after..j].iter().collect();
-                return Some((inner, j + want));
+                return Some((after, j, j + want));
             }
             j += run;
         } else {
@@ -4385,7 +4483,6 @@ fn parse_link_like(
     if chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
         return None;
     }
-    let text: String = chars[i + 1..j].iter().collect();
     let mut k = j + 2;
 
     skip_link_whitespace(chars, &mut k);
@@ -4413,7 +4510,7 @@ fn parse_link_like(
         return None;
     }
     Some((
-        parse_inlines_with_refs_profiled(&text, refs, profiler),
+        parse_inlines_chars_nested(&chars[i + 1..j], refs, profiler),
         dest,
         title,
         k + 1,
@@ -4621,10 +4718,9 @@ fn parse_reference_link_like(
     };
 
     let reference = refs.get(&label)?;
-    // Only now, with a real reference, collect + parse the link text as content.
-    let text: String = chars[i + 1..close].iter().collect();
+    // Only now, with a real reference, parse the link text in place as content.
     Some((
-        parse_inlines_with_refs_profiled(&text, refs, profiler),
+        parse_inlines_chars_nested(&chars[i + 1..close], refs, profiler),
         reference.dest.clone(),
         reference.title.clone(),
         next,
@@ -5445,6 +5541,50 @@ mod inline_autolink_candidate_tests {
             "uppercase scheme must not take the plain-text inline fast path"
         );
         assert!(super::inline_text_needs_full_parse("See WWW.example.test"));
+    }
+
+    #[test]
+    fn char_slice_gate_matches_byte_gate_exactly() {
+        // The nested inline entry gates on the char slice directly
+        // (`inline_chars_needs_full_parse`); every other entry gates on the
+        // encoded text's bytes (`inline_text_needs_full_parse`). The two must
+        // agree on every input or nested spans would route differently than
+        // top-level text with the same content.
+        fn gates_agree(text: &str) -> bool {
+            let chars = text.chars().collect::<Vec<_>>();
+            super::inline_text_needs_full_parse(text)
+                == super::inline_chars_needs_full_parse(&chars)
+        }
+
+        for src in [
+            "",
+            "plain ascii text",
+            "a*b*c _d_ `code` ~~strike~~ [link](/u) <b> &amp;",
+            "back\\slash and @at and $math$ and !bang",
+            "See HTTP://example.test",
+            "See http://example.test",
+            "See https://example.test",
+            "See WWW.example.test",
+            "See www.example.test and www",
+            "no scheme: //example.test",
+            "almost:http:// x ttp:// x http:/ x http://",
+            "htp:// http: // hTtP://Ex aMpLe",
+            "\u{e9}http:// \u{e9}www. caf\u{e9}: caf\u{e9}.",
+            "emoji \u{1f642} then http://x and www.y",
+            "\u{1f680}\u{1f680}\u{1f680}:",
+            "line\nbreak and line\rbreak",
+        ] {
+            assert!(gates_agree(src), "gate mismatch on {src:?}");
+            // Every substring too: window boundaries at multibyte edges are
+            // where byte-index and char-index reasoning could diverge.
+            let chars: Vec<char> = src.chars().collect();
+            for start in 0..chars.len() {
+                for end in start..chars.len() {
+                    let sub: String = chars[start..=end].iter().collect();
+                    assert!(gates_agree(&sub), "gate mismatch on {sub:?} ({src:?})");
+                }
+            }
+        }
     }
 }
 

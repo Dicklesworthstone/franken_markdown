@@ -122,7 +122,7 @@ fn trim4(v: f64) -> String {
         frac /= 10;
         width -= 1;
     }
-    format!("{sign}{int}.{frac:0width$}")
+    format!("{}{}.{:0w$}", sign, int, frac, w = width)
 }
 
 /// XML double-quoted attribute escaping: `&`, `<`, `>`, `"`, `'`.
@@ -557,12 +557,11 @@ impl Poster {
         size: f64,
         l: f64,
         r: f64,
-        quote: bool,
+        _quote: bool, // ink already carried by run styles
         gap_after: f64,
     ) {
         let leading = size * self.line_height;
         let lines = self.wrap(pieces, size, r - l);
-        let _ = quote; // ink already carried by styles
         for line in &lines {
             let baseline = self.y + size * 0.85;
             self.draw_words(line, l, baseline, size);

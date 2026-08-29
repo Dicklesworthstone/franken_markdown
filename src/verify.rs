@@ -356,6 +356,25 @@ fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
         }
         return find_source_span(source, &format!("](#{id})"));
     }
+    if finding.code == "heading_level_skip" {
+        if let Some((_, text)) = finding.detail.split_once(": ") {
+            return find_source_span(source, text);
+        }
+    }
+    if finding.code == "missing_alt_text" {
+        if let Some(rest) = finding.detail.strip_prefix("image ") {
+            let dest = rest.strip_suffix(" has empty alt text").unwrap_or(rest);
+            return find_source_span(source, &format!("![]({dest})"))
+                .or_else(|| find_source_span(source, dest));
+        }
+    }
+    if finding.code == "generic_link_text" {
+        if let Some(rest) = finding.detail.strip_prefix("link text \"") {
+            if let Some((text, _)) = rest.split_once("\" is meaningless") {
+                return find_source_span(source, text);
+            }
+        }
+    }
     None
 }
 

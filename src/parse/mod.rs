@@ -2860,6 +2860,7 @@ struct Marker<'a> {
     indent: usize,
     ordered: bool,
     start: u64,
+    marker_char: char,
     content_indent: usize,
     rest: &'a str,
 }
@@ -2884,6 +2885,7 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
             indent,
             ordered: false,
             start: 1,
+            marker_char: first,
             content_indent: indent + marker_cols + padding,
             rest,
         });
@@ -2897,10 +2899,12 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
             && let Ok(start) = digits.parse()
             && let Some((rest, padding)) = marker_padding(&after[1..], indent + digit_len + 1)
         {
+            let delim = after.chars().next()?;
             return Some(Marker {
                 indent,
                 ordered: true,
                 start,
+                marker_char: delim,
                 content_indent: indent + digit_len + 1 + padding,
                 rest,
             });
@@ -2986,7 +2990,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         } else {
             list_marker(lines[i])
         };
-        let Some(m) = marker.filter(|m| m.ordered == ordered) else {
+        let Some(m) = marker.filter(|m| m.ordered == ordered && m.marker_char == first.marker_char) else {
             break;
         };
         let mut item_lines = vec![m.rest];
@@ -2999,8 +3003,11 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                     j += 1;
                 }
                 if j < lines.len()
-                    && list_marker(lines[j])
-                        .is_some_and(|next| next.ordered == ordered && next.indent == m.indent)
+                    && list_marker(lines[j]).is_some_and(|next| {
+                        next.ordered == ordered
+                            && next.marker_char == first.marker_char
+                            && next.indent == m.indent
+                    })
                 {
                     tight = false;
                     i = j;
@@ -3027,7 +3034,6 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
 
             if let Some(next) = list_marker(lines[i])
                 && next.indent <= m.indent
-                && (next.ordered == ordered || !next.ordered || next.start == 1)
             {
                 break;
             }
@@ -4912,16 +4918,38 @@ fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
     )
 }
 
+fn is_html_tag_name_start(c: char) -> bool {
+    c.is_ascii_alphabetic()
+}
+
+fn is_html_tag_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-'
+}
+
+fn is_html_attr_name_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_' || c == ':'
+}
+
+fn is_html_attr_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-')
+}
+
+fn is_html_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
+}
+
 fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
     if chars.get(i) != Some(&'<') {
         return None;
     }
+    let n = chars.len();
+    // 1. Comment: <!-- ... -->
     if chars.get(i + 1) == Some(&'!')
         && chars.get(i + 2) == Some(&'-')
         && chars.get(i + 3) == Some(&'-')
     {
         let mut j = i + 4;
-        while j + 2 < chars.len() {
+        while j + 2 < n {
             if chars[j] == '-' && chars[j + 1] == '-' && chars[j + 2] == '>' {
                 let html: String = chars[i..=j + 2].iter().collect();
                 return Some((html, j + 3));
@@ -4930,25 +4958,141 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
         }
         return None;
     }
-
-    let first = chars.get(i + 1).copied()?;
-    let tag_like = first.is_ascii_alphabetic()
-        || first == '!'
-        || first == '?'
-        || (first == '/' && chars.get(i + 2).is_some_and(|ch| ch.is_ascii_alphabetic()));
-    if !tag_like {
+    // 2. Processing instruction: <? ... ?>
+    if chars.get(i + 1) == Some(&'?') {
+        let mut j = i + 2;
+        while j + 1 < n {
+            if chars[j] == '?' && chars[j + 1] == '>' {
+                let html: String = chars[i..=j + 1].iter().collect();
+                return Some((html, j + 2));
+            }
+            j += 1;
+        }
         return None;
     }
-
+    // 3. CDATA: <![CDATA[ ... ]]>
+    if i + 8 < n && chars[i + 1..i + 9].iter().collect::<String>() == "![CDATA[" {
+        let mut j = i + 9;
+        while j + 2 < n {
+            if chars[j] == ']' && chars[j + 1] == ']' && chars[j + 2] == '>' {
+                let html: String = chars[i..=j + 2].iter().collect();
+                return Some((html, j + 3));
+            }
+            j += 1;
+        }
+        return None;
+    }
+    // 4. Declaration: <!ASCII_UPPER ... >
+    if chars.get(i + 1) == Some(&'!') && chars.get(i + 2).is_some_and(|c| c.is_ascii_uppercase()) {
+        let mut j = i + 3;
+        while j < n && chars[j] != '>' {
+            j += 1;
+        }
+        if j < n && chars[j] == '>' {
+            let html: String = chars[i..=j].iter().collect();
+            return Some((html, j + 1));
+        }
+        return None;
+    }
+    // 5. Closing tag: </tag_name whitespace* >
+    if chars.get(i + 1) == Some(&'/') {
+        let mut j = i + 2;
+        if j >= n || !is_html_tag_name_start(chars[j]) {
+            return None;
+        }
+        while j < n && is_html_tag_name_char(chars[j]) {
+            j += 1;
+        }
+        while j < n && is_html_whitespace(chars[j]) {
+            j += 1;
+        }
+        if j < n && chars[j] == '>' {
+            let html: String = chars[i..=j].iter().collect();
+            return Some((html, j + 1));
+        }
+        return None;
+    }
+    // 6. Open tag: <tag_name (whitespace+ attr)* whitespace* /? >
     let mut j = i + 1;
-    while j < chars.len() && chars[j] != '>' && chars[j] != '\n' {
+    if j >= n || !is_html_tag_name_start(chars[j]) {
+        return None;
+    }
+    while j < n && is_html_tag_name_char(chars[j]) {
         j += 1;
     }
-    if chars.get(j) != Some(&'>') {
-        return None;
+    loop {
+        let ws_start = j;
+        while j < n && is_html_whitespace(chars[j]) {
+            j += 1;
+        }
+        let had_ws = j > ws_start;
+        if j < n && chars[j] == '/' {
+            j += 1;
+            while j < n && is_html_whitespace(chars[j]) {
+                j += 1;
+            }
+            if j < n && chars[j] == '>' {
+                let html: String = chars[i..=j].iter().collect();
+                return Some((html, j + 1));
+            }
+            return None;
+        }
+        if j < n && chars[j] == '>' {
+            let html: String = chars[i..=j].iter().collect();
+            return Some((html, j + 1));
+        }
+        if !had_ws || j >= n || !is_html_attr_name_start(chars[j]) {
+            return None;
+        }
+        while j < n && is_html_attr_name_char(chars[j]) {
+            j += 1;
+        }
+        let before_eq = j;
+        while j < n && is_html_whitespace(chars[j]) {
+            j += 1;
+        }
+        if j < n && chars[j] == '=' {
+            j += 1;
+            while j < n && is_html_whitespace(chars[j]) {
+                j += 1;
+            }
+            if j >= n {
+                return None;
+            }
+            if chars[j] == '"' {
+                j += 1;
+                while j < n && chars[j] != '"' {
+                    j += 1;
+                }
+                if j >= n || chars[j] != '"' {
+                    return None;
+                }
+                j += 1;
+            } else if chars[j] == '\'' {
+                j += 1;
+                while j < n && chars[j] != '\'' {
+                    j += 1;
+                }
+                if j >= n || chars[j] != '\'' {
+                    return None;
+                }
+                j += 1;
+            } else {
+                let val_start = j;
+                while j < n
+                    && !is_html_whitespace(chars[j])
+                    && !matches!(chars[j], '"' | '\'' | '=' | '<' | '>' | '`')
+                {
+                    j += 1;
+                }
+                if j == val_start {
+                    return None;
+                }
+            }
+        } else {
+            j = before_eq;
+        }
     }
-    let html: String = chars[i..=j].iter().collect();
-    Some((html, j + 1))
 }
 
 fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {

@@ -1540,8 +1540,6 @@ fn push_escaped_url(s: &str, out: &mut String) {
                     | b'/'
                     | b'?'
                     | b'#'
-                    | b'['
-                    | b']'
             )
         {
             if b == b'&' {

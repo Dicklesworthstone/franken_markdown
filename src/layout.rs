@@ -2873,6 +2873,7 @@ fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
 /// detection would make the DP edge cost quadratic in line length.
 const RIVER_SEED_DEMERITS: i64 = 1_000;
 
+#[allow(clippy::needless_range_loop)]
 fn river_seed_demerits(
     items: &[ParagraphItem],
     widths: &[i64],

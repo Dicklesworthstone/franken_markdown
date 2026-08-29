@@ -3,7 +3,9 @@
   "version": "0.4.2",
   "description": "Browser/WASM package for franken_markdown Markdown to HTML/PDF rendering.",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./fmd-view.js"
+  ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
   "homepage": "https://github.com/Dicklesworthstone/franken_markdown#readme",

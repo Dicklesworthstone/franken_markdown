@@ -267,7 +267,7 @@ fn wasm_capabilities_json_exposes_browser_safe_contract() {
     let json = capabilities_json();
 
     assert!(json.contains("\"schema\":\"fmd-wasm-capabilities-v1\""));
-    assert!(json.contains("\"outputs\":[\"html\",\"pdf\"]"));
+    assert!(json.contains("\"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"]"));
     assert!(json.contains("\"filesystem\":false"));
     assert!(json.contains("\"process\":false"));
     assert!(json.contains("\"network\":false"));

@@ -74,6 +74,7 @@ struct ForgeView: View {
     @State private var exportStatusMessage: String?
     @State private var showCopiedAlert = false
     @State private var auxiliaryPanel: AuxiliaryPanel?
+    @State private var showDocumentLab = false
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
@@ -107,6 +108,10 @@ struct ForgeView: View {
         .onChange(of: renderer.fontFamily) { _, _ in renderer.renderNow() }
         .onChange(of: renderer.darkMode) { _, _ in renderer.renderNow() }
         .onChange(of: renderer.allowRawHtml) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.toc) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.tocDepth) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.language) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.documentTitle) { _, _ in renderer.renderNow() }
         .onChange(of: renderFontScale) { _, scale in
             renderer.renderFontScale = clampedRenderFontScale(scale)
             renderer.renderNow()
@@ -155,6 +160,11 @@ struct ForgeView: View {
                 }
             }
             .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showDocumentLab) {
+            DocumentLabView(renderer: renderer)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .top) {
             if showCopiedAlert {
@@ -229,6 +239,19 @@ struct ForgeView: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
 
+            Button {
+                showDocumentLab = true
+            } label: {
+                Label("Document Lab", systemImage: "bolt.horizontal.circle.fill")
+                    .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Lab.emerald, in: Capsule())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
             if horizontalSizeClass == .regular {
 #if targetEnvironment(macCatalyst)
                 Button {
@@ -268,37 +291,27 @@ struct ForgeView: View {
 #endif
             }
 
-            Button {
-                triggerPdfExport()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.down.doc")
-                    Text("PDF")
+            Menu {
+                Button { triggerPdfExport() } label: {
+                    Label("PDF document", systemImage: "doc.richtext")
                 }
-                .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
-                .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(LinearGradient(colors: [Lab.amber, Lab.amber.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            }
-            .disabled(isExporting)
-
-            Button {
-                triggerHtmlExport()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "curlybraces")
-                    Text("HTML")
+                Button { triggerHtmlExport() } label: {
+                    Label("Self-contained HTML", systemImage: "globe")
                 }
-                .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
-                .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(LinearGradient(colors: [Lab.cyan, Lab.cyan.opacity(0.78)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                Divider()
+                Button { showDocumentLab = true } label: {
+                    Label("All publishing formats…", systemImage: "sparkles.rectangle.stack")
+                }
+            } label: {
+                Label("Publish", systemImage: "arrow.up.doc")
+                    .font(.system(size: Lab.size(11), weight: .bold, design: .monospaced))
+                    .foregroundStyle(Lab.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .disabled(isExporting)
         }
@@ -500,8 +513,34 @@ struct ForgeView: View {
                     Divider().background(Lab.stroke)
 
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("DOCUMENT SYSTEM")
+                            .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
+                            .foregroundStyle(Lab.secondary)
+                        TextField("Title", text: $renderer.documentTitle)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Author", text: $renderer.documentAuthor)
+                            .textFieldStyle(.roundedBorder)
+                        Picker("Language", selection: $renderer.language) {
+                            Text("English").tag("en")
+                            Text("Deutsch").tag("de")
+                            Text("Français").tag("fr")
+                            Text("Español").tag("es")
+                            Text("Nederlands").tag("nl")
+                        }
+                        Toggle("Table of contents", isOn: $renderer.toc)
+                        if renderer.toc {
+                            Stepper("Contents depth: H\(renderer.tocDepth)", value: $renderer.tocDepth, in: 1...6)
+                        }
+                    }
+                    .font(.system(size: Lab.size(11)))
+                    .foregroundStyle(Lab.text)
+
+                    Divider().background(Lab.stroke)
+
+                    VStack(alignment: .leading, spacing: 8) {
                         Toggle("PDF Page Numbers", isOn: $renderer.pageNumbers)
                         Toggle("Code Line Numbers", isOn: $renderer.codeLineNumbers)
+                        Toggle("Optical-margin microtype", isOn: $renderer.microtypeProtrusion)
                         Toggle("Allow Raw HTML", isOn: $renderer.allowRawHtml)
                     }
                     .font(.system(size: Lab.size(12)))

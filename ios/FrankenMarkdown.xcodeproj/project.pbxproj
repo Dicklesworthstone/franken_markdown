@@ -13,6 +13,7 @@
 		42AA8FBAEB45C36937DF447D /* ForgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 450492AA363B17872450BAF4 /* ForgeView.swift */; };
 		6264F508E1C65CE9E5E53C27 /* MarkdownCodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6131BEA50DECB58BD103AC5A /* MarkdownCodeEditor.swift */; };
 		66DDDDAB530D13E14E1407FB /* Renderer in Resources */ = {isa = PBXBuildFile; fileRef = 6141E231B487C77A5B1683E2 /* Renderer */; };
+		79AB0548B879EAC96926D540 /* DocumentLabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F24025622B57C8A027B6EE60 /* DocumentLabView.swift */; };
 		A87F806CDA194CF0402CAEA6 /* FrankenMarkdownApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */; };
 		C8B55CBEAEB2627B054A0626 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19C79608149D8DC651F4E806 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -27,6 +28,7 @@
 		9FF0FC9185DD69073DCEFA93 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		B9867A57FB86816F535584A0 /* RendererHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererHost.swift; sourceTree = "<group>"; };
 		EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		F24025622B57C8A027B6EE60 /* DocumentLabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentLabView.swift; sourceTree = "<group>"; };
 		F5364EFE11307299824181A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -34,6 +36,7 @@
 		A3F92906F8DDD3CC75D2ACCE /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				F24025622B57C8A027B6EE60 /* DocumentLabView.swift */,
 				450492AA363B17872450BAF4 /* ForgeView.swift */,
 				088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */,
 				F5364EFE11307299824181A8 /* Info.plist */,
@@ -136,6 +139,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				79AB0548B879EAC96926D540 /* DocumentLabView.swift in Sources */,
 				42AA8FBAEB45C36937DF447D /* ForgeView.swift in Sources */,
 				A87F806CDA194CF0402CAEA6 /* FrankenMarkdownApp.swift in Sources */,
 				6264F508E1C65CE9E5E53C27 /* MarkdownCodeEditor.swift in Sources */,

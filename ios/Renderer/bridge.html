@@ -93,6 +93,76 @@
         }
       };
 
+      window.frankenAnalyze = async (command) => {
+        const markdown = String(command.markdown);
+        const [stats, audit, search] = await Promise.all([
+          renderer.documentStats(markdown),
+          renderer.accessibilityAudit(markdown),
+          renderer.searchIndex(markdown)
+        ]);
+        return JSON.stringify({stats, audit, search});
+      };
+
+      window.frankenExportArtifact = async (command) => {
+        const markdown = String(command.markdown);
+        const options = command.options || {};
+        let output;
+        switch (String(command.format)) {
+          case 'svg': output = await renderer.renderSvg(markdown, options); break;
+          case 'epub': output = await renderer.renderEpub(markdown, options); break;
+          case 'interactive-html': output = await renderer.renderInteractiveHtml(markdown, options); break;
+          case 'search-index': {
+            const json = JSON.stringify(await renderer.searchIndex(markdown), null, 2);
+            return JSON.stringify({
+              base64: btoa(unescape(encodeURIComponent(json))),
+              byteLength: new TextEncoder().encode(json).byteLength,
+              extension: 'json', mimeType: 'application/json', diagnostics: []
+            });
+          }
+          default: throw new Error(`Unsupported artifact format: ${command.format}`);
+        }
+        const bytes = output.bytes;
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        return JSON.stringify({
+          base64: btoa(binary), byteLength: bytes.byteLength,
+          extension: output.extension, mimeType: output.mimeType,
+          diagnostics: output.diagnostics
+        });
+      };
+
+      window.frankenDiff = async (command) => {
+        const output = await renderer.renderSemanticDiff(
+          String(command.oldMarkdown), String(command.newMarkdown), command.options || {}
+        );
+        const metrics = await renderer.semanticDiff(
+          String(command.oldMarkdown), String(command.newMarkdown), command.options || {}
+        );
+        return JSON.stringify({html: output.text(), metrics});
+      };
+
+      window.frankenBook = async (command) => {
+        const files = Array.isArray(command.files) ? command.files : [];
+        const options = command.options || {};
+        const output = command.format === 'pdf'
+          ? await renderer.renderBookPdf(files, options)
+          : await renderer.renderBookSite(files, options);
+        const bytes = output.bytes;
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        return JSON.stringify({
+          base64: btoa(binary), byteLength: bytes.byteLength,
+          extension: output.extension, mimeType: output.mimeType,
+          diagnostics: output.diagnostics
+        });
+      };
+
       bridge.postMessage({type: 'ready'});
     } catch (error) {
       bridge.postMessage({type: 'failure', message: `WASM initialization failed: ${error}`});

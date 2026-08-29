@@ -4,6 +4,7 @@
 //! into clean, standalone SVG vector graphics for HTML and PDF rendering.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,136 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fast exact fixed-point writer for SVG coordinate floats
+// ---------------------------------------------------------------------------
+
+/// Formats an SVG coordinate/dimension with exactly the bytes
+/// `format!("{:.1}", v)` produces (one fractional digit, trailing `.0`
+/// kept), bypassing the exact-decimal ("dragon") float formatter that
+/// `{:.N}` otherwise invokes per emitted number.
+struct SvgNum(f32);
+
+impl fmt::Display for SvgNum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_svg_fixed(f, self.0, 1)
+    }
+}
+
+/// Formats an SVG size with exactly the bytes `format!("{:.0}", v)`
+/// produces (no fractional digits, no decimal point).
+struct SvgInt(f32);
+
+impl fmt::Display for SvgInt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_svg_fixed(f, self.0, 0)
+    }
+}
+
+/// Byte-identical replacement for `format!("{:.frac_digits}", v)` on f32,
+/// derived from the value's exact binary expansion instead of the flt2dec
+/// exact-decimal ("dragon") machinery.
+///
+/// Rust's `{:.N}` expands the f32's exact value `m * 2^e` into its
+/// terminating decimal digits and rounds that expansion at the Nth
+/// fractional digit with round-half-to-even ties (probe: `{:.2}` of
+/// 0.125f32 -> "0.12", `{:.2}` of 2.675f32 -> "2.67" because 2.675f32 is
+/// exactly 2.6749999523…). For `e < 0` the value is `m * 5^k / 10^k` with
+/// `k = -e`, so `value * 10^N = m * 5^N / 2^(k-N)` exactly; the quotient and
+/// the tie test are therefore an integer shift and a bitmask compare. For
+/// `e >= 0` the value is the integer `m << e`. Negatives keep their sign
+/// even when the rounded magnitude is zero ("-0.0" for -0.04), matching std.
+///
+/// Domain: every finite f32 with `0.05 <= |v| <= 4e9` (0.05 is the f32
+/// nearest 0.05; every f32 below it rounds to zero at <= 1 fractional digit
+/// and no exact 0.05 exists in binary, so the boundary is never a tie).
+/// Every f32 below 0.05 prints its zero form directly; NaN, infinities and
+/// larger magnitudes fall back to the std formatter, so the emitted bytes
+/// match std for every f32. Locked by differential tests against `format!`
+/// (dyadic sweeps including every tie shape, exhaustive small integers, a
+/// per-exponent mantissa sweep through subnormals, and random bit patterns).
+fn write_svg_fixed(out: &mut impl fmt::Write, v: f32, frac_digits: u32) -> fmt::Result {
+    if !v.is_finite() || v.abs() > 4.0e9 {
+        // Unreachable from diagram geometry (layout sums stay far below),
+        // but keep exact std bytes if it ever happens.
+        return if frac_digits == 0 {
+            write!(out, "{v:.0}")
+        } else {
+            write!(out, "{v:.1}")
+        };
+    }
+    if v.abs() < 0.05 {
+        let zero = match (v.is_sign_negative(), frac_digits) {
+            (true, 0) => "-0",
+            (true, _) => "-0.0",
+            (false, 0) => "0",
+            (false, _) => "0.0",
+        };
+        return out.write_str(zero);
+    }
+    let bits = v.to_bits();
+    // |v| >= 0.05 excludes every subnormal, so the implicit bit is always set.
+    let m = ((bits & 0x007f_ffff) | 0x0080_0000) as u64; // [2^23, 2^24)
+    let e2 = ((bits >> 23) & 0xff) as i32 - 127 - 23; // value = m * 2^e2
+    let pow5: u64 = if frac_digits == 0 { 1 } else { 5 };
+    let scale: u64 = if frac_digits == 0 { 1 } else { 10 };
+    let q: u64 = if e2 >= 0 {
+        (m << e2) * scale // integral value; no digits to round away
+    } else {
+        let t = (-e2) as u32 - frac_digits; // >= 1 - frac_digits
+        if t == 0 {
+            m * pow5 // exactly frac_digits fractional bits; nothing to round
+        } else {
+            let n = m * pow5; // = value * 2^t * 10^frac_digits, exactly
+            let q0 = n >> t;
+            let rem = n & ((1u64 << t) - 1);
+            let half = 1u64 << (t - 1);
+            q0 + u64::from(rem > half || (rem == half && (q0 & 1) == 1))
+        }
+    };
+    // q = round_half_even(|v| * 10^frac_digits); emit sign + digits + point.
+    let fd = frac_digits as usize;
+    let mut rev = [0u8; 12]; // |v| <= 4e9 -> q <= 4e10 -> at most 11 digits
+    let mut i = 0usize;
+    let mut n = q;
+    while n > 0 {
+        rev[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    if i == 0 {
+        rev[0] = b'0'; // |v| in [0.05, 0.5) at {:.0} rounds to "0"/"-0"
+        i = 1;
+    }
+    let mut b = [0u8; 15]; // '-' + 11 digits + '.' + 1 fractional digit
+    let mut len = 0usize;
+    if v.is_sign_negative() {
+        b[0] = b'-';
+        len = 1;
+    }
+    if i > fd {
+        for p in (fd..i).rev() {
+            b[len] = rev[p];
+            len += 1;
+        }
+    } else {
+        b[len] = b'0';
+        len += 1;
+    }
+    if fd > 0 {
+        b[len] = b'.';
+        len += 1;
+        for p in (0..fd).rev() {
+            b[len] = if p < i { rev[p] } else { b'0' };
+            len += 1;
+        }
+    }
+    if let Ok(s) = std::str::from_utf8(&b[..len]) {
+        out.write_str(s)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +265,11 @@ fn render_flowchart(src: &str) -> Option<String> {
     // Generate SVG
     let mut svg = String::with_capacity(4096);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {:.0} {:.0}\" width=\"{:.0}\" height=\"{:.0}\" class=\"fmd-diagram fmd-flowchart\">\n",
-        total_width, total_height, total_width, total_height
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-flowchart\">\n",
+        SvgInt(total_width),
+        SvgInt(total_height),
+        SvgInt(total_width),
+        SvgInt(total_height)
     ));
 
     // Defs: Arrowhead markers and styles
@@ -176,8 +310,11 @@ fn render_flowchart(src: &str) -> Option<String> {
 
             if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
                 svg.push_str(&format!(
-                    "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" class=\"fmd-edge-path\"{dash_attr} />\n",
-                    x1, y1, x2, y2
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    SvgNum(x1),
+                    SvgNum(y1),
+                    SvgNum(x2),
+                    SvgNum(y2)
                 ));
             } else {
                 let mid_x = (x1 + x2) / 2.0;
@@ -191,8 +328,15 @@ fn render_flowchart(src: &str) -> Option<String> {
                     }
                 };
                 svg.push_str(&format!(
-                    "<path d=\"M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}\" class=\"fmd-edge-path\"{dash_attr} />\n",
-                    x1, y1, cx1, cy1, cx2, cy2, x2, y2
+                    "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    SvgNum(x1),
+                    SvgNum(y1),
+                    SvgNum(cx1),
+                    SvgNum(cy1),
+                    SvgNum(cx2),
+                    SvgNum(cy2),
+                    SvgNum(x2),
+                    SvgNum(y2)
                 ));
             }
 
@@ -202,13 +346,15 @@ fn render_flowchart(src: &str) -> Option<String> {
                 let mid_y = (y1 + y2) / 2.0;
                 let lbl_w = (lbl.len() as f32 * 7.0 + 8.0).max(24.0);
                 svg.push_str(&format!(
-                    "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"16\" class=\"fmd-edge-label-bg\" />\n",
-                    mid_x - lbl_w / 2.0, mid_y - 8.0, lbl_w
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"16\" class=\"fmd-edge-label-bg\" />\n",
+                    SvgNum(mid_x - lbl_w / 2.0),
+                    SvgNum(mid_y - 8.0),
+                    SvgNum(lbl_w)
                 ));
                 svg.push_str(&format!(
-                    "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-edge-label-text\">{}</text>\n",
-                    mid_x,
-                    mid_y,
+                    "<text x=\"{}\" y=\"{}\" class=\"fmd-edge-label-text\">{}</text>\n",
+                    SvgNum(mid_x),
+                    SvgNum(mid_y),
                     escape_svg_text(lbl)
                 ));
             }
@@ -224,27 +370,33 @@ fn render_flowchart(src: &str) -> Option<String> {
             match node.shape {
                 NodeShape::Rectangle => {
                     svg.push_str(&format!(
-                        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" class=\"fmd-node-rect\" />\n",
-                        node.x, node.y, node.width, node.height
+                        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-node-rect\" />\n",
+                        SvgNum(node.x),
+                        SvgNum(node.y),
+                        SvgNum(node.width),
+                        SvgNum(node.height)
                     ));
                 }
                 NodeShape::Rounded | NodeShape::Stadium => {
                     svg.push_str(&format!(
-                        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" class=\"fmd-node-rounded\" />\n",
-                        node.x, node.y, node.width, node.height
+                        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-node-rounded\" />\n",
+                        SvgNum(node.x),
+                        SvgNum(node.y),
+                        SvgNum(node.width),
+                        SvgNum(node.height)
                     ));
                 }
                 NodeShape::Diamond => {
                     let pts = format!(
-                        "{:.1},{:.1} {:.1},{:.1} {:.1},{:.1} {:.1},{:.1}",
-                        cx,
-                        node.y,
-                        node.x + node.width,
-                        cy,
-                        cx,
-                        node.y + node.height,
-                        node.x,
-                        cy
+                        "{},{} {},{} {},{} {},{}",
+                        SvgNum(cx),
+                        SvgNum(node.y),
+                        SvgNum(node.x + node.width),
+                        SvgNum(cy),
+                        SvgNum(cx),
+                        SvgNum(node.y + node.height),
+                        SvgNum(node.x),
+                        SvgNum(cy)
                     );
                     svg.push_str(&format!(
                         "<polygon points=\"{}\" class=\"fmd-node-diamond\" />\n",
@@ -254,16 +406,18 @@ fn render_flowchart(src: &str) -> Option<String> {
                 NodeShape::Circle => {
                     let r = (node.width.min(node.height) / 2.0).max(18.0);
                     svg.push_str(&format!(
-                        "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{:.1}\" class=\"fmd-node-rounded\" />\n",
-                        cx, cy, r
+                        "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" class=\"fmd-node-rounded\" />\n",
+                        SvgNum(cx),
+                        SvgNum(cy),
+                        SvgNum(r)
                     ));
                 }
             }
 
             svg.push_str(&format!(
-                "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-node-text\">{}</text>\n",
-                cx,
-                cy,
+                "<text x=\"{}\" y=\"{}\" class=\"fmd-node-text\">{}</text>\n",
+                SvgNum(cx),
+                SvgNum(cy),
                 escape_svg_text(&node.label)
             ));
         }
@@ -748,8 +902,11 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
 
     let mut svg = String::with_capacity(4096);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {:.0} {:.0}\" width=\"{:.0}\" height=\"{:.0}\" class=\"fmd-diagram fmd-sequence\">\n",
-        total_width, total_height, total_width, total_height
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-sequence\">\n",
+        SvgInt(total_width),
+        SvgInt(total_height),
+        SvgInt(total_width),
+        SvgInt(total_height)
     ));
 
     svg.push_str("<defs>\n");
@@ -781,8 +938,11 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
     // Lifelines
     for part in &participants {
         svg.push_str(&format!(
-            "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" class=\"fmd-seq-lifeline\" />\n",
-            part.x, header_y, part.x, bottom_header_y
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-seq-lifeline\" />\n",
+            SvgNum(part.x),
+            SvgNum(header_y),
+            SvgNum(part.x),
+            SvgNum(bottom_header_y)
         ));
     }
 
@@ -808,15 +968,18 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
                     };
 
                     svg.push_str(&format!(
-                        "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" class=\"fmd-seq-msg-line\"{dash_attr} />\n",
-                        x1, curr_y, x2, curr_y
+                        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-seq-msg-line\"{dash_attr} />\n",
+                        SvgNum(x1),
+                        SvgNum(curr_y),
+                        SvgNum(x2),
+                        SvgNum(curr_y)
                     ));
 
                     let mid_x = (x1 + x2) / 2.0;
                     svg.push_str(&format!(
-                        "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-seq-msg-text\">{}</text>\n",
-                        mid_x,
-                        curr_y - 6.0,
+                        "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-msg-text\">{}</text>\n",
+                        SvgNum(mid_x),
+                        SvgNum(curr_y - 6.0),
                         escape_svg_text(text)
                     ));
                 }
@@ -846,13 +1009,16 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
                 let note_w = (max_x - min_x).max(80.0);
                 let note_h = 24.0;
                 svg.push_str(&format!(
-                    "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" class=\"fmd-seq-note\" />\n",
-                    min_x, curr_y - note_h / 2.0, note_w, note_h
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-note\" />\n",
+                    SvgNum(min_x),
+                    SvgNum(curr_y - note_h / 2.0),
+                    SvgNum(note_w),
+                    SvgNum(note_h)
                 ));
                 svg.push_str(&format!(
-                    "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-seq-note-text\">{}</text>\n",
-                    min_x + note_w / 2.0,
-                    curr_y,
+                    "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-note-text\">{}</text>\n",
+                    SvgNum(min_x + note_w / 2.0),
+                    SvgNum(curr_y),
                     escape_svg_text(text)
                 ));
                 curr_y += event_gap;
@@ -865,25 +1031,31 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
         let bx = part.x - part_w / 2.0;
         // Top
         svg.push_str(&format!(
-            "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" class=\"fmd-seq-box\" />\n",
-            bx, margin, part_w, part_h
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-box\" />\n",
+            SvgNum(bx),
+            SvgNum(margin),
+            SvgNum(part_w),
+            SvgNum(part_h)
         ));
         svg.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-seq-box-text\">{}</text>\n",
-            part.x,
-            margin + part_h / 2.0,
+            "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-box-text\">{}</text>\n",
+            SvgNum(part.x),
+            SvgNum(margin + part_h / 2.0),
             escape_svg_text(&part.label)
         ));
 
         // Bottom
         svg.push_str(&format!(
-            "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" class=\"fmd-seq-box\" />\n",
-            bx, bottom_header_y, part_w, part_h
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-box\" />\n",
+            SvgNum(bx),
+            SvgNum(bottom_header_y),
+            SvgNum(part_w),
+            SvgNum(part_h)
         ));
         svg.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"{:.1}\" class=\"fmd-seq-box-text\">{}</text>\n",
-            part.x,
-            bottom_header_y + part_h / 2.0,
+            "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-box-text\">{}</text>\n",
+            SvgNum(part.x),
+            SvgNum(bottom_header_y + part_h / 2.0),
             escape_svg_text(&part.label)
         ));
     }
@@ -910,16 +1082,19 @@ fn render_ascii_diagram(src: &str) -> Option<String> {
 
     let mut svg = String::with_capacity(2048);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {:.0} {:.0}\" width=\"{:.0}\" height=\"{:.0}\" class=\"fmd-diagram fmd-ascii\">\n",
-        total_width, total_height, total_width, total_height
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-ascii\">\n",
+        SvgInt(total_width),
+        SvgInt(total_height),
+        SvgInt(total_width),
+        SvgInt(total_height)
     ));
     svg.push_str("<style>\n.fmd-ascii-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; fill: var(--fg-default, #1f2328); dominant-baseline: hanging; white-space: pre; }\n@media (prefers-color-scheme: dark) { .fmd-ascii-text { fill: #e6edf3; } }\n</style>\n");
 
     let mut y = 16.0;
     for line in lines {
         svg.push_str(&format!(
-            "<text x=\"16\" y=\"{:.1}\" class=\"fmd-ascii-text\">{}</text>\n",
-            y,
+            "<text x=\"16\" y=\"{}\" class=\"fmd-ascii-text\">{}</text>\n",
+            SvgNum(y),
             escape_svg_text(line)
         ));
         y += char_h;

@@ -1358,8 +1358,9 @@ fn parse_blocks_with_refs_profiled(
         if let Some((fence_ch, fence_len, info)) = scanned_open_fence(scan) {
             let started = profiler.checkpoint();
             let lang = {
-                let t = info.trim();
-                t.split_whitespace()
+                let decoded = decode_info_string(info.trim());
+                decoded
+                    .split_whitespace()
                     .next()
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
@@ -1855,25 +1856,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
         return None;
     }
 
-    let dest = if chars[i] == '<' {
-        i += 1;
-        let start = i;
-        while i < chars.len() && chars[i] != '>' {
-            i += 1;
-        }
-        if i >= chars.len() {
-            return None;
-        }
-        let dest: String = chars[start..i].iter().collect();
-        i += 1;
-        dest
-    } else {
-        let start = i;
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
-        }
-        chars[start..i].iter().collect()
-    };
+    let dest = parse_link_destination(&chars, &mut i)?;
     if dest.is_empty() {
         return None;
     }
@@ -1882,22 +1865,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     let title = if i >= chars.len() {
         None
     } else {
-        let close_ch = match chars[i] {
-            '"' => '"',
-            '\'' => '\'',
-            '(' => ')',
-            _ => return None,
-        };
-        i += 1;
-        let start = i;
-        while i < chars.len() && chars[i] != close_ch {
-            i += 1;
-        }
-        if i >= chars.len() {
-            return None;
-        }
-        let title: String = chars[start..i].iter().collect();
-        i += 1;
+        let title = parse_link_title(&chars, &mut i)?;
         skip_spaces(&chars, &mut i);
         if i != chars.len() {
             return None;
@@ -2176,6 +2144,30 @@ fn open_fence_after_indent(t: &str) -> Option<(char, usize, &str)> {
         return None;
     }
     Some((marker as char, n, info))
+}
+
+fn decode_info_string(info: &str) -> String {
+    let chars: Vec<char> = info.chars().collect();
+    let mut out = String::with_capacity(info.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() && is_ascii_punct(chars[i + 1]) {
+            out.push(chars[i + 1]);
+            i += 2;
+        } else if chars[i] == '&' {
+            if let Some((decoded, next)) = parse_character_reference(&chars, i) {
+                out.push_str(&decoded);
+                i = next;
+            } else {
+                out.push('&');
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn is_close_fence(line: &str, ch: char, len: usize) -> bool {
@@ -3491,6 +3483,9 @@ fn parse_inlines_chars_with_refs_profiled(
                     Inline::SoftBreak
                 }));
                 i += 1;
+                while i < bytes.len() && (bytes[i] == ' ' || bytes[i] == '\t') {
+                    i += 1;
+                }
             }
             '`' => {
                 let n = run_len(&bytes, i, '`');
@@ -3700,6 +3695,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
         }
+    }
+    while buf.ends_with(' ') {
+        buf.pop();
     }
     flush(&mut buf, &mut els);
     let resolver_allocations = if has_emphasis_delimiters {
@@ -4209,6 +4207,25 @@ fn contains_link(inlines: &[Inline]) -> bool {
     })
 }
 
+fn skip_link_whitespace(chars: &[char], i: &mut usize) {
+    let mut saw_newline = false;
+    while *i < chars.len() {
+        match chars[*i] {
+            ' ' | '\t' => {
+                *i += 1;
+            }
+            '\n' => {
+                if saw_newline {
+                    break;
+                }
+                saw_newline = true;
+                *i += 1;
+            }
+            _ => break,
+        }
+    }
+}
+
 /// Parse `[content](dest "title")` starting at the `[`.
 fn parse_link_like(
     chars: &[char],
@@ -4227,15 +4244,15 @@ fn parse_link_like(
     let text: String = chars[i + 1..j].iter().collect();
     let mut k = j + 2;
 
-    skip_spaces(chars, &mut k);
+    skip_link_whitespace(chars, &mut k);
     let dest = parse_link_destination(chars, &mut k)?;
-    skip_spaces(chars, &mut k);
+    skip_link_whitespace(chars, &mut k);
 
     let title = if chars.get(k) == Some(&')') {
         None
     } else {
         let title = parse_link_title(chars, &mut k)?;
-        skip_spaces(chars, &mut k);
+        skip_link_whitespace(chars, &mut k);
         Some(title)
     };
 
@@ -4348,18 +4365,40 @@ fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
     *i += 1;
 
     let mut title = String::new();
+    let mut saw_newline = false;
     while let Some(&ch) = chars.get(*i) {
         match ch {
             c if c == close => {
                 *i += 1;
                 return Some(title);
             }
-            '\n' => return None,
+            '\n' => {
+                if saw_newline {
+                    return None;
+                }
+                saw_newline = true;
+                title.push(ch);
+                *i += 1;
+            }
             '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
+                saw_newline = false;
                 title.push(chars[*i + 1]);
                 *i += 2;
             }
+            '&' => {
+                saw_newline = false;
+                if let Some((decoded, next)) = parse_character_reference(chars, *i) {
+                    title.push_str(&decoded);
+                    *i = next;
+                } else {
+                    title.push(ch);
+                    *i += 1;
+                }
+            }
             _ => {
+                if !ch.is_whitespace() {
+                    saw_newline = false;
+                }
                 title.push(ch);
                 *i += 1;
             }

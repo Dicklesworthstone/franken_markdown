@@ -1484,7 +1484,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     {
         report_write("epub", path, bytes.len(), json);
     }
-    if let Some(bytes) = search_index_bytes.as_ref()
+    if let Some((_, bytes)) = search_index_bytes.as_ref()
         && let Some(path) = args.search_index.as_deref()
     {
         report_write("search-index", path, bytes.len(), json);
@@ -1622,6 +1622,16 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Target::Html => OutputFormat::Html,
         Target::Pdf => OutputFormat::Pdf,
         Target::Both => OutputFormat::Both,
+        // Multi-file EPUB is the fmd book epic's job (7tus); a batch run of
+        // one-chapter epubs would silently skip the unified-book semantics.
+        Target::Epub => {
+            return fail_json(
+                64,
+                "usage_error",
+                "--to epub is not supported in batch; render single books per file or use fmd book when it lands",
+                json,
+            );
+        }
     };
     // Only PDF output consults SOURCE_DATE_EPOCH, so an HTML-only batch must not
     // fail on a malformed value it never uses (matches single-render behavior).

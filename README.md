@@ -16,7 +16,7 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.3.4 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.4.2 franken_markdown
 ```
 
 </div>
@@ -112,7 +112,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | Checksum-verified GitHub release archives for Linux, macOS Intel, macOS Apple Silicon, and Windows, each built and smoke-tested with DSR; npm package `@franken-suite/franken-markdown` currently latest at `0.3.2`; crates.io currently lists `0.2.0` |
+| Releases | Checksum-verified GitHub release archives for Linux and macOS (Intel + Apple Silicon), each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.2` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.2 with `fmd-font` 0.3.0 and `fmd-math` 0.1.0 |
 
 ### Mainline Highlights
 
@@ -498,10 +498,12 @@ fmd --text '<markdown>' --out out.html
 |---|---|
 | `<input>` (positional) | Input `.md` path, or `-` to read Markdown from stdin |
 | `--text <markdown>` | Render a raw Markdown string directly, with no input file |
-| `--to html\|pdf\|both` | Output format(s). Default `html` |
+| `--to html\|pdf\|both\|epub` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book (binary; requires a real `--out` path like PDF) |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
 | `--html-font-format woff1\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `ttf` keeps raw TrueType data URLs) |
+| `--microtype off\|protrusion` | Optical-margin protrusion for justified PDF body paragraphs (punctuation hangs into the margin; default `off` keeps output byte-identical) |
+| `--search-index <path>` | Also write a deterministic JSON search index (headings + anchored paragraphs, schema `fmd-search-index-v1`) for docs-site search |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
 | `--title <text>` | Set the document title (otherwise the first heading, then "Document") |
 | `--author <text>` | Set PDF author metadata |

@@ -2928,3 +2928,51 @@ fn fmd_stats_emits_human_and_json_reports() {
     assert!(text_out.contains("\"headings_total\":1"));
     assert!(text_out.contains("raw-text"));
 }
+
+#[test]
+fn fmd_diff_emits_html_and_json() {
+    let f1 = temp_file("diff-v1", "md");
+    let f2 = temp_file("diff-v2", "md");
+    let out_html = temp_file("diff-out", "html");
+
+    fs::write(&f1, "# Original Title\n\nOriginal paragraph text.\n").unwrap();
+    fs::write(
+        &f2,
+        "# Original Title\n\nUpdated paragraph text with extra words.\n",
+    )
+    .unwrap();
+
+    let f1_s = f1.to_str().unwrap();
+    let f2_s = f2.to_str().unwrap();
+    let out_s = out_html.to_str().unwrap();
+
+    // HTML file output
+    let res_html = fmd(&["diff", f1_s, f2_s, "--out", out_s]);
+    assert_eq!(
+        res_html.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_html.stderr)
+    );
+    let html_content = fs::read_to_string(&out_html).unwrap();
+    assert!(html_content.contains("<!DOCTYPE html>"));
+    assert!(html_content.contains("diff-header"));
+    assert!(html_content.contains("diff-inline"));
+
+    // JSON stdout
+    let res_json = fmd(&["diff", f1_s, f2_s, "--json"]);
+    assert_eq!(
+        res_json.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_json.stderr)
+    );
+    let json_out = text(&res_json.stdout);
+    assert!(json_out.contains("\"schema\":\"fmd-diff-v1\""));
+    assert!(json_out.contains("\"modified_blocks\":1"));
+    assert!(json_out.contains("\"words_inserted\""));
+
+    let _ = fs::remove_file(f1);
+    let _ = fs::remove_file(f2);
+    let _ = fs::remove_file(out_html);
+}

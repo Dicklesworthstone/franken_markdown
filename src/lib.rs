@@ -31,6 +31,8 @@
 pub mod ast;
 pub mod caret;
 pub mod compress;
+pub mod diagrams;
+pub mod diff;
 pub mod doc_stats;
 pub mod error;
 pub mod fonts;
@@ -76,6 +78,8 @@ pub mod batch;
 pub use ast::{DefinitionItem, Document};
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use compress::zlib_decompress;
+pub use diagrams::{is_diagram_code, render_diagram_svg};
+pub use diff::{DiffBlock, DiffInline, DiffStats, DocumentDiff, compute_diff};
 pub use doc_stats::{
     DocFinding, DocumentStats, DocumentStructure, OutlineHeading, compute_doc_stats,
 };

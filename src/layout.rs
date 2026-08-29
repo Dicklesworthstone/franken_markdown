@@ -2569,6 +2569,11 @@ pub fn break_paragraph_into(
     }
 
     scratch.states.clear();
+    // Pareto fronts from a previous paragraph (the production scratch is
+    // reused across the whole document) must never be visible to this one:
+    // `pareto_fronts.get(prev_idx)` would return another paragraph's states
+    // — wrong items, wrong classes, corrupt reconstruction.
+    scratch.pareto_fronts.clear();
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
         if scratch.pareto_breaking() {

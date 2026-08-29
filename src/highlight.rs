@@ -1850,7 +1850,7 @@ mod char_classifier_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod keyword_table_tests {
     use super::{
-        BOOL_KW, CSS_KW, JSON_KW, JS_TY, KwTable, MERMAID_KW, MERMAID_TY, YAML_KW, highlight,
+        BOOL_KW, CSS_KW, JSON_KW, JS_TY, KwTable, MERMAID_KW, MERMAID_TY, Tok, YAML_KW, highlight,
         lexer,
     };
 

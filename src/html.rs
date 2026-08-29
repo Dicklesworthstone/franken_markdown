@@ -654,7 +654,7 @@ fn render_inlines(
             } => {
                 if let Some(href) = state.safe_url_cached(dest, UrlContext::Link) {
                     out.push_str("<a href=\"");
-                    push_escaped_attr(href, out);
+                    push_escaped_url(href, out);
                     out.push('"');
                     if let Some(title) = title.as_deref() {
                         out.push_str(" title=\"");
@@ -674,7 +674,7 @@ fn render_inlines(
                     if opts.image_assets.is_empty()
                         || !push_html_image_asset_data_uri(src, opts, out)
                     {
-                        push_escaped_attr(src, out);
+                        push_escaped_url(src, out);
                     }
                     out.push_str("\" alt=\"");
                     push_escaped_attr(alt, out);
@@ -1479,6 +1479,62 @@ fn push_escaped_attr(s: &str, out: &mut String) {
         start = pos + 1;
     }
     out.push_str(&s[start..]);
+}
+
+fn push_escaped_url(s: &str, out: &mut String) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push('%');
+            out.push(bytes[i + 1] as char);
+            out.push(bytes[i + 2] as char);
+            i += 3;
+        } else if b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'_'
+                    | b'.'
+                    | b'~'
+                    | b'!'
+                    | b'*'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b';'
+                    | b':'
+                    | b'@'
+                    | b'&'
+                    | b'='
+                    | b'+'
+                    | b'$'
+                    | b','
+                    | b'/'
+                    | b'?'
+                    | b'#'
+                    | b'['
+                    | b']'
+            )
+        {
+            if b == b'&' {
+                out.push_str("&amp;");
+            } else {
+                out.push(b as char);
+            }
+            i += 1;
+        } else {
+            out.push('%');
+            out.push(HEX_DIGITS[(b >> 4) as usize] as char);
+            out.push(HEX_DIGITS[(b & 0x0F) as usize] as char);
+            i += 1;
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

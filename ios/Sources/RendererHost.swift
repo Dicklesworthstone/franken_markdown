@@ -369,6 +369,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func analyzeDocument() async throws -> DocumentAnalysis {
+        try await waitForBridgeReady()
         phase = .exporting("Inspecting structure...")
         defer { phase = .ready }
         let command: [String: Any] = ["markdown": source]
@@ -382,6 +383,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func exportArtifact(_ format: DocumentArtifactFormat) async throws -> RenderedArtifact {
+        try await waitForBridgeReady()
         phase = .exporting("Forging \(format.title)...")
         defer { phase = .ready }
         let command: [String: Any] = [
@@ -396,6 +398,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func semanticDiff(from baseline: String) async throws -> SemanticDiffPreview {
+        try await waitForBridgeReady()
         phase = .exporting("Aligning semantic structure...")
         defer { phase = .ready }
         let command: [String: Any] = [
@@ -413,6 +416,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         files: [BookSourceFile],
         format: BookArtifactFormat
     ) async throws -> RenderedArtifact {
+        try await waitForBridgeReady()
         phase = .exporting(format == .pdf ? "Binding PDF book..." : "Building book site...")
         defer { phase = .ready }
         let filePayload = files.map { ["path": $0.path, "source": $0.source] }
@@ -447,6 +451,31 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             )
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Deep links and state restoration can surface the document lab before
+    /// WebKit has finished instantiating the bundled WASM module. Keep every
+    /// advanced operation behind the same readiness boundary as the preview.
+    private func waitForBridgeReady() async throws {
+        for _ in 0..<200 {
+            switch phase {
+            case .loading:
+                try await Task.sleep(for: .milliseconds(50))
+            case let .failed(message):
+                throw NSError(
+                    domain: "FrankenMarkdown.Renderer",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: message]
+                )
+            default:
+                return
+            }
+        }
+        throw NSError(
+            domain: "FrankenMarkdown.Renderer",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "The private Rust renderer did not become ready in time."]
+        )
     }
 
     static let presets: [DocumentPreset] = [

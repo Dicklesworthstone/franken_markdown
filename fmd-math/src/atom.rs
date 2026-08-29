@@ -264,11 +264,12 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
 }
 
 /// Classify a horizontal list: every item's *effective* atom class, with
-/// TeX's two Bin→Ord degradation rules applied (appendix G, rules 5 and 6):
+/// TeX's Bin→Ord degradation rules applied (appendix G, rules 5, 6, and 7):
 ///
 /// 1. a Bin atom that opens the list or follows a Bin, Op, Rel, Open, or
 ///    Punct atom becomes Ord;
-/// 2. a Bin atom directly before a Rel, Close, or Punct atom becomes Ord.
+/// 2. a Bin atom directly before a Rel, Close, or Punct atom becomes Ord;
+/// 3. a Bin atom at the end of the list becomes Ord.
 ///
 /// Non-atom items yield `None` and are transparent: they neither receive a
 /// class nor interrupt atom adjacency.
@@ -306,6 +307,11 @@ pub fn classify_list(items: &[Node]) -> Vec<Option<AtomClass>> {
             }
         }
         prev_atom = Some(i);
+    }
+    if let Some(p) = prev_atom {
+        if classes[p] == Some(AtomClass::Bin) {
+            classes[p] = Some(AtomClass::Ord);
+        }
     }
     classes
 }

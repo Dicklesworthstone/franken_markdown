@@ -154,3 +154,13 @@ fn non_atoms_yield_none() {
     assert!(classified[1].is_none(), "spacing is not an atom");
     assert!(classified[2].is_some());
 }
+
+#[test]
+fn rule7_bin_degrades_at_list_end() {
+    use AtomClass::*;
+    // A Bin atom ending the list becomes Ord: "a +" degrades because there is no right operand.
+    assert_eq!(classes(r"a+"), vec![Ord, Ord]);
+    assert_eq!(classes(r"x-"), vec![Ord, Ord]);
+    // Trailing non-atom spaces/markers do not prevent degradation of the last atom.
+    assert_eq!(classes(r"a + \, "), vec![Ord, Ord]);
+}

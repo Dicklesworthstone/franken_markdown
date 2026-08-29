@@ -179,10 +179,8 @@ struct ForgeView: View {
             }
             .preferredColorScheme(.dark)
         }
-        .sheet(isPresented: $showDocumentLab) {
+        .fullScreenCover(isPresented: $showDocumentLab) {
             DocumentLabView(renderer: renderer)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .top) {
             if showCopiedAlert {

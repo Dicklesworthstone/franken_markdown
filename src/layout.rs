@@ -258,6 +258,11 @@ pub struct TextBox {
     /// Styled text runs carried through to the PDF line/page builders.
     pub runs: StyledText,
     pub width: LayoutUnit,
+    /// Optical-margin protrusion precomputed at box construction, where the
+    /// font size is known (see docs/MICROTYPOGRAPHY.md). `Protrusion::default()`
+    /// (zero) unless the caller enabled microtype protrusion — the breaker
+    /// stays size-agnostic and default output stays byte-identical.
+    pub protrusion: Protrusion,
 }
 
 /// Inline text style metadata preserved for PDF layout.
@@ -611,6 +616,7 @@ fn push_styled_word_box(
         text: std::mem::take(current_plain),
         runs: std::mem::take(current),
         width: *current_width,
+        protrusion: Protrusion::default(),
     }));
     *current_width = LayoutUnit::ZERO;
 }
@@ -768,6 +774,7 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
             text: word.to_string(),
             runs: StyledText::plain(word),
             width: measure_text_with_pairs(metrics, word, size),
+            protrusion: Protrusion::default(),
         }));
         return;
     }
@@ -783,6 +790,7 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
                 text: part.to_string(),
                 runs: StyledText::plain(part),
                 width: measure_text_with_pairs(metrics, part, size),
+                protrusion: Protrusion::default(),
             }));
             if hyphen {
                 out.push(ParagraphItem::Penalty(Penalty {
@@ -802,6 +810,7 @@ fn push_hyphenated_word_items_from_points<M: PairMetrics>(
             text: part.to_string(),
             runs: StyledText::plain(part),
             width: measure_text_with_pairs(metrics, part, size),
+            protrusion: Protrusion::default(),
         }));
     }
 }
@@ -1661,6 +1670,7 @@ struct HyphenTrie {
     nodes: Vec<HyphenTrieNode>,
     edges: Vec<HyphenTrieEdge>,
     values: Vec<u8>,
+    root_ascii: [u32; 128],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1680,9 +1690,16 @@ struct HyphenTrieEdge {
 impl HyphenTrie {
     fn apply(&self, word: &[u8], scores: &mut [u8]) {
         for start in 0..word.len() {
-            let Some(mut node) = self.child(0, u32::from(word[start])) else {
-                continue;
+            let b = word[start];
+            let root_target = if (b as usize) < 128 {
+                self.root_ascii[b as usize]
+            } else {
+                u32::MAX
             };
+            if root_target == u32::MAX {
+                continue;
+            }
+            let mut node = root_target;
             self.apply_terminal_values(node, start, scores);
             for &byte in &word[start + 1..] {
                 let Some(next) = self.child(node, u32::from(byte)) else {
@@ -1908,10 +1925,23 @@ fn flatten_hyphen_trie(build_nodes: Vec<BuildHyphenNode>) -> HyphenTrie {
             values_len: clamp_usize_to_u8(values.len().saturating_sub(values_start)),
         });
     }
+    let mut root_ascii = [u32::MAX; 128];
+    if let Some(root_node) = nodes.first() {
+        let start = root_node.first_edge as usize;
+        let count = root_node.edge_count as usize;
+        if let Some(root_edges) = edges.get(start..start + count) {
+            for edge in root_edges {
+                if (edge.key as usize) < 128 {
+                    root_ascii[edge.key as usize] = edge.target;
+                }
+            }
+        }
+    }
     HyphenTrie {
         nodes,
         edges,
         values,
+        root_ascii,
     }
 }
 
@@ -1982,13 +2012,27 @@ impl Protrusion {
 /// Compute optical-margin protrusion for a text run.
 #[must_use]
 pub fn protrusion_for_text(text: &str, size: FontSize, options: MicrotypeOptions) -> Protrusion {
+    protrusion_for_boundary_chars(text.chars().next(), text.chars().next_back(), size, options)
+}
+
+/// Compute optical-margin protrusion from a run's boundary characters without
+/// concatenating the run — the PDF word path calls this per box on the hot
+/// layout path, where allocating a joined string per word would be allocator
+/// churn the renderer has explicitly optimized away.
+#[must_use]
+pub fn protrusion_for_boundary_chars(
+    first: Option<char>,
+    last: Option<char>,
+    size: FontSize,
+    options: MicrotypeOptions,
+) -> Protrusion {
     if !options.protrusion {
         return Protrusion::default();
     }
-    let left = text.chars().next().map_or(LayoutUnit::ZERO, |ch| {
+    let left = first.map_or(LayoutUnit::ZERO, |ch| {
         protrusion_amount(left_protrusion_per_mille(ch), size)
     });
-    let right = text.chars().next_back().map_or(LayoutUnit::ZERO, |ch| {
+    let right = last.map_or(LayoutUnit::ZERO, |ch| {
         protrusion_amount(right_protrusion_per_mille(ch), size)
     });
     Protrusion { left, right }
@@ -2106,6 +2150,16 @@ struct MetricPrefixes {
     /// separately so a segment can be re-evaluated WITHOUT the credit (the
     /// final line of a paragraph, which no emitter justifies).
     box_elasticity: Vec<i64>,
+    /// `next_box_left[i]` = left optical-margin protrusion (milli-points) of
+    /// the first `Box` at item index >= `i`; 0 when the segment has no box.
+    /// Lets the breaker widen a line by its left-edge protrusion in O(1).
+    next_box_left: Vec<i64>,
+    /// `prev_box_right[i]` = right optical-margin protrusion (milli-points) of
+    /// the last `Box` at item index < `i`; 0 when none. (At discretionary
+    /// hyphen breaks the true last glyph is the hyphen; using the box's own
+    /// trailing character instead is the documented conservative v1 choice —
+    /// the difference is <= 80 per-mille of the font size.)
+    prev_box_right: Vec<i64>,
 }
 
 impl MetricPrefixes {
@@ -2118,6 +2172,8 @@ impl MetricPrefixes {
         self.stretch.clear();
         self.shrink.clear();
         self.box_elasticity.clear();
+        self.next_box_left.clear();
+        self.prev_box_right.clear();
 
         let needed = items.len() + 1;
         self.width.reserve(needed);
@@ -2135,11 +2191,13 @@ impl MetricPrefixes {
         let mut running_shrink = 0i64;
         let mut running_elasticity = 0i64;
         let permilli = i64::from(expansion_permilli);
+        let mut running_prev_right = 0i64;
         for item in items {
             match item {
                 ParagraphItem::Box(item) => {
                     let w = item.width.milli_points() as i64;
                     running_width += w;
+                    running_prev_right = i64::from(item.protrusion.right.milli_points());
                     // Micro-typography font expansion (Hàn Thế Thành / Zapf Hz-program):
                     // Glyphs provide ±1.5% horizontal expansion/compression elasticity.
                     let expansion_elasticity = (w * permilli) / 1000;
@@ -2159,7 +2217,27 @@ impl MetricPrefixes {
             self.stretch.push(running_stretch);
             self.shrink.push(running_shrink);
             self.box_elasticity.push(running_elasticity);
+            self.prev_box_right.push(running_prev_right);
         }
+        // Backward pass: first box at or after each position.
+        self.next_box_left.resize(items.len() + 1, 0);
+        let mut next_left = 0i64;
+        for i in (0..=items.len()).rev() {
+            if let Some(ParagraphItem::Box(item)) = items.get(i) {
+                next_left = i64::from(item.protrusion.left.milli_points());
+            }
+            self.next_box_left[i] = next_left;
+        }
+    }
+
+    /// Optical-margin allowance for the segment `[start, end_item)`: the left
+    /// protrusion of its first box plus the right protrusion of its last box.
+    /// Zero when microtype protrusion is disabled (boxes carry zero), so the
+    /// default path is byte-identical.
+    fn segment_protrusion(&self, start: usize, end_item: usize) -> i64 {
+        let left = self.next_box_left.get(start).copied().unwrap_or(0);
+        let right = self.prev_box_right.get(end_item).copied().unwrap_or(0);
+        left + right
     }
 
     fn segment_metrics(
@@ -2342,16 +2420,25 @@ pub fn break_paragraph_into(
         && !candidate_stats.has_rewarded_break
         && let Some(&candidate) = candidates.last()
         && let Some(width) = candidate_stats.trailing_forced_width
-        && let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width)
     {
-        scratch.forced_prefix.clear();
-        scratch.metrics.width.clear();
-        scratch.metrics.stretch.clear();
-        scratch.metrics.shrink.clear();
-        scratch.metrics.box_elasticity.clear();
-        scratch.states.clear();
-        out.push(line);
-        return;
+        // Microtype (opt-in): the whole-paragraph single-line fast path must
+        // honor the same optical-margin credit the DP loop uses, or a
+        // paragraph exactly at the margin would break differently depending on
+        // which path ran. Zero for zero-protrusion boxes (default identical).
+        let (pl, pr) = paragraph_edge_protrusion(items);
+        let width = width.saturating_sub(LayoutUnit::from_milli_points(pl + pr));
+        if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width) {
+            scratch.forced_prefix.clear();
+            scratch.metrics.width.clear();
+            scratch.metrics.stretch.clear();
+            scratch.metrics.shrink.clear();
+            scratch.metrics.box_elasticity.clear();
+            scratch.states.clear();
+            scratch.metrics.next_box_left.clear();
+            scratch.metrics.prev_box_right.clear();
+            out.push(line);
+            return;
+        }
     }
     scratch
         .metrics
@@ -2412,6 +2499,16 @@ pub fn break_paragraph_into(
                 scratch
                     .metrics
                     .segment_metrics(start, *candidate, include_box_elasticity);
+            // Optical-margin protrusion (microtype, opt-in): the line's first
+            // box may hang left and its last box right, so the segment fits
+            // against a wider effective measure. Zero when boxes carry no
+            // protrusion — the default path is byte-identical.
+            let eff_line_width = line_width
+                + LayoutUnit(clamp_i64_to_i32(
+                    scratch
+                        .metrics
+                        .segment_protrusion(start, candidate.item_index),
+                ));
             // An INTER-candidate line (prev_idx != j) that cannot fit even fully
             // shrunk is "overfull". Segment width grows monotonically as the start
             // moves earlier, so the first overfull predecessor reached is the
@@ -2431,7 +2528,7 @@ pub fn break_paragraph_into(
             // lines share the capped demerit, so fewer lines would win). Its
             // overflow says nothing about the narrower inter-candidate
             // predecessors, so it is neither selectable-when-overfull nor a stop.
-            let is_overfull = segment.width.saturating_sub(segment.shrink) > line_width;
+            let is_overfull = segment.width.saturating_sub(segment.shrink) > eff_line_width;
             if prev_idx == j && j > 0 && is_overfull {
                 // The whole-prefix line (start = 0 to candidate j > 0) does not fit on one line;
                 // do not cram multiple words into one overfull line when intermediate breaks exist.
@@ -2439,7 +2536,7 @@ pub fn break_paragraph_into(
             }
             let overfull = is_overfull;
 
-            let badness = candidate_badness(*candidate, segment, line_width);
+            let badness = candidate_badness(*candidate, segment, eff_line_width);
             // Underfull-past-stretch lines (INF badness, not overfull) stay illegal
             // — keep scanning toward wider segments.
             if badness >= INF_PENALTY && !overfull {
@@ -2462,7 +2559,7 @@ pub fn break_paragraph_into(
                     }
                 }
             };
-            let fitness = candidate_fitness(*candidate, segment, line_width);
+            let fitness = candidate_fitness(*candidate, segment, eff_line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
             let line_demerit_val = line_demerits(
                 badness,
@@ -2477,7 +2574,7 @@ pub fn break_paragraph_into(
             // Scale by overflow amount so an overfull token is isolated to its own line
             // rather than greedily dragging subsequent feasible words into the overflow.
             let overfull_cost = if overfull {
-                let overflow = segment.width.saturating_sub(line_width).milli_points() as i64;
+                let overflow = segment.width.saturating_sub(eff_line_width).milli_points() as i64;
                 1_000_000_000i64.saturating_add(overflow.saturating_mul(100_000))
             } else {
                 0i64
@@ -2530,6 +2627,27 @@ pub fn break_paragraph_into(
         }
     }
     out.reverse();
+}
+
+/// Paragraph edge protrusion (left of first box, right of last box) in
+/// milli-points — the whole-paragraph fast path's share of the microtype
+/// optical-margin credit. Zero when microtype is disabled (boxes carry zero).
+fn paragraph_edge_protrusion(items: &[ParagraphItem]) -> (i32, i32) {
+    let mut left = 0i32;
+    let mut right = 0i32;
+    for item in items {
+        if let ParagraphItem::Box(b) = item {
+            left = b.protrusion.left.milli_points();
+            break;
+        }
+    }
+    for item in items.iter().rev() {
+        if let ParagraphItem::Box(b) = item {
+            right = b.protrusion.right.milli_points();
+            break;
+        }
+    }
+    (left, right)
 }
 
 fn trailing_forced_fit_break(
@@ -3003,8 +3121,8 @@ mod hyphen_and_break_edge_tests {
     use super::{
         AdvanceMetrics, BreakCandidate, BuildHyphenNode, FORCED_BREAK_PENALTY, FitnessClass,
         FontSize, Glue, HyphenLang, HyphenLangChoice, HyphenPattern, Hyphenator, LayoutUnit,
-        PairMetrics, ParagraphItem, ParagraphLayoutScratch, Penalty, StyledText, TextBox,
-        TextStyle, UNKNOWN_HYPHEN_LANG, append_styled_word_chunk, break_paragraph,
+        PairMetrics, ParagraphItem, ParagraphLayoutScratch, Penalty, Protrusion, StyledText,
+        TextBox, TextStyle, UNKNOWN_HYPHEN_LANG, append_styled_word_chunk, break_paragraph,
         break_paragraph_into, build_hyphen_trie, insert_encoded_hyphen_pattern,
         insert_hyphen_pattern, push_hyphenated_word_items_from_points, resolve_hyphen_lang,
         trailing_forced_fit_break,
@@ -3082,12 +3200,14 @@ mod hyphen_and_break_edge_tests {
                     text: "hy".to_string(),
                     runs: StyledText::plain("hy"),
                     width: LayoutUnit::from_milli_points(10_000),
+                    protrusion: Protrusion::default(),
                 }),
                 hyphen_penalty.clone(),
                 ParagraphItem::Box(TextBox {
                     text: "phen".to_string(),
                     runs: StyledText::plain("phen"),
                     width: LayoutUnit::from_milli_points(20_000),
+                    protrusion: Protrusion::default(),
                 }),
                 hyphen_penalty,
             ]
@@ -3241,6 +3361,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(width_pt),
+                protrusion: Protrusion::default(),
             })
         };
         let items = vec![
@@ -3290,6 +3411,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(width_pt),
+                protrusion: Protrusion::default(),
             })
         };
         let mut prefixes = super::MetricPrefixes::default();
@@ -3326,6 +3448,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(width_pt),
+                protrusion: Protrusion::default(),
             })
         };
         let items = vec![
@@ -3367,6 +3490,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(99),
+                protrusion: Protrusion::default(),
             }),
             ParagraphItem::Glue(Glue {
                 width: LayoutUnit::ZERO,
@@ -3377,6 +3501,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(2),
+                protrusion: Protrusion::default(),
             }),
             ParagraphItem::Penalty(Penalty {
                 width: LayoutUnit::ZERO,
@@ -3414,6 +3539,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(95),
+                protrusion: Protrusion::default(),
             }),
             ParagraphItem::Glue(Glue {
                 width: LayoutUnit::ZERO,
@@ -3424,6 +3550,7 @@ mod hyphen_and_break_edge_tests {
                 text: String::new(),
                 runs: StyledText::default(),
                 width: LayoutUnit::from_points(6),
+                protrusion: Protrusion::default(),
             }),
             ParagraphItem::Glue(Glue {
                 width: LayoutUnit::from_points(2),

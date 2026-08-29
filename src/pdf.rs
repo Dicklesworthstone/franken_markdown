@@ -14127,16 +14127,38 @@ fn svg_hwb_to_rgb(hue_degrees: f32, whiteness: f32, blackness: f32) -> SvgColor 
     )
 }
 
+const HEX_NIBBLE_TABLE: [u8; 256] = {
+    let mut t = [0xFFu8; 256];
+    let mut i = b'0';
+    while i <= b'9' {
+        t[i as usize] = i - b'0';
+        i += 1;
+    }
+    let mut i = b'a';
+    while i <= b'f' {
+        t[i as usize] = i - b'a' + 10;
+        i += 1;
+    }
+    let mut i = b'A';
+    while i <= b'F' {
+        t[i as usize] = i - b'A' + 10;
+        i += 1;
+    }
+    t
+};
+
+#[inline(always)]
 fn svg_hex_pair(high: u8, low: u8) -> Option<u8> {
     Some((svg_hex_nibble(high)? << 4) | svg_hex_nibble(low)?)
 }
 
+#[inline(always)]
 fn svg_hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
+    let v = HEX_NIBBLE_TABLE[byte as usize];
+    if v != 0xFF {
+        Some(v)
+    } else {
+        None
     }
 }
 

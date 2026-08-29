@@ -98,14 +98,19 @@ wasm-bindgen "$wasm_in" --target web --out-dir "$pkg_dir"
 # Assemble the package: hand-written wrapper + generated pkg/ + demo.
 cp wasm/franken_markdown.js "$package_dir/franken_markdown.js"
 cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
+cp wasm/fmd-view.js "$package_dir/fmd-view.js"
+cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 cp wasm/package.json "$package_dir/package.json"
 cp wasm/README.md "$package_dir/README.md"
 mkdir -p "$package_dir/demo"
 cp wasm/demo/index.html "$package_dir/demo/index.html"
 cp wasm/demo/demo.js "$package_dir/demo/demo.js"
+cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
+cp wasm/demo/sample.md "$package_dir/demo/sample.md"
 
 for artifact in \
   "$package_dir/franken_markdown.js" "$package_dir/franken_markdown.d.ts" \
+  "$package_dir/fmd-view.js" "$package_dir/fmd-view.d.ts" \
   "$package_dir/package.json" "$package_dir/demo/index.html" "$package_dir/demo/demo.js" \
   "$pkg_dir/franken_markdown.js" "$pkg_dir/franken_markdown_bg.wasm"; do
   [ -s "$artifact" ] || { log "expected package artifact missing: $artifact"; exit 1; }

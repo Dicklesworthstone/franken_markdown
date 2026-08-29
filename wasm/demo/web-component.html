@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>&lt;fmd-view&gt; — drop-in Markdown element</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+    fmd-view { border: 1px solid #d1d9e0; border-radius: 10px; padding: 0 1rem; display: block; margin: 1rem 0; }
+    .hint { color: #59636e; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>&lt;fmd-view&gt;</h1>
+  <p class="hint">Framework-free custom element from
+    <code>@franken-suite/franken-markdown/web-component</code>. Two instances
+    below: one fetching a remote source, one rendering inline slot content.</p>
+
+  <fmd-view src="../demo/sample.md">
+    <p>(fallback while loading…)</p>
+  </fmd-view>
+
+  <fmd-view id="inline">
+    <script type="text/markdown">
+# Inline source
+
+Slot content renders too: **bold**, *italic*, `code`.
+
+| A | B |
+|---|---:|
+| 1 | 2 |
+    </script>
+  </fmd-view>
+
+  <p id="events" class="hint"></p>
+
+  <script type="module">
+    import "../fmd-view.js";
+
+    const log = document.getElementById("events");
+    for (const el of document.querySelectorAll("fmd-view")) {
+      el.addEventListener("fmd-rendered", (e) => {
+        log.textContent += `rendered ${e.detail.bytes} bytes from ${e.detail.sourceLength} source bytes; `;
+      });
+      el.addEventListener("fmd-error", (e) => {
+        log.textContent += `error: ${e.detail.error}; `;
+      });
+    }
+  </script>
+</body>
+</html>

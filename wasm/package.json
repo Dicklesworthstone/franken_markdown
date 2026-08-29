@@ -35,6 +35,10 @@
     ".": {
       "types": "./franken_markdown.d.ts",
       "import": "./franken_markdown.js"
+    },
+    "./web-component": {
+      "types": "./fmd-view.d.ts",
+      "import": "./fmd-view.js"
     }
   },
   "files": [
@@ -45,6 +49,8 @@
     "pkg/franken_markdown.js",
     "pkg/franken_markdown_bg.wasm",
     "pkg/franken_markdown_bg.wasm.d.ts",
-    "pkg/franken_markdown.d.ts"
+    "pkg/franken_markdown.d.ts",
+    "fmd-view.js",
+    "fmd-view.d.ts"
   ]
 }

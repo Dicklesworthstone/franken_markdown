@@ -747,7 +747,9 @@ fn inline_images_share_robust_destination_and_title_parsing() {
     let out = html("![alt](<images/final diagram.svg> 'Final diagram')");
 
     assert!(
-        out.contains("<img src=\"images/final%20diagram.svg\" alt=\"alt\" title=\"Final diagram\">")
+        out.contains(
+            "<img src=\"images/final%20diagram.svg\" alt=\"alt\" title=\"Final diagram\">"
+        )
     );
 }
 

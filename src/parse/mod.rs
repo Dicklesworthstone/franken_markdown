@@ -1729,11 +1729,14 @@ fn parse_lines_as_inlines(
 ) -> (Vec<Inline>, usize, usize) {
     match lines {
         [] => (Vec::new(), 0, 0),
-        [line] => (
-            parse_inlines_with_refs_profiled(line, refs, profiler),
-            line.len(),
-            0,
-        ),
+        [line] => {
+            let trimmed = line.trim_start_matches(|c| c == ' ' || c == '\t');
+            (
+                parse_inlines_with_refs_profiled(trimmed, refs, profiler),
+                line.len(),
+                0,
+            )
+        }
         _ => {
             let started = profiler.checkpoint();
             let scan = scan_multiline_inline_lines(lines);
@@ -1794,18 +1797,16 @@ fn plain_multiline_inline_fast_path(lines: &[&str], count_chars: bool) -> (Vec<I
         0
     };
     for (idx, line) in lines.iter().enumerate() {
+        let trimmed_start = line.trim_start_matches(|c| c == ' ' || c == '\t');
         if count_chars {
-            char_count += line.chars().count();
+            char_count += trimmed_start.chars().count();
         }
         let is_last = idx + 1 == lines.len();
-        let text = if is_last {
-            *line
-        } else {
-            line.trim_end_matches(' ')
-        };
+        let hard = line.ends_with("  ") || line.ends_with('\\');
+        let text = trimmed_start.trim_end_matches(' ');
         push_inline_text(&mut out, text);
         if !is_last {
-            out.push(if line.ends_with("  ") {
+            out.push(if hard {
                 Inline::HardBreak
             } else {
                 Inline::SoftBreak
@@ -1821,7 +1822,8 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
         if idx > 0 {
             chars.push('\n');
         }
-        chars.extend(line.chars());
+        let trimmed = line.trim_start_matches(|c| c == ' ' || c == '\t');
+        chars.extend(trimmed.chars());
     }
     chars
 }
@@ -1857,9 +1859,6 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     }
 
     let dest = parse_link_destination(&chars, &mut i)?;
-    if dest.is_empty() {
-        return None;
-    }
 
     skip_spaces(&chars, &mut i);
     let title = if i >= chars.len() {
@@ -1874,6 +1873,54 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     };
 
     Some((label, LinkReference { dest, title }))
+}
+
+fn parse_reference_definition_label(line: &str) -> Option<String> {
+    if leading_spaces(line) > 3 {
+        return None;
+    }
+    let t = trim_start_space_tab(line);
+    let chars: Vec<char> = t.chars().collect();
+    if chars.first() != Some(&'[') {
+        return None;
+    }
+    let close = find_closing_bracket(&chars, 0)?;
+    if chars.get(close + 1) != Some(&':') {
+        return None;
+    }
+    let label = normalize_reference_label_chars(&chars[1..close])?;
+    let mut i = close + 2;
+    skip_spaces(&chars, &mut i);
+    if i == chars.len() {
+        Some(label)
+    } else {
+        None
+    }
+}
+
+fn parse_reference_destination_line(line: &str) -> Option<(String, Option<String>)> {
+    if leading_spaces(line) > 3 {
+        return None;
+    }
+    let t = trim_start_space_tab(line);
+    if t.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = t.chars().collect();
+    let mut k = 0usize;
+    let dest = parse_link_destination(&chars, &mut k)?;
+    skip_spaces(&chars, &mut k);
+    let title = if k < chars.len() {
+        let title = parse_link_title(&chars, &mut k)?;
+        skip_spaces(&chars, &mut k);
+        if k != chars.len() {
+            return None;
+        }
+        Some(title)
+    } else {
+        None
+    };
+    Some((dest, title))
 }
 
 fn parse_reference_title_line(line: &str) -> Option<String> {

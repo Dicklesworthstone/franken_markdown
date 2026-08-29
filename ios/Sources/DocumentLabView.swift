@@ -136,7 +136,7 @@ struct DocumentLabView: View {
         }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showShare) {
-            if let exportURL { ShareActivityView(activityItems: [exportURL]) }
+            if let exportURL { ShareActivityView(fileURL: exportURL) }
         }
         .fileImporter(
             isPresented: $showBaselineImporter,

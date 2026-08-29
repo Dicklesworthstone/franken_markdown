@@ -25607,7 +25607,7 @@ fn draw_svg_text(
     let shaped = match shaped_cache[slot_idx].get(text.text.as_str()) {
         Some(run) => run.glyphs.as_slice(),
         None => {
-            fallback = shape_run(source, &face.lig, &text.text);
+            fallback = shape_run(source, face.lig, &text.text);
             fallback.glyphs.as_slice()
         }
     };
@@ -25684,7 +25684,7 @@ fn draw_svg_text(
             matrix,
             &face.map_lookup,
             source,
-            &face.kern,
+            face.kern,
             shaped,
             letter_spacing_adjust,
             word_spacing_adjust,
@@ -25710,7 +25710,7 @@ fn draw_svg_text(
                             matrix,
                             &face.map_lookup,
                             source,
-                            &face.kern,
+                            face.kern,
                             shaped,
                             letter_spacing_adjust,
                             word_spacing_adjust,
@@ -25735,7 +25735,7 @@ fn draw_svg_text(
                             matrix,
                             &face.map_lookup,
                             source,
-                            &face.kern,
+                            face.kern,
                             shaped,
                             letter_spacing_adjust,
                             word_spacing_adjust,
@@ -26173,7 +26173,7 @@ fn draw_seg(
     let (shaped, cached_tj) = match shaped_cache[slot_idx].get(seg.text.as_str()) {
         Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
         None => {
-            fallback = shape_run(source, &face.lig, &seg.text);
+            fallback = shape_run(source, face.lig, &seg.text);
             (fallback.glyphs.as_slice(), None)
         }
     };
@@ -26187,7 +26187,7 @@ fn draw_seg(
             y,
             &face.map_lookup,
             source,
-            &face.kern,
+            face.kern,
             shaped,
             cached_tj,
         );
@@ -26205,7 +26205,7 @@ fn draw_seg(
             y,
             &face.map_lookup,
             source,
-            &face.kern,
+            face.kern,
             shaped,
             cached_tj,
         );
@@ -37274,6 +37274,7 @@ mod coverage_gap_tests {
             badness: 0,
             fitness: crate::layout::FitnessClass::Decent,
             demerits: 0,
+            fitness_milli: 0,
         };
         let mut out = Vec::new();
         glue_adjustments_into(
@@ -37301,6 +37302,7 @@ mod coverage_gap_tests {
             badness: 0,
             fitness: crate::layout::FitnessClass::Decent,
             demerits: 0,
+            fitness_milli: 0,
         };
         let mut out = Vec::new();
         glue_adjustments_into(
@@ -37330,6 +37332,7 @@ mod coverage_gap_tests {
             badness: 0,
             fitness: crate::layout::FitnessClass::Decent,
             demerits: 0,
+            fitness_milli: 0,
         };
         let mut out = Vec::new();
         glue_adjustments_into(

@@ -2320,6 +2320,7 @@ impl Default for ParagraphLayoutScratch {
             metrics: MetricPrefixes::default(),
             states: Vec::new(),
             expansion_permilli: 15,
+            gradual_demerits: false,
         }
     }
 }
@@ -2337,6 +2338,16 @@ impl ParagraphLayoutScratch {
         self.expansion_permilli = permilli.min(100);
     }
 
+    /// Enable or disable gradual adjacent demerits (Verna DocEng '25).
+    /// Default: false (classic KP fitness classes, byte-identical).
+    pub fn set_gradual_demerits(&mut self, enabled: bool) {
+        self.gradual_demerits = enabled;
+    }
+
+    #[must_use]
+    pub const fn gradual_demerits(&self) -> bool {
+        self.gradual_demerits
+    }
     #[must_use]
     pub const fn expansion_permilli(&self) -> u16 {
         self.expansion_permilli
@@ -2574,6 +2585,15 @@ pub fn break_paragraph_into(
             let fitness = candidate_fitness(*candidate, segment, eff_line_width);
             let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
+            // Gradual demerits (Verna '25) are opt-in: pass the fine-grained
+            // ratio only when the paragraph policy enables them. When disabled,
+            // prev_fitness_milli is None and line_demerits' gradual arm is
+            // zero, producing byte-identical classic KP output.
+            let prev_fm = if scratch.gradual_demerits() {
+                prev_state.map(|(_, state)| state.line.fitness_milli)
+            } else {
+                None
+            };
             let line_demerit_val = line_demerits(
                 badness,
                 candidate.penalty,
@@ -2581,7 +2601,7 @@ pub fn break_paragraph_into(
                 candidate.flagged,
                 prev_state.map(|(_, state)| state.fitness),
                 fitness,
-                prev_state.map(|(_, state)| state.line.fitness_milli),
+                prev_fm,
                 fitness_milli,
             );
             // Overfull lines must carry a massive penalty so that any feasible or
@@ -2822,6 +2842,7 @@ fn candidate_badness(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line_demerits(
     badness: i32,
     penalty: i32,
@@ -2922,7 +2943,6 @@ fn fitness_ratio_milli(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
     let ratio = diff.saturating_mul(1000) / available;
     ratio.clamp(-1000, 1000) as i32
 }
-
 
 fn candidate_fitness(
     candidate: BreakCandidate,

@@ -538,7 +538,42 @@ fn adler32(data: &[u8]) -> u32 {
     // Process in bounded chunks (NMAX=5552) so the sums never overflow u32
     // before the modulo: worst-case s2 stays below 2^32.
     for chunk in data.chunks(ADLER_NMAX) {
-        for &b in chunk {
+        let mut chunks16 = chunk.chunks_exact(16);
+        for c in &mut chunks16 {
+            s1 += c[0] as u32;
+            s2 += s1;
+            s1 += c[1] as u32;
+            s2 += s1;
+            s1 += c[2] as u32;
+            s2 += s1;
+            s1 += c[3] as u32;
+            s2 += s1;
+            s1 += c[4] as u32;
+            s2 += s1;
+            s1 += c[5] as u32;
+            s2 += s1;
+            s1 += c[6] as u32;
+            s2 += s1;
+            s1 += c[7] as u32;
+            s2 += s1;
+            s1 += c[8] as u32;
+            s2 += s1;
+            s1 += c[9] as u32;
+            s2 += s1;
+            s1 += c[10] as u32;
+            s2 += s1;
+            s1 += c[11] as u32;
+            s2 += s1;
+            s1 += c[12] as u32;
+            s2 += s1;
+            s1 += c[13] as u32;
+            s2 += s1;
+            s1 += c[14] as u32;
+            s2 += s1;
+            s1 += c[15] as u32;
+            s2 += s1;
+        }
+        for &b in chunks16.remainder() {
             s1 += b as u32;
             s2 += s1;
         }

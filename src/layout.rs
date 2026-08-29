@@ -3179,7 +3179,12 @@ const fn hyphen_penalty_cost(penalty: i32) -> i64 {
     } else {
         // `saturating_pow` saturates at i64::MAX, whose negation would panic;
         // cap the magnitude first so the negation is always defined.
-        -((penalty as i64).saturating_pow(2).min(i64::MAX / 2))
+        let mag = (penalty as i64).saturating_pow(2);
+        if mag > i64::MAX / 2 {
+            -(i64::MAX / 2)
+        } else {
+            -mag
+        }
     }
 }
 

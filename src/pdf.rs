@@ -19384,6 +19384,10 @@ fn build_segs_adjusted(
     // glyph scaling (`Tz`) instead of flat letter-spacing. The distribution
     // in `glue_adjustments_into` is proportional to each box's width, so a
     // single uniform factor per line is exact for word boxes.
+    // Sanity cap matching the documented extreme (±10%): PdfOptions exposes
+    // max_expansion_per_mille as an unclamped u16, and the permille factor is
+    // stored in an i16 — an unsane budget would wrap here.
+    let expansion_permille_budget = expansion_permille_budget.min(100);
     let use_expansion = expansion_permille_budget > 0;
     let mut word_extra_milli: f64 = 0.0;
     let mut box_width_milli: f64 = 0.0;
@@ -33981,6 +33985,7 @@ mod pdf_writer_tests {
         expansion_permille_budget: u16,
         links: &[LinkTarget],
     ) -> Vec<Seg> {
+        let expansion_permille_budget = expansion_permille_budget.min(100);
         let use_expansion = expansion_permille_budget > 0;
         let mut word_extra_milli: f64 = 0.0;
         let mut box_width_milli: f64 = 0.0;

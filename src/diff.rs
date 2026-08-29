@@ -168,6 +168,7 @@ fn can_pair_blocks(a: &Block, b: &Block) -> bool {
             | (Block::Heading { .. }, Block::Heading { .. })
             | (Block::CodeBlock { .. }, Block::CodeBlock { .. })
             | (Block::Table(_), Block::Table(_))
+            | (Block::MathBlock(_), Block::MathBlock(_))
     )
 }
 
@@ -190,7 +191,91 @@ fn diff_block_inlines(old: &Block, new: &Block, stats: &mut DiffStats) -> Vec<Di
                 })
                 .collect()
         }
+        (Block::CodeBlock { code: c_a, .. }, Block::CodeBlock { code: c_b, .. }) => {
+            let words_a: Vec<&str> = c_a.split_whitespace().collect();
+            let words_b: Vec<&str> = c_b.split_whitespace().collect();
+            let raw = lcs_diff(&words_a, &words_b);
+            for item in raw {
+                match item {
+                    RawDiffItem::Inserted(_) => stats.words_inserted += 1,
+                    RawDiffItem::Deleted(_) => stats.words_deleted += 1,
+                    RawDiffItem::Unchanged(_) => {}
+                }
+            }
+            Vec::new()
+        }
+        (Block::MathBlock(m_a), Block::MathBlock(m_b)) => {
+            let words_a: Vec<&str> = m_a.split_whitespace().collect();
+            let words_b: Vec<&str> = m_b.split_whitespace().collect();
+            let raw = lcs_diff(&words_a, &words_b);
+            for item in raw {
+                match item {
+                    RawDiffItem::Inserted(_) => stats.words_inserted += 1,
+                    RawDiffItem::Deleted(_) => stats.words_deleted += 1,
+                    RawDiffItem::Unchanged(_) => {}
+                }
+            }
+            Vec::new()
+        }
+        (Block::Table(t_a), Block::Table(t_b)) => {
+            let mut words_a = Vec::new();
+            let mut words_b = Vec::new();
+            for cell in &t_a.head {
+                for inl in cell {
+                    collect_inline_words(inl, &mut words_a);
+                }
+            }
+            for row in &t_a.rows {
+                for cell in row {
+                    for inl in cell {
+                        collect_inline_words(inl, &mut words_a);
+                    }
+                }
+            }
+            for cell in &t_b.head {
+                for inl in cell {
+                    collect_inline_words(inl, &mut words_b);
+                }
+            }
+            for row in &t_b.rows {
+                for cell in row {
+                    for inl in cell {
+                        collect_inline_words(inl, &mut words_b);
+                    }
+                }
+            }
+            let raw = lcs_diff(&words_a, &words_b);
+            for item in raw {
+                match item {
+                    RawDiffItem::Inserted(_) => stats.words_inserted += 1,
+                    RawDiffItem::Deleted(_) => stats.words_deleted += 1,
+                    RawDiffItem::Unchanged(_) => {}
+                }
+            }
+            Vec::new()
+        }
         _ => Vec::new(),
+    }
+}
+
+fn collect_inline_words<'a>(inline: &'a Inline, words: &mut Vec<&'a str>) {
+    match inline {
+        Inline::Text(t)
+        | Inline::Code(t)
+        | Inline::Image { alt: t, .. }
+        | Inline::Math(t)
+        | Inline::DisplayMath(t) => {
+            words.extend(t.split_whitespace());
+        }
+        Inline::Emphasis(inner)
+        | Inline::Strong(inner)
+        | Inline::Strikethrough(inner)
+        | Inline::Link { content: inner, .. } => {
+            for inl in inner {
+                collect_inline_words(inl, words);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -724,6 +809,21 @@ mod tests {
         let json = diff.to_json();
         assert!(json.contains("\"schema\":\"fmd-diff-v1\""));
         assert!(json.contains("\"modified_blocks\":2"));
+    }
+
+    #[test]
+    fn compute_diff_tracks_code_math_table_words() {
+        let md_a = "```rust\nlet count = 10;\n```\n\n$$\nx + y\n$$\n\n| Item | Val |\n|---|---|\n| foo | 1 |\n";
+        let md_b = "```rust\nlet count = 20;\n```\n\n$$\nx + z\n$$\n\n| Item | Val |\n|---|---|\n| foo | 2 |\n";
+
+        let doc_a = parse_markdown(md_a);
+        let doc_b = parse_markdown(md_b);
+
+        let diff = compute_diff(&doc_a, &doc_b, "a.md", "b.md");
+
+        assert_eq!(diff.stats.modified_blocks, 3);
+        assert_eq!(diff.stats.words_inserted, 3); // "20;", "z", "2"
+        assert_eq!(diff.stats.words_deleted, 3); // "10;", "y", "1"
     }
 }
 // ===========================================================================

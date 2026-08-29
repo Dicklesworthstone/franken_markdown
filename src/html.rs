@@ -55,7 +55,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
 /// Render a fragment of blocks without the HTML document shell or style tag.
 #[must_use]
 pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
-    let mut html = String::new();
+    let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
     let mut state = RenderState {
         footnote_defs: collect_footnote_defs(blocks),
         toc_entries: collect_toc_entries(blocks),
@@ -532,9 +532,21 @@ fn render_inlines(
             Inline::FootnoteRef { id } => {
                 render_footnote_ref(id, out, state);
             }
-            Inline::Emphasis(c) => wrap(out, "em", c, opts, state),
-            Inline::Strong(c) => wrap(out, "strong", c, opts, state),
-            Inline::Strikethrough(c) => wrap(out, "del", c, opts, state),
+            Inline::Emphasis(c) => {
+                out.push_str("<em>");
+                render_inlines(c, out, opts, state);
+                out.push_str("</em>");
+            }
+            Inline::Strong(c) => {
+                out.push_str("<strong>");
+                render_inlines(c, out, opts, state);
+                out.push_str("</strong>");
+            }
+            Inline::Strikethrough(c) => {
+                out.push_str("<del>");
+                render_inlines(c, out, opts, state);
+                out.push_str("</del>");
+            }
             Inline::Code(t) => {
                 out.push_str("<code>");
                 push_escaped_text(t, out);
@@ -1305,6 +1317,9 @@ fn highlighted_span_kind_is_html_safe(kind: Tok) -> bool {
 }
 
 fn push_escaped_text(s: &str, out: &mut String) {
+    if s.is_empty() {
+        return;
+    }
     // Text nodes only need `&`, `<`, and `>` escaped. Writing into the caller's
     // buffer avoids a temporary allocation for strings that contain escapes.
     let bytes = s.as_bytes();
@@ -1351,6 +1366,9 @@ fn escape_attr(s: &str) -> Cow<'_, str> {
 }
 
 fn push_escaped_attr(s: &str, out: &mut String) {
+    if s.is_empty() {
+        return;
+    }
     let bytes = s.as_bytes();
     let mut start = 0;
     while let Some(rel) = crate::scanner::find_html_escape(&bytes[start..]) {

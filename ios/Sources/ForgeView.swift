@@ -79,6 +79,9 @@ struct ForgeView: View {
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
         _lane = State(initialValue: ForgeLane(rawValue: requested ?? "") ?? .write)
+        _showDocumentLab = State(
+            initialValue: ProcessInfo.processInfo.environment["FMD_OPEN_DOCUMENT_LAB"] == "1"
+        )
     }
 
     var body: some View {
@@ -133,6 +136,21 @@ struct ForgeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .newMarkdownDocument)) { _ in
             renderer.source = "# New Document\n\nStart writing..."
             lane = .write
+        }
+        .onOpenURL { url in
+            guard url.scheme?.lowercased() == "frankenmarkdown" else { return }
+            switch url.host?.lowercased() {
+            case "lab":
+                showDocumentLab = true
+            case "publish":
+                showDocumentLab = true
+            case "write":
+                lane = .write
+            case "preview":
+                lane = .preview
+            default:
+                break
+            }
         }
         .sheet(isPresented: $showShareSheet) {
             if let url = exportItemUrl {

@@ -17,6 +17,7 @@
 //! cannot express larger values. Length conversions saturate rather than
 //! panic, so an absurd input yields a corrupt-but-safe archive instead of a
 //! crash.
+use franken_markdown::compress::{ZlibCompressScratch, zlib_compress_with_scratch};
 
 // ---------------------------------------------------------------------------
 // CRC-32 (IEEE 802.3, reflected polynomial 0xEDB88320), table-driven.
@@ -98,6 +99,42 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct ZipWriter {
     entries: Vec<Entry>,
+    /// One LZ77 scratch shared by every `add_deflated` entry of this archive
+    /// (byte-equivalent to a fresh scratch per entry by the generation-base
+    /// scheme; only table regrowth is skipped).
+    scratch: ZlibCompressScratch,
+}
+
+// ---------------------------------------------------------------------------
+// Scratch-shared DEFLATE entry construction.
+
+/// Build one DEFLATE `Entry` against `scratch`.
+///
+/// `add_deflated` passes the writer's single long-lived scratch so an entire
+/// archive (and every archive an embedder builds in a loop) amortizes the LZ77
+/// table regrowth; the compressor's generation-base scratch scheme guarantees
+/// the emitted stream is byte-identical to a fresh scratch per call, so this
+/// is purely an allocation/locality lever (see `compress::ZlibCompressScratch`
+/// and the zip-level equality test below).
+fn deflated_entry(name: &str, bytes: &[u8], scratch: &mut ZlibCompressScratch) -> Entry {
+    let zlib = zlib_compress_with_scratch(bytes, scratch);
+    // zlib layout: 2-byte header | raw deflate body | 4-byte adler32.
+    let body = if zlib.len() >= 6 {
+        zlib[2..zlib.len() - 4].to_vec()
+    } else {
+        // Unreachable with the project compressor (it always emits a full
+        // header, at least one stored block, and the Adler trailer). Fall
+        // back to a valid empty final stored block rather than corrupting
+        // the archive layout.
+        vec![0x01, 0x00, 0x00, 0xFF, 0xFF]
+    };
+    Entry {
+        name: name.to_string(),
+        method: METHOD_DEFLATE,
+        crc32: crc32(bytes),
+        uncompressed_size: to_u32(bytes.len()),
+        data: body,
+    }
 }
 
 impl ZipWriter {
@@ -122,25 +159,11 @@ impl ZipWriter {
     ///
     /// The raw DEFLATE stream is recovered from the project compressor's zlib
     /// output by stripping the 2-byte zlib header and 4-byte Adler-32 trailer.
+    /// All deflated entries of one writer share a single LZ77 scratch; output
+    /// bytes are identical to per-entry fresh compression.
     pub fn add_deflated(&mut self, name: &str, bytes: &[u8]) {
-        let zlib = franken_markdown::compress::zlib_compress(bytes);
-        // zlib layout: 2-byte header | raw deflate body | 4-byte adler32.
-        let body = if zlib.len() >= 6 {
-            zlib[2..zlib.len() - 4].to_vec()
-        } else {
-            // Unreachable with the project compressor (it always emits a full
-            // header, at least one stored block, and the Adler trailer). Fall
-            // back to a valid empty final stored block rather than corrupting
-            // the archive layout.
-            vec![0x01, 0x00, 0x00, 0xFF, 0xFF]
-        };
-        self.entries.push(Entry {
-            name: name.to_string(),
-            method: METHOD_DEFLATE,
-            crc32: crc32(bytes),
-            uncompressed_size: to_u32(bytes.len()),
-            data: body,
-        });
+        let entry = deflated_entry(name, bytes, &mut self.scratch);
+        self.entries.push(entry);
     }
 
     /// Serialize the archive: local headers in insertion order, then the
@@ -224,4 +247,69 @@ fn to_u32(n: usize) -> u32 {
 
 fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_scratch_archive_matches_fresh_per_entry_bytes() {
+        // Isomorphism holder for the ZipWriter scratch field (one LZ77 scratch
+        // reused by every `add_deflated` entry of an archive — the path EPUB
+        // and the wasm book loop take). Build the same archive twice: once via
+        // the public API (shared writer scratch, dirty from earlier entries),
+        // once with a brand-new scratch per entry, and demand byte-identical
+        // archives. Payloads cover empty, tiny, repetitive (fixed-Huffman),
+        // and pseudo-random incompressible (stored-block) shapes.
+        let lcg: Vec<u8> = {
+            let mut state: u64 = 0x243F_6A88_85A3_08D3;
+            (0..40_000)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    (state >> 33) as u8
+                })
+                .collect()
+        };
+        let payloads: Vec<(&str, Vec<u8>)> = vec![
+            ("mimetype-ish", b"stored payload".to_vec()),
+            ("empty.bin", Vec::new()),
+            ("repeat.txt", b"deflate me ".repeat(600)),
+            ("rand.bin", lcg),
+            ("tiny.txt", b"z".to_vec()),
+        ];
+        let mut shared = ZipWriter::new();
+        let mut fresh = ZipWriter::new();
+        for (name, bytes) in &payloads {
+            shared.add_deflated(name, bytes);
+            fresh
+                .entries
+                .push(deflated_entry(name, bytes, &mut ZlibCompressScratch::new()));
+        }
+
+        // Every shared-scratch entry body equals a fresh one-shot
+        // `zlib_compress` of the same payload, header/trailer stripped.
+        for (entry, (_, bytes)) in shared.entries.iter().zip(payloads.iter()) {
+            let one_shot = franken_markdown::compress::zlib_compress(bytes);
+            assert_eq!(entry.method, METHOD_DEFLATE);
+            assert_eq!(
+                entry.data.as_slice(),
+                &one_shot[2..one_shot.len() - 4],
+                "entry {} body must equal fresh zlib body",
+                entry.name
+            );
+        }
+
+        // And the whole archive built through one shared scratch is
+        // byte-identical to the fresh-scratch-per-entry archive.
+        assert_eq!(
+            shared.finish(),
+            fresh.finish(),
+            "archive built with one shared scratch must be byte-identical to fresh-per-entry"
+        );
+    }
 }

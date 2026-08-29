@@ -16,8 +16,8 @@
 //! the deterministic zlib path, and every computed field derives only from the
 //! input bytes. Same input ⇒ identical output bytes.
 
-use crate::compress::zlib_compress;
 use crate::{RenderError, Result};
+use crate::compress::{ZlibCompressScratch, zlib_compress_with_scratch};
 
 const WOFF_SIGNATURE: u32 = 0x774F_4646; // "wOFF"
 const WOFF_HEADER_LEN: usize = 44;
@@ -131,6 +131,20 @@ fn font_revision(sfnt: &[u8], tables: &[SfntTable]) -> (u16, u16) {
 /// Returns [`RenderError::InvalidInput`] when the input is not a parseable
 /// sfnt directory (truncated, zero tables, or out-of-bounds table ranges).
 pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>> {
+    let mut scratch = ZlibCompressScratch::new();
+    encode_woff1_with_scratch(sfnt, &mut scratch)
+}
+
+/// [`encode_woff1`] with a caller-owned LZ77 scratch reused across every
+/// table of this font. The compressor's generation-base scratch scheme
+/// (see `ZlibCompressScratch`) makes a reused scratch byte-equivalent to a
+/// fresh one per call, so the emitted bytes are identical to
+/// [`encode_woff1`]; sharing one scratch across a whole font (or a whole
+/// document's faces) only skips the per-call table regrowth.
+pub(crate) fn encode_woff1_with_scratch(
+    sfnt: &[u8],
+    scratch: &mut ZlibCompressScratch,
+) -> Result<Vec<u8>> {
     let (flavor, tables) = parse_sfnt_directory(sfnt)?;
     if tables.is_empty() {
         return Err(RenderError::InvalidInput(
@@ -145,7 +159,7 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>> {
     for table in &tables {
         let is_last = table.offset == max_offset;
         let raw = slice_table(sfnt, *table, is_last)?;
-        let compressed = zlib_compress(raw);
+        let compressed = zlib_compress_with_scratch(raw, scratch);
         if compressed.len() < raw.len() {
             payloads.push((std::borrow::Cow::Owned(compressed), u32_len(raw)?));
         } else {
@@ -280,6 +294,32 @@ mod tests {
         let a = encode_woff1(sfnt).expect("encode a");
         let b = encode_woff1(sfnt).expect("encode b");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn scratch_reuse_matches_fresh_encode_bytes() {
+        // Isomorphism holder for the shared-scratch woff1 path (html.rs embeds
+        // five faces through ONE scratch; each face compresses ~12-16 tables
+        // through the same scratch). The compress.rs generation-base scheme
+        // already pins fresh-vs-reused equality per zlib call
+        // (`scratch_reuse_matches_fresh_zlib_bytes`); this pins it at the
+        // whole-font wrap level, across alternating fonts and repeated rounds
+        // so the scratch carries stale state from earlier tables and faces.
+        let faces = [
+            fmd_font::bundled::PLEX_REGULAR,
+            fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS,
+            fmd_font::bundled::CM_BOLD_ITALIC,
+        ];
+        let mut scratch = ZlibCompressScratch::new();
+        for face in faces.iter().cycle().take(9) {
+            let fresh = encode_woff1(face).expect("fresh encode");
+            let reused = encode_woff1_with_scratch(face, &mut scratch).expect("reused encode");
+            assert_eq!(
+                reused, fresh,
+                "reused-scratch woff1 must be byte-identical for face len {}",
+                face.len()
+            );
+        }
     }
 
     #[test]

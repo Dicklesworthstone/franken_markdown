@@ -341,7 +341,12 @@ struct FixedDeflate {
     complete: bool,
 }
 
-pub(crate) struct ZlibCompressScratch {
+/// Reusable LZ77 scratch state for [`zlib_compress_with_scratch`].
+///
+/// Public so dual-compiled modules (files also included by integration
+/// tests via `#[path]`, e.g. `zip.rs`) can name it; behavior is unchanged.
+#[derive(Debug)]
+pub struct ZlibCompressScratch {
     head: Vec<usize>,
     prev: Vec<usize>,
     /// Generation base for the current call: `head`/`prev` entries store
@@ -353,7 +358,9 @@ pub(crate) struct ZlibCompressScratch {
 }
 
 impl ZlibCompressScratch {
-    pub(crate) fn new() -> Self {
+    /// Create an empty scratch (no tables allocated until first use).
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             head: Vec::new(),
             prev: Vec::new(),
@@ -676,7 +683,12 @@ pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     zlib_compress_with_scratch(data, &mut scratch)
 }
 
-pub(crate) fn zlib_compress_with_scratch(
+/// [`zlib_compress`] with a caller-owned scratch reused across calls.
+///
+/// Byte-identical to [`zlib_compress`] for every input regardless of prior
+/// use (see [`ZlibCompressScratch`] for the invariant); sharing a scratch
+/// over many calls only skips per-call table (re)allocation and regrowth.
+pub fn zlib_compress_with_scratch(
     data: &[u8],
     scratch: &mut ZlibCompressScratch,
 ) -> Vec<u8> {

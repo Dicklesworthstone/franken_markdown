@@ -3931,11 +3931,7 @@ fn opener_bottom_index(ch: char, slot: usize) -> usize {
 /// The CommonMark "process emphasis" pass: walk closers left to right, match each
 /// to the nearest compatible opener honoring the rule of three, and wrap the
 /// enclosed nodes in `Strong` (2 delimiters) or `Emphasis` (1 delimiter).
-fn process_emphasis(
-    els: &mut Vec<InlineEl>,
-    arena: &mut EmphasisArena,
-    head: &mut Option<usize>,
-) {
+fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &mut Option<usize>) {
     let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
     let step_budget = els.len().saturating_mul(64).max(4096);
     let mut steps: usize = 0;
@@ -4549,26 +4545,55 @@ fn parse_character_reference(chars: &[char], i: usize) -> Option<(String, usize)
     if chars.get(i) != Some(&'&') {
         return None;
     }
-    let semi = chars[i + 1..]
+    let slice = chars.get(i + 1..)?;
+    let semi_offset = slice
         .iter()
         .take(MAX_CHAR_REF_BODY_LEN + 1)
-        .position(|&ch| ch == ';')
-        .map(|offset| i + 1 + offset)?;
-    if semi == i + 1 {
+        .position(|&ch| ch == ';')?;
+    if semi_offset == 0 || semi_offset > MAX_CHAR_REF_BODY_LEN {
         return None;
     }
-    let body = chars[i + 1..semi].iter().collect::<String>();
-    let decoded: String =
-        if let Some(numeric) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
-            decode_numeric_reference(numeric, 16)?.to_string()
-        } else if let Some(numeric) = body.strip_prefix('#') {
-            decode_numeric_reference(numeric, 10)?.to_string()
-        } else {
-            // Full HTML5 named character reference set (semicolon-terminated, as
-            // CommonMark requires). A few entities resolve to two code points.
-            entities::lookup(&body)?.to_string()
-        };
-    Some((decoded, semi + 1))
+    let body_chars = &slice[..semi_offset];
+
+    if body_chars == ['a', 'm', 'p'] {
+        return Some(("&".to_string(), i + 1 + semi_offset + 1));
+    }
+    if body_chars == ['l', 't'] {
+        return Some(("<".to_string(), i + 1 + semi_offset + 1));
+    }
+    if body_chars == ['g', 't'] {
+        return Some((">".to_string(), i + 1 + semi_offset + 1));
+    }
+    if body_chars == ['q', 'u', 'o', 't'] {
+        return Some(("\"".to_string(), i + 1 + semi_offset + 1));
+    }
+    if body_chars == ['a', 'p', 'o', 's'] {
+        return Some(("'".to_string(), i + 1 + semi_offset + 1));
+    }
+    if body_chars == ['n', 'b', 's', 'p'] {
+        return Some(("\u{a0}".to_string(), i + 1 + semi_offset + 1));
+    }
+
+    let mut buf = [0u8; MAX_CHAR_REF_BODY_LEN];
+    for (idx, &ch) in body_chars.iter().enumerate() {
+        if !ch.is_ascii() {
+            return None;
+        }
+        buf[idx] = ch as u8;
+    }
+    let body_str = std::str::from_utf8(&buf[..body_chars.len()]).ok()?;
+
+    let decoded: String = if let Some(numeric) = body_str
+        .strip_prefix("#x")
+        .or_else(|| body_str.strip_prefix("#X"))
+    {
+        decode_numeric_reference(numeric, 16)?.to_string()
+    } else if let Some(numeric) = body_str.strip_prefix('#') {
+        decode_numeric_reference(numeric, 10)?.to_string()
+    } else {
+        entities::lookup(body_str)?.to_string()
+    };
+    Some((decoded, i + 1 + semi_offset + 1))
 }
 
 fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {

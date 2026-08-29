@@ -209,6 +209,13 @@ fn civil_from_days(unix_days: u64) -> (u32, u32, u32) {
 }
 
 fn push_xml_escaped(out: &mut String, s: &str) {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
+    {
+        out.push_str(s);
+        return;
+    }
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),

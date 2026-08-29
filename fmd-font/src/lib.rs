@@ -4362,6 +4362,30 @@ mod synthetic_font_tests {
     }
 
     #[test]
+    fn substitute_with_spans_into_matches_allocating_variant() {
+        let ligs = gsub_font(1, 4, 0);
+        let corpora: [&[u16]; 7] = [
+            &[],
+            &[10, 11, 12, 10, 11],
+            &[10, 11, 7],
+            &[10, 7],
+            &[99, 99, 99],
+            &[10, 11, 12, 10, 11, 12, 10, 11],
+            &[7, 8, 9, 10],
+        ];
+        // Start from a dirty buffer: the into-scratch variant must clear it,
+        // and reuse across back-to-back calls must keep matching.
+        let mut scratch = vec![(u16::MAX, usize::MAX); 4];
+        for gids in corpora {
+            let mut into = Vec::new();
+            ligs.substitute_with_spans_into(gids, &mut into);
+            assert_eq!(into, ligs.substitute_with_spans(gids));
+            ligs.substitute_with_spans_into(gids, &mut scratch);
+            assert_eq!(scratch, into);
+        }
+    }
+
+    #[test]
     fn max_rule_len_reports_longest_rule() {
         // gsub_table registers 10 + [11, 12] -> 99 (3 glyphs) and
         // 10 + [11] -> 77 (2 glyphs), so the window is 3.

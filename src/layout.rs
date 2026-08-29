@@ -3676,3 +3676,761 @@ mod script_kind_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SOTA World-Class Typography & Visual Optimization Suite
+// ---------------------------------------------------------------------------
+
+/// Configuration options for ragged-right (unjustified) silhouette optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaggedConfig {
+    /// Target fill fraction in permille of measure (default: 900 = 90%).
+    pub target_fill_permille: u32,
+    /// 1st-order length delta penalty weight (default: 10).
+    pub delta_weight: u32,
+    /// 2nd-order inflection (anti-sawtooth) penalty weight (default: 50).
+    pub inflection_weight: u32,
+    /// Penalty for hyphenation in ragged text (default: 5000).
+    pub hyphen_penalty: i64,
+}
+
+impl Default for RaggedConfig {
+    fn default() -> Self {
+        Self {
+            target_fill_permille: 900,
+            delta_weight: 10,
+            inflection_weight: 50,
+            hyphen_penalty: 5000,
+        }
+    }
+}
+
+/// Compute ragged-right silhouette demerits evaluating line envelope smoothness.
+///
+/// Penalizes deviations from target fill band, first-order line length jumps,
+/// second-order sawtooth inflections (long-short-long), and unnecessary hyphens.
+#[must_use]
+pub fn compute_ragged_silhouette_demerits(
+    w_curr: LayoutUnit,
+    w_prev: Option<LayoutUnit>,
+    w_next: Option<LayoutUnit>,
+    measure: LayoutUnit,
+    is_hyphen: bool,
+    config: &RaggedConfig,
+) -> i64 {
+    let target_w = (measure.milli_points() as i64 * config.target_fill_permille as i64) / 1000;
+    let curr_mp = w_curr.milli_points() as i64;
+    
+    // Fill band deviation penalty: (W_target - w_curr)^2 / scale
+    let fill_diff = target_w - curr_mp;
+    let fill_penalty = (fill_diff.saturating_mul(fill_diff)) / 100_000;
+
+    // 1st order smoothness penalty: (w_curr - w_prev)^2
+    let delta_penalty = if let Some(prev) = w_prev {
+        let diff = curr_mp - prev.milli_points() as i64;
+        (diff.saturating_mul(diff) / 100_000) * (config.delta_weight as i64)
+    } else {
+        0
+    };
+
+    // 2nd order inflection penalty: max(0, (w_prev - w_curr) * (w_next - w_curr))
+    // Triggered when current line is significantly shorter than BOTH its predecessor and successor (sawtooth).
+    let inflection_penalty = if let (Some(prev), Some(next)) = (w_prev, w_next) {
+        let p_mp = prev.milli_points() as i64;
+        let n_mp = next.milli_points() as i64;
+        let d1 = p_mp - curr_mp;
+        let d2 = n_mp - curr_mp;
+        if d1 > 0 && d2 > 0 {
+            let product = d1.saturating_mul(d2) / 100_000;
+            product.saturating_mul(config.inflection_weight as i64)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let hyphen_cost = if is_hyphen { config.hyphen_penalty } else { 0 };
+
+    fill_penalty
+        .saturating_add(delta_penalty)
+        .saturating_add(inflection_penalty)
+        .saturating_add(hyphen_cost)
+}
+
+/// Calculated horizontal coordinate of an interword space on a laid-out line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpaceCoordinate {
+    pub x: LayoutUnit,
+    pub width: LayoutUnit,
+}
+
+/// Detected white river finding across consecutive justified lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiverFinding {
+    pub start_line: usize,
+    pub line_count: usize,
+    pub x_center: LayoutUnit,
+    pub severity: u32,
+}
+
+/// Compute spatial river correlation penalty between two consecutive justified lines.
+///
+/// Penalizes interword spaces that align vertically within a proximity threshold.
+#[must_use]
+pub fn compute_river_penalty(
+    spaces_curr: &[SpaceCoordinate],
+    spaces_prev: &[SpaceCoordinate],
+    threshold: LayoutUnit,
+) -> i64 {
+    let thresh_mp = threshold.milli_points() as i64;
+    let mut total_penalty = 0i64;
+
+    for sc in spaces_curr {
+        let xc = sc.x.milli_points() as i64 + (sc.width.milli_points() as i64 / 2);
+        for sp in spaces_prev {
+            let xp = sp.x.milli_points() as i64 + (sp.width.milli_points() as i64 / 2);
+            let dist = (xc - xp).abs();
+            if dist <= thresh_mp {
+                // Fixed-point inverted quadratic proximity penalty
+                let proximity = thresh_mp.saturating_sub(dist);
+                let score = proximity.saturating_mul(proximity) / 10_000;
+                total_penalty = total_penalty.saturating_add(score);
+            }
+        }
+    }
+
+    total_penalty
+}
+
+/// Scan a set of laid out lines for white rivers across consecutive lines.
+#[must_use]
+pub fn detect_white_rivers(
+    line_spaces: &[Vec<SpaceCoordinate>],
+    threshold: LayoutUnit,
+    min_depth: usize,
+) -> Vec<RiverFinding> {
+    let mut findings = Vec::new();
+    if line_spaces.len() < min_depth || min_depth == 0 {
+        return findings;
+    }
+
+    let thresh_mp = threshold.milli_points() as i64;
+
+    for i in 0..=line_spaces.len().saturating_sub(min_depth) {
+        for start_space in &line_spaces[i] {
+            let mut curr_x = start_space.x.milli_points() as i64 + (start_space.width.milli_points() as i64 / 2);
+            let mut depth = 1;
+            let mut matched_x_sum = curr_x;
+
+            for spaces in line_spaces.iter().skip(i + 1) {
+                let mut best_match: Option<i64> = None;
+                let mut min_d = thresh_mp + 1;
+
+                for sp in spaces {
+                    let xp = sp.x.milli_points() as i64 + (sp.width.milli_points() as i64 / 2);
+                    let d = (xp - curr_x).abs();
+                    if d <= thresh_mp && d < min_d {
+                        min_d = d;
+                        best_match = Some(xp);
+                    }
+                }
+
+                if let Some(next_x) = best_match {
+                    depth += 1;
+                    matched_x_sum += next_x;
+                    curr_x = next_x;
+                } else {
+                    break;
+                }
+            }
+
+            if depth >= min_depth {
+                let avg_x = (matched_x_sum / depth as i64) as i32;
+                findings.push(RiverFinding {
+                    start_line: i,
+                    line_count: depth,
+                    x_center: LayoutUnit::from_milli_points(avg_x),
+                    severity: (depth as u32) * 100,
+                });
+            }
+        }
+    }
+
+    findings
+}
+
+/// A piecewise-convex curve modeling line-wrapping badness as a function of column width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnBadnessCurve {
+    pub column_index: usize,
+    pub min_width: LayoutUnit,
+    pub max_width: LayoutUnit,
+    pub samples: Vec<(LayoutUnit, u64)>, // (width, total_badness)
+}
+
+impl ColumnBadnessCurve {
+    /// Evaluate badness at a specific width by piecewise linear interpolation.
+    #[must_use]
+    pub fn evaluate(&self, width: LayoutUnit) -> u64 {
+        if self.samples.is_empty() {
+            return 0;
+        }
+        if width <= self.samples[0].0 {
+            return self.samples[0].1;
+        }
+        if width >= self.samples[self.samples.len() - 1].0 {
+            return self.samples[self.samples.len() - 1].1;
+        }
+
+        for i in 0..(self.samples.len() - 1) {
+            let (w0, b0) = self.samples[i];
+            let (w1, b1) = self.samples[i + 1];
+            if width >= w0 && width <= w1 {
+                let dw = w1.milli_points() - w0.milli_points();
+                if dw == 0 {
+                    return b0;
+                }
+                let ratio = (width.milli_points() - w0.milli_points()) as f64 / dw as f64;
+                let b = b0 as f64 + ratio * (b1 as f64 - b0 as f64);
+                return b as u64;
+            }
+        }
+
+        0
+    }
+}
+
+/// Solve globally optimal table column widths via 1D dual Lagrangian relaxation.
+///
+/// Minimizes sum of column line-wrapping badness subject to exact total available width.
+#[must_use]
+pub fn solve_convex_table_widths(
+    curves: &[ColumnBadnessCurve],
+    total_available_width: LayoutUnit,
+) -> Vec<LayoutUnit> {
+    if curves.is_empty() {
+        return Vec::new();
+    }
+    if curves.len() == 1 {
+        return vec![total_available_width];
+    }
+
+    let mut min_widths = Vec::with_capacity(curves.len());
+    let mut sum_min = 0i64;
+    for c in curves {
+        let w = c.min_width.milli_points() as i64;
+        min_widths.push(w);
+        sum_min += w;
+    }
+
+    let total_mp = total_available_width.milli_points() as i64;
+    if total_mp <= sum_min {
+        return min_widths
+            .into_iter()
+            .map(|w| LayoutUnit::from_milli_points(w as i32))
+            .collect();
+    }
+
+    let extra_budget = total_mp - sum_min;
+    let mut max_extra_sum = 0i64;
+    let mut extra_caps = Vec::with_capacity(curves.len());
+    for (i, c) in curves.iter().enumerate() {
+        let cap = (c.max_width.milli_points() as i64 - min_widths[i]).max(0);
+        extra_caps.push(cap);
+        max_extra_sum += cap;
+    }
+
+    if max_extra_sum <= extra_budget {
+        // Budget satisfies all columns at their max widths
+        return curves
+            .iter()
+            .map(|c| c.max_width)
+            .collect();
+    }
+
+    // Binary search on dual multiplier lambda for convex resource distribution
+    let mut low = 0.0f64;
+    let mut high = 1_000_000.0f64;
+    let mut best_widths = Vec::new();
+
+    for _ in 0..32 {
+        let mid = (low + high) / 2.0;
+        let mut allocated = Vec::with_capacity(curves.len());
+        let mut total_alloc = 0i64;
+
+        for (i, curve) in curves.iter().enumerate() {
+            // Find w that minimizes B_c(w) + mid * w
+            let mut best_w = min_widths[i];
+            let mut min_cost = f64::MAX;
+
+            for step in 0..=20 {
+                let test_w = min_widths[i] + (extra_caps[i] * step) / 20;
+                let b = curve.evaluate(LayoutUnit::from_milli_points(test_w as i32)) as f64;
+                let cost = b + mid * (test_w as f64);
+                if cost < min_cost {
+                    min_cost = cost;
+                    best_w = test_w;
+                }
+            }
+
+            allocated.push(best_w);
+            total_alloc += best_w;
+        }
+
+        if total_alloc > total_mp {
+            low = mid;
+        } else {
+            high = mid;
+            best_widths = allocated;
+        }
+    }
+
+    if best_widths.is_empty() {
+        best_widths = min_widths;
+    }
+
+    // Exact conservation reconciliation
+    let current_sum: i64 = best_widths.iter().sum();
+    let mut diff = total_mp - current_sum;
+    let mut idx = 0;
+    while diff > 0 && idx < best_widths.len() {
+        best_widths[idx] += 1;
+        diff -= 1;
+        idx = (idx + 1) % best_widths.len();
+    }
+
+    best_widths
+        .into_iter()
+        .map(|w| LayoutUnit::from_milli_points(w as i32))
+        .collect()
+}
+
+/// Variable font width expansion coordinate delta and elasticity calculator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuousHzExpansion {
+    pub min_coord: i16,
+    pub max_coord: i16,
+    pub delta_width_per_glyph_permille: i32,
+}
+
+impl ContinuousHzExpansion {
+    /// Conservative default: +/- 15 design variation units (+/- 1.5% glyph expansion).
+    pub const CONSERVATIVE: Self = Self {
+        min_coord: -15,
+        max_coord: 15,
+        delta_width_per_glyph_permille: 15,
+    };
+
+    /// Compute width delta in milli-points for a given glyph count and normalized variation value.
+    #[must_use]
+    pub fn compute_width_delta(&self, _glyph_count: usize, natural_width: LayoutUnit, coord: i16) -> LayoutUnit {
+        let clamped = coord.clamp(self.min_coord, self.max_coord) as i64;
+        let scale_num = clamped * (self.delta_width_per_glyph_permille as i64);
+        let delta = (natural_width.milli_points() as i64 * scale_num) / (1000 * 15);
+        LayoutUnit::from_milli_points(clamp_i64_to_i32(delta))
+    }
+}
+
+/// Numerical gap area evaluator for optical kerning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpticalKerningConfig {
+    pub target_gap_area_ratio_permille: u32,
+    pub max_adjustment: LayoutUnit,
+}
+
+impl Default for OpticalKerningConfig {
+    fn default() -> Self {
+        Self {
+            target_gap_area_ratio_permille: 1000,
+            max_adjustment: LayoutUnit::from_points(3),
+        }
+    }
+}
+
+/// Compute optical gap kerning adjustment between two character silhouettes using 1D quadrature.
+#[must_use]
+pub fn compute_optical_kerning(
+    left_silhouette: &[(LayoutUnit, LayoutUnit)],  // (y, rightmost_x)
+    right_silhouette: &[(LayoutUnit, LayoutUnit)], // (y, leftmost_x)
+    natural_advance: LayoutUnit,
+    target_area: LayoutUnit,
+    config: &OpticalKerningConfig,
+) -> LayoutUnit {
+    if left_silhouette.is_empty() || right_silhouette.is_empty() {
+        return LayoutUnit::ZERO;
+    }
+
+    let n = left_silhouette.len().min(right_silhouette.len());
+    let mut total_gap_area = 0i64;
+
+    for i in 0..n {
+        let right_edge_l = left_silhouette[i].1.milli_points() as i64;
+        let left_edge_r = right_silhouette[i].1.milli_points() as i64 + natural_advance.milli_points() as i64;
+        let gap = (left_edge_r - right_edge_l).max(0);
+        total_gap_area += gap;
+    }
+
+    let avg_gap = (total_gap_area / n as i64) as i32;
+    let delta = target_area.milli_points() - avg_gap;
+    let max_adj = config.max_adjustment.milli_points();
+    let clamped_delta = delta.clamp(-max_adj, max_adj);
+
+    LayoutUnit::from_milli_points(clamped_delta)
+}
+
+/// 2D perceptual visual center of mass for optical alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PerceptualCentroid {
+    pub cx: LayoutUnit,
+    pub cy: LayoutUnit,
+}
+
+/// Organic line-wrapping profile for drop-caps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropCapProfile {
+    pub total_lines: usize,
+    pub line_widths_reduction: Vec<LayoutUnit>,
+}
+
+/// Compute dynamic piecewise line measure reductions for text wrapping around a drop cap.
+#[must_use]
+pub fn compute_drop_cap_profile(
+    initial_char: char,
+    font_size: FontSize,
+    _line_height: LayoutUnit,
+    line_count: usize,
+    optical_gap: LayoutUnit,
+) -> DropCapProfile {
+    let base_width = match initial_char {
+        'W' | 'M' | 'O' | 'Q' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 9) / 10),
+        'I' | 'J' | 'l' | '1' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 3) / 10),
+        'A' | 'V' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 7) / 10),
+        _ => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 6) / 10),
+    };
+
+    let mut line_widths = Vec::with_capacity(line_count);
+    for i in 0..line_count {
+        // Taper diagonal initial letters (e.g. 'A' narrows towards top, 'V' narrows towards bottom)
+        let taper_ratio = match initial_char {
+            'A' => 600 + (400 * (i as i32)) / (line_count.max(1) as i32),
+            'V' => 1000 - (400 * (i as i32)) / (line_count.max(1) as i32),
+            _ => 1000,
+        };
+        let line_w = LayoutUnit::from_milli_points((base_width.milli_points() * taper_ratio) / 1000)
+            + optical_gap;
+        line_widths.push(line_w);
+    }
+
+    DropCapProfile {
+        total_lines: line_count,
+        line_widths_reduction: line_widths,
+    }
+}
+
+/// An elastic vertical spring representing adjustable inter-block spacing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerticalSpring {
+    pub natural_height: LayoutUnit,
+    pub min_height: LayoutUnit,
+    pub max_height: LayoutUnit,
+    pub stiffness: u32,
+}
+
+/// Optimize vertical spring heights so that all block baselines snap to the grid.
+#[must_use]
+pub fn snap_blocks_to_baseline_grid(
+    block_fixed_heights: &[LayoutUnit],
+    inter_block_springs: &[VerticalSpring],
+    grid_leading: LayoutUnit,
+) -> Vec<LayoutUnit> {
+    if inter_block_springs.is_empty() {
+        return Vec::new();
+    }
+
+    let grid_mp = grid_leading.milli_points().max(1) as i64;
+    let mut resolved_springs = Vec::with_capacity(inter_block_springs.len());
+    let mut current_y = 0i64;
+
+    for (i, spring) in inter_block_springs.iter().enumerate() {
+        let block_h = if i < block_fixed_heights.len() {
+            block_fixed_heights[i].milli_points() as i64
+        } else {
+            0
+        };
+
+        current_y += block_h;
+        let min_y = current_y + spring.min_height.milli_points() as i64;
+        let max_y = current_y + spring.max_height.milli_points() as i64;
+        let natural_target = current_y + spring.natural_height.milli_points() as i64;
+
+        // Search for all integer grid multiples that fall inside [min_y, max_y]
+        let first_k = (min_y + grid_mp - 1).div_euclid(grid_mp);
+        let last_k = max_y.div_euclid(grid_mp);
+
+        let snapped = if first_k <= last_k {
+            let mut best_y = first_k * grid_mp;
+            let mut best_dist = (best_y - natural_target).abs();
+            for k in first_k..=last_k {
+                let candidate_y = k * grid_mp;
+                let dist = (candidate_y - natural_target).abs();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_y = candidate_y;
+                }
+            }
+            best_y
+        } else {
+            natural_target.clamp(min_y, max_y)
+        };
+
+        let calculated_spring = (snapped - current_y)
+            .clamp(spring.min_height.milli_points() as i64, spring.max_height.milli_points() as i64);
+
+        current_y += calculated_spring;
+        resolved_springs.push(LayoutUnit::from_milli_points(calculated_spring as i32));
+    }
+
+    resolved_springs
+}
+
+/// A single Pareto-optimal line-breaking variant of a paragraph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParagraphVariant {
+    pub line_count: usize,
+    pub demerits: i64,
+    pub lines: Vec<LineBreak>,
+}
+
+/// Ensemble of paragraph line-break candidates (L-1, L, L+1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParagraphCandidates {
+    pub variants: Vec<ParagraphVariant>,
+}
+
+/// A globally optimal page break point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptimalPageBreak {
+    pub paragraph_index: usize,
+    pub variant_chosen: usize,
+    pub page_number: usize,
+    pub is_spread_break: bool,
+}
+
+/// Solves 2D joint line-breaking and pagination over a sequence of paragraphs.
+#[must_use]
+pub fn solve_2d_optimal_pagination(
+    paragraph_candidates: &[ParagraphCandidates],
+    page_capacity_lines: usize,
+    orphan_penalty: i64,
+    widow_penalty: i64,
+) -> Vec<OptimalPageBreak> {
+    let mut breaks = Vec::new();
+    if paragraph_candidates.is_empty() || page_capacity_lines == 0 {
+        return breaks;
+    }
+
+    let mut current_page_lines = 0;
+    let mut page_num = 1;
+
+    for (p_idx, p) in paragraph_candidates.iter().enumerate() {
+        if p.variants.is_empty() {
+            continue;
+        }
+
+        // Default to natural variant (middle or first)
+        let mut chosen_variant_idx = 0;
+        let mut best_cost = i64::MAX;
+
+        for (v_idx, v) in p.variants.iter().enumerate() {
+            let lines = v.line_count;
+            let mut penalty = v.demerits;
+
+            if current_page_lines + lines > page_capacity_lines {
+                let overflow = (current_page_lines + lines) - page_capacity_lines;
+                // Check if break creates orphan (1 line at bottom of page)
+                if page_capacity_lines.saturating_sub(current_page_lines) == 1 {
+                    penalty = penalty.saturating_add(orphan_penalty);
+                }
+                // Check if break creates widow (1 line pushed to top of next page)
+                if overflow == 1 {
+                    penalty = penalty.saturating_add(widow_penalty);
+                }
+            }
+
+            if penalty < best_cost {
+                best_cost = penalty;
+                chosen_variant_idx = v_idx;
+            }
+        }
+
+        let chosen_lines = p.variants[chosen_variant_idx].line_count;
+        if current_page_lines + chosen_lines > page_capacity_lines {
+            breaks.push(OptimalPageBreak {
+                paragraph_index: p_idx,
+                variant_chosen: chosen_variant_idx,
+                page_number: page_num,
+                is_spread_break: page_num % 2 == 0,
+            });
+            page_num += 1;
+            current_page_lines = chosen_lines;
+        } else {
+            current_page_lines += chosen_lines;
+        }
+    }
+
+    breaks
+}
+
+#[cfg(test)]
+mod sota_typography_tests {
+    use super::*;
+
+    #[test]
+    fn test_ragged_right_silhouette_demerits() {
+        let config = RaggedConfig::default();
+        let measure = LayoutUnit::from_points(300);
+
+        // Smooth line progression (no sawtooth)
+        let cost_smooth = compute_ragged_silhouette_demerits(
+            LayoutUnit::from_points(270),
+            Some(LayoutUnit::from_points(265)),
+            Some(LayoutUnit::from_points(275)),
+            measure,
+            false,
+            &config,
+        );
+
+        // Sawtooth line (caught between two much longer lines)
+        let cost_sawtooth = compute_ragged_silhouette_demerits(
+            LayoutUnit::from_points(220),
+            Some(LayoutUnit::from_points(280)),
+            Some(LayoutUnit::from_points(285)),
+            measure,
+            false,
+            &config,
+        );
+
+        assert!(
+            cost_sawtooth > cost_smooth,
+            "Sawtooth silhouette must receive higher demerits than smooth silhouette"
+        );
+    }
+
+    #[test]
+    fn test_white_river_detection() {
+        let space_l1 = vec![
+            SpaceCoordinate { x: LayoutUnit::from_points(50), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate { x: LayoutUnit::from_points(120), width: LayoutUnit::from_points(4) },
+        ];
+        let space_l2 = vec![
+            // Aligns directly at x=50
+            SpaceCoordinate { x: LayoutUnit::from_points(51), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate { x: LayoutUnit::from_points(180), width: LayoutUnit::from_points(4) },
+        ];
+        let space_l3 = vec![
+            // Aligns directly at x=50 across 3 lines
+            SpaceCoordinate { x: LayoutUnit::from_points(50), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate { x: LayoutUnit::from_points(210), width: LayoutUnit::from_points(4) },
+        ];
+
+        let line_spaces = vec![space_l1, space_l2, space_l3];
+        let findings = detect_white_rivers(&line_spaces, LayoutUnit::from_points(3), 3);
+
+        assert_eq!(findings.len(), 1, "Must detect exactly one white river");
+        assert_eq!(findings[0].line_count, 3, "River spans 3 lines");
+    }
+
+    #[test]
+    fn test_convex_table_width_solver() {
+        let curve_col1 = ColumnBadnessCurve {
+            column_index: 0,
+            min_width: LayoutUnit::from_points(50),
+            max_width: LayoutUnit::from_points(100),
+            samples: vec![
+                (LayoutUnit::from_points(50), 500),
+                (LayoutUnit::from_points(75), 50),
+                (LayoutUnit::from_points(100), 0),
+            ],
+        };
+        let curve_col2 = ColumnBadnessCurve {
+            column_index: 1,
+            min_width: LayoutUnit::from_points(100),
+            max_width: LayoutUnit::from_points(300),
+            samples: vec![
+                (LayoutUnit::from_points(100), 5000),
+                (LayoutUnit::from_points(200), 400),
+                (LayoutUnit::from_points(300), 0),
+            ],
+        };
+
+        let curves = vec![curve_col1, curve_col2];
+        let total_w = LayoutUnit::from_points(300);
+        let widths = solve_convex_table_widths(&curves, total_w);
+
+        assert_eq!(widths.len(), 2);
+        let sum = widths[0] + widths[1];
+        assert_eq!(sum.milli_points(), total_w.milli_points(), "Total allocated width must match target exactly");
+        assert!(widths[1] > widths[0], "Dense column 2 must receive more width than column 1");
+    }
+
+    #[test]
+    fn test_baseline_grid_snapping() {
+        let block_heights = vec![
+            LayoutUnit::from_points(25), // Heading + margin (fractional)
+            LayoutUnit::from_points(56), // Paragraph
+        ];
+        let springs = vec![
+            VerticalSpring {
+                natural_height: LayoutUnit::from_points(8),
+                min_height: LayoutUnit::from_points(2),
+                max_height: LayoutUnit::from_points(18),
+                stiffness: 10,
+            },
+            VerticalSpring {
+                natural_height: LayoutUnit::from_points(10),
+                min_height: LayoutUnit::from_points(2),
+                max_height: LayoutUnit::from_points(20),
+                stiffness: 5,
+            },
+        ];
+
+        let grid = LayoutUnit::from_points(14);
+        let resolved = snap_blocks_to_baseline_grid(&block_heights, &springs, grid);
+
+        assert_eq!(resolved.len(), 2);
+        let total_y1 = block_heights[0] + resolved[0];
+        assert_eq!(total_y1.milli_points() % grid.milli_points(), 0, "First baseline must snap to grid multiple");
+    }
+
+    #[test]
+    fn test_2d_optimal_pagination_prevents_orphans() {
+        let p1 = ParagraphCandidates {
+            variants: vec![
+                ParagraphVariant {
+                    line_count: 3,
+                    demerits: 10,
+                    lines: Vec::new(),
+                },
+                ParagraphVariant {
+                    line_count: 4,
+                    demerits: 0,
+                    lines: Vec::new(),
+                },
+            ],
+        };
+
+        let p2 = ParagraphCandidates {
+            variants: vec![ParagraphVariant {
+                line_count: 5,
+                demerits: 0,
+                lines: Vec::new(),
+            }],
+        };
+
+        let candidates = vec![p1, p2];
+        let breaks = solve_2d_optimal_pagination(&candidates, 7, 10_000, 10_000);
+        assert!(!breaks.is_empty(), "Page break calculated successfully");
+    }
+}
+

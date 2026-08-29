@@ -33,6 +33,7 @@
 extern crate self as franken_markdown;
 
 pub mod ast;
+pub mod book;
 pub mod caret;
 pub mod compress;
 pub mod diagrams;
@@ -86,6 +87,10 @@ pub mod watch;
 pub mod batch;
 
 pub use ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem, Table};
+pub use book::{
+    Book, BookChapter, BookHeading, BookInput, book_pdf_document, build_book, chapter_headings,
+    inject_book_nav, out_name, rewrite_links_for_site,
+};
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use compress::zlib_decompress;
 pub use diagrams::{is_diagram_code, render_diagram_svg};

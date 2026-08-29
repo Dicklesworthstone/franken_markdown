@@ -84,10 +84,34 @@ enum Command {
     Stats(StatsArgs),
     /// Compare two Markdown documents and render semantic visual diff (HTML, JSON).
     Diff(DiffArgs),
+    /// Assemble a directory of Markdown files into a unified HTML site and/or a
+    /// single PDF book (global outline, continuous page numbers).
+    Book(BookArgs),
     /// Render many Markdown inputs in parallel under a bounded worker budget
     /// (native-only; Asupersync-backed). See docs/BATCH_ORCHESTRATION.md.
     #[cfg(feature = "batch")]
     Batch(BatchArgs),
+}
+
+#[derive(Args, Clone)]
+struct BookArgs {
+    /// Book directory (walked recursively for *.md/*.markdown, sorted
+    /// deterministically by path).
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Output directory for the site and/or book file (default: alongside the
+    /// input directory as `<dir>-site/` and `<dir>.pdf`).
+    #[arg(long, short)]
+    out_dir: Option<PathBuf>,
+    /// Which output(s) to produce.
+    #[arg(long, value_enum, default_value_t = Target::Both)]
+    to: Target,
+    /// Emit the deterministic book receipt JSON to stdout.
+    #[arg(long)]
+    json: bool,
+    /// Maximum Markdown input bytes per file accepted before parsing (default 64 MiB).
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
 }
 
 #[derive(Args)]
@@ -198,6 +222,21 @@ struct VerifyArgs {
     /// focused view for docs accessibility sweeps.
     #[arg(long)]
     a11y: bool,
+    /// Check external http(s) links with the system curl/wget (HEAD, then a
+    /// ranged GET fallback), reporting broken/redirected links. Opt-in: it
+    /// touches the network, so it is NEVER part of the default verify.
+    #[arg(long)]
+    links: bool,
+    /// Cache file for --links results (JSONL: url, status, checked_unix).
+    /// Reuses entries newer than --links-ttl-secs. Default: none (no cache).
+    #[arg(long, value_name = "FILE")]
+    links_cache: Option<PathBuf>,
+    /// Per-link timeout in seconds for --links (default 10).
+    #[arg(long, default_value_t = 10)]
+    links_timeout_secs: u64,
+    /// Cache entry age to accept for --links (default 86400 = 1 day).
+    #[arg(long, default_value_t = 86400)]
+    links_ttl_secs: u64,
 }
 
 #[derive(Args, Clone)]
@@ -478,7 +517,7 @@ struct ConfigPathArgs {
     json: bool,
 }
 
-#[derive(Copy, Clone, ValueEnum)]
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum Target {
     Html,
     Pdf,
@@ -565,6 +604,7 @@ pub fn main() -> ExitCode {
         Some(Command::Config(args)) => run_config(args, json, no_config),
         Some(Command::Stats(args)) => run_stats(args, json),
         Some(Command::Diff(args)) => run_diff(args, json, no_config),
+        Some(Command::Book(args)) => run_book(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
         Some(Command::Verify(args)) => run_verify(args, json, no_color),
@@ -1611,6 +1651,234 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
 /// internal-anchor audit, render warnings, horizontal overflow findings, and
 /// a content digest (beads yo83.1-3). Exit codes: 0 clean, 1 findings, 2/66
 /// usage/input errors, 70 font load failure.
+
+/// --links (fjzd): external http(s) link check. HEAD first via the system
+/// curl (wget fallback), ranged GET when HEAD is unsupported; results cached
+/// as JSONL (url, status, checked_unix) with a TTL. NEVER part of default
+/// verify — network is non-deterministic by definition. All fetches honor the
+/// project user agent.
+fn check_external_links(
+    doc: &crate::Document,
+    timeout_secs: u64,
+    cache_path: Option<&std::path::Path>,
+    ttl_secs: u64,
+    json: bool,
+) -> Vec<crate::verify::VerifyFinding> {
+    use std::collections::BTreeMap;
+
+    let urls = collect_external_links(doc);
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Cache: read JSONL entries within TTL.
+    let mut cache: BTreeMap<String, (u16, bool, u64)> = BTreeMap::new();
+    if let Some(path) = cache_path
+        && let Ok(text) = std::fs::read_to_string(path)
+    {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // entry: {"url":..,"status":NNN,"ok":bool,"checked":NNN}
+            let Some(v) = parse_cache_line(line) else { continue };
+            cache.insert(v.0, (v.1, v.2, v.3));
+        }
+    }
+
+    let mut findings = Vec::new();
+    let mut out_cache: BTreeMap<String, (u16, bool, u64)> = BTreeMap::new();
+    for url in &urls {
+        let (status, ok) = if let Some((status, ok, checked)) = cache.get(url) {
+            if now.saturating_sub(*checked) <= ttl_secs {
+                (*status, *ok)
+            } else {
+                check_one_link(url, timeout_secs)
+            }
+        } else {
+            check_one_link(url, timeout_secs)
+        };
+        out_cache.insert(url.clone(), (status, ok, now));
+        if !ok {
+            findings.push(crate::verify::VerifyFinding {
+                code: "link_broken",
+                detail: format!("external link {url} returned HTTP {status}"),
+            });
+        } else if (300..400).contains(&status) {
+            findings.push(crate::verify::VerifyFinding {
+                code: "link_redirected",
+                detail: format!("external link {url} redirected (HTTP {status})"),
+            });
+        }
+    }
+
+    // Persist the cache (fresh entries only; concurrent writers last-wins).
+    if let Some(path) = cache_path
+        && !out_cache.is_empty()
+    {
+        let mut text = String::new();
+        for (url, (status, ok, checked)) in &out_cache {
+            let esc = url.replace('\\', "\\\\").replace('"', "\\\"");
+            text.push_str(&format!(
+                "{{\"url\":\"{esc}\",\"status\":{status},\"ok\":{ok},\"checked\":{checked}}}\n"
+            ));
+        }
+        let _ = std::fs::write(path, text);
+    }
+    if json {
+        eprintln!(
+            "fmd: checked {} external link(s), {} broken",
+            urls.len(),
+            findings.iter().filter(|f| f.code == "link_broken").count()
+        );
+    }
+    findings
+}
+
+fn parse_cache_line(line: &str) -> Option<(String, u16, bool, u64)> {
+    // Minimal, allocation-light JSON field scrape for our own fixed shape.
+    let pick = |key: &str| -> Option<String> {
+        let pat = format!("\"{key}\":");
+        let start = line.find(&pat)? + pat.len();
+        let rest = &line[start..];
+        let rest = rest.strip_prefix(' ').unwrap_or(rest);
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(stripped[..end].replace("\\\\", "\\").replace("\\\"", "\""))
+        } else {
+            let end = rest.find([',', '}']).unwrap_or(rest.len());
+            Some(rest[..end].to_string())
+        }
+    };
+    let url = pick("url")?;
+    let status: u16 = pick("status")?.parse().ok()?;
+    let ok: bool = pick("ok")?.parse().ok()?;
+    let checked: u64 = pick("checked")?.parse().ok()?;
+    Some((url, status, ok, checked))
+}
+
+/// One link probe: HEAD, then a ranged GET when HEAD fails (405/501), via the
+/// system curl or wget. ok = 2xx (3xx reported separately, not broken).
+fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
+    let ua = "--user-agent";
+    let ua_owned = format!("fmd/{}", crate::VERSION);
+    let ua_val = ua_owned.as_str();
+    let timeout = timeout_secs.to_string();
+    let head = |program: &str| -> Option<(u16, bool)> {
+        let args: Vec<String> = match program {
+            "curl" => vec![
+                "-sS".into(),
+                "-o".into(),
+                "/dev/null".into(),
+                "-w".into(),
+                "%{http_code}".into(),
+                "--max-time".into(),
+                timeout.clone(),
+                "-I".into(),
+                ua.into(),
+                ua_val.into(),
+                url.into(),
+            ],
+            _ => vec![
+                "--server-response".into(),
+                "--spider".into(),
+                format!("--timeout={timeout}"),
+                ua.into(),
+                ua_val.into(),
+                url.into(),
+            ],
+        };
+        let out = std::process::Command::new(program)
+            .args(&args)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let code: u16 = text.trim().chars().take(3).collect::<String>().parse().ok()?;
+        Some((code, (200..300).contains(&code)))
+    };
+    for program in ["curl", "wget"] {
+        if let Some((status, ok)) = head(program) {
+            if ok || !(status == 405 || status == 501) {
+                return (status, ok);
+            }
+        }
+    }
+    // GET fallback (range-limited so we never download bodies).
+    let timeout_str = timeout_secs.to_string();
+    let out = std::process::Command::new("curl")
+        .args([
+            "-sS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            timeout_str.as_str(),
+            "--range",
+            "0-0",
+            ua,
+            ua_val,
+            url,
+        ])
+        .output();
+    match out {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            match text.trim().chars().take(3).collect::<String>().parse::<u16>() {
+                Ok(code) => (code, (200..400).contains(&code)),
+                Err(_) => (0, false),
+            }
+        }
+        Err(_) => (0, false),
+    }
+}
+
+fn collect_external_links(doc: &crate::Document) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    fn inlines(inl: &[crate::Inline], out: &mut Vec<String>) {
+        for i in inl {
+            match i {
+                crate::Inline::Link { dest, content, .. } => {
+                    let d = dest.as_str();
+                    if d.starts_with("http://") || d.starts_with("https://") {
+                        if !out.iter().any(|u| u == d) {
+                            out.push(d.to_string());
+                        }
+                    }
+                    inlines(content, out);
+                }
+                crate::Inline::Emphasis(c)
+                | crate::Inline::Strong(c)
+                | crate::Inline::Strikethrough(c) => inlines(c, out),
+                _ => {}
+            }
+        }
+    }
+    fn blocks(blk: &[crate::Block], out: &mut Vec<String>) {
+        for b in blk {
+            match b {
+                crate::Block::Paragraph(i) | crate::Block::Heading { inlines: i, .. } => {
+                    inlines(i, out);
+                }
+                crate::Block::BlockQuote(inner) => blocks(inner, out),
+                crate::Block::List(list) => {
+                    for item in &list.items {
+                        blocks(&item.blocks, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    blocks(&doc.blocks, &mut out);
+    out
+}
+
 fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     // Agent/CI pipes get JSON without `--json` (VERIFY_RECIPE, `> report.json`).
     // A TTY without `--json` gets the caret report. `--json` / global `--json`
@@ -1643,6 +1911,15 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     };
     let report = if args.a11y {
         crate::verify::filter_a11y(report)
+    } else {
+        report
+    };
+    // --links (fjzd): external link check via the system fetcher. Adds
+    // link_broken / link_redirected findings; pure addition, never in the
+    // default path (network is non-deterministic by definition).
+    let report = if args.links {
+        let extra = check_external_links(&doc, args.links_timeout_secs, args.links_cache.as_deref(), args.links_ttl_secs, json);
+        crate::verify::with_extra_findings(report, extra)
     } else {
         report
     };
@@ -2423,7 +2700,8 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
             Block::CodeBlock { .. }
             | Block::ThematicBreak
             | Block::HtmlBlock(_)
-            | Block::MathBlock(_) => {}
+            | Block::MathBlock(_)
+            | Block::PageBreak => {}
         }
     }
 }
@@ -2832,7 +3110,10 @@ fn expand_file_includes(
         }
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Some((text, canon.to_string_lossy().into_owned()))),
-            Err(_) => Err(format!("include_invalid_utf8: {} is not UTF-8", path.display())),
+            Err(_) => Err(format!(
+                "include_invalid_utf8: {} is not UTF-8",
+                path.display()
+            )),
         }
     })
     .map_err(|e| e.to_string())
@@ -3199,9 +3480,490 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
     }
 }
 
+fn run_book(args: BookArgs, global_json: bool, no_config: bool) -> ExitCode {
+    let json = args.json || global_json;
+    if !args.input.exists() {
+        return fail_json(
+            66,
+            "input_error",
+            &format!("book input directory not found: {}", args.input.display()),
+            json,
+        );
+    }
+    if !args.input.is_dir() {
+        return fail_json(
+            66,
+            "input_error",
+            &format!("book input is not a directory: {}", args.input.display()),
+            json,
+        );
+    }
+    match args.to {
+        Target::Html | Target::Pdf | Target::Both => {}
+        Target::Epub | Target::Svg => {
+            return fail_json(
+                64,
+                "usage_error",
+                "--to epub/svg is not supported for fmd book",
+                json,
+            );
+        }
+    }
+
+    let mut files = Vec::new();
+    if let Err(e) = collect_markdown_files(&args.input, &mut files) {
+        return fail_json(
+            66,
+            "input_error",
+            &format!("walking {}: {e}", args.input.display()),
+            json,
+        );
+    }
+
+    let manifest_path = args.input.join("book.toml");
+    let mut manifest_order = Vec::new();
+    let mut manifest_title = None;
+    if manifest_path.is_file() {
+        if let Ok(manifest_src) = std::fs::read_to_string(&manifest_path) {
+            parse_book_manifest(&manifest_src, &mut manifest_order, &mut manifest_title);
+        }
+    }
+
+    if !manifest_order.is_empty() {
+        let mut ordered_files = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for item in manifest_order {
+            let item_path = args.input.join(&item);
+            if item_path.is_file() {
+                ordered_files.push(item_path.clone());
+                seen.insert(item_path);
+            }
+        }
+        for f in files {
+            if !seen.contains(&f) {
+                ordered_files.push(f);
+            }
+        }
+        files = ordered_files;
+    } else {
+        files.sort_by(|a, b| {
+            let rel_a = a.strip_prefix(&args.input).unwrap_or(a);
+            let rel_b = b.strip_prefix(&args.input).unwrap_or(b);
+            rel_a.cmp(rel_b)
+        });
+    }
+
+    if files.is_empty() {
+        return fail_json(
+            66,
+            "input_error",
+            &format!("no Markdown files found in {}", args.input.display()),
+            json,
+        );
+    }
+
+    let mut inputs = Vec::with_capacity(files.len());
+    let mut file_byte_counts = Vec::with_capacity(files.len());
+    for file_path in &files {
+        let rel = file_path
+            .strip_prefix(&args.input)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let path_str = file_path.to_string_lossy();
+        let raw = match read_input(Some(&path_str), None, args.max_input_bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                return fail_json(
+                    66,
+                    "input_error",
+                    &format!("reading {}: {e}", file_path.display()),
+                    json,
+                );
+            }
+        };
+        file_byte_counts.push(raw.len());
+        let expanded = if crate::transclude::has_includes(&raw) {
+            match expand_file_includes(&path_str, &raw, args.max_input_bytes) {
+                Ok(s) => s,
+                Err(e) => return fail_json(66, "include_error", &e, json),
+            }
+        } else {
+            raw
+        };
+        inputs.push(crate::book::BookInput {
+            path: rel,
+            source: expanded,
+        });
+    }
+
+    let book = match crate::book::build_book(&inputs) {
+        Ok(b) => b,
+        Err(e) => return fail_json(66, "book_error", &e.to_string(), json),
+    };
+
+    let dir_name = args
+        .input
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .filter(|s| !s.is_empty() && s != ".")
+        .unwrap_or(std::borrow::Cow::Borrowed("book"));
+
+    let (site_dir, pdf_path) = match &args.out_dir {
+        Some(out) => {
+            if args.to == Target::Pdf && out.extension().is_some_and(|e| e == "pdf") {
+                (
+                    out.parent()
+                        .unwrap_or(Path::new(""))
+                        .join(format!("{dir_name}-site")),
+                    out.clone(),
+                )
+            } else {
+                (out.clone(), out.join(format!("{dir_name}.pdf")))
+            }
+        }
+        None => {
+            let parent = args.input.parent().unwrap_or(Path::new(""));
+            (
+                parent.join(format!("{dir_name}-site")),
+                parent.join(format!("{dir_name}.pdf")),
+            )
+        }
+    };
+
+    let theme = if no_config {
+        Theme::default()
+    } else {
+        match load_config(false) {
+            Ok(c) => c.to_theme(),
+            Err(_) => Theme::default(),
+        }
+    };
+
+    let known_pages: std::collections::BTreeSet<String> =
+        book.chapters.iter().map(|c| c.out_name.clone()).collect();
+    let mut outputs = Vec::new();
+    let mut unresolved_count = 0;
+
+    for chapter in &book.chapters {
+        unresolved_count += count_unresolved_links(&chapter.doc, &known_pages);
+    }
+    if unresolved_count > 0 && !json {
+        eprintln!("fmd: warning: found {unresolved_count} unresolved cross-file links");
+    }
+
+    if matches!(args.to, Target::Html | Target::Both) {
+        if let Err(e) = std::fs::create_dir_all(&site_dir) {
+            return fail_json(
+                73,
+                "output_error",
+                &format!("creating site dir {}: {e}", site_dir.display()),
+                json,
+            );
+        }
+        let html_opts = HtmlOptions {
+            theme: theme.clone(),
+            ..HtmlOptions::default()
+        };
+
+        for chapter in &book.chapters {
+            let mut doc = chapter.doc.clone();
+            crate::book::rewrite_links_for_site(&mut doc, &known_pages);
+            let rendered = match crate::render_html_document(&doc, &html_opts) {
+                Ok(s) => s,
+                Err(e) => return fail_json(70, "html_render_error", &e.to_string(), json),
+            };
+            let final_html = crate::book::inject_book_nav(&rendered, &book, &chapter.out_name);
+            let out_file = site_dir.join(&chapter.out_name);
+            if let Err(e) = std::fs::write(&out_file, final_html.as_bytes()) {
+                return fail_json(
+                    73,
+                    "output_error",
+                    &format!("writing {}: {e}", out_file.display()),
+                    json,
+                );
+            }
+            outputs.push(out_file.display().to_string());
+        }
+
+        if let Some(first) = book.chapters.first() {
+            let index_html = format!(
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={}\"><title>Redirecting...</title></head><body><p>Redirecting to <a href=\"{}\">{}</a>...</p></body></html>\n",
+                first.out_name, first.out_name, first.out_name
+            );
+            let index_file = site_dir.join("index.html");
+            if let Err(e) = std::fs::write(&index_file, index_html.as_bytes()) {
+                return fail_json(
+                    73,
+                    "output_error",
+                    &format!("writing {}: {e}", index_file.display()),
+                    json,
+                );
+            }
+            outputs.push(index_file.display().to_string());
+        }
+    }
+
+    let mut pdf_pages = 0;
+    if matches!(args.to, Target::Pdf | Target::Both) {
+        let pdf_doc = crate::book::book_pdf_document(&book);
+        let mut pdf_opts = PdfOptions {
+            theme,
+            toc: true,
+            ..PdfOptions::default()
+        };
+        if let Some(title) = manifest_title.or_else(|| {
+            book.chapters
+                .first()
+                .and_then(|c| c.frontmatter.as_ref())
+                .and_then(|fm| fm.title.clone())
+        }) {
+            pdf_opts.title = Some(title);
+        }
+        if let Some(author) = book
+            .chapters
+            .first()
+            .and_then(|c| c.frontmatter.as_ref())
+            .and_then(|fm| fm.author.clone())
+        {
+            pdf_opts.author = Some(author);
+        }
+        let pdf_bytes = match crate::render_pdf_document(&pdf_doc, &pdf_opts) {
+            Ok(b) => b,
+            Err(e) => return fail_json(70, "pdf_render_error", &e.to_string(), json),
+        };
+        pdf_pages = count_pdf_pages(&pdf_bytes);
+        if let Some(p) = pdf_path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        if let Err(e) = std::fs::write(&pdf_path, &pdf_bytes) {
+            return fail_json(
+                73,
+                "output_error",
+                &format!("writing {}: {e}", pdf_path.display()),
+                json,
+            );
+        }
+        outputs.push(pdf_path.display().to_string());
+    }
+
+    if json {
+        let mut files_json = Vec::new();
+        for (i, ch) in book.chapters.iter().enumerate() {
+            let bytes = file_byte_counts.get(i).copied().unwrap_or(0);
+            files_json.push(format!(
+                "{{\"path\":\"{}\",\"out_name\":\"{}\",\"title\":\"{}\",\"bytes\":{bytes}}}",
+                json_escape(&ch.path),
+                json_escape(&ch.out_name),
+                json_escape(&ch.title),
+            ));
+        }
+        let outputs_json: Vec<_> = outputs
+            .iter()
+            .map(|o| format!("\"{}\"", json_escape(o)))
+            .collect();
+        let receipt = format!(
+            "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"input\":\"{}\",\"chapters\":{},\"files\":[{}],\"unresolved_links\":{},\"pages\":{},\"outputs\":[{}]}}",
+            json_escape(&args.input.display().to_string()),
+            book.chapters.len(),
+            files_json.join(","),
+            unresolved_count,
+            pdf_pages,
+            outputs_json.join(",")
+        );
+        return emit_stdout(&receipt);
+    }
+
+    eprintln!("fmd: assembled book ({} chapters)", book.chapters.len());
+    if matches!(args.to, Target::Html | Target::Both) {
+        eprintln!("fmd: wrote HTML site -> {}", site_dir.display());
+    }
+    if matches!(args.to, Target::Pdf | Target::Both) {
+        eprintln!("fmd: wrote PDF book -> {}", pdf_path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_markdown_files(&path, out)?;
+        } else if path.is_file() && (name_str.ends_with(".md") || name_str.ends_with(".markdown")) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn parse_book_manifest(src: &str, order: &mut Vec<String>, title: &mut Option<String>) {
+    let mut in_order_array = false;
+    for raw_line in src.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if in_order_array {
+            let chunk = if let Some(idx) = line.find(']') {
+                in_order_array = false;
+                &line[..idx]
+            } else {
+                line
+            };
+            for item in chunk.split(',') {
+                let s = item.trim().trim_matches('"').trim_matches('\'').trim();
+                if !s.is_empty() {
+                    order.push(s.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let key = k.trim();
+            let val = v.trim();
+            if key == "title" {
+                *title = Some(val.trim_matches('"').trim_matches('\'').to_string());
+            } else if key == "order" || key == "chapters" {
+                if let Some(open_idx) = val.find('[') {
+                    let after_open = &val[open_idx + 1..];
+                    let (chunk, closed) = if let Some(close_idx) = after_open.find(']') {
+                        (&after_open[..close_idx], true)
+                    } else {
+                        (after_open, false)
+                    };
+                    for item in chunk.split(',') {
+                        let s = item.trim().trim_matches('"').trim_matches('\'').trim();
+                        if !s.is_empty() {
+                            order.push(s.to_string());
+                        }
+                    }
+                    if !closed {
+                        in_order_array = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn count_unresolved_links(doc: &Document, known: &std::collections::BTreeSet<String>) -> usize {
+    let mut count = 0;
+    count_block_unresolved(&doc.blocks, known, &mut count);
+    count
+}
+
+fn count_block_unresolved(
+    blocks: &[Block],
+    known: &std::collections::BTreeSet<String>,
+    count: &mut usize,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
+                count_inline_unresolved(inlines, known, count);
+            }
+            Block::BlockQuote(inner) => count_block_unresolved(inner, known, count),
+            Block::List(list) => {
+                for item in &list.items {
+                    count_block_unresolved(&item.blocks, known, count);
+                }
+            }
+            Block::Table(table) => {
+                for cell in &table.head {
+                    count_inline_unresolved(cell, known, count);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        count_inline_unresolved(cell, known, count);
+                    }
+                }
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        count_inline_unresolved(term, known, count);
+                    }
+                    for def in &item.definitions {
+                        count_inline_unresolved(def, known, count);
+                    }
+                }
+            }
+            Block::FootnoteDefinition { blocks, .. } => {
+                count_block_unresolved(blocks, known, count)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn count_inline_unresolved(
+    inlines: &[Inline],
+    known: &std::collections::BTreeSet<String>,
+    count: &mut usize,
+) {
+    for inl in inlines {
+        match inl {
+            Inline::Link { dest, content, .. } => {
+                if !dest.starts_with("http://")
+                    && !dest.starts_with("https://")
+                    && !dest.starts_with("//")
+                {
+                    let target = dest.split_once('#').map_or(dest.as_str(), |(p, _)| p);
+                    if target.ends_with(".md") || target.ends_with(".markdown") {
+                        let page_html = crate::book::out_name(target);
+                        if !known.contains(&page_html) {
+                            *count += 1;
+                        }
+                    }
+                }
+                count_inline_unresolved(content, known, count);
+            }
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                count_inline_unresolved(c, known, count);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn count_pdf_pages(bytes: &[u8]) -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"/Type /Page") {
+            let next = bytes.get(i + 11);
+            if matches!(next, Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')) {
+                count += 1;
+                i += 11;
+                continue;
+            }
+        } else if bytes[i..].starts_with(b"/Type/Page") {
+            let next = bytes.get(i + 10);
+            if matches!(next, Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')) {
+                count += 1;
+                i += 10;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    count.max(1)
+}
+
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -3216,11 +3978,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license
-  fmd doctor fonts --corpus ./docs --json
-                             # glyph coverage vs bundled faces + Noto math fallback.
-                             # stdout JSON: scripts/ranges/uncovered/hints.
-                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. deeper page-builder polish is still planned; specifics: full widow/orphan control, keep-with-next, footnotes layout, columns.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. deeper page-builder polish is still planned; specifics: full widow/orphan control, keep-with-next, footnotes layout, columns.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 
@@ -3242,6 +4000,7 @@ fn normalized_args() -> Vec<String> {
         "config",
         "stats",
         "diff",
+        "book",
         // Recognized even without the `batch` feature so it is never rewritten to
         // `render batch ...`; clap then reports a clean "unrecognized subcommand".
         "batch",

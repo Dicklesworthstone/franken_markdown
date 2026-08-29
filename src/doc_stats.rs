@@ -226,6 +226,7 @@ impl StatsCollector {
     fn walk_blocks(&mut self, blocks: &[Block]) {
         for block in blocks {
             match block {
+                Block::PageBreak => {}
                 Block::Heading { level, inlines } => {
                     let lvl = (*level as usize).clamp(1, 6);
                     self.structure.headings_total += 1;

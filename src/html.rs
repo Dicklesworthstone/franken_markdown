@@ -312,6 +312,9 @@ fn render_block<'a, 'b>(
 ) {
     match block {
         Block::FootnoteDefinition { .. } => {}
+        Block::PageBreak => {
+            out.push_str("<div class=\"fmd-pagebreak\" style=\"break-after: page;\"></div>\n");
+        }
         Block::Heading { level, inlines } => {
             out.push_str("<h");
             push_u64(out, u64::from(*level));
@@ -1942,6 +1945,7 @@ fn collect_font_usage(doc: &Document) -> FontUsage {
 fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
     for block in blocks {
         match block {
+            Block::PageBreak => {}
             Block::FootnoteDefinition { blocks: inner, .. } => {
                 collect_blocks_font_usage(inner, usage);
             }

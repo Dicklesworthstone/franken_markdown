@@ -829,6 +829,7 @@ fn block_tag(block: &Block) -> u8 {
         Block::FootnoteDefinition { .. } => 8,
         Block::MathBlock(_) => 9,
         Block::DefinitionList(_) => 10,
+        Block::PageBreak => 11,
     }
 }
 
@@ -845,6 +846,7 @@ fn block_name(tag: u8) -> &'static str {
         8 => "footnote definition",
         9 => "math block",
         10 => "definition list",
+        11 => "page break",
         _ => "block",
     }
 }
@@ -861,6 +863,7 @@ fn normalize_prose(text: &str) -> String {
 /// formatting change is a real diff.
 fn canonical_block(block: &Block, with_dests: bool) -> String {
     match block {
+        Block::PageBreak => "\u{0}pagebreak".to_string(),
         Block::Heading { level, inlines } => {
             let mut s = String::from("h");
             s.push_str(&level.to_string());
@@ -1059,6 +1062,7 @@ fn block_link_dests(block: &Block) -> Vec<String> {
 
 fn collect_block_dests(block: &Block, out: &mut Vec<String>) {
     match block {
+        Block::PageBreak => {}
         Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
             collect_inline_dests(inlines, out);
         }
@@ -1131,6 +1135,7 @@ fn plain_block(block: &Block) -> String {
 
 fn plain_block_into(block: &Block, out: &mut String) {
     match block {
+        Block::PageBreak => out.push_str("[page break]"),
         Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
             plain_inlines(inlines, out);
         }

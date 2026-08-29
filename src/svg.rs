@@ -570,6 +570,7 @@ impl Poster {
                 }
                 self.y += body_size * 0.4;
             }
+            Block::PageBreak => {}
         }
     }
 

@@ -198,6 +198,7 @@ fn audit_accessibility_blocks(
             | crate::ast::Block::ThematicBreak
             | crate::ast::Block::HtmlBlock(_)
             | crate::ast::Block::MathBlock(_)
+            | crate::ast::Block::PageBreak
             | crate::ast::Block::FootnoteDefinition { .. } => {}
         }
     }
@@ -280,6 +281,21 @@ pub fn filter_a11y(mut report: VerifyReport) -> VerifyReport {
         "table_missing_header",
     ];
     report.findings.retain(|f| A11Y_CODES.contains(&f.code));
+    report.verdict = if report.findings.is_empty() {
+        "clean"
+    } else {
+        "findings"
+    };
+    let body = to_json_body(&report);
+    report.digest = fnv1a64(body.as_bytes());
+    report
+}
+
+/// Append caller-produced findings (the --links network check lives CLI-side;
+/// the core never touches the network) and recompute verdict + digest so the
+/// report stays self-consistent.
+pub fn with_extra_findings(mut report: VerifyReport, extra: Vec<VerifyFinding>) -> VerifyReport {
+    report.findings.extend(extra);
     report.verdict = if report.findings.is_empty() {
         "clean"
     } else {

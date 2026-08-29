@@ -40,6 +40,11 @@ pub enum Block {
     MathBlock(String),
     /// A definition list (GFM-plus).
     DefinitionList(Vec<DefinitionItem>),
+    /// A forced page/chapter break (book builder, bead j0o4). Renders as a
+    /// zero-content boundary: a `break-after: page` div in HTML, a new page in
+    /// PDF. Not produced by the Markdown parser — hosts insert it between
+    /// merged chapters.
+    PageBreak,
 }
 
 /// An item in a definition list: one or more terms, followed by one or more definitions.

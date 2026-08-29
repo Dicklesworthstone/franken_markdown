@@ -46,7 +46,10 @@ pub type ResolveResult = std::result::Result<Option<(String, String)>, String>;
 /// - `include_cycle`: a path appears twice in the active include stack.
 /// - `include_depth`: nesting exceeded `MAX_DEPTH`.
 /// - the resolver's `Err` detail, unchanged.
-pub fn expand_includes(src: &str, resolver: &dyn Fn(&str, &str) -> ResolveResult) -> Result<String> {
+pub fn expand_includes(
+    src: &str,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
+) -> Result<String> {
     let mut stack = Vec::new();
     expand_inner(src, resolver, &mut stack, 0, "<input>")
 }
@@ -188,7 +191,12 @@ mod tests {
     #[test]
     fn depth_cap_errors() {
         let files: Vec<(String, String)> = (0..20)
-            .map(|i| (format!("d{i}.md"), format!("{{{{#include d{}.md}}}}\n", i + 1)))
+            .map(|i| {
+                (
+                    format!("d{i}.md"),
+                    format!("{{{{#include d{}.md}}}}\n", i + 1),
+                )
+            })
             .collect();
         let map: BTreeMap<String, String> = files.into_iter().collect();
         let r = move |p: &str, _o: &str| Ok(map.get(p).map(|c| (c.clone(), p.to_string())));

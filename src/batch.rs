@@ -722,7 +722,8 @@ fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
             Block::CodeBlock { .. }
             | Block::ThematicBreak
             | Block::HtmlBlock(_)
-            | Block::MathBlock(_) => {}
+            | Block::MathBlock(_)
+            | Block::PageBreak => {}
         }
     }
 }

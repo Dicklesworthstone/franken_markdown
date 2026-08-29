@@ -283,7 +283,8 @@ fn collect_block_metrics(
                     }
                 }
             }
-            Block::ThematicBreak | Block::HtmlBlock(_) | Block::MathBlock(_) => {}
+            Block::ThematicBreak | Block::HtmlBlock(_) | Block::MathBlock(_) | Block::PageBreak => {
+            }
         }
     }
 }
@@ -540,7 +541,8 @@ fn walk_blocks_for_anchors<'a>(
             Block::CodeBlock { .. }
             | Block::ThematicBreak
             | Block::HtmlBlock(_)
-            | Block::MathBlock(_) => {}
+            | Block::MathBlock(_)
+            | Block::PageBreak => {}
         }
     }
 }

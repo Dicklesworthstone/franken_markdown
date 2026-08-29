@@ -38,6 +38,10 @@ e2e_run "install.sh --from-source --dest (sandbox)" -- \
   bash "$INSTALL" --from-source --dest "$DEST" --quiet --no-gum --force
 e2e_expect_exit 0
 e2e_expect_file "${DEST}/fmd"
+e2e_expect_file "${WORK}/share/bash-completion/completions/fmd"
+e2e_expect_file "${WORK}/share/zsh/site-functions/_fmd"
+e2e_expect_file "${WORK}/share/fish/vendor_completions.d/fmd.fish"
+e2e_expect_file "${WORK}/share/man/man1/fmd.1"
 
 # 3) The installed binary must run and report its surface.
 e2e_run "installed fmd --help" -- "${DEST}/fmd" --help

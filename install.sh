@@ -952,11 +952,55 @@ maybe_add_path() {
     ;;
   esac
 }
-maybe_add_path
+# Shell completions and man page installation (bead ncok)
+install_completions_and_man() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
-# Shell completions: fmd does not (yet) expose a `completions <shell>` subcommand,
-# so there is nothing to install. This is intentionally a clean no-op; revisit if
-# a completions generator is added to the CLI.
+  local share_dir
+  if [ "$DEST" = "$DEST_DEFAULT" ]; then
+    share_dir="$HOME/.local/share"
+  elif [ "$DEST" = "/usr/local/bin" ] || [ "$DEST" = "/usr/bin" ]; then
+    share_dir="/usr/local/share"
+  else
+    share_dir="$(dirname "$DEST")/share"
+  fi
+
+  # Shell completions
+  if [ -n "$script_dir" ] && [ -f "$script_dir/completions/fmd.bash" ]; then
+    local bash_dest="$share_dir/bash-completion/completions"
+    mkdir -p "$bash_dest" 2>/dev/null || true
+    if cp "$script_dir/completions/fmd.bash" "$bash_dest/fmd" 2>/dev/null; then
+      ok "Installed bash completions: $bash_dest/fmd"
+    fi
+  fi
+
+  if [ -n "$script_dir" ] && [ -f "$script_dir/completions/fmd.zsh" ]; then
+    local zsh_dest="$share_dir/zsh/site-functions"
+    mkdir -p "$zsh_dest" 2>/dev/null || true
+    if cp "$script_dir/completions/fmd.zsh" "$zsh_dest/_fmd" 2>/dev/null; then
+      ok "Installed zsh completions: $zsh_dest/_fmd"
+    fi
+  fi
+
+  if [ -n "$script_dir" ] && [ -f "$script_dir/completions/fmd.fish" ]; then
+    local fish_dest="$share_dir/fish/vendor_completions.d"
+    mkdir -p "$fish_dest" 2>/dev/null || true
+    if cp "$script_dir/completions/fmd.fish" "$fish_dest/fmd.fish" 2>/dev/null; then
+      ok "Installed fish completions: $fish_dest/fmd.fish"
+    fi
+  fi
+
+  # Man page
+  if [ -n "$script_dir" ] && [ -f "$script_dir/docs/fmd.1" ]; then
+    local man_dest="$share_dir/man/man1"
+    mkdir -p "$man_dest" 2>/dev/null || true
+    if cp "$script_dir/docs/fmd.1" "$man_dest/fmd.1" 2>/dev/null; then
+      ok "Installed man page: $man_dest/fmd.1"
+    fi
+  fi
+}
+install_completions_and_man
 
 # ─────────────────────────────────────────────────────────────────────────────
 # --verify self-test

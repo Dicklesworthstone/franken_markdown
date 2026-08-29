@@ -19077,8 +19077,7 @@ impl<'a> SegRunShaper<'a> {
                             self.size,
                         );
                     }
-                    *running +=
-                        advance_to_layout_units(tables.advances[usize::from(b)], self.size);
+                    *running += advance_to_layout_units(tables.advances[usize::from(b)], self.size);
                     *prev = Some(b);
                 }
             }
@@ -30351,12 +30350,12 @@ mod pdf_writer_tests {
         PdfImageData, PdfImageStreamFilter, PdfOutlineItemObjectParts, PdfPageObjectParts,
         PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
         PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
-        SElem, SKey, SKid, SNode, Seg, SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor,
-        SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement,
-        SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap,
-        SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect,
-        SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText,
-        SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
+        SElem, SKey, SKid, SNode, Seg, SegRunShaper, SimpleParagraphLayoutCache, SvgClipPath,
+        SvgCssAncestor, SvgCssRule, SvgCssVariable, SvgDashPattern, SvgDominantBaseline,
+        SvgElement, SvgFilterShadow, SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine,
+        SvgLineCap, SvgLineJoin, SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly,
+        SvgRect, SvgReusableDef, SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle,
+        SvgText, SvgTextAnchor, SvgTextDecoration, SvgTextMatrix, SvgTransform,
         TABLE_LAYOUT_CACHE_MAX_INLINE_NODES, TableLayoutCache, TableLayoutKey, Tok, TokGroup,
         WidthCache, append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
         append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
@@ -30381,16 +30380,13 @@ mod pdf_writer_tests {
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        container_prefix_with_extra, decode_xml_entities,
-        estimate_page_content_capacity, finish_page_content_stream, finite_pdf_scalar,
-        first_visible_segment_index, fnv1a64_update, fnv1a64_update_bytewise_reference,
-        font_size_of, hyphenator_for_word, hyphenator_for_word_with_doc_lang,
-        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
-        layout_simple_text_paragraph, layout_table, layout_table_uncached,
-        left_protrusion_hang, line_has_visible_content, measure_word,
-        normalize_svg_text_node, parse_svg_attrs, SegRunShaper,
-        shaped_width_points_for_layout,
-        parse_svg_background_color_token, parse_svg_baseline_shift,
+        container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
+        finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
+        fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
+        hyphenator_for_word_with_doc_lang, kerned_tj, kerned_tj_with_spacing, layout_inlines,
+        layout_inlines_greedy, layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        left_protrusion_hang, line_has_visible_content, measure_word, normalize_svg_text_node,
+        parse_svg_attrs, parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
         parse_svg_marker_body, parse_svg_path_data, parse_svg_reusable_body_elements,
@@ -30398,12 +30394,12 @@ mod pdf_writer_tests {
         parse_svg_transform, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
         pdf_num, pdf_shading_resource, pdf_text_string, pdf_word_break_points, pdf_word_plain_text,
         pdf_word_stats, png_paeth, push_text_tokens, rounded_rect_fill, shape_run,
-        split_svg_top_level_slash, svg_alpha_extgstate_resource, svg_background_top_level_tokens,
-        svg_clip_rect_ops, svg_color_mix_weights, svg_fill_shadings, svg_object_bbox_transform,
-        svg_stroke_shadings, svg_style_with_non_scaling_stroke, svg_text_advance,
-        svg_text_path_advance, svg_text_pdf_stroke_width, svg_uniform_stroke_scale,
-        svg_uniform_svg_transform_scale, token_visible_text, tokenize, visit_svg_path_segments,
-        wrap_cell_styled,
+        shaped_width_points_for_layout, split_svg_top_level_slash, svg_alpha_extgstate_resource,
+        svg_background_top_level_tokens, svg_clip_rect_ops, svg_color_mix_weights,
+        svg_fill_shadings, svg_object_bbox_transform, svg_stroke_shadings,
+        svg_style_with_non_scaling_stroke, svg_text_advance, svg_text_path_advance,
+        svg_text_pdf_stroke_width, svg_uniform_stroke_scale, svg_uniform_svg_transform_scale,
+        token_visible_text, tokenize, visit_svg_path_segments, wrap_cell_styled,
     };
     use crate::ast::{Align, Inline, Table};
     use crate::{PdfOptions, ThemeColors};
@@ -32673,8 +32669,8 @@ mod pdf_writer_tests {
         // Justified body-text lines: words (some ligature-starting) with
         // stretched spaces, exactly what the Knuth-Plass emitter feeds in.
         let words = [
-            "fire", "flow", "office", "the", "quick", "brown", "fox", "jumps",
-            "over", "lazy", "dog", "affine", "shelf", "grift", "waffle",
+            "fire", "flow", "office", "the", "quick", "brown", "fox", "jumps", "over", "lazy",
+            "dog", "affine", "shelf", "grift", "waffle",
         ];
         let mut lines: Vec<Vec<LineTok>> = Vec::new();
         for l in 0..64usize {
@@ -32734,8 +32730,9 @@ mod pdf_writer_tests {
         // every token carries an extra (applies_to_words / CJK-style
         // justification), so the old code re-shaped the whole growing run
         // per token (quadratic) while the incremental shaper stays linear.
-        let cjk_chars: Vec<char> =
-            "日本語のテストは長い行を構成するための文字列ですここで終わり".chars().collect();
+        let cjk_chars: Vec<char> = "日本語のテストは長い行を構成するための文字列ですここで終わり"
+            .chars()
+            .collect();
         let mut cjk_lines: Vec<Vec<LineTok>> = Vec::new();
         for l in 0..16usize {
             let mut toks = Vec::new();
@@ -32780,7 +32777,8 @@ mod pdf_writer_tests {
         for (idx, toks) in differential_line_toks().into_iter().enumerate() {
             for budget in [0u16, 15] {
                 let new = build_segs_adjusted(&toks, left, size, &faces, None, budget);
-                let reference = build_segs_adjusted_reference(&toks, left, size, &faces, None, budget);
+                let reference =
+                    build_segs_adjusted_reference(&toks, left, size, &faces, None, budget);
                 assert_same_segs(&new, &reference, &format!("case {idx} budget {budget}"));
             }
         }
@@ -32828,13 +32826,7 @@ mod pdf_writer_tests {
             },
             extra_advance: extra,
         };
-        let line_toks = vec![
-            word("of"),
-            word("fi"),
-            word("ce"),
-            space(2.5),
-            word("next"),
-        ];
+        let line_toks = vec![word("of"), word("fi"), word("ce"), space(2.5), word("next")];
 
         let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0);
 
@@ -32924,7 +32916,6 @@ mod pdf_writer_tests {
         }
         Ok(())
     }
-
 
     #[test]
     fn decimal_writer_covers_boundary_values() {

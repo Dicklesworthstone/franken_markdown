@@ -3676,6 +3676,8 @@ impl LayoutCx<'_> {
             .set_expansion_permilli(policy.expansion_permilli());
         self.paragraph_scratch
             .set_gradual_demerits(policy.gradual_demerits);
+        self.paragraph_scratch
+            .set_river_penalty(policy.river_penalty);
         break_paragraph_into(
             items,
             line_width,
@@ -18468,6 +18470,8 @@ fn layout_inlines(
     // Gradual adjacent demerits (Verna '25) are justified-paragraph-only:
     // ragged flows have no inter-word scaling to homogenize.
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
+    // River seeds apply to ragged flows too (natural-width detection).
+    policy.river_penalty = cx.opts.river_penalty;
     let built = build_paragraph(
         &toks,
         fs,
@@ -18594,6 +18598,7 @@ fn layout_prefixed_inlines(
     let fs = font_size_of(spec.size);
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
+    policy.river_penalty = cx.opts.river_penalty;
     let built = build_paragraph(
         &toks,
         fs,

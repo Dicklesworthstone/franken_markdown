@@ -124,7 +124,7 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(dts.contains("metadataEpochSeconds?: number"));
 
     assert!(package.contains("\"type\": \"module\""));
-    assert!(package.contains("\"sideEffects\": false"));
+    assert!(package.contains("\"sideEffects\": [") && package.contains("\"./fmd-view.js\""));
     assert!(package.contains("\"franken_markdown.d.ts\""));
     assert!(package.contains("\"demo/index.html\""));
     assert!(package.contains("\"demo/demo.js\""));

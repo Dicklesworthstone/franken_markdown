@@ -140,10 +140,11 @@ pub fn encode_woff1(sfnt: &[u8]) -> Result<Vec<u8>> {
 
     // Per the WOFF spec, a table whose compressed form is not smaller is
     // stored raw (compLength == origLength).
-    let last_idx = tables.len() - 1;
+    let max_offset = tables.iter().map(|t| t.offset).max().unwrap_or(0);
     let mut payloads: Vec<(std::borrow::Cow<'_, [u8]>, u32)> = Vec::with_capacity(tables.len());
-    for (idx, table) in tables.iter().enumerate() {
-        let raw = slice_table(sfnt, *table, idx == last_idx)?;
+    for table in &tables {
+        let is_last = table.offset == max_offset;
+        let raw = slice_table(sfnt, *table, is_last)?;
         let compressed = zlib_compress(raw);
         if compressed.len() < raw.len() {
             payloads.push((std::borrow::Cow::Owned(compressed), u32_len(raw)?));
@@ -266,7 +267,8 @@ mod tests {
                 crate::compress::zlib_decompress(payload, orig_len as usize + 64)
                     .expect("valid zlib stream")
             };
-            let is_last = std::ptr::eq(table, tables.last().unwrap());
+            let max_offset = tables.iter().map(|t| t.offset).max().unwrap_or(0);
+            let is_last = table.offset == max_offset;
             let expected = slice_table(sfnt, *table, is_last).expect("slice");
             assert_eq!(decoded, expected, "table {:?} round-trips", table.tag);
         }
@@ -278,6 +280,42 @@ mod tests {
         let a = encode_woff1(sfnt).expect("encode a");
         let b = encode_woff1(sfnt).expect("encode b");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn woff1_clamps_overrunning_physically_last_table_not_alphabetical_last() {
+        // Construct an sfnt with 2 tables:
+        // Table 'zzzz': offset 44, length 10 (alphabetically last, but starts earlier)
+        // Table 'aaaa': offset 54, length 20 (alphabetically first, but physically last)
+        // Total buffer length: 64 (so 'aaaa' declared length 20 overruns 54..74 by 10 bytes)
+        let mut sfnt = Vec::new();
+        // sfnt header: flavor(4), numTables(2), searchRange(2), entrySelector(2), rangeShift(2)
+        sfnt.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        sfnt.extend_from_slice(&2u16.to_be_bytes());
+        sfnt.extend_from_slice(&32u16.to_be_bytes());
+        sfnt.extend_from_slice(&1u16.to_be_bytes());
+        sfnt.extend_from_slice(&0u16.to_be_bytes());
+
+        // Entry 1: 'zzzz', checksum 0, offset 44, length 10
+        sfnt.extend_from_slice(b"zzzz");
+        sfnt.extend_from_slice(&0u32.to_be_bytes());
+        sfnt.extend_from_slice(&44u32.to_be_bytes());
+        sfnt.extend_from_slice(&10u32.to_be_bytes());
+
+        // Entry 2: 'aaaa', checksum 0, offset 54, length 20 (overruns buffer length 64)
+        sfnt.extend_from_slice(b"aaaa");
+        sfnt.extend_from_slice(&0u32.to_be_bytes());
+        sfnt.extend_from_slice(&54u32.to_be_bytes());
+        sfnt.extend_from_slice(&20u32.to_be_bytes());
+
+        // Table 'zzzz' data (10 bytes: 44..54)
+        sfnt.extend_from_slice(&[0x11; 10]);
+        // Table 'aaaa' data (10 bytes present: 54..64, though 20 declared)
+        sfnt.extend_from_slice(&[0x22; 10]);
+        assert_eq!(sfnt.len(), 64);
+
+        let woff = encode_woff1(&sfnt).expect("must succeed by clamping overrunning last table");
+        assert_eq!(&woff[0..4], b"wOFF");
     }
 
     #[test]

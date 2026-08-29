@@ -1730,7 +1730,12 @@ fn check_external_links(
                 "{{\"url\":\"{esc}\",\"status\":{status},\"ok\":{ok},\"checked\":{checked}}}\n"
             ));
         }
-        let _ = std::fs::write(path, text);
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!(
+                "fmd: warning: could not write link cache {}: {e}",
+                path.display()
+            );
+        }
     }
     if json {
         eprintln!(

@@ -49,9 +49,13 @@ pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
             closed_at = Some(offset + line.len());
             break;
         }
-        // Frontmatter bodies are line-oriented key=value; a blank line or a
-        // non-conforming line ends the candidate without matching.
-        if trimmed.is_empty() || trimmed.contains('=') {
+        // Frontmatter bodies are line-oriented key=value or key: value; a blank line,
+        // comment (#), or conforming key-value line is accepted.
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || trimmed.contains('=')
+            || trimmed.contains(':')
+        {
             body_lines.push(trimmed);
         } else {
             return (None, src);
@@ -68,19 +72,28 @@ pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
     (fm, &body[end..])
 }
 
-/// Parse the collected body lines. Returns None when no key=value line is
+/// Parse the collected body lines. Returns None when no key=value or key: value line is
 /// present (an empty or comment-only block is not frontmatter).
 fn parse_frontmatter_lines(lines: &[&str]) -> Option<Frontmatter> {
     let mut fm = Frontmatter::default();
     let mut saw_any = false;
     for line in lines {
-        if line.is_empty() {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        let pair = line.split_once('=').or_else(|| line.split_once(':'));
+        let Some((key, value)) = pair else {
             continue;
         };
         let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let value = if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+            || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
         let value = value.trim().to_string();
         saw_any = true;
         match key.as_str() {
@@ -146,5 +159,18 @@ mod tests {
             Some("BOM Doc")
         );
         assert_eq!(rest, "# Hi\n");
+    }
+
+    #[test]
+    fn parses_yaml_style_colon_and_quoted_values() {
+        let src = "---\n# Comment line\ntitle: \"YAML Title\"\nauthor: 'Alice'\nlang: fr\ntoc: yes\ntoc_depth: 3\n---\n# Content\n";
+        let (fm, rest) = split_frontmatter(src);
+        let fm = fm.expect("yaml frontmatter recognized");
+        assert_eq!(fm.title.as_deref(), Some("YAML Title"));
+        assert_eq!(fm.author.as_deref(), Some("Alice"));
+        assert_eq!(fm.lang.as_deref(), Some("fr"));
+        assert_eq!(fm.toc, Some(true));
+        assert_eq!(fm.toc_depth, Some(3));
+        assert_eq!(rest, "# Content\n");
     }
 }

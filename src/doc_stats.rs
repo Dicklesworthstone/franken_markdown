@@ -174,13 +174,15 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         let w_per_s = (collector.words as f32) / (effective_sentences as f32);
         let syl_per_w = (effective_syllables as f32) / (collector.words as f32);
         let chars_per_word = (collector.characters as f32) / (collector.words as f32);
-        let chars_per_hundred_words = chars_per_word * 100.0;
         let sentences_per_hundred_words =
             (effective_sentences as f32) / (collector.words as f32) * 100.0;
 
         let fre = 206.835 - (1.015 * w_per_s) - (84.6 * syl_per_w);
         let fkg = (0.39 * w_per_s) + (11.8 * syl_per_w) - 15.59;
-        let cli = 0.0588 * chars_per_hundred_words - 0.296 * sentences_per_hundred_words - 15.8;
+        // Coleman-Liau requires LETTERS per 100 words (L), not all characters.
+        let letters_per_hundred_words =
+            (collector.letters as f32) / (collector.words as f32) * 100.0;
+        let cli = 0.0588 * letters_per_hundred_words - 0.296 * sentences_per_hundred_words - 15.8;
         let ari = 4.71 * chars_per_word + 0.5 * w_per_s - 21.43;
 
         let label = if fre >= 90.0 {
@@ -232,6 +234,9 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
 struct StatsCollector {
     words: usize,
     characters: usize,
+    /// Alphabetic characters only (for Coleman-Liau which requires letters,
+    /// not all non-whitespace chars).
+    letters: usize,
     sentences: usize,
     syllables: usize,
     structure: DocumentStructure,
@@ -323,6 +328,7 @@ impl StatsCollector {
                         }
                     }
                     self.characters += code.chars().filter(|c| !c.is_whitespace()).count();
+                    self.letters += code.chars().filter(|c| c.is_alphabetic()).count();
                 }
                 Block::BlockQuote(inner) => {
                     if let Some((tag, _label, body)) = crate::ast::alert_body(inner) {
@@ -368,6 +374,7 @@ impl StatsCollector {
                 Block::ThematicBreak => {}
                 Block::HtmlBlock(html) => {
                     self.characters += html.chars().filter(|c| !c.is_whitespace()).count();
+                    self.letters += html.chars().filter(|c| c.is_alphabetic()).count();
                 }
                 Block::FootnoteDefinition { id, blocks } => {
                     self.structure.footnote_definitions += 1;
@@ -377,6 +384,7 @@ impl StatsCollector {
                 Block::MathBlock(math) => {
                     self.structure.math_blocks += 1;
                     self.characters += math.chars().filter(|c| !c.is_whitespace()).count();
+                    self.letters += math.chars().filter(|c| c.is_alphabetic()).count();
                 }
                 Block::DefinitionList(items) => {
                     for item in items {
@@ -402,7 +410,6 @@ impl StatsCollector {
                     self.analyze_inlines(inner);
                 }
                 Inline::Code(code) => {
-                    self.characters += code.chars().filter(|c| !c.is_whitespace()).count();
                     self.process_prose_text(code);
                 }
                 Inline::Link { dest, content, .. } => {
@@ -424,6 +431,7 @@ impl StatsCollector {
                 Inline::SoftBreak | Inline::HardBreak => {}
                 Inline::Html(h) => {
                     self.characters += h.chars().filter(|c| !c.is_whitespace()).count();
+                    self.letters += h.chars().filter(|c| c.is_alphabetic()).count();
                 }
                 Inline::FootnoteRef { id } => {
                     self.structure.footnote_references += 1;
@@ -432,6 +440,7 @@ impl StatsCollector {
                 Inline::Math(m) | Inline::DisplayMath(m) => {
                     self.structure.math_inlines += 1;
                     self.characters += m.chars().filter(|c| !c.is_whitespace()).count();
+                    self.letters += m.chars().filter(|c| c.is_alphabetic()).count();
                 }
             }
         }
@@ -441,6 +450,9 @@ impl StatsCollector {
         for ch in text.chars() {
             if !ch.is_whitespace() {
                 self.characters += 1;
+            }
+            if ch.is_alphabetic() {
+                self.letters += 1;
             }
         }
 
@@ -1036,5 +1048,20 @@ And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [
         assert_eq!(stats.outline[0].slug, "section");
         assert_eq!(stats.outline[1].slug, "section-2");
         assert_eq!(stats.outline[2].slug, "section-3");
+    }
+
+    #[test]
+    fn compute_doc_stats_coleman_liau_and_letter_metrics() {
+        let md = "The quick brown fox jumps over the lazy dog. It was a sunny afternoon.";
+        let doc = parse_markdown(md);
+        let stats = compute_doc_stats(md, &doc);
+
+        assert_eq!(stats.words, 14);
+        assert_eq!(stats.sentences, 2);
+        // Characters excluding whitespace: 57 non-whitespace chars, 55 alphabetic letters
+        assert_eq!(stats.characters, 57);
+        // Letters should be non-zero and Coleman-Liau should produce a valid positive grade score
+        assert!(stats.coleman_liau_index > 0.0);
+        assert!(stats.flesch_reading_ease > 70.0);
     }
 }

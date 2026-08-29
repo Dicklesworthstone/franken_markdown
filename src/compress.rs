@@ -214,7 +214,6 @@ const MAX_MATCH: usize = 258;
 const WINDOW: usize = 32768;
 const MAX_CHAIN: usize = 256;
 const STORED_BLOCK_MAX: usize = u16::MAX as usize;
-const NONE: usize = usize::MAX;
 const ADLER_MOD: u32 = 65521;
 const ADLER_NMAX: usize = 5552;
 const FIXED_LIMIT_OVERSHOOT_BYTES: usize = 4;
@@ -345,53 +344,50 @@ struct FixedDeflate {
 pub(crate) struct ZlibCompressScratch {
     head: Vec<usize>,
     prev: Vec<usize>,
-    /// Hash buckets written since the last reset — one entry per bucket's
-    /// FIRST write per call — so reuse clears only the dirtied slots instead
-    /// of re-filling the whole 256 KiB table. Bucket indices are always
-    /// < HASH_SIZE, which the const assertion below pins to the u16 range.
-    touched: Vec<u16>,
+    /// Generation base for the current call: `head`/`prev` entries store
+    /// `base + position`, and every entry from an earlier call (or a virgin
+    /// zero fill) is strictly less than `base`, so the chain walk's single
+    /// `cand >= base` test invalidates them exactly like a NONE entry in a
+    /// freshly reset table — with no per-call reset sweep at all.
+    base: usize,
 }
-
-const _: () = assert!(HASH_SIZE <= u16::MAX as usize + 1);
 
 impl ZlibCompressScratch {
     pub(crate) fn new() -> Self {
         Self {
             head: Vec::new(),
             prev: Vec::new(),
-            touched: Vec::new(),
+            base: 1,
         }
     }
 
-    /// Prepare the LZ77 tables for one call over `input_len` bytes.
+    /// Prepare the LZ77 tables for one call over `input_len` bytes and return
+    /// the call's generation base alongside them.
     ///
-    /// Reset equivalence invariant: `insert` below pushes a bucket to
-    /// `touched` exactly when it overwrites a NONE entry (a bucket's first
-    /// write of the call — head entries never return to NONE mid-call), so at
-    /// every call boundary `head[h] != NONE` iff `h` appears in `touched`.
-    /// Clearing exactly the touched buckets therefore restores the all-NONE
-    /// state a fresh table would have. LZ77 decisions read `head`/`prev` only
-    /// at lookup time and every `prev[cand]` read is preceded by the `insert`
-    /// that wrote it in the same call, so reset-to-NONE equivalence makes the
-    /// emitted DEFLATE stream byte-identical to a fresh-scratch run.
-    fn fixed_tables(&mut self, input_len: usize) -> (&mut [usize], &mut [usize], &mut Vec<u16>) {
-        if self.head.len() == HASH_SIZE {
-            for &h in &self.touched {
-                self.head[usize::from(h)] = NONE;
-            }
-        } else {
+    /// Reset-equivalence invariant: entries store `base + position`; `base`
+    /// starts at 1 (so the virgin zero fill is always invalid) and advances by
+    /// each call's input length, so entries from different calls live in
+    /// disjoint ranges and `cand >= base` accepts exactly the entries the
+    /// CURRENT call inserted — precisely the population a fresh all-NONE table
+    /// would expose. LZ77 decisions read `head`/`prev` only at lookup time and
+    /// every `prev[c]` read is preceded by the `insert` that wrote it in the
+    /// same call, so the emitted DEFLATE stream is byte-identical to a
+    /// fresh-scratch run while skipping the 256 KiB table sweep per call.
+    /// (`input_len >= MIN_MATCH` whenever this runs, so `base` never stalls.)
+    fn fixed_tables(&mut self, input_len: usize) -> (usize, &mut [usize], &mut [usize]) {
+        if self.head.len() != HASH_SIZE || self.base.checked_add(input_len).is_none() {
             self.head.clear();
-            self.head.resize(HASH_SIZE, NONE);
+            self.head.resize(HASH_SIZE, 0);
+            self.base = 1;
         }
-        self.touched.clear();
-
         if self.prev.len() < input_len {
-            self.prev.resize(input_len, NONE);
-        } else {
-            self.prev.truncate(input_len);
+            self.prev.resize(input_len, 0);
         }
-
-        (&mut self.head, &mut self.prev, &mut self.touched)
+        let base = self.base;
+        // Next call's base clears every global this call can store
+        // (base + input_len - 1 at most).
+        self.base = base + input_len;
+        (base, &mut self.head, &mut self.prev)
     }
 }
 
@@ -455,19 +451,13 @@ fn deflate_fixed_with_scratch(
             complete: true,
         };
     }
-    let (head, prev, touched) = scratch.fixed_tables(n);
-
-    let insert = |head: &mut [usize], prev: &mut [usize], touched: &mut Vec<u16>, p: usize| {
+    let (base, head, prev) = scratch.fixed_tables(n);
+    let insert = |head: &mut [usize], prev: &mut [usize], p: usize| {
         if p + MIN_MATCH <= n {
             let h = hash3(data, p);
             let old = head[h];
             prev[p] = old;
-            if old == NONE {
-                // First write to this bucket this call: remember it so
-                // the next call's reset only clears dirtied slots.
-                touched.push(h as u16);
-            }
-            head[h] = p;
+            head[h] = base + p;
         }
     };
 
@@ -481,17 +471,26 @@ fn deflate_fixed_with_scratch(
             let max_match = (n - pos).min(MAX_MATCH);
             let mut cand = head[h];
             let mut chain = MAX_CHAIN;
-            while cand != NONE && chain > 0 && cand < pos {
-                let dist = pos - cand;
+            // `cand >= base` accepts only this call's entries; stale and
+            // virgin (zero) entries end the chain exactly like NONE would in
+            // a freshly reset table. The subtract feeding every use of `c`
+            // replaces the `pos - cand` distance computation the local-
+            // position form needed anyway, so the walk gains no work.
+            while cand >= base && chain > 0 {
+                let c = cand - base;
+                if c >= pos {
+                    break;
+                }
+                let dist = pos - c;
                 if dist > WINDOW {
                     break;
                 }
-                if best_len < max_match && data[cand + best_len] != data[pos + best_len] {
-                    cand = prev[cand];
+                if best_len < max_match && data[c + best_len] != data[pos + best_len] {
+                    cand = prev[c];
                     chain -= 1;
                     continue;
                 }
-                let len = match_len(data, cand, pos, max_match);
+                let len = match_len(data, c, pos, max_match);
                 if len > best_len {
                     best_len = len;
                     best_dist = dist;
@@ -499,7 +498,7 @@ fn deflate_fixed_with_scratch(
                         break;
                     }
                 }
-                cand = prev[cand];
+                cand = prev[c];
                 chain -= 1;
             }
         }
@@ -517,7 +516,7 @@ fn deflate_fixed_with_scratch(
             adler.update_slice(&data[pos..end]);
             let mut k = pos;
             while k < end {
-                insert(&mut *head, &mut *prev, &mut *touched, k);
+                insert(&mut *head, &mut *prev, k);
                 k += 1;
             }
             pos = end;
@@ -533,7 +532,7 @@ fn deflate_fixed_with_scratch(
                 };
             }
             adler.update_byte(b);
-            insert(&mut *head, &mut *prev, &mut *touched, pos);
+            insert(&mut *head, &mut *prev, pos);
             pos += 1;
         }
     }

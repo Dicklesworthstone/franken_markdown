@@ -194,6 +194,10 @@ fn diff_block_inlines(old: &Block, new: &Block, stats: &mut DiffStats) -> Vec<Di
     }
 }
 
+/// Maximum DP cells before lcs_diff falls back to a whole-replacement diff.
+/// 16M cells = 64 MB of u32; beyond that, the quadratic cost is a DoS vector.
+const LCS_MAX_CELLS: usize = 16 * 1024 * 1024;
+
 fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
     let m = old.len();
     let n = new.len();
@@ -206,7 +210,16 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
     if n == 0 {
         return old.iter().cloned().map(RawDiffItem::Deleted).collect();
     }
-
+    // Cap the quadratic DP: beyond the cell budget, fall back to reporting the
+    // entire old side deleted + the entire new side inserted (correct, just
+    // not minimal). The block-pairing pass above still detects Modified for
+    // same-kind blocks, so the output stays useful.
+    if m.saturating_mul(n) > LCS_MAX_CELLS {
+        let mut out = Vec::with_capacity(m + n);
+        out.extend(old.iter().cloned().map(RawDiffItem::Deleted));
+        out.extend(new.iter().cloned().map(RawDiffItem::Inserted));
+        return out;
+    }
     let stride = n + 1;
     let mut dp = vec![0u32; (m + 1) * stride];
 

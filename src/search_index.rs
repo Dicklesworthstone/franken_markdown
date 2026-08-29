@@ -268,7 +268,11 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
             Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
                 out.push_str(t)
             }
-            Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
+            Inline::FootnoteRef { id } => {
+                out.push_str("[^");
+                out.push_str(id);
+                out.push(']');
+            }
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_inlines_to_plain(c, out);
             }

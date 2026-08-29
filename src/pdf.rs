@@ -28928,8 +28928,9 @@ fn build_pdf(
     // Embedded font object groups.
     // One Flate scratch reused across every embedded font program: each face's
     // subset bytes are compressed back-to-back here, so the 256 KiB LZ77 hash
-    // table is allocated once and only the buckets dirtied by the previous
-    // face are reset between programs (byte-identical to fresh scratches).
+    // table is allocated once per render and no per-program reset sweep runs
+    // (stale entries are invalidated by the scratch's generation base,
+    // byte-identical to fresh scratches).
     let mut font_scratch = crate::compress::ZlibCompressScratch::new();
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);

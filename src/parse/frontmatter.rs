@@ -1,0 +1,150 @@
+//! Document frontmatter (bead qqst): a leading `---` fenced block of
+//! `key=value` lines carrying per-document metadata.
+//!
+//! Deliberately a `key=value` subset (the project's existing config grammar),
+//! NOT YAML/TOML: the zero-dependency doctrine rules out real YAML parsers,
+//! and a documented minimal subset surprises nobody. Recognized keys:
+//! `title`, `author`, `lang`, `toc`, `toc_depth`. Unknown keys are collected
+//! (never fatal) so the CLI can warn and editors can lint.
+//!
+//! A frontmatter block is recognized ONLY at byte 0 (after an optional BOM):
+//! the first line must be exactly `---`, a closing line that is exactly `---`
+//! must follow, and the body must contain at least one `key=value` line. A
+//! leading `---` that fails any of those is parsed as ordinary content (a
+//! thematic break), matching reader expectations for non-frontmatter docs.
+
+/// Parsed frontmatter values. `None`/absent keys leave the render defaults
+/// (first-heading title, no author, language autodetect).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Frontmatter {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub lang: Option<String>,
+    pub toc: Option<bool>,
+    pub toc_depth: Option<u8>,
+    /// Unrecognized keys (in source order) for warning/lint surfaces.
+    pub unknown_keys: Vec<String>,
+}
+
+/// Split a leading frontmatter block from the source. Returns the parsed
+/// frontmatter and the remaining source (starting on the line after the
+/// closing fence). When no valid frontmatter block exists, returns
+/// `(None, src)` with the input untouched.
+#[must_use]
+pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
+    let body = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let mut lines = body.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return (None, src);
+    };
+    if first.trim_end_matches(['\n', '\r']) != "---" {
+        return (None, src);
+    }
+    let mut offset = first.len();
+    let mut body_lines: Vec<&str> = Vec::new();
+    let mut closed_at = None;
+    for line in lines.by_ref() {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == "---" {
+            closed_at = Some(offset + line.len());
+            break;
+        }
+        // Frontmatter bodies are line-oriented key=value; a blank line or a
+        // non-conforming line ends the candidate without matching.
+        if trimmed.is_empty() || trimmed.contains('=') {
+            body_lines.push(trimmed);
+        } else {
+            return (None, src);
+        }
+        offset += line.len();
+    }
+    let Some(end) = closed_at else {
+        return (None, src);
+    };
+    let fm = parse_frontmatter_lines(&body_lines);
+    if fm.is_none() {
+        return (None, src);
+    }
+    (fm, &body[end..])
+}
+
+/// Parse the collected body lines. Returns None when no key=value line is
+/// present (an empty or comment-only block is not frontmatter).
+fn parse_frontmatter_lines(lines: &[&str]) -> Option<Frontmatter> {
+    let mut fm = Frontmatter::default();
+    let mut saw_any = false;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().to_string();
+        saw_any = true;
+        match key.as_str() {
+            "title" => fm.title = Some(value),
+            "author" => fm.author = Some(value),
+            "lang" => fm.lang = Some(value),
+            "toc" => {
+                fm.toc = match value.to_ascii_lowercase().as_str() {
+                    "true" | "yes" | "on" | "1" => Some(true),
+                    "false" | "no" | "off" | "0" => Some(false),
+                    _ => None,
+                };
+            }
+            "toc_depth" => {
+                fm.toc_depth = value.parse::<u8>().ok().filter(|d| (1..=6).contains(d));
+            }
+            other => fm.unknown_keys.push(other.to_string()),
+        }
+    }
+    saw_any.then_some(fm)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontmatter_only_at_document_start() {
+        let src = "# Title\n\n---\ntitle=not metadata\n---\n";
+        let (fm, rest) = split_frontmatter(src);
+        assert!(fm.is_none(), "mid-document fences are not frontmatter");
+        assert_eq!(rest, src);
+    }
+
+    #[test]
+    fn parses_recognized_and_collects_unknown() {
+        let src = "---\ntitle=My Book\nauthor=Jane\nlang=de\ntoc=true\ntoc_depth=2\nflavor=x\n---\n# Hi\n";
+        let (fm, rest) = split_frontmatter(src);
+        let fm = fm.expect("frontmatter recognized");
+        assert_eq!(fm.title.as_deref(), Some("My Book"));
+        assert_eq!(fm.author.as_deref(), Some("Jane"));
+        assert_eq!(fm.lang.as_deref(), Some("de"));
+        assert_eq!(fm.toc, Some(true));
+        assert_eq!(fm.toc_depth, Some(2));
+        assert_eq!(fm.unknown_keys, ["flavor"]);
+        assert_eq!(rest, "# Hi\n");
+    }
+
+    #[test]
+    fn rejects_unclosed_and_empty_blocks() {
+        assert!(split_frontmatter("---\ntitle=x\n# Hi\n").0.is_none());
+        assert!(split_frontmatter("---\n---\n# Hi\n").0.is_none());
+        assert!(split_frontmatter("---\njust words\n---\n").0.is_none());
+    }
+
+    #[test]
+    fn bom_prefixed_frontmatter() {
+        let src = "\u{feff}---\ntitle=BOM Doc\n---\n# Hi\n";
+        let (fm, rest) = split_frontmatter(src);
+        assert_eq!(
+            fm.expect("bom frontmatter").title.as_deref(),
+            Some("BOM Doc")
+        );
+        assert_eq!(rest, "# Hi\n");
+    }
+}

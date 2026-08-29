@@ -60,7 +60,9 @@ pub use fmd_math as math;
 pub mod epub;
 pub mod interactive;
 pub mod search_index;
+pub mod svg;
 pub mod theme;
+pub mod transclude;
 pub mod wasm;
 pub mod woff1;
 pub mod zip;
@@ -110,6 +112,8 @@ pub use span::{
     DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
     SpannedInline, SpannedListItem, SpannedTable,
 };
+pub use svg::{SvgOptions, SvgReport, render_svg, render_svg_with_report};
+pub use transclude::expand_includes;
 pub use theme::{
     CodeTheme, DarkModePolicy, FontFamily, FontScale, MonoFontFamily, PageMargins, PageSize,
     PageStyle, Theme, ThemeColors, ThemeSpacing, TypeScale, TypeScalePreset,

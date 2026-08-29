@@ -17,7 +17,10 @@ use crate::scanner::{ParserLineScan, scan_markdown_line};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 mod entities;
+mod frontmatter;
 mod unicode_punct;
+
+pub use frontmatter::{Frontmatter, split_frontmatter};
 
 #[cfg(not(target_arch = "wasm32"))]
 type ParseStageStart = std::time::Instant;
@@ -235,6 +238,10 @@ pub fn parse_document_profiled(src: &str) -> ParseProfile {
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    // Frontmatter (key=value between --- fences at byte 0) is document
+    // metadata, not content: split it off before line scanning so it never
+    // renders as a thematic break or paragraph text.
+    let (_frontmatter, src) = split_frontmatter(src);
     let lines = profiler.measure(
         "line_split",
         "strip UTF-8 BOM if present and split source into logical lines",

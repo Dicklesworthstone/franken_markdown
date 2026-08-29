@@ -1477,18 +1477,25 @@ fn parse_blocks_with_refs_profiled(
                 text.push_str(strip_n(cont, 4));
                 used += 1;
             }
-            let inlines = parse_inlines_with_refs_profiled(&text, refs, profiler);
+            let inner_lines: Vec<&str> = text.lines().collect();
+            let parsed_inner = parse_blocks_with_refs_profiled(&inner_lines, refs, profiler);
+            let inner_blocks = if parsed_inner.is_empty() {
+                let inlines = parse_inlines_with_refs_profiled(&text, refs, profiler);
+                vec![Block::Paragraph(inlines)]
+            } else {
+                parsed_inner
+            };
             profiler.record_since(
                 "footnote_definition",
                 used,
                 text.len(),
-                1 + inlines.len(),
-                "parse one GFM footnote definition and its inline content",
+                inner_blocks.len(),
+                "parse one GFM footnote definition and its block content",
                 started,
             );
             blocks.push(Block::FootnoteDefinition {
                 id,
-                blocks: vec![Block::Paragraph(inlines)],
+                blocks: inner_blocks,
             });
             i += used;
             continue;
@@ -3837,61 +3844,68 @@ fn finish_inline_elements_without_delimiters(els: Vec<InlineEl>) -> Vec<Inline> 
     out
 }
 
+#[derive(Clone, Copy)]
+struct EmphasisNode {
+    prev: Option<usize>,
+    next: Option<usize>,
+    node_depth: usize,
+    alive: bool,
+}
+
+struct EmphasisArena {
+    nodes: Vec<EmphasisNode>,
+}
+
+impl EmphasisArena {
+    fn new(n: usize) -> Self {
+        let mut nodes = Vec::with_capacity(n.saturating_mul(2));
+        for i in 0..n {
+            nodes.push(EmphasisNode {
+                prev: i.checked_sub(1),
+                next: if i + 1 < n { Some(i + 1) } else { None },
+                node_depth: 1,
+                alive: true,
+            });
+        }
+        Self { nodes }
+    }
+
+    #[inline(always)]
+    fn unlink(&mut self, x: usize, head: &mut Option<usize>) {
+        let p = self.nodes[x].prev;
+        let nx = self.nodes[x].next;
+        match p {
+            Some(pp) => self.nodes[pp].next = nx,
+            None => *head = nx,
+        }
+        if let Some(nn) = nx {
+            self.nodes[nn].prev = p;
+        }
+        self.nodes[x].alive = false;
+    }
+}
+
 /// Resolve a flat token list into a nested inline tree using the CommonMark
 /// "process emphasis" delimiter-stack algorithm, then linearize what remains.
 fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
     let n = els.len();
     let mut els = els;
-    // Intrusive doubly linked list over `els`, with tombstones (`alive`) instead
-    // of physical removal so indices stay stable as nodes are spliced in/out.
-    let mut prev: Vec<Option<usize>> = (0..n).map(|i| i.checked_sub(1)).collect();
-    let mut next: Vec<Option<usize>> = (0..n).map(|i| (i + 1 < n).then_some(i + 1)).collect();
-    let mut alive: Vec<bool> = vec![true; n];
-    // Nesting depth of the subtree each node represents (1 for a leaf token).
-    // Used to bound how deep emphasis/strong wrapping may go.
-    let mut node_depth: Vec<usize> = vec![1; n];
+    let mut arena = EmphasisArena::new(n);
     let mut head: Option<usize> = (n > 0).then_some(0);
 
-    process_emphasis(
-        &mut els,
-        &mut prev,
-        &mut next,
-        &mut alive,
-        &mut node_depth,
-        &mut head,
-    );
+    process_emphasis(&mut els, &mut arena, &mut head);
 
     let mut out = Vec::new();
     let mut idx = head;
     while let Some(k) = idx {
-        let next_idx = next[k];
-        if alive[k] {
+        let next_idx = arena.nodes[k].next;
+        if arena.nodes[k].alive {
             let taken = std::mem::replace(&mut els[k], InlineEl::Text(String::new()));
             emit_inline_el_owned(taken, &mut out);
         }
         idx = next_idx;
     }
     out
-}
-
-/// Splice element `x` out of the intrusive linked list and mark it dead.
-fn unlink_el(
-    x: usize,
-    prev: &mut [Option<usize>],
-    next: &mut [Option<usize>],
-    alive: &mut [bool],
-    head: &mut Option<usize>,
-) {
-    let p = prev[x];
-    let nx = next[x];
-    match p {
-        Some(pp) => next[pp] = nx,
-        None => *head = nx,
-    }
-    if let Some(nn) = nx {
-        prev[nn] = p;
-    }
-    alive[x] = false;
 }
 
 /// Defensive bound on emphasis/strong nesting depth. Real prose never nests
@@ -3917,35 +3931,19 @@ fn opener_bottom_index(ch: char, slot: usize) -> usize {
 /// The CommonMark "process emphasis" pass: walk closers left to right, match each
 /// to the nearest compatible opener honoring the rule of three, and wrap the
 /// enclosed nodes in `Strong` (2 delimiters) or `Emphasis` (1 delimiter).
-///
-/// Matching a closer means walking back over openers, and for pathological
-/// both-open-and-close runs (e.g. alternating `*_*_…`) that back-walk is
-/// quadratic even with `openers_bottom`. We cap the *total* back-walk work at a
-/// linear multiple of the token count; once spent we stop pairing and leave the
-/// remaining delimiters as literal text. Legitimate prose never approaches the
-/// budget (its openers are always nearby), so output is unaffected; only crafted
-/// worst-case input degrades, and it degrades deterministically.
 fn process_emphasis(
     els: &mut Vec<InlineEl>,
-    prev: &mut Vec<Option<usize>>,
-    next: &mut Vec<Option<usize>>,
-    alive: &mut Vec<bool>,
-    node_depth: &mut Vec<usize>,
+    arena: &mut EmphasisArena,
     head: &mut Option<usize>,
 ) {
-    // Per (char, slot) lower bound below which no opener can be found; `slot`
-    // folds the closer's can_open flag and run length mod 3, mirroring the
-    // reference implementation's `openers_bottom`.
     let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
-    // Linear back-walk budget (see fn doc). 64x the token count is far above any
-    // real document yet turns the adversarial quadratic case into linear time.
     let step_budget = els.len().saturating_mul(64).max(4096);
     let mut steps: usize = 0;
     let mut ci = *head;
 
     while let Some(c) = ci {
-        if !alive[c] {
-            ci = next[c];
+        if !arena.nodes[c].alive {
+            ci = arena.nodes[c].next;
             continue;
         }
         let (cch, closer_can_open, corig) = match &els[c] {
@@ -3957,7 +3955,7 @@ fn process_emphasis(
                 ..
             } if *can_close => (*ch, *can_open, *orig),
             _ => {
-                ci = next[c];
+                ci = arena.nodes[c].next;
                 continue;
             }
         };
@@ -3967,21 +3965,17 @@ fn process_emphasis(
 
         // Walk back to the nearest opener of the same char that is not rejected
         // by the rule of three.
-        let mut opener_idx = prev[c];
+        let mut opener_idx = arena.nodes[c].prev;
         let mut found: Option<usize> = None;
         while let Some(o) = opener_idx {
             steps += 1;
             if steps > step_budget {
-                // Back-walk budget exhausted: stop pairing. Any still-unmatched
-                // delimiters stay alive and are emitted as literal text by the
-                // caller's final linearization. Bounds worst-case CPU on crafted
-                // both-open-and-close runs without affecting real prose.
                 return;
             }
             if Some(o) == bound {
                 break;
             }
-            if alive[o]
+            if arena.nodes[o].alive
                 && let InlineEl::Delim {
                     ch,
                     can_open,
@@ -4002,14 +3996,12 @@ fn process_emphasis(
                     break;
                 }
             }
-            opener_idx = prev[o];
+            opener_idx = arena.nodes[o].prev;
         }
 
         let Some(o) = found else {
-            // No opener: remember the lower bound. The delimiter itself is
-            // still literal source text, so leave it alive for final emission.
-            openers_bottom[bottom_idx] = prev[c];
-            ci = next[c];
+            openers_bottom[bottom_idx] = arena.nodes[c].prev;
+            ci = arena.nodes[c].next;
             continue;
         };
 
@@ -4021,45 +4013,29 @@ fn process_emphasis(
             InlineEl::Delim { count, .. } => *count,
             _ => 0,
         };
-        // Pair delimiters into strong (2) or emphasis (1). CommonMark consumes the
-        // delimiters nearest the content first: when both the opener and closer
-        // have >= 2 delimiters this pairing is strong (the INNER wrapper), and any
-        // leftover single delimiter becomes the outer emphasis on a later pass.
-        // So `***x***` -> <em><strong>x</strong></em> (strong inner, em outer), and
-        // `****x****` pairs entirely into <strong><strong>x</strong></strong>.
         let use_delims = if ocount >= 2 && ccount >= 2 { 2 } else { 1 };
 
-        // Bound nesting depth before building anything: the deepest node strictly
-        // between opener and closer determines the wrapper's depth. Past the cap
-        // we refuse to wrap and leave this closer as literal text (advance past
-        // it) so the resulting tree cannot overflow the stack at render/drop.
-        // The `next` chain only threads live nodes, so every visited index is
-        // alive; the `filter` folds the `!= c` terminator into the loop head.
         let mut max_child_depth = 0usize;
-        let mut m = next[o];
+        let mut m = arena.nodes[o].next;
         while let Some(mi) = m.filter(|&mi| mi != c) {
-            max_child_depth = max_child_depth.max(node_depth[mi]);
-            m = next[mi];
+            max_child_depth = max_child_depth.max(arena.nodes[mi].node_depth);
+            m = arena.nodes[mi].next;
         }
         if max_child_depth >= MAX_INLINE_NESTING_DEPTH {
-            ci = next[c];
+            ci = arena.nodes[c].next;
             continue;
         }
 
         // Collect and consume the nodes strictly between opener and closer.
         let mut content: Vec<Inline> = Vec::new();
-        let mut m = next[o];
+        let mut m = arena.nodes[o].next;
         while let Some(mi) = m {
             if mi == c {
                 break;
             }
-            let nxt = next[mi];
-            if alive[mi] {
-                alive[mi] = false;
-                // Move the node out rather than clone it: it is now dead and
-                // spliced out below, so it is never read again. This keeps
-                // repeated wrapping (deeply nested `Strong`/`Emphasis`) linear
-                // instead of re-cloning the growing subtree each pair.
+            let nxt = arena.nodes[mi].next;
+            if arena.nodes[mi].alive {
+                arena.nodes[mi].alive = false;
                 let taken = std::mem::replace(&mut els[mi], InlineEl::Text(String::new()));
                 emit_inline_el_owned(taken, &mut content);
             }
@@ -4081,22 +4057,23 @@ fn process_emphasis(
         // Splice the new node between the (possibly shortened) opener and closer.
         let ni = els.len();
         els.push(InlineEl::Node(node));
-        prev.push(Some(o));
-        next.push(Some(c));
-        alive.push(true);
-        node_depth.push(max_child_depth + 1);
-        next[o] = Some(ni);
-        prev[c] = Some(ni);
+        arena.nodes.push(EmphasisNode {
+            prev: Some(o),
+            next: Some(c),
+            node_depth: max_child_depth + 1,
+            alive: true,
+        });
+        arena.nodes[o].next = Some(ni);
+        arena.nodes[c].prev = Some(ni);
 
         if matches!(&els[o], InlineEl::Delim { count, .. } if *count == 0) {
-            unlink_el(o, prev, next, alive, head);
+            arena.unlink(o, head);
         }
         if matches!(&els[c], InlineEl::Delim { count, .. } if *count == 0) {
-            let after = next[c];
-            unlink_el(c, prev, next, alive, head);
+            let after = arena.nodes[c].next;
+            arena.unlink(c, head);
             ci = after;
         } else {
-            // Closer still has delimiters: keep matching it against more openers.
             ci = Some(c);
         }
     }

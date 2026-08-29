@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{Block, Document, Inline, ListItem, Table};
+use crate::ast::{Block, Document, Inline};
 
 /// Aggregated document telemetry, readability scores, and health analysis.
 #[derive(Debug, Clone, PartialEq)]

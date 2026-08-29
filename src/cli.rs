@@ -2773,24 +2773,15 @@ fn run_doctor_health(json: bool) -> ExitCode {
 fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
     let json = args.json || global_json;
     let input_path = args.input.display().to_string();
-    let md = if input_path == "-" {
-        match read_stdin(args.max_input_bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return fail_json(66, "input_error", &format!("reading stdin: {e}"), json);
-            }
-        }
-    } else {
-        match read_input(&args.input, args.max_input_bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return fail_json(
-                    66,
-                    "input_error",
-                    &format!("reading input {}: {e}", args.input.display()),
-                    json,
-                );
-            }
+    let md = match read_input(Some(&input_path), None, args.max_input_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            return fail_json(
+                66,
+                "input_error",
+                &format!("reading input {}: {e}", args.input.display()),
+                json,
+            );
         }
     };
     let doc = crate::parse_markdown(&md);

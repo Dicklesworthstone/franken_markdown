@@ -11,6 +11,7 @@
 #
 # Exit: 0 ok · 64 usage · 66 env/build · 70 an assertion failed.
 set -uo pipefail
+export RCH_SHIM_LOCAL_IDE=1
 source "$(dirname "$0")/lib.sh"
 
 e2e_init "${1:-installer}"

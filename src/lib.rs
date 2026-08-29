@@ -609,6 +609,12 @@ pub struct PdfOptions {
     /// Default false — classic KP behavior, byte-identical output. See
     /// docs/MICROTYPOGRAPHY.md for the quality metrics this improves.
     pub gradual_demerits: bool,
+    /// Enable river-seed demerits in the Knuth-Plass line breaker: penalize
+    /// break candidates whose previous line's last inter-word space aligns
+    /// horizontally (within 1% of the measure) with a space in the candidate
+    /// line — the two-line seed of a vertical whitespace channel ("river").
+    /// Default false — classic behavior, byte-identical output.
+    pub river_penalty: bool,
 }
 
 impl PdfOptions {

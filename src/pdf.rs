@@ -2051,6 +2051,11 @@ struct ParagraphPolicy {
     /// Gradual adjacent demerits (Verna DocEng '25): opt-in refinement to
     /// the KP fitness-class penalty. Default false (classic behavior).
     gradual_demerits: bool,
+    /// River-seed demerits: opt-in penalty for aligned inter-word spaces on
+    /// consecutive lines. Default false (classic behavior). Applies to ragged
+    /// flows too — rivers form without justification, and detection uses
+    /// natural-width positions, which ragged rendering preserves exactly.
+    river_penalty: bool,
 }
 
 impl ParagraphPolicy {
@@ -2059,12 +2064,14 @@ impl ParagraphPolicy {
         justify: false,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
         gradual_demerits: false,
+        river_penalty: false,
     };
     const TEX_PARAGRAPH: Self = Self {
         hyphenate: true,
         justify: true,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
         gradual_demerits: false,
+        river_penalty: false,
     };
 
     /// Glyph-expansion credit the line breaker may assume (±permilli of box
@@ -20049,13 +20056,7 @@ fn serialize(
                 let shaped = if tail {
                     tail_misses += 1;
                     let t0 = subset_tail_now();
-                    let s = shape_run_with_scratch(
-                        source,
-                        lig,
-                        tables,
-                        text,
-                        &mut shape_scratch,
-                    );
+                    let s = shape_run_with_scratch(source, lig, tables, text, &mut shape_scratch);
                     subset_tail_since(t0, &mut tail_shape_ns);
                     s
                 } else {
@@ -29826,7 +29827,10 @@ fn shape_run_with_scratch(
         && bytes.iter().all(|&b| b < 128)
         && !bytes.iter().any(|&b| tables.lig_start[usize::from(b)])
     {
-        let glyphs: Vec<u16> = bytes.iter().map(|&b| tables.glyphs[usize::from(b)]).collect();
+        let glyphs: Vec<u16> = bytes
+            .iter()
+            .map(|&b| tables.glyphs[usize::from(b)])
+            .collect();
         // Pre-size the TJ buffer: each glyph emits 4 hex digits, and a kerned
         // pair can add '>', a sign, up to 3 digits, and '<' between glyphs, so
         // 10 bytes per glyph plus the "[<"/">]" brackets covers the worst case.
@@ -33789,7 +33793,7 @@ mod pdf_writer_tests {
     fn streamed_text_segment_operator_matches_legacy_format_shape() -> crate::Result<()> {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
-        let shaped = shape_run(&face.font, &face.lig, "AVATAR");
+        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), "AVATAR");
         let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
         for &g in &shaped.glyphs {
             map[usize::from(g)] = g;
@@ -33841,7 +33845,7 @@ mod pdf_writer_tests {
     fn streamed_svg_text_operator_matches_legacy_format_shape() -> crate::Result<()> {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
-        let shaped = shape_run(&face.font, &face.lig, "A V A");
+        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), "A V A");
         let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
         for &g in &shaped.glyphs {
             map[usize::from(g)] = g;

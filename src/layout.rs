@@ -2892,8 +2892,7 @@ fn river_seed_demerits(
             && glue.width > LayoutUnit::ZERO
         {
             x_prev = Some(
-                widths.get(g).copied().unwrap_or(0)
-                    - widths.get(prev_start).copied().unwrap_or(0),
+                widths.get(g).copied().unwrap_or(0) - widths.get(prev_start).copied().unwrap_or(0),
             );
             break;
         }
@@ -2906,8 +2905,8 @@ fn river_seed_demerits(
         if let ParagraphItem::Glue(glue) = &items[g]
             && glue.width > LayoutUnit::ZERO
         {
-            let x = widths.get(g).copied().unwrap_or(0)
-                - widths.get(line_start).copied().unwrap_or(0);
+            let x =
+                widths.get(g).copied().unwrap_or(0) - widths.get(line_start).copied().unwrap_or(0);
             if (x_prev - x).abs() <= tolerance {
                 return RIVER_SEED_DEMERITS;
             }

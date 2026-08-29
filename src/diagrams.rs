@@ -1174,4 +1174,117 @@ sequenceDiagram
         assert!(svg.contains("fmd-ascii"));
         assert!(svg.contains("Producer"));
     }
+
+    fn svg_fixed(v: f32, frac_digits: u32) -> String {
+        let mut s = String::new();
+        write_svg_fixed(&mut s, v, frac_digits).expect("String fmt writes are infallible");
+        s
+    }
+
+    fn assert_matches_std(v: f32) {
+        assert_eq!(svg_fixed(v, 1), format!("{v:.1}"), "mismatch at {v:e} ({{:.1}})");
+        assert_eq!(svg_fixed(v, 0), format!("{v:.0}"), "mismatch at {v:e} ({{:.0}})");
+    }
+
+    #[test]
+    fn svg_fixed_matches_std_on_dyadic_grid_with_ties() {
+        // Every j/2^k for k <= 8, j < 2^12, both signs: covers the reachable
+        // diagram-geometry domain (multiples of 0.125 from layout sums, .5
+        // label widths, .25 centering offsets) densely, and every exact-tie
+        // shape (j odd at k >= 3 is a tie at both precisions).
+        for k in 0..=8u32 {
+            let denom = (1u64 << k) as f32;
+            for j in 0..(1u64 << 12) {
+                let v = j as f32 / denom;
+                assert_matches_std(v);
+                assert_matches_std(-v);
+            }
+        }
+    }
+
+    #[test]
+    fn svg_fixed_matches_std_on_integers_and_display_wrapper() {
+        // Exhaustive small integers plus a sparse sweep to the domain cap,
+        // and the Display wrappers end-to-end through format! machinery.
+        for j in 0..=30_000i64 {
+            let v = j as f32;
+            assert_matches_std(v);
+            assert_matches_std(-v);
+        }
+        let mut j = 30_001i64;
+        while j <= 4_000_000_000 {
+            let v = j as f32;
+            assert_matches_std(v);
+            assert_matches_std(-v);
+            j += 99_933;
+        }
+        for v in [0.049_999_996, 0.05, 0.06, 0.25, 0.5, 0.75, 1.5, 2.65, 69.75, 91.5] {
+            assert_eq!(format!("{}", SvgNum(v)), format!("{v:.1}"), "SvgNum({v:e})");
+            assert_eq!(format!("{}", SvgInt(v)), format!("{v:.0}"), "SvgInt({v:e})");
+        }
+    }
+
+    #[test]
+    fn svg_fixed_matches_std_across_all_exponent_classes() {
+        // Every biased exponent (subnormals through inf-class fallbacks) with
+        // pseudo-random mantissas: hits the exact-tail band [0.05, 4e9], the
+        // subnormal zero forms, huge magnitudes, and the fallback branch.
+        let mut x = 0x2545_F491u32;
+        for exp in 0..=255u32 {
+            for _ in 0..256 {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                let v = f32::from_bits((exp << 23) | (x & 0x007f_ffff));
+                assert_matches_std(v);
+                let v = f32::from_bits((exp << 23) | (x & 0x007f_ffff) | 0x8000_0000);
+                assert_matches_std(v);
+            }
+        }
+    }
+
+    #[test]
+    fn svg_fixed_matches_std_on_random_bit_patterns() {
+        let mut x = 0x9E37_79B9u32;
+        for _ in 0..60_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            assert_matches_std(f32::from_bits(x));
+        }
+    }
+
+    #[test]
+    fn svg_fixed_locks_std_tie_and_zero_semantics() {
+        // Values pinned from std probes (see write_svg_fixed docs).
+        assert_eq!(svg_fixed(0.25, 1), "0.2"); // exact tie -> even
+        assert_eq!(svg_fixed(0.75, 1), "0.8"); // exact tie -> even
+        assert_eq!(svg_fixed(12.5, 0), "12"); // tie -> even
+        assert_eq!(svg_fixed(13.5, 0), "14"); // tie -> even
+        assert_eq!(svg_fixed(0.5, 0), "0");
+        assert_eq!(svg_fixed(1.5, 0), "2");
+        assert_eq!(svg_fixed(-0.0, 1), "-0.0");
+        assert_eq!(svg_fixed(-0.04, 0), "-0"); // sign kept when rounding to zero
+        assert_eq!(svg_fixed(-0.04, 1), "-0.0");
+        assert_eq!(svg_fixed(0.05, 1), "0.1"); // f32 0.05 is above 0.05
+        assert_eq!(svg_fixed(0.049_999_996, 1), "0.0");
+        assert_eq!(svg_fixed(f32::INFINITY, 1), "inf"); // fallback branch
+        assert_eq!(svg_fixed(-f32::NAN, 0), "NaN");
+    }
+
+    #[test]
+    fn flowchart_view_box_uses_half_even_ties() {
+        // Two same-layer nodes with widths 91.5 (7-char label) and 83
+        // (6-char label) give total_width = 202.5 + 48 = 250.5 exactly;
+        // {:.0} half-even keeps "250" (a naive half-up writer would emit 251).
+        let code = "graph TD\n    A[sevens]\n    B[sixes]";
+        let svg = render_diagram_svg(code, "mermaid").expect("should render flowchart");
+        assert!(
+            svg.starts_with(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 250 86\" width=\"250\" height=\"86\""
+            ),
+            "unexpected header: {}",
+            svg.lines().next().unwrap_or_default()
+        );
+    }
 }

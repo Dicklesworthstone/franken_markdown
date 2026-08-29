@@ -4690,7 +4690,7 @@ fn starts_with_ascii_chars_ignore_case(chars: &[char], i: usize, needle: &[u8]) 
     };
     for idx in 0..needle.len() {
         let got = window[idx];
-        if !got.is_ascii() || got.to_ascii_lowercase() as u8 != needle[idx].to_ascii_lowercase() {
+        if !got.is_ascii() || !(got as u8).eq_ignore_ascii_case(&needle[idx]) {
             return false;
         }
     }
@@ -4720,11 +4720,11 @@ fn trim_unmatched_trailing_parens(chars: &[char], start: usize, mut end: usize) 
 fn has_unmatched_closing_paren(chars: &[char], start: usize, end: usize) -> bool {
     let mut opens = 0usize;
     let mut closes = 0usize;
-    for ch in &chars[start..end] {
-        match ch {
-            '(' => opens += 1,
-            ')' => closes += 1,
-            _ => {}
+    for &ch in &chars[start..end] {
+        if ch == '(' {
+            opens += 1;
+        } else if ch == ')' {
+            closes += 1;
         }
     }
     closes > opens
@@ -4735,9 +4735,11 @@ fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
         return None;
     }
     // Only an all-digits run (in the given radix) is a numeric reference at all;
-    // anything else stays literal (`&#xyz;` etc.).
-    if !value.chars().all(|c| c.is_digit(radix)) {
-        return None;
+    // verify bytes directly without UTF-8 char iterator overhead.
+    for &b in value.as_bytes() {
+        if !(b as char).is_digit(radix) {
+            return None;
+        }
     }
     // CommonMark: the NUL code point (U+0000), out-of-range values (> U+10FFFF,
     // including digit runs that overflow `u32`), and surrogate code points

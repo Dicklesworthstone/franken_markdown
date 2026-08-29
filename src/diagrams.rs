@@ -289,7 +289,7 @@ fn parse_flowchart_line(
 
             let (from_id, _) = parse_or_insert_node(left_part.trim(), nodes, node_order);
 
-            let (edge_label, dest_str) = if pat.ends_with('|') {
+            let (mut edge_label, mut dest_str) = if pat.ends_with('|') {
                 if let Some(pipe_pos) = right_part.find('|') {
                     (
                         Some(right_part[..pipe_pos].trim().to_string()),
@@ -301,6 +301,14 @@ fn parse_flowchart_line(
             } else {
                 (None, right_part.trim())
             };
+
+            if edge_label.is_none() && dest_str.starts_with('|') {
+                if let Some(second_pipe) = dest_str[1..].find('|') {
+                    let pipe_pos = 1 + second_pipe;
+                    edge_label = Some(dest_str[1..pipe_pos].trim().to_string());
+                    dest_str = dest_str[pipe_pos + 1..].trim();
+                }
+            }
 
             let (to_id, _) = parse_or_insert_node(dest_str, nodes, node_order);
             let dashed = pat.contains("-.-");
@@ -678,8 +686,8 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
             continue;
         }
 
-        // Messages: A->>B: text, A-->>B: text, A->B: text
-        let msg_delims = ["->>", "-->>", "->", "-->"];
+        // Messages: A-->>B: text, A-->B: text, A->>B: text, A->B: text
+        let msg_delims = ["-->>", "-->", "->>", "->"];
         for delim in msg_delims {
             if let Some(delim_idx) = line.find(delim) {
                 let from = line[..delim_idx].trim().to_string();
@@ -961,6 +969,8 @@ sequenceDiagram
         assert!(svg.contains("fmd-sequence"));
         assert!(svg.contains("Client"));
         assert!(svg.contains("Server"));
+        assert!(!svg.contains("Server-"));
+        assert!(svg.contains("stroke-dasharray=\"4,4\""));
         assert!(svg.contains("GET /status"));
         assert!(svg.contains("200 OK"));
         assert!(svg.contains("Completed roundtrip"));

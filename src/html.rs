@@ -41,9 +41,14 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</title>\n<style>\n");
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
+    let needs_toc = opts.toc || has_toc_marker(&doc.blocks);
     let mut state = RenderState {
         footnote_defs: collect_footnote_defs(&doc.blocks),
-        toc_entries: collect_toc_entries(&doc.blocks),
+        toc_entries: if needs_toc {
+            collect_toc_entries(&doc.blocks)
+        } else {
+            Vec::new()
+        },
         ..RenderState::default()
     };
     render_blocks(&doc.blocks, &mut html, opts, &mut state);
@@ -56,9 +61,14 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
 #[must_use]
 pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
     let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
+    let needs_toc = opts.toc || has_toc_marker(blocks);
     let mut state = RenderState {
         footnote_defs: collect_footnote_defs(blocks),
-        toc_entries: collect_toc_entries(blocks),
+        toc_entries: if needs_toc {
+            collect_toc_entries(blocks)
+        } else {
+            Vec::new()
+        },
         ..RenderState::default()
     };
     render_blocks(blocks, &mut html, opts, &mut state);
@@ -74,6 +84,13 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
 /// plain `/`; inserting that backslash keeps the stylesheet's meaning while the
 /// byte sequence is no longer an HTML end tag.
 fn sanitize_custom_css(css: &str) -> String {
+    if !css
+        .as_bytes()
+        .windows(7)
+        .any(|w| w.eq_ignore_ascii_case(b"</style"))
+    {
+        return css.to_string();
+    }
     let lower = css.to_ascii_lowercase();
     if !lower.contains("</style") {
         return css.to_string();
@@ -1022,20 +1039,40 @@ fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bo
             | Inline::Html(t)
             | Inline::Math(t)
             | Inline::DisplayMath(t) => {
-                for c in t.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
+                push_slug_str(out, pending_dash, t);
             }
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 push_slug_inlines(c, out, pending_dash);
             }
             Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
             Inline::Image { alt, .. } => {
-                for c in alt.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
+                push_slug_str(out, pending_dash, alt);
             }
             Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
+        }
+    }
+}
+
+fn push_slug_str(out: &mut String, pending_dash: &mut bool, s: &str) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            if b.is_ascii_alphanumeric() {
+                if *pending_dash && !out.is_empty() {
+                    out.push('-');
+                }
+                out.push((b as char).to_ascii_lowercase());
+                *pending_dash = false;
+            } else if b == b' ' || b == b'-' || b == b'_' {
+                *pending_dash = true;
+            }
+            i += 1;
+        } else {
+            let ch = s[i..].chars().next().unwrap_or('\0');
+            push_slug_char(out, pending_dash, ch);
+            i += ch.len_utf8();
         }
     }
 }

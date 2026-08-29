@@ -339,11 +339,7 @@ const fn is_pdf_escape_byte(byte: u8) -> bool {
 fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
     find_needles(
         bytes,
-        |word| {
-            word_contains_byte(word, a)
-                || word_contains_byte(word, b)
-                || word_contains_byte(word, c)
-        },
+        |word| word_contains_any_of_3(word, a, b, c),
         |byte| byte == a || byte == b || byte == c,
     )
 }
@@ -351,14 +347,39 @@ fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
 fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
     find_needles(
         bytes,
-        |word| {
-            word_contains_byte(word, a)
-                || word_contains_byte(word, b)
-                || word_contains_byte(word, c)
-                || word_contains_byte(word, d)
-        },
+        |word| word_contains_any_of_4(word, a, b, c, d),
         |byte| byte == a || byte == b || byte == c || byte == d,
     )
+}
+
+#[inline(always)]
+fn word_contains_any_of_3(word: u64, a: u8, b: u8, c: u8) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+    let ma = word ^ (ONES * u64::from(a));
+    let mb = word ^ (ONES * u64::from(b));
+    let mc = word ^ (ONES * u64::from(c));
+    let has_a = ma.wrapping_sub(ONES) & !ma;
+    let has_b = mb.wrapping_sub(ONES) & !mb;
+    let has_c = mc.wrapping_sub(ONES) & !mc;
+    (has_a | has_b | has_c) & HIGHS != 0
+}
+
+#[inline(always)]
+fn word_contains_any_of_4(word: u64, a: u8, b: u8, c: u8, d: u8) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+    let ma = word ^ (ONES * u64::from(a));
+    let mb = word ^ (ONES * u64::from(b));
+    let mc = word ^ (ONES * u64::from(c));
+    let md = word ^ (ONES * u64::from(d));
+    let has_a = ma.wrapping_sub(ONES) & !ma;
+    let has_b = mb.wrapping_sub(ONES) & !mb;
+    let has_c = mc.wrapping_sub(ONES) & !mc;
+    let has_d = md.wrapping_sub(ONES) & !md;
+    (has_a | has_b | has_c | has_d) & HIGHS != 0
 }
 
 /// Chunked first-index scan at 32 (AVX2 width), 16 (NEON/SSE2 width), or 8

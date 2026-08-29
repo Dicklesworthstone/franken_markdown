@@ -83,7 +83,7 @@ pub mod watch;
 #[cfg(feature = "batch")]
 pub mod batch;
 
-pub use ast::{DefinitionItem, Document};
+pub use ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem, Table};
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
 pub use compress::zlib_decompress;
 pub use diagrams::{is_diagram_code, render_diagram_svg};

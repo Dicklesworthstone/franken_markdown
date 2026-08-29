@@ -264,7 +264,7 @@ impl StatsCollector {
                     };
                     let full_slug = if let Some(count) = self.slug_counts.get_mut(&base_slug) {
                         *count += 1;
-                        let suffixed = format!("{}-{}", base_slug, *count - 1);
+                        let suffixed = format!("{}-{}", base_slug, *count);
                         self.findings.push(DocFinding {
                             severity: "info",
                             code: "duplicate_heading_slug",
@@ -928,7 +928,7 @@ And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [
 
         assert_eq!(stats.outline.len(), 3);
         assert_eq!(stats.outline[0].slug, "section");
-        assert_eq!(stats.outline[1].slug, "section-1");
-        assert_eq!(stats.outline[2].slug, "section-2");
+        assert_eq!(stats.outline[1].slug, "section-2");
+        assert_eq!(stats.outline[2].slug, "section-3");
     }
 }

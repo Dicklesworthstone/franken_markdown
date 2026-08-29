@@ -1140,6 +1140,9 @@ impl ScriptKind {
 #[must_use]
 pub const fn classify_script(ch: char) -> ScriptKind {
     let cp = ch as u32;
+    if cp < 0x1100 {
+        return ScriptKind::Latin;
+    }
     match cp {
         0x4E00..=0x9FFF | 0x3400..=0x4DBF => ScriptKind::Han,
         0x3040..=0x30FF => ScriptKind::Kana,
@@ -1727,9 +1730,17 @@ impl HyphenTrie {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn apply_terminal_values(&self, node_idx: u32, start: usize, scores: &mut [u8]) {
-        if let Some(values) = self.terminal_values(node_idx) {
+        let Some(node) = self.nodes.get(node_idx as usize) else {
+            return;
+        };
+        if node.values_len == 0 {
+            return;
+        }
+        let v_start = node.values_start as usize;
+        let v_end = v_start + node.values_len as usize;
+        if let Some(values) = self.values.get(v_start..v_end) {
             debug_assert!(start + values.len() <= scores.len());
             let score_window = &mut scores[start..start + values.len()];
             for (score, &value) in score_window.iter_mut().zip(values) {
@@ -1758,16 +1769,6 @@ impl HyphenTrie {
             .binary_search_by_key(&key, |edge| edge.key)
             .ok()
             .and_then(|idx| edges.get(idx).map(|edge| edge.target))
-    }
-
-    fn terminal_values(&self, node_idx: u32) -> Option<&[u8]> {
-        let node = self.nodes.get(node_idx as usize)?;
-        if node.values_len == 0 {
-            return None;
-        }
-        let start = node.values_start as usize;
-        let end = start.saturating_add(node.values_len as usize);
-        self.values.get(start..end)
     }
 }
 
@@ -2954,6 +2955,16 @@ const fn clamp_i128_to_i32(value: i128) -> i32 {
     }
 }
 
+const fn clamp_i128_to_u64(value: i128) -> u64 {
+    if value < 0 {
+        0
+    } else if value > (u64::MAX as i128) {
+        u64::MAX
+    } else {
+        value as u64
+    }
+}
+
 const fn clamp_i64_to_i32(value: i64) -> i32 {
     if value > i32::MAX as i64 {
         i32::MAX
@@ -3718,7 +3729,8 @@ pub fn compute_ragged_silhouette_demerits(
     is_hyphen: bool,
     config: &RaggedConfig,
 ) -> i64 {
-    let target_w = (measure.milli_points() as i64 * config.target_fill_permille as i64) / 1000;
+    let target_w =
+        (measure.milli_points() as i64).saturating_mul(config.target_fill_permille as i64) / 1000;
     let curr_mp = w_curr.milli_points() as i64;
 
     // Fill band deviation penalty: (W_target - w_curr)^2 / scale
@@ -3728,7 +3740,7 @@ pub fn compute_ragged_silhouette_demerits(
     // 1st order smoothness penalty: (w_curr - w_prev)^2
     let delta_penalty = if let Some(prev) = w_prev {
         let diff = curr_mp - prev.milli_points() as i64;
-        (diff.saturating_mul(diff) / 100_000) * (config.delta_weight as i64)
+        (diff.saturating_mul(diff) / 100_000).saturating_mul(config.delta_weight as i64)
     } else {
         0
     };
@@ -3783,7 +3795,7 @@ pub fn compute_river_penalty(
     spaces_prev: &[SpaceCoordinate],
     threshold: LayoutUnit,
 ) -> i64 {
-    let thresh_mp = threshold.milli_points() as i64;
+    let thresh_mp = (threshold.milli_points() as i64).max(0);
     let mut total_penalty = 0i64;
 
     for sc in spaces_curr {
@@ -3815,7 +3827,7 @@ pub fn detect_white_rivers(
         return findings;
     }
 
-    let thresh_mp = threshold.milli_points() as i64;
+    let thresh_mp = (threshold.milli_points() as i64).max(0);
 
     for i in 0..=line_spaces.len().saturating_sub(min_depth) {
         for start_space in &line_spaces[i] {
@@ -3847,7 +3859,7 @@ pub fn detect_white_rivers(
             }
 
             if depth >= min_depth {
-                let avg_x = (matched_x_sum / depth as i64) as i32;
+                let avg_x = clamp_i64_to_i32(matched_x_sum / depth as i64);
                 findings.push(RiverFinding {
                     start_line: i,
                     line_count: depth,
@@ -3888,13 +3900,14 @@ impl ColumnBadnessCurve {
             let (w0, b0) = self.samples[i];
             let (w1, b1) = self.samples[i + 1];
             if width >= w0 && width <= w1 {
-                let dw = w1.milli_points() - w0.milli_points();
-                if dw == 0 {
+                let dw = w1.milli_points() as i128 - w0.milli_points() as i128;
+                if dw <= 0 {
                     return b0;
                 }
-                let ratio = (width.milli_points() - w0.milli_points()) as f64 / dw as f64;
-                let b = b0 as f64 + ratio * (b1 as f64 - b0 as f64);
-                return b as u64;
+                let num = (width.milli_points() as i128 - w0.milli_points() as i128)
+                    * (b1 as i128 - b0 as i128);
+                let b = b0 as i128 + (num / dw);
+                return clamp_i128_to_u64(b);
             }
         }
 
@@ -3929,7 +3942,7 @@ pub fn solve_convex_table_widths(
     if total_mp <= sum_min {
         return min_widths
             .into_iter()
-            .map(|w| LayoutUnit::from_milli_points(w as i32))
+            .map(|w| LayoutUnit::from_milli_points(clamp_i64_to_i32(w)))
             .collect();
     }
 
@@ -3943,29 +3956,47 @@ pub fn solve_convex_table_widths(
     }
 
     if max_extra_sum <= extra_budget {
-        // Budget satisfies all columns at their max widths
-        return curves.iter().map(|c| c.max_width).collect();
+        // Budget satisfies all columns at their max widths; distribute excess if any
+        let mut allocated: Vec<LayoutUnit> = curves.iter().map(|c| c.max_width).collect();
+        let current_sum: i64 = allocated.iter().map(|w| w.milli_points() as i64).sum();
+        let diff = total_mp - current_sum;
+        if diff > 0 && !allocated.is_empty() {
+            let per_col = diff / (allocated.len() as i64);
+            let mut rem = (diff % (allocated.len() as i64)) as usize;
+            for w in &mut allocated {
+                let add = per_col
+                    + if rem > 0 {
+                        rem -= 1;
+                        1
+                    } else {
+                        0
+                    };
+                *w = w.saturating_add(LayoutUnit::from_milli_points(clamp_i64_to_i32(add)));
+            }
+        }
+        return allocated;
     }
 
-    // Binary search on dual multiplier lambda for convex resource distribution
-    let mut low = 0.0f64;
-    let mut high = 1_000_000.0f64;
+    // Binary search on integer dual multiplier lambda in fixed-point permille (1000 = 1.0)
+    let mut low = 0i64;
+    let mut high = 1_000_000_000i64;
     let mut best_widths = Vec::new();
 
-    for _ in 0..32 {
-        let mid = (low + high) / 2.0;
+    for _ in 0..40 {
+        let mid = (low + high) / 2;
         let mut allocated = Vec::with_capacity(curves.len());
         let mut total_alloc = 0i64;
 
         for (i, curve) in curves.iter().enumerate() {
-            // Find w that minimizes B_c(w) + mid * w
+            // Find w in [min_widths[i], min_widths[i] + extra_caps[i]] that minimizes B_c(w) + mid * w / 1000
             let mut best_w = min_widths[i];
-            let mut min_cost = f64::MAX;
+            let mut min_cost = i128::MAX;
 
             for step in 0..=20 {
                 let test_w = min_widths[i] + (extra_caps[i] * step) / 20;
-                let b = curve.evaluate(LayoutUnit::from_milli_points(test_w as i32)) as f64;
-                let cost = b + mid * (test_w as f64);
+                let b =
+                    curve.evaluate(LayoutUnit::from_milli_points(clamp_i64_to_i32(test_w))) as i128;
+                let cost = b.saturating_add((mid as i128).saturating_mul(test_w as i128) / 1000);
                 if cost < min_cost {
                     min_cost = cost;
                     best_w = test_w;
@@ -3977,7 +4008,7 @@ pub fn solve_convex_table_widths(
         }
 
         if total_alloc > total_mp {
-            low = mid;
+            low = mid + 1;
         } else {
             high = mid;
             best_widths = allocated;
@@ -3990,17 +4021,22 @@ pub fn solve_convex_table_widths(
 
     // Exact conservation reconciliation
     let current_sum: i64 = best_widths.iter().sum();
-    let mut diff = total_mp - current_sum;
-    let mut idx = 0;
-    while diff > 0 && idx < best_widths.len() {
-        best_widths[idx] += 1;
-        diff -= 1;
-        idx = (idx + 1) % best_widths.len();
+    let diff = total_mp - current_sum;
+    if diff > 0 && !best_widths.is_empty() {
+        let per_col = diff / (best_widths.len() as i64);
+        let mut rem = (diff % (best_widths.len() as i64)) as usize;
+        for w in &mut best_widths {
+            *w += per_col;
+            if rem > 0 {
+                *w += 1;
+                rem -= 1;
+            }
+        }
     }
 
     best_widths
         .into_iter()
-        .map(|w| LayoutUnit::from_milli_points(w as i32))
+        .map(|w| LayoutUnit::from_milli_points(clamp_i64_to_i32(w)))
         .collect()
 }
 
@@ -4028,9 +4064,13 @@ impl ContinuousHzExpansion {
         natural_width: LayoutUnit,
         coord: i16,
     ) -> LayoutUnit {
+        let max_abs = (self.max_coord.abs() as i64)
+            .max(self.min_coord.abs() as i64)
+            .max(1);
         let clamped = coord.clamp(self.min_coord, self.max_coord) as i64;
-        let scale_num = clamped * (self.delta_width_per_glyph_permille as i64);
-        let delta = (natural_width.milli_points() as i64 * scale_num) / (1000 * 15);
+        let scale_num = clamped.saturating_mul(self.delta_width_per_glyph_permille as i64);
+        let delta =
+            (natural_width.milli_points() as i64).saturating_mul(scale_num) / (1000 * max_abs);
         LayoutUnit::from_milli_points(clamp_i64_to_i32(delta))
     }
 }
@@ -4075,9 +4115,9 @@ pub fn compute_optical_kerning(
         total_gap_area += gap;
     }
 
-    let avg_gap = (total_gap_area / n as i64) as i32;
+    let avg_gap = clamp_i64_to_i32(total_gap_area / n as i64);
     let delta = target_area.milli_points() - avg_gap;
-    let max_adj = config.max_adjustment.milli_points();
+    let max_adj = config.max_adjustment.milli_points().abs();
     let clamped_delta = delta.clamp(-max_adj, max_adj);
 
     LayoutUnit::from_milli_points(clamped_delta)
@@ -4117,12 +4157,13 @@ pub fn compute_drop_cap_profile(
         _ => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 6) / 10),
     };
 
+    let denom = (line_count.saturating_sub(1)).max(1) as i32;
     let mut line_widths = Vec::with_capacity(line_count);
     for i in 0..line_count {
         // Taper diagonal initial letters (e.g. 'A' narrows towards top, 'V' narrows towards bottom)
         let taper_ratio = match initial_char {
-            'A' => 600 + (400 * (i as i32)) / (line_count.max(1) as i32),
-            'V' => 1000 - (400 * (i as i32)) / (line_count.max(1) as i32),
+            'A' => 600 + (400 * (i as i32)) / denom,
+            'V' => 1000 - (400 * (i as i32)) / denom,
             _ => 1000,
         };
         let line_w =
@@ -4157,7 +4198,7 @@ pub fn snap_blocks_to_baseline_grid(
         return Vec::new();
     }
 
-    let grid_mp = grid_leading.milli_points().max(1) as i64;
+    let grid_mp = (grid_leading.milli_points() as i64).max(1);
     let mut resolved_springs = Vec::with_capacity(inter_block_springs.len());
     let mut current_y = 0i64;
 
@@ -4169,8 +4210,10 @@ pub fn snap_blocks_to_baseline_grid(
         };
 
         current_y += block_h;
-        let min_y = current_y + spring.min_height.milli_points() as i64;
-        let max_y = current_y + spring.max_height.milli_points() as i64;
+        let s_min = spring.min_height.milli_points() as i64;
+        let s_max = (spring.max_height.milli_points() as i64).max(s_min);
+        let min_y = current_y + s_min;
+        let max_y = current_y + s_max;
         let natural_target = current_y + spring.natural_height.milli_points() as i64;
 
         // Search for all integer grid multiples that fall inside [min_y, max_y]
@@ -4193,13 +4236,12 @@ pub fn snap_blocks_to_baseline_grid(
             natural_target.clamp(min_y, max_y)
         };
 
-        let calculated_spring = (snapped - current_y).clamp(
-            spring.min_height.milli_points() as i64,
-            spring.max_height.milli_points() as i64,
-        );
+        let calculated_spring = (snapped - current_y).clamp(s_min, s_max);
 
         current_y += calculated_spring;
-        resolved_springs.push(LayoutUnit::from_milli_points(calculated_spring as i32));
+        resolved_springs.push(LayoutUnit::from_milli_points(clamp_i64_to_i32(
+            calculated_spring,
+        )));
     }
 
     resolved_springs
@@ -4276,7 +4318,7 @@ pub fn solve_2d_optimal_pagination(
         }
 
         let chosen_lines = p.variants[chosen_variant_idx].line_count;
-        if current_page_lines + chosen_lines > page_capacity_lines {
+        if current_page_lines > 0 && current_page_lines + chosen_lines > page_capacity_lines {
             breaks.push(OptimalPageBreak {
                 paragraph_index: p_idx,
                 variant_chosen: chosen_variant_idx,

@@ -371,3 +371,142 @@ fn sota_track8_2d_joint_pagination_widow_orphan_eradication() {
         "2D joint pagination must compress paragraph to fit page and eradicate widow"
     );
 }
+
+#[test]
+fn sota_edge_cases_and_robustness_gauntlet() {
+    // 1. Continuous Hz Expansion with arbitrary coordinates and bounds
+    let custom_hz = ContinuousHzExpansion {
+        min_coord: -50,
+        max_coord: 50,
+        delta_width_per_glyph_permille: 30, // 3.0%
+    };
+    let width = LayoutUnit::from_points(100);
+    let delta_max = custom_hz.compute_width_delta(10, width, 50);
+    assert_eq!(
+        delta_max.milli_points(),
+        3_000,
+        "3% expansion on 100 pt = 3 pt"
+    );
+    let delta_clamped = custom_hz.compute_width_delta(10, width, 100);
+    assert_eq!(
+        delta_clamped.milli_points(),
+        3_000,
+        "Coordinate > 50 must clamp to 50"
+    );
+
+    // 2. Optical Kerning with negative max_adjustment (must not panic)
+    let hostile_opt_config = OpticalKerningConfig {
+        target_gap_area_ratio_permille: 1000,
+        max_adjustment: LayoutUnit::from_points(-5),
+    };
+    let left = vec![(LayoutUnit::from_points(0), LayoutUnit::from_points(10))];
+    let right = vec![(LayoutUnit::from_points(0), LayoutUnit::from_points(0))];
+    let adj = compute_optical_kerning(
+        &left,
+        &right,
+        LayoutUnit::from_points(20),
+        LayoutUnit::from_points(5),
+        &hostile_opt_config,
+    );
+    assert!(adj.milli_points() <= 5_000 && adj.milli_points() >= -5_000);
+
+    // 3. Column Badness Curve edge samples
+    let empty_curve = ColumnBadnessCurve {
+        column_index: 0,
+        min_width: LayoutUnit::from_points(10),
+        max_width: LayoutUnit::from_points(100),
+        samples: Vec::new(),
+    };
+    assert_eq!(empty_curve.evaluate(LayoutUnit::from_points(50)), 0);
+
+    let single_sample_curve = ColumnBadnessCurve {
+        column_index: 0,
+        min_width: LayoutUnit::from_points(10),
+        max_width: LayoutUnit::from_points(100),
+        samples: vec![(LayoutUnit::from_points(50), 123)],
+    };
+    assert_eq!(
+        single_sample_curve.evaluate(LayoutUnit::from_points(10)),
+        123
+    );
+    assert_eq!(
+        single_sample_curve.evaluate(LayoutUnit::from_points(100)),
+        123
+    );
+
+    // 4. Convex Table Widths with empty, single, and excess budget
+    assert_eq!(
+        solve_convex_table_widths(&[], LayoutUnit::from_points(100)),
+        Vec::<LayoutUnit>::new()
+    );
+    assert_eq!(
+        solve_convex_table_widths(
+            std::slice::from_ref(&single_sample_curve),
+            LayoutUnit::from_points(150)
+        ),
+        vec![LayoutUnit::from_points(150)]
+    );
+
+    // Table allocator with budget > max_widths sum (excess distributed cleanly)
+    let col_a = ColumnBadnessCurve {
+        column_index: 0,
+        min_width: LayoutUnit::from_points(10),
+        max_width: LayoutUnit::from_points(20),
+        samples: vec![
+            (LayoutUnit::from_points(10), 100),
+            (LayoutUnit::from_points(20), 0),
+        ],
+    };
+    let col_b = ColumnBadnessCurve {
+        column_index: 1,
+        min_width: LayoutUnit::from_points(10),
+        max_width: LayoutUnit::from_points(20),
+        samples: vec![
+            (LayoutUnit::from_points(10), 100),
+            (LayoutUnit::from_points(20), 0),
+        ],
+    };
+    let wide_alloc = solve_convex_table_widths(&[col_a, col_b], LayoutUnit::from_points(100));
+    assert_eq!(wide_alloc[0] + wide_alloc[1], LayoutUnit::from_points(100));
+
+    // 5. White river detection with negative/zero threshold and depth
+    assert!(detect_white_rivers(&[], LayoutUnit::from_points(5), 3).is_empty());
+    assert!(detect_white_rivers(&[vec![]], LayoutUnit::from_points(5), 0).is_empty());
+    assert!(detect_white_rivers(&[vec![]], LayoutUnit::from_points(-5), 1).is_empty());
+
+    // 6. Baseline Grid Snapping with inverted spring bounds (min > max) and zero pitch
+    let inverted_spring = VerticalSpring {
+        natural_height: LayoutUnit::from_points(10),
+        min_height: LayoutUnit::from_points(20),
+        max_height: LayoutUnit::from_points(5), // Inverted
+        stiffness: 1,
+    };
+    let snapped_inverted = snap_blocks_to_baseline_grid(
+        &[LayoutUnit::from_points(10)],
+        &[inverted_spring],
+        LayoutUnit::from_points(0), // Zero grid pitch
+    );
+    assert_eq!(snapped_inverted.len(), 1);
+
+    // 7. 2D Pagination with oversized paragraph and zero page capacity
+    assert!(solve_2d_optimal_pagination(&[], 10, 100, 100).is_empty());
+    assert!(
+        solve_2d_optimal_pagination(&[ParagraphCandidates { variants: vec![] }], 0, 100, 100)
+            .is_empty()
+    );
+
+    let oversized_p = ParagraphCandidates {
+        variants: vec![ParagraphVariant {
+            line_count: 50,
+            demerits: 0,
+            lines: Vec::new(),
+        }],
+    };
+    // Paragraph has 50 lines, page has 20. First page shouldn't emit break at line 0.
+    let oversized_breaks = solve_2d_optimal_pagination(&[oversized_p], 20, 1000, 1000);
+    assert_eq!(
+        oversized_breaks.len(),
+        0,
+        "Single paragraph on fresh page does not create leading empty page break"
+    );
+}

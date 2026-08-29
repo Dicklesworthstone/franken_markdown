@@ -106,6 +106,8 @@ pub struct Font {
     /// Optional OpenType variations (`fvar` + optional `avar`). Absent for
     /// static faces and for fonts whose variation tables fail validation.
     variation: Option<FontVariation>,
+    ascii_glyphs: [u16; 128],
+    ascii_advances_1000: [u32; 128],
 }
 
 /// One `fvar` variation axis (`wght`, `wdth`, `opsz`, …).
@@ -617,7 +619,7 @@ impl Font {
             }
         }
 
-        Ok(Self {
+        let mut font = Self {
             data,
             units_per_em,
             num_glyphs,
@@ -634,7 +636,25 @@ impl Font {
             loca_long,
             kern0,
             variation,
-        })
+            ascii_glyphs: [0; 128],
+            ascii_advances_1000: [0; 128],
+        };
+        for b in 0..128 {
+            let gid = match font.cmap_format {
+                4 => font.cmap4_lookup(b as u32).unwrap_or(0),
+                12 => font.cmap12_lookup(b as u32).unwrap_or(0),
+                _ => 0,
+            };
+            font.ascii_glyphs[b] = gid;
+        }
+        if font.units_per_em > 0 {
+            for b in 0..128 {
+                let gid = font.ascii_glyphs[b];
+                let aw = font.advance_width(gid) as u32;
+                font.ascii_advances_1000[b] = aw * 1000 / font.units_per_em as u32;
+            }
+        }
+        Ok(font)
     }
 
     /// True when the font carries TrueType (`glyf`) outlines we can read/subset.
@@ -862,6 +882,9 @@ impl Font {
     #[must_use]
     pub fn glyph_index(&self, ch: char) -> u16 {
         let cp = ch as u32;
+        if cp < 128 {
+            return self.ascii_glyphs[cp as usize];
+        }
         match self.cmap_format {
             4 => self.cmap4_lookup(cp).unwrap_or(0),
             12 => self.cmap12_lookup(cp).unwrap_or(0),
@@ -875,6 +898,10 @@ impl Font {
     /// with `units_per_em == 0` yields `0`.
     #[must_use]
     pub fn advance_1000(&self, ch: char) -> u32 {
+        let cp = ch as u32;
+        if cp < 128 {
+            return self.ascii_advances_1000[cp as usize];
+        }
         if self.units_per_em == 0 {
             return 0;
         }
@@ -1093,9 +1120,10 @@ impl Font {
 
         // --- 3. Rebuild glyf + loca (long offsets) --------------------------
         let mut glyf_bytes: Vec<u8> = Vec::with_capacity(n.saturating_mul(64));
-        let mut loca: Vec<u32> = Vec::with_capacity(n.checked_add(1)?);
+        let mut loca_bytes: Vec<u8> = Vec::with_capacity(n.checked_add(1)?.checked_mul(4)?);
         for &old in &old_gids {
-            loca.push(u32::try_from(glyf_bytes.len()).ok()?);
+            let offset = u32::try_from(glyf_bytes.len()).ok()?;
+            loca_bytes.extend_from_slice(&offset.to_be_bytes());
             let gb = self.subset_glyph_bytes(old, &new_of_lookup)?;
             glyf_bytes.extend_from_slice(&gb);
             // Pad each glyph to a 4-byte multiple so the next glyph (and every
@@ -1105,11 +1133,8 @@ impl Font {
                 glyf_bytes.resize(glyf_bytes.len() + (4 - rem), 0);
             }
         }
-        loca.push(u32::try_from(glyf_bytes.len()).ok()?);
-        let mut loca_bytes: Vec<u8> = Vec::with_capacity(loca.len().checked_mul(4)?);
-        for o in &loca {
-            loca_bytes.extend_from_slice(&o.to_be_bytes());
-        }
+        let final_offset = u32::try_from(glyf_bytes.len()).ok()?;
+        loca_bytes.extend_from_slice(&final_offset.to_be_bytes());
 
         // --- 4. Metric/meta tables ------------------------------------------
         // maxp: original bytes with numGlyphs (u16 @ +4) set to n.
@@ -1125,8 +1150,9 @@ impl Font {
         // hmtx: n long metrics (advanceWidth + true lsb), no trailing run.
         let mut hmtx: Vec<u8> = Vec::with_capacity(n.checked_mul(4)?);
         for &old in &old_gids {
-            hmtx.extend_from_slice(&self.advance_width(old).to_be_bytes());
-            hmtx.extend_from_slice(&self.left_side_bearing(old).to_be_bytes());
+            let [a0, a1] = self.advance_width(old).to_be_bytes();
+            let [l0, l1] = self.left_side_bearing(old).to_be_bytes();
+            hmtx.extend_from_slice(&[a0, a1, l0, l1]);
         }
 
         // head: original bytes; zero checkSumAdjustment (@ +8), force long loca.

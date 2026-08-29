@@ -2136,6 +2136,39 @@ pub(crate) static HTML5_ENTITIES: &[(&str, &str)] = &[
 /// Resolve a named character reference body (the text between `&` and `;`) to
 /// its replacement string, or `None` if it is not a recognized HTML5 entity.
 pub(crate) fn lookup(name: &str) -> Option<&'static str> {
+    // Fast-path common entities to avoid binary search over 2134 entries.
+    match name {
+        "amp" => return Some("&"),
+        "lt" => return Some("<"),
+        "gt" => return Some(">"),
+        "quot" => return Some("\""),
+        "apos" => return Some("'"),
+        "nbsp" => return Some("\u{a0}"),
+        "copy" => return Some("\u{a9}"),
+        "reg" => return Some("\u{ae}"),
+        "trade" => return Some("\u{2122}"),
+        "mdash" => return Some("\u{2014}"),
+        "ndash" => return Some("\u{2013}"),
+        "hellip" => return Some("\u{2026}"),
+        "laquo" => return Some("\u{ab}"),
+        "raquo" => return Some("\u{bb}"),
+        "bull" => return Some("\u{2022}"),
+        "deg" => return Some("\u{b0}"),
+        "plusmn" => return Some("\u{b1}"),
+        "times" => return Some("\u{d7}"),
+        "divide" => return Some("\u{f7}"),
+        "euro" => return Some("\u{20ac}"),
+        "pound" => return Some("\u{a3}"),
+        "yen" => return Some("\u{a5}"),
+        "cent" => return Some("\u{a2}"),
+        "sect" => return Some("\u{a7}"),
+        "para" => return Some("\u{b6}"),
+        "middot" => return Some("\u{b7}"),
+        "iquest" => return Some("\u{bf}"),
+        "iexcl" => return Some("\u{a1}"),
+        "check" | "checkmark" => return Some("\u{2713}"),
+        _ => {}
+    }
     HTML5_ENTITIES
         .binary_search_by(|&(key, _)| key.cmp(name))
         .ok()

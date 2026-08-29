@@ -92,6 +92,14 @@ impl Writer {
 }
 
 fn push_escaped(buf: &mut String, s: &str, attr: bool) {
+    if !s
+        .as_bytes()
+        .iter()
+        .any(|&b| b == b'&' || b == b'<' || b == b'>' || (attr && b == b'"'))
+    {
+        buf.push_str(s);
+        return;
+    }
     for ch in s.chars() {
         match ch {
             '&' => buf.push_str("&amp;"),

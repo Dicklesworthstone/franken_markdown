@@ -234,6 +234,7 @@ impl Adler32 {
         }
     }
 
+    #[inline(always)]
     fn update_byte(&mut self, byte: u8) {
         self.s1 += u32::from(byte);
         self.s2 += self.s1;
@@ -242,6 +243,61 @@ impl Adler32 {
             self.s1 %= ADLER_MOD;
             self.s2 %= ADLER_MOD;
             self.pending = 0;
+        }
+    }
+
+    fn update_slice(&mut self, mut slice: &[u8]) {
+        while !slice.is_empty() {
+            let available = ADLER_NMAX - self.pending;
+            let take = available.min(slice.len());
+            let (head, rest) = slice.split_at(take);
+            slice = rest;
+
+            let mut chunks16 = head.chunks_exact(16);
+            for c in &mut chunks16 {
+                self.s1 += c[0] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[1] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[2] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[3] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[4] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[5] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[6] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[7] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[8] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[9] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[10] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[11] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[12] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[13] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[14] as u32;
+                self.s2 += self.s1;
+                self.s1 += c[15] as u32;
+                self.s2 += self.s1;
+            }
+            for &b in chunks16.remainder() {
+                self.s1 += b as u32;
+                self.s2 += self.s1;
+            }
+            self.pending += take;
+            if self.pending == ADLER_NMAX {
+                self.s1 %= ADLER_MOD;
+                self.s2 %= ADLER_MOD;
+                self.pending = 0;
+            }
         }
     }
 
@@ -432,9 +488,9 @@ fn deflate_fixed_with_scratch(
                 };
             }
             let end = pos + best_len;
+            adler.update_slice(&data[pos..end]);
             let mut k = pos;
             while k < end {
-                adler.update_byte(data[k]);
                 insert(&mut *head, &mut *prev, k);
                 k += 1;
             }

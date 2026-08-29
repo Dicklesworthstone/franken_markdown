@@ -444,7 +444,7 @@ const INTERACTIVE_JS: &str = r#"
 
     const words = (text.match(/\S+/g) || []).length;
     const chars = text.length;
-    const readTimeMinutes = Math.max(1, Math.ceil(words / 220));
+    const readTimeMinutes = words === 0 ? 0 : Math.max(1, Math.ceil(words / 220));
 
     // Syllable heuristic for Flesch score
     const sentences = Math.max(1, (text.match(/[.!?]+(\s|$)/g) || []).length);
@@ -472,16 +472,28 @@ const INTERACTIVE_JS: &str = r#"
     let codeLang = '';
     let codeBuf = [];
     let inList = false;
+    let inCallout = false;
+    let inQuote = false;
 
     function flushList() {
       if (inList) { out += '</ul>\n'; inList = false; }
+    }
+
+    function flushQuote() {
+      if (inCallout) { out += '</aside>\n'; inCallout = false; }
+      if (inQuote) { out += '</blockquote>\n'; inQuote = false; }
+    }
+
+    function flushAll() {
+      flushList();
+      flushQuote();
     }
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
       if (line.startsWith('```')) {
-        flushList();
+        flushAll();
         if (inCode) {
           out += `<pre><code class="language-${codeLang}">${escapeHtml(codeBuf.join('\n'))}</code></pre>\n`;
           inCode = false;
@@ -500,42 +512,53 @@ const INTERACTIVE_JS: &str = r#"
       }
 
       if (line.startsWith('# ')) {
-        flushList();
+        flushAll();
         out += `<h1>${inlineFormat(line.slice(2))}</h1>\n`;
       } else if (line.startsWith('## ')) {
-        flushList();
+        flushAll();
         out += `<h2>${inlineFormat(line.slice(3))}</h2>\n`;
       } else if (line.startsWith('### ')) {
-        flushList();
+        flushAll();
         out += `<h3>${inlineFormat(line.slice(4))}</h3>\n`;
       } else if (line.startsWith('> [!NOTE]')) {
-        flushList();
+        flushAll();
+        inCallout = true;
         out += `<aside class="callout callout-note"><p class="callout-title">Note</p>`;
       } else if (line.startsWith('> [!TIP]')) {
-        flushList();
+        flushAll();
+        inCallout = true;
         out += `<aside class="callout callout-tip"><p class="callout-title">Tip</p>`;
       } else if (line.startsWith('> [!WARNING]')) {
-        flushList();
+        flushAll();
+        inCallout = true;
         out += `<aside class="callout callout-warning"><p class="callout-title">Warning</p>`;
       } else if (line.startsWith('> [!IMPORTANT]')) {
-        flushList();
+        flushAll();
+        inCallout = true;
         out += `<aside class="callout callout-important"><p class="callout-title">Important</p>`;
       } else if (line.startsWith('> [!CAUTION]')) {
-        flushList();
+        flushAll();
+        inCallout = true;
         out += `<aside class="callout callout-caution"><p class="callout-title">Caution</p>`;
       } else if (line.startsWith('> ')) {
+        flushList();
+        if (!inCallout && !inQuote) {
+          inQuote = true;
+          out += '<blockquote>\n';
+        }
         out += `<p>${inlineFormat(line.slice(2))}</p>\n`;
       } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        flushQuote();
         if (!inList) { out += '<ul>\n'; inList = true; }
         out += `<li>${inlineFormat(line.slice(2))}</li>\n`;
       } else if (line.trim().length === 0) {
-        flushList();
+        flushAll();
       } else {
-        flushList();
+        flushAll();
         out += `<p>${inlineFormat(line)}</p>\n`;
       }
     }
-    flushList();
+    flushAll();
     if (inCode) {
       out += `<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>\n`;
     }

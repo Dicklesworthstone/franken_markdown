@@ -2333,6 +2333,7 @@ fn fit_to_target_pages(
     let mut high = 1.00f32;
     let mut best_opts = opts.clone();
     let mut best_page = base_page;
+    let mut min_achieved_pages = initial_pages;
 
     for _ in 0..14 {
         let mid = (low + high) / 2.0;
@@ -2362,8 +2363,14 @@ fn fit_to_target_pages(
         if pages <= target_pages {
             best_opts = candidate_opts;
             best_page = candidate_page;
+            min_achieved_pages = pages;
             low = mid;
         } else {
+            if pages < min_achieved_pages {
+                min_achieved_pages = pages;
+                best_opts = candidate_opts;
+                best_page = candidate_page;
+            }
             high = mid;
         }
     }
@@ -18954,7 +18961,15 @@ fn preserve_code_block_lines(lang: Option<&str>, code: &str) -> bool {
     let lang = code_language_key(lang);
     if matches!(
         lang.as_str(),
-        "mermaid" | "mmd" | "dot" | "graphviz" | "ascii" | "diagram"
+        "mermaid"
+            | "mmd"
+            | "flowchart"
+            | "sequence"
+            | "ditaa"
+            | "dot"
+            | "graphviz"
+            | "ascii"
+            | "diagram"
     ) {
         return true;
     }
@@ -27410,18 +27425,7 @@ fn estimated_pdf_buffer_capacity(
 }
 
 fn append_decimal_usize(out: &mut Vec<u8>, value: usize) {
-    let mut buf = [0u8; 20];
-    let mut n = value;
-    let mut pos = buf.len();
-    loop {
-        pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    out.extend_from_slice(&buf[pos..]);
+    append_decimal_u64(out, value as u64);
 }
 
 fn append_xref_offset(out: &mut Vec<u8>, offset: usize) {
@@ -27820,21 +27824,39 @@ fn append_i32_bytes(out: &mut Vec<u8>, value: i32) {
 }
 
 fn append_decimal_u64(out: &mut Vec<u8>, value: u64) {
+    const DECIMAL_PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+          2021222324252627282930313233343536373839\
+          4041424344454647484950515253545556575859\
+          6061626364656667686970717273747576777879\
+          8081828384858687888990919293949596979899";
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut pos = buf.len();
-    loop {
+    while n >= 100 {
+        let pair = ((n % 100) * 2) as usize;
+        n /= 100;
+        pos -= 2;
+        buf[pos] = DECIMAL_PAIRS[pair];
+        buf[pos + 1] = DECIMAL_PAIRS[pair + 1];
+    }
+    if n < 10 {
         pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
+        buf[pos] = b'0' + n as u8;
+    } else {
+        let pair = (n * 2) as usize;
+        pos -= 2;
+        buf[pos] = DECIMAL_PAIRS[pair];
+        buf[pos + 1] = DECIMAL_PAIRS[pair + 1];
     }
     out.extend_from_slice(&buf[pos..]);
 }
 
 fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
+    const DECIMAL_PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+          2021222324252627282930313233343536373839\
+          4041424344454647484950515253545556575859\
+          6061626364656667686970717273747576777879\
+          8081828384858687888990919293949596979899";
     let finite = if value.is_finite() { value } else { 0.0 };
     let scaled = (f64::from(finite) * 100.0).round() as i64;
     if scaled < 0 || (scaled == 0 && finite.is_sign_negative()) {
@@ -27842,18 +27864,20 @@ fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
     }
     let abs = scaled.unsigned_abs();
     append_decimal_u64(out, abs / 100);
-    let frac = abs % 100;
+    let frac = (abs % 100) as usize;
     if frac == 0 {
         return;
     }
     out.push(b'.');
     if frac < 10 {
         out.push(b'0');
-        append_decimal_u64(out, frac);
+        out.push(b'0' + frac as u8);
     } else if frac % 10 == 0 {
-        append_decimal_u64(out, frac / 10);
+        out.push(b'0' + (frac / 10) as u8);
     } else {
-        append_decimal_u64(out, frac);
+        let pair = frac * 2;
+        out.push(DECIMAL_PAIRS[pair]);
+        out.push(DECIMAL_PAIRS[pair + 1]);
     }
 }
 
@@ -27882,10 +27906,13 @@ fn append_pdf_text_string_bytes(out: &mut Vec<u8>, s: &str) {
 
 fn append_hex_u16_bytes(out: &mut Vec<u8>, value: u16) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    out.push(HEX[((value >> 12) & 0xF) as usize]);
-    out.push(HEX[((value >> 8) & 0xF) as usize]);
-    out.push(HEX[((value >> 4) & 0xF) as usize]);
-    out.push(HEX[(value & 0xF) as usize]);
+    let b = [
+        HEX[((value >> 12) & 0xF) as usize],
+        HEX[((value >> 8) & 0xF) as usize],
+        HEX[((value >> 4) & 0xF) as usize],
+        HEX[(value & 0xF) as usize],
+    ];
+    out.extend_from_slice(&b);
 }
 
 fn append_struct_kid_list_bytes(

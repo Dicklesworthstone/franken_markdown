@@ -47,7 +47,18 @@ const fn build_crc32_table() -> [u32; 256] {
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
+    let mut chunks = data.chunks_exact(8);
+    for chunk in chunks.by_ref() {
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[0])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[1])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[2])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[3])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[4])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[5])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[6])) & 0xFF) as usize] ^ (crc >> 8);
+        crc = CRC32_TABLE[((crc ^ u32::from(chunk[7])) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    for &b in chunks.remainder() {
         crc = CRC32_TABLE[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
     }
     !crc

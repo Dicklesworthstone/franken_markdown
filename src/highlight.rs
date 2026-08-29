@@ -187,19 +187,12 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         if r.hash_directives && c == '#' && line_prefix_is_blank(code, pos) {
             let start = pos;
             let mut p = pos + clen;
-            while p < len
-                && code[p..]
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| ch == ' ' || ch == '\t')
-            {
+            let bytes = code.as_bytes();
+            while p < len && (bytes[p] == b' ' || bytes[p] == b'\t') {
                 p += 1;
             }
-            while p < len {
-                match code[p..].chars().next() {
-                    Some(ch) if ch.is_ascii_alphabetic() => p += ch.len_utf8(),
-                    _ => break,
-                }
+            while p < len && bytes[p].is_ascii_alphabetic() {
+                p += 1;
             }
             spans.push(Span {
                 kind: Tok::Keyword,
@@ -324,30 +317,25 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             } else {
                 r.keywords.contains(&word)
             };
-            let is_type = if r.case_insensitive {
-                r.types.iter().any(|k| k.eq_ignore_ascii_case(word))
-            } else {
-                r.types.contains(&word)
-            };
-            let next_is_paren = code[p..].trim_start().starts_with('(');
-            // ALL_CAPS identifiers are conventionally constants, not types, so the
-            // "Capitalized => Type" heuristic must skip them.
-            let mut letters = word.chars().filter(|c| c.is_alphabetic());
-            let all_caps = word.chars().any(|c| c.is_ascii_uppercase())
-                && letters.all(|c| c.is_ascii_uppercase());
-            let first_upper = word.chars().next().is_some_and(|c| c.is_ascii_uppercase());
             let kind = if is_keyword {
                 Tok::Keyword
-            } else if is_type {
-                Tok::Type
-            } else if next_is_paren {
-                // A call/definition wins over the capitalization heuristic, so
-                // `Println(` is a function, not a type.
-                Tok::Func
-            } else if !r.types.is_empty() && first_upper && !all_caps {
-                Tok::Type
             } else {
-                Tok::Plain
+                let is_type = if r.case_insensitive {
+                    r.types.iter().any(|k| k.eq_ignore_ascii_case(word))
+                } else {
+                    r.types.contains(&word)
+                };
+                if is_type {
+                    Tok::Type
+                } else if next_byte_after_whitespace(code, p) == Some(b'(') {
+                    // A call/definition wins over the capitalization heuristic, so
+                    // `Println(` is a function, not a type.
+                    Tok::Func
+                } else if !r.types.is_empty() && is_capitalized_not_all_caps(word) {
+                    Tok::Type
+                } else {
+                    Tok::Plain
+                }
             };
             spans.push(Span {
                 kind,
@@ -690,6 +678,58 @@ fn first_char_at(code: &str, pos: usize) -> char {
     } else {
         first_char_in_nonempty(&code[pos..])
     }
+}
+
+#[inline(always)]
+fn next_byte_after_whitespace(code: &str, mut pos: usize) -> Option<u8> {
+    let bytes = code.as_bytes();
+    while pos < bytes.len() {
+        let b = bytes[pos];
+        if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
+            pos += 1;
+        } else {
+            return Some(b);
+        }
+    }
+    None
+}
+
+#[inline(always)]
+fn is_capitalized_not_all_caps(word: &str) -> bool {
+    let bytes = word.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    // Fast path for ASCII words (vast majority)
+    if bytes[0] < 0x80 {
+        if !bytes[0].is_ascii_uppercase() {
+            return false;
+        }
+        let mut all_upper = true;
+        for &b in &bytes[1..] {
+            if b < 0x80 {
+                if b.is_ascii_lowercase() {
+                    all_upper = false;
+                }
+            } else {
+                return is_capitalized_not_all_caps_unicode(word);
+            }
+        }
+        !all_upper
+    } else {
+        is_capitalized_not_all_caps_unicode(word)
+    }
+}
+
+fn is_capitalized_not_all_caps_unicode(word: &str) -> bool {
+    let first_upper = word.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    if !first_upper {
+        return false;
+    }
+    let mut letters = word.chars().filter(|c| c.is_alphabetic());
+    let all_caps =
+        word.chars().any(|c| c.is_ascii_uppercase()) && letters.all(|c| c.is_ascii_uppercase());
+    !all_caps
 }
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {

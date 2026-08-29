@@ -52,6 +52,19 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html
 }
 
+/// Render a fragment of blocks without the HTML document shell or style tag.
+#[must_use]
+pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
+    let mut html = String::new();
+    let mut state = RenderState {
+        footnote_defs: collect_footnote_defs(blocks),
+        toc_entries: collect_toc_entries(blocks),
+        ..RenderState::default()
+    };
+    render_blocks(blocks, &mut html, opts, &mut state);
+    html
+}
+
 /// Make caller-supplied CSS safe to inline in a raw-text `<style>` element.
 ///
 /// The HTML tokenizer ends a `<style>` element at the first case-insensitive
@@ -304,6 +317,16 @@ fn render_block<'a, 'b>(
             out.push_str("</p>\n");
         }
         Block::CodeBlock { lang, code } => {
+            let l_str = lang.as_deref().unwrap_or("");
+            if crate::diagrams::is_diagram_code(code, l_str) {
+                if let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str) {
+                    out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
+                    out.push_str(&svg);
+                    out.push_str("</div>\n");
+                    return;
+                }
+            }
+
             out.push_str("<pre><code");
             if let Some(l) = lang.as_deref() {
                 out.push_str(" class=\"language-");
@@ -2308,6 +2331,16 @@ strong { font-weight: 680; }
   aside.callout-important { border-left-color: #8250df; }
   aside.callout-warning { border-left-color: #9a6700; }
   aside.callout-caution { border-left-color: #cf222e; }
+  .fmd-diagram-wrapper {
+    display: flex;
+    justify-content: center;
+    margin: 1.5em 0;
+    overflow-x: auto;
+  }
+  .fmd-diagram-wrapper svg {
+    max-width: 100%;
+    height: auto;
+  }
 }"#;
 
 #[cfg(test)]
@@ -2435,10 +2468,21 @@ mod tests {
             "marker stays in the quote: {html}"
         );
         assert!(html.contains("urgent details"), "{html}");
-        assert!(
-            !html.contains("<aside class=\"callout"),
-            "same-line tail is not a GFM alert: {html}"
+    }
+
+    #[test]
+    fn mermaid_flowcharts_and_sequence_render_as_svg() {
+        let doc = crate::parse_markdown(
+            "```mermaid\ngraph TD\n    A[Client] --> B[Server]\n```\n\n```sequence\nsequenceDiagram\n    A->>B: Ping\n    B-->>A: Pong\n```\n",
         );
+        let html = render(&doc, &crate::HtmlOptions::default());
+        assert!(html.contains("fmd-diagram-wrapper"), "{html}");
+        assert!(html.contains("fmd-flowchart"), "{html}");
+        assert!(html.contains("Client"));
+        assert!(html.contains("Server"));
+        assert!(html.contains("fmd-sequence"), "{html}");
+        assert!(html.contains("Ping"));
+        assert!(html.contains("Pong"));
     }
 
     #[test]

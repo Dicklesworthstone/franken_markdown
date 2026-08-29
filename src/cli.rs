@@ -1143,6 +1143,32 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
 
+    // Transclusion (qpqv): expand {{#include path}} for FILE inputs before
+    // parsing. The resolver sandboxes to the top input's directory and
+    // resolves each include relative to the INCLUDING file. stdin/--text have
+    // no base directory: a directive there is a usage error, never a silent
+    // skip.
+    let src = if crate::transclude::has_includes(&src) {
+        match args.input.as_deref() {
+            Some("-") | None => {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    "{{#include}} needs a file input (stdin/--text have no base directory)",
+                    json,
+                );
+            }
+            Some(input_path) => {
+                match expand_file_includes(&src, input_path, args.max_input_bytes) {
+                    Ok(expanded) => expanded,
+                    Err(e) => return fail_json(66, "input_error", &e, json),
+                }
+            }
+        }
+    } else {
+        src
+    };
+
     let config = match load_config(no_config) {
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
@@ -2757,6 +2783,32 @@ fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
     trimmed.parse::<u64>().map(Some).map_err(|_| {
         "SOURCE_DATE_EPOCH is too large; expected decimal seconds since the Unix epoch".to_string()
     })
+}
+
+fn expand_file_includes(
+    src: &str,
+    input_path: &str,
+    max_input_bytes: u64,
+) -> std::result::Result<String, String> {
+    let input_p = Path::new(input_path);
+    let base_dir = input_p.parent().unwrap_or_else(|| Path::new("."));
+    crate::transclude::expand_includes(src, &|rel_path, origin| {
+        let path = if origin == "<input>" {
+            base_dir.join(rel_path)
+        } else {
+            Path::new(origin)
+                .parent()
+                .unwrap_or(base_dir)
+                .join(rel_path)
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) if (bytes.len() as u64) <= max_input_bytes => {
+                String::from_utf8(bytes).ok()
+            }
+            _ => None,
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Compute the output path for a given extension, or `None` to mean stdout

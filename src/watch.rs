@@ -68,7 +68,6 @@ impl Clock for ManualClock {
     }
 }
 
-
 /// What changed on a watched path after the debounce quiet window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeEvent {

@@ -16,6 +16,13 @@ use crate::{RenderError, Result};
 /// around the payload) splices `path`'s content at that position.
 const INCLUDE_PREFIX: &str = "{{#include";
 
+/// True when the source may contain an include directive (cheap pre-filter so
+/// include-free documents never pay for the expansion walk).
+#[must_use]
+pub fn has_includes(src: &str) -> bool {
+    src.contains(INCLUDE_PREFIX)
+}
+
 /// Maximum include nesting depth. Deeper nesting errors rather than risking
 /// pathological expansion.
 const MAX_DEPTH: usize = 16;
@@ -31,9 +38,15 @@ const MAX_DEPTH: usize = 16;
 /// - `include_missing`: the resolver returned None for a path (chain named).
 /// - `include_cycle`: a path appears twice in the active include stack.
 /// - `include_depth`: nesting exceeded `MAX_DEPTH`.
+/// Check whether `src` contains any `{{#include` directives.
+#[must_use]
+pub fn has_includes(src: &str) -> bool {
+    src.contains(INCLUDE_PREFIX)
+}
+
 pub fn expand_includes(
     src: &str,
-    resolver: &dyn Fn(&str, &str) -> Option<String>,
+    resolver: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
 ) -> Result<String> {
     let mut stack = Vec::new();
     expand_inner(src, resolver, &mut stack, 0, "<input>")
@@ -41,7 +54,7 @@ pub fn expand_includes(
 
 fn expand_inner(
     src: &str,
-    resolver: &dyn Fn(&str, &str) -> Option<String>,
+    resolver: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
     stack: &mut Vec<String>,
     depth: usize,
     origin: &str,
@@ -78,14 +91,20 @@ fn expand_inner(
                     chain.join(" -> ")
                 )));
             }
-            let Some(content) = resolver(path, origin) else {
-                let mut chain = stack.clone();
-                chain.push(path.to_string());
-                return Err(RenderError::InvalidInput(format!(
-                    "include_missing: cannot read {} (chain: {})",
-                    path,
-                    chain.join(" -> ")
-                )));
+            let content = match resolver(path, origin) {
+                Ok(Some(content)) => content,
+                Ok(None) => {
+                    let mut chain = stack.clone();
+                    chain.push(path.to_string());
+                    return Err(RenderError::InvalidInput(format!(
+                        "include_missing: cannot read {} (chain: {})",
+                        path,
+                        chain.join(" -> ")
+                    )));
+                }
+                Err(reason) => {
+                    return Err(RenderError::InvalidInput(reason));
+                }
             };
             stack.push(path.to_string());
             let expanded = expand_inner(&content, resolver, stack, depth + 1, path)?;
@@ -112,7 +131,7 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        move |p, _origin| map.get(p).cloned()
+        move |p: &str, _origin: &str| Ok(map.get(p).cloned())
     }
 
     #[test]
@@ -172,7 +191,7 @@ mod tests {
             })
             .collect();
         let map: BTreeMap<String, String> = files.into_iter().collect();
-        let r = move |p: &str, _o: &str| map.get(p).cloned();
+        let r = move |p: &str, _o: &str| Ok(map.get(p).cloned());
         let err = expand_includes("{{#include d0.md}}\n", &r).unwrap_err();
         assert!(err.to_string().contains("include_depth"), "{err}");
     }

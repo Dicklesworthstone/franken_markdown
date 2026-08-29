@@ -29778,52 +29778,83 @@ fn append_rgb_stroke_line_operator(
     append_rgb_stroke_segment_operator(out, color, width, x1, y, x2, y);
 }
 
+/// Fixed ToUnicode CMap preamble: everything up to the first bfchar run.
+const CMAP_PREAMBLE: &str = concat!(
+    "/CIDInit /ProcSet findresource begin\n",
+    "12 dict begin\n",
+    "begincmap\n",
+    "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n",
+    "/CMapName /Adobe-Identity-UCS def\n",
+    "/CMapType 2 def\n",
+    "1 begincodespacerange\n",
+    "<0000> <FFFF>\n",
+    "endcodespacerange\n",
+);
+
+/// Fixed ToUnicode CMap trailer after the last bfchar run.
+const CMAP_FOOTER: &str = "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+
+/// Unicode source for one bfchar entry: a lone character (the common case,
+/// stored inline with no allocation) or a ligature's multi-character string.
+#[derive(Clone, Copy)]
+enum BfcharUni<'a> {
+    Ch(char),
+    Lig(&'a str),
+}
+
 /// A `ToUnicode` CMap mapping each glyph id back to its character(s), so text
 /// stays selectable. Only the glyphs the document uses appear.
 fn tounicode_cmap(font: &Font, cmap_chars: &[char], lig_uni: &BTreeMap<u16, String>) -> String {
-    // (gid, UTF-16BE hex) over the chars known to be present in the subset cmap,
+    // (gid, UTF-16BE source) over the chars known to be present in the subset cmap,
     // plus ligature glyphs (which no single character maps to) so ligated text
     // stays selectable. This avoids scanning broad Unicode ranges for every
     // embedded face.
-    let mut entries: Vec<(u16, String)> =
+    let mut entries: Vec<(u16, BfcharUni)> =
         Vec::with_capacity(cmap_chars.len().saturating_add(lig_uni.len()));
     for &c in cmap_chars {
         let g = font.glyph_index(c);
         if g != 0 {
-            entries.push((g, utf16be_hex(c)));
+            entries.push((g, BfcharUni::Ch(c)));
         }
     }
     for (g, s) in lig_uni {
-        let mut hex = String::with_capacity(s.len().saturating_mul(4));
-        for c in s.chars() {
-            append_utf16be_hex(c, &mut hex);
-        }
-        entries.push((*g, hex));
+        entries.push((*g, BfcharUni::Lig(s)));
     }
     entries.sort_by_key(|&(g, _)| g);
     entries.dedup_by_key(|(g, _)| *g);
 
-    let mut body = String::with_capacity(entries.len().saturating_mul(18).saturating_add(64));
+    // Per entry `<GGGG> <HHHH>\n` is 14 bytes for one BMP unit and 16 for a
+    // surrogate pair, so 18/entry also absorbs the `N beginbfchar\n` +
+    // `endbfchar\n` chunk framing (~26 bytes per 100 entries).
+    let mut out = String::with_capacity(
+        CMAP_PREAMBLE
+            .len()
+            .saturating_add(CMAP_FOOTER.len())
+            .saturating_add(64)
+            .saturating_add(entries.len().saturating_mul(18)),
+    );
+    out.push_str(CMAP_PREAMBLE);
     for chunk in entries.chunks(100) {
-        let _ = writeln!(&mut body, "{} beginbfchar", chunk.len());
-        for (g, hex) in chunk {
-            let _ = writeln!(&mut body, "<{g:04X}> <{hex}>");
+        append_decimal_usize_string(&mut out, chunk.len());
+        out.push_str(" beginbfchar\n");
+        for &(g, uni) in chunk {
+            out.push('<');
+            append_hex_u16(&mut out, g);
+            out.push_str("> <");
+            match uni {
+                BfcharUni::Ch(c) => append_utf16be_hex(c, &mut out),
+                BfcharUni::Lig(s) => {
+                    for c in s.chars() {
+                        append_utf16be_hex(c, &mut out);
+                    }
+                }
+            }
+            out.push_str(">\n");
         }
-        body.push_str("endbfchar\n");
+        out.push_str("endbfchar\n");
     }
-    format!(
-        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
-         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
-         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
-         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
-         {body}endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
-    )
-}
-
-fn utf16be_hex(c: char) -> String {
-    let mut s = String::with_capacity(8);
-    append_utf16be_hex(c, &mut s);
-    s
+    out.push_str(CMAP_FOOTER);
+    out
 }
 
 fn append_utf16be_hex(c: char, out: &mut String) {

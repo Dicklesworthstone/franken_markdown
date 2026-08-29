@@ -585,21 +585,40 @@ fn render_diff_inline(inline: &Inline, out: &mut String) {
             out.push_str("</del>");
         }
         Inline::Link { dest, content, .. } => {
-            out.push_str(&format!("<a href=\"{}\">", html_escape(dest)));
-            for i in content {
-                render_diff_inline(i, out);
+            if is_safe_href(dest) {
+                out.push_str(&format!("<a href=\"{}\">", html_escape(dest)));
+                for i in content {
+                    render_diff_inline(i, out);
+                }
+                out.push_str("</a>");
+            } else {
+                for i in content {
+                    render_diff_inline(i, out);
+                }
             }
-            out.push_str("</a>");
         }
         Inline::Image { alt, .. } => {
             out.push_str(&format!("[Image: {}]", html_escape(alt)));
         }
         Inline::SoftBreak | Inline::HardBreak => out.push(' '),
-        Inline::Html(h) => out.push_str(h),
+        Inline::Html(h) => out.push_str(&html_escape(h)),
         Inline::FootnoteRef { id } => out.push_str(&format!("[^{}]", html_escape(id))),
         Inline::Math(m) => out.push_str(&format!("${}$", html_escape(m))),
         Inline::DisplayMath(m) => out.push_str(&format!("$${}$$", html_escape(m))),
     }
+}
+
+fn is_safe_href(url: &str) -> bool {
+    let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('/') {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
+        || !lower.contains(':')
 }
 
 fn html_escape(s: &str) -> String {

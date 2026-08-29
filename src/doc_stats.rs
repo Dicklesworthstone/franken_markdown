@@ -256,28 +256,23 @@ impl StatsCollector {
                         });
                     }
 
-                    let raw_slug = slug_from_text(&plain_text);
+                    let raw_slug = slug_inlines(inlines);
                     let base_slug = if raw_slug.is_empty() {
                         "section".to_string()
                     } else {
-                        raw_slug
+                        raw_slug.clone()
                     };
-                    let full_slug = if let Some(count) = self.slug_counts.get_mut(&base_slug) {
-                        *count += 1;
-                        let suffixed = format!("{}-{}", base_slug, *count);
+                    let full_slug = assign_heading_id(inlines, &mut self.slug_counts);
+                    if full_slug != base_slug {
                         self.findings.push(DocFinding {
                             severity: "info",
                             code: "duplicate_heading_slug",
                             message: format!(
                                 "duplicate heading text '{}' generated collision anchor '#{}'",
-                                plain_text, suffixed
+                                plain_text, full_slug
                             ),
                         });
-                        suffixed
-                    } else {
-                        self.slug_counts.insert(base_slug.clone(), 1);
-                        base_slug
-                    };
+                    }
 
                     self.defined_anchors.insert(full_slug.clone());
                     self.outline.push(OutlineHeading {
@@ -510,21 +505,95 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
     s
 }
 
-fn slug_from_text(text: &str) -> String {
-    let mut s = String::new();
-    let mut pending_dash = false;
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() {
-            if pending_dash && !s.is_empty() {
-                s.push('-');
+fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>) -> String {
+    let mut base = slug_inlines(inlines);
+    if base.is_empty() {
+        base.push_str("section");
+    }
+    let mut suffix = suffixes.get(base.as_str()).copied().unwrap_or(1);
+    loop {
+        if suffix == 1 {
+            suffix += 1;
+            if !suffixes.contains_key(base.as_str()) {
+                suffixes.insert(base.clone(), suffix);
+                return base;
             }
-            s.push(c.to_ascii_lowercase());
-            pending_dash = false;
-        } else if c == ' ' || c == '-' || c == '_' {
-            pending_dash = true;
+            continue;
+        }
+        let candidate = format!("{base}-{suffix}");
+        suffix += 1;
+        if !suffixes.contains_key(candidate.as_str()) {
+            suffixes.insert(candidate.clone(), 1);
+            suffixes.insert(base, suffix);
+            return candidate;
         }
     }
+}
+
+fn slug_inlines(inlines: &[Inline]) -> String {
+    let mut s = String::new();
+    let mut pending_dash = false;
+    push_slug_inlines(inlines, &mut s, &mut pending_dash);
     s
+}
+
+fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
+    for inl in inlines {
+        match inl {
+            Inline::FootnoteRef { .. } => {}
+            Inline::Text(t)
+            | Inline::Code(t)
+            | Inline::Html(t)
+            | Inline::Math(t)
+            | Inline::DisplayMath(t) => {
+                push_slug_str(out, pending_dash, t);
+            }
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                push_slug_inlines(c, out, pending_dash);
+            }
+            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
+            Inline::Image { alt, .. } => {
+                push_slug_str(out, pending_dash, alt);
+            }
+            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
+        }
+    }
+}
+
+fn push_slug_str(out: &mut String, pending_dash: &mut bool, s: &str) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            if b.is_ascii_alphanumeric() {
+                if *pending_dash && !out.is_empty() {
+                    out.push('-');
+                }
+                out.push((b as char).to_ascii_lowercase());
+                *pending_dash = false;
+            } else if b == b' ' || b == b'-' || b == b'_' {
+                *pending_dash = true;
+            }
+            i += 1;
+        } else {
+            let ch = s[i..].chars().next().unwrap_or('\0');
+            push_slug_char(out, pending_dash, ch);
+            i += ch.len_utf8();
+        }
+    }
+}
+
+fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
+    if c.is_ascii_alphanumeric() {
+        if *pending_dash && !out.is_empty() {
+            out.push('-');
+        }
+        out.push(c.to_ascii_lowercase());
+        *pending_dash = false;
+    } else if c == ' ' || c == '-' || c == '_' {
+        *pending_dash = true;
+    }
 }
 
 impl DocumentStats {

@@ -496,11 +496,21 @@ fn word_contains_byte(word: u64, byte: u8) -> bool {
 }
 
 fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {
-    match byte {
-        b'w' => bytes[idx..].starts_with(b"www."),
-        b'h' => bytes[idx..].starts_with(b"http://") || bytes[idx..].starts_with(b"https://"),
+    let tail = bytes.get(idx..).unwrap_or(&[]);
+    match byte.to_ascii_lowercase() {
+        b'w' => starts_with_ignore_ascii_case(tail, b"www."),
+        b'h' => {
+            starts_with_ignore_ascii_case(tail, b"http://")
+                || starts_with_ignore_ascii_case(tail, b"https://")
+        }
         _ => false,
     }
+}
+
+fn starts_with_ignore_ascii_case(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes
+        .get(..needle.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle))
 }
 
 fn starts_unordered_list_marker(bytes: &[u8]) -> bool {

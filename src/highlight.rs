@@ -722,13 +722,13 @@ fn is_capitalized_not_all_caps(word: &str) -> bool {
 }
 
 fn is_capitalized_not_all_caps_unicode(word: &str) -> bool {
-    let first_upper = word.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    let first_upper = word.chars().next().is_some_and(|c| c.is_uppercase());
     if !first_upper {
         return false;
     }
     let mut letters = word.chars().filter(|c| c.is_alphabetic());
     let all_caps =
-        word.chars().any(|c| c.is_ascii_uppercase()) && letters.all(|c| c.is_ascii_uppercase());
+        word.chars().any(|c| c.is_uppercase()) && letters.all(|c| c.is_uppercase());
     !all_caps
 }
 

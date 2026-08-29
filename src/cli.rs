@@ -1166,11 +1166,11 @@ fn read_http_head(stream: &mut TcpStream) -> Vec<u8> {
 
 fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
-    if out_is_stdout(&args) && !matches!(args.to, Target::Html) {
+    if out_is_stdout(&args) && !matches!(args.to, Target::Html | Target::Svg) {
         return fail_json(
             64,
             "usage_error",
-            "`--out -` writes HTML to stdout only; PDF and --to both require a real output path",
+            "`--out -` writes HTML/SVG to stdout only; PDF and --to both require a real output path",
             json,
         );
     }
@@ -1651,7 +1651,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
 /// internal-anchor audit, render warnings, horizontal overflow findings, and
 /// a content digest (beads yo83.1-3). Exit codes: 0 clean, 1 findings, 2/66
 /// usage/input errors, 70 font load failure.
-
+///
 /// --links (fjzd): external http(s) link check. HEAD first via the system
 /// curl (wget fallback), ranged GET when HEAD is unsupported; results cached
 /// as JSONL (url, status, checked_unix) with a TTL. NEVER part of default
@@ -1686,7 +1686,9 @@ fn check_external_links(
                 continue;
             }
             // entry: {"url":..,"status":NNN,"ok":bool,"checked":NNN}
-            let Some(v) = parse_cache_line(line) else { continue };
+            let Some(v) = parse_cache_line(line) else {
+                continue;
+            };
             cache.insert(v.0, (v.1, v.2, v.3));
         }
     }
@@ -1798,7 +1800,13 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
             .output()
             .ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let code: u16 = text.trim().chars().take(3).collect::<String>().parse().ok()?;
+        let code: u16 = text
+            .trim()
+            .chars()
+            .take(3)
+            .collect::<String>()
+            .parse()
+            .ok()?;
         Some((code, (200..300).contains(&code)))
     };
     for program in ["curl", "wget"] {
@@ -1829,7 +1837,13 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
     match out {
         Ok(o) => {
             let text = String::from_utf8_lossy(&o.stdout);
-            match text.trim().chars().take(3).collect::<String>().parse::<u16>() {
+            match text
+                .trim()
+                .chars()
+                .take(3)
+                .collect::<String>()
+                .parse::<u16>()
+            {
                 Ok(code) => (code, (200..400).contains(&code)),
                 Err(_) => (0, false),
             }
@@ -1845,10 +1859,10 @@ fn collect_external_links(doc: &crate::Document) -> Vec<String> {
             match i {
                 crate::Inline::Link { dest, content, .. } => {
                     let d = dest.as_str();
-                    if d.starts_with("http://") || d.starts_with("https://") {
-                        if !out.iter().any(|u| u == d) {
-                            out.push(d.to_string());
-                        }
+                    if (d.starts_with("http://") || d.starts_with("https://"))
+                        && !out.iter().any(|u| u == d)
+                    {
+                        out.push(d.to_string());
                     }
                     inlines(content, out);
                 }
@@ -1918,7 +1932,13 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     // link_broken / link_redirected findings; pure addition, never in the
     // default path (network is non-deterministic by definition).
     let report = if args.links {
-        let extra = check_external_links(&doc, args.links_timeout_secs, args.links_cache.as_deref(), args.links_ttl_secs, json);
+        let extra = check_external_links(
+            &doc,
+            args.links_timeout_secs,
+            args.links_cache.as_deref(),
+            args.links_ttl_secs,
+            json,
+        );
         crate::verify::with_extra_findings(report, extra)
     } else {
         report
@@ -3584,7 +3604,7 @@ fn run_book(args: BookArgs, global_json: bool, no_config: bool) -> ExitCode {
         };
         file_byte_counts.push(raw.len());
         let expanded = if crate::transclude::has_includes(&raw) {
-            match expand_file_includes(&path_str, &raw, args.max_input_bytes) {
+            match expand_file_includes(&raw, &path_str, args.max_input_bytes) {
                 Ok(s) => s,
                 Err(e) => return fail_json(66, "include_error", &e, json),
             }
@@ -3687,9 +3707,10 @@ fn run_book(args: BookArgs, global_json: bool, no_config: bool) -> ExitCode {
         }
 
         if let Some(first) = book.chapters.first() {
+            let escaped_url = crate::book::escape_attr_pub(&first.out_name);
+            let escaped_title = crate::book::escape_text_pub(&first.title);
             let index_html = format!(
-                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={}\"><title>Redirecting...</title></head><body><p>Redirecting to <a href=\"{}\">{}</a>...</p></body></html>\n",
-                first.out_name, first.out_name, first.out_name
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={escaped_url}\"><title>Redirecting to {escaped_title}</title></head><body><p>Redirecting to <a href=\"{escaped_url}\">{escaped_title}</a>...</p></body></html>\n"
             );
             let index_file = site_dir.join("index.html");
             if let Err(e) = std::fs::write(&index_file, index_html.as_bytes()) {
@@ -3918,9 +3939,12 @@ fn count_inline_unresolved(
                 if !dest.starts_with("http://")
                     && !dest.starts_with("https://")
                     && !dest.starts_with("//")
+                    && !dest.starts_with("mailto:")
+                    && !dest.starts_with("data:")
                 {
                     let target = dest.split_once('#').map_or(dest.as_str(), |(p, _)| p);
-                    if target.ends_with(".md") || target.ends_with(".markdown") {
+                    let target_lower = target.to_ascii_lowercase();
+                    if target_lower.ends_with(".md") || target_lower.ends_with(".markdown") {
                         let page_html = crate::book::out_name(target);
                         if !known.contains(&page_html) {
                             *count += 1;

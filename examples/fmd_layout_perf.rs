@@ -431,7 +431,7 @@ fn collect_blocks_text(blocks: &[Block], out: &mut Vec<String>) {
                 }
             }
             Block::FootnoteDefinition { blocks, .. } => collect_blocks_text(blocks, out),
-            Block::ThematicBreak => {}
+            Block::ThematicBreak | Block::PageBreak => {}
         }
     }
 }

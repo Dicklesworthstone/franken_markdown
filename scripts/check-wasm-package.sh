@@ -58,13 +58,20 @@ log_check() {
 #            GFM-plus definition lists AST/parser/HTML/PDF engine,
 #            expanded superscript/phonetic glyph fallbacks,
 #            MathML block/inline wiring & caret diagnostics.
+#   0.4.2 (complete mobile document lab)
+#          measured raw=4,491,290 gzip=1,967,839 brotli=1,467,465
+#          budget 4,600,000 / 2,050,000 (+340,409 raw / +119,687 gzip)
+#          Shipped contributors now reachable from the WASM/mobile ABI:
+#            SVG poster + EPUB + self-hosting HTML exporters; semantic AST diff;
+#            document intelligence/search/accessibility; transclusion-aware book
+#            site ZIP + merged PDF workflows. HTML/PDF parity remains exact.
 #
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=4150881
-PREVIOUS_GZIP=1848152
-BUDGET_RAW=4300000
-BUDGET_GZIP=1900000
+PREVIOUS_RAW=4491290
+PREVIOUS_GZIP=1967839
+BUDGET_RAW=4600000
+BUDGET_GZIP=2050000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"

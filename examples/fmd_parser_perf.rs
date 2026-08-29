@@ -289,7 +289,8 @@ fn count_block(block: &Block) -> AstCounts {
         Block::CodeBlock { .. }
         | Block::ThematicBreak
         | Block::HtmlBlock(_)
-        | Block::MathBlock(_) => AstCounts {
+        | Block::MathBlock(_)
+        | Block::PageBreak => AstCounts {
             blocks: 0,
             inlines: 0,
         },

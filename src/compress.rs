@@ -345,23 +345,45 @@ struct FixedDeflate {
 pub(crate) struct ZlibCompressScratch {
     head: Vec<usize>,
     prev: Vec<usize>,
+    /// Hash buckets written since the last reset — one entry per bucket's
+    /// FIRST write per call — so reuse clears only the dirtied slots instead
+    /// of re-filling the whole 256 KiB table. Bucket indices are always
+    /// < HASH_SIZE, which the const assertion below pins to the u16 range.
+    touched: Vec<u16>,
 }
+
+const _: () = assert!(HASH_SIZE <= u16::MAX as usize + 1);
 
 impl ZlibCompressScratch {
     pub(crate) fn new() -> Self {
         Self {
             head: Vec::new(),
             prev: Vec::new(),
+            touched: Vec::new(),
         }
     }
 
-    fn fixed_tables(&mut self, input_len: usize) -> (&mut [usize], &mut [usize]) {
+    /// Prepare the LZ77 tables for one call over `input_len` bytes.
+    ///
+    /// Reset equivalence invariant: `insert` below pushes a bucket to
+    /// `touched` exactly when it overwrites a NONE entry (a bucket's first
+    /// write of the call — head entries never return to NONE mid-call), so at
+    /// every call boundary `head[h] != NONE` iff `h` appears in `touched`.
+    /// Clearing exactly the touched buckets therefore restores the all-NONE
+    /// state a fresh table would have. LZ77 decisions read `head`/`prev` only
+    /// at lookup time and every `prev[cand]` read is preceded by the `insert`
+    /// that wrote it in the same call, so reset-to-NONE equivalence makes the
+    /// emitted DEFLATE stream byte-identical to a fresh-scratch run.
+    fn fixed_tables(&mut self, input_len: usize) -> (&mut [usize], &mut [usize], &mut Vec<u16>) {
         if self.head.len() == HASH_SIZE {
-            self.head.fill(NONE);
+            for &h in &self.touched {
+                self.head[usize::from(h)] = NONE;
+            }
         } else {
             self.head.clear();
             self.head.resize(HASH_SIZE, NONE);
         }
+        self.touched.clear();
 
         if self.prev.len() < input_len {
             self.prev.resize(input_len, NONE);
@@ -369,7 +391,7 @@ impl ZlibCompressScratch {
             self.prev.truncate(input_len);
         }
 
-        (&mut self.head, &mut self.prev)
+        (&mut self.head, &mut self.prev, &mut self.touched)
     }
 }
 
@@ -433,14 +455,18 @@ fn deflate_fixed_with_scratch(
             complete: true,
         };
     }
+    let (head, prev, touched) = scratch.fixed_tables(n);
 
-    let (head, prev) = scratch.fixed_tables(n);
-
-    let insert = |head: &mut [usize], prev: &mut [usize], p: usize| {
+    let insert = |head: &mut [usize], prev: &mut [usize], touched: &mut Vec<u16>, p: usize| {
         if p + MIN_MATCH <= n {
             let h = hash3(data, p);
             let old = head[h];
             prev[p] = old;
+            if old == NONE {
+                // First write to this bucket this call: remember it so
+                // the next call's reset only clears dirtied slots.
+                touched.push(h as u16);
+            }
             head[h] = p;
         }
     };
@@ -491,7 +517,7 @@ fn deflate_fixed_with_scratch(
             adler.update_slice(&data[pos..end]);
             let mut k = pos;
             while k < end {
-                insert(&mut *head, &mut *prev, k);
+                insert(&mut *head, &mut *prev, &mut *touched, k);
                 k += 1;
             }
             pos = end;
@@ -507,7 +533,7 @@ fn deflate_fixed_with_scratch(
                 };
             }
             adler.update_byte(b);
-            insert(&mut *head, &mut *prev, pos);
+            insert(&mut *head, &mut *prev, &mut *touched, pos);
             pos += 1;
         }
     }

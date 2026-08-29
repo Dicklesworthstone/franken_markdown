@@ -7,7 +7,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::{PdfOptions, parse_markdown, verify::{VerifyFinding, verify_pdf, with_extra_findings}};
+use franken_markdown::{
+    PdfOptions, parse_markdown,
+    verify::{VerifyFinding, verify_pdf, with_extra_findings},
+};
 
 fn codes(md: &str) -> Vec<&'static str> {
     let doc = parse_markdown(md);
@@ -51,7 +54,9 @@ fn with_empty_extra_findings_is_identity() {
 fn doc_without_external_links_gains_no_link_findings_by_default() {
     let found = codes("# Doc\n\n[local](#anchor) and [file](other.md).\n");
     assert!(
-        !found.iter().any(|c| *c == "link_broken" || *c == "link_redirected"),
+        !found
+            .iter()
+            .any(|c| *c == "link_broken" || *c == "link_redirected"),
         "no network in default verify: {found:?}"
     );
 }

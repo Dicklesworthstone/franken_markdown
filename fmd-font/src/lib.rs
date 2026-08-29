@@ -1889,8 +1889,7 @@ impl Kerning {
                     // A covered first glyph defines an adjustment for every
                     // second glyph, so walk the 128x128 cells but hoist the
                     // coverage search and both class lookups out of the walk.
-                    let c2_of: [u16; 128] =
-                        std::array::from_fn(|b| class2.class(glyphs[b]));
+                    let c2_of: [u16; 128] = std::array::from_fn(|b| class2.class(glyphs[b]));
                     let c1_count = usize::from(*class1_count);
                     let c2_count = usize::from(*class2_count);
                     for l in 0..128u8 {
@@ -4079,10 +4078,13 @@ mod synthetic_font_tests {
 
             let mut enumerated = [0i16; 128 * 128];
             let mut emitted = 0usize;
-            kern.for_each_ascii_pair(|b| glyphs[usize::from(b)], |l, r, v| {
-                enumerated[usize::from(l) * 128 + usize::from(r)] = v;
-                emitted += 1;
-            });
+            kern.for_each_ascii_pair(
+                |b| glyphs[usize::from(b)],
+                |l, r, v| {
+                    enumerated[usize::from(l) * 128 + usize::from(r)] = v;
+                    emitted += 1;
+                },
+            );
 
             let mut brute = [0i16; 128 * 128];
             for l in 0..128usize {

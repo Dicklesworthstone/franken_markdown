@@ -77,7 +77,6 @@ pub mod cli;
 pub mod config;
 #[cfg(feature = "cli")]
 pub(crate) mod file_write;
-#[cfg(feature = "cli")]
 pub mod verify;
 #[cfg(feature = "cli")]
 pub mod watch;

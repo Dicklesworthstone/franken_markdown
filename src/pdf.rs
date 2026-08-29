@@ -18466,10 +18466,34 @@ fn layout_inlines(
     let n = cx.line_breaks.len();
     for i in 0..n {
         let lb = cx.line_breaks[i];
+        // Microtype: the justifier must target the same effective width the
+        // breaker used (content + protrusion credit) — otherwise a line the
+        // breaker admitted via right-edge protrusion reads as overfull to the
+        // justifier and gets wrongly compressed, negating the optical margin.
+        let line_protrusion = if policy.microtype.protrusion {
+            let left = built.items[lb.start..]
+                .iter()
+                .find_map(|item| match item {
+                    ParagraphItem::Box(b) => Some(b.protrusion.left),
+                    _ => None,
+                })
+                .unwrap_or(crate::layout::LayoutUnit::ZERO);
+            let right = built.items[..lb.end]
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    ParagraphItem::Box(b) => Some(b.protrusion.right),
+                    _ => None,
+                })
+                .unwrap_or(crate::layout::LayoutUnit::ZERO);
+            left + right
+        } else {
+            crate::layout::LayoutUnit::ZERO
+        };
         line_tokens_for_break_into(
             &built,
             &lb,
-            content_w,
+            content_w + line_protrusion,
             policy.justify && i + 1 < n,
             &mut cx.glue_adjustments,
             &mut cx.line_toks,
@@ -28894,6 +28918,11 @@ fn build_pdf(
     }
 
     // Embedded font object groups.
+    // One Flate scratch reused across every embedded font program: each face's
+    // subset bytes are compressed back-to-back here, so the 256 KiB LZ77 hash
+    // table is allocated once and only the buckets dirtied by the previous
+    // face are reset between programs (byte-identical to fresh scratches).
+    let mut font_scratch = crate::compress::ZlibCompressScratch::new();
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);
         let m = FaceMetrics::of(&face.font);
@@ -28947,7 +28976,7 @@ fn build_pdf(
             "font_stream_compression",
             face.bytes.len(),
             "Flate-compress one embedded subset font program",
-            || crate::compress::zlib_compress(&face.bytes),
+            || crate::compress::zlib_compress_with_scratch(&face.bytes, &mut font_scratch),
             |bytes| bytes.len(),
         );
         append_pdf_fontfile2_stream_object(

@@ -3017,30 +3017,58 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
     }
 
     let mut final_lines = Vec::new();
+    // One LayoutCx spans the whole fixpoint so every value-pure cache survives
+    // across passes: between iterations the document content is identical —
+    // only TOC page numbers change, and those affect pagination, never a
+    // measurement. Field purity audit (pass 13, round 2):
+    //   - carried, provably iteration-pure: `width_cache` (key = font slot +
+    //     size + text → the exact `Faces::shaped_width` measurement; TOC page
+    //     strings land under their own keys), `hyphen_cache` (key = language +
+    //     lowercase word → intrinsic hyphenation points),
+    //     `simple_paragraph_cache` (key = text + indent + measure + size +
+    //     gap + kind + policy, all iteration-invariant; templates are
+    //     scrubbed to `FlowMark::default()` at insert and fully re-stamped by
+    //     `mark_flow` at hit), `table_layout_cache` (same discipline; the
+    //     flow group is scrubbed at insert and re-stamped by
+    //     `stamp_table_layout_group` at hit), the workspaces
+    //     `paragraph_scratch` + `line_breaks`/`line_toks`/`glue_adjustments`/
+    //     `code_highlight_spans` (cleared at every consumer entry), `links`
+    //     (intern indices are internal-only and content-keyed: Segs own the
+    //     resolved `LinkTarget`, and equal indices ⇔ equal targets), and
+    //     `toc_entries` (built once above, read-only during layout).
+    //   - reset per iteration to the exact fresh-construction values:
+    //     `toc_page_map` (the fixpoint variable itself), the `next_flow`/
+    //     `next_bg` counters, `pending_page_break`, and `list_stack` — every
+    //     field that observes TOC state or restarts numbering per pass.
+    let type_scale = opts.type_scale();
+    let mut cx = LayoutCx {
+        opts,
+        pending_page_break: false,
+        type_scale,
+        faces,
+        page,
+        next_bg: 0,
+        next_flow: 0,
+        list_stack: Vec::new(),
+        hyphen_cache: RefCell::new(HashMap::new()),
+        width_cache: RefCell::new(WidthCache::default()),
+        simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
+        table_layout_cache: TableLayoutCache::default(),
+        paragraph_scratch: ParagraphLayoutScratch::new(),
+        line_breaks: Vec::new(),
+        line_toks: Vec::new(),
+        glue_adjustments: Vec::new(),
+        code_highlight_spans: Vec::new(),
+        links: LinkIntern::default(),
+        toc_entries,
+        toc_page_map: page_map.clone(),
+    };
     for _iter in 0..5 {
-        let type_scale = opts.type_scale();
-        let mut cx = LayoutCx {
-            opts,
-            pending_page_break: false,
-            type_scale,
-            faces,
-            page,
-            next_bg: 0,
-            next_flow: 0,
-            list_stack: Vec::new(),
-            hyphen_cache: RefCell::new(HashMap::new()),
-            width_cache: RefCell::new(WidthCache::default()),
-            simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
-            table_layout_cache: TableLayoutCache::default(),
-            paragraph_scratch: ParagraphLayoutScratch::new(),
-            line_breaks: Vec::new(),
-            line_toks: Vec::new(),
-            glue_adjustments: Vec::new(),
-            code_highlight_spans: Vec::new(),
-            links: LinkIntern::default(),
-            toc_entries: toc_entries.clone(),
-            toc_page_map: page_map.clone(),
-        };
+        cx.pending_page_break = false;
+        cx.list_stack.clear();
+        cx.next_bg = 0;
+        cx.next_flow = 0;
+        cx.toc_page_map = page_map.clone();
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
         layout_pdf_footnote_notes(blocks, &mut out, &mut cx);

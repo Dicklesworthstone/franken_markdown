@@ -27287,7 +27287,15 @@ fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
     let mut boundary = n;
     while boundary > 0 {
         ends.push(boundary);
-        boundary = prev[boundary];
+        // Defensive: the invariant guarantees every index is reachable (each
+        // page start can place its first line unconditionally), so prev is
+        // always set. Guard anyway — an unbounded loop would be far worse
+        // than a truncated plan.
+        let p = prev[boundary];
+        if p == usize::MAX {
+            break;
+        }
+        boundary = p;
     }
     ends.reverse();
     PageBreakPlan { ends }
@@ -29892,7 +29900,9 @@ fn build_pdf(
             append_decimal_usize(&mut buf, image.width_px as usize);
             buf.extend_from_slice(b" /Height ");
             append_decimal_usize(&mut buf, image.height_px as usize);
-            buf.extend_from_slice(b" /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ");
+            buf.extend_from_slice(
+                b" /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ",
+            );
             append_decimal_usize(&mut buf, alpha.len());
             buf.extend_from_slice(b" >>\nstream\n");
             buf.extend_from_slice(alpha);

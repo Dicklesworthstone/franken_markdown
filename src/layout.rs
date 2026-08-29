@@ -2312,7 +2312,14 @@ struct ParetoState {
 /// discarded when some member is at least as good in BOTH dimensions and in
 /// the classic scalar; members the candidate dominates are removed. Ties go
 /// to the existing member (insertion order), keeping the result
-/// deterministic. The front is scalar-sorted and truncated at the cap.
+/// deterministic.
+///
+/// The cap is PER CLASS, not global: there are exactly
+/// `2 flagged × 4 fitness = 8` class combos, and a global scalar-sorted cap
+/// of 8 could be exhausted by one class — dropping the class diversity that
+/// is the entire point of the front. Per-class capping bounds each class's
+/// staircase frontier (genuine structure/hyphen trade-offs) while preserving
+/// every other class's survivors.
 fn pareto_insert(front: &mut Vec<ParetoState>, cand: ParetoState) {
     let same_class = |s: &ParetoState| s.flagged == cand.flagged && s.fitness == cand.fitness;
     if front.iter().any(|s| {
@@ -2330,14 +2337,22 @@ fn pareto_insert(front: &mut Vec<ParetoState>, cand: ParetoState) {
             && cand.line.demerits <= s.line.demerits)
     });
     front.push(cand);
-    if front.len() > PARETO_FRONT_CAP {
-        front.sort_by_key(|s| s.line.demerits);
-        front.truncate(PARETO_FRONT_CAP);
+    let class_members = front.iter().filter(|s| same_class(s)).count();
+    if class_members > PARETO_FRONT_CAP
+        && let Some(worst) = front
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| same_class(s))
+            .max_by(|(_, a), (_, b)| a.line.demerits.cmp(&b.line.demerits))
+            .map(|(i, _)| i)
+    {
+        front.remove(worst);
     }
 }
 
-/// Front cap: keeps the multi-objective DP bounded. 8 members is generous —
-/// with two dimensions most states are dominated well before this.
+/// Front cap: keeps the multi-objective DP bounded. Applied PER
+/// (flagged, fitness) class — 8 members is generous, since within a class
+/// the surviving states differ only by genuine two-dimension trade-offs.
 const PARETO_FRONT_CAP: usize = 8;
 
 #[derive(Debug)]

@@ -172,7 +172,12 @@ fn pdf_pareto_default_off_and_optin_deterministic() {
         "Extraordinarily incomprehensible misinterpretations decontaminating ",
         "reconstructing the thorough oxymoron quizzed the phenomenological ",
         "zeitgeist while deterministic incremental hyphenation algorithms ",
-        "balance typography against the stubborn arithmetic of line breaks.\n"
+        "balance typography against the stubborn arithmetic of line breaks.\n\n",
+        "## Second\n\n",
+        "A second paragraph exercises the production scratch-reuse path: the ",
+        "same workspace laid out the first paragraph, so any stale front state ",
+        "would corrupt this one's line breaking. Thorough oxymoron quizzed the ",
+        "phenomenological zeitgeist examining skepticism once more.\n"
     ));
     let a = render_pdf_document(&doc, &PdfOptions::default()).expect("a");
     let b = render_pdf_document(&doc, &PdfOptions::default()).expect("b");
@@ -201,9 +206,7 @@ fn pareto_with_reused_scratch_matches_fresh_scratch_per_paragraph() {
             "The thorough oxymoron quizzed the phenomenological zeitgeist examining skepticism again.",
             "Deterministic incremental hyphenation algorithms balance stubborn arithmetic of breaks.",
         ],
-        vec![
-            "First paragraph alone with a few words to break across the measure.",
-        ],
+        vec!["First paragraph alone with a few words to break across the measure."],
         vec![
             "Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike.",
             "November oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu.",

@@ -1752,7 +1752,9 @@ fn parse_lines_as_inlines(
     match lines {
         [] => (Vec::new(), 0, 0),
         [line] => {
-            let trimmed = line.trim_start_matches(|c| c == ' ' || c == '\t');
+            let trimmed = line
+                .trim_start_matches([' ', '\t'])
+                .trim_end_matches([' ', '\t']);
             (
                 parse_inlines_with_refs_profiled(trimmed, refs, profiler),
                 line.len(),
@@ -1819,13 +1821,17 @@ fn plain_multiline_inline_fast_path(lines: &[&str], count_chars: bool) -> (Vec<I
         0
     };
     for (idx, line) in lines.iter().enumerate() {
-        let trimmed_start = line.trim_start_matches(|c| c == ' ' || c == '\t');
+        let trimmed_start = line.trim_start_matches([' ', '\t']);
         if count_chars {
             char_count += trimmed_start.chars().count();
         }
         let is_last = idx + 1 == lines.len();
         let hard = line.ends_with("  ") || line.ends_with('\\');
-        let text = trimmed_start.trim_end_matches(' ');
+        let text = if is_last {
+            trimmed_start.trim_end_matches([' ', '\t'])
+        } else {
+            trimmed_start.trim_end_matches(' ')
+        };
         push_inline_text(&mut out, text);
         if !is_last {
             out.push(if hard {
@@ -1844,7 +1850,12 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
         if idx > 0 {
             chars.push('\n');
         }
-        let trimmed = line.trim_start_matches(|c| c == ' ' || c == '\t');
+        let trimmed_start = line.trim_start_matches([' ', '\t']);
+        let trimmed = if idx + 1 == lines.len() {
+            trimmed_start.trim_end_matches([' ', '\t'])
+        } else {
+            trimmed_start
+        };
         chars.extend(trimmed.chars());
     }
     chars
@@ -1882,10 +1893,14 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
 
     let dest = parse_link_destination(&chars, &mut i)?;
 
+    let spaces_start = i;
     skip_spaces(&chars, &mut i);
     let title = if i >= chars.len() {
         None
     } else {
+        if i == spaces_start {
+            return None;
+        }
         let title = parse_link_title(&chars, &mut i)?;
         skip_spaces(&chars, &mut i);
         if i != chars.len() {
@@ -1913,11 +1928,7 @@ fn parse_reference_definition_label(line: &str) -> Option<String> {
     let label = normalize_reference_label_chars(&chars[1..close])?;
     let mut i = close + 2;
     skip_spaces(&chars, &mut i);
-    if i == chars.len() {
-        Some(label)
-    } else {
-        None
-    }
+    if i == chars.len() { Some(label) } else { None }
 }
 
 fn parse_reference_destination_line(line: &str) -> Option<(String, Option<String>)> {
@@ -1931,8 +1942,12 @@ fn parse_reference_destination_line(line: &str) -> Option<(String, Option<String
     let chars: Vec<char> = t.chars().collect();
     let mut k = 0usize;
     let dest = parse_link_destination(&chars, &mut k)?;
+    let spaces_start = k;
     skip_spaces(&chars, &mut k);
     let title = if k < chars.len() {
+        if k == spaces_start {
+            return None;
+        }
         let title = parse_link_title(&chars, &mut k)?;
         skip_spaces(&chars, &mut k);
         if k != chars.len() {
@@ -1965,7 +1980,7 @@ fn parse_reference_title_line(line: &str) -> Option<String> {
 }
 
 fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkReference)> {
-    if leading_spaces(line) > 3 || !line.is_ascii() {
+    if leading_spaces(line) > 3 || !line.is_ascii() || line.contains('&') || line.contains('\\') {
         return None;
     }
     let t = trim_start_space_tab(line);
@@ -2163,8 +2178,8 @@ fn setext_underline_trimmed(t: &str) -> Option<u8> {
         '-' => 2,
         _ => return None,
     };
-    let marker_count = t.chars().filter(|&c| c == first).count();
-    if marker_count > 0 && t.chars().all(|c| c == first || c == ' ') {
+    let marker_len = t.chars().take_while(|&c| c == first).count();
+    if marker_len > 0 && t[marker_len..].chars().all(is_space_or_tab) {
         Some(level)
     } else {
         None
@@ -2183,7 +2198,9 @@ fn thematic_break_trimmed(t: &str) -> bool {
         return false;
     }
     for ch in ['-', '*', '_'] {
-        if t.chars().all(|c| c == ch || c == ' ') && t.chars().filter(|&c| c == ch).count() >= 3 {
+        if t.chars().all(|c| c == ch || c == ' ' || c == '\t')
+            && t.chars().filter(|&c| c == ch).count() >= 3
+        {
             return true;
         }
     }
@@ -2848,6 +2865,9 @@ struct Marker<'a> {
 }
 
 fn list_marker(line: &str) -> Option<Marker<'_>> {
+    if is_thematic_break(line) {
+        return None;
+    }
     // `indent` is a column count (a leading tab counts as up to 4 columns) used
     // for the content-indent math below. To find the marker we must slice off the
     // *actual* leading whitespace by pattern — using the column count as a byte
@@ -4314,15 +4334,24 @@ fn parse_link_like(
     let mut k = j + 2;
 
     skip_link_whitespace(chars, &mut k);
-    let dest = parse_link_destination(chars, &mut k)?;
-    skip_link_whitespace(chars, &mut k);
-
-    let title = if chars.get(k) == Some(&')') {
-        None
+    let (dest, title) = if chars.get(k) == Some(&')') {
+        (String::new(), None)
     } else {
-        let title = parse_link_title(chars, &mut k)?;
+        let dest = parse_link_destination(chars, &mut k)?;
+        let spaces_start = k;
         skip_link_whitespace(chars, &mut k);
-        Some(title)
+
+        let title = if chars.get(k) == Some(&')') {
+            None
+        } else {
+            if k == spaces_start {
+                return None;
+            }
+            let title = parse_link_title(chars, &mut k)?;
+            skip_link_whitespace(chars, &mut k);
+            Some(title)
+        };
+        (dest, title)
     };
 
     if chars.get(k) != Some(&')') {
@@ -4330,7 +4359,7 @@ fn parse_link_like(
     }
     Some((
         parse_inlines_with_refs_profiled(&text, refs, profiler),
-        dest.trim().to_string(),
+        dest,
         title,
         k + 1,
     ))
@@ -4397,7 +4426,8 @@ fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> 
                 *i += 1;
             }
             '<' | '\n' => return None,
-            ch if ch.is_whitespace() => break,
+            ch if ch == ' ' || ch == '\t' || ch == '\r' => break,
+            ch if ch.is_ascii_control() => return None,
             '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
                 dest.push(chars[*i + 1]);
                 *i += 2;
@@ -4418,7 +4448,11 @@ fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> 
         }
     }
 
-    if paren_depth == 0 { Some(dest) } else { None }
+    if paren_depth == 0 && !dest.is_empty() {
+        Some(dest)
+    } else {
+        None
+    }
 }
 
 fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
@@ -4851,6 +4885,12 @@ fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
     if value.is_empty() {
         return None;
     }
+    if radix == 10 && value.len() > 7 {
+        return None;
+    }
+    if radix == 16 && value.len() > 6 {
+        return None;
+    }
     // Only an all-digits run (in the given radix) is a numeric reference at all;
     // verify bytes directly without UTF-8 char iterator overhead.
     for &b in value.as_bytes() {
@@ -4964,6 +5004,16 @@ fn compute_bracket_pairs(chars: &[char]) -> Vec<Option<usize>> {
 }
 
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
+    let mut escaped = false;
+    for &ch in label {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '[' || ch == ']' {
+            return None;
+        }
+    }
     let mut start = 0usize;
     while start < label.len() && label[start].is_whitespace() {
         start += 1;

@@ -192,6 +192,12 @@ struct VerifyArgs {
     /// force the schema.
     #[arg(long)]
     json: bool,
+    /// Restrict findings to the accessibility audit (missing alt text,
+    /// heading-level jumps, generic link text, headerless tables). The a11y
+    /// findings also appear in the default verify report; this flag is the
+    /// focused view for docs accessibility sweeps.
+    #[arg(long)]
+    a11y: bool,
 }
 
 #[derive(Args, Clone)]
@@ -1538,6 +1544,11 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
             "verification could not load the bundled fonts",
             json,
         );
+    };
+    let report = if args.a11y {
+        crate::verify::filter_a11y(report)
+    } else {
+        report
     };
     let out_status = if json {
         // JSON contract: stdout carries the report, nothing else. The schema

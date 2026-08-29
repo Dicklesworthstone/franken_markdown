@@ -268,6 +268,30 @@ fn plain_inline_text(inlines: &[crate::ast::Inline]) -> String {
     out
 }
 
+/// Restrict a report to the accessibility findings (`fmd verify --a11y`).
+/// The digest is recomputed over the filtered body so the report stays
+/// self-consistent (a filtered report is a different document).
+#[must_use]
+pub fn filter_a11y(mut report: VerifyReport) -> VerifyReport {
+    const A11Y_CODES: &[&str] = &[
+        "missing_alt_text",
+        "heading_level_skip",
+        "generic_link_text",
+        "table_missing_header",
+    ];
+    report
+        .findings
+        .retain(|f| A11Y_CODES.contains(&f.code));
+    report.verdict = if report.findings.is_empty() {
+        "clean"
+    } else {
+        "findings"
+    };
+    let body = to_json_body(&report);
+    report.digest = fnv1a64(body.as_bytes());
+    report
+}
+
 /// Human-mode verify report: caret blocks for findings that map back into
 /// `source`, plus a one-line summary. JSON consumers must keep using
 /// [`to_json`] — this never writes to stdout and does not change the JSON

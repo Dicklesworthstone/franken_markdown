@@ -20354,7 +20354,7 @@ fn retained_pdf_bytes(
         n = n.saturating_add(
             page.marks
                 .len()
-                .saturating_mul(std::mem::size_of::<StructMark>()),
+                .saturating_mul(STRUCT_MARK_RETAINED_BYTES),
         );
         n = n.saturating_add(page.shadings.len().saturating_mul(64));
     }
@@ -21112,7 +21112,7 @@ fn generate_page_content(
                 if seg.text.is_empty() {
                     continue;
                 }
-                let mut path = clone_prefix_with_extra(&prefix, 3);
+                let mut path = SmallPath::from_slice(prefix.as_slice());
                 path.push(SElem {
                     key: SKey::Table(line.flow.group),
                     tag: "Table",
@@ -21156,7 +21156,7 @@ fn generate_page_content(
             if marked {
                 let leaf = leaf_elem(line);
                 append_marked_content_begin(&mut body, leaf.tag, next_mcid);
-                let mut path = container_prefix_with_extra(line, 1);
+                let mut path = container_prefix(line);
                 path.push(leaf);
                 let (alt, bbox) = if let Some(image) = &line.image {
                     let x0 = line.rule_x;
@@ -21284,7 +21284,7 @@ fn generate_page_content(
 /// the same `TableRow`, every wrapped line of one paragraph reuses the same
 /// `Paragraph`). Two marks open/extend the same element iff their keys compare
 /// equal at the same path depth.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
     BlockQuote(usize),
     List(u32),
@@ -21308,6 +21308,100 @@ struct SElem {
     tag: &'static str,
 }
 
+/// Inline capacity of [`SmallPath`]: measured across the perf corpora
+/// (examples/showcase.md, the pdf-large generator, a table/list-heavy stress
+/// document, and README.md; round 2 pass 11) structure paths are 1-8 elements
+/// deep for 96-100% of marks (depths 1-5 and 7 dominate; 10 appears only for
+/// text inside triply nested lists), so paths up to this length never touch
+/// the heap. Deeper paths spill to a `Vec` exactly like the pre-inline builder.
+const INLINE_PATH_CAP: usize = 8;
+
+/// A structure path held inline while at most [`INLINE_PATH_CAP`] elements deep
+/// and on the heap only beyond that. Hand-rolled because the engine core is
+/// std-only: replacing the per-mark `Vec<SElem>` removes one heap allocation
+/// per marked line and per table cell, which page generation otherwise pays in
+/// proportion to (lines + cells). `Deref<Target = [SElem]>` keeps every
+/// existing consumer (`len`, indexing, slicing, iteration) untouched.
+#[derive(Clone)]
+// The 11:1 size ratio is the point: the inline variant absorbs the heap
+// allocation for every path real documents produce (measured 96-100%), and
+// the small spill variant only exists for the rare deeper chain.
+#[allow(clippy::large_enum_variant)]
+enum SmallPath {
+    Inline {
+        elems: [SElem; INLINE_PATH_CAP],
+        len: u8,
+    },
+    Spilled(Vec<SElem>),
+}
+
+impl SmallPath {
+    /// Filler for unused inline tail slots; never observable through
+    /// [`SmallPath::as_slice`], which bounds the slice by `len`.
+    const ZERO: SElem = SElem {
+        key: SKey::Paragraph(0),
+        tag: "",
+    };
+
+    const fn empty() -> Self {
+        SmallPath::Inline {
+            elems: [Self::ZERO; INLINE_PATH_CAP],
+            len: 0,
+        }
+    }
+
+    fn from_slice(elems: &[SElem]) -> Self {
+        if elems.len() <= INLINE_PATH_CAP {
+            let mut path = Self::empty();
+            if let SmallPath::Inline {
+                elems: slots,
+                len,
+            } = &mut path
+            {
+                slots[..elems.len()].copy_from_slice(elems);
+                *len = elems.len() as u8;
+            }
+            path
+        } else {
+            SmallPath::Spilled(elems.to_vec())
+        }
+    }
+
+    fn push(&mut self, elem: SElem) {
+        match self {
+            SmallPath::Inline { elems, len } => {
+                let n = usize::from(*len);
+                if n < INLINE_PATH_CAP {
+                    elems[n] = elem;
+                    *len += 1;
+                } else {
+                    let mut spilled = Vec::with_capacity(INLINE_PATH_CAP.saturating_add(2));
+                    spilled.extend_from_slice(elems);
+                    spilled.push(elem);
+                    *self = SmallPath::Spilled(spilled);
+                }
+            }
+            SmallPath::Spilled(spilled) => spilled.push(elem),
+        }
+    }
+
+    fn as_slice(&self) -> &[SElem] {
+        match self {
+            SmallPath::Inline { elems, len } => &elems[..usize::from(*len)],
+            SmallPath::Spilled(spilled) => spilled,
+        }
+    }
+}
+
+impl std::ops::Deref for SmallPath {
+    type Target = [SElem];
+
+    #[inline]
+    fn deref(&self) -> &[SElem] {
+        self.as_slice()
+    }
+}
+
 /// A single piece of marked content (one `/MCID`) plus the structure path that
 /// owns it. The path runs from just below the implicit `/Document` root down to
 /// the owning element (whose `tag` is also the content-stream BDC operand). The
@@ -21316,13 +21410,21 @@ struct SElem {
 #[derive(Clone)]
 struct StructMark {
     mcid: usize,
-    path: Vec<SElem>,
+    path: SmallPath,
     /// `/Alt` text for the owning element (figures carry their image alt).
     alt: Option<String>,
     /// Figure bounding box `[x0, y0, x1, y1]` in page coordinates, emitted as a
     /// layout `/BBox` attribute so assistive tech can locate the image region.
     bbox: Option<[f32; 4]>,
 }
+
+/// Historical `size_of::<StructMark>()` from before `path` went inline
+/// (round 2 pass 11). The retained-memory ceiling check must keep making
+/// identical accept/reject decisions for fixed inputs, so its per-mark term
+/// stays pinned to the pre-inline footprint instead of following the grown
+/// struct: an inline path trades heap allocation for struct bytes without
+/// changing what the writer retains per mark.
+const STRUCT_MARK_RETAINED_BYTES: usize = 80;
 
 #[derive(Clone)]
 struct LinkAnnotation {
@@ -21511,10 +21613,10 @@ mod struct_tree_tests {
     fn paragraph_mark(mcid: usize, group: u32) -> StructMark {
         StructMark {
             mcid,
-            path: vec![SElem {
+            path: SmallPath::from_slice(&[SElem {
                 key: SKey::Paragraph(group),
                 tag: "P",
-            }],
+            }]),
             alt: None,
             bbox: None,
         }
@@ -26723,43 +26825,64 @@ fn leaf_elem(line: &Line) -> SElem {
 /// block structure is a tree, so start order is exactly nesting order — this
 /// gets `> - item` (list inside quote) and `- > quote` (quote inside list)
 /// right, rather than always nesting one kind inside the other.
-fn container_prefix(line: &Line) -> Vec<SElem> {
-    container_prefix_with_extra(line, 0)
-}
-
-fn container_prefix_with_extra(line: &Line, extra_len: usize) -> Vec<SElem> {
+fn container_prefix(line: &Line) -> SmallPath {
     if line.quote_bars.is_empty() && line.list_path.is_empty() {
-        return Vec::with_capacity(extra_len);
+        return SmallPath::empty();
     }
 
+    #[derive(Clone, Copy)]
     enum Container {
         Quote(usize),
         List { list: u32, item: u32 },
     }
-    let mut containers: Vec<(usize, Container)> =
-        Vec::with_capacity(line.quote_bars.len().saturating_add(line.list_path.len()));
-    for (qid, _x) in &line.quote_bars {
-        containers.push((*qid, Container::Quote(*qid)));
-    }
-    for lm in &line.list_path {
-        containers.push((
-            lm.list as usize,
-            Container::List {
-                list: lm.list,
-                item: lm.item,
-            },
-        ));
-    }
+    /// Enclosing blockquote/list levels per line are few (one entry per
+    /// container level); deeper chains than this spill to a `Vec` and take the
+    /// exact pre-inline allocation path.
+    const CONTAINER_STACK_CAP: usize = 8;
+    const CONTAINER_ZERO: (usize, Container) = (0, Container::Quote(0));
+
+    let total = line.quote_bars.len().saturating_add(line.list_path.len());
+    let mut inline_stack: [(usize, Container); CONTAINER_STACK_CAP] =
+        [CONTAINER_ZERO; CONTAINER_STACK_CAP];
+    let mut spilled_stack: Vec<(usize, Container)> = Vec::new();
+    let containers: &mut [(usize, Container)] = if total <= CONTAINER_STACK_CAP {
+        let mut n = 0usize;
+        for (qid, _x) in &line.quote_bars {
+            inline_stack[n] = (*qid, Container::Quote(*qid));
+            n += 1;
+        }
+        for lm in &line.list_path {
+            inline_stack[n] = (
+                lm.list as usize,
+                Container::List {
+                    list: lm.list,
+                    item: lm.item,
+                },
+            );
+            n += 1;
+        }
+        &mut inline_stack[..n]
+    } else {
+        spilled_stack.reserve(total);
+        for (qid, _x) in &line.quote_bars {
+            spilled_stack.push((*qid, Container::Quote(*qid)));
+        }
+        for lm in &line.list_path {
+            spilled_stack.push((
+                lm.list as usize,
+                Container::List {
+                    list: lm.list,
+                    item: lm.item,
+                },
+            ));
+        }
+        &mut spilled_stack
+    };
     containers.sort_by_key(|(start, _)| *start);
 
-    let capacity = line
-        .quote_bars
-        .len()
-        .saturating_add(line.list_path.len().saturating_mul(3))
-        .saturating_add(extra_len);
-    let mut path = Vec::with_capacity(capacity);
-    for (_, container) in containers {
-        match container {
+    let mut path = SmallPath::empty();
+    for (_, container) in containers.iter() {
+        match *container {
             Container::Quote(qid) => path.push(SElem {
                 key: SKey::BlockQuote(qid),
                 tag: "BlockQuote",
@@ -26780,12 +26903,6 @@ fn container_prefix_with_extra(line: &Line, extra_len: usize) -> Vec<SElem> {
             }
         }
     }
-    path
-}
-
-fn clone_prefix_with_extra(prefix: &[SElem], extra_len: usize) -> Vec<SElem> {
-    let mut path = Vec::with_capacity(prefix.len().saturating_add(extra_len));
-    path.extend_from_slice(prefix);
     path
 }
 
@@ -30597,7 +30714,8 @@ mod pdf_writer_tests {
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
+        container_prefix, decode_xml_entities, estimate_page_content_capacity, INLINE_PATH_CAP,
+        SmallPath,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
         fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
         hyphenator_for_word_with_doc_lang, kerned_tj, kerned_tj_with_spacing, layout_inlines,
@@ -32522,7 +32640,7 @@ mod pdf_writer_tests {
 
         let empty = line_with_containers(Vec::new(), Vec::new());
         assert!(
-            container_prefix_with_extra(&empty, 3).is_empty(),
+            container_prefix(&empty).is_empty(),
             "an ordinary line has no container prefix; callers append leaves"
         );
 
@@ -32530,7 +32648,7 @@ mod pdf_writer_tests {
             vec![(9, 90.0), (1, 70.0)],
             vec![ListMark { list: 3, item: 4 }],
         );
-        let prefix = container_prefix_with_extra(&mixed, 1);
+        let prefix = container_prefix(&mixed);
         let tags = prefix
             .iter()
             .map(|elem: &SElem| elem.tag)
@@ -32545,6 +32663,430 @@ mod pdf_writer_tests {
         assert!(matches!(prefix[2].key, SKey::ListItem(4)));
         assert!(matches!(prefix[3].key, SKey::ListBody(4)));
         assert!(matches!(prefix[4].key, SKey::BlockQuote(9)));
+    }
+
+    /// Verbatim pre-pass-11 `container_prefix_with_extra`, kept as the
+    /// differential reference for the inline [`SmallPath`] route.
+    fn container_prefix_reference(line: &Line) -> Vec<SElem> {
+        if line.quote_bars.is_empty() && line.list_path.is_empty() {
+            return Vec::new();
+        }
+
+        enum Container {
+            Quote(usize),
+            List { list: u32, item: u32 },
+        }
+        let mut containers: Vec<(usize, Container)> =
+            Vec::with_capacity(line.quote_bars.len().saturating_add(line.list_path.len()));
+        for (qid, _x) in &line.quote_bars {
+            containers.push((*qid, Container::Quote(*qid)));
+        }
+        for lm in &line.list_path {
+            containers.push((
+                lm.list as usize,
+                Container::List {
+                    list: lm.list,
+                    item: lm.item,
+                },
+            ));
+        }
+        containers.sort_by_key(|(start, _)| *start);
+
+        let mut path: Vec<SElem> = Vec::with_capacity(
+            line.quote_bars
+                .len()
+                .saturating_add(line.list_path.len().saturating_mul(3)),
+        );
+        for (_, container) in containers {
+            match container {
+                Container::Quote(qid) => path.push(SElem {
+                    key: SKey::BlockQuote(qid),
+                    tag: "BlockQuote",
+                }),
+                Container::List { list, item } => {
+                    path.push(SElem {
+                        key: SKey::List(list),
+                        tag: "L",
+                    });
+                    path.push(SElem {
+                        key: SKey::ListItem(item),
+                        tag: "LI",
+                    });
+                    path.push(SElem {
+                        key: SKey::ListBody(item),
+                        tag: "LBody",
+                    });
+                }
+            }
+        }
+        path
+    }
+
+    /// Verbatim pre-pass-11 per-cell path construction (`clone_prefix_with_extra`
+    /// plus the three table pushes the page builder made at the call site).
+    fn table_cell_path_reference(prefix: &[SElem], group: u32, row: u32, col: u32, header: bool) -> Vec<SElem> {
+        let mut path = Vec::with_capacity(prefix.len().saturating_add(3));
+        path.extend_from_slice(prefix);
+        path.push(SElem {
+            key: SKey::Table(group),
+            tag: "Table",
+        });
+        path.push(SElem {
+            key: SKey::TableRow(group, row),
+            tag: "TR",
+        });
+        path.push(SElem {
+            key: SKey::TableCell(group, row, col),
+            tag: if header { "TH" } else { "TD" },
+        });
+        path
+    }
+
+    fn path_signature(path: &[SElem]) -> Vec<(SKey, &'static str)> {
+        path.iter().map(|elem| (elem.key, elem.tag)).collect()
+    }
+
+    #[test]
+    fn container_prefix_inline_paths_match_allocating_reference() {
+        fn line_with_containers(quotes: &[usize], lists: &[(u32, u32)]) -> Line {
+            Line {
+                size: 12.0,
+                gap_after: 0.0,
+                rule: false,
+                rule_x: 72.0,
+                quote_bars: quotes.iter().map(|&q| (q, 18.0)).collect(),
+                bg: 0,
+                shade: false,
+                flow: FlowMark::default(),
+                list_path: lists
+                    .iter()
+                    .map(|&(list, item)| ListMark { list, item })
+                    .collect(),
+                table_cols: Vec::new(),
+                segs: Vec::new(),
+                page_break_before: false,
+                image: None,
+            }
+        }
+
+        // Covers inline depths (1-8), the exact-capacity boundary, and both
+        // spill routes: >8 containers (spilled container stack) and a container
+        // count that fits but whose path elements exceed the inline capacity.
+        type Case = (&'static str, Vec<usize>, Vec<(u32, u32)>);
+        let cases: Vec<Case> = vec![
+            ("plain", vec![], vec![]),
+            ("quote-1", vec![4], vec![]),
+            ("quote-2", vec![4, 9], vec![]),
+            ("list-1", vec![], vec![(1, 2)]),
+            ("list-2", vec![], vec![(1, 2), (5, 6)]),
+            ("list-3", vec![], vec![(1, 2), (5, 6), (9, 10)]),
+            ("list-4-path-spill", vec![], vec![(1, 2), (5, 6), (9, 10), (13, 14)]),
+            ("quote-then-list", vec![3], vec![(7, 8)]),
+            ("list-then-quote", vec![9], vec![(2, 3)]),
+            ("interleaved", vec![9, 1], vec![(3, 4)]),
+            (
+                "nine-containers-stack-spill",
+                vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+                vec![],
+            ),
+        ];
+        for (label, quotes, lists) in cases {
+            let line = line_with_containers(&quotes, &lists);
+            let reference = container_prefix_reference(&line);
+            let inline = container_prefix(&line);
+            assert_eq!(
+                path_signature(inline.as_slice()),
+                path_signature(&reference),
+                "inline route must equal the allocating reference for {label}"
+            );
+            if reference.len() <= INLINE_PATH_CAP {
+                assert!(
+                    matches!(inline, SmallPath::Inline { .. }),
+                    "depth {} must stay inline for {label}",
+                    reference.len()
+                );
+            } else {
+                assert!(
+                    matches!(inline, SmallPath::Spilled(_)),
+                    "depth {} must spill for {label}",
+                    reference.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_path_inline_push_then_spill_roundtrip() {
+        let mut path = SmallPath::empty();
+        assert!(path.is_empty());
+        let mut expected: Vec<SElem> = Vec::new();
+        for i in 0..(INLINE_PATH_CAP + 3) {
+            let elem = SElem {
+                key: SKey::Paragraph(u32::try_from(i).unwrap_or(u32::MAX)),
+                tag: "P",
+            };
+            path.push(elem);
+            expected.push(elem);
+            assert_eq!(path.len(), expected.len());
+            assert_eq!(path_signature(path.as_slice()), path_signature(&expected));
+        }
+        assert!(matches!(path, SmallPath::Spilled(_)));
+
+        let inline = SmallPath::from_slice(&expected[..INLINE_PATH_CAP]);
+        assert!(matches!(inline, SmallPath::Inline { .. }));
+        assert_eq!(
+            path_signature(inline.as_slice()),
+            path_signature(&expected[..INLINE_PATH_CAP])
+        );
+        let spilled = SmallPath::from_slice(&expected);
+        assert!(matches!(spilled, SmallPath::Spilled(_)));
+        assert_eq!(path_signature(spilled.as_slice()), path_signature(&expected));
+    }
+
+    #[test]
+    fn table_cell_inline_paths_match_allocating_reference() {
+        fn table_line(quotes: &[usize], lists: &[(u32, u32)], header: bool) -> Line {
+            Line {
+                size: 12.0,
+                gap_after: 0.0,
+                rule: false,
+                rule_x: 72.0,
+                quote_bars: quotes.iter().map(|&q| (q, 18.0)).collect(),
+                bg: 0,
+                shade: false,
+                flow: FlowMark {
+                    group: 42,
+                    index: 0,
+                    count: 1,
+                    kind: if header {
+                        FlowKind::TableHeader
+                    } else {
+                        FlowKind::TableRow
+                    },
+                    list_start: false,
+                },
+                list_path: lists
+                    .iter()
+                    .map(|&(list, item)| ListMark { list, item })
+                    .collect(),
+                table_cols: vec![0, 1, 2],
+                segs: vec![
+                    Seg {
+                        x: 0.0,
+                        slot: F_BODY,
+                        text: String::from("a"),
+                        link: None,
+                        fill: Fill::Black,
+                        strike: false,
+                        task: None,
+                        width: 6.0,
+                        expansion_permille: 0,
+                    },
+                    Seg {
+                        x: 20.0,
+                        slot: F_BODY,
+                        text: String::from("b"),
+                        link: None,
+                        fill: Fill::Black,
+                        strike: false,
+                        task: None,
+                        width: 6.0,
+                        expansion_permille: 0,
+                    },
+                    Seg {
+                        x: 40.0,
+                        slot: F_BODY,
+                        text: String::from("c"),
+                        link: None,
+                        fill: Fill::Black,
+                        strike: false,
+                        task: None,
+                        width: 6.0,
+                        expansion_permille: 0,
+                    },
+                ],
+                page_break_before: false,
+                image: None,
+            }
+        }
+
+        // Top-level table cells (depth 3) and cells inside one and two nested
+        // lists (depths 6 and 9 — the latter exercises the spill route).
+        for (label, quotes, lists, header) in [
+            ("top-level", &[] as &[usize], &[] as &[(u32, u32)], true),
+            ("top-level-body", &[], &[], false),
+            ("in-list", &[], &[(1, 2)], false),
+            ("in-nested-list", &[], &[(1, 2), (5, 6)], false),
+        ] {
+            let line = table_line(quotes, lists, header);
+            let prefix = container_prefix(&line);
+            let cell_tag = if header { "TH" } else { "TD" };
+            for (i, col) in line.table_cols.iter().enumerate() {
+                assert!(!line.segs[i].text.is_empty());
+                let mut path = SmallPath::from_slice(prefix.as_slice());
+                path.push(SElem {
+                    key: SKey::Table(line.flow.group),
+                    tag: "Table",
+                });
+                path.push(SElem {
+                    key: SKey::TableRow(line.flow.group, 7),
+                    tag: "TR",
+                });
+                path.push(SElem {
+                    key: SKey::TableCell(line.flow.group, 7, *col),
+                    tag: cell_tag,
+                });
+                let reference =
+                    table_cell_path_reference(prefix.as_slice(), line.flow.group, 7, *col, header);
+                assert_eq!(
+                    path_signature(path.as_slice()),
+                    path_signature(&reference),
+                    "cell {i} must match the allocating reference for {label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf micro: run with --ignored --nocapture"]
+    fn struct_mark_prefix_perf_alloc_vs_inline() {
+        fn line_with_containers(quotes: &[usize], lists: &[(u32, u32)]) -> Line {
+            Line {
+                size: 12.0,
+                gap_after: 0.0,
+                rule: false,
+                rule_x: 72.0,
+                quote_bars: quotes.iter().map(|&q| (q, 18.0)).collect(),
+                bg: 0,
+                shade: false,
+                flow: FlowMark::default(),
+                list_path: lists
+                    .iter()
+                    .map(|&(list, item)| ListMark { list, item })
+                    .collect(),
+                table_cols: Vec::new(),
+                segs: Vec::new(),
+                page_break_before: false,
+                image: None,
+            }
+        }
+
+        // Corpus mirroring the measured mark mix (table/list-heavy): mostly
+        // depth-1 paragraphs, list lines at depths 4/7, quote+list at 6, plus
+        // one deep line that spills. One table line expands to per-cell paths.
+        let corpus: Vec<Line> = [
+            (&[] as &[usize], &[] as &[(u32, u32)]),
+            (&[], &[]),
+            (&[], &[]),
+            (&[], &[]),
+            (&[], &[(1, 2)]),
+            (&[], &[(1, 2)]),
+            (&[], &[(1, 2), (5, 6)]),
+            (&[3], &[(7, 8)]),
+            (&[], &[(1, 2), (5, 6), (9, 10)]),
+        ]
+        .iter()
+        .map(|&(quotes, lists)| line_with_containers(quotes, lists))
+        .collect();
+        let table = line_with_containers(&[], &[(1, 2)]);
+        let cell_cols: [u32; 3] = [0, 1, 2];
+
+        let mut total_sink = 0usize;
+
+        fn run_reference(corpus: &[Line], table: &Line, cols: &[u32]) -> usize {
+            let mut total = 0usize;
+            for line in corpus {
+                let mut path = container_prefix_reference(line);
+                path.push(SElem {
+                    key: SKey::Paragraph(line.flow.group),
+                    tag: "P",
+                });
+                total += path.len();
+            }
+            let prefix = container_prefix_reference(table);
+            for &col in cols {
+                let path = table_cell_path_reference(&prefix, table.flow.group, 3, col, false);
+                total += path.len();
+            }
+            total
+        }
+        fn run_inline(corpus: &[Line], table: &Line, cols: &[u32]) -> usize {
+            let mut total = 0usize;
+            for line in corpus {
+                let mut path = container_prefix(line);
+                path.push(SElem {
+                    key: SKey::Paragraph(line.flow.group),
+                    tag: "P",
+                });
+                total += path.len();
+            }
+            let prefix = container_prefix(table);
+            for &col in cols {
+                let mut path = SmallPath::from_slice(prefix.as_slice());
+                path.push(SElem {
+                    key: SKey::Table(table.flow.group),
+                    tag: "Table",
+                });
+                path.push(SElem {
+                    key: SKey::TableRow(table.flow.group, 3),
+                    tag: "TR",
+                });
+                path.push(SElem {
+                    key: SKey::TableCell(table.flow.group, 3, col),
+                    tag: "TD",
+                });
+                total += path.len();
+            }
+            total
+        }
+
+        let expected = run_reference(&corpus, &table, &cell_cols);
+        assert_eq!(
+            run_inline(&corpus, &table, &cell_cols),
+            expected,
+            "sink totals must agree before timing"
+        );
+
+        let rounds = 2000usize;
+        let mut reference_ns: Vec<u128> = Vec::new();
+        let mut inline_ns: Vec<u128> = Vec::new();
+        for round in 0..9 {
+            let (a, b) = if round % 2 == 0 {
+                let a = std::time::Instant::now();
+                for _ in 0..rounds {
+                    total_sink = run_reference(&corpus, &table, &cell_cols);
+                }
+                let a = a.elapsed().as_nanos();
+                let b_start = std::time::Instant::now();
+                for _ in 0..rounds {
+                    total_sink = run_inline(&corpus, &table, &cell_cols);
+                }
+                (a, b_start.elapsed().as_nanos())
+            } else {
+                let b_start = std::time::Instant::now();
+                for _ in 0..rounds {
+                    total_sink = run_inline(&corpus, &table, &cell_cols);
+                }
+                let b = b_start.elapsed().as_nanos();
+                let a = std::time::Instant::now();
+                for _ in 0..rounds {
+                    total_sink = run_reference(&corpus, &table, &cell_cols);
+                }
+                (a.elapsed().as_nanos(), b)
+            };
+            reference_ns.push(a);
+            inline_ns.push(b);
+        }
+        assert_eq!(total_sink, expected, "sink total must stay stable");
+        reference_ns.sort_unstable();
+        inline_ns.sort_unstable();
+        let mid = reference_ns.len() / 2;
+        let ref_med = reference_ns[mid];
+        let inl_med = inline_ns[mid];
+        println!(
+            "struct-mark prefix builders, {rounds} iters x 9 lines + 3 cells: reference {ref_med} ns vs inline {inl_med} ns ({:+.1}%)",
+            (inl_med as f64 - ref_med as f64) * 100.0 / ref_med as f64
+        );
     }
 
     #[test]

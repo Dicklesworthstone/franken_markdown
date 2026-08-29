@@ -101,9 +101,15 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
 
     // Check for broken internal anchors (e.g. [Link](#missing-target))
     for (anchor, link_text) in &collector.referenced_anchors {
-        if !collector.defined_anchors.contains(anchor)
-            && !collector.footnote_defs_set.contains(anchor)
-        {
+        let is_valid_footnote = collector.footnote_defs_set.contains(anchor)
+            || anchor
+                .strip_prefix("fn-")
+                .is_some_and(|id| collector.footnote_defs_set.contains(id))
+            || anchor
+                .strip_prefix("fnref-")
+                .is_some_and(|id| collector.footnote_defs_set.contains(id));
+
+        if !collector.defined_anchors.contains(anchor) && !is_valid_footnote {
             collector.findings.push(DocFinding {
                 severity: "warning",
                 code: "broken_internal_anchor",
@@ -250,7 +256,12 @@ impl StatsCollector {
                         });
                     }
 
-                    let base_slug = slug_from_text(&plain_text);
+                    let raw_slug = slug_from_text(&plain_text);
+                    let base_slug = if raw_slug.is_empty() {
+                        "section".to_string()
+                    } else {
+                        raw_slug
+                    };
                     let full_slug = if let Some(count) = self.slug_counts.get_mut(&base_slug) {
                         *count += 1;
                         let suffixed = format!("{}-{}", base_slug, *count - 1);
@@ -878,5 +889,46 @@ Paragraph with [Broken Link](#nonexistent-anchor) and [Footnote Reference][^1].
                 .iter()
                 .any(|f| f.code == "undefined_footnote")
         );
+    }
+
+    #[test]
+    fn compute_doc_stats_resolves_fn_prefixed_footnote_anchors() {
+        let md = r#"# Notes
+
+Here is a statement with a citation[^alpha].
+
+And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [Ref](#fnref-alpha).
+
+[^alpha]: This is the alpha footnote definition.
+"#;
+        let doc = parse_markdown(md);
+        let stats = compute_doc_stats(md, &doc);
+
+        assert_eq!(stats.structure.footnote_definitions, 1);
+        assert_eq!(stats.structure.footnote_references, 1);
+        assert_eq!(stats.structure.links_internal_anchors, 2);
+        // Neither #fn-alpha nor #fnref-alpha should trigger a broken_internal_anchor warning
+        assert!(
+            stats.findings.is_empty(),
+            "unexpected findings: {:?}",
+            stats.findings
+        );
+    }
+
+    #[test]
+    fn compute_doc_stats_handles_empty_headings_and_section_slugs() {
+        let md = r#"# 
+
+## 🔥
+
+### 🔥
+"#;
+        let doc = parse_markdown(md);
+        let stats = compute_doc_stats(md, &doc);
+
+        assert_eq!(stats.outline.len(), 3);
+        assert_eq!(stats.outline[0].slug, "section");
+        assert_eq!(stats.outline[1].slug, "section-1");
+        assert_eq!(stats.outline[2].slug, "section-2");
     }
 }

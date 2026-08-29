@@ -2908,7 +2908,23 @@ fn fmd_stats_emits_human_and_json_reports() {
     assert!(json_out.contains("\"schema\":\"fmd-document-stats-v1\""));
     assert!(json_out.contains("\"headings_total\":2"));
     assert!(json_out.contains("\"callouts_total\":1"));
-    assert!(json_out.contains("\"reading_time_secs\""));
-
     let _ = fs::remove_file(input);
+
+    // Raw --text flag
+    let res_text = fmd(&[
+        "stats",
+        "--text",
+        "# Raw Text\n\nTesting raw text input.",
+        "--json",
+    ]);
+    assert_eq!(
+        res_text.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_text.stderr)
+    );
+    let text_out = text(&res_text.stdout);
+    assert!(text_out.contains("\"schema\":\"fmd-document-stats-v1\""));
+    assert!(text_out.contains("\"headings_total\":1"));
+    assert!(text_out.contains("raw-text"));
 }

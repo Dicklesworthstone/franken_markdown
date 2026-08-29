@@ -110,7 +110,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
             "font": fontFamily,
-            "renderFontScale": renderFontScale
+            "fontScale": renderFontScale
         ]
         if !documentTitle.isEmpty {
             options["title"] = documentTitle
@@ -144,7 +144,6 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             "font": fontFamily,
             "pageNumbers": pageNumbers,
             "codeLineNumbers": codeLineNumbers,
-            "baseFontSize": 11.0 * renderFontScale,
             "fontScale": renderFontScale
         ]
         if !documentTitle.isEmpty {
@@ -181,7 +180,6 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             "darkMode": validatedDarkMode,
             "allowRawHtml": allowRawHtml,
             "font": fontFamily,
-            "renderFontScale": renderFontScale,
             "fontScale": renderFontScale
         ]
         if !documentTitle.isEmpty {

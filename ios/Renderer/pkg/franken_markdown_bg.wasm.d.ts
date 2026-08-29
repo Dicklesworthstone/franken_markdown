@@ -11,6 +11,7 @@ export const fmdrenderresult_mimeType: (a: number, b: number) => void;
 export const fmdrenderresult_sourceLength: (a: number) => number;
 export const renderHtml: (a: number, b: number, c: number) => void;
 export const renderHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
+export const renderHtmlConfiguredAdvanced: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number) => void;
 export const renderHtmlConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number) => void;
 export const renderHtmlConfiguredWithFonts: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number) => void;
 export const renderPdf: (a: number, b: number, c: number) => void;

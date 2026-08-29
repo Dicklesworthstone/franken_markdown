@@ -111,3 +111,4 @@ tests/artifacts/visual/
 /fuzz/artifacts/
 /fuzz/coverage/
 tests/artifacts/fuzz/
+ios/build/

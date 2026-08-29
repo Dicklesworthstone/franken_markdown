@@ -215,6 +215,81 @@ export function renderHtmlConfigured(markdown, font, dark_mode, title, custom_cs
 }
 
 /**
+ * Render Markdown to self-contained HTML with the complete browser option
+ * set, including the core-owned uniform typographic scale.
+ *
+ * This additive entry point keeps the original narrow ABI stable while giving
+ * the ergonomic JavaScript wrapper one canonical path for fonts, images, and
+ * type scale. The scale is interpreted by [`WasmRenderOptions`] and therefore
+ * changes the Rust-generated theme rather than patching the returned HTML.
+ *
+ * # Errors
+ * Returns a JavaScript error when parallel image arrays are inconsistent, a
+ * font asset is invalid, the scale is not positive and finite, or rendering
+ * fails.
+ * @param {string} markdown
+ * @param {string | null | undefined} font
+ * @param {string | null | undefined} dark_mode
+ * @param {string | null | undefined} title
+ * @param {string | null | undefined} custom_css
+ * @param {boolean} allow_raw_html
+ * @param {number | null | undefined} font_scale
+ * @param {Uint8Array} body_regular
+ * @param {Uint8Array} body_bold
+ * @param {Uint8Array} body_italic
+ * @param {Uint8Array} body_bold_italic
+ * @param {Uint8Array} mono_regular
+ * @param {Uint32Array} font_weights
+ * @param {string[]} image_destinations
+ * @param {Uint8Array} image_bytes_flat
+ * @param {Uint32Array} image_bytes_lengths
+ * @returns {FmdRenderResult}
+ */
+export function renderHtmlConfiguredAdvanced(markdown, font, dark_mode, title, custom_css, allow_raw_html, font_scale, body_regular, body_bold, body_italic, body_bold_italic, mono_regular, font_weights, image_destinations, image_bytes_flat, image_bytes_lengths) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(markdown, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(font) ? 0 : passStringToWasm0(font, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(dark_mode) ? 0 : passStringToWasm0(dark_mode, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(title) ? 0 : passStringToWasm0(title, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(custom_css) ? 0 : passStringToWasm0(custom_css, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArray8ToWasm0(body_regular, wasm.__wbindgen_export);
+        const len5 = WASM_VECTOR_LEN;
+        const ptr6 = passArray8ToWasm0(body_bold, wasm.__wbindgen_export);
+        const len6 = WASM_VECTOR_LEN;
+        const ptr7 = passArray8ToWasm0(body_italic, wasm.__wbindgen_export);
+        const len7 = WASM_VECTOR_LEN;
+        const ptr8 = passArray8ToWasm0(body_bold_italic, wasm.__wbindgen_export);
+        const len8 = WASM_VECTOR_LEN;
+        const ptr9 = passArray8ToWasm0(mono_regular, wasm.__wbindgen_export);
+        const len9 = WASM_VECTOR_LEN;
+        const ptr10 = passArray32ToWasm0(font_weights, wasm.__wbindgen_export);
+        const len10 = WASM_VECTOR_LEN;
+        const ptr11 = passArrayJsValueToWasm0(image_destinations, wasm.__wbindgen_export);
+        const len11 = WASM_VECTOR_LEN;
+        const ptr12 = passArray8ToWasm0(image_bytes_flat, wasm.__wbindgen_export);
+        const len12 = WASM_VECTOR_LEN;
+        const ptr13 = passArray32ToWasm0(image_bytes_lengths, wasm.__wbindgen_export);
+        const len13 = WASM_VECTOR_LEN;
+        wasm.renderHtmlConfiguredAdvanced(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, allow_raw_html, !isLikeNone(font_scale), isLikeNone(font_scale) ? 0 : font_scale, ptr5, len5, ptr6, len6, ptr7, len7, ptr8, len8, ptr9, len9, ptr10, len10, ptr11, len11, ptr12, len12, ptr13, len13);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return FmdRenderResult.__wrap(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Render Markdown to self-contained HTML with fonts and any number of host
  * image assets (data-URI inlined). Parallel image arrays match the PDF multi
  * ABI so the JS wrapper can share flattening.

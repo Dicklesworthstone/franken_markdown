@@ -19,15 +19,6 @@
     const preview = document.querySelector('#preview');
     let latestRequest = 0;
 
-    function withRenderedFontScale(html, rawScale) {
-      const parsed = Number(rawScale);
-      const scale = Number.isFinite(parsed) ? Math.min(2.0, Math.max(0.5, parsed)) : 1;
-      const basePx = Math.round(16 * scale);
-      const measurePx = Math.round(760 * scale);
-      const override = `<style id="fmd-host-text-size">:root{--fmd-base:${basePx}px!important;--fmd-measure:${measurePx}px!important}</style>`;
-      return String(html).replace('</head>', `${override}</head>`);
-    }
-
     try {
       // wasm-bindgen's default initializer attempts instantiateStreaming on
       // the custom-scheme response. WebKit serves the bytes correctly, but a
@@ -44,7 +35,7 @@
         try {
           const output = await renderer.renderHtml(String(command.markdown), command.options || {});
           if (requestID !== latestRequest) return false;
-          preview.srcdoc = withRenderedFontScale(output.text(), command.options?.renderFontScale);
+          preview.srcdoc = output.text();
           bridge.postMessage({
             type: 'result', requestID,
             elapsedMS: performance.now() - started,
@@ -87,7 +78,7 @@
         const requestID = Number(command.requestID);
         try {
           const output = await renderer.renderHtml(String(command.markdown), command.options || {});
-          const htmlText = withRenderedFontScale(output.text(), command.options?.renderFontScale);
+          const htmlText = output.text();
           bridge.postMessage({
             type: 'exportHtmlResult',
             requestID,

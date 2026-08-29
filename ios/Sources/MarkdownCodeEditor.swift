@@ -10,8 +10,9 @@ struct MarkdownCodeEditor: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> MarkdownTextView {
-        let view = MarkdownTextView()
+    func makeUIView(context: Context) -> MarkdownEditorContainer {
+        let container = MarkdownEditorContainer()
+        let view = container.textView
         view.delegate = context.coordinator
         view.backgroundColor = .clear
         view.keyboardDismissMode = .interactive
@@ -26,10 +27,11 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         view.accessibilityLabel = "Markdown source editor"
         view.accessibilityHint = "Edit Markdown with syntax highlighting. The Rust renderer supplies authoritative diagnostics."
         context.coordinator.applyHighlight(to: view, replacingText: text)
-        return view
+        return container
     }
 
-    func updateUIView(_ view: MarkdownTextView, context: Context) {
+    func updateUIView(_ container: MarkdownEditorContainer, context: Context) {
+        let view = container.textView
         context.coordinator.parent = self
         if view.text != text {
             context.coordinator.applyHighlight(to: view, replacingText: text)
@@ -59,7 +61,10 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) { textView.setNeedsDisplay() }
-        func scrollViewDidScroll(_ scrollView: UIScrollView) { scrollView.setNeedsDisplay() }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            scrollView.setNeedsDisplay()
+            (scrollView as? MarkdownTextView)?.gutterView?.setNeedsDisplay()
+        }
 
         func applyHighlight(to view: MarkdownTextView, replacingText replacement: String?) {
             isApplyingHighlight = true
@@ -92,6 +97,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
             refreshTypingAttributes(in: view)
             view.setContentOffset(contentOffset, animated: false)
             view.setNeedsDisplay()
+            view.gutterView?.setNeedsDisplay()
             isApplyingHighlight = false
         }
 
@@ -336,69 +342,169 @@ private enum MarkdownLexicalHighlighter {
     private static let strikeRegex = regex(#"(~~)(?!\s)([\s\S]*?\S)(~~)"#)
 }
 
+final class MarkdownEditorContainer: UIView {
+    static let gutterWidth: CGFloat = 44
+
+    let textView = MarkdownTextView()
+    private let gutterView = MarkdownLineNumberView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        gutterView.textView = textView
+        textView.gutterView = gutterView
+        addSubview(gutterView)
+        addSubview(textView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        gutterView.frame = CGRect(x: 0, y: 0, width: Self.gutterWidth, height: bounds.height)
+        textView.frame = CGRect(
+            x: Self.gutterWidth,
+            y: 0,
+            width: max(0, bounds.width - Self.gutterWidth),
+            height: bounds.height
+        )
+        gutterView.setNeedsDisplay()
+    }
+}
+
 final class MarkdownTextView: UITextView {
-    private let gutterWidth: CGFloat = 42
+    weak var gutterView: UIView?
+
+    private var editorInsets: UIEdgeInsets {
+        UIEdgeInsets(top: 14, left: 12, bottom: 18, right: 14)
+    }
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
-        textContainerInset = UIEdgeInsets(top: 14, left: gutterWidth + 12, bottom: 18, right: 14)
+        textContainerInset = editorInsets
+        self.textContainer.widthTracksTextView = true
+        contentInsetAdjustmentBehavior = .never
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        // Catalyst can restore UITextView defaults while swapping layout modes
+        // during a live window resize. Keep the text metrics deterministic.
+        if textContainerInset != editorInsets {
+            textContainerInset = editorInsets
+        }
+        textContainer.widthTracksTextView = true
+        layoutManager.ensureLayout(for: textContainer)
+        gutterView?.setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        drawCurrentLine()
+        super.draw(rect)
+    }
+
+    private func drawCurrentLine() {
+        let length = (text as NSString).length
+        guard length > 0 else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(selectedRange.location, length - 1))
+        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let y = fragment.minY + textContainerInset.top
+        let row = CGRect(x: bounds.minX, y: y, width: bounds.width, height: fragment.height)
+        UIColor(Lab.emerald).withAlphaComponent(0.055).setFill()
+        UIBezierPath(rect: row).fill()
+    }
+}
+
+private final class MarkdownLineNumberView: UIView {
+    weak var textView: MarkdownTextView?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+        accessibilityElementsHidden = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ rect: CGRect) {
-        drawCurrentLine()
-        super.draw(rect)
-        drawGutter()
-    }
-
-    private func drawCurrentLine() {
-        let length = (text as NSString).length
-        guard length > 0 else { return }
-        let glyph = layoutManager.glyphIndexForCharacter(at: min(selectedRange.location, length - 1))
-        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let y = fragment.minY + textContainerInset.top - contentOffset.y
-        let row = CGRect(x: gutterWidth, y: y, width: bounds.width - gutterWidth, height: fragment.height)
-        UIColor(Lab.emerald).withAlphaComponent(0.055).setFill()
-        UIBezierPath(rect: row).fill()
-    }
-
-    private func drawGutter() {
+        guard let textView else { return }
         let context = UIGraphicsGetCurrentContext()
         context?.saveGState()
         UIColor(Lab.emerald).withAlphaComponent(0.16).setStroke()
         let divider = UIBezierPath()
-        divider.move(to: CGPoint(x: gutterWidth, y: 0))
-        divider.addLine(to: CGPoint(x: gutterWidth, y: bounds.height))
+        divider.move(to: CGPoint(x: bounds.maxX - 0.5, y: bounds.minY))
+        divider.addLine(to: CGPoint(x: bounds.maxX - 0.5, y: bounds.maxY))
         divider.lineWidth = 0.7
         divider.stroke()
 
-        let nsText = text as NSString
+        let nsText = textView.text as NSString
+        let numberFont = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+            .font: numberFont,
             .foregroundColor: UIColor(Lab.secondary).withAlphaComponent(0.58)
         ]
         if nsText.length == 0 {
-            drawLineNumber(1, y: textContainerInset.top - contentOffset.y + 2, attributes: attributes)
+            drawLineNumber(1, y: textView.textContainerInset.top, attributes: attributes)
             context?.restoreGState()
             return
         }
 
-        var line = 1
-        var start = 0
-        while start < nsText.length {
-            let glyph = layoutManager.glyphIndexForCharacter(at: start)
-            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            let y = fragment.minY + textContainerInset.top - contentOffset.y + 2
-            if y > -20, y < bounds.height + 20 {
-                drawLineNumber(line, y: y, attributes: attributes)
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let lineStarts = logicalLineStarts(in: nsText)
+        let glyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        textView.layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
+            [weak self] _, usedRect, _, fragmentGlyphRange, _ in
+            guard let self, let textView = self.textView else { return }
+            let characterRange = textView.layoutManager.characterRange(
+                forGlyphRange: fragmentGlyphRange,
+                actualGlyphRange: nil
+            )
+            guard let line = lineStarts[characterRange.location] else {
+                // A soft-wrapped continuation deliberately has no number.
+                return
             }
-            let lineRange = nsText.lineRange(for: NSRange(location: start, length: 0))
-            start = NSMaxRange(lineRange)
-            line += 1
+            let y = usedRect.minY - textView.contentOffset.y
+                + max(0, (usedRect.height - numberFont.lineHeight) * 0.5)
+            if y > -20, y < self.bounds.height + 20 {
+                self.drawLineNumber(line, y: y, attributes: attributes)
+            }
+        }
+
+        if nsText.character(at: nsText.length - 1) == 10,
+           let trailingLine = lineStarts[nsText.length] {
+            let fragment = textView.layoutManager.extraLineFragmentRect
+            let y = fragment.minY - textView.contentOffset.y
+            if fragment != .zero, y > -20, y < bounds.height + 20 {
+                drawLineNumber(trailingLine, y: y, attributes: attributes)
+            }
         }
         context?.restoreGState()
+    }
+
+    private func logicalLineStarts(in text: NSString) -> [Int: Int] {
+        var result = [0: 1]
+        var line = 1
+        var cursor = 0
+        while cursor < text.length {
+            let range = text.lineRange(for: NSRange(location: cursor, length: 0))
+            let next = NSMaxRange(range)
+            guard next > cursor else { break }
+            cursor = next
+            if cursor <= text.length {
+                line += 1
+                result[cursor] = line
+            }
+        }
+        return result
     }
 
     private func drawLineNumber(
@@ -408,6 +514,6 @@ final class MarkdownTextView: UITextView {
     ) {
         let label = "\(line)" as NSString
         let size = label.size(withAttributes: attributes)
-        label.draw(at: CGPoint(x: gutterWidth - size.width - 8, y: y), withAttributes: attributes)
+        label.draw(at: CGPoint(x: bounds.maxX - size.width - 8, y: y), withAttributes: attributes)
     }
 }

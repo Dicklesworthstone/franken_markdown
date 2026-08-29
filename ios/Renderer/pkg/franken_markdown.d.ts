@@ -56,6 +56,22 @@ export function renderHtml(markdown: string): FmdRenderResult;
 export function renderHtmlConfigured(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean): FmdRenderResult;
 
 /**
+ * Render Markdown to self-contained HTML with the complete browser option
+ * set, including the core-owned uniform typographic scale.
+ *
+ * This additive entry point keeps the original narrow ABI stable while giving
+ * the ergonomic JavaScript wrapper one canonical path for fonts, images, and
+ * type scale. The scale is interpreted by [`WasmRenderOptions`] and therefore
+ * changes the Rust-generated theme rather than patching the returned HTML.
+ *
+ * # Errors
+ * Returns a JavaScript error when parallel image arrays are inconsistent, a
+ * font asset is invalid, the scale is not positive and finite, or rendering
+ * fails.
+ */
+export function renderHtmlConfiguredAdvanced(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean, font_scale: number | null | undefined, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array, font_weights: Uint32Array, image_destinations: string[], image_bytes_flat: Uint8Array, image_bytes_lengths: Uint32Array): FmdRenderResult;
+
+/**
  * Render Markdown to self-contained HTML with fonts and any number of host
  * image assets (data-URI inlined). Parallel image arrays match the PDF multi
  * ABI so the JS wrapper can share flattening.
@@ -148,6 +164,7 @@ export interface InitOutput {
     readonly fmdrenderresult_sourceLength: (a: number) => number;
     readonly renderHtml: (a: number, b: number, c: number) => void;
     readonly renderHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
+    readonly renderHtmlConfiguredAdvanced: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number) => void;
     readonly renderHtmlConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number) => void;
     readonly renderHtmlConfiguredWithFonts: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number) => void;
     readonly renderPdf: (a: number, b: number, c: number) => void;

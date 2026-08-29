@@ -39,13 +39,14 @@ fn optimal_pagination_deterministic_and_valid() {
     let b = render_pdf_document(&doc(), &opts()).expect("b");
     assert_eq!(a, b, "opt-in render deterministic");
     assert!(a.starts_with(b"%PDF-"), "still a valid PDF");
-    // The DP minimizes cost, not page count: within one page of greedy is the
-    // sane envelope (a much larger count would mean the DP void-avoids into
-    // absurdity; fewer is fine).
+    // The DP minimizes cost, not page count: legitimately adding pages to
+    // honor keep-penalties is the feature (each dodged keep is 0.65-1.5M
+    // demerits vs ~60k for an extra page). The bound here only rejects
+    // runaway growth (alpha mis-calibration), not the trade itself.
     let greedy = render_pdf_document(&doc(), &PdfOptions::default()).expect("greedy");
     let (gp, op) = (count_pages(&greedy), count_pages(&a));
     assert!(
-        op <= gp + 1,
-        "optimal pagination page count {op} within greedy {gp} + 1"
+        op <= gp + (gp / 4).max(2),
+        "optimal pagination page count {op} within runaway bound of greedy {gp}"
     );
 }

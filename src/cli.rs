@@ -2160,38 +2160,13 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
 
     let html = HtmlOptions {
         theme: theme.clone(),
-        title: None,
         custom_css,
-        allow_raw_html: false,
-        font_assets: FontAssets::default(),
-        image_assets: Vec::new(),
-        lang: None,
-        profile: None,
-        toc: false,
-        toc_depth: None,
-        html_font_format: HtmlFontFormat::default(),
+        ..Default::default()
     };
     let pdf = PdfOptions {
         theme,
-        title: None,
-        author: None,
         metadata_epoch_seconds: pdf_epoch,
-        allow_raw_html: false,
-        code_line_numbers: false,
-        page_numbers: false,
-        base_font_size: None,
-        heading_scale: None,
-        table_font_size: None,
-        image_assets: Vec::new(),
-        font_assets: FontAssets::default(),
-        lang: None,
-        profile: None,
-        toc: false,
-        toc_depth: None,
-        fit_to_pages: None,
-        microtype: Default::default(),
-        gradual_demerits: false,
-        river_penalty: false,
+        ..Default::default()
     };
 
     let plan = BatchPlan {
@@ -4109,6 +4084,7 @@ fn normalized_args() -> Vec<String> {
         // Recognized even without the `batch` feature so it is never rewritten to
         // `render batch ...`; clap then reports a clean "unrecognized subcommand".
         "batch",
+        "mcp",
         "help",
     ];
     let global_no_value = ["--json", "--no-color", "--no-config", "--robot-triage"];

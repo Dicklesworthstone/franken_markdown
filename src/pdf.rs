@@ -26906,6 +26906,11 @@ struct PageBreakPlan {
     ends: Vec<usize>,
 }
 
+/// Plass per-page count demerit for the optimal-pagination DP: 5x the worst
+/// per-page void badness (10_000), so adding a page must save either one
+/// 650k+ keep-penalty or substantial distributed void.
+const PAGE_COUNT_DEMERITS: f32 = 50_000.0;
+
 impl PageBreakPlan {
     fn end_for(&self, start: usize) -> usize {
         // First boundary strictly after `start`; the last entry covers the tail.
@@ -26949,11 +26954,19 @@ fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
             j += 1;
             // Edge i -> j: page is lines[i..j). Final page is unpenalized,
             // mirroring the greedy early-return for the last segment.
+            // Non-final pages pay Plass's per-page count demerit: without
+            // it the DP over-paginates, because dodging one 1.5M
+            // keep-penalty is "worth" ~150 pages of maximum void badness.
+            // Charging 5x the worst void per page keeps page-count growth
+            // honest while still allowing an extra page to save a stranded
+            // heading or kept block.
             let cost = if j == n {
                 0.0
             } else {
                 let remaining = (capacity - used).max(0.0);
-                (remaining / capacity.max(1.0)).powi(2) * 10_000.0 + penalties[j]
+                PAGE_COUNT_DEMERITS
+                    + (remaining / capacity.max(1.0)).powi(2) * 10_000.0
+                    + penalties[j]
             };
             let total = best[i] + cost;
             if total < best[j] {
@@ -38833,8 +38846,9 @@ mod plass_pagination_tests {
                     used += line_leading(l) + l.gap_after;
                 }
                 let remaining = (capacity - used).max(0.0);
-                total +=
-                    (remaining / capacity.max(1.0)).powi(2) * 10_000.0 + break_penalty(lines, end);
+                total += PAGE_COUNT_DEMERITS
+                    + (remaining / capacity.max(1.0)).powi(2) * 10_000.0
+                    + break_penalty(lines, end);
             }
             start = end;
         }

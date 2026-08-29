@@ -383,6 +383,17 @@ fn parse_or_insert_node(
             },
         );
         node_order.push(id.clone());
+    } else if let Some(node) = nodes.get_mut(&id) {
+        if node.label == id && label != id {
+            node.width = (label.len() as f32 * 8.5 + 32.0).max(80.0);
+            node.height = if shape == NodeShape::Diamond {
+                54.0
+            } else {
+                38.0
+            };
+            node.label = label;
+            node.shape = shape;
+        }
     }
     (id, is_new)
 }

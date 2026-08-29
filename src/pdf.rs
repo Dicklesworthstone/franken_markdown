@@ -26557,9 +26557,17 @@ fn choose_page_break_with_void_control(
     }
 
     // Shrunk refit: same walk as the baseline, but inter-block gaps flex.
+    // Forced boundaries (chapter breaks) cap the refit — pulling content up
+    // past one would merge chapters onto a single page.
+    let forced_cap = (start + 1..lines.len())
+        .find(|&i| lines[i].page_break_before)
+        .unwrap_or(lines.len());
     let mut used_s = 0.0f32;
     let mut last_fit_s = start;
     for (idx, line) in lines.iter().enumerate().skip(start) {
+        if idx >= forced_cap {
+            break;
+        }
         let gap = if is_block_boundary(lines, idx) {
             flexed_gap(line.gap_after)
         } else {
@@ -26579,7 +26587,7 @@ fn choose_page_break_with_void_control(
     let mut best = baseline_end;
     let mut best_score = f32::INFINITY;
     let mut candidate_used = 0.0f32;
-    for candidate in (start + 1)..=last_fit_s {
+    for candidate in (start + 1)..=last_fit_s.min(forced_cap) {
         let line = &lines[candidate - 1];
         let gap = if is_block_boundary(lines, candidate - 1) {
             flexed_gap(line.gap_after)

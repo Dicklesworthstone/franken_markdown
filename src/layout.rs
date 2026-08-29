@@ -2186,6 +2186,7 @@ impl MetricPrefixes {
         self.stretch.push(0);
         self.shrink.push(0);
         self.box_elasticity.push(0);
+        self.prev_box_right.push(0);
 
         let mut running_width = 0i64;
         let mut running_stretch = 0i64;

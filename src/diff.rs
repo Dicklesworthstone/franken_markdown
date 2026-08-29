@@ -207,14 +207,17 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
         return old.iter().cloned().map(RawDiffItem::Deleted).collect();
     }
 
-    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    let stride = n + 1;
+    let mut dp = vec![0u32; (m + 1) * stride];
 
     for i in 0..m {
         for j in 0..n {
             if old[i] == new[j] {
-                dp[i + 1][j + 1] = dp[i][j] + 1;
+                dp[(i + 1) * stride + (j + 1)] = dp[i * stride + j] + 1;
             } else {
-                dp[i + 1][j + 1] = dp[i + 1][j].max(dp[i][j + 1]);
+                let up = dp[i * stride + (j + 1)];
+                let left = dp[(i + 1) * stride + j];
+                dp[(i + 1) * stride + (j + 1)] = up.max(left);
             }
         }
     }
@@ -228,10 +231,10 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
             diff.push(RawDiffItem::Unchanged(old[i - 1].clone()));
             i -= 1;
             j -= 1;
-        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+        } else if j > 0 && (i == 0 || dp[i * stride + (j - 1)] >= dp[(i - 1) * stride + j]) {
             diff.push(RawDiffItem::Inserted(new[j - 1].clone()));
             j -= 1;
-        } else if i > 0 && (j == 0 || dp[i][j - 1] < dp[i - 1][j]) {
+        } else if i > 0 && (j == 0 || dp[i * stride + (j - 1)] < dp[(i - 1) * stride + j]) {
             diff.push(RawDiffItem::Deleted(old[i - 1].clone()));
             i -= 1;
         }
@@ -277,13 +280,39 @@ fn count_block_words(block: &Block, count: &mut usize) {
         Block::CodeBlock { code, .. } => {
             *count += code.split_whitespace().count();
         }
+        Block::MathBlock(math) => {
+            *count += math.split_whitespace().count();
+        }
+        Block::DefinitionList(items) => {
+            for item in items {
+                for term in &item.terms {
+                    for inl in term {
+                        count_inline_words(inl, count);
+                    }
+                }
+                for def in &item.definitions {
+                    for inl in def {
+                        count_inline_words(inl, count);
+                    }
+                }
+            }
+        }
+        Block::FootnoteDefinition { blocks, .. } => {
+            for b in blocks {
+                count_block_words(b, count);
+            }
+        }
         _ => {}
     }
 }
 
 fn count_inline_words(inline: &Inline, count: &mut usize) {
     match inline {
-        Inline::Text(t) | Inline::Code(t) | Inline::Image { alt: t, .. } => {
+        Inline::Text(t)
+        | Inline::Code(t)
+        | Inline::Image { alt: t, .. }
+        | Inline::Math(t)
+        | Inline::DisplayMath(t) => {
             *count += t.split_whitespace().count();
         }
         Inline::Emphasis(inner)

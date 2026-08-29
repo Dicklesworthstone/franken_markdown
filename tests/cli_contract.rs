@@ -391,7 +391,7 @@ fn pdf_out_dash_is_rejected_before_creating_literal_dash_file() {
     assert!(out.stdout.is_empty());
     let stderr = text(&out.stderr);
     assert!(stderr.contains("\"code\":\"usage_error\""));
-    assert!(stderr.contains("`--out -` writes HTML to stdout only"));
+    assert!(stderr.contains("`--out -` writes HTML/SVG to stdout only"));
     assert!(
         !cwd.join("-").exists(),
         "PDF refusal must not create a literal dash file"

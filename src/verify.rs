@@ -194,12 +194,14 @@ fn audit_accessibility_blocks(
                     }
                 }
             }
+            crate::ast::Block::FootnoteDefinition { blocks, .. } => {
+                audit_accessibility_blocks(blocks, out, &mut None);
+            }
             crate::ast::Block::CodeBlock { .. }
             | crate::ast::Block::ThematicBreak
             | crate::ast::Block::HtmlBlock(_)
             | crate::ast::Block::MathBlock(_)
-            | crate::ast::Block::PageBreak
-            | crate::ast::Block::FootnoteDefinition { .. } => {}
+            | crate::ast::Block::PageBreak => {}
         }
     }
 }
@@ -253,17 +255,17 @@ fn plain_inline_text(inlines: &[crate::ast::Inline]) -> String {
     let mut out = String::new();
     for inl in inlines {
         match inl {
-            crate::ast::Inline::Text(t) | crate::ast::Inline::Code(t) => out.push_str(t),
+            crate::ast::Inline::Text(t)
+            | crate::ast::Inline::Code(t)
+            | crate::ast::Inline::Math(t)
+            | crate::ast::Inline::DisplayMath(t) => out.push_str(t),
             crate::ast::Inline::Emphasis(c)
             | crate::ast::Inline::Strong(c)
             | crate::ast::Inline::Strikethrough(c) => out.push_str(&plain_inline_text(c)),
             crate::ast::Inline::Link { content, .. } => out.push_str(&plain_inline_text(content)),
             crate::ast::Inline::Image { alt, .. } => out.push_str(alt),
             crate::ast::Inline::SoftBreak | crate::ast::Inline::HardBreak => out.push(' '),
-            crate::ast::Inline::Html(_)
-            | crate::ast::Inline::FootnoteRef { .. }
-            | crate::ast::Inline::Math(_)
-            | crate::ast::Inline::DisplayMath(_) => {}
+            crate::ast::Inline::Html(_) | crate::ast::Inline::FootnoteRef { .. } => {}
         }
     }
     out

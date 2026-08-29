@@ -1799,14 +1799,35 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
             .args(&args)
             .output()
             .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        let code: u16 = text
-            .trim()
-            .chars()
-            .take(3)
-            .collect::<String>()
-            .parse()
-            .ok()?;
+        // curl -w %{http_code} writes the code to stdout; wget
+        // --server-response writes headers to stderr. Read the right stream.
+        let text = if program == "curl" {
+            String::from_utf8_lossy(&out.stdout)
+        } else {
+            String::from_utf8_lossy(&out.stderr)
+        };
+        let code: u16 = if program == "curl" {
+            // curl's -w output is exactly "NNN\n".
+            text.trim()
+                .chars()
+                .take(3)
+                .collect::<String>()
+                .parse()
+                .ok()?
+        } else {
+            // wget's --server-response stderr contains lines like
+            // "  HTTP/1.1 200 OK"; find the last one and take the code.
+            text.lines().rev().find_map(|l| {
+                let trimmed = l.trim();
+                let rest = trimmed.strip_prefix("HTTP/")?;
+                let after_version = rest.split_once(' ')?.1;
+                let code_str: String = after_version
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                code_str.parse().ok()
+            })?
+        };
         Some((code, (200..300).contains(&code)))
     };
     for program in ["curl", "wget"] {

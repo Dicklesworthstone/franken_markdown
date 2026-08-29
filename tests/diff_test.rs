@@ -251,3 +251,17 @@ fn reports_are_byte_identical_across_runs() {
     assert_eq!(report_json(&first), report_json(&second));
     assert_eq!(report_text(&first), report_text(&second));
 }
+
+#[test]
+fn compute_diff_counts_math_and_footnote_words() {
+    use franken_markdown::diff::compute_diff;
+
+    let old_doc = parse_markdown("# Old\n\n$$\nx^2 + y^2 = z^2\n$$\n\n[^1]: note alpha beta\n");
+    let new_doc = parse_markdown(
+        "# New\n\n$$\na^2 + b^2 = c^2 + d^2\n$$\n\n[^1]: note gamma delta epsilon\n",
+    );
+
+    let diff = compute_diff(&old_doc, &new_doc, "a.md", "b.md");
+    assert!(diff.stats.words_inserted > 0);
+    assert!(diff.stats.words_deleted > 0);
+}

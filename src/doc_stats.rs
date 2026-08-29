@@ -31,6 +31,10 @@ pub struct DocumentStats {
     pub flesch_reading_ease: f32,
     /// Flesch-Kincaid Grade Level (e.g. 8.0 = 8th grade reading level).
     pub flesch_kincaid_grade: f32,
+    /// Coleman-Liau grade estimate derived from characters and sentences per 100 words.
+    pub coleman_liau_index: f32,
+    /// Automated Readability Index grade estimate.
+    pub automated_readability_index: f32,
     /// Readability tier label ("Very Easy", "Standard", "Difficult", etc.).
     pub reading_ease_label: &'static str,
     /// Structural element breakdown.
@@ -158,14 +162,26 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     let reading_time_secs = ((collector.words as f32) / (220.0 / 60.0)).round() as u32;
     let speaking_time_secs = ((collector.words as f32) / (130.0 / 60.0)).round() as u32;
 
-    let (flesch_reading_ease, flesch_kincaid_grade, reading_ease_label) = if collector.words == 0 {
-        (100.0, 0.0, "N/A")
+    let (
+        flesch_reading_ease,
+        flesch_kincaid_grade,
+        coleman_liau_index,
+        automated_readability_index,
+        reading_ease_label,
+    ) = if collector.words == 0 {
+        (100.0, 0.0, 0.0, 0.0, "N/A")
     } else {
         let w_per_s = (collector.words as f32) / (effective_sentences as f32);
         let syl_per_w = (effective_syllables as f32) / (collector.words as f32);
+        let chars_per_word = (collector.characters as f32) / (collector.words as f32);
+        let chars_per_hundred_words = chars_per_word * 100.0;
+        let sentences_per_hundred_words =
+            (effective_sentences as f32) / (collector.words as f32) * 100.0;
 
         let fre = 206.835 - (1.015 * w_per_s) - (84.6 * syl_per_w);
         let fkg = (0.39 * w_per_s) + (11.8 * syl_per_w) - 15.59;
+        let cli = 0.0588 * chars_per_hundred_words - 0.296 * sentences_per_hundred_words - 15.8;
+        let ari = 4.71 * chars_per_word + 0.5 * w_per_s - 21.43;
 
         let label = if fre >= 90.0 {
             "Very Easy (5th grade)"
@@ -183,7 +199,13 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
             "Very Confusing (Graduate)"
         };
 
-        (fre.clamp(0.0, 100.0), fkg.max(0.0), label)
+        (
+            fre.clamp(0.0, 100.0),
+            fkg.max(0.0),
+            cli.max(0.0),
+            ari.max(0.0),
+            label,
+        )
     };
 
     DocumentStats {
@@ -197,6 +219,8 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         speaking_time_secs,
         flesch_reading_ease,
         flesch_kincaid_grade,
+        coleman_liau_index,
+        automated_readability_index,
         reading_ease_label,
         structure: collector.structure,
         outline: collector.outline,
@@ -627,6 +651,14 @@ impl DocumentStats {
             self.flesch_kincaid_grade
         ));
         out.push_str(&format!(
+            "\"coleman_liau_index\":{:.2},",
+            self.coleman_liau_index
+        ));
+        out.push_str(&format!(
+            "\"automated_readability_index\":{:.2},",
+            self.automated_readability_index
+        ));
+        out.push_str(&format!(
             "\"reading_ease_label\":\"{}\",",
             self.reading_ease_label
         ));
@@ -765,8 +797,12 @@ impl DocumentStats {
             read_mins, read_rem_secs, speak_mins, speak_rem_secs
         ));
         s.push_str(&format!(
-            "Readability: Flesch Reading Ease: {:.1} ({})\n             Flesch-Kincaid Grade: Grade {:.1}\n\n",
-            self.flesch_reading_ease, self.reading_ease_label, self.flesch_kincaid_grade
+            "Readability: Flesch Reading Ease: {:.1} ({})\n             Flesch-Kincaid Grade: {:.1}\n             Coleman-Liau Index: {:.1}\n             Automated Readability Index: {:.1}\n\n",
+            self.flesch_reading_ease,
+            self.reading_ease_label,
+            self.flesch_kincaid_grade,
+            self.coleman_liau_index,
+            self.automated_readability_index
         ));
 
         s.push_str("--- Structure ---\n");

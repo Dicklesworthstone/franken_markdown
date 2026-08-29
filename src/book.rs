@@ -309,17 +309,37 @@ pub fn inject_book_nav(rendered: &str, book: &Book, current_page: &str) -> Strin
         ));
     }
     nav.push_str("</ul>\n</nav>\n");
-    let nav_css = "<style>\n.fmd-book-nav{border:1px solid var(--fmd-border, #d1d9e0);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.25rem;font-size:0.9em}\n.fmd-book-nav ul{margin:0;padding-left:1.1rem}\n.fmd-book-nav .current{font-weight:700}\n.fmd-book-nav .current>a{text-decoration:none}\n</style>\n";
+    // The nav CSS goes into the document's existing <head> <style> block (just
+    // before the closing </style>) so the page stays spec-valid HTML; the nav
+    // element itself goes immediately before <main> in the body.
+    let nav_css = "\n.fmd-book-nav{border:1px solid var(--fmd-border, #d1d9e0);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.25rem;font-size:0.9em}\n.fmd-book-nav ul{margin:0;padding-left:1.1rem}\n.fmd-book-nav .current{font-weight:700}\n.fmd-book-nav .current>a{text-decoration:none}\n";
     let mut out = String::with_capacity(rendered.len() + nav.len() + nav_css.len());
-    if let Some(pos) = rendered.find("<main class=\"fmd\">") {
-        out.push_str(&rendered[..pos]);
-        out.push_str(&nav);
-        out.push_str(nav_css);
-        out.push_str(&rendered[pos..]);
-    } else {
-        // Emitter drift: fail loudly rather than silently dropping the nav.
-        out.push_str(rendered);
-        out.push_str("<!-- fmd-book-nav: injection point not found -->\n");
+    let main_pos = rendered.find("<main class=\"fmd\">");
+    let style_end = rendered.rfind("</style>");
+    match (main_pos, style_end) {
+        (Some(main), Some(style)) if style < main => {
+            // Insert CSS into the head's style block, nav before <main>.
+            out.push_str(&rendered[..style]);
+            out.push_str(nav_css);
+            out.push_str(&rendered[style..main]);
+            out.push_str(&nav);
+            out.push_str(&rendered[main..]);
+        }
+        (Some(main), _) => {
+            // No style block found (custom CSS mode?): inline the style with
+            // the nav in the body — invalid but visible; log via comment.
+            out.push_str(&rendered[..main]);
+            out.push_str(&nav);
+            out.push_str("<style>");
+            out.push_str(nav_css);
+            out.push_str("</style>");
+            out.push_str(&rendered[main..]);
+        }
+        _ => {
+            // Emitter drift: fail loudly rather than silently dropping the nav.
+            out.push_str(rendered);
+            out.push_str("<!-- fmd-book-nav: injection point not found -->\n");
+        }
     }
     out
 }

@@ -85,14 +85,6 @@ fn expand_inner(
                     "include_missing: empty include path in {origin}"
                 )));
             }
-            if stack.iter().any(|p| p == path) {
-                let mut chain = stack.clone();
-                chain.push(path.to_string());
-                return Err(RenderError::InvalidInput(format!(
-                    "include_cycle: {} forms an include cycle",
-                    chain.join(" -> ")
-                )));
-            }
             let (content, resolved) = match resolver(path, origin) {
                 Ok(Some(pair)) => pair,
                 Ok(None) => {
@@ -106,7 +98,15 @@ fn expand_inner(
                 }
                 Err(reason) => return Err(RenderError::InvalidInput(reason)),
             };
-            stack.push(path.to_string());
+            if stack.iter().any(|p| p == path || p == &resolved) {
+                let mut chain = stack.clone();
+                chain.push(path.to_string());
+                return Err(RenderError::InvalidInput(format!(
+                    "include_cycle: {} forms an include cycle",
+                    chain.join(" -> ")
+                )));
+            }
+            stack.push(resolved.clone());
             let expanded = expand_inner(&content, resolver, stack, depth + 1, &resolved)?;
             stack.pop();
             out.push_str(&expanded);

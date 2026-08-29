@@ -109,7 +109,7 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
 
     // Initial source storage for reset
     out.push_str("<script type=\"text/markdown\" id=\"fmd-raw-source\">\n");
-    out.push_str(markdown_src);
+    out.push_str(&markdown_src.replace("</script", "<\\/script"));
     out.push_str("\n</script>\n");
 
     // Client-side JavaScript
@@ -566,7 +566,7 @@ const INTERACTIVE_JS: &str = r#"
   }
 
   function escapeHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function inlineFormat(s) {
@@ -574,7 +574,11 @@ const INTERACTIVE_JS: &str = r#"
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
       .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, href) => {
+        const h = href.trim();
+        const safe = h.startsWith('#') || h.startsWith('/') || h.startsWith('./') || h.startsWith('http://') || h.startsWith('https://') || h.startsWith('mailto:');
+        return safe ? `<a href="${h}">${label}</a>` : label;
+      });
   }
 
   // Live editor input debounce

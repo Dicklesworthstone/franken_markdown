@@ -107,3 +107,18 @@ fn filter_a11y_keeps_only_a11y_codes() {
     );
     assert_eq!(filtered.verdict, "findings");
 }
+
+#[test]
+fn math_in_table_header_is_clean() {
+    let found = codes("# Doc\n\n| $f(x)$ | $g(x)$ |\n|---|---|\n| 1 | 2 |\n");
+    assert!(!found.contains(&"table_missing_header"), "got {found:?}");
+}
+
+#[test]
+fn footnote_definitions_are_audited_for_a11y() {
+    let found = codes(
+        "# Doc\n\nSee note[^1].\n\n[^1]: ![](missing.png) and [click here](https://example.com)\n",
+    );
+    assert!(found.contains(&"missing_alt_text"), "got {found:?}");
+    assert!(found.contains(&"generic_link_text"), "got {found:?}");
+}

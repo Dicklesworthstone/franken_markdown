@@ -222,13 +222,12 @@ pub fn expand_md_directory(dir: &Path) -> Vec<PathBuf> {
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 walk(acc, &path)?;
-            } else if file_type.is_file()
-                && name_str
-                    .rsplit('.')
-                    .next()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                acc.push(path);
+            } else if file_type.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
+                        acc.push(path);
+                    }
+                }
             }
         }
         Ok(())

@@ -21,6 +21,39 @@ enum Lab {
     }
 }
 
+/// One family wordmark across the FrankenSuite: the name stays uppercase, but
+/// the F and product initial carry the visual rhythm of the camel-case name.
+struct FrankenWordmark: View {
+    let productInitial: String
+    let productRemainder: String
+    let fullName: String
+    var size: CGFloat = 20
+    var accent: Color = Lab.emerald
+
+    var body: some View {
+        (
+            Text("F")
+                .font(.system(size: Lab.size(size), weight: .black, design: .monospaced))
+                .foregroundColor(accent)
+            + Text("RANKEN")
+                .font(.system(size: Lab.size(size * 0.66), weight: .black, design: .monospaced))
+                .foregroundColor(Lab.text.opacity(0.88))
+            + Text(productInitial)
+                .font(.system(size: Lab.size(size), weight: .black, design: .monospaced))
+                .foregroundColor(accent)
+            + Text(productRemainder)
+                .font(.system(size: Lab.size(size * 0.66), weight: .black, design: .monospaced))
+                .foregroundColor(Lab.text.opacity(0.88))
+        )
+        .kerning(0.8)
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .allowsTightening(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(fullName)
+    }
+}
+
 struct LaboratoryBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -95,4 +128,3 @@ struct PrimaryButtonStyle: ButtonStyle {
             .opacity(isEnabled ? (configuration.isPressed ? 0.72 : 1) : 0.34)
     }
 }
-

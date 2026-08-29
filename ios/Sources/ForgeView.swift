@@ -195,11 +195,11 @@ struct ForgeView: View {
                 .shadow(color: Lab.emerald.opacity(0.42), radius: 13)
                 .accessibilityLabel("Friendly FrankenMarkdown document monster")
             VStack(alignment: .leading, spacing: 1) {
-                Text("FRANKENMARKDOWN")
-                    .font(.system(size: Lab.size(19), weight: .black, design: .monospaced))
-                    .minimumScaleFactor(0.66)
-                    .lineLimit(1)
-                    .foregroundStyle(Lab.text)
+                FrankenWordmark(
+                    productInitial: "M",
+                    productRemainder: "ARKDOWN",
+                    fullName: "FrankenMarkdown"
+                )
                 Text("DOCUMENT_PRESS // private · offline · Rust")
                     .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
                     .foregroundStyle(Lab.secondary)

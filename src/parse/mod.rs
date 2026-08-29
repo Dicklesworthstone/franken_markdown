@@ -1578,16 +1578,24 @@ fn parse_blocks_with_refs_profiled(
         }
         if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
-            let mut inner = Vec::new();
+            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
-                    inner.push(strip_blockquote_marker(lines[i]));
+                    inner.push(std::borrow::Cow::Borrowed(strip_blockquote_marker(
+                        lines[i],
+                    )));
                     i += 1;
-                } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
+                } else if blockquote_lazy_continuation(inner.last().map(|s| s.as_ref()), lines[i]) {
                     // CommonMark lazy continuation: a non-blank, non-`>` line that
                     // does not start a new block continues the blockquote's open
-                    // paragraph instead of ending the quote.
-                    inner.push(trim_start_space_tab(lines[i]));
+                    // paragraph instead of ending the quote. A lazy line cannot be a
+                    // setext heading underline (CommonMark §4.3).
+                    let trimmed = trim_start_space_tab(lines[i]);
+                    if setext_underline(trimmed).is_some() {
+                        inner.push(std::borrow::Cow::Owned(format!("\\{trimmed}")));
+                    } else {
+                        inner.push(std::borrow::Cow::Borrowed(trimmed));
+                    }
                     i += 1;
                 } else {
                     break;
@@ -1599,14 +1607,15 @@ fn parse_blocks_with_refs_profiled(
             } else {
                 0
             };
+            let inner_str_refs: Vec<&str> = inner.iter().map(|s| s.as_ref()).collect();
             // Remove reference-definition lines from the blockquote body so they
             // are not rendered as literal text; they were already collected into
             // the shared `refs` map by `collect_nested_references`.
-            let inner_kept = if inner.iter().any(|line| line.contains("]:")) {
-                let (consumed, _) = collect_link_reference_metadata(&inner);
-                strip_consumed_references(&inner, &consumed)
+            let inner_kept = if inner_str_refs.iter().any(|line| line.contains("]:")) {
+                let (consumed, _) = collect_link_reference_metadata(&inner_str_refs);
+                strip_consumed_references(&inner_str_refs, &consumed)
             } else {
-                inner
+                inner_str_refs
             };
             let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
             profiler.record_since(
@@ -5387,7 +5396,9 @@ fn compute_bracket_pairs_in<S: PairTable>(chars: &[char]) -> S {
                 }
             }
             '<' => {
-                if let Some((_, next)) = parse_inline_html(chars, i) {
+                if let Some((_, _, next)) = parse_autolink(chars, i) {
+                    i = next - 1;
+                } else if let Some((_, next)) = parse_inline_html(chars, i) {
                     i = next - 1;
                 }
             }

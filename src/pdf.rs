@@ -29844,8 +29844,6 @@ fn build_pdf(
 
     for (k, image) in images.iter().enumerate() {
         offsets[image_obj(k)] = buf.len();
-        let colors = image.color.components();
-        let color_space = image.color.color_space();
         // The zero-decode fast path embeds the raw PNG IDAT and runs the PNG
         // adaptive predictor; the full-decode path embeds our own zlib of the
         // unfiltered samples and needs no predictor.
@@ -29853,30 +29851,29 @@ fn build_pdf(
             PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
             PdfImageStreamFilter::Dct => "/DCTDecode",
         };
-        let decode_parms = if image.filter == PdfImageStreamFilter::FlatePngPredictor {
-            format!(
-                " /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >>",
-                w = image.width_px,
-            )
-        } else {
-            String::new()
-        };
-        let smask_ref = match smask_for_image.get(k).copied().flatten() {
-            Some(n) => format!(" /SMask {n} 0 R"),
-            None => String::new(),
-        };
-        buf.extend_from_slice(
-            format!(
-                "{n} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                 /ColorSpace {color_space} /BitsPerComponent 8 /Filter {filter_name}\
-                 {decode_parms}{smask_ref} /Length {len} >>\nstream\n",
-                n = image_obj(k),
-                w = image.width_px,
-                h = image.height_px,
-                len = image.data.len(),
-            )
-            .as_bytes(),
-        );
+        append_pdf_object_header(&mut buf, image_obj(k));
+        buf.extend_from_slice(b"<< /Type /XObject /Subtype /Image /Width ");
+        append_decimal_usize(&mut buf, image.width_px as usize);
+        buf.extend_from_slice(b" /Height ");
+        append_decimal_usize(&mut buf, image.height_px as usize);
+        buf.extend_from_slice(b" /ColorSpace ");
+        buf.extend_from_slice(image.color.color_space().as_bytes());
+        buf.extend_from_slice(b" /BitsPerComponent 8 /Filter ");
+        buf.extend_from_slice(filter_name.as_bytes());
+        if image.filter == PdfImageStreamFilter::FlatePngPredictor {
+            buf.extend_from_slice(b" /DecodeParms << /Predictor 15 /Colors ");
+            append_decimal_u64(&mut buf, u64::from(image.color.components()));
+            buf.extend_from_slice(b" /BitsPerComponent 8 /Columns ");
+            append_decimal_usize(&mut buf, image.width_px as usize);
+            buf.extend_from_slice(b" >>");
+        }
+        if let Some(smask_ref) = smask_for_image.get(k).copied().flatten() {
+            buf.extend_from_slice(b" /SMask ");
+            append_pdf_object_ref_bytes(&mut buf, smask_ref);
+        }
+        buf.extend_from_slice(b" /Length ");
+        append_decimal_usize(&mut buf, image.data.len());
+        buf.extend_from_slice(b" >>\nstream\n");
         buf.extend_from_slice(&image.data);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
 
@@ -29886,17 +29883,14 @@ fn build_pdf(
             image.smask.as_ref(),
         ) {
             offsets[smask_obj] = buf.len();
-            buf.extend_from_slice(
-                format!(
-                    "{smask_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                     /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode \
-                     /Length {len} >>\nstream\n",
-                    w = image.width_px,
-                    h = image.height_px,
-                    len = alpha.len(),
-                )
-                .as_bytes(),
-            );
+            append_pdf_object_header(&mut buf, smask_obj);
+            buf.extend_from_slice(b"<< /Type /XObject /Subtype /Image /Width ");
+            append_decimal_usize(&mut buf, image.width_px as usize);
+            buf.extend_from_slice(b" /Height ");
+            append_decimal_usize(&mut buf, image.height_px as usize);
+            buf.extend_from_slice(b" /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ");
+            append_decimal_usize(&mut buf, alpha.len());
+            buf.extend_from_slice(b" >>\nstream\n");
             buf.extend_from_slice(alpha);
             buf.extend_from_slice(b"\nendstream\nendobj\n");
         }
@@ -29912,13 +29906,16 @@ fn build_pdf(
             let struct_parent = annot_struct_parent
                 .get(page_index)
                 .and_then(|keys| keys.get(local_index).copied().flatten());
-            let body = annotation_dict(annot, &dest_by_id, page_obj, struct_parent, pdf_a)?;
-            append_pdf_object_str(
+            append_pdf_link_annotation_object(
                 &mut buf,
                 &mut offsets,
                 annot_obj(page_index, local_index),
-                &body,
-            );
+                annot,
+                &dest_by_id,
+                &page_obj,
+                struct_parent,
+                pdf_a,
+            )?;
         }
     }
 
@@ -30204,55 +30201,60 @@ fn annotation_is_resolved(annot: &LinkAnnotation, dest_ids: &BTreeSet<&str>) -> 
     }
 }
 
-fn annotation_dict(
+#[allow(clippy::too_many_arguments)]
+fn append_pdf_link_annotation_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
     annot: &LinkAnnotation,
     dest_by_id: &BTreeMap<&str, &OutlineEntry>,
-    page_obj: impl Fn(usize) -> usize,
+    page_obj: &impl Fn(usize) -> usize,
     struct_parent: Option<usize>,
     pdf_a: crate::PdfASettings,
-) -> Result<String> {
-    let rect = format!(
-        "[{} {} {} {}]",
-        pdf_num(annot.rect.x0),
-        pdf_num(annot.rect.y0),
-        pdf_num(annot.rect.x1),
-        pdf_num(annot.rect.y1),
-    );
-    // The reverse of the owning /Link element's /OBJR: maps this annotation back
-    // through the parent tree to its structure element (required for tagged
-    // links, PDF/UA).
-    let sp = struct_parent
-        .map(|key| format!(" /StructParent {key}"))
-        .unwrap_or_default();
+) -> Result<()> {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(b"<< /Type /Annot /Subtype /Link /Rect [");
+    append_pdf_num_bytes(out, annot.rect.x0);
+    out.push(b' ');
+    append_pdf_num_bytes(out, annot.rect.y0);
+    out.push(b' ');
+    append_pdf_num_bytes(out, annot.rect.x1);
+    out.push(b' ');
+    append_pdf_num_bytes(out, annot.rect.y1);
+    out.extend_from_slice(b"] /Border [0 0 0]");
     // PDF/A-2b: Print flag (bit 3 = 4) required on annotations.
-    let flags = if pdf_a.mode.is_a2b() { " /F 4" } else { "" };
-    Ok(match &annot.target {
+    if pdf_a.mode.is_a2b() {
+        out.extend_from_slice(b" /F 4");
+    }
+    match &annot.target {
         LinkTarget::Uri(uri) => {
             let drop_action = crate::pdfa::check_uri_action(pdf_a, uri)?;
-            if drop_action {
-                format!("<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>")
-            } else {
-                format!(
-                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags} \
-                     /A << /S /URI /URI {uri} >>{sp} >>",
-                    uri = pdf_text_string(uri),
-                )
+            if !drop_action {
+                out.extend_from_slice(b" /A << /S /URI /URI ");
+                append_pdf_text_string_bytes(out, uri);
+                out.extend_from_slice(b" >>");
             }
         }
         LinkTarget::Fragment(id) => {
-            let Some(dest) = dest_by_id.get(id.as_str()) else {
-                return Ok(format!(
-                    "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>"
-                ));
-            };
-            format!(
-                "<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags} \
-                 /Dest [{page} 0 R /XYZ null {y} null]{sp} >>",
-                page = page_obj(dest.page_index),
-                y = pdf_num(dest.y),
-            )
+            if let Some(dest) = dest_by_id.get(id.as_str()) {
+                out.extend_from_slice(b" /Dest [");
+                append_pdf_object_ref_bytes(out, page_obj(dest.page_index));
+                out.extend_from_slice(b" /XYZ null ");
+                append_pdf_num_bytes(out, dest.y);
+                out.extend_from_slice(b" null]");
+            }
         }
-    })
+    }
+    // The reverse of the owning /Link element's /OBJR: maps this annotation back
+    // through the parent tree to its structure element (required for tagged
+    // links, PDF/UA).
+    if let Some(key) = struct_parent {
+        out.extend_from_slice(b" /StructParent ");
+        append_decimal_usize(out, key);
+    }
+    out.extend_from_slice(b" >>\nendobj\n");
+    Ok(())
 }
 
 /// FontDescriptor metrics in 1/1000 em.

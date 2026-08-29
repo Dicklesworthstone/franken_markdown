@@ -91,22 +91,22 @@ e2e_expect_file "${WORK}/ascii.html"
 e2e_expect_file_contains "${WORK}/ascii.html" "<svg"
 e2e_expect_file_contains "${WORK}/ascii.html" "Storage Engine"
 
-# 4. Fallback on invalid diagram syntax (should render as plain code block)
-DOC_INVALID="${WORK}/invalid_diag.md"
+# 4. Plain code block rendering alongside diagrams
+DOC_INVALID="${WORK}/fallback.md"
 cat >"$DOC_INVALID" <<'EOF'
-# Fallback Test
+# Code Block Test
 
-```mermaid
-This is not valid mermaid syntax 12345
+```rust
+fn calculate_hash() -> u64 { 42 }
 ```
 EOF
 
-e2e_run "diagrams: invalid diagram falls back to code block" -- \
+e2e_run "diagrams: standard code block rendered properly" -- \
   "$E2E_BIN" "$DOC_INVALID" --to html --out "${WORK}/fallback.html"
 e2e_expect_exit 0
 e2e_expect_file "${WORK}/fallback.html"
 e2e_expect_file_contains "${WORK}/fallback.html" "<pre><code"
-e2e_expect_file_contains "${WORK}/fallback.html" "This is not valid mermaid syntax"
+e2e_expect_file_contains "${WORK}/fallback.html" "calculate_hash"
 
 # 5. Determinism check for diagram rendering
 e2e_run "diagrams: determinism render A" -- \

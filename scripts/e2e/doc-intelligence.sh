@@ -40,10 +40,10 @@ EOF
 e2e_run "doc-stats: human text telemetry output" -- \
   "$E2E_BIN" stats "$DOC_SAMPLE"
 e2e_expect_exit 0
-e2e_expect_stdout_contains "Words:"
-e2e_expect_stdout_contains "Reading time:"
+e2e_expect_stdout_contains "Size:"
+e2e_expect_stdout_contains "Reading:"
 e2e_expect_stdout_contains "Flesch Reading Ease:"
-e2e_expect_stdout_contains "Outline:"
+e2e_expect_stdout_contains "Headings:"
 
 e2e_run "doc-stats: JSON telemetry output" -- \
   "$E2E_BIN" stats "$DOC_SAMPLE" --json
@@ -55,15 +55,17 @@ e2e_assert "stats --json is valid JSON" -- \
   sh -c "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$E2E_LAST_STDOUT'"
 
 # --- fmd search-index ---
+INDEX_FILE="${WORK}/search_index.json"
 e2e_run "search-index: JSON output schema and entries" -- \
-  "$E2E_BIN" search-index "$DOC_SAMPLE" --json
+  "$E2E_BIN" "$DOC_SAMPLE" --to html --search-index "$INDEX_FILE" --out "${WORK}/sample.html"
 e2e_expect_exit 0
-e2e_expect_stdout_contains '"schema":"fmd-search-index-v1"'
-e2e_expect_stdout_contains '"kind":"heading"'
-e2e_expect_stdout_contains '"kind":"paragraph"'
-e2e_expect_stdout_contains '"anchor":"readability-metrics"'
-e2e_assert "search-index --json is valid JSON" -- \
-  sh -c "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$E2E_LAST_STDOUT'"
+e2e_expect_file "$INDEX_FILE"
+e2e_expect_file_contains "$INDEX_FILE" '"schema":"fmd-search-index-v1"'
+e2e_expect_file_contains "$INDEX_FILE" '"kind":"heading"'
+e2e_expect_file_contains "$INDEX_FILE" '"kind":"paragraph"'
+e2e_expect_file_contains "$INDEX_FILE" '"anchor":"readability-metrics"'
+e2e_assert "search-index is valid JSON" -- \
+  sh -c "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$INDEX_FILE'"
 
 # 2. Prepare documents for semantic diffing
 DOC_V1="${WORK}/v1.md"
@@ -91,7 +93,7 @@ EOF
 
 # --- fmd diff to HTML ---
 e2e_run "diff: generate visual HTML diff report" -- \
-  "$E2E_BIN" diff "$DOC_V1" "$DOC_V2" --html --out "${WORK}/diff.html"
+  "$E2E_BIN" diff "$DOC_V1" "$DOC_V2" --out "${WORK}/diff.html"
 e2e_expect_exit 0
 e2e_expect_file "${WORK}/diff.html"
 e2e_expect_file_contains "${WORK}/diff.html" "Comparing"

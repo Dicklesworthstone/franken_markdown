@@ -63,14 +63,17 @@ fi
 fmd_validate_run_id "batch-throughput" "$RUN_ID"
 
 # ---- build the batch-enabled binary ----------------------------------------
-echo "batch-throughput: building fmd --features batch (release)..."
-cargo build --release --features batch --bin fmd >/dev/null 2>&1 \
-  || fail_env "cargo build --release --features batch failed"
-target_dir() {
-  { cargo metadata --format-version 1 --no-deps 2>/dev/null || true; } \
-    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'
-}
-FMD="$(target_dir)/release/fmd"
+export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$ROOT_DIR/target/fmd-checks}"
+if [ -n "${FMD_BIN:-}" ] && [ -x "$FMD_BIN" ]; then
+  FMD="$FMD_BIN"
+elif [ -x "$CARGO_TARGET_DIR/release/fmd" ]; then
+  FMD="$CARGO_TARGET_DIR/release/fmd"
+else
+  echo "batch-throughput: building fmd --features batch (release)..."
+  RCH_SHIM_LOCAL_IDE=1 cargo build --release --features batch --bin fmd >/dev/null 2>&1 \
+    || fail_env "cargo build --release --features batch failed"
+  FMD="$CARGO_TARGET_DIR/release/fmd"
+fi
 [ -x "$FMD" ] || fail_env "fmd binary not found at $FMD"
 
 # ---- run dir + fingerprint --------------------------------------------------
@@ -138,6 +141,24 @@ INPROCESS="$OUT_DIR/inprocess.jsonl"
 SUMMARY_ROWS="$WORK/rows.jsonl"
 : > "$SUMMARY_ROWS"
 
+now_nanos() {
+  if [ "${HAS_DATE_N:-unset}" = "unset" ]; then
+    if date +%s%N 2>/dev/null | grep -vq '%N'; then
+      HAS_DATE_N=1
+    else
+      HAS_DATE_N=0
+    fi
+  fi
+  if [ "$HAS_DATE_N" = "1" ]; then
+    date +%s%N
+  else
+    python3 -c 'import time; print(int(time.time_ns()))'
+  fi
+}
+
+# rsplit_int: last whitespace-separated integer on stdin (peak RSS value).
+rsplit_int() { awk '{print $NF}' | tr -dc '0-9'; }
+
 # Run a timed scenario: K iterations of `fmd batch`, capture samples + receipt.
 # Args: scenario  category  input_dir  to(html|pdf|both)  [extra fmd args...]
 run_scenario() {
@@ -151,10 +172,10 @@ run_scenario() {
   local k=0
   while [ "$k" -lt "$ITERS" ]; do
     local start end
-    start="$(date +%s%N)"
+    start="$(now_nanos)"
     "$FMD" batch "$input" --to "$to" --out-dir "$sdir/out" --json "${extra[@]}" \
       > "$receipt" 2>"$sdir/stderr.txt" || fail_scn "$scenario: fmd batch exited nonzero"
-    end="$(date +%s%N)"
+    end="$(now_nanos)"
     echo "$((end - start))" >> "$samples"
     k=$((k + 1))
   done
@@ -174,7 +195,7 @@ run_scenario() {
   if command -v /usr/bin/time >/dev/null 2>&1; then
     /usr/bin/time -v "$FMD" batch "$input" --to "$to" --out-dir "$sdir/out3" --json "${extra[@]}" \
       >/dev/null 2>"$sdir/time.stderr" || true
-    rss_kb="$(grep -i 'Maximum resident set size' "$sdir/time.stderr" 2>/dev/null \
+    rss_kb="$( (grep -i 'Maximum resident set size' "$sdir/time.stderr" 2>/dev/null || true) \
       | rsplit_int)"
     [ -z "$rss_kb" ] && rss_kb="null"
   fi

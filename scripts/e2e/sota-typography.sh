@@ -21,35 +21,32 @@ EPOCH=1700000000
 # 1. Complex typography document: multi-level headings, dense paragraphs, tables, blockquotes
 DOC_COMPLEX="${WORK}/complex_typography.md"
 cat >"$DOC_COMPLEX" <<'EOF'
-# Advanced Typographic Layout in FrankenMarkdown
+# Advanced Typographic Layout
 
-The visual elegance of modern digital documents requires a synthesis of Knuth-Plass
-optimal paragraph breaking with continuous optical kerning and microtypographic
-expansion. When typesetting across multiple columns or dense pages, visual rhythm
-must remain strictly harmonic across the baseline grid.
+High quality digital typography requires Knuth-Plass paragraph breaking,
+continuous optical kerning, and microtypographic expansion.
 
 ## The Harmony of Negative Space
 
-Microtypography achieves optical margin alignment through dynamic adjustment of
-character shapes and inter-word springs. A ragged silhouette penalty prevents
-unbalanced line measures that cause reader disorientation.
+Microtypography achieves optical margin alignment through dynamic adjustment
+of character shapes and inter-word springs.
 
-> Good typography is invisible. When the baseline grid aligns perfectly across
-> columns and callouts, the reader experiences effortless comprehension.
+> Good typography is invisible. When the baseline grid aligns,
+> reading becomes effortless.
 
 | Parameter | Default | Min Bound | Max Bound | Target Metric |
 |:----------|:-------:|:---------:|:---------:|--------------:|
-| Grid Pitch | 12.0 pt | 8.0 pt | 24.0 pt | Vertical Rythm |
+| Grid Pitch | 12.0 pt | 8.0 pt | 24.0 pt | Vertical Rhythm |
 | Spring Tension | 1.00 | 0.50 | 2.50 | Elasticity |
 | River Penalty | 500 | 100 | 2000 | White Space |
-| Optical Kerning | Active | N/A | N/A | Area Quadrature |
+| Optical Kerning | Active | N/A | N/A | Quadrature |
 
 ### Mathematical Elegance
 
-Euler's identity represents the apex of structural elegance in mathematical notation:
+Euler's identity represents structural elegance:
 $$e^{i\pi} + 1 = 0$$
 
-Furthermore, the Knuth-Plass objective function minimizes total demerits:
+The Knuth-Plass objective function minimizes total demerits:
 $$D = \sum_{k=1}^m (d_k + \gamma_k)^2$$
 EOF
 

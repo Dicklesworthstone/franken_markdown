@@ -4,16 +4,16 @@
 //! collision parity, unicode syntax highlighting, URL scanner case-insensitivity,
 //! PDF hex color parsing, and verification caret spans.
 
+use franken_markdown::PdfOptions;
 use franken_markdown::ast::{Block, Document, Inline};
 use franken_markdown::caret::CaretStyle;
 use franken_markdown::diff::compute_diff;
 use franken_markdown::doc_stats::compute_doc_stats;
-use franken_markdown::highlight::{highlight, Tok};
+use franken_markdown::highlight::{Tok, highlight};
 use franken_markdown::parse::parse_document;
 use franken_markdown::scanner::scan_markdown_line;
 use franken_markdown::theme::Theme;
 use franken_markdown::verify::{to_human, verify_pdf};
-use franken_markdown::PdfOptions;
 
 #[test]
 fn diff_html_escapes_raw_html_and_blocks_xss() {
@@ -46,9 +46,7 @@ fn diff_html_escapes_raw_html_and_blocks_xss() {
 #[test]
 fn diff_html_filters_javascript_links() {
     let doc_a = Document {
-        blocks: vec![Block::Paragraph(vec![Inline::Text(
-            "Before".to_string(),
-        )])],
+        blocks: vec![Block::Paragraph(vec![Inline::Text("Before".to_string())])],
     };
     let doc_b = Document {
         blocks: vec![Block::Paragraph(vec![Inline::Link {
@@ -129,7 +127,11 @@ fn verify_accessibility_caret_spans_in_human_output() {
     let md =
         "# Title\n\n### Subtitle\n\n![ ](missing-img.png)\n\n[click here](https://example.com)\n";
     let doc = parse_document(md);
-    let report = verify_pdf(&doc, &PdfOptions::default()).expect("verify report");
+    let report = verify_pdf(&doc, &PdfOptions::default());
+    assert!(report.is_some(), "verify report must succeed");
+    let Some(report) = report else {
+        return;
+    };
 
     let human = to_human(&report, md, Some("test.md"), CaretStyle::default());
 

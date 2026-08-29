@@ -727,8 +727,7 @@ fn is_capitalized_not_all_caps_unicode(word: &str) -> bool {
         return false;
     }
     let mut letters = word.chars().filter(|c| c.is_alphabetic());
-    let all_caps =
-        word.chars().any(|c| c.is_uppercase()) && letters.all(|c| c.is_uppercase());
+    let all_caps = word.chars().any(|c| c.is_uppercase()) && letters.all(|c| c.is_uppercase());
     !all_caps
 }
 

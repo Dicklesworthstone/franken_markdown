@@ -279,9 +279,7 @@ pub fn filter_a11y(mut report: VerifyReport) -> VerifyReport {
         "generic_link_text",
         "table_missing_header",
     ];
-    report
-        .findings
-        .retain(|f| A11Y_CODES.contains(&f.code));
+    report.findings.retain(|f| A11Y_CODES.contains(&f.code));
     report.verdict = if report.findings.is_empty() {
         "clean"
     } else {

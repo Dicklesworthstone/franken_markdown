@@ -486,6 +486,9 @@ enum Target {
     /// EPUB 3 e-book (single file; a one-chapter book). Writes a real file —
     /// binary zips cannot stream to stdout.
     Epub,
+    /// Standalone vector SVG poster (glyphs as paths, zero fonts). Text format
+    /// — streams to stdout like HTML when no --out is given.
+    Svg,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -1191,6 +1194,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let want_html = matches!(args.to, Target::Html | Target::Both);
     let want_pdf = matches!(args.to, Target::Pdf | Target::Both);
     let want_epub = matches!(args.to, Target::Epub);
+    let want_svg = matches!(args.to, Target::Svg);
     let single = !matches!(args.to, Target::Both);
 
     // Refuse to overwrite the input file. `read_input` already slurped the
@@ -1237,6 +1241,25 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     if json {
         report_font_assets(&font_assets);
     }
+    // Frontmatter metadata (qqst): the parser skips a leading --- key=value
+    // block; harvest it here so document metadata flows into HTML <title> /
+    // PDF metadata / hyphenation language / TOC. Precedence: explicit CLI flag
+    // > frontmatter > first-heading default (unchanged when absent).
+    let frontmatter = crate::parse::split_frontmatter(&src).0;
+    let frontmatter_unknown = frontmatter
+        .as_ref()
+        .map(|fm| fm.unknown_keys.clone())
+        .unwrap_or_default();
+    for key in &frontmatter_unknown {
+        eprintln!(
+            "fmd: warning: unknown frontmatter key \"{key}\" (supported: title, author, lang, toc, toc_depth)"
+        );
+    }
+    let frontmatter_title = frontmatter.as_ref().and_then(|fm| fm.title.clone());
+    let frontmatter_author = frontmatter.as_ref().and_then(|fm| fm.author.clone());
+    let frontmatter_lang = frontmatter.as_ref().and_then(|fm| fm.lang.clone());
+    let frontmatter_toc = frontmatter.as_ref().and_then(|fm| fm.toc);
+    let frontmatter_toc_depth = frontmatter.as_ref().and_then(|fm| fm.toc_depth);
     let doc = parse_markdown(&src);
     let mut image_destinations = Vec::new();
     collect_image_destinations(&doc.blocks, &mut image_destinations);
@@ -1318,15 +1341,15 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let html_bytes = if want_html {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone(),
+            title: args.title.clone().or_else(|| frontmatter_title.clone()),
             custom_css: custom_css.clone(),
             allow_raw_html: args.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets,
-            lang: args.lang.clone(),
+            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc,
-            toc_depth: args.toc_depth,
+            toc: args.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
             html_font_format: args
                 .html_font_format
                 .map(HtmlFontFormat::from)
@@ -1348,9 +1371,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let pdf_render = if want_pdf {
         let opts = PdfOptions {
             theme: theme.clone(),
-            title: args.title.clone(),
-            author: args.author.clone(),
-            lang: args.lang.clone(),
+            title: args.title.clone().or_else(|| frontmatter_title.clone()),
+            author: args.author.clone().or_else(|| frontmatter_author.clone()),
+            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.allow_html,
@@ -1363,8 +1386,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             table_font_size: args.pdf_table_font_size,
             image_assets: pdf_image_assets,
             font_assets: font_assets.clone(),
-            toc: args.toc,
-            toc_depth: args.toc_depth,
+            toc: args.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
             fit_to_pages: args.fit_to_pages,
             microtype: args.microtype.into(),
         };
@@ -1383,15 +1406,15 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let epub_render = if want_epub {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone(),
+            title: args.title.clone().or_else(|| frontmatter_title.clone()),
             custom_css: None,
             allow_raw_html: args.allow_html,
             font_assets: FontAssets::default(),
             image_assets: Vec::new(),
-            lang: args.lang.clone(),
+            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc,
-            toc_depth: args.toc_depth,
+            toc: args.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
             html_font_format: HtmlFontFormat::default(),
         };
         match crate::render_epub(&doc, &opts) {
@@ -1413,6 +1436,23 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 );
             }
         }
+    } else {
+        None
+    };
+
+    // SVG poster (bead y0vu): text format, so like HTML it may stream to
+    // stdout; with a path it rides the staged write.
+    let svg_render = if want_svg {
+        let opts = crate::svg::SvgOptions {
+            theme: theme.clone(),
+            ..crate::svg::SvgOptions::default()
+        };
+        Some(crate::render_svg(&doc, &opts))
+    } else {
+        None
+    };
+    let svg_path = if svg_render.is_some() {
+        out_path(&args, single, "svg")
     } else {
         None
     };
@@ -1458,6 +1498,16 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             bytes: bytes.as_slice(),
         });
     }
+    // SVG streams to stdout like HTML when no path derived (stdout case), or
+    // rides the staged write when a file path exists.
+    if let (Some(path), Some(bytes)) = (svg_path.as_deref(), svg_render.as_ref()) {
+        if !is_stdout_path(path) {
+            file_outputs.push(crate::file_write::OutputFile {
+                path,
+                bytes: bytes.as_slice(),
+            });
+        }
+    }
     if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
         return fail_json(
             73,
@@ -1489,6 +1539,26 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         && let Some(path) = epub_path.as_deref()
     {
         report_write("epub", path, bytes.len(), json);
+    }
+    if let Some(bytes) = svg_render.as_ref() {
+        match svg_path.as_deref() {
+            Some(path) if !is_stdout_path(path) => report_write("svg", path, bytes.len(), json),
+            _ => {
+                let mut stdout = std::io::stdout().lock();
+                match stdout.write_all(bytes) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == IoErrorKind::BrokenPipe => {}
+                    Err(e) => {
+                        return fail_json(
+                            74,
+                            "stdout_error",
+                            &format!("writing stdout: {e}"),
+                            json,
+                        );
+                    }
+                }
+            }
+        }
     }
     if let Some((_, bytes)) = search_index_bytes.as_ref()
         && let Some(path) = args.search_index.as_deref()
@@ -1635,11 +1705,12 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Target::Both => OutputFormat::Both,
         // Multi-file EPUB is the fmd book epic's job (7tus); a batch run of
         // one-chapter epubs would silently skip the unified-book semantics.
-        Target::Epub => {
+        // SVG posters are a per-document display artifact, not a batch target.
+        Target::Epub | Target::Svg => {
             return fail_json(
                 64,
                 "usage_error",
-                "--to epub is not supported in batch; render single books per file or use fmd book when it lands",
+                "--to epub/svg is not supported in batch; epub books await fmd book (7tus), svg posters are single-document artifacts",
                 json,
             );
         }
@@ -2700,7 +2771,7 @@ fn out_path(args: &RenderArgs, single: bool, ext: &str) -> Option<PathBuf> {
         }
         return Some(p.with_extension(ext));
     }
-    if single && ext == "html" {
+    if single && (ext == "html" || ext == "svg") {
         return None; // stdout
     }
     // Derive from the input filename when no --out was given.
@@ -3051,7 +3122,7 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))

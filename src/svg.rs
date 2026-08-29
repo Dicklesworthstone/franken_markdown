@@ -345,9 +345,9 @@ impl Poster {
     }
 
     fn advance(&self, slot: usize, ch: char, size: f64) -> f64 {
-        self.faces[slot].as_ref().map_or(0.0, |font| {
-            f64::from(font.advance_1000(ch)) * size / 1000.0
-        })
+        self.faces[slot]
+            .as_ref()
+            .map_or(0.0, |font| f64::from(font.advance_1000(ch)) * size / 1000.0)
     }
 
     /// Width of `text` at `size` under `st` (silent; never counts missing).
@@ -411,7 +411,14 @@ impl Poster {
                 }
                 Inline::Code(s) => out.push(Piece::Text(s.clone(), RStyle { mono: true, ..st })),
                 Inline::Link { content, .. } => {
-                    self.flatten(content, RStyle { ink: Ink::Accent, ..st }, out);
+                    self.flatten(
+                        content,
+                        RStyle {
+                            ink: Ink::Accent,
+                            ..st
+                        },
+                        out,
+                    );
                 }
                 Inline::Image { alt, .. } => {
                     let label = if alt.is_empty() {
@@ -419,18 +426,31 @@ impl Poster {
                     } else {
                         format!("[{alt}]")
                     };
-                    out.push(Piece::Text(label, RStyle { ink: Ink::FgMuted, ..st }));
+                    out.push(Piece::Text(
+                        label,
+                        RStyle {
+                            ink: Ink::FgMuted,
+                            ..st
+                        },
+                    ));
                 }
                 Inline::SoftBreak => out.push(Piece::Text(" ".to_string(), st)),
                 Inline::HardBreak => out.push(Piece::Break),
                 Inline::Html(_) => {}
                 Inline::FootnoteRef { id } => out.push(Piece::Text(
                     format!("[^{id}]"),
-                    RStyle { ink: Ink::FgMuted, ..st },
+                    RStyle {
+                        ink: Ink::FgMuted,
+                        ..st
+                    },
                 )),
                 Inline::Math(s) | Inline::DisplayMath(s) => out.push(Piece::Text(
                     s.clone(),
-                    RStyle { mono: true, ink: Ink::FgMuted, ..st },
+                    RStyle {
+                        mono: true,
+                        ink: Ink::FgMuted,
+                        ..st
+                    },
                 )),
             }
         }
@@ -528,19 +548,27 @@ impl Poster {
             // collected by emitters that support notes (the poster does not).
             Block::HtmlBlock(_) | Block::FootnoteDefinition { .. } => {}
             Block::DefinitionList(items) => {
+                let body_size = f64::from(self.scale.body);
                 for item in items {
                     for term in &item.terms {
                         let mut pieces = Vec::new();
-                        self.flatten(term, RStyle { bold: true, ..RStyle::BODY }, &mut pieces);
-                        self.text_lines(&pieces, self.scale.body, l, r, quote, self.scale.body * 0.4);
+                        self.flatten(
+                            term,
+                            RStyle {
+                                bold: true,
+                                ..RStyle::BODY
+                            },
+                            &mut pieces,
+                        );
+                        self.text_lines(&pieces, body_size, l, r, quote, body_size * 0.4);
                     }
                     for def in &item.definitions {
                         let mut pieces = Vec::new();
                         self.flatten(def, RStyle::BODY, &mut pieces);
-                        self.text_lines(&pieces, self.scale.body, l + 18.0, r, quote, self.scale.body * 0.4);
+                        self.text_lines(&pieces, body_size, l + 18.0, r, quote, body_size * 0.4);
                     }
                 }
-                self.y += self.scale.body * 0.4;
+                self.y += body_size * 0.4;
             }
         }
     }
@@ -580,7 +608,11 @@ impl Poster {
         let mut pieces = Vec::new();
         self.flatten(
             inlines,
-            RStyle { bold: true, ink, ..RStyle::BODY },
+            RStyle {
+                bold: true,
+                ink,
+                ..RStyle::BODY
+            },
             &mut pieces,
         );
         let leading = size * 1.3;
@@ -608,7 +640,14 @@ impl Poster {
         let size = f64::from(self.scale.body);
         let ink = Self::default_ink(quote);
         let mut pieces = Vec::new();
-        self.flatten(inlines, RStyle { ink, ..RStyle::BODY }, &mut pieces);
+        self.flatten(
+            inlines,
+            RStyle {
+                ink,
+                ..RStyle::BODY
+            },
+            &mut pieces,
+        );
         self.text_lines(&pieces, size, l, r, quote, size * 0.7);
     }
 
@@ -628,7 +667,10 @@ impl Poster {
             fill: Ink::CodeBg,
             stroke: Some(Ink::BorderMuted),
         });
-        let st = RStyle { mono: true, ..RStyle::BODY };
+        let st = RStyle {
+            mono: true,
+            ..RStyle::BODY
+        };
         let mut ly = self.y + pad;
         for line in lines {
             let baseline = ly + size * 0.8;
@@ -661,14 +703,21 @@ impl Poster {
         let size = f64::from(self.scale.body);
         let marker_w = 18.0;
         // Plex/CM both map U+2022; fall back to '-' if a face ever does not.
-        let bullet = self
-            .faces[SLOT_BODY]
-            .as_ref()
-            .map_or("-", |f| if f.glyph_index('•') != 0 { "•" } else { "-" });
+        let bullet = self.faces[SLOT_BODY].as_ref().map_or("-", |f| {
+            if f.glyph_index('•') != 0 {
+                "•"
+            } else {
+                "-"
+            }
+        });
         let ink = Self::default_ink(quote);
         for (i, item) in list.items.iter().enumerate() {
             let marker = if let Some(checked) = item.task {
-                if checked { "[x]".to_string() } else { "[ ]".to_string() }
+                if checked {
+                    "[x]".to_string()
+                } else {
+                    "[ ]".to_string()
+                }
             } else if list.ordered {
                 format!("{}.", list.start + i as u64)
             } else {
@@ -679,7 +728,16 @@ impl Poster {
                 self.block(block, l + marker_w, r, quote);
             }
             let baseline = mark_top + size * 0.85;
-            self.draw_text(l, baseline, &marker, RStyle { ink, ..RStyle::BODY }, size);
+            self.draw_text(
+                l,
+                baseline,
+                &marker,
+                RStyle {
+                    ink,
+                    ..RStyle::BODY
+                },
+                size,
+            );
             if !list.tight {
                 self.y += 4.0;
             }
@@ -705,9 +763,16 @@ impl Poster {
         // Column widths: natural single-line width (capped), scaled down
         // proportionally when the table would overflow the measure.
         let mut natural = vec![size; ncols];
-        let mut consider = |col: usize, cells: &[Inline], bold: bool, natural: &mut Vec<f64>| {
+        let consider = |col: usize, cells: &[Inline], bold: bool, natural: &mut Vec<f64>| {
             let mut pieces = Vec::new();
-            self.flatten(cells, RStyle { bold, ..RStyle::BODY }, &mut pieces);
+            self.flatten(
+                cells,
+                RStyle {
+                    bold,
+                    ..RStyle::BODY
+                },
+                &mut pieces,
+            );
             let text: String = pieces
                 .iter()
                 .filter_map(|p| match p {
@@ -716,7 +781,14 @@ impl Poster {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            let w = self.measure(&text, RStyle { bold, ..RStyle::BODY }, size) + 2.0 * pad_x;
+            let w = self.measure(
+                &text,
+                RStyle {
+                    bold,
+                    ..RStyle::BODY
+                },
+                size,
+            ) + 2.0 * pad_x;
             natural[col] = natural[col].max(w.min(avail * 0.6));
         };
         for (c, cell) in table.head.iter().enumerate().take(ncols) {
@@ -738,8 +810,11 @@ impl Poster {
             .map(|c| table.align.get(c).copied().unwrap_or(Align::None))
             .collect();
 
-        let mut draw_row = |poster: &mut Self, cells: &[Vec<Inline>], bold: bool, top: f64| -> f64 {
-            let st = RStyle { bold, ..RStyle::BODY };
+        let draw_row = |poster: &mut Self, cells: &[Vec<Inline>], bold: bool, top: f64| -> f64 {
+            let st = RStyle {
+                bold,
+                ..RStyle::BODY
+            };
             let wrapped: Vec<Vec<Vec<Word>>> = (0..ncols)
                 .map(|c| {
                     let mut pieces = Vec::new();
@@ -932,7 +1007,14 @@ impl Poster {
         let mut drawn = 0;
         for op in &self.ops {
             match op {
-                Op::Rect { x, y, w, h, fill, stroke } => {
+                Op::Rect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    fill,
+                    stroke,
+                } => {
                     out.push_str("<rect x=\"");
                     out.push_str(&q2(*x));
                     out.push_str("\" y=\"");
@@ -951,7 +1033,14 @@ impl Poster {
                     }
                     out.push_str("/>\n");
                 }
-                Op::Rule { x1, y1, x2, y2, ink, w } => {
+                Op::Rule {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    ink,
+                    w,
+                } => {
                     out.push_str("<line x1=\"");
                     out.push_str(&q2(*x1));
                     out.push_str("\" y1=\"");
@@ -966,7 +1055,14 @@ impl Poster {
                     out.push_str(&q2(*w));
                     out.push_str("\"/>\n");
                 }
-                Op::Glyph { slot, gid, x, y, size, ink } => {
+                Op::Glyph {
+                    slot,
+                    gid,
+                    x,
+                    y,
+                    size,
+                    ink,
+                } => {
                     let key = (*slot, *gid);
                     let Some(id) = ids.get(&key) else {
                         continue; // outline failed to decode; no def to reference

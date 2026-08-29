@@ -108,7 +108,7 @@ e2e_build_bin() {
     local feats=()
     [ "$#" -gt 0 ] && feats=(--features "$(IFS=,; echo "$*")")
     local tdir="${FMD_TARGET_DIR:-${E2E_REPO_ROOT}/target/fmd-checks}"
-    ( cd "$E2E_REPO_ROOT" && CARGO_TARGET_DIR="$tdir" cargo build --release --quiet --bin fmd "${feats[@]}" ) \
+    ( cd "$E2E_REPO_ROOT" && RCH_SHIM_LOCAL_IDE=1 PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$tdir" cargo build --release --quiet --bin fmd "${feats[@]}" ) \
       || { _e2e_warn "failed to build fmd"; return 66; }
     E2E_BIN="${tdir}/release/fmd"
   fi

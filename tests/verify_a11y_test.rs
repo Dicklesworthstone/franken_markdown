@@ -82,13 +82,28 @@ fn clean_document_has_no_a11y_findings() {
 fn filter_a11y_keeps_only_a11y_codes() {
     let doc = parse_markdown("# Top\n\n### Jump\n\n![ ](x.png)\n\n[missing](#nowhere)\n");
     let report = verify_pdf(&doc, &PdfOptions::default()).expect("verify");
-    assert!(report.findings.iter().any(|f| f.code == "unresolved_anchor"));
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == "unresolved_anchor")
+    );
     let filtered = franken_markdown::verify::filter_a11y(report);
     assert!(filtered.findings.iter().all(|f| matches!(
         f.code,
         "missing_alt_text" | "heading_level_skip" | "generic_link_text" | "table_missing_header"
     )));
-    assert!(filtered.findings.iter().any(|f| f.code == "missing_alt_text"));
-    assert!(filtered.findings.iter().any(|f| f.code == "heading_level_skip"));
+    assert!(
+        filtered
+            .findings
+            .iter()
+            .any(|f| f.code == "missing_alt_text")
+    );
+    assert!(
+        filtered
+            .findings
+            .iter()
+            .any(|f| f.code == "heading_level_skip")
+    );
     assert_eq!(filtered.verdict, "findings");
 }

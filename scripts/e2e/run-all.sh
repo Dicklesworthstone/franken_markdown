@@ -39,7 +39,7 @@ log() { printf '%s\n' "$*" | tee -a "$LOG"; }
 # Build the fmd binary once; the suites honor FMD_BIN and skip their own builds.
 log "run-all: building fmd (release) once for all suites"
 export FMD_TARGET_DIR="${FMD_TARGET_DIR:-$REPO_ROOT/target/fmd-checks}"
-if ! ( CARGO_TARGET_DIR="$FMD_TARGET_DIR" cargo build --release --quiet --bin fmd ); then
+if ! ( RCH_SHIM_LOCAL_IDE=1 PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$FMD_TARGET_DIR" cargo build --release --quiet --bin fmd --features batch ); then
   log "run-all: FAILED to build fmd"
   exit 66
 fi

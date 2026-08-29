@@ -27,7 +27,7 @@ if command -v wasm-bindgen >/dev/null 2>&1 && command -v node >/dev/null 2>&1; t
   e2e_run "wasm: check-wasm-package headless parity run" -- \
     "${E2E_REPO_ROOT}/scripts/check-wasm-package.sh" "e2e-wasm"
   e2e_expect_exit 0
-  e2e_expect_stdout_contains "wasm-package: ok"
+  e2e_expect_stdout_contains "wasm-package gate: ok"
 else
   e2e_run "wasm: skip package gate (wasm-bindgen or node missing)" -- \
     echo "wasm-package gate skipped on current environment (missing tools)"

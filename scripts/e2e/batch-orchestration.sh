@@ -42,8 +42,8 @@ e2e_run "batch: multi-file HTML rendering" -- \
   "$E2E_BIN" batch "${INPUT_DIR}" --to html --out-dir "$OUT_HTML"
 e2e_expect_exit 0
 e2e_expect_file "${OUT_HTML}/index.html"
-e2e_expect_file "${OUT_HTML}/sub/page1.html"
-e2e_expect_file "${OUT_HTML}/sub/page2.html"
+e2e_expect_file "${OUT_HTML}/page1.html"
+e2e_expect_file "${OUT_HTML}/page2.html"
 
 # --- Batch render to both (HTML + PDF) with JSON output ---
 OUT_BOTH="${WORK}/dist_both"
@@ -52,15 +52,17 @@ e2e_run "batch: multi-file dual-format rendering with JSON receipt" -- \
 e2e_expect_exit 0
 e2e_expect_file "${OUT_BOTH}/index.html"
 e2e_expect_file "${OUT_BOTH}/index.pdf"
-e2e_expect_file "${OUT_BOTH}/sub/page1.html"
-e2e_expect_file "${OUT_BOTH}/sub/page1.pdf"
+e2e_expect_file "${OUT_BOTH}/page1.html"
+e2e_expect_file "${OUT_BOTH}/page1.pdf"
+e2e_expect_file "${OUT_BOTH}/page2.html"
+e2e_expect_file "${OUT_BOTH}/page2.pdf"
 e2e_expect_stdout_contains '"schema":"fmd-batch-receipt-v1"'
-e2e_expect_stdout_contains '"total_inputs":3'
+e2e_expect_stdout_contains '"inputs":3'
+e2e_expect_stdout_contains '"ok":3'
 e2e_assert "batch receipt is valid JSON" -- \
   sh -c "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$E2E_LAST_STDOUT'"
 
-# --- Batch failure isolation ---
-# Add an unreadable or directory conflict and ensure other files succeed
+# --- Batch failure isolation & atomic abort ---
 BAD_DIR="${WORK}/bad_input"
 mkdir -p "$BAD_DIR"
 cat >"${BAD_DIR}/valid.md" <<'EOF'
@@ -68,11 +70,10 @@ cat >"${BAD_DIR}/valid.md" <<'EOF'
 Content here.
 EOF
 
-e2e_run "batch: partial failure isolation" -- \
+e2e_run "batch: strict unexpandable input aborts atomically" -- \
   "$E2E_BIN" batch "${BAD_DIR}/valid.md" "${BAD_DIR}/nonexistent.md" --out-dir "${WORK}/dist_partial"
-# Should complete valid inputs but exit non-zero due to missing input
 e2e_expect_exit 66
-e2e_expect_file "${WORK}/dist_partial/valid.html"
+e2e_expect_no_file "${WORK}/dist_partial/valid.html"
 
 e2e_finish
 exit $?

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use franken_markdown::watch::{
-    ChangeKind, FakeClock, PollWatcher, collect_watch_paths, referenced_local_paths,
+    ChangeKind, ManualClock, PollWatcher, collect_watch_paths, referenced_local_paths,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +48,7 @@ fn rename_into_place_then_css_extra_are_watched() {
     let tmp = dir.join("doc.md.tmp");
     std::fs::write(&md, "# a\n").unwrap();
     std::fs::write(&css, "body{}\n").unwrap();
-    let clock = FakeClock::new();
+    let clock = ManualClock::new();
     let paths = collect_watch_paths(&md, std::slice::from_ref(&css));
     let mut w = PollWatcher::new(paths, Duration::ZERO, clock);
     std::fs::write(&tmp, "# b\n").unwrap();

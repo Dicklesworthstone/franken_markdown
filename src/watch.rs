@@ -37,12 +37,12 @@ impl Clock for SystemClock {
 /// Test clock: clones share an offset so the watcher and the test advance
 /// together.
 #[derive(Clone)]
-pub struct FakeClock {
+pub struct ManualClock {
     origin: Instant,
     offset: Rc<Cell<Duration>>,
 }
 
-impl FakeClock {
+impl ManualClock {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -56,17 +56,18 @@ impl FakeClock {
     }
 }
 
-impl Default for FakeClock {
+impl Default for ManualClock {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Clock for FakeClock {
+impl Clock for ManualClock {
     fn now(&self) -> Instant {
         self.origin + self.offset.get()
     }
 }
+
 
 /// What changed on a watched path after the debounce quiet window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,7 +496,7 @@ mod tests {
         dir
     }
 
-    fn primed(path: &Path, debounce: Duration, clock: FakeClock) -> PollWatcher<FakeClock> {
+    fn primed(path: &Path, debounce: Duration, clock: ManualClock) -> PollWatcher<ManualClock> {
         PollWatcher::new(vec![path.to_path_buf()], debounce, clock)
     }
 
@@ -504,7 +505,7 @@ mod tests {
         let dir = fresh_dir("in-place");
         let path = dir.join("doc.md");
         std::fs::write(&path, "# hi\n").unwrap();
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::from_millis(300), clock.clone());
         log_check(
             "j3e0.1.in_place.prime",
@@ -540,7 +541,7 @@ mod tests {
         let path = dir.join("doc.md");
         let tmp = dir.join("doc.md.tmp");
         std::fs::write(&path, "old\n").unwrap();
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::ZERO, clock.clone());
 
         std::fs::write(&tmp, "new\n").unwrap();
@@ -559,7 +560,7 @@ mod tests {
         let dir = fresh_dir("touch");
         let path = dir.join("doc.md");
         std::fs::write(&path, "same\n").unwrap();
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::ZERO, clock.clone());
 
         let file = std::fs::File::options().write(true).open(&path).unwrap();
@@ -581,7 +582,7 @@ mod tests {
         let dir = fresh_dir("coalesce");
         let path = dir.join("doc.md");
         std::fs::write(&path, "a\n").unwrap();
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::from_millis(300), clock.clone());
 
         std::fs::write(&path, "b\n").unwrap();
@@ -603,7 +604,7 @@ mod tests {
     fn missing_then_created_emits_created() {
         let dir = fresh_dir("create");
         let path = dir.join("doc.md");
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::ZERO, clock.clone());
         std::fs::write(&path, "new\n").unwrap();
         let events = w.poll();
@@ -620,7 +621,7 @@ mod tests {
         let dir = fresh_dir("delete");
         let path = dir.join("doc.md");
         std::fs::write(&path, "x\n").unwrap();
-        let clock = FakeClock::new();
+        let clock = ManualClock::new();
         let mut w = primed(&path, Duration::ZERO, clock.clone());
         std::fs::remove_file(&path).unwrap();
         let events = w.poll();

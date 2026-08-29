@@ -31784,9 +31784,30 @@ mod pdf_writer_tests {
         // Shaped-unique segment corpus: mostly plain ASCII words (fast route),
         // a ligature-bearing slice (general route), and some non-ASCII runs.
         let words = [
-            "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "paragraph",
-            "sentence", "renders", "stream", "output", "bytes", "AVATAR", "checksum",
-            "office", "waffle", "fluff", "difficult", "affix", "café", "über", "日本語",
+            "the",
+            "quick",
+            "brown",
+            "fox",
+            "jumps",
+            "over",
+            "lazy",
+            "dog",
+            "paragraph",
+            "sentence",
+            "renders",
+            "stream",
+            "output",
+            "bytes",
+            "AVATAR",
+            "checksum",
+            "office",
+            "waffle",
+            "fluff",
+            "difficult",
+            "affix",
+            "café",
+            "über",
+            "日本語",
         ];
         let slots = [F_BODY, F_BOLD, F_MONO];
         let corpus: Vec<(u8, &str)> = slots

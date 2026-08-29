@@ -185,18 +185,66 @@ pub fn classify_ascii_whitespace(bytes: &[u8]) -> WhitespaceScan {
     scan
 }
 
+const FLAG_PIPE: u8 = 1 << 0;
+const FLAG_BACKTICK: u8 = 1 << 1;
+const FLAG_TILDE: u8 = 1 << 2;
+const FLAG_DASH: u8 = 1 << 3;
+const FLAG_COLON: u8 = 1 << 4;
+const FLAG_OPEN_ANGLE: u8 = 1 << 5;
+const FLAG_AT: u8 = 1 << 6;
+const FLAG_OPEN_BRACKET: u8 = 1 << 7;
+
+const LINE_CHAR_FLAGS: [u8; 256] = {
+    let mut table = [0u8; 256];
+    table[b'|' as usize] = FLAG_PIPE;
+    table[b'`' as usize] = FLAG_BACKTICK;
+    table[b'~' as usize] = FLAG_TILDE;
+    table[b'-' as usize] = FLAG_DASH;
+    table[b':' as usize] = FLAG_COLON;
+    table[b'<' as usize] = FLAG_OPEN_ANGLE;
+    table[b'@' as usize] = FLAG_AT;
+    table[b'[' as usize] = FLAG_OPEN_BRACKET;
+    table
+};
+
+const MARKDOWN_SPECIAL_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let specials = b"\\\n\r\t#-=*+_`~|[]()<>&:@0123456789";
+    let mut i = 0;
+    while i < specials.len() {
+        table[specials[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
+
+const HTML_ESCAPE_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let escapes = b"&<>\"";
+    let mut i = 0;
+    while i < escapes.len() {
+        table[escapes[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
+
+const PDF_ESCAPE_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let escapes = b"()\\\r\n";
+    let mut i = 0;
+    while i < escapes.len() {
+        table[escapes[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
+
 /// Classify one Markdown source line without allocation.
 #[must_use]
 pub fn scan_markdown_line(line: &str) -> ParserLineScan {
     let bytes = line.as_bytes();
-    let mut contains_pipe = false;
-    let mut contains_backtick = false;
-    let mut contains_tilde = false;
-    let mut contains_dash = false;
-    let mut contains_colon = false;
-    let mut contains_open_angle = false;
-    let mut contains_at = false;
-    let mut contains_open_bracket = false;
+    let mut accum_flags = 0u8;
     let mut has_reference_colon = false;
     let mut maybe_url_prefix = false;
     let mut first_special_byte = None;
@@ -212,17 +260,7 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
                 in_leading_spaces = false;
             }
         }
-        match byte {
-            b'|' => contains_pipe = true,
-            b'`' => contains_backtick = true,
-            b'~' => contains_tilde = true,
-            b'-' => contains_dash = true,
-            b':' => contains_colon = true,
-            b'<' => contains_open_angle = true,
-            b'@' => contains_at = true,
-            b'[' => contains_open_bracket = true,
-            _ => {}
-        }
+        accum_flags |= LINE_CHAR_FLAGS[byte as usize];
         if previous == b']' && byte == b':' {
             has_reference_colon = true;
         }
@@ -242,6 +280,15 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
         && (starts_unordered_list_marker(marker_tail) || starts_ordered_list_marker(marker_tail));
     let first_special_byte =
         first_special_byte.or_else(|| maybe_list_marker.then_some(leading_spaces));
+
+    let contains_pipe = (accum_flags & FLAG_PIPE) != 0;
+    let contains_backtick = (accum_flags & FLAG_BACKTICK) != 0;
+    let contains_tilde = (accum_flags & FLAG_TILDE) != 0;
+    let contains_dash = (accum_flags & FLAG_DASH) != 0;
+    let contains_colon = (accum_flags & FLAG_COLON) != 0;
+    let contains_open_angle = (accum_flags & FLAG_OPEN_ANGLE) != 0;
+    let contains_at = (accum_flags & FLAG_AT) != 0;
+    let contains_open_bracket = (accum_flags & FLAG_OPEN_BRACKET) != 0;
 
     ParserLineScan {
         contains_pipe,
@@ -274,38 +321,19 @@ pub fn scan_table_or_fence_candidate(line: &str) -> TableFenceCandidateScan {
     }
 }
 
+#[inline(always)]
 const fn is_markdown_special_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'\\'
-            | b'\n'
-            | b'\r'
-            | b'\t'
-            | b'#'
-            | b'-'
-            | b'='
-            | b'*'
-            | b'+' // `+` is a CommonMark bullet-list marker, like `-` and `*`
-            | b'_'
-            | b'`'
-            | b'~'
-            | b'|'
-            | b'['
-            | b']'
-            | b'('
-            | b')'
-            | b'<'
-            | b'>'
-            | b'!'
-            | b'&'
-            | b':'
-            | b'@'
-            | b'0'..=b'9'
-    )
+    MARKDOWN_SPECIAL_TABLE[byte as usize]
 }
 
+#[inline(always)]
 const fn is_html_escape_byte(byte: u8) -> bool {
-    matches!(byte, b'&' | b'<' | b'>' | b'"')
+    HTML_ESCAPE_TABLE[byte as usize]
+}
+
+#[inline(always)]
+const fn is_pdf_escape_byte(byte: u8) -> bool {
+    PDF_ESCAPE_TABLE[byte as usize]
 }
 
 fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
@@ -444,10 +472,6 @@ fn word_contains_byte(word: u64, byte: u8) -> bool {
     let repeated = ONES * u64::from(byte);
     let matches = word ^ repeated;
     matches.wrapping_sub(ONES) & !matches & HIGHS != 0
-}
-
-const fn is_pdf_escape_byte(byte: u8) -> bool {
-    matches!(byte, b'(' | b')' | b'\\' | b'\r' | b'\n')
 }
 
 fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {

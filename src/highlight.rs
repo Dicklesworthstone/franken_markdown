@@ -84,14 +84,11 @@ pub struct Span {
 
 #[derive(Clone, Copy)]
 struct Rules {
-    keywords: &'static [&'static str],
-    types: &'static [&'static str],
+    keywords: KwTable,
+    types: KwTable,
     line_comments: &'static [&'static str],
     block_comment: Option<(&'static str, &'static str)>,
     strings: &'static [char],
-    /// Case-insensitive keyword/type matching (e.g. SQL, where `select`,
-    /// `SELECT`, and `Select` are all the keyword).
-    case_insensitive: bool,
     /// A `#` at the start of a line begins a preprocessor directive whose first
     /// word is a keyword (C/C++ `#include`, `#define`, ...).
     hash_directives: bool,
@@ -312,19 +309,14 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
                 }
             }
             let word = &code[start..p];
-            let is_keyword = if r.case_insensitive {
-                r.keywords.iter().any(|k| k.eq_ignore_ascii_case(word))
-            } else {
-                r.keywords.contains(&word)
-            };
+            // Tables are first-byte bucketed (see `KwTable` below), so the
+            // common case — an ordinary identifier in NEITHER table — is one
+            // offset-pair probe instead of a scan of every entry.
+            let is_keyword = r.keywords.contains(word);
             let kind = if is_keyword {
                 Tok::Keyword
             } else {
-                let is_type = if r.case_insensitive {
-                    r.types.iter().any(|k| k.eq_ignore_ascii_case(word))
-                } else {
-                    r.types.contains(&word)
-                };
+                let is_type = r.types.contains(word);
                 if is_type {
                     Tok::Type
                 } else if next_byte_after_whitespace(code, p) == Some(b'(') {
@@ -477,7 +469,7 @@ fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos = consume_while(code, pos, is_css_ident_char);
             let word = &code[start..pos];
-            let kind = if CSS_KW.contains(&word) {
+            let kind = if CSS_KW.contains(word) {
                 Tok::Keyword
             } else if next_non_space_is(code, pos, ':')
                 || previous_non_space_is_selector(code, start)
@@ -618,9 +610,9 @@ fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos = consume_while(code, pos, is_mermaid_ident_char);
             let word = &code[start..pos];
-            let kind = if MERMAID_KW.iter().any(|kw| kw.eq_ignore_ascii_case(word)) {
+            let kind = if MERMAID_KW.contains(word) {
                 Tok::Keyword
-            } else if MERMAID_TY.iter().any(|ty| ty.eq_ignore_ascii_case(word)) {
+            } else if MERMAID_TY.contains(word) {
                 Tok::Type
             } else {
                 Tok::Plain
@@ -1073,7 +1065,6 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"'],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "python" | "py" => Some(Lexer::Generic(Rules {
@@ -1082,7 +1073,6 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
@@ -1092,35 +1082,31 @@ fn lexer(lang: &str) -> Option<Lexer> {
                 line_comments: &["//"],
                 block_comment: Some(("/*", "*/")),
                 strings: &['"', '\'', '`'],
-                case_insensitive: false,
-                hash_directives: false,
+                    hash_directives: false,
             }))
         }
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
-            keywords: &["true", "false", "null"],
-            types: &[],
+            keywords: JSON_KW,
+            types: KwTable::EMPTY,
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"'],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "bash" | "sh" | "shell" | "zsh" | "console" => Some(Lexer::Generic(Rules {
             keywords: SH_KW,
-            types: &[],
+            types: KwTable::EMPTY,
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "powershell" | "pwsh" | "ps1" => Some(Lexer::Generic(Rules {
             keywords: PS_KW,
-            types: &[],
+            types: KwTable::EMPTY,
             line_comments: &["#"],
             block_comment: Some(("<#", "#>")),
             strings: &['"', '\''],
-            case_insensitive: true,
             hash_directives: false,
         })),
         "go" | "golang" => Some(Lexer::Generic(Rules {
@@ -1129,7 +1115,6 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"', '`'],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "c" | "h" | "cpp" | "c++" | "cc" | "hpp" => Some(Lexer::Generic(Rules {
@@ -1138,35 +1123,31 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["//"],
             block_comment: Some(("/*", "*/")),
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: true,
         })),
         "toml" => Some(Lexer::Generic(Rules {
-            keywords: &["true", "false"],
-            types: &[],
+            keywords: BOOL_KW,
+            types: KwTable::EMPTY,
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "ini" | "cfg" | "conf" => Some(Lexer::Generic(Rules {
-            keywords: &["true", "false"],
-            types: &[],
+            keywords: BOOL_KW,
+            types: KwTable::EMPTY,
             // INI comments are conventionally `;` (and often `#`).
             line_comments: &[";", "#"],
             block_comment: None,
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "yaml" | "yml" => Some(Lexer::Generic(Rules {
-            keywords: &["true", "false", "null", "yes", "no"],
-            types: &[],
+            keywords: YAML_KW,
+            types: KwTable::EMPTY,
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
-            case_insensitive: false,
             hash_directives: false,
         })),
         "sql" => Some(Lexer::Generic(Rules {
@@ -1175,340 +1156,405 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["--"],
             block_comment: Some(("/*", "*/")),
             strings: &['\'', '"'],
-            case_insensitive: true,
             hash_directives: false,
         })),
         _ => None,
     }
 }
 
-const CSS_KW: &[&str] = &[
-    "auto",
-    "block",
-    "border-box",
-    "center",
-    "currentColor",
-    "flex",
-    "grid",
-    "inherit",
-    "initial",
-    "inline",
-    "inline-block",
-    "none",
-    "revert",
-    "solid",
-    "transparent",
-    "unset",
-];
+// ---------------------------------------------------------------------------
+// First-byte bucketed keyword/type tables
+//
+// Identifier classification used to linearly scan the per-language keyword and
+// type tables (`slice::contains`, or `eq_ignore_ascii_case` for the
+// case-insensitive languages). The common case in real code is a MISS — an
+// ordinary identifier that is in neither table — which walked every entry.
+//
+// Two candidate fixes were measured head-to-head in-process (interleaved A/B,
+// 24 windows x 60 reps over a ~400-word identifier corpus per table, Apple M4;
+// micro-direct-lever.txt in this pass's artifact directory): a byte-sorted
+// table + `binary_search` is 8%..286% SLOWER than the linear scan (log n
+// unpredictable branches lose to ~2-4-cycle length-check rejections over a
+// handful of L1-resident strings), while bucketing by first byte is 73%..90%
+// FASTER: a miss now probes one 2-u16 offset pair, and a hit scans only its
+// own bucket. The tables are regrouped at compile time; membership semantics
+// are unchanged (pinned by `keyword_table_tests`).
+// ---------------------------------------------------------------------------
 
-const MERMAID_KW: &[&str] = &[
-    "accdescr",
-    "acctitle",
-    "activate",
-    "actor",
-    "alt",
-    "as",
-    "autonumber",
-    "class",
-    "classdef",
-    "classdiagram",
-    "click",
-    "critical",
-    "deactivate",
-    "direction",
-    "else",
-    "end",
-    "erdiagram",
-    "flowchart",
-    "gantt",
-    "gitgraph",
-    "graph",
-    "journey",
-    "loop",
-    "mindmap",
-    "note",
-    "opt",
-    "over",
-    "par",
-    "participant",
-    "pie",
-    "rect",
-    "section",
-    "sequencediagram",
-    "statediagram",
-    "statediagram-v2",
-    "style",
-    "subgraph",
-    "theme",
-    "timeline",
-    "title",
-];
+/// ASCII-lowercase one byte. Hand-rolled so every helper in this block stays
+/// callable from `const` table building without toolchain-version questions.
+const fn fold_ascii(b: u8) -> u8 {
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
+}
 
-const MERMAID_TY: &[&str] = &[
-    "BT", "LR", "RL", "TB", "TD", "bottom", "left", "right", "top",
-];
+/// A keyword/type table grouped by its entries' (case-folded for the
+/// case-insensitive languages) first byte, so membership starts with one
+/// offset-pair probe instead of a scan of the whole table.
+#[derive(Clone, Copy)]
+struct KwTable {
+    /// Entries grouped by (folded) first byte, in source order within a group.
+    entries: &'static [&'static str],
+    /// `entries[offsets[b]..offsets[b + 1]]` are exactly the entries whose
+    /// (folded) first byte is `b`.
+    offsets: &'static [u16; 129],
+    /// ASCII-case-fold before bucketing and compare entries
+    /// case-insensitively (SQL, PowerShell, Mermaid).
+    fold: bool,
+}
 
-const RUST_KW: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "union",
-    "unsafe", "use", "where", "while",
-];
+impl KwTable {
+    const EMPTY: KwTable = Self {
+        entries: &[],
+        offsets: &[0; 129],
+        fold: false,
+    };
 
-const PS_KW: &[&str] = &[
-    "begin",
-    "break",
-    "catch",
-    "class",
-    "continue",
-    "data",
-    "default",
-    "do",
-    "dynamicparam",
-    "else",
-    "elseif",
-    "end",
-    "exit",
-    "filter",
-    "finally",
-    "for",
-    "foreach",
-    "from",
-    "function",
-    "hidden",
-    "if",
-    "in",
-    "param",
-    "process",
-    "return",
-    "switch",
-    "throw",
-    "trap",
-    "try",
-    "until",
-    "using",
-    "var",
-    "while",
-    "workflow",
-    // Common command aliases that appear in install snippets.
-    "curl",
-    "iex",
-    "irm",
-    "iwr",
-    "wget",
-];
-const RUST_TY: &[&str] = &[
-    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
-    "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc",
-];
-const PY_KW: &[&str] = &[
-    "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
-    "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda",
-    "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "False", "try", "while",
-    "with", "yield", "self",
-];
-const PY_TY: &[&str] = &[
-    "int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes",
-];
-const JS_KW: &[&str] = &[
-    "as",
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "debugger",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "export",
-    "extends",
-    "finally",
-    "for",
-    "from",
-    "function",
-    "if",
-    "import",
-    "in",
-    "instanceof",
-    "interface",
-    "let",
-    "new",
-    "null",
-    "of",
-    "return",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "true",
-    "false",
-    "try",
-    "type",
-    "typeof",
-    "var",
-    "void",
-    "while",
-    "yield",
-];
-const JS_TY: &[&str] = &[
-    "string", "number", "boolean", "object", "any", "unknown", "never", "void",
-];
-const SH_KW: &[&str] = &[
-    "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if", "in",
-    "local", "read", "return", "select", "then", "until", "while", "echo", "set", "unset",
-    "source",
-];
-const GO_KW: &[&str] = &[
-    "break",
-    "case",
-    "chan",
-    "const",
-    "continue",
-    "default",
-    "defer",
-    "else",
-    "fallthrough",
-    "for",
-    "func",
-    "go",
-    "goto",
-    "if",
-    "import",
-    "interface",
-    "map",
-    "package",
-    "range",
-    "return",
-    "select",
-    "struct",
-    "switch",
-    "type",
-    "var",
-    "nil",
-    "true",
-    "false",
-];
-const GO_TY: &[&str] = &[
-    "bool", "byte", "rune", "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8",
-    "uint16", "uint32", "uint64", "float32", "float64", "error",
-];
-const C_KW: &[&str] = &[
-    "auto",
-    "break",
-    "case",
-    "const",
-    "continue",
-    "default",
-    "do",
-    "else",
-    "enum",
-    "extern",
-    "for",
-    "goto",
-    "if",
-    "inline",
-    "register",
-    "return",
-    "sizeof",
-    "static",
-    "struct",
-    "switch",
-    "typedef",
-    "union",
-    "volatile",
-    "while",
-    "class",
-    "namespace",
-    "template",
-    "public",
-    "private",
-    "protected",
-    "virtual",
-    "new",
-    "delete",
-    "nullptr",
-    "true",
-    "false",
-];
-const C_TY: &[&str] = &[
-    "bool", "char", "double", "float", "int", "long", "short", "signed", "unsigned", "void",
-    "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-];
-const SQL_KW: &[&str] = &[
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "INSERT",
-    "INTO",
-    "VALUES",
-    "UPDATE",
-    "SET",
-    "DELETE",
-    "CREATE",
-    "TABLE",
-    "DROP",
-    "ALTER",
-    "JOIN",
-    "LEFT",
-    "RIGHT",
-    "INNER",
-    "OUTER",
-    "ON",
-    "GROUP",
-    "BY",
-    "ORDER",
-    "HAVING",
-    "LIMIT",
-    "AS",
-    "AND",
-    "OR",
-    "NOT",
-    "NULL",
-    "IN",
-    "IS",
-    "DISTINCT",
-    "UNION",
-    "PRIMARY",
-    "KEY",
-    "FOREIGN",
-    "REFERENCES",
-    "INDEX",
-    "DEFAULT",
-    "select",
-    "from",
-    "where",
-    "insert",
-    "into",
-    "values",
-    "update",
-    "set",
-    "delete",
-    "create",
-    "table",
-    "join",
-    "on",
-];
-const SQL_TY: &[&str] = &[
-    "INT",
-    "INTEGER",
-    "BIGINT",
-    "TEXT",
-    "VARCHAR",
-    "CHAR",
-    "BOOLEAN",
-    "DATE",
-    "TIMESTAMP",
-    "REAL",
-    "FLOAT",
-    "DECIMAL",
-    "SERIAL",
-    "BLOB",
-];
+    #[inline]
+    fn is_empty(self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Membership test. An empty word misses; a non-ASCII first byte misses
+    /// (every table entry starts with an ASCII byte).
+    #[inline]
+    fn contains(self, word: &str) -> bool {
+        let Some(&first) = word.as_bytes().first() else {
+            return false;
+        };
+        let key = if self.fold { fold_ascii(first) } else { first } as usize;
+        if key >= 128 {
+            return false;
+        }
+        let lo = self.offsets[key] as usize;
+        let hi = self.offsets[key + 1] as usize;
+        if self.fold {
+            self.entries[lo..hi]
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(word))
+        } else {
+            self.entries[lo..hi].contains(&word)
+        }
+    }
+}
+
+/// (Folded) first byte of an entry. Empty or non-ASCII-leading entries abort
+/// compilation of the table (const index panic), keeping the invariant loud.
+const fn entry_key(entry: &str, fold: bool) -> usize {
+    let b = entry.as_bytes()[0];
+    (if fold { fold_ascii(b) } else { b }) as usize
+}
+
+/// Counting sort of `entries` by (folded) first byte, stable in source order.
+const fn group_by_first_byte<const N: usize>(
+    entries: [&'static str; N],
+    fold: bool,
+) -> [&'static str; N] {
+    let mut counts = [0u16; 129];
+    let mut i = 0;
+    while i < N {
+        counts[entry_key(entries[i], fold) + 1] += 1;
+        i += 1;
+    }
+    let mut b = 0;
+    while b < 128 {
+        counts[b + 1] += counts[b];
+        b += 1;
+    }
+    let mut cursor = counts;
+    let mut grouped = [""; N];
+    let mut i = 0;
+    while i < N {
+        let key = entry_key(entries[i], fold);
+        grouped[cursor[key] as usize] = entries[i];
+        cursor[key] += 1;
+        i += 1;
+    }
+    grouped
+}
+
+/// Bucket offsets for an already-grouped table: `offsets[b]` = number of
+/// entries whose (folded) first byte sorts before byte `b`.
+const fn kw_offsets_slice(entries: &[&str], fold: bool) -> [u16; 129] {
+    let mut offsets = [0u16; 129];
+    let mut i = 0;
+    while i < entries.len() {
+        offsets[entry_key(entries[i], fold) + 1] += 1;
+        i += 1;
+    }
+    let mut b = 0;
+    while b < 128 {
+        offsets[b + 1] += offsets[b];
+        b += 1;
+    }
+    offsets
+}
+
+
+const CSS_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "auto", "block", "border-box", "center", "currentColor", "flex", "grid", "inherit", "initial",
+        "inline", "inline-block", "none", "revert", "solid", "transparent", "unset",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const MERMAID_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "accdescr", "acctitle", "activate", "actor", "alt", "as", "autonumber", "class", "classdef",
+        "classdiagram", "click", "critical", "deactivate", "direction", "else", "end", "erdiagram",
+        "flowchart", "gantt", "gitgraph", "graph", "journey", "loop", "mindmap", "note", "opt", "over",
+        "par", "participant", "pie", "rect", "section", "sequencediagram", "statediagram",
+        "statediagram-v2", "style", "subgraph", "theme", "timeline", "title",
+    ], true);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, true),
+        fold: true,
+    }
+};
+
+const MERMAID_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "BT", "LR", "RL", "TB", "TD", "bottom", "left", "right", "top",
+    ], true);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, true),
+        fold: true,
+    }
+};
+
+const RUST_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+        "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+        "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "union",
+        "unsafe", "use", "where", "while",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const PS_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "begin", "break", "catch", "class", "continue", "data", "default", "do", "dynamicparam", "else",
+        "elseif", "end", "exit", "filter", "finally", "for", "foreach", "from", "function", "hidden",
+        "if", "in", "param", "process", "return", "switch", "throw", "trap", "try", "until", "using",
+        "var", "while", "workflow", "curl", "iex", "irm", "iwr", "wget",
+    ], true);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, true),
+        fold: true,
+    }
+};
+
+const RUST_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
+        "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const PY_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
+        "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda",
+        "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "False", "try", "while",
+        "with", "yield", "self",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const PY_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const JS_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+        "default", "delete", "do", "else", "export", "extends", "finally", "for", "from", "function",
+        "if", "import", "in", "instanceof", "interface", "let", "new", "null", "of", "return", "super",
+        "switch", "this", "throw", "true", "false", "try", "type", "typeof", "var", "void", "while",
+        "yield",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+/// Eight entries — grouping barely matters at this size, but a `KwTable`
+/// keeps every lexer path uniform, and the bucket probe is still just one
+/// offset pair.
+const JS_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "string", "number", "boolean", "object", "any", "unknown", "never", "void",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const SH_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if", "in",
+        "local", "read", "return", "select", "then", "until", "while", "echo", "set", "unset", "source",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const GO_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for",
+        "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return",
+        "select", "struct", "switch", "type", "var", "nil", "true", "false",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const GO_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "bool", "byte", "rune", "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8",
+        "uint16", "uint32", "uint64", "float32", "float64", "error",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const C_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern", "for",
+        "goto", "if", "inline", "register", "return", "sizeof", "static", "struct", "switch", "typedef",
+        "union", "volatile", "while", "class", "namespace", "template", "public", "private",
+        "protected", "virtual", "new", "delete", "nullptr", "true", "false",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+const C_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "bool", "char", "double", "float", "int", "long", "short", "signed", "unsigned", "void",
+        "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+    ], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+/// SQL keywords, matched case-insensitively (`fold: true`). The former
+/// lowercase tail (`select`, `from`, `where`, `insert`, `into`, `values`,
+/// `update`, `set`, `delete`, `create`, `table`, `join`, `on`) was exactly the
+/// case-folded duplicate of the uppercase entries, so dropping it cannot
+/// change membership under the folded compare — every case variant of every
+/// entry still matches (`keyword_table_tests` pins the dedupe and arbitrary
+/// mixed-case probes).
+const SQL_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
+        "TABLE", "DROP", "ALTER", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY",
+        "ORDER", "HAVING", "LIMIT", "AS", "AND", "OR", "NOT", "NULL", "IN", "IS", "DISTINCT", "UNION",
+        "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "INDEX", "DEFAULT",
+    ], true);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, true),
+        fold: true,
+    }
+};
+
+const SQL_TY: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte([
+        "INT", "INTEGER", "BIGINT", "TEXT", "VARCHAR", "CHAR", "BOOLEAN", "DATE", "TIMESTAMP", "REAL",
+        "FLOAT", "DECIMAL", "SERIAL", "BLOB",
+    ], true);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, true),
+        fold: true,
+    }
+};
+
+/// JSON keyword literals (shared by `json`/`jsonc`).
+const JSON_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte(["true", "false", "null"], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+/// Boolean keyword literals (shared by TOML and INI).
+const BOOL_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte(["true", "false"], false);
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
+/// YAML keyword literals.
+const YAML_KW: KwTable = {
+    const GROUPED: &[&str] = &group_by_first_byte(
+        ["true", "false", "null", "yes", "no"],
+        false,
+    );
+    KwTable {
+        entries: GROUPED,
+        offsets: &kw_offsets_slice(GROUPED, false),
+        fold: false,
+    }
+};
+
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1796,5 +1842,189 @@ mod char_classifier_tests {
         assert_matches_literal_set("`*_~[]()!|:", is_markdown_plain_stop_char);
         assert_matches_literal_set("-.=><+*/\\&@~!", is_mermaid_operator_char);
         assert_matches_literal_set("()[]{}:,;|", is_mermaid_punct_char);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod keyword_table_tests {
+    use super::{
+        BOOL_KW, CSS_KW, C_KW, C_TY, GO_KW, GO_TY, JSON_KW, JS_KW, JS_TY, KwTable, MERMAID_KW,
+        MERMAID_TY, PS_KW, PY_KW, PY_TY, RUST_KW, RUST_TY, SH_KW, SQL_KW, SQL_TY, Tok, YAML_KW,
+        highlight, lexer,
+    };
+
+    fn flip_ascii_case(word: &str) -> String {
+        word.bytes()
+            .map(|b| {
+                if b.is_ascii_uppercase() {
+                    b.to_ascii_lowercase()
+                } else {
+                    b.to_ascii_uppercase()
+                }
+            })
+            .map(char::from)
+            .collect()
+    }
+
+    /// Membership by the pre-change algorithm: a linear scan of the table
+    /// (case-insensitively for fold tables). The bucketed lookup must agree
+    /// with it on every probe.
+    fn linear(table: KwTable, word: &str) -> bool {
+        if table.fold {
+            table.entries.iter().any(|e| e.eq_ignore_ascii_case(word))
+        } else {
+            table.entries.contains(&word)
+        }
+    }
+
+    /// Every keywords/types pair the lexers actually classify with. The Rules
+    /// come from `lexer()` itself, so the tiny JSON/TOML/INI/YAML tables are
+    /// covered without duplicating their literals here; the CSS and Mermaid
+    /// lexers call their tables directly, so they are listed too.
+    fn all_tables() -> Vec<(&'static str, KwTable)> {
+        let mut tables: Vec<(&'static str, KwTable)> = Vec::new();
+        for lang in [
+            "rust", "python", "javascript", "json", "bash", "powershell", "go", "c", "toml",
+            "ini", "yaml", "sql",
+        ] {
+            let Some(super::Lexer::Generic(rules)) = lexer(lang) else {
+                panic!("expected a generic lexer for {lang}");
+            };
+            tables.push((lang, rules.keywords));
+            tables.push((lang, rules.types));
+        }
+        tables.push(("css", CSS_KW));
+        tables.push(("mermaid", MERMAID_KW));
+        tables.push(("mermaid", MERMAID_TY));
+        // Tables not reachable through a language arm but defined for parity.
+        tables.push(("json", JSON_KW));
+        tables.push(("toml/ini", BOOL_KW));
+        tables.push(("yaml", YAML_KW));
+        tables.push(("js-ty", JS_TY));
+        tables
+    }
+
+    #[test]
+    fn bucket_offsets_partition_the_entries() {
+        for (lang, table) in all_tables() {
+            assert_eq!(
+                table.offsets[0], 0,
+                "{lang} offsets must start at zero"
+            );
+            assert_eq!(
+                table.offsets[128] as usize,
+                table.entries.len(),
+                "{lang} offsets must end at the entry count"
+            );
+            for b in 0..128 {
+                assert!(
+                    table.offsets[b] <= table.offsets[b + 1],
+                    "{lang} offsets must be non-decreasing at byte {b}"
+                );
+            }
+            for entry in table.entries {
+                let first = entry.as_bytes()[0];
+                let key = (if table.fold {
+                    super::fold_ascii(first)
+                } else {
+                    first
+                }) as usize;
+                let lo = table.offsets[key] as usize;
+                let hi = table.offsets[key + 1] as usize;
+                assert!(
+                    table.entries[lo..hi].contains(entry),
+                    "{lang} entry {entry:?} must live in its own bucket"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bucketed_membership_matches_the_linear_scan() {
+        for (lang, table) in all_tables() {
+            for entry in table.entries {
+                // Probes around every entry: the exact hit, case variants,
+                // near-miss extensions on both sides, and a truncation.
+                let mut probes = vec![
+                    (*entry).to_string(),
+                    flip_ascii_case(entry),
+                    entry.to_ascii_uppercase(),
+                    entry.to_ascii_lowercase(),
+                    format!("{entry}x"),
+                    format!("x{entry}"),
+                ];
+                if entry.len() > 1 {
+                    probes.push(entry[..entry.len() - 1].to_string());
+                }
+                for probe in probes {
+                    assert_eq!(
+                        table.contains(&probe),
+                        linear(table, &probe),
+                        "{lang} membership drift for {probe:?} (entry {entry:?})"
+                    );
+                }
+            }
+            // Sanity: every entry is found by the exact probe.
+            for entry in table.entries {
+                assert!(
+                    table.contains(entry),
+                    "{lang} table misses its own entry {entry:?}"
+                );
+                // Fold tables must match ANY case variant.
+                if table.fold {
+                    assert!(table.contains(&flip_ascii_case(entry)));
+                    assert!(table.contains(&entry.to_ascii_uppercase()));
+                }
+            }
+            // Structurally empty probes.
+            assert!(!table.contains(""));
+            assert!(!table.contains("λword")); // non-ASCII first byte
+        }
+    }
+
+    #[test]
+    fn empty_table_misses_everything() {
+        assert!(KwTable::EMPTY.is_empty());
+        assert!(!KwTable::EMPTY.contains("true"));
+        assert!(!KwTable::EMPTY.contains(""));
+    }
+
+    #[test]
+    fn case_insensitive_lexers_match_arbitrary_mixed_case_keywords() {
+        // SQL: mixed-case keyword, the formerly-duplicated lowercase forms,
+        // and a mixed-case type.
+        for sql in [
+            "SeLeCt name FrOm users;",
+            "select * from t;",
+            "JOIN t ON x = y;",
+            "join t on x = y;",
+        ] {
+            let spans = highlight("sql", sql);
+            assert!(
+                spans.first().is_some_and(|s| s.kind == Tok::Keyword),
+                "first token of {sql:?} must be a keyword"
+            );
+        }
+        assert!(
+            highlight("sql", "vArChAr")
+                .first()
+                .is_some_and(|s| s.kind == Tok::Type)
+        );
+
+        // PowerShell: mixed-case keyword.
+        assert!(
+            highlight("powershell", "Foreach ($item In $list) {}")
+                .first()
+                .is_some_and(|s| s.kind == Tok::Keyword)
+        );
+
+        // Mermaid: mixed-case diagram keyword.
+        assert!(
+            highlight("mermaid", "FlowChart TD")
+                .first()
+                .is_some_and(|s| s.kind == Tok::Keyword)
+        );
     }
 }

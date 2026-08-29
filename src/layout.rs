@@ -2524,6 +2524,12 @@ pub fn break_paragraph_into(
     out: &mut Vec<LineBreak>,
 ) {
     out.clear();
+    // Pareto fronts from a previous paragraph (the production scratch is
+    // reused across the whole document) must never be visible to this one:
+    // `pareto_fronts.get(prev_idx)` would return another paragraph's states —
+    // wrong items, wrong classes, corrupt reconstruction. Cleared
+    // unconditionally at entry so every early-return path below is safe.
+    scratch.pareto_fronts.clear();
     let candidate_stats = break_candidates_into(items, &mut scratch.candidates);
     if scratch.candidates.is_empty() {
         scratch.forced_prefix.clear();
@@ -2569,11 +2575,6 @@ pub fn break_paragraph_into(
     }
 
     scratch.states.clear();
-    // Pareto fronts from a previous paragraph (the production scratch is
-    // reused across the whole document) must never be visible to this one:
-    // `pareto_fronts.get(prev_idx)` would return another paragraph's states
-    // — wrong items, wrong classes, corrupt reconstruction.
-    scratch.pareto_fronts.clear();
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
         if scratch.pareto_breaking() {

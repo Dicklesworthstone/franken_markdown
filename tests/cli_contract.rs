@@ -2871,3 +2871,44 @@ fn font_scale_presets_render_pdf_successfully() {
     let _ = fs::remove_file(input);
     let _ = fs::remove_file(out_pdf);
 }
+
+#[test]
+fn fmd_stats_emits_human_and_json_reports() {
+    let input = temp_file("stats-test-in", "md");
+    fs::write(
+        &input,
+        "# Guide to Rust\n\nRust provides memory safety without garbage collection.\n\n## Concurrency\n\nFearless concurrency is a core feature.\n\n> [!NOTE]\n> Read the official documentation.\n",
+    )
+    .unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // Human report
+    let res_human = fmd(&["stats", input_s]);
+    assert_eq!(
+        res_human.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_human.stderr)
+    );
+    let human_out = text(&res_human.stdout);
+    assert!(human_out.contains("=== Document Intelligence Report ==="));
+    assert!(human_out.contains("H1 Guide to Rust (#guide-to-rust)"));
+    assert!(human_out.contains("H2 Concurrency (#concurrency)"));
+    assert!(human_out.contains("Callouts: 1"));
+
+    // JSON report
+    let res_json = fmd(&["stats", input_s, "--json"]);
+    assert_eq!(
+        res_json.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_json.stderr)
+    );
+    let json_out = text(&res_json.stdout);
+    assert!(json_out.contains("\"schema\":\"fmd-document-stats-v1\""));
+    assert!(json_out.contains("\"headings_total\":2"));
+    assert!(json_out.contains("\"callouts_total\":1"));
+    assert!(json_out.contains("\"reading_time_secs\""));
+
+    let _ = fs::remove_file(input);
+}

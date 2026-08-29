@@ -153,7 +153,10 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
             findings.push(DocFinding {
                 severity: "warning",
                 code: "undefined_footnote",
-                message: format!("footnote reference '[^{}]' has no matching definition", fref),
+                message: format!(
+                    "footnote reference '[^{}]' has no matching definition",
+                    fref
+                ),
             });
         }
     }
@@ -531,11 +534,7 @@ fn analyze_inlines(
                 *characters += code.chars().filter(|c| !c.is_whitespace()).count();
                 process_prose_text(code, words, characters, sentences, syllables);
             }
-            Inline::Link {
-                dest,
-                content,
-                ..
-            } => {
+            Inline::Link { dest, content, .. } => {
                 structure.links_total += 1;
                 if let Some(anchor) = dest.strip_prefix('#') {
                     structure.links_internal_anchors += 1;
@@ -642,7 +641,10 @@ fn count_syllables_in_word(word: &str) -> usize {
     if (bytes.ends_with(b"ed") || bytes.ends_with(b"es"))
         && count > 1
         && len > 4
-        && !matches!(bytes[len - 3], b't' | b'd' | b's' | b'z' | b'c' | b'g' | b'j')
+        && !matches!(
+            bytes[len - 3],
+            b't' | b'd' | b's' | b'z' | b'c' | b'g' | b'j'
+        )
     {
         count -= 1;
     }
@@ -653,8 +655,14 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut s = String::new();
     for inl in inlines {
         match inl {
-            Inline::Text(t) | Inline::Code(t) | Inline::Html(t) | Inline::Math(t) | Inline::DisplayMath(t) => s.push_str(t),
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => s.push_str(&inlines_to_plain(c)),
+            Inline::Text(t)
+            | Inline::Code(t)
+            | Inline::Html(t)
+            | Inline::Math(t)
+            | Inline::DisplayMath(t) => s.push_str(t),
+            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                s.push_str(&inlines_to_plain(c))
+            }
             Inline::Link { content, .. } => s.push_str(&inlines_to_plain(content)),
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => s.push(' '),
@@ -694,34 +702,71 @@ impl DocumentStats {
         out.push_str(&format!("\"characters\":{},", self.characters));
         out.push_str(&format!("\"sentences\":{},", self.sentences));
         out.push_str(&format!("\"syllables\":{},", self.syllables));
-        out.push_str(&format!("\"reading_time_secs\":{},", self.reading_time_secs));
-        out.push_str(&format!("\"speaking_time_secs\":{},", self.speaking_time_secs));
-        out.push_str(&format!("\"flesch_reading_ease\":{:.2},", self.flesch_reading_ease));
-        out.push_str(&format!("\"flesch_kincaid_grade\":{:.2},", self.flesch_kincaid_grade));
-        out.push_str(&format!("\"reading_ease_label\":\"{}\",", self.reading_ease_label));
+        out.push_str(&format!(
+            "\"reading_time_secs\":{},",
+            self.reading_time_secs
+        ));
+        out.push_str(&format!(
+            "\"speaking_time_secs\":{},",
+            self.speaking_time_secs
+        ));
+        out.push_str(&format!(
+            "\"flesch_reading_ease\":{:.2},",
+            self.flesch_reading_ease
+        ));
+        out.push_str(&format!(
+            "\"flesch_kincaid_grade\":{:.2},",
+            self.flesch_kincaid_grade
+        ));
+        out.push_str(&format!(
+            "\"reading_ease_label\":\"{}\",",
+            self.reading_ease_label
+        ));
 
         // Structure
         out.push_str("\"structure\":{");
-        out.push_str(&format!("\"headings_total\":{},", self.structure.headings_total));
+        out.push_str(&format!(
+            "\"headings_total\":{},",
+            self.structure.headings_total
+        ));
         out.push_str(&format!(
             "\"headings_by_level\":[{}],",
-            self.structure.headings_by_level.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+            self.structure
+                .headings_by_level
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         ));
         out.push_str(&format!("\"paragraphs\":{},", self.structure.paragraphs));
         out.push_str(&format!("\"code_blocks\":{},", self.structure.code_blocks));
         out.push_str(&format!(
             "\"code_languages\":[{}],",
-            self.structure.code_languages.iter().map(|l| format!("\"{}\"", json_escape(l))).collect::<Vec<_>>().join(",")
+            self.structure
+                .code_languages
+                .iter()
+                .map(|l| format!("\"{}\"", json_escape(l)))
+                .collect::<Vec<_>>()
+                .join(",")
         ));
         out.push_str(&format!("\"tables\":{},", self.structure.tables));
         out.push_str(&format!("\"table_rows\":{},", self.structure.table_rows));
         out.push_str(&format!("\"table_cells\":{},", self.structure.table_cells));
         out.push_str(&format!("\"lists\":{},", self.structure.lists));
         out.push_str(&format!("\"list_items\":{},", self.structure.list_items));
-        out.push_str(&format!("\"task_items_total\":{},", self.structure.task_items_total));
-        out.push_str(&format!("\"task_items_completed\":{},", self.structure.task_items_completed));
+        out.push_str(&format!(
+            "\"task_items_total\":{},",
+            self.structure.task_items_total
+        ));
+        out.push_str(&format!(
+            "\"task_items_completed\":{},",
+            self.structure.task_items_completed
+        ));
         out.push_str(&format!("\"blockquotes\":{},", self.structure.blockquotes));
-        out.push_str(&format!("\"callouts_total\":{},", self.structure.callouts_total));
+        out.push_str(&format!(
+            "\"callouts_total\":{},",
+            self.structure.callouts_total
+        ));
         out.push_str("\"callouts_by_kind\":{");
         let callout_entries: Vec<String> = self
             .structure
@@ -732,13 +777,28 @@ impl DocumentStats {
         out.push_str(&callout_entries.join(","));
         out.push_str("},");
         out.push_str(&format!("\"math_blocks\":{},", self.structure.math_blocks));
-        out.push_str(&format!("\"math_inlines\":{},", self.structure.math_inlines));
+        out.push_str(&format!(
+            "\"math_inlines\":{},",
+            self.structure.math_inlines
+        ));
         out.push_str(&format!("\"links_total\":{},", self.structure.links_total));
-        out.push_str(&format!("\"links_external\":{},", self.structure.links_external));
-        out.push_str(&format!("\"links_internal_anchors\":{},", self.structure.links_internal_anchors));
+        out.push_str(&format!(
+            "\"links_external\":{},",
+            self.structure.links_external
+        ));
+        out.push_str(&format!(
+            "\"links_internal_anchors\":{},",
+            self.structure.links_internal_anchors
+        ));
         out.push_str(&format!("\"images\":{},", self.structure.images));
-        out.push_str(&format!("\"footnote_definitions\":{},", self.structure.footnote_definitions));
-        out.push_str(&format!("\"footnote_references\":{}", self.structure.footnote_references));
+        out.push_str(&format!(
+            "\"footnote_definitions\":{},",
+            self.structure.footnote_definitions
+        ));
+        out.push_str(&format!(
+            "\"footnote_references\":{}",
+            self.structure.footnote_references
+        ));
         out.push_str("},");
 
         // Outline
@@ -860,15 +920,26 @@ impl DocumentStats {
             s.push_str("--- Outline ---\n");
             for h in &self.outline {
                 let indent = "  ".repeat((h.level.saturating_sub(1)) as usize);
-                s.push_str(&format!("{}H{} {} (#{})\n", indent, h.level, h.text, h.slug));
+                s.push_str(&format!(
+                    "{}H{} {} (#{})\n",
+                    indent, h.level, h.text, h.slug
+                ));
             }
             s.push('\n');
         }
 
         if !self.findings.is_empty() {
-            s.push_str(&format!("--- Findings ({} issues) ---\n", self.findings.len()));
+            s.push_str(&format!(
+                "--- Findings ({} issues) ---\n",
+                self.findings.len()
+            ));
             for f in &self.findings {
-                s.push_str(&format!("[{}] ({}): {}\n", f.severity.to_uppercase(), f.code, f.message));
+                s.push_str(&format!(
+                    "[{}] ({}): {}\n",
+                    f.severity.to_uppercase(),
+                    f.code,
+                    f.message
+                ));
             }
         } else {
             s.push_str("--- Health: Clean (0 issues) ---\n");
@@ -962,8 +1033,23 @@ Paragraph with [Broken Link](#nonexistent-anchor) and [Footnote Reference][^1].
         let doc = parse_markdown(md);
         let stats = compute_doc_stats(md, &doc);
 
-        assert!(stats.findings.iter().any(|f| f.code == "heading_hierarchy_skip"));
-        assert!(stats.findings.iter().any(|f| f.code == "broken_internal_anchor"));
-        assert!(stats.findings.iter().any(|f| f.code == "undefined_footnote"));
+        assert!(
+            stats
+                .findings
+                .iter()
+                .any(|f| f.code == "heading_hierarchy_skip")
+        );
+        assert!(
+            stats
+                .findings
+                .iter()
+                .any(|f| f.code == "broken_internal_anchor")
+        );
+        assert!(
+            stats
+                .findings
+                .iter()
+                .any(|f| f.code == "undefined_footnote")
+        );
     }
 }

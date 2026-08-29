@@ -152,6 +152,11 @@ struct RenderState<'a> {
     /// Bounded per-render cache for repeated non-consecutive code blocks.
     highlight_cache: Vec<HighlightCacheEntry>,
     highlight_cache_next: usize,
+    /// Bounded per-render cache for repeated formulas. Keyed by the trimmed
+    /// TeX source plus the display flag — the exact inputs fmd_math::parse
+    /// and to_mathml consume (see push_mathml_cached for the purity audit).
+    math_cache: Vec<MathCacheEntry>,
+    math_cache_next: usize,
     /// Bounded per-render cache for repeated link/image destinations.
     url_cache: Vec<UrlCacheEntry>,
     url_cache_next: usize,
@@ -163,6 +168,16 @@ struct HighlightCacheEntry {
     rendered_html: String,
 }
 
+struct MathCacheEntry {
+    tex: String,
+    display: bool,
+    mathml: String,
+}
+
+const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
+const MATH_CACHE_MAX_ENTRIES: usize = 16;
+const URL_CACHE_MAX_ENTRIES: usize = 32;
+
 struct UrlCacheEntry {
     context: UrlContext,
     raw_url: String,
@@ -173,9 +188,6 @@ struct UrlCacheEntry {
     trim_start: usize,
     trim_end: usize,
 }
-
-const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
-const URL_CACHE_MAX_ENTRIES: usize = 32;
 
 impl<'a> RenderState<'a> {
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
@@ -247,6 +259,55 @@ impl<'a> RenderState<'a> {
 
         self.highlight_cache[self.highlight_cache_next] = entry;
         self.highlight_cache_next = (self.highlight_cache_next + 1) % HIGHLIGHT_CACHE_MAX_ENTRIES;
+    }
+
+    /// Render MathML for one formula, memoized on (tex.trim(), display).
+    ///
+    /// Purity: `fmd_math::parse` is a pure function of its source string (the
+    /// only state it touches is an idempotent empty `MacroSet` OnceLock, and
+    /// `\newcommand` expansion is driven by the source itself), and
+    /// `to_mathml` reads nothing but the parsed node and the display flag —
+    /// no render options or surrounding context enter either call. So the
+    /// MathML bytes are exactly a function of (trimmed tex, display), which
+    /// is the cache key. Unparseable sources return false and are NOT cached:
+    /// their fallback output embeds the untrimmed tex, so it varies beyond
+    /// the key (and the fallback is a cheap escape, not worth memoizing).
+    /// Returns true when MathML was pushed.
+    fn push_mathml_cached(&mut self, tex: &str, display: bool, out: &mut String) -> bool {
+        let trimmed = tex.trim();
+        if let Some(entry) = self
+            .math_cache
+            .iter()
+            .find(|entry| entry.display == display && entry.tex == trimmed)
+        {
+            out.push_str(&entry.mathml);
+            return true;
+        }
+
+        match fmd_math::parse(trimmed) {
+            Ok(node) => {
+                let mathml = fmd_math::to_mathml(&node, display);
+                out.push_str(&mathml);
+                self.remember_math(trimmed, display, mathml);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn remember_math(&mut self, trimmed: &str, display: bool, mathml: String) {
+        let entry = MathCacheEntry {
+            tex: trimmed.to_string(),
+            display,
+            mathml,
+        };
+        if self.math_cache.len() < MATH_CACHE_MAX_ENTRIES {
+            self.math_cache.push(entry);
+            return;
+        }
+
+        self.math_cache[self.math_cache_next] = entry;
+        self.math_cache_next = (self.math_cache_next + 1) % MATH_CACHE_MAX_ENTRIES;
     }
 
     fn safe_url_cached<'u>(&mut self, url: &'u str, context: UrlContext) -> Option<&'u str> {
@@ -402,18 +463,15 @@ fn render_block<'a, 'b>(
         Block::DefinitionList(items) => render_definition_list(items, out, opts, state),
         Block::Table(table) => render_table(table, out, opts, state),
         Block::ThematicBreak => out.push_str("<hr>\n"),
-        Block::MathBlock(tex) => match fmd_math::parse(tex.trim()) {
-            Ok(node) => {
-                let mathml = fmd_math::to_mathml(&node, true);
-                out.push_str(&mathml);
+        Block::MathBlock(tex) => {
+            if state.push_mathml_cached(tex, true, out) {
                 out.push('\n');
-            }
-            Err(_) => {
+            } else {
                 out.push_str("<div class=\"math display\">\\[");
                 push_escaped_text(tex, out);
                 out.push_str("\\]</div>\n");
             }
-        },
+        }
         Block::HtmlBlock(html) => {
             if opts.allow_raw_html {
                 out.push_str(html);
@@ -640,28 +698,20 @@ fn render_inlines(
                     push_escaped_text(h, out);
                 }
             }
-            Inline::Math(tex) => match fmd_math::parse(tex.trim()) {
-                Ok(node) => {
-                    let mathml = fmd_math::to_mathml(&node, false);
-                    out.push_str(&mathml);
-                }
-                Err(_) => {
+            Inline::Math(tex) => {
+                if !state.push_mathml_cached(tex, false, out) {
                     out.push_str("<span class=\"math inline\">\\(");
                     push_escaped_text(tex, out);
                     out.push_str("\\)</span>");
                 }
-            },
-            Inline::DisplayMath(tex) => match fmd_math::parse(tex.trim()) {
-                Ok(node) => {
-                    let mathml = fmd_math::to_mathml(&node, true);
-                    out.push_str(&mathml);
-                }
-                Err(_) => {
+            }
+            Inline::DisplayMath(tex) => {
+                if !state.push_mathml_cached(tex, true, out) {
                     out.push_str("<span class=\"math display\">\\[");
                     push_escaped_text(tex, out);
                     out.push_str("\\]</span>");
                 }
-            },
+            }
         }
     }
 }
@@ -2683,7 +2733,8 @@ mod tests {
     use crate::{HtmlOptions, PdfImageAsset};
 
     use super::{
-        FontCharSet, HTML_FONT_SEED, RenderState, UrlContext, ascii_char_mask, ascii_char_masks,
+        FontCharSet, HTML_FONT_SEED, MATH_CACHE_MAX_ENTRIES, RenderState, UrlContext,
+        ascii_char_mask, ascii_char_masks,
         base64_encode, css_num, css_token, css_without_remote_imports, emit_highlighted_spans,
         escape_attr, escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
         html_image_asset_mime, initial_body_capacity, inlines_to_plain, push_escaped_attr,
@@ -2864,6 +2915,81 @@ mod tests {
                 "third lookup stays byte-stable for {url:?}"
             );
         }
+    }
+
+    #[test]
+    fn math_cache_memoizes_formulas_by_trimmed_source_and_display() {
+        let mut state = RenderState::default();
+        let raw = "  \\frac{a}{b} + c^2  ";
+        let mut inline_out = String::new();
+        assert!(
+            state.push_mathml_cached(raw, false, &mut inline_out),
+            "parsable formula must push MathML"
+        );
+        assert_eq!(state.math_cache.len(), 1);
+
+        // Same formula with different surrounding whitespace: identical
+        // trimmed key, so still one entry and byte-identical output.
+        let mut hit_out = String::new();
+        assert!(state.push_mathml_cached("\\frac{a}{b} + c^2", false, &mut hit_out));
+        assert_eq!(
+            state.math_cache.len(),
+            1,
+            "trimmed-equal formulas share one cache entry"
+        );
+        assert_eq!(hit_out, inline_out);
+
+        // The display flag is part of the key: a separate entry whose MathML
+        // differs from the inline form.
+        let mut display_out = String::new();
+        assert!(state.push_mathml_cached(raw, true, &mut display_out));
+        assert_eq!(state.math_cache.len(), 2);
+        assert_ne!(display_out, inline_out);
+
+        // Hit bytes equal a fresh uncached parse+render of the same formula.
+        let node = fmd_math::parse(raw.trim()).unwrap();
+        let mut fresh = String::new();
+        fresh.push_str(&fmd_math::to_mathml(&node, false));
+        assert_eq!(inline_out, fresh);
+
+        // Unparseable sources push no MathML and are not cached.
+        let mut bad_out = String::new();
+        assert!(!state.push_mathml_cached("{x \\right) y}", false, &mut bad_out));
+        assert!(bad_out.is_empty());
+        assert_eq!(
+            state.math_cache.len(),
+            2,
+            "parse failures must not evict or add cache entries"
+        );
+    }
+
+    #[test]
+    fn math_cache_caps_at_bound_and_repeated_formulas_render_deterministically() {
+        let mut state = RenderState::default();
+        let mut out = String::new();
+        for i in 0..(MATH_CACHE_MAX_ENTRIES + 8) {
+            let tex = format!("x^{i} + y_{i}");
+            assert!(state.push_mathml_cached(&tex, i % 2 == 0, &mut out));
+        }
+        assert_eq!(
+            state.math_cache.len(),
+            MATH_CACHE_MAX_ENTRIES,
+            "ring eviction must cap the cache at the bound"
+        );
+
+        // End-to-end: the same formula repeated across paragraphs, inline
+        // display math, and a math block renders byte-identically on every
+        // pass (determinism doctrine), exercising miss and hit paths alike.
+        let src = "Intro $E = mc^2$ here.\n\nBody repeats $E = mc^2$ plus $$\\int_0^1 x\\,dx$$.\n\n$$E = mc^2$$\n";
+        let doc = crate::parse_markdown(src);
+        let opts = crate::HtmlOptions::default();
+        let first = super::render(&doc, &opts);
+        let second = super::render(&doc, &opts);
+        assert_eq!(first, second);
+        assert!(
+            first.contains("<math"),
+            "math-heavy input must emit MathML, got: {first}"
+        );
     }
 
     #[test]

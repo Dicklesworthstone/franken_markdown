@@ -19465,17 +19465,29 @@ impl Palette {
     }
 }
 
-/// Parse a `#rrggbb` theme token into a PDF device-RGB triple in `0.0..=1.0`.
+/// Parse a `#rrggbb` or `#rgb` theme token into a PDF device-RGB triple in `0.0..=1.0`.
 /// Falls back to black on malformed input so rendering stays infallible.
 fn hex_rgb(hex: &str) -> (f32, f32, f32) {
     let s = hex.trim();
     let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() == 3 {
+        let r = u8::from_str_radix(s.get(0..1).unwrap_or(""), 16).ok();
+        let g = u8::from_str_radix(s.get(1..2).unwrap_or(""), 16).ok();
+        let b = u8::from_str_radix(s.get(2..3).unwrap_or(""), 16).ok();
+        if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+            return (
+                f32::from(r * 17) / 255.0,
+                f32::from(g * 17) / 255.0,
+                f32::from(b * 17) / 255.0,
+            );
+        }
+    }
     let component = |range: std::ops::Range<usize>| -> Option<f32> {
         let byte = u8::from_str_radix(s.get(range)?, 16).ok()?;
         Some(f32::from(byte) / 255.0)
     };
     match (component(0..2), component(2..4), component(4..6)) {
-        (Some(r), Some(g), Some(b)) if s.len() == 6 => (r, g, b),
+        (Some(r), Some(g), Some(b)) if s.len() >= 6 => (r, g, b),
         _ => (0.0, 0.0, 0.0),
     }
 }

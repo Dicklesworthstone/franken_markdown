@@ -1932,9 +1932,6 @@ fn parse_reference_definition_label(line: &str) -> Option<String> {
 }
 
 fn parse_reference_destination_line(line: &str) -> Option<(String, Option<String>)> {
-    if leading_spaces(line) > 3 {
-        return None;
-    }
     let t = trim_start_space_tab(line);
     if t.is_empty() {
         return None;
@@ -1965,9 +1962,6 @@ fn parse_reference_title_line(line: &str) -> Option<String> {
         return Some(title);
     }
 
-    if leading_spaces(line) > 3 {
-        return None;
-    }
     let t = trim_start_space_tab(line);
     if t.is_empty() {
         return None;
@@ -2023,10 +2017,14 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
         t[start..i].to_string()
     };
 
+    let spaces_start = i;
     skip_ascii_spaces(bytes, &mut i);
     let title = if i >= bytes.len() {
         None
     } else {
+        if i == spaces_start {
+            return None;
+        }
         let close_ch = match bytes[i] {
             b'"' => b'"',
             b'\'' => b'\'',
@@ -2057,7 +2055,7 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
 }
 
 fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
-    if leading_spaces(line) > 3 || !line.is_ascii() {
+    if !line.is_ascii() {
         return None;
     }
     let t = trim_start_space_tab(line);

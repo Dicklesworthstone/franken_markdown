@@ -1818,6 +1818,117 @@ impl Kerning {
         }
         0
     }
+
+    /// Enumerates the ASCII byte pairs this kerning adjusts, replacing the
+    /// 16,384-pair brute force over [`Kerning::pair`].
+    ///
+    /// For every byte pair `(l, r)` with `pair(glyph_of(l), glyph_of(r)) != 0`
+    /// — where `glyph_of` maps the 128 ASCII bytes to glyph ids, possibly
+    /// several bytes to one glyph — calls `emit(l, r, v)` with `v` exactly
+    /// equal to that `pair` result (first matching subtable wins, defined
+    /// zeros shadow later subtables just like `pair`). Pairs resolving to 0
+    /// are never emitted: a zero-initialized matrix already holds their value,
+    /// so `emit` fires once per nonzero cell. The order of `emit` calls across
+    /// distinct pairs is unspecified (format-1 pair maps hash-scatter), so
+    /// `emit` must be order-independent.
+    ///
+    /// Cost is proportional to what the tables actually contain — format-1
+    /// pair-map entries and format-2 coverage glyphs — instead of the full
+    /// 128x128 cross product.
+    pub fn for_each_ascii_pair(
+        &self,
+        glyph_of: impl Fn(u8) -> u16,
+        mut emit: impl FnMut(u8, u8, i16),
+    ) {
+        let glyphs: [u16; 128] = std::array::from_fn(|b| glyph_of(b as u8));
+        // Byte index sorted by glyph id so a subtable pair locates its bytes
+        // with two binary searches; duplicate gids stay as duplicate entries.
+        let mut by_glyph: Vec<(u16, u8)> = glyphs
+            .iter()
+            .enumerate()
+            .map(|(b, &g)| (g, b as u8))
+            .collect();
+        by_glyph.sort_unstable();
+
+        // A defined zero must still shadow later subtables, so track which
+        // cells any subtable has defined — not which are nonzero.
+        let mut defined = [[false; 128]; 128];
+
+        for st in &self.subtables {
+            match st {
+                KernSubtable::Format1 { pairs } => {
+                    for (&key, &v) in pairs {
+                        let left = (key >> 16) as u16;
+                        let right = (key & 0xFFFF) as u16;
+                        let ls = by_glyph.partition_point(|&(g, _)| g < left);
+                        let le = by_glyph.partition_point(|&(g, _)| g <= left);
+                        let rs = by_glyph.partition_point(|&(g, _)| g < right);
+                        let re = by_glyph.partition_point(|&(g, _)| g <= right);
+                        for &(_, l) in &by_glyph[ls..le] {
+                            for &(_, r) in &by_glyph[rs..re] {
+                                let row = &mut defined[usize::from(l)];
+                                if row[usize::from(r)] {
+                                    continue;
+                                }
+                                row[usize::from(r)] = true;
+                                if v != 0 {
+                                    emit(l, r, v);
+                                }
+                            }
+                        }
+                    }
+                }
+                KernSubtable::Format2 {
+                    coverage,
+                    class1,
+                    class2,
+                    class1_count,
+                    class2_count,
+                    matrix,
+                } => {
+                    // A covered first glyph defines an adjustment for every
+                    // second glyph, so walk the 128x128 cells but hoist the
+                    // coverage search and both class lookups out of the walk.
+                    let c2_of: [u16; 128] =
+                        std::array::from_fn(|b| class2.class(glyphs[b]));
+                    let c1_count = usize::from(*class1_count);
+                    let c2_count = usize::from(*class2_count);
+                    for l in 0..128u8 {
+                        if coverage.binary_search(&glyphs[usize::from(l)]).is_err() {
+                            continue;
+                        }
+                        let c1 = usize::from(class1.class(glyphs[usize::from(l)]));
+                        for r in 0..128u8 {
+                            let row = &mut defined[usize::from(l)];
+                            if row[usize::from(r)] {
+                                continue;
+                            }
+                            // Mirror `lookup` exactly: out-of-range classes
+                            // and empty value records are a defined zero; an
+                            // index that cannot be computed leaves the pair
+                            // undefined for this subtable.
+                            let value = if c1 >= c1_count
+                                || usize::from(c2_of[usize::from(r)]) >= c2_count
+                                || matrix.is_empty()
+                            {
+                                Some(0)
+                            } else {
+                                c1.checked_mul(c2_count)
+                                    .and_then(|m| m.checked_add(usize::from(c2_of[usize::from(r)])))
+                                    .map(|idx| matrix.get(idx).copied().unwrap_or(0))
+                            };
+                            if let Some(v) = value {
+                                row[usize::from(r)] = true;
+                                if v != 0 {
+                                    emit(l, r, v);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// ValueRecord byte size = popcount(valueFormat) * 2.
@@ -3927,6 +4038,164 @@ mod synthetic_font_tests {
         };
         assert_eq!(kerning.pair(5, 6), 0);
         assert_eq!(kerning.pair(4, 6), 0);
+    }
+
+    #[test]
+    fn for_each_ascii_pair_matches_brute_force_pair_on_bundled_faces() {
+        // Every bundled face that ships GPOS kerning — IBM Plex Sans carries
+        // the richest tables — must produce, via enumeration, exactly the
+        // matrix that probing all 16,384 ASCII byte pairs through `pair`
+        // produces. Also checks the "nonzero cells only" emission contract.
+        let base = env!("CARGO_MANIFEST_DIR");
+        let mut any_kerning_face = false;
+        for path in [
+            "/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+            "/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+            "/fonts/computer-modern/cmunrm.ttf",
+            "/fonts/computer-modern/cmuntt.ttf",
+            "/fonts/noto-sans-math/NotoSansMathSymbols.ttf",
+        ] {
+            let Ok(bytes) = std::fs::read(format!("{base}{path}")) else {
+                continue;
+            };
+            let Ok(font) = Font::parse(bytes) else {
+                continue;
+            };
+            let kern = font.gpos_kerning();
+            let glyphs: [u16; 128] = std::array::from_fn(|b| font.glyph_index(b as u8 as char));
+            let nonzero_pairs = kern
+                .subtables
+                .iter()
+                .map(|st| match st {
+                    KernSubtable::Format1 { pairs } => pairs.len(),
+                    KernSubtable::Format2 { coverage, .. } => coverage.len() * 128,
+                })
+                .sum::<usize>();
+            if nonzero_pairs == 0 {
+                continue;
+            }
+            any_kerning_face = true;
+
+            let mut enumerated = [0i16; 128 * 128];
+            let mut emitted = 0usize;
+            kern.for_each_ascii_pair(|b| glyphs[usize::from(b)], |l, r, v| {
+                enumerated[usize::from(l) * 128 + usize::from(r)] = v;
+                emitted += 1;
+            });
+
+            let mut brute = [0i16; 128 * 128];
+            for l in 0..128usize {
+                for r in 0..128usize {
+                    brute[l * 128 + r] = kern.pair(glyphs[l], glyphs[r]);
+                }
+            }
+            assert_eq!(enumerated, brute, "enumeration != brute force for {path}");
+            assert_eq!(
+                emitted,
+                brute.iter().filter(|&&v| v != 0).count(),
+                "emission count != nonzero cells for {path}"
+            );
+        }
+        assert!(
+            any_kerning_face,
+            "test is vacuous: no bundled face has GPOS kerning"
+        );
+    }
+
+    #[test]
+    fn for_each_ascii_pair_first_match_duplicate_glyphs_and_zero_shadowing() {
+        // glyph_of: bytes 10..=12 -> gids 5..=7, bytes 13 and 14 both -> gid 9
+        // (duplicate mapping), everything else -> its own gid.
+        let glyph_of = |b: u8| -> u16 {
+            match b {
+                10..=12 => u16::from(b) - 5,
+                13 | 14 => 9,
+                other => u16::from(other),
+            }
+        };
+
+        let covered_all_rights = KernSubtable::Format2 {
+            coverage: vec![5],
+            class1: ClassDef::Format1 {
+                start: 5,
+                classes: vec![1],
+            },
+            class2: ClassDef::Format1 {
+                start: 6,
+                classes: vec![1, 1],
+            },
+            class1_count: 2,
+            class2_count: 2,
+            // (c1=1, c2=1) -> -25 for rights of class 1 (gids 6, 7);
+            // (c1=1, c2=0) -> 30 for rights of class 0 (incl. gid 9).
+            matrix: vec![0, 0, 30, -25],
+        };
+        let specific = KernSubtable::Format1 {
+            pairs: PairMap::from_iter([(pair_key(5, 6), -99), (pair_key(9, 9), -12)]),
+        };
+        let out_of_range_class_zero = KernSubtable::Format2 {
+            coverage: vec![9],
+            class1: ClassDef::Format1 {
+                start: 9,
+                classes: vec![9], // class 9 >= class1_count 2 -> defined 0
+            },
+            class2: ClassDef::Format2 {
+                ranges: Vec::new(),
+                dense: true,
+            },
+            class1_count: 2,
+            class2_count: 2,
+            matrix: vec![0; 4],
+        };
+        let defined_zero = KernSubtable::Format1 {
+            pairs: PairMap::from_iter([(pair_key(6, 6), 0)]),
+        };
+        let shadowed = KernSubtable::Format1 {
+            pairs: PairMap::from_iter([(pair_key(6, 6), -77)]),
+        };
+
+        let kerning = Kerning {
+            subtables: vec![
+                covered_all_rights,
+                specific,
+                out_of_range_class_zero,
+                defined_zero,
+                shadowed,
+            ],
+        };
+
+        let mut enumerated = [0i16; 128 * 128];
+        kerning.for_each_ascii_pair(glyph_of, |l, r, v| {
+            enumerated[usize::from(l) * 128 + usize::from(r)] = v;
+        });
+        let mut brute = [0i16; 128 * 128];
+        for l in 0..128usize {
+            for r in 0..128usize {
+                brute[l * 128 + r] = kerning.pair(glyph_of(l as u8), glyph_of(r as u8));
+            }
+        }
+        assert_eq!(enumerated, brute);
+
+        // Spot-check the first-match story: the format-2 subtable wins over
+        // the format-1 (5,6) pair; both duplicate bytes carry (9,9); the
+        // defined zero on (6,6) shadows the later -77; rights outside every
+        // class stay 0.
+        let cell = |l: u8, r: u8| enumerated[usize::from(l) * 128 + usize::from(r)];
+        assert_eq!(cell(10, 11), -25); // gids (5,6): format 2 beats -99
+        assert_eq!(cell(10, 12), -25); // gids (5,7)
+        assert_eq!(cell(10, 13), 30); // gids (5,9): class-0 right
+        assert_eq!(cell(13, 13), -12); // gids (9,9): format 1 beats the zero
+        assert_eq!(cell(13, 14), -12);
+        assert_eq!(cell(14, 13), -12);
+        assert_eq!(cell(14, 14), -12);
+        assert_eq!(cell(11, 11), 0); // gids (6,6): defined 0 shadows -77
+        assert_eq!(cell(13, 11), 0); // gids (9,6): out-of-range class -> 0
+
+        // An empty kerning enumerates nothing.
+        let mut calls = 0;
+        Kerning::default().for_each_ascii_pair(glyph_of, |_, _, _| calls += 1);
+        assert_eq!(calls, 0);
     }
 
     #[test]

@@ -1417,8 +1417,8 @@ struct Face {
     /// the general path computes, so results are bit-for-bit equal. When every
     /// face part is borrowed from the bundled-font registry statics, the
     /// tables are memoized process-wide (see [`ascii_tables_for_parts`]) so
-    /// repeat renders reuse one `Arc` instead of rebuilding 128 cmap lookups
-    /// and 16,384 `Kerning::pair` probes per face.
+    /// repeat renders reuse one `Arc` instead of rebuilding the 128 cmap
+    /// lookups and the kern matrix per face.
     ascii: std::sync::OnceLock<std::sync::Arc<AsciiWidthTables>>,
 }
 
@@ -1500,8 +1500,8 @@ fn ascii_tables_for_parts(
 
 /// Build the ASCII fast tables from a face's parts: 128 cmap glyph ids with
 /// their 1/1000-em advances, the dense 128x128 kern matrix, and the per-byte
-/// ligature-start flags. This is the original per-face computation, unchanged;
-/// only where the result is stored differs.
+/// ligature-start flags. Values are identical to what the general path
+/// computes, so results are bit-for-bit equal.
 fn build_ascii_tables(font: &Font, kern: &Kerning, lig: &Ligatures) -> AsciiWidthTables {
     let mut advances = [0u32; 128];
     let mut lig_start = [false; 128];
@@ -1517,12 +1517,16 @@ fn build_ascii_tables(font: &Font, kern: &Kerning, lig: &Ligatures) -> AsciiWidt
     let upm = i32::from(font.units_per_em);
     let mut kern_pairs = vec![0i32; 128 * 128];
     if upm != 0 {
-        for l in 0usize..128 {
-            for r in 0usize..128 {
-                kern_pairs[l * 128 + r] =
-                    i32::from(kern.pair(glyph_ids[l], glyph_ids[r])) * 1000 / upm;
-            }
-        }
+        // Enumerate only the pairs the GPOS tables actually define (format-1
+        // pair entries / format-2 coverage glyphs) instead of probing all
+        // 16,384 cells through `Kerning::pair`; undefined cells keep the 0
+        // the full probe would have stored.
+        kern.for_each_ascii_pair(
+            |b| glyph_ids[usize::from(b)],
+            |l, r, v| {
+                kern_pairs[usize::from(l) * 128 + usize::from(r)] = i32::from(v) * 1000 / upm;
+            },
+        );
     }
     AsciiWidthTables {
         advances,

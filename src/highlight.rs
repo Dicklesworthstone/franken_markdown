@@ -163,10 +163,15 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         // Whitespace run.
         if c.is_whitespace() {
             let start = pos;
+            let bytes = code.as_bytes();
             while pos < len {
-                match code[pos..].chars().next() {
-                    Some(w) if w.is_whitespace() => pos += w.len_utf8(),
-                    _ => break,
+                let b = bytes[pos];
+                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                    pos += 1;
+                } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
+                    pos += first_char_at(code, pos).len_utf8();
+                } else {
+                    break;
                 }
             }
             spans.push(Span {
@@ -268,10 +273,18 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         if c.is_ascii_digit() {
             let start = pos;
             let mut p = pos;
+            let bytes = code.as_bytes();
             while p < len {
-                let ch = first_char_at(code, p);
-                if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' {
-                    p += ch.len_utf8();
+                let b = bytes[p];
+                if b.is_ascii_alphanumeric() || b == b'.' || b == b'_' {
+                    p += 1;
+                } else if b >= 0x80 {
+                    let ch = first_char_at(code, p);
+                    if ch.is_alphanumeric() || ch == '.' || ch == '_' {
+                        p += ch.len_utf8();
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -289,10 +302,18 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         if c == '_' || c.is_alphabetic() {
             let start = pos;
             let mut p = pos;
+            let bytes = code.as_bytes();
             while p < len {
-                let ch = first_char_at(code, p);
-                if ch == '_' || ch.is_alphanumeric() {
-                    p += ch.len_utf8();
+                let b = bytes[p];
+                if b == b'_' || b.is_ascii_alphanumeric() {
+                    p += 1;
+                } else if b >= 0x80 {
+                    let ch = first_char_at(code, p);
+                    if ch == '_' || ch.is_alphanumeric() {
+                        p += ch.len_utf8();
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -649,16 +670,26 @@ fn push_span(spans: &mut Vec<Span>, kind: Tok, start: usize, end: usize) {
     spans.push(Span { kind, start, end });
 }
 
-#[inline]
+#[inline(always)]
 fn first_char_in_nonempty(text: &str) -> char {
     debug_assert!(!text.is_empty());
-    text.chars().next().unwrap_or('\0')
+    let b = text.as_bytes()[0];
+    if b < 0x80 {
+        b as char
+    } else {
+        text.chars().next().unwrap_or('\0')
+    }
 }
 
-#[inline]
+#[inline(always)]
 fn first_char_at(code: &str, pos: usize) -> char {
     debug_assert!(pos < code.len());
-    first_char_in_nonempty(&code[pos..])
+    let b = code.as_bytes()[pos];
+    if b < 0x80 {
+        b as char
+    } else {
+        first_char_in_nonempty(&code[pos..])
+    }
 }
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {

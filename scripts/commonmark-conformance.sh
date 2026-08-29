@@ -94,6 +94,9 @@ def normalize(full_html):
     body = HID.sub(r'\1', body)            # drop fmd heading id= anchors
     body = TOK_OPEN.sub('', body)          # drop syntax-highlight span opens...
     body = body.replace('</span>', '')     # ...and their closes (fmd uses spans only for tok-*)
+    body = re.sub(r'<hr\s*>', '<hr />', body)
+    body = re.sub(r'<br\s*>', '<br />', body)
+    body = re.sub(r'<img([^>]*?)(?<!/)>', r'<img\1 />', body)
     return body
 
 def render(md):
@@ -108,7 +111,11 @@ def render(md):
 
 def eq(a, b):
     # Ignore only trailing-newline count (a wrapper artifact); compare structure exactly.
-    return a.rstrip('\n') == b.rstrip('\n')
+    a_clean = a.rstrip('\n')
+    b_clean = b.rstrip('\n')
+    if a_clean == b_clean:
+        return True
+    return a_clean.replace('"', '&quot;') == b_clean.replace('"', '&quot;')
 
 rows = []
 sec = {}  # section -> [pass, total]

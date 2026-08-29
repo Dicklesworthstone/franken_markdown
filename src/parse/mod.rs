@@ -3500,8 +3500,10 @@ fn parse_inlines_chars_with_refs_profiled(
                     els.push(InlineEl::Node(Inline::Code(normalize_code_span(&inner))));
                     i = end + n;
                 } else {
-                    buf.push(c);
-                    i += 1;
+                    for _ in 0..n {
+                        buf.push('`');
+                    }
+                    i += n;
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {

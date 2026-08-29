@@ -1471,10 +1471,10 @@ fn valid_url_scheme(scheme: &str) -> bool {
 fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
     match context {
         UrlContext::Link => {
-            scheme.eq_ignore_ascii_case("http")
-                || scheme.eq_ignore_ascii_case("https")
-                || scheme.eq_ignore_ascii_case("mailto")
-                || scheme.eq_ignore_ascii_case("tel")
+            !scheme.eq_ignore_ascii_case("javascript")
+                && !scheme.eq_ignore_ascii_case("vbscript")
+                && !scheme.eq_ignore_ascii_case("data")
+                && !scheme.eq_ignore_ascii_case("file")
         }
         UrlContext::Image => {
             scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")

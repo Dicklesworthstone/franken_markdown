@@ -846,19 +846,22 @@ impl Poster {
         };
 
         let table_top = self.y;
-        // Header row on a subtle stripe.
+        // Header row on a subtle stripe: record the insertion point so the
+        // background rectangle precedes the header glyphs in painter's order
+        // without calling draw_row twice.
+        let ops_start = self.ops.len();
         let header_h = draw_row(self, &table.head, true, table_top);
-        self.ops.push(Op::Rect {
-            x: l,
-            y: table_top,
-            w: avail,
-            h: header_h,
-            fill: Ink::BgSubtle,
-            stroke: None,
-        });
-        // Repaint header text above the stripe.
-        let header_h2 = draw_row(self, &table.head, true, table_top);
-        debug_assert_eq!(header_h, header_h2);
+        self.ops.insert(
+            ops_start,
+            Op::Rect {
+                x: l,
+                y: table_top,
+                w: avail,
+                h: header_h,
+                fill: Ink::BgSubtle,
+                stroke: None,
+            },
+        );
         let mut row_top = table_top + header_h;
         let mut bottoms = vec![row_top];
         for row in &table.rows {

@@ -485,7 +485,15 @@ fn deflate_fixed_with_scratch(
         // untouched, so later calls stay byte-identical to fresh tables.
         let mut head = vec![0usize; HASH_SIZE];
         let mut prev = vec![0usize; n];
-        deflate_fixed_lz77::<usize>(data, bw, adler, abort_after_body_len, 1, &mut head, &mut prev)
+        deflate_fixed_lz77::<usize>(
+            data,
+            bw,
+            adler,
+            abort_after_body_len,
+            1,
+            &mut head,
+            &mut prev,
+        )
     }
 }
 
@@ -1366,8 +1374,7 @@ mod tests {
         }
         let payloads: [&[u8]; 3] = [b"abcabcabc", repeated.as_bytes(), lcg.as_slice()];
         for data in payloads {
-            let via_u32 =
-                deflate_fixed_with_scratch(data, None, &mut ZlibCompressScratch::new());
+            let via_u32 = deflate_fixed_with_scratch(data, None, &mut ZlibCompressScratch::new());
             let mut bw = BitWriter::with_capacity(fixed_body_capacity_hint(data.len(), None));
             let adler = Adler32::new();
             // Block header: BFINAL = 1, BTYPE = 01, exactly as the wrapper
@@ -1504,8 +1511,7 @@ mod tests {
         // interrupted mid-run), else the flush-at-match path is untested:
         // with ~6.7 KiB of match-covered bytes the fixed body comes out
         // clearly below the input length, unlike a literals-only payload.
-        let fixed_mixed =
-            deflate_fixed_with_scratch(&mixed, None, &mut ZlibCompressScratch::new());
+        let fixed_mixed = deflate_fixed_with_scratch(&mixed, None, &mut ZlibCompressScratch::new());
         assert!(fixed_mixed.complete);
         assert!(
             fixed_mixed.body.len() < mixed.len(),

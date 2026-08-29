@@ -2106,8 +2106,12 @@ pub struct LineBreak {
     /// Coarse stretch/shrink class used to discourage visually abrupt adjacent
     /// lines.
     pub fitness: FitnessClass,
-    /// Cumulative demerits through this line.
-    pub demerits: i64,
+    /// Fine-grained fitness in per-mille of the stretch/shrink ratio (Verna
+    /// DocEng '25): floor(10 * LSAR + 0.5) * 100, giving 10%-wide classes
+    /// from -1000 (fully tight) to +1000 (fully loose). Used for gradual
+    /// adjacent demerits when the paragraph policy enables it; the coarse
+    /// FitnessClass above remains the classic KP state-tracking key.
+    pub fitness_milli: i32,
 }
 
 /// Coarse TeX-style line fitness class.

@@ -285,3 +285,16 @@ fn theme_colors_are_attribute_escaped() {
     );
     assert_well_formed(&out);
 }
+
+#[test]
+fn table_header_emitted_once_and_glyphs_counted_accurately() {
+    // Single-character table header and body.
+    let (out, report) = render_str("| H |\n|---|\n| B |\n");
+    assert_well_formed(&out);
+    // Exactly 2 glyph instances: 'H' (header) and 'B' (body).
+    assert_eq!(
+        report.glyphs_drawn, 2,
+        "header glyph must not be counted twice: {report:?}"
+    );
+    assert_eq!(count_occurrences(&out, "<use href="), 2);
+}

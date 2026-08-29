@@ -19704,7 +19704,7 @@ fn serialize(
 
     // Subset each used face to the characters it renders, and keep the parsed
     // subset (its cmap gives the new glyph ids we encode in the content stream).
-    let mut subsets: Vec<EmbeddedFace> = Vec::with_capacity(used_slots.len());
+    let mut subsets: Vec<EmbeddedFace<'_>> = Vec::with_capacity(used_slots.len());
     let mut shaped_cache: ShapedRunCache =
         std::array::from_fn(|slot_idx| HashMap::with_capacity(slot_texts[slot_idx].texts.len()));
     let mut shape_cache_hits = 0usize;
@@ -19865,8 +19865,8 @@ fn serialize(
             slot,
             bytes,
             font,
-            kern: face.kern.clone().into_owned(),
-            lig: face.lig.clone().into_owned(),
+            kern: face.kern.as_ref(),
+            lig: face.lig.as_ref(),
             map_lookup,
             cmap_chars: keep,
             lig_uni,
@@ -20023,7 +20023,7 @@ fn empty_page_content() -> PageContent {
 fn retained_pdf_bytes(
     pages: &[PageContent],
     compressed: &[OwnedPdfStream],
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     images: &[PdfImageData],
 ) -> usize {
     let mut n = 0usize;
@@ -20058,7 +20058,7 @@ fn check_retained_ceiling(
     max: Option<usize>,
     pages: &[PageContent],
     compressed: &[OwnedPdfStream],
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     images: &[PdfImageData],
 ) -> Result<()> {
     let Some(max) = max else {
@@ -20103,7 +20103,7 @@ fn serialize_pages(
     faces: &Faces,
     page: PageGeom,
     palette: &Palette,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     shaped_cache: &ShapedRunCache,
     heading_meta: &BTreeMap<u32, HeadingMeta>,
@@ -20153,7 +20153,7 @@ fn serialize_pages_monolithic(
     faces: &Faces,
     page: PageGeom,
     palette: &Palette,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     shaped_cache: &ShapedRunCache,
     heading_meta: &BTreeMap<u32, HeadingMeta>,
@@ -20215,7 +20215,7 @@ fn serialize_pages_chunked(
     faces: &Faces,
     page: PageGeom,
     palette: &Palette,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     shaped_cache: &ShapedRunCache,
     heading_meta: &BTreeMap<u32, HeadingMeta>,
@@ -20539,7 +20539,7 @@ fn finish_serialized_pages(
     precompressed: Option<Vec<OwnedPdfStream>>,
     page_buffer_reserved_bytes: usize,
     stream_generation_started: Option<PdfStageStart>,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     images: &[PdfImageData],
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
@@ -20597,7 +20597,7 @@ fn generate_page_content(
     palette: &Palette,
     opts: &PdfOptions,
     faces: &Faces,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     shaped_cache: &ShapedRunCache,
     heading_meta: &BTreeMap<u32, HeadingMeta>,
@@ -21696,7 +21696,7 @@ struct SvgPaintResources<'a> {
 
 #[derive(Clone, Copy)]
 struct SvgTextDrawResources<'a> {
-    subsets: &'a [EmbeddedFace],
+    subsets: &'a [EmbeddedFace<'a>],
     subset_lookup: &'a EmbeddedFaceLookup,
     faces: &'a Faces,
     shaped_cache: &'a ShapedRunCache,
@@ -21990,7 +21990,7 @@ fn draw_svg_image(
     y: f32,
     image_index: &BTreeMap<&str, usize>,
     page_resources: &mut SvgPageResources<'_>,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
     shaped_cache: &ShapedRunCache,
@@ -25586,7 +25586,7 @@ fn draw_svg_text(
     text: &SvgText,
     image_transform: SvgImageTransform,
     clip_paths: &[SvgClipPath],
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
     shaped_cache: &ShapedRunCache,
@@ -26153,7 +26153,7 @@ fn draw_seg(
     seg: &Seg,
     size: f32,
     y: f32,
-    subsets: &[EmbeddedFace],
+    subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
     faces: &Faces,
     shaped_cache: &ShapedRunCache,
@@ -27487,16 +27487,19 @@ fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f
     out
 }
 
-/// A subset face ready to embed.
-struct EmbeddedFace {
+/// A subset face ready to embed. The GPOS/GSUB tables are borrowed from the
+/// source [`Face`] (owned by the render's [`Faces`] registry, which outlives
+/// every use of the subset within the same render) instead of deep-cloned —
+/// they are read-only here, keyed by original glyph ids.
+struct EmbeddedFace<'a> {
     slot: u8,
     bytes: Vec<u8>,
     font: Font,
     /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
     /// original glyph ids — used to position glyphs in the content stream.
-    kern: Kerning,
+    kern: &'a Kerning,
     /// GSUB ligatures of the SOURCE face, applied to shape content lines.
-    lig: Ligatures,
+    lig: &'a Ligatures,
     /// Direct-index source glyph id -> subset (renumbered) glyph id; entries
     /// for source gids absent from the subset are 0 (`.notdef`).
     map_lookup: Vec<u16>,
@@ -27512,7 +27515,7 @@ struct EmbeddedFaceLookup {
 }
 
 impl EmbeddedFaceLookup {
-    fn new(faces: &[EmbeddedFace]) -> Self {
+    fn new(faces: &[EmbeddedFace<'_>]) -> Self {
         let mut by_slot = [None; SLOTS.len()];
         for (index, face) in faces.iter().enumerate() {
             if let Some(slot_index) = pdf_font_slot_index(face.slot) {
@@ -27522,7 +27525,7 @@ impl EmbeddedFaceLookup {
         Self { by_slot }
     }
 
-    fn get<'a>(&self, faces: &'a [EmbeddedFace], slot: u8) -> Option<&'a EmbeddedFace> {
+    fn get<'s, 'f>(&self, faces: &'s [EmbeddedFace<'f>], slot: u8) -> Option<&'s EmbeddedFace<'f>> {
         let slot_index = pdf_font_slot_index(slot)?;
         let face_index = self.by_slot[slot_index]?;
         faces.get(face_index)
@@ -27554,7 +27557,7 @@ struct PdfBufferCapacityCounts {
 fn estimated_pdf_buffer_capacity(
     page_stream_bytes: usize,
     pages: &[PageContent],
-    faces: &[EmbeddedFace],
+    faces: &[EmbeddedFace<'_>],
     images: &[PdfImageData],
     counts: PdfBufferCapacityCounts,
 ) -> usize {
@@ -28640,7 +28643,7 @@ fn parse_four_ascii_digits(bytes: &[u8]) -> Option<u16> {
 fn build_pdf(
     pages: &[PageContent],
     outlines: &[OutlineEntry],
-    faces: &[EmbeddedFace],
+    faces: &[EmbeddedFace<'_>],
     images: &[PdfImageData],
     opts: &PdfOptions,
     page_geom: PageGeom,

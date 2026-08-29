@@ -879,6 +879,7 @@ fn collect_link_reference_metadata_into(
                 let mut used = 1usize;
                 if reference.title.is_none()
                     && let Some(title_line) = lines.get(i + 1)
+                    && leading_spaces(title_line) < 4
                     && let Some(title) = parse_reference_title_line(title_line)
                 {
                     reference.title = Some(title);
@@ -3076,12 +3077,21 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 continue;
             }
 
-            if let Some(next) = list_marker(lines[i])
-                && next.indent <= m.indent
-                && ((next.ordered == ordered && next.marker_char == first.marker_char)
-                    || marker_interrupts_paragraph(next))
-            {
-                break;
+            if let Some(next) = list_marker(lines[i]) {
+                let is_item_break = if next.indent == m.indent {
+                    if next.ordered == ordered {
+                        true
+                    } else {
+                        marker_interrupts_paragraph(next)
+                    }
+                } else if next.indent < m.indent {
+                    marker_interrupts_paragraph(next)
+                } else {
+                    false
+                };
+                if is_item_break {
+                    break;
+                }
             }
 
             if is_thematic_break(lines[i]) && leading_spaces(lines[i]) <= m.indent {
@@ -3549,11 +3559,7 @@ fn record_plain_inline_chars_parse(
     } else {
         vec![Inline::Text(chars.iter().collect())]
     };
-    let char_count = if profiler.enabled {
-        chars.len()
-    } else {
-        0
-    };
+    let char_count = if profiler.enabled { chars.len() } else { 0 };
     profiler.record_since(
         "inline_parse",
         char_count,
@@ -3693,7 +3699,7 @@ fn parse_inlines_chars_with_refs_profiled(
     // Build `[`→`]` matches lazily. Most inline runs contain no links/images, so
     // they should not pay for the bracket-pair vector; once a bracket candidate
     // exists, all link/reference attempts share the same linear precompute.
-    let mut bracket_pairs: Option<Vec<Option<usize>>> = None;
+    let mut bracket_pairs: Option<BracketPairs> = None;
     let maybe_bare_email = bytes.contains(&'@');
     let mut buf = String::new();
     let mut i = 0;
@@ -4472,14 +4478,14 @@ fn skip_link_whitespace(chars: &[char], i: &mut usize) {
 fn parse_link_like(
     chars: &[char],
     i: usize,
-    bracket_pairs: &[Option<usize>],
+    bracket_pairs: &BracketPairs,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let j = bracket_pairs.get(i).copied().flatten()?;
+    let j = bracket_pairs.partner(i)?;
     if chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
         return None;
     }
@@ -4671,14 +4677,14 @@ const MAX_REFERENCE_LABEL_LEN: usize = 999;
 fn parse_reference_link_like(
     chars: &[char],
     i: usize,
-    bracket_pairs: &[Option<usize>],
+    bracket_pairs: &BracketPairs,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let close = bracket_pairs.get(i).copied().flatten()?;
+    let close = bracket_pairs.partner(i)?;
     let text_len = close.saturating_sub(i + 1);
 
     // Resolve the reference LABEL (used for the lookup) without collecting the
@@ -4686,7 +4692,7 @@ fn parse_reference_link_like(
     // over-length label in O(1).
     let (label, next) = if chars.get(close + 1) == Some(&'[') {
         let label_start = close + 2;
-        let label_close = bracket_pairs.get(close + 1).copied().flatten()?;
+        let label_close = bracket_pairs.partner(close + 1)?;
         if label_close > label_start {
             // [text][label]: the second bracket is the explicit label.
             if label_close - label_start > MAX_REFERENCE_LABEL_LEN {
@@ -5266,23 +5272,129 @@ fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {
 /// Match every `[` to its closing `]` in one pass, so link parsing can look up a
 /// bracket's partner in O(1) instead of rescanning from each `[`.
 ///
-/// `pairs[open] == Some(close)` iff a `[` at `open` is closed by a `]` at
+/// `partner(open) == Some(close)` iff a `[` at `open` is closed by a `]` at
 /// `close`, with the exact nesting and backslash-escape rules of
 /// [`find_closing_bracket`] (a `\` skips the next char, so `\[`/`\]` are inert).
 /// Rescanning per `[` made a line like `[[[…]]]` quadratic; one stack pass is
 /// linear and byte-for-byte equivalent (`find_closing_bracket(open)` returns the
 /// `]` that pops `open`, which is exactly what this records).
-fn compute_bracket_pairs(chars: &[char]) -> Vec<Option<usize>> {
-    let mut pairs = vec![None; chars.len()];
-    let mut open_stack: Vec<usize> = Vec::new();
+///
+/// The table is 4 bytes per char (`u32` + sentinel) instead of the 16 of
+/// `Option<usize>` whenever the slice fits `u32` indices — every reachable
+/// input (the CLI caps files at 64 MiB; wasm32 cannot address a slice past
+/// `u32::MAX`), while unbounded library callers beyond that keep the
+/// full-width entries (pass-5 discipline: guard the domain, keep a full-width
+/// fallback). The pairing loop lives once in
+/// [`compute_bracket_pairs_in`](compute_bracket_pairs_in) and both
+/// representations monomorphize from that single source, so pairing decisions
+/// are identical by construction.
+#[derive(Debug)]
+enum BracketPairs {
+    /// `u32::MAX` marks an unpaired `[`; routing guarantees every recorded
+    /// close index is `< chars.len() <= u32::MAX`, so the sentinel cannot
+    /// collide with a real index.
+    Compact(Vec<u32>),
+    /// Fallback for slices longer than `u32::MAX` chars (16 bytes per char,
+    /// exactly the pre-pass-25 representation).
+    Wide(Vec<Option<usize>>),
+}
+
+/// Sentinel stored in the compact table for a `[` with no closing `]`.
+const UNPAIRED_BRACKET: u32 = u32::MAX;
+
+impl BracketPairs {
+    /// The `]` index closing the `[` at `open`, if any — value-for-value the
+    /// entry the old `Vec<Option<usize>>` held at `open` (out-of-bounds and
+    /// unpaired both map to `None`).
+    fn partner(&self, open: usize) -> Option<usize> {
+        match self {
+            BracketPairs::Compact(table) => match table.get(open) {
+                None | Some(&UNPAIRED_BRACKET) => None,
+                Some(&close) => Some(close as usize),
+            },
+            BracketPairs::Wide(table) => table.get(open).copied().flatten(),
+        }
+    }
+}
+
+/// Storage half of the pairing pass: how each representation starts all-unpaired,
+/// records one pair, and reads one back. Pure storage — every decision stays in
+/// the shared generic loop, so the two representations cannot diverge.
+trait PairTable {
+    fn unpaired(len: usize) -> Self;
+    fn record(&mut self, open: usize, close: usize);
+    #[cfg(test)]
+    fn partner(&self, open: usize) -> Option<usize>;
+}
+
+/// 4 bytes per char; domain `len <= u32::MAX` (enforced by
+/// [`compute_bracket_pairs`], so `record`'s narrowing cast is lossless).
+struct CompactTable(Vec<u32>);
+
+/// 16 bytes per char; works for any `len`.
+struct WideTable(Vec<Option<usize>>);
+
+impl PairTable for CompactTable {
+    fn unpaired(len: usize) -> Self {
+        CompactTable(vec![UNPAIRED_BRACKET; len])
+    }
+    fn record(&mut self, open: usize, close: usize) {
+        // Lossless: close < len <= u32::MAX on this arm.
+        self.0[open] = close as u32;
+    }
+    #[cfg(test)]
+    fn partner(&self, open: usize) -> Option<usize> {
+        match self.0.get(open) {
+            None | Some(&UNPAIRED_BRACKET) => None,
+            Some(&close) => Some(close as usize),
+        }
+    }
+}
+
+impl PairTable for WideTable {
+    fn unpaired(len: usize) -> Self {
+        WideTable(vec![None; len])
+    }
+    fn record(&mut self, open: usize, close: usize) {
+        self.0[open] = Some(close);
+    }
+    #[cfg(test)]
+    fn partner(&self, open: usize) -> Option<usize> {
+        self.0.get(open).copied().flatten()
+    }
+}
+
+/// The single pairing pass (nesting + backslash-escape rules verbatim from the
+/// pre-pass-25 `compute_bracket_pairs`); `S` picks only the storage width.
+fn compute_bracket_pairs_in<S: PairTable>(chars: &[char]) -> S {
+    let mut pairs = S::unpaired(chars.len());
+    // Real inline runs peak at nesting depth 1-2 (measured across the perf
+    // corpora; only degenerate `[[[…` runs go deeper), so len/64 covers every
+    // measured shape in one allocation while costing 1/32 of the compact
+    // table itself. The bracket-count alternative (a counting pre-pass)
+    // measured 9-24% SLOWER end-to-end than either this or no presize.
+    let mut open_stack: Vec<usize> = Vec::with_capacity(chars.len() / 64);
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
             '\\' => i += 1, // skip the escaped char, exactly as find_closing_bracket does
+            '`' => {
+                let n = run_len(chars, i, '`');
+                if let Some(end) = find_code_close(chars, i + n, '`', n) {
+                    i = end + n - 1;
+                } else {
+                    i += n - 1;
+                }
+            }
+            '<' => {
+                if let Some((_, next)) = parse_inline_html(chars, i) {
+                    i = next - 1;
+                }
+            }
             '[' => open_stack.push(i),
             ']' => {
                 if let Some(open) = open_stack.pop() {
-                    pairs[open] = Some(i);
+                    pairs.record(open, i);
                 }
             }
             _ => {}
@@ -5290,6 +5402,18 @@ fn compute_bracket_pairs(chars: &[char]) -> Vec<Option<usize>> {
         i += 1;
     }
     pairs
+}
+
+fn compute_bracket_pairs(chars: &[char]) -> BracketPairs {
+    // Indices are < len, so len <= u32::MAX keeps every recorded index at
+    // u32::MAX - 1 or below — the sentinel stays collision-free even at the
+    // boundary. On wasm32 (usize == u32) the comparison is tautologically true
+    // and Compact is the only live arm.
+    if chars.len() <= u32::MAX as usize {
+        BracketPairs::Compact(compute_bracket_pairs_in::<CompactTable>(chars).0)
+    } else {
+        BracketPairs::Wide(compute_bracket_pairs_in::<WideTable>(chars).0)
+    }
 }
 
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
@@ -6635,7 +6759,7 @@ mod line_split_tests {
 mod inline_helper_branch_tests {
     use super::{
         INLINE_PARSE_CACHE_MAX_ENTRIES, INLINE_PARSE_CACHE_MAX_KEY_BYTES,
-        INLINE_PARSE_CACHE_MAX_TRACKED_HASHES, INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES,
+        INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MAX_TRACKED_HASHES,
         INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache, collect_inline_chars_from_text,
         inline_cache_size_allows, inline_cache_text_hash, inline_http_scheme_before_colon,
         is_email_autolink, is_intraword_underscore_run, parse_angle_link_destination,
@@ -6739,8 +6863,10 @@ mod inline_helper_branch_tests {
         assert!(!cache.admit(other), "a different text starts fresh");
         assert!(cache.admit(other));
 
-        let mut full = InlineParseCache::default();
-        full.seen_hashes = vec![inline_cache_text_hash(key); INLINE_PARSE_CACHE_MAX_TRACKED_HASHES];
+        let mut full = InlineParseCache {
+            seen_hashes: vec![inline_cache_text_hash(key); INLINE_PARSE_CACHE_MAX_TRACKED_HASHES],
+            ..InlineParseCache::default()
+        };
         assert!(
             full.admit(key),
             "a tracked hash still admits at tracker capacity"
@@ -6845,11 +6971,73 @@ mod fenced_indent_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod bracket_tests {
-    use super::{compute_bracket_pairs, normalize_reference_label_chars};
+    use super::{
+        BracketPairs, CompactTable, PairTable, WideTable, compute_bracket_pairs,
+        compute_bracket_pairs_in, normalize_reference_label_chars,
+    };
     use crate::{HtmlOptions, render_html};
 
     fn pairs(s: &str) -> Vec<Option<usize>> {
-        compute_bracket_pairs(&s.chars().collect::<Vec<char>>())
+        let chars = s.chars().collect::<Vec<char>>();
+        let table = compute_bracket_pairs(&chars);
+        (0..chars.len()).map(|i| table.partner(i)).collect()
+    }
+
+    #[test]
+    fn bracket_pair_representations_agree_and_route_compact() {
+        // Battery: nesting, escapes, unmatched opens/closes, images, empty,
+        // dense-degenerate shapes. Both storage representations monomorphize
+        // from the same loop; this pins that they answer identically at every
+        // index (including one-past-end, the OOB lookup consumers can make).
+        let battery = [
+            "",
+            "[",
+            "]",
+            "][",
+            "[][]",
+            "[a]",
+            "[[x]]",
+            "\\[\\]",
+            "[\\]]",
+            "[a\\]b]",
+            "[[[]]]][",
+            "![[x]](y)",
+            "[text][label]",
+            "[[[[[[[[[a]]]]]]]]]",
+            "[a](/u) [b](/v)",
+            "[[[[",
+            "]]]]",
+        ];
+        for src in battery {
+            let chars = src.chars().collect::<Vec<char>>();
+            let compact = compute_bracket_pairs_in::<CompactTable>(&chars);
+            let wide = compute_bracket_pairs_in::<WideTable>(&chars);
+            for i in 0..=chars.len() {
+                assert_eq!(
+                    compact.partner(i),
+                    wide.partner(i),
+                    "storage mismatch at {i} in {src:?}"
+                );
+            }
+            // Every testable slice routes to the compact 4-byte table (len is
+            // far below the u32::MAX guard), and the routed entry answers
+            // exactly what both raw representations compute.
+            match compute_bracket_pairs(&chars) {
+                BracketPairs::Compact(table) => {
+                    let routed = BracketPairs::Compact(table);
+                    for i in 0..=chars.len() {
+                        assert_eq!(
+                            routed.partner(i),
+                            wide.partner(i),
+                            "routed mismatch at {i} in {src:?}"
+                        );
+                    }
+                }
+                BracketPairs::Wide(_) => {
+                    unreachable!("test-length slices must route Compact");
+                }
+            }
+        }
     }
 
     fn normalized_label(s: &str) -> Option<String> {

@@ -359,6 +359,13 @@ struct RenderArgs {
     /// `off` keeps output byte-identical to previous versions.
     #[arg(long, value_enum, default_value_t = MicrotypeArg::Off)]
     microtype: MicrotypeArg,
+    /// Enable gradual adjacent demerits (Verna, DocEng '25) in the
+    /// Knuth-Plass breaker for justified paragraphs: replaces the coarse
+    /// 4-class fitness check with a penalty proportional to the spacing
+    /// difference between consecutive lines, producing more homogeneous
+    /// inter-word spacing. Default off — classic behavior.
+    #[arg(long = "typography-homogeneous")]
+    typography_homogeneous: bool,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -547,18 +554,10 @@ enum MicrotypeArg {
     #[default]
     Off,
     Protrusion,
-}
-
-impl From<MicrotypeArg> for crate::layout::MicrotypeOptions {
-    fn from(m: MicrotypeArg) -> Self {
-        match m {
-            MicrotypeArg::Off => crate::layout::MicrotypeOptions::DISABLED,
-            // Expansion stays unwired (no PDF glyph-stretch emitter support in
-            // v1); CONSERVATIVE carries an inert 15 per-mille budget that only
-            // the expansion_budget() hook reads — forward-compatible.
-            MicrotypeArg::Protrusion => crate::layout::MicrotypeOptions::CONSERVATIVE,
-        }
-    }
+    /// Glyph expansion only (Hàn Thế Thành): justified lines stretch/shrink
+    /// word glyphs horizontally via the PDF `Tz` operator (±1.5%) instead of
+    /// letter-spacing, keeping inter-word spaces closer to natural.
+    Expansion,
 }
 
 impl From<HtmlFontFormatArg> for HtmlFontFormat {
@@ -566,6 +565,21 @@ impl From<HtmlFontFormatArg> for HtmlFontFormat {
         match f {
             HtmlFontFormatArg::Ttf => HtmlFontFormat::Ttf,
             HtmlFontFormatArg::Woff1 => HtmlFontFormat::Woff1,
+        }
+    }
+}
+
+impl From<MicrotypeArg> for crate::layout::MicrotypeOptions {
+    fn from(m: MicrotypeArg) -> Self {
+        match m {
+            MicrotypeArg::Off => crate::layout::MicrotypeOptions::DISABLED,
+            // CONSERVATIVE carries the 15 per-mille expansion budget; the
+            // Tz emitter applies it as true glyph scaling on justified lines.
+            MicrotypeArg::Protrusion => crate::layout::MicrotypeOptions::CONSERVATIVE,
+            MicrotypeArg::Expansion => crate::layout::MicrotypeOptions {
+                protrusion: false,
+                max_expansion_per_mille: 15,
+            },
         }
     }
 }
@@ -655,6 +669,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         remote_image_timeout_secs: DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS,
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         microtype: Default::default(),
+        typography_homogeneous: false,
         json: args.json,
     }
 }
@@ -1456,6 +1471,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             toc_depth: args.toc_depth.or(frontmatter_toc_depth),
             fit_to_pages: args.fit_to_pages,
             microtype: args.microtype.into(),
+            gradual_demerits: args.typography_homogeneous,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -2137,6 +2153,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         toc_depth: None,
         fit_to_pages: None,
         microtype: Default::default(),
+        gradual_demerits: false,
     };
 
     let plan = BatchPlan {
@@ -4013,7 +4030,7 @@ fn count_pdf_pages(bytes: &[u8]) -> usize {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --microtype expansion --out README.pdf\",\"fmd README.md --to pdf --typography-homogeneous --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion_expansion\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_381_of_652_normalized\"}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))

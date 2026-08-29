@@ -41,8 +41,14 @@ breaker fits against protrusion-adjusted line widths (O(1) edge lookups in
 `MetricPrefixes`), the whole-paragraph fast path honors the same credit, and
 the emitter shifts line starts left by the credited protrusion. Default renders
 are byte-identical (tests/microtype_test.rs pins all four behaviors).
-Expansion (font stretch) remains hooks-only: spending the budget needs PDF
-glyph-scale emitter support — a separate increment.
+Expansion (font stretch) shipped as the `Tz` emitter (Unreleased): the justifier
+already credits word boxes ±15‰ glyph elasticity (`glue_adjustments_into`), and
+`build_segs_adjusted` now converts that credit into a uniform per-line `Tz`
+operator (exact because the credit distribution is proportional to box width)
+instead of flat letter-spacing. `--microtype expansion` enables glyph scaling
+alone; `--microtype protrusion` enables both effects. Related quality lever:
+`--typography-homogeneous` (Verna DocEng '25 gradual adjacent demerits) refines
+the KP fitness-class penalty for smoother inter-word spacing.
 
 The hooks are complete, tested, and conservative-by-default. Enabling them inside
 the optimal line breaker is intentionally **not** done by default, per the

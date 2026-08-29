@@ -191,3 +191,102 @@ fn pdf_optin_stays_valid_and_deterministic() {
     // (protrusion_lets_a_period_word_fit_the_line); a short fixture that never
     // grazes the margin is CORRECTLY byte-identical under protrusion.
 }
+
+#[path = "pdf_inflate_helper.rs"]
+mod pdf_inflate_helper;
+
+#[test]
+fn expansion_emits_tz_operators_optin_only() {
+    let sentence = "The renderer breaks this long sentence at the measured margin. ";
+    let doc = parse_markdown(&sentence.repeat(24));
+
+    // Default: no Tz operators anywhere (byte-identical classic emission).
+    let off = render_pdf_document(&doc, &PdfOptions::default()).expect("render off");
+    let off_content = pdf_inflate_helper::decompressed_content(&off);
+    assert!(
+        !off_content.windows(b" Tz ".len()).any(|w| w == b" Tz "),
+        "default render must not emit Tz"
+    );
+
+    // Opt-in expansion: Tz operators appear and stay within ±1.5% (98.5..101.5).
+    let on = render_pdf_document(
+        &doc,
+        &PdfOptions {
+            microtype: MicrotypeOptions {
+                protrusion: false,
+                max_expansion_per_mille: 15,
+            },
+            ..PdfOptions::default()
+        },
+    )
+    .expect("render on");
+    let on_content = pdf_inflate_helper::decompressed_content(&on);
+    let tz_count = on_content
+        .windows(b" Tz ".len())
+        .filter(|w| *w == b" Tz ")
+        .count();
+    assert!(
+        tz_count > 0,
+        "expansion must emit Tz operators (got {tz_count})"
+    );
+    // Every emitted factor must lie within the ±1.5% budget: operand form is
+    // "<fixed2> Tz " where fixed2 has one decimal digit.
+    let mut i = 0;
+    let mut checked = 0;
+    while let Some(pos) = on_content[i..].windows(4).position(|w| w == b" Tz ") {
+        let end = i + pos;
+        // Scan back over the decimal operand.
+        let mut s = end;
+        while s > 0 && on_content[s - 1].is_ascii_digit() {
+            s -= 1;
+        }
+        if s > 0 && on_content[s - 1] == b'.' {
+            s -= 1;
+            while s > 0 && on_content[s - 1].is_ascii_digit() {
+                s -= 1;
+            }
+        }
+        let val: f32 = std::str::from_utf8(&on_content[s..end])
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(100.0);
+        assert!(
+            (98.5..=101.5).contains(&val),
+            "Tz factor {val} outside ±1.5% budget"
+        );
+        checked += 1;
+        i = end + 4;
+    }
+    assert_eq!(checked, tz_count, "parsed every Tz operand");
+}
+
+#[test]
+fn expansion_render_is_deterministic_and_same_page_count() {
+    let sentence = "The renderer breaks this long sentence at the measured margin. ";
+    let doc = parse_markdown(&sentence.repeat(24));
+    let opts = |n| PdfOptions {
+        microtype: MicrotypeOptions {
+            protrusion: false,
+            max_expansion_per_mille: n,
+        },
+        ..PdfOptions::default()
+    };
+    let a = render_pdf_document(&doc, &opts(15)).expect("a");
+    let b = render_pdf_document(&doc, &opts(15)).expect("b");
+    assert_eq!(a, b, "expansion render is deterministic");
+    let zero = render_pdf_document(&doc, &opts(0)).expect("zero");
+    assert_eq!(
+        zero,
+        render_pdf_document(&doc, &PdfOptions::default()).expect("default")
+    );
+    let count_pages = |pdf: &[u8]| {
+        pdf.windows(b"/Type /Page ".len())
+            .filter(|w| *w == b"/Type /Page ")
+            .count()
+    };
+    assert_eq!(
+        count_pages(&a),
+        count_pages(&zero),
+        "expansion keeps page count"
+    );
+}

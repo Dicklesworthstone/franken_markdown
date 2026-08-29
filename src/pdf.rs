@@ -185,6 +185,11 @@ struct Seg {
     task: Option<bool>,
     /// Shaped layout advance, used to size decorations and subsequent segments.
     width: f32,
+    /// Microtype expansion (Hàn Thế Thành / pdfTeX): per-glyph horizontal
+    /// scaling in per-mille applied by the justifier via the `Tz` operator.
+    /// 0 = no scaling (default). +15 = 1.5% stretch, -15 = 1.5% shrink.
+    /// Deterministic: computed from the line's justification needs.
+    expansion_permille: i16,
 }
 
 /// Deterministic text fill color class. This enum, rather than raw floats, lets
@@ -2041,6 +2046,9 @@ struct ParagraphPolicy {
     /// carried to per-box precomputation. DISABLED by default; default output
     /// stays byte-identical.
     microtype: crate::layout::MicrotypeOptions,
+    /// Gradual adjacent demerits (Verna DocEng '25): opt-in refinement to
+    /// the KP fitness-class penalty. Default false (classic behavior).
+    gradual_demerits: bool,
 }
 
 impl ParagraphPolicy {
@@ -2048,11 +2056,13 @@ impl ParagraphPolicy {
         hyphenate: false,
         justify: false,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
+        gradual_demerits: false,
     };
     const TEX_PARAGRAPH: Self = Self {
         hyphenate: true,
         justify: true,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
+        gradual_demerits: false,
     };
 
     /// Glyph-expansion credit the line breaker may assume (±permilli of box
@@ -2857,6 +2867,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
             strike: false,
             task: None,
             width: title_w,
+            expansion_permille: 0,
         };
 
         let mut segs = vec![title_seg];
@@ -2870,6 +2881,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 strike: false,
                 task: None,
                 width: dots_w,
+                expansion_permille: 0,
             };
             segs.push(dots_seg);
         }
@@ -2883,6 +2895,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
             strike: false,
             task: None,
             width: page_w,
+            expansion_permille: 0,
         };
         segs.push(page_seg);
 
@@ -3652,6 +3665,8 @@ impl LayoutCx<'_> {
     ) {
         self.paragraph_scratch
             .set_expansion_permilli(policy.expansion_permilli());
+        self.paragraph_scratch
+            .set_gradual_demerits(policy.gradual_demerits);
         break_paragraph_into(
             items,
             line_width,
@@ -3850,6 +3865,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     strike: false,
                     task: None,
                     width: 0.0,
+                    expansion_permille: 0,
                 });
                 out.push(Line {
                     size: CODE_FONT_SIZE,
@@ -17141,6 +17157,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                         strike: run.strike,
                         task: None,
                         width: run.width,
+                        expansion_permille: 0,
                     });
                     cols.push(k as u32);
                     x += run.width;
@@ -17263,6 +17280,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             strike: false,
             task: item.task,
             width: marker.width,
+            expansion_permille: 0,
         };
         // Split the item's blocks: only the FIRST block, when it is a paragraph,
         // shares the marker line; everything else — any further (loose)
@@ -18438,6 +18456,9 @@ fn layout_inlines(
     } else {
         crate::layout::MicrotypeOptions::DISABLED
     };
+    // Gradual adjacent demerits (Verna '25) are justified-paragraph-only:
+    // ragged flows have no inter-word scaling to homogenize.
+    policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     let built = build_paragraph(
         &toks,
         fs,
@@ -18520,6 +18541,7 @@ fn layout_inlines(
             size,
             cx.faces,
             Some(&cx.width_cache),
+            policy.microtype.max_expansion_per_mille,
         );
         out.push(Line {
             size,
@@ -18561,7 +18583,8 @@ fn layout_prefixed_inlines(
     let start = out.len();
     let left = cx.page.left + spec.content_indent;
     let fs = font_size_of(spec.size);
-    let policy = ParagraphPolicy::for_flow(spec.flow.kind);
+    let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
+    policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     let built = build_paragraph(
         &toks,
         fs,
@@ -18631,6 +18654,7 @@ fn layout_prefixed_inlines(
             spec.size,
             cx.faces,
             Some(&cx.width_cache),
+            policy.microtype.max_expansion_per_mille,
         );
         if i == 0 {
             if let Some(marker) = marker.take() {
@@ -18927,7 +18951,7 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
             extra_advance: 0.0,
         })
         .collect::<Vec<_>>();
-    build_segs_adjusted(&line_toks, left, size, faces, None)
+    build_segs_adjusted(&line_toks, left, size, faces, None, 0)
 }
 
 fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
@@ -18947,68 +18971,340 @@ fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
     (size * per_mille) / 1000.0
 }
 
+/// Incremental shaped-width accumulator for one growing same-face text run.
+///
+/// `Face::shaped_width` measures a whole string per call. A multi-token
+/// segment grows token by token, so asking it per merged token re-shapes every
+/// prefix of the run (quadratic shaping work per line) and would need every
+/// transient prefix as a `WidthCache` key. This shaper instead folds the
+/// identical per-glyph/per-pair layout-unit terms into running totals as text
+/// arrives, so the width queried at each token boundary is bit-identical to
+/// `Face::shaped_width` of the accumulated prefix while the total work stays
+/// linear in the run text.
+struct SegRunShaper<'a> {
+    face: &'a Face,
+    size: FontSize,
+    upm: i32,
+    /// Total glyph length of the longest ligature rule: greedy substitution
+    /// decisions starting at least this far from the input end are final.
+    settle_window: usize,
+    mode: SegRunMode<'a>,
+}
+
+enum SegRunMode<'a> {
+    /// Every byte so far is ASCII and none can start a ligature rule, so
+    /// substitution is the identity and widths accumulate straight from the
+    /// per-byte tables (mirrors `Face::shaped_width_ascii` per prefix).
+    Ascii {
+        tables: &'a AsciiWidthTables,
+        running: LayoutUnit,
+        prev: Option<u8>,
+    },
+    /// General path (mirrors `Face::shaped_width`'s glyph route): the
+    /// greedy-ligature output that can no longer change plus the unsettled
+    /// input suffix — a rule may still complete across the run's end, so the
+    /// trailing `settle_window` input glyphs stay pending and re-substitute
+    /// at each boundary.
+    General {
+        out: Vec<u16>,
+        out_width: LayoutUnit,
+        pending: Vec<u16>,
+    },
+}
+
+impl Face {
+    /// One glyph's advance contribution in layout units, matching the term
+    /// [`Face::shaped_glyph_width`] adds per glyph.
+    fn glyph_advance_term(&self, upm: i32, size: FontSize, glyph: u16) -> LayoutUnit {
+        if upm == 0 {
+            return LayoutUnit::ZERO;
+        }
+        advance_to_layout_units(self.glyph_advance_1000(glyph), size)
+    }
+
+    /// One adjacent-pair kern contribution in layout units, matching the term
+    /// [`Face::shaped_glyph_width`] adds per glyph pair.
+    fn glyph_kern_term(&self, upm: i32, size: FontSize, left: u16, right: u16) -> LayoutUnit {
+        if upm == 0 {
+            return LayoutUnit::ZERO;
+        }
+        let adjustment_1000 = i32::from(self.kern.pair(left, right)) * 1000 / upm;
+        adjustment_to_layout_units(adjustment_1000, size)
+    }
+}
+
+impl<'a> SegRunShaper<'a> {
+    fn new(face: &'a Face, size: FontSize) -> Self {
+        Self {
+            face,
+            size,
+            upm: i32::from(face.font.units_per_em),
+            settle_window: face.lig.max_rule_len(),
+            mode: SegRunMode::Ascii {
+                tables: face.ascii_tables(),
+                running: LayoutUnit::ZERO,
+                prev: None,
+            },
+        }
+    }
+
+    /// Append one token's visible text. `run_text` must be the full
+    /// accumulated run text ending with `chunk` (used once, if at all, to
+    /// reseed the general path when the ASCII eligibility check first fails).
+    fn append(&mut self, chunk: &str, run_text: &str) {
+        if let SegRunMode::Ascii { tables, .. } = &self.mode
+            && chunk
+                .as_bytes()
+                .iter()
+                .any(|&b| b >= 128 || tables.lig_start[usize::from(b)])
+        {
+            // `run_text` already ends with `chunk`, so reseeding the general
+            // path over the whole run text consumes it; appending again
+            // below would double-count the token.
+            self.reseed_general(run_text);
+            return;
+        }
+        match &mut self.mode {
+            SegRunMode::Ascii {
+                tables,
+                running,
+                prev,
+            } => {
+                for &b in chunk.as_bytes() {
+                    if let Some(p) = *prev {
+                        *running += adjustment_to_layout_units(
+                            tables.kern[usize::from(p) * 128 + usize::from(b)],
+                            self.size,
+                        );
+                    }
+                    *running +=
+                        advance_to_layout_units(tables.advances[usize::from(b)], self.size);
+                    *prev = Some(b);
+                }
+            }
+            SegRunMode::General { pending, .. } => {
+                for ch in chunk.chars() {
+                    pending.push(self.face.glyph_index(ch));
+                }
+                self.settle_general();
+            }
+        }
+    }
+
+    /// Shaped width of the accumulated text — bit-identical to
+    /// `Face::shaped_width` on the same string, including the zero clamp.
+    fn current_width(&self) -> LayoutUnit {
+        match &self.mode {
+            SegRunMode::Ascii { running, .. } => (*running).max(LayoutUnit::ZERO),
+            SegRunMode::General {
+                out,
+                out_width,
+                pending,
+            } => {
+                let sub = self.face.lig.substitute_with_spans(pending);
+                let mut total = *out_width;
+                let mut prev = out.last().copied();
+                for &(glyph, _) in &sub {
+                    if let Some(p) = prev {
+                        total += self.face.glyph_kern_term(self.upm, self.size, p, glyph);
+                    }
+                    total += self.face.glyph_advance_term(self.upm, self.size, glyph);
+                    prev = Some(glyph);
+                }
+                total.max(LayoutUnit::ZERO)
+            }
+        }
+    }
+
+    /// Switch to the general glyph path over the whole run text so far. The
+    /// ASCII tables produce bit-identical terms for the same strings (they
+    /// are built from the same font/kern/ligature tables and substitution is
+    /// the identity there), so previously queried prefix widths stay valid.
+    fn reseed_general(&mut self, run_text: &str) {
+        if matches!(self.mode, SegRunMode::General { .. }) {
+            return;
+        }
+        let mut pending = Vec::with_capacity(run_text.len());
+        for ch in run_text.chars() {
+            pending.push(self.face.glyph_index(ch));
+        }
+        self.mode = SegRunMode::General {
+            out: Vec::new(),
+            out_width: LayoutUnit::ZERO,
+            pending,
+        };
+        self.settle_general();
+    }
+
+    /// Move every greedy-ligature decision that further appends can no longer
+    /// revise from `pending` into the finalized output. A decision starting
+    /// at input offset `p` reads at most `settle_window` glyphs, so it is
+    /// final exactly when `p + settle_window <= pending.len()` (pending is a
+    /// suffix of the input stream, so pending-relative and stream-relative
+    /// offsets agree).
+    fn settle_general(&mut self) {
+        let window = self.settle_window;
+        loop {
+            let (out, out_width, pending) = match &mut self.mode {
+                SegRunMode::General {
+                    out,
+                    out_width,
+                    pending,
+                } => (out, out_width, pending),
+                SegRunMode::Ascii { .. } => return,
+            };
+            if pending.len() < window {
+                return;
+            }
+            let sub = self.face.lig.substitute_with_spans(pending);
+            let mut settled_pos = 0usize;
+            let mut prev = out.last().copied();
+            for &(glyph, span) in &sub {
+                if settled_pos + window > pending.len() {
+                    break;
+                }
+                if let Some(p) = prev {
+                    *out_width += self.face.glyph_kern_term(self.upm, self.size, p, glyph);
+                }
+                *out_width += self.face.glyph_advance_term(self.upm, self.size, glyph);
+                out.push(glyph);
+                prev = Some(glyph);
+                settled_pos += span;
+            }
+            if settled_pos == 0 {
+                return;
+            }
+            pending.drain(..settled_pos);
+        }
+    }
+}
+
+/// Keep the width cache warm for a finalized run text without measuring
+/// transient prefixes: single-use prefix keys would only evict useful
+/// entries (`WIDTH_CACHE_MAX` is a hard cap with no eviction).
+fn ensure_width_cached(
+    cache: &RefCell<WidthCache>,
+    slot: u8,
+    text: &str,
+    fs: FontSize,
+    computed: LayoutUnit,
+) {
+    let key = (slot, fs.milli_points());
+    if cache.borrow().get(key, text).is_some() {
+        return;
+    }
+    cache.borrow_mut().insert_if_room(key, text, computed);
+}
+
 fn build_segs_adjusted(
     toks: &[LineTok],
     left: f32,
     size: f32,
     faces: &Faces,
     width_cache: Option<&RefCell<WidthCache>>,
+    expansion_permille_budget: u16,
 ) -> Vec<Seg> {
     if let Some(seg) = build_single_adjusted_seg(toks, left, size, faces, width_cache) {
         return vec![seg];
     }
 
+    // Microtype expansion (Hàn Thế Thành / pdfTeX): when the justifier
+    // distributed part of the line's stretch/shrink onto word glyphs
+    // (`extra_advance` on non-space tokens), render it as true horizontal
+    // glyph scaling (`Tz`) instead of flat letter-spacing. The distribution
+    // in `glue_adjustments_into` is proportional to each box's width, so a
+    // single uniform factor per line is exact for word boxes.
+    let use_expansion = expansion_permille_budget > 0;
+    let mut word_extra_milli: f64 = 0.0;
+    let mut box_width_milli: f64 = 0.0;
+
     let hang = left_protrusion_hang(toks, size);
     let mut segs: Vec<Seg> = Vec::new();
     let mut x = left - hang;
-    let mut cur: Option<Seg> = None;
     let fs = font_size_of(size);
-    for line_tok in toks {
-        let tok = &line_tok.tok;
-        let text = token_visible_text(tok);
-        let advance;
-        match &mut cur {
-            Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
-                let old_width = s.width;
-                s.text.push_str(text);
-                s.width = (shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs)
-                    + line_tok.extra_advance)
-                    .max(old_width);
-                advance = (s.width - old_width).max(0.0);
+    let mut i = 0usize;
+    while let Some(first) = toks.get(i) {
+        let slot = first.tok.slot;
+        let link = &first.tok.link;
+        let strike = first.tok.strike;
+        // Run extent: consecutive same-slot/link/strike tokens, stopping
+        // after a space that carries justification stretch (it must flush
+        // the segment so the next run starts on its own).
+        let mut end = i;
+        let mut text_len = 0usize;
+        while let Some(line_tok) = toks.get(end) {
+            let tok = &line_tok.tok;
+            if end > i && (tok.slot != slot || &tok.link != link || tok.strike != strike) {
+                break;
             }
-            _ => {
-                if let Some(s) = cur.take() {
-                    segs.push(s);
-                }
-                advance = (shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs)
-                    + line_tok.extra_advance)
-                    .max(0.0);
-                cur = Some(Seg {
-                    x,
-                    slot: tok.slot,
-                    text: text.to_string(),
-                    link: tok.link.clone(),
-                    fill: if tok.link.is_some() {
-                        Fill::Link
-                    } else {
-                        Fill::Black
-                    },
-                    strike: tok.strike,
-                    task: None,
-                    width: advance,
-                });
+            text_len = text_len.saturating_add(token_visible_text(tok).len());
+            end += 1;
+            if tok.space && line_tok.extra_advance != 0.0 {
+                break;
             }
         }
-        x += advance;
-        if tok.space
-            && line_tok.extra_advance != 0.0
-            && let Some(s) = cur.take()
-        {
-            segs.push(s);
+        let seg_x = x;
+        let mut text = String::with_capacity(text_len);
+        let mut shaper = SegRunShaper::new(faces.face(slot), fs);
+        // Width is the running max over the run of (natural prefix width +
+        // effective extra) — the same maximum the per-token emitter folded
+        // via `(natural + extra).max(old_width)`. The per-token advance
+        // `(new - old).max(0.0)` is reproduced step for step so the running
+        // f32 sum behind `x` stays bit-identical to the per-token emitter.
+        let mut width = 0.0f32;
+        for line_tok in &toks[i..end] {
+            let tok = &line_tok.tok;
+            let visible = token_visible_text(tok);
+            text.push_str(visible);
+            shaper.append(visible, &text);
+            let natural = shaper.current_width().to_points_f32();
+            let extra = if use_expansion && !tok.space {
+                // Defer word extras to the uniform Tz factor below.
+                word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                0.0
+            } else {
+                line_tok.extra_advance
+            };
+            let new_width = width.max(natural + extra);
+            let advance = (new_width - width).max(0.0);
+            if use_expansion && !tok.space {
+                // `advance` is this token's natural-width delta (word
+                // extras were deferred), so the accumulation stays O(n).
+                box_width_milli += f64::from(advance) * 1000.0;
+            }
+            x += advance;
+            width = new_width;
         }
+        if let Some(cache) = width_cache {
+            ensure_width_cached(cache, slot, &text, fs, shaper.current_width());
+        }
+        segs.push(Seg {
+            x: seg_x,
+            slot,
+            text,
+            link: link.clone(),
+            fill: if link.is_some() {
+                Fill::Link
+            } else {
+                Fill::Black
+            },
+            strike,
+            task: None,
+            width,
+            expansion_permille: 0,
+        });
+        i = end;
     }
-    if let Some(s) = cur {
-        segs.push(s);
+    if use_expansion && box_width_milli > 0.0 {
+        let factor = word_extra_milli / box_width_milli;
+        let permille_f = (factor * 1000.0).round().clamp(
+            -f64::from(expansion_permille_budget),
+            f64::from(expansion_permille_budget),
+        );
+        let permille = permille_f as i16;
+        for seg in &mut segs {
+            seg.expansion_permille = permille;
+        }
     }
     segs
 }
@@ -19045,6 +19341,7 @@ fn build_single_adjusted_seg(
         strike,
         task: None,
         width,
+        expansion_permille: 0,
     })
 }
 
@@ -19490,6 +19787,7 @@ fn code_frags_to_segs(
                 strike: false,
                 task: None,
                 width,
+                expansion_permille: 0,
             });
             x += width;
         }
@@ -19526,6 +19824,7 @@ fn code_line_number_seg(
         strike: false,
         task: None,
         width,
+        expansion_permille: 0,
     }
 }
 
@@ -19539,6 +19838,7 @@ fn empty_code_seg(x: f32) -> Seg {
         strike: false,
         task: None,
         width: 0.0,
+        expansion_permille: 0,
     }
 }
 
@@ -20910,6 +21210,7 @@ fn generate_page_content(
             strike: false,
             task: None,
             width,
+            expansion_permille: 0,
         };
         append_marked_content_begin(&mut body, "Artifact", next_mcid);
         draw_seg(
@@ -21522,6 +21823,7 @@ mod font_slot_text_refs_tests {
             strike: false,
             task: None,
             width: 0.0,
+            expansion_permille: 0,
         }
     }
 
@@ -26179,7 +26481,7 @@ fn draw_seg(
     };
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
-        append_invisible_text_segment_operator(
+        append_text_segment_operator_with_render_mode(
             body,
             seg.slot,
             size,
@@ -26190,6 +26492,8 @@ fn draw_seg(
             face.kern,
             shaped,
             cached_tj,
+            Some(3),
+            seg.expansion_permille,
         );
     } else {
         if seg.fill != *current_fill {
@@ -26197,7 +26501,7 @@ fn draw_seg(
             append_rgb_fill_operator(body, (r, g, b));
             *current_fill = seg.fill;
         }
-        append_text_segment_operator(
+        append_text_segment_operator_with_render_mode(
             body,
             seg.slot,
             size,
@@ -26208,6 +26512,8 @@ fn draw_seg(
             face.kern,
             shaped,
             cached_tj,
+            None,
+            seg.expansion_permille,
         );
     }
     // Strikethrough: a thin stroke through the run's middle, in the text's own
@@ -26959,6 +27265,7 @@ mod keep_with_next_tests {
             strike: false,
             task: None,
             width: 1.0,
+            expansion_permille: 0,
         });
         line
     }
@@ -29594,6 +29901,7 @@ fn svg_word_spacing_after_glyph(
     word_spacing_adjust != 0 && glyph != 0 && (glyph == space || glyph == nbsp)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn append_text_segment_operator(
     body: &mut String,
@@ -29608,35 +29916,7 @@ fn append_text_segment_operator(
     cached_tj: Option<&str>,
 ) {
     append_text_segment_operator_with_render_mode(
-        body, slot, size, x, y, map_lookup, source, kern, shaped, cached_tj, None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_invisible_text_segment_operator(
-    body: &mut String,
-    slot: u8,
-    size: f32,
-    x: f32,
-    y: f32,
-    map_lookup: &[u16],
-    source: &Font,
-    kern: &Kerning,
-    shaped: &[u16],
-    cached_tj: Option<&str>,
-) {
-    append_text_segment_operator_with_render_mode(
-        body,
-        slot,
-        size,
-        x,
-        y,
-        map_lookup,
-        source,
-        kern,
-        shaped,
-        cached_tj,
-        Some(3),
+        body, slot, size, x, y, map_lookup, source, kern, shaped, cached_tj, None, 0,
     );
 }
 
@@ -29653,6 +29933,7 @@ fn append_text_segment_operator_with_render_mode(
     shaped: &[u16],
     cached_tj: Option<&str>,
     render_mode: Option<u8>,
+    expansion_permille: i16,
 ) {
     body.push_str("BT /F");
     append_decimal_u64_string(body, u64::from(slot));
@@ -29662,6 +29943,15 @@ fn append_text_segment_operator_with_render_mode(
     if let Some(mode) = render_mode {
         append_decimal_u64_string(body, u64::from(mode));
         body.push_str(" Tr ");
+    }
+    // Microtype expansion (Hàn Thế Thành): scale glyphs horizontally. The Tz
+    // operand is a percentage of natural width; 100 = unscaled. +15 permille
+    // → 101.5, -15 permille → 98.5. Values are emitted with one decimal and
+    // snap to exact per-mille steps, keeping output deterministic.
+    if expansion_permille != 0 {
+        let tz_percent = 100.0 + f32::from(expansion_permille) / 10.0;
+        append_pdf_fixed2(body, tz_percent);
+        body.push_str(" Tz ");
     }
     body.push_str("1 0 0 1 ");
     append_pdf_fixed2(body, x);
@@ -30091,12 +30381,15 @@ mod pdf_writer_tests {
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        container_prefix_with_extra, decode_xml_entities, estimate_page_content_capacity,
-        finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
-        fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
-        hyphenator_for_word_with_doc_lang, kerned_tj, kerned_tj_with_spacing, layout_inlines,
-        layout_inlines_greedy, layout_simple_text_paragraph, layout_table, layout_table_uncached,
-        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
+        container_prefix_with_extra, decode_xml_entities,
+        estimate_page_content_capacity, finish_page_content_stream, finite_pdf_scalar,
+        first_visible_segment_index, fnv1a64_update, fnv1a64_update_bytewise_reference,
+        font_size_of, hyphenator_for_word, hyphenator_for_word_with_doc_lang,
+        kerned_tj, kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
+        layout_simple_text_paragraph, layout_table, layout_table_uncached,
+        left_protrusion_hang, line_has_visible_content, measure_word,
+        normalize_svg_text_node, parse_svg_attrs, SegRunShaper,
+        shaped_width_points_for_layout,
         parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
@@ -30226,6 +30519,7 @@ mod pdf_writer_tests {
                     strike: false,
                     task: None,
                     width: 0.0,
+                    expansion_permille: 0,
                 })
                 .collect(),
             page_break_before: false,
@@ -31651,6 +31945,7 @@ mod pdf_writer_tests {
                 strike,
                 task: None,
                 width,
+                expansion_permille: 0,
             }
         }
 
@@ -32046,7 +32341,7 @@ mod pdf_writer_tests {
             },
         ];
 
-        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache));
+        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0);
 
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "fi");
@@ -32100,7 +32395,7 @@ mod pdf_writer_tests {
             },
         ];
 
-        let segs = build_segs_adjusted(&line_toks, left, size, &faces, None);
+        let segs = build_segs_adjusted(&line_toks, left, size, &faces, None, 0);
 
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].text, "alpha ");
@@ -32116,6 +32411,520 @@ mod pdf_writer_tests {
         );
         Ok(())
     }
+    /// The per-token emitter this replaced: re-shapes the whole merged text
+    /// at every token (`shaped_width_points_for_layout` per growing prefix).
+    /// Kept as the reference for the incremental shaper's differential test.
+    #[allow(clippy::too_many_arguments)]
+    fn build_segs_adjusted_reference(
+        toks: &[LineTok],
+        left: f32,
+        size: f32,
+        faces: &Faces,
+        width_cache: Option<&std::cell::RefCell<WidthCache>>,
+        expansion_permille_budget: u16,
+    ) -> Vec<Seg> {
+        let use_expansion = expansion_permille_budget > 0;
+        let mut word_extra_milli: f64 = 0.0;
+        let mut box_width_milli: f64 = 0.0;
+        let hang = left_protrusion_hang(toks, size);
+        let mut segs: Vec<Seg> = Vec::new();
+        let mut x = left - hang;
+        let mut cur: Option<Seg> = None;
+        let fs = font_size_of(size);
+        for line_tok in toks {
+            let tok = &line_tok.tok;
+            let text = token_visible_text(tok);
+            let advance;
+            match &mut cur {
+                Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
+                    let old_width = s.width;
+                    s.text.push_str(text);
+                    let natural =
+                        shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs);
+                    let extra = if use_expansion && !tok.space {
+                        word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                        0.0
+                    } else {
+                        line_tok.extra_advance
+                    };
+                    s.width = (natural + extra).max(old_width);
+                    advance = (s.width - old_width).max(0.0);
+                    if use_expansion && !tok.space {
+                        // `advance` is this token's natural-width delta (word
+                        // extras were deferred), so the accumulation stays O(n).
+                        box_width_milli += f64::from(advance) * 1000.0;
+                    }
+                }
+                _ => {
+                    if let Some(s) = cur.take() {
+                        segs.push(s);
+                    }
+                    let natural =
+                        shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs);
+                    let extra = if use_expansion && !tok.space {
+                        word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                        0.0
+                    } else {
+                        line_tok.extra_advance
+                    };
+                    advance = (natural + extra).max(0.0);
+                    if use_expansion && !tok.space {
+                        box_width_milli += f64::from(advance) * 1000.0;
+                    }
+                    cur = Some(Seg {
+                        x,
+                        slot: tok.slot,
+                        text: text.to_string(),
+                        link: tok.link.clone(),
+                        fill: if tok.link.is_some() {
+                            Fill::Link
+                        } else {
+                            Fill::Black
+                        },
+                        strike: tok.strike,
+                        task: None,
+                        width: advance,
+                        expansion_permille: 0,
+                    });
+                }
+            }
+            x += advance;
+            if tok.space
+                && line_tok.extra_advance != 0.0
+                && let Some(s) = cur.take()
+            {
+                segs.push(s);
+            }
+        }
+        if let Some(s) = cur {
+            segs.push(s);
+        }
+        if use_expansion && box_width_milli > 0.0 {
+            let factor = word_extra_milli / box_width_milli;
+            let permille_f = (factor * 1000.0).round().clamp(
+                -f64::from(expansion_permille_budget),
+                f64::from(expansion_permille_budget),
+            );
+            let permille = permille_f as i16;
+            for seg in &mut segs {
+                seg.expansion_permille = permille;
+            }
+        }
+        segs
+    }
+
+    fn assert_same_segs(new: &[Seg], reference: &[Seg], label: &str) {
+        assert_eq!(new.len(), reference.len(), "segment count differs: {label}");
+        for (idx, (n, r)) in new.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(n.text, r.text, "text differs at {label}[{idx}]");
+            assert_eq!(n.slot, r.slot, "slot differs at {label}[{idx}]");
+            assert_eq!(n.strike, r.strike, "strike differs at {label}[{idx}]");
+            assert_eq!(n.task, r.task, "task differs at {label}[{idx}]");
+            assert_eq!(
+                n.expansion_permille, r.expansion_permille,
+                "expansion differs at {label}[{idx}]"
+            );
+            assert_eq!(
+                n.link.is_some(),
+                r.link.is_some(),
+                "link presence differs at {label}[{idx}]"
+            );
+            assert_eq!(
+                n.x.to_bits(),
+                r.x.to_bits(),
+                "x bits differ at {label}[{idx}]: {} vs {}",
+                n.x,
+                r.x
+            );
+            assert_eq!(
+                n.width.to_bits(),
+                r.width.to_bits(),
+                "width bits differ at {label}[{idx}]: {} vs {}",
+                n.width,
+                r.width
+            );
+        }
+    }
+
+    fn differential_line_toks() -> Vec<Vec<LineTok>> {
+        let word = |text: &str, slot: u8| LineTok {
+            tok: Tok {
+                text: text.to_string(),
+                slot,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: 0.0,
+        };
+        let space = |extra: f32| LineTok {
+            tok: Tok {
+                text: String::new(),
+                slot: F_BODY,
+                space: true,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: extra,
+        };
+        let strike_tok = |text: &str| LineTok {
+            tok: Tok {
+                text: text.to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: true,
+            },
+            extra_advance: 0.0,
+        };
+        let linked = |text: &str| LineTok {
+            tok: Tok {
+                text: text.to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: Some(LinkTarget::Uri("https://example.com".to_string())),
+                strike: false,
+            },
+            extra_advance: 0.0,
+        };
+        let with_extra = |mut lt: LineTok, extra: f32| {
+            lt.extra_advance = extra;
+            lt
+        };
+        vec![
+            // Ligature across token boundaries.
+            vec![word("f", F_BODY), word("i", F_BODY)],
+            vec![word("of", F_BODY), word("fi", F_BODY), word("ce", F_BODY)],
+            vec![word("f", F_BODY), word("f", F_BODY), word("i", F_BODY)],
+            vec![word("af", F_BODY), word("fine", F_BODY), space(0.0)],
+            // Justified spaces flush runs with the extra folded into width.
+            vec![
+                word("alpha", F_BODY),
+                space(3.25),
+                word("beta", F_BODY),
+                space(-1.5),
+                word("gamma", F_BODY),
+            ],
+            // Word extras (applies_to_words / CJK-style justification).
+            vec![
+                with_extra(word("日", F_BODY), 0.8),
+                with_extra(word("本", F_BODY), 0.8),
+                with_extra(word("語", F_BODY), 0.8),
+                space(0.8),
+                with_extra(word("テ", F_BODY), 0.8),
+                with_extra(word("ス", F_BODY), 0.8),
+            ],
+            // Slot/link/strike run splitting.
+            vec![
+                word("plain ", F_BODY),
+                word("bold", F_BOLD),
+                word(" tail", F_BODY),
+                linked("link"),
+                word(" after", F_BODY),
+                strike_tok("gone"),
+                word(" end", F_BODY),
+            ],
+            // Mixed non-ASCII + ligatures + extras in one long run.
+            vec![
+                word("Ünïcödé ", F_BODY),
+                word("fi", F_BODY),
+                with_extra(word("ffl", F_BODY), 2.0),
+                word(" AV", F_BODY),
+                word("A", F_BODY),
+                word("V.", F_BODY),
+                space(1.25),
+            ],
+            // Empty visible text (hard-break style token kept mid-run).
+            vec![word("a", F_BODY), word("", F_BODY), word("b", F_BODY)],
+        ]
+    }
+
+    #[test]
+    #[ignore = "perf micro: cargo test --profile release-perf -- --ignored segs_adjusted_perf"]
+    fn segs_adjusted_perf_reference_vs_incremental() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let word = |text: &str| LineTok {
+            tok: Tok {
+                text: text.to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: 0.0,
+        };
+        let space = |extra: f32| LineTok {
+            tok: Tok {
+                text: String::new(),
+                slot: F_BODY,
+                space: true,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: extra,
+        };
+        // Justified body-text lines: words (some ligature-starting) with
+        // stretched spaces, exactly what the Knuth-Plass emitter feeds in.
+        let words = [
+            "fire", "flow", "office", "the", "quick", "brown", "fox", "jumps",
+            "over", "lazy", "dog", "affine", "shelf", "grift", "waffle",
+        ];
+        let mut lines: Vec<Vec<LineTok>> = Vec::new();
+        for l in 0..64usize {
+            let mut toks = Vec::new();
+            for w in 0..12usize {
+                toks.push(word(words[(l + w) % words.len()]));
+                toks.push(space(if w % 3 == 0 { 3.25 } else { 1.75 }));
+            }
+            lines.push(toks);
+        }
+
+        let run_ref = |lines: &[Vec<LineTok>]| {
+            let mut sink = 0usize;
+            for toks in lines {
+                // Fresh cache per line: the real emitter creates one per
+                // render, so cold-ish lookups dominate as they do live.
+                let cache = std::cell::RefCell::new(WidthCache::default());
+                let segs = build_segs_adjusted_reference(toks, 10.0, size, &faces, Some(&cache), 0);
+                sink += segs.len();
+            }
+            sink
+        };
+        let run_new = |lines: &[Vec<LineTok>]| {
+            let mut sink = 0usize;
+            for toks in lines {
+                let cache = std::cell::RefCell::new(WidthCache::default());
+                let segs = build_segs_adjusted(toks, 10.0, size, &faces, Some(&cache), 0);
+                sink += segs.len();
+            }
+            sink
+        };
+
+        // Interleaved paired rounds under ambient load.
+        let mut ref_ns: Vec<u128> = Vec::new();
+        let mut new_ns: Vec<u128> = Vec::new();
+        for _ in 0..9 {
+            let t = std::time::Instant::now();
+            let a = run_ref(&lines);
+            let d_ref = t.elapsed().as_nanos();
+            let t = std::time::Instant::now();
+            let b = run_new(&lines);
+            let d_new = t.elapsed().as_nanos();
+            assert_eq!(a, b, "same segment count");
+            ref_ns.push(d_ref);
+            new_ns.push(d_new);
+        }
+        ref_ns.sort();
+        new_ns.sort();
+        println!(
+            "segs_adjusted 64x12-word justified lines: reference (per-prefix reshaping) {} ns vs incremental {} ns ({:+.1}%)",
+            ref_ns[4],
+            new_ns[4],
+            (new_ns[4] as f64 - ref_ns[4] as f64) / ref_ns[4] as f64 * 100.0
+        );
+
+        // Worst case for the old emitter: one long same-slot run where
+        // every token carries an extra (applies_to_words / CJK-style
+        // justification), so the old code re-shaped the whole growing run
+        // per token (quadratic) while the incremental shaper stays linear.
+        let cjk_chars: Vec<char> =
+            "日本語のテストは長い行を構成するための文字列ですここで終わり".chars().collect();
+        let mut cjk_lines: Vec<Vec<LineTok>> = Vec::new();
+        for l in 0..16usize {
+            let mut toks = Vec::new();
+            for c in 0..40usize {
+                let mut buf = [0u8; 4];
+                let mut lt = word(cjk_chars[(l + c) % cjk_chars.len()].encode_utf8(&mut buf));
+                lt.extra_advance = 0.5;
+                toks.push(lt);
+            }
+            toks.push(space(0.5));
+            cjk_lines.push(toks);
+        }
+        let mut cjk_ref_ns: Vec<u128> = Vec::new();
+        let mut cjk_new_ns: Vec<u128> = Vec::new();
+        for _ in 0..9 {
+            let t = std::time::Instant::now();
+            let a = run_ref(&cjk_lines);
+            let d_ref = t.elapsed().as_nanos();
+            let t = std::time::Instant::now();
+            let b = run_new(&cjk_lines);
+            let d_new = t.elapsed().as_nanos();
+            assert_eq!(a, b, "same segment count (cjk)");
+            cjk_ref_ns.push(d_ref);
+            cjk_new_ns.push(d_new);
+        }
+        cjk_ref_ns.sort();
+        cjk_new_ns.sort();
+        println!(
+            "segs_adjusted 16x41-token extra-carrying runs: reference {} ns vs incremental {} ns ({:+.1}%)",
+            cjk_ref_ns[4],
+            cjk_new_ns[4],
+            (cjk_new_ns[4] as f64 - cjk_ref_ns[4] as f64) / cjk_ref_ns[4] as f64 * 100.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn segs_adjusted_incremental_matches_per_prefix_reshaping() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let left = 17.0;
+        for (idx, toks) in differential_line_toks().into_iter().enumerate() {
+            for budget in [0u16, 15] {
+                let new = build_segs_adjusted(&toks, left, size, &faces, None, budget);
+                let reference = build_segs_adjusted_reference(&toks, left, size, &faces, None, budget);
+                assert_same_segs(&new, &reference, &format!("case {idx} budget {budget}"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn segs_adjusted_incremental_matches_per_prefix_reshaping_cached() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let cache = std::cell::RefCell::new(WidthCache::default());
+        for (idx, toks) in differential_line_toks().into_iter().enumerate() {
+            let new = build_segs_adjusted(&toks, 5.0, size, &faces, Some(&cache), 0);
+            let reference = build_segs_adjusted_reference(&toks, 5.0, size, &faces, None, 0);
+            assert_same_segs(&new, &reference, &format!("cached case {idx}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multi_token_runs_cache_only_final_shaped_text() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let size = 11.0;
+        let key = (F_BODY, font_size_of(size).milli_points());
+        let cache = std::cell::RefCell::new(WidthCache::default());
+        let word = |text: &str| LineTok {
+            tok: Tok {
+                text: text.to_string(),
+                slot: F_BODY,
+                space: false,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: 0.0,
+        };
+        let space = |extra: f32| LineTok {
+            tok: Tok {
+                text: String::new(),
+                slot: F_BODY,
+                space: true,
+                hard_break: false,
+                link: None,
+                strike: false,
+            },
+            extra_advance: extra,
+        };
+        let line_toks = vec![
+            word("of"),
+            word("fi"),
+            word("ce"),
+            space(2.5),
+            word("next"),
+        ];
+
+        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0);
+
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "office ");
+        assert_eq!(segs[1].text, "next");
+        assert!(cache.borrow().contains(key, "office "));
+        assert!(cache.borrow().contains(key, "next"));
+        assert!(
+            !cache.borrow().contains(key, "of"),
+            "transient prefix must not be cached"
+        );
+        assert!(
+            !cache.borrow().contains(key, "offi"),
+            "transient prefix must not be cached"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seg_run_shaper_prefix_widths_match_per_call_shaping() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let fs = font_size_of(11.0);
+        let corpus = [
+            "",
+            " ",
+            "f",
+            "fi",
+            "fl",
+            "ff",
+            "ffi",
+            "ffl",
+            "affi",
+            "affine",
+            "office flu",
+            "shelfful",
+            "AVATAR.",
+            "VA.",
+            "To Ta",
+            "the quick brown fox",
+            "fjord fj",
+            "Ünïcödé",
+            "日本語のテスト",
+            "mixed fi 日 f fl",
+            "----",
+            "aaaa",
+        ];
+        for slot in [F_BODY, F_BOLD, F_MONO] {
+            for text in corpus {
+                let char_count = text.chars().count();
+                // Byte offset of every char boundary (plus the two ends).
+                let mut bounds: Vec<usize> = vec![0];
+                bounds.extend(text.char_indices().skip(1).map(|(idx, _)| idx));
+                bounds.push(text.len());
+                // All token splits for strings up to 10 chars; for longer
+                // ones, every single boundary plus prefix/suffix splits.
+                let mut masks: Vec<u32> = Vec::new();
+                if char_count <= 10 {
+                    masks.extend(0..1u32 << char_count.saturating_sub(1));
+                } else {
+                    masks.extend((0..char_count - 1).map(|b| 1u32 << b));
+                    masks.push((1u32 << (char_count - 1)) - 1);
+                }
+                for mask in masks {
+                    let mut cuts: Vec<usize> = vec![0];
+                    for (b, &bound) in bounds.iter().enumerate().take(char_count) {
+                        if b > 0 && mask & (1 << (b - 1)) != 0 {
+                            cuts.push(bound);
+                        }
+                    }
+                    cuts.push(text.len());
+                    let mut shaper = SegRunShaper::new(faces.face(slot), fs);
+                    let mut acc = String::new();
+                    for pair in cuts.windows(2) {
+                        let part = &text[pair[0]..pair[1]];
+                        acc.push_str(part);
+                        shaper.append(part, &acc);
+                        let want = faces.shaped_width(slot, &acc, fs);
+                        assert_eq!(
+                            shaper.current_width(),
+                            want,
+                            "slot {slot} acc {acc:?} (mask {mask})"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
 
     #[test]
     fn decimal_writer_covers_boundary_values() {
@@ -33199,6 +34008,7 @@ mod pdf_writer_tests {
             strike: false,
             task: Some(true),
             width: 15.0,
+            expansion_permille: 0,
         };
         let mut out = String::new();
         let palette = Palette::from_colors(&ThemeColors::default());

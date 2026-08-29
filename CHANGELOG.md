@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SOTA typography optimization (Verna DocEng '25 + Hàn Thế Thành pdfTeX):**
+  - Added `--typography-homogeneous`: gradual adjacent demerits in the Knuth-Plass line breaker. Replaces the coarse 4-class binary fitness check with a linear penalty proportional to the fine-grained spacing-ratio difference between consecutive lines (`fitness_ratio_milli` + `line_demerits` gradual arm in `src/layout.rs`), producing more homogeneous inter-word spacing in justified paragraphs. Default off — byte-identical classic KP output.
+  - Implemented the microtype expansion emitter: `--microtype expansion` renders the justifier's ±1.5‰ glyph-elasticity credit as true horizontal glyph scaling via the PDF `Tz` operator (uniform per line — exact, because the credit distribution in `glue_adjustments_into` is proportional to box width), instead of flat letter-spacing (`build_segs_adjusted` + `append_text_segment_operator_with_render_mode` in `src/pdf.rs`). `--microtype protrusion` now carries both effects.
+  - Tests pin the contract: default renders byte-identical (no `Tz`), opt-in deterministic, every `Tz` factor within the ±1.5% budget, page counts unchanged (`tests/gradual_demerits_test.rs`, `tests/microtype_test.rs`).
+
 - **Multi-Chapter Book & Site Builder (`fmd book`, epic `7tus`, beads `qqst`, `qpqv`, `j0o4`):**
   - Added the `fmd book <dir> [--out-dir DIR] [--to html|pdf|both] [--json]` command to compile a directory of Markdown files into a unified multi-page HTML site and/or a single merged PDF book from one shared AST representation (`src/book.rs`, `src/cli.rs`).
   - Added frontmatter metadata parsing (`title=`, `author=`, `lang=`, `toc=`, `toc_depth=`) supporting key-value frontmatter fences (`---`) before block parsing (`src/parse/frontmatter.rs`).

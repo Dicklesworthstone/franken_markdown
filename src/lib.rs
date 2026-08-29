@@ -602,6 +602,13 @@ pub struct PdfOptions {
     /// `layout` (docs/MICROTYPOGRAPHY.md). DISABLED by default — default
     /// output stays byte-identical.
     pub microtype: crate::layout::MicrotypeOptions,
+    /// Enable gradual adjacent demerits (Verna, DocEng '25) in the Knuth-Plass
+    /// line breaker for justified paragraphs: replaces the coarse 4-class
+    /// binary fitness check with a linear penalty proportional to the
+    /// fine-grained spacing-ratio difference between consecutive lines.
+    /// Default false — classic KP behavior, byte-identical output. See
+    /// docs/MICROTYPOGRAPHY.md for the quality metrics this improves.
+    pub gradual_demerits: bool,
 }
 
 impl PdfOptions {

@@ -2326,6 +2326,19 @@ impl Ligatures {
         self.rules.keys()
     }
 
+    /// Total glyph length (first glyph + components) of the longest ligature
+    /// rule. Incremental shapers use it as the settle window: an input suffix
+    /// shorter than this cannot complete a rule that starts before it, so
+    /// decisions before the window are final.
+    #[must_use]
+    pub fn max_rule_len(&self) -> usize {
+        self.rules
+            .values()
+            .flat_map(|rules| rules.iter().map(|r| r.components.len() + 1))
+            .max()
+            .unwrap_or(1)
+    }
+
     /// Apply ligature substitution to a glyph-id sequence (greedy longest match),
     /// returning the shaped sequence (which may contain ligature glyph ids that
     /// no single character maps to).
@@ -4336,6 +4349,15 @@ mod synthetic_font_tests {
             ligs.substitute_with_spans(&[10, 11, 12, 10, 11]),
             vec![(99, 3), (77, 2)]
         );
+    }
+
+    #[test]
+    fn max_rule_len_reports_longest_rule() {
+        // gsub_table registers 10 + [11, 12] -> 99 (3 glyphs) and
+        // 10 + [11] -> 77 (2 glyphs), so the window is 3.
+        assert_eq!(gsub_font(1, 4, 0).max_rule_len(), 3);
+        // No rules: the window degenerates to 1 (every decision final).
+        assert_eq!(Ligatures::default().max_rule_len(), 1);
     }
 
     #[test]

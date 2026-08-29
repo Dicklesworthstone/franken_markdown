@@ -122,7 +122,7 @@ impl JsonValue {
                         out.push_str(&format!("{n}"));
                     }
                 } else {
-                    out.push_str("0");
+                    out.push('0');
                 }
             }
             Self::String(s) => {
@@ -203,7 +203,7 @@ fn parse_value(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
 }
 
 fn parse_null(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
-    if *idx + 4 <= chars.len() && &chars[*idx..*idx + 4] == ['n', 'u', 'l', 'l'] {
+    if *idx + 4 <= chars.len() && chars[*idx..*idx + 4] == ['n', 'u', 'l', 'l'] {
         *idx += 4;
         Ok(JsonValue::Null)
     } else {
@@ -212,10 +212,10 @@ fn parse_null(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
 }
 
 fn parse_bool(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
-    if *idx + 4 <= chars.len() && &chars[*idx..*idx + 4] == ['t', 'r', 'u', 'e'] {
+    if *idx + 4 <= chars.len() && chars[*idx..*idx + 4] == ['t', 'r', 'u', 'e'] {
         *idx += 4;
         Ok(JsonValue::Bool(true))
-    } else if *idx + 5 <= chars.len() && &chars[*idx..*idx + 5] == ['f', 'a', 'l', 's', 'e'] {
+    } else if *idx + 5 <= chars.len() && chars[*idx..*idx + 5] == ['f', 'a', 'l', 's', 'e'] {
         *idx += 5;
         Ok(JsonValue::Bool(false))
     } else {
@@ -1181,12 +1181,14 @@ fn handle_render_file(
 
     match to.as_str() {
         "html" => {
-            let mut opts = HtmlOptions::default();
-            opts.title = Some(
-                path.file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            );
+            let opts = HtmlOptions {
+                title: Some(
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+                ..Default::default()
+            };
             let doc = parse_markdown(&src);
             let html = render_html_document(&doc, &opts).map_err(|e| {
                 (
@@ -1211,12 +1213,14 @@ fn handle_render_file(
             }
         }
         "pdf" => {
-            let mut opts = PdfOptions::default();
-            opts.title = Some(
-                path.file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            );
+            let opts = PdfOptions {
+                title: Some(
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+                ..Default::default()
+            };
             let doc = parse_markdown(&src);
             let pdf_bytes = render_pdf_document(&doc, &opts).map_err(|e| {
                 (

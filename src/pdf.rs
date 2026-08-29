@@ -20198,9 +20198,9 @@ fn serialize(
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let (bytes, map) = if tail {
+        let (bytes, mut gid_lookup) = if tail {
             let t0 = subset_tail_now();
-            let r = source.subset_glyphs(&seed, &keep);
+            let r = source.subset_glyphs_with_lookup(&seed, &keep);
             subset_tail_since(t0, &mut tail_subset_ns);
             match r {
                 Some(v) => v,
@@ -20211,7 +20211,7 @@ fn serialize(
                 }
             }
         } else {
-            match source.subset_glyphs(&seed, &keep) {
+            match source.subset_glyphs_with_lookup(&seed, &keep) {
                 Some(v) => v,
                 None => {
                     return Err(RenderError::PdfGeneration(
@@ -20246,16 +20246,24 @@ fn serialize(
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
         for (src, s) in lig_src_uni {
-            if let Some(&new) = map.get(&src) {
-                lig_uni.insert(new, s);
+            if let Some(&new) = gid_lookup.get(usize::from(src)) {
+                if new != crate::text::MISSING_GLYPH_REMAP {
+                    lig_uni.insert(new, s);
+                }
             }
         }
-        let mut map_lookup = vec![0u16; usize::from(source.num_glyphs)];
-        for (&old, &new) in &map {
-            if let Some(slot) = map_lookup.get_mut(usize::from(old)) {
-                *slot = new;
+        // The subsetter's dense old->new table doubles as `map_lookup`
+        // in-place: absent glyphs point at the subset's `.notdef` (new gid
+        // 0) instead of the sentinel, exactly matching the table the old
+        // BTreeMap scatter produced (every mapped old gid keeps its new id;
+        // every unmapped one stays 0).
+        for new in &mut gid_lookup {
+            if *new == crate::text::MISSING_GLYPH_REMAP {
+                *new = 0;
             }
         }
+        gid_lookup.truncate(usize::from(source.num_glyphs));
+        let map_lookup = gid_lookup;
         if tail {
             let t0 = subset_tail_now();
             for shaped in slot_cache.values_mut() {

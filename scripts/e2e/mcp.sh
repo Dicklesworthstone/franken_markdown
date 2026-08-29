@@ -33,19 +33,22 @@ def send_frame(proc, obj):
     proc.stdin.flush()
 
 def read_frame(proc):
-    content_length = None
-    while True:
-        line = proc.stdout.readline()
-        if not line:
+    header_bytes = b""
+    while b"\r\n\r\n" not in header_bytes and b"\n\n" not in header_bytes:
+        chunk = proc.stdout.read(1)
+        if not chunk:
             return None
-        line_str = line.decode("utf-8").strip()
-        if not line_str:
-            if content_length is not None:
-                body = proc.stdout.read(content_length)
-                return json.loads(body.decode("utf-8"))
-            continue
-        if line_str.startswith("Content-Length:"):
-            content_length = int(line_str.split(":", 1)[1].strip())
+        header_bytes += chunk
+    header_str = header_bytes.decode("utf-8")
+    content_length = None
+    for line in header_str.splitlines():
+        if line.lower().startswith("content-length:"):
+            content_length = int(line.split(":", 1)[1].strip())
+            break
+    if content_length is None:
+        return None
+    body = proc.stdout.read(content_length)
+    return json.loads(body.decode("utf-8"))
 
 binary = sys.argv[1]
 proc = subprocess.Popen(

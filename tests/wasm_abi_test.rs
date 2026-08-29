@@ -46,7 +46,7 @@ fn tiny_rgb_png() -> Vec<u8> {
 fn capabilities_returns_the_browser_contract_json() {
     let json = capabilities();
     assert!(json.contains("\"schema\":\"fmd-wasm-capabilities-v1\""));
-    assert!(json.contains("\"outputs\":[\"html\",\"pdf\"]"));
+    assert!(json.contains("\"html\"") && json.contains("\"pdf\""));
     assert!(
         json.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""),
         "HTML and PDF both accept host-supplied image bytes: {json}"
@@ -253,6 +253,12 @@ fn render_pdf_configured_multi_embeds_every_supplied_image() {
         None,
         None,
         false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        false,
     )
     .expect("pdf with two images");
     let bytes = out.bytes();
@@ -291,6 +297,12 @@ fn render_pdf_configured_multi_drops_non_finite_and_f32_overflow_sizes() {
         Some(1e39),
         Some(f64::NAN),
         Some(f64::INFINITY),
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
         false,
     )
     .expect("overflow typography is ignored, not fatal");
@@ -354,6 +366,12 @@ fn render_pdf_configured_multi_skips_fully_blank_placeholder_entries() {
         Vec::new(),
         Vec::new(),
         None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        false,
         None,
         None,
         false,

@@ -114,10 +114,11 @@ fn mcp_tool_render_pdf_parity() {
 
     assert!(!b64.is_empty());
     // Directly verify PDF output from renderer
-    let mut opts = franken_markdown::PdfOptions::default();
-    opts.page_numbers = true;
-    let expected_pdf =
-        franken_markdown::render_pdf(markdown, &opts).expect("direct render");
+    let opts = franken_markdown::PdfOptions {
+        page_numbers: true,
+        ..Default::default()
+    };
+    let expected_pdf = franken_markdown::render_pdf(markdown, &opts).expect("direct render");
     let expected_b64 = franken_markdown::mcp::base64_encode(&expected_pdf);
     assert_eq!(
         b64, expected_b64,
@@ -259,4 +260,114 @@ fn mcp_sequential_calls_session_stream() {
         };
         assert!(html.contains(&format!("Document {i}")));
     }
+}
+
+#[test]
+fn mcp_tool_render_file_parity_and_errors() {
+    let tmp_dir = std::env::temp_dir().join(format!("fmd_mcp_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let sample_path = tmp_dir.join("sample.md");
+    let out_html_path = tmp_dir.join("sample.html");
+    let out_pdf_path = tmp_dir.join("sample.pdf");
+
+    let md_content = "# File Render Test\n\nContent rendered from disk via MCP.";
+    std::fs::write(&sample_path, md_content).expect("write sample md");
+
+    // 1. Render file to HTML returning string
+    let mut args = BTreeMap::new();
+    args.insert(
+        "path".to_string(),
+        JsonValue::String(sample_path.to_string_lossy().to_string()),
+    );
+    args.insert("to".to_string(), JsonValue::String("html".to_string()));
+    let mut params = BTreeMap::new();
+    params.insert(
+        "name".to_string(),
+        JsonValue::String("fmd.render_file".to_string()),
+    );
+    params.insert("arguments".to_string(), JsonValue::Object(args));
+
+    let res = handle_tool_call(Some(&JsonValue::Object(params)), DEFAULT_MAX_INPUT_BYTES)
+        .expect("render_file html");
+    let content = res.get("content").expect("content");
+    let html = match content {
+        JsonValue::Array(arr) => arr[0].get("text").and_then(|t| t.as_str()).expect("text"),
+        _ => panic!("expected array"),
+    };
+    assert!(html.contains("File Render Test"));
+
+    // 2. Render file to HTML writing to out path
+    let mut args = BTreeMap::new();
+    args.insert(
+        "path".to_string(),
+        JsonValue::String(sample_path.to_string_lossy().to_string()),
+    );
+    args.insert("to".to_string(), JsonValue::String("html".to_string()));
+    args.insert(
+        "out".to_string(),
+        JsonValue::String(out_html_path.to_string_lossy().to_string()),
+    );
+    let mut params = BTreeMap::new();
+    params.insert(
+        "name".to_string(),
+        JsonValue::String("fmd.render_file".to_string()),
+    );
+    params.insert("arguments".to_string(), JsonValue::Object(args));
+
+    let res = handle_tool_call(Some(&JsonValue::Object(params)), DEFAULT_MAX_INPUT_BYTES)
+        .expect("render_file out html");
+    let content = res.get("content").expect("content");
+    let msg = match content {
+        JsonValue::Array(arr) => arr[0].get("text").and_then(|t| t.as_str()).expect("text"),
+        _ => panic!("expected array"),
+    };
+    assert!(msg.contains("Rendered HTML written to"));
+    assert!(out_html_path.exists());
+
+    // 3. Render file to PDF writing to out path
+    let mut args = BTreeMap::new();
+    args.insert(
+        "path".to_string(),
+        JsonValue::String(sample_path.to_string_lossy().to_string()),
+    );
+    args.insert("to".to_string(), JsonValue::String("pdf".to_string()));
+    args.insert(
+        "out".to_string(),
+        JsonValue::String(out_pdf_path.to_string_lossy().to_string()),
+    );
+    let mut params = BTreeMap::new();
+    params.insert(
+        "name".to_string(),
+        JsonValue::String("fmd.render_file".to_string()),
+    );
+    params.insert("arguments".to_string(), JsonValue::Object(args));
+
+    let res = handle_tool_call(Some(&JsonValue::Object(params)), DEFAULT_MAX_INPUT_BYTES)
+        .expect("render_file out pdf");
+    let content = res.get("content").expect("content");
+    let msg = match content {
+        JsonValue::Array(arr) => arr[0].get("text").and_then(|t| t.as_str()).expect("text"),
+        _ => panic!("expected array"),
+    };
+    assert!(msg.contains("Rendered PDF written to"));
+    assert!(out_pdf_path.exists());
+
+    // 4. Non-existent file error
+    let mut args = BTreeMap::new();
+    args.insert(
+        "path".to_string(),
+        JsonValue::String("/nonexistent/file/path/xyz.md".to_string()),
+    );
+    let mut params = BTreeMap::new();
+    params.insert(
+        "name".to_string(),
+        JsonValue::String("fmd.render_file".to_string()),
+    );
+    params.insert("arguments".to_string(), JsonValue::Object(args));
+
+    let err = handle_tool_call(Some(&JsonValue::Object(params)), DEFAULT_MAX_INPUT_BYTES)
+        .expect_err("nonexistent file");
+    assert_eq!(err.2, "file_not_found");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

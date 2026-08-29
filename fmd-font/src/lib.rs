@@ -46,7 +46,11 @@ const MAX_LAYOUT_GLYPHS: usize = 65_536;
 
 /// Alias of the layout ceiling used specifically for Coverage-table expansion.
 const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
-const MISSING_GLYPH_REMAP: u16 = u16::MAX;
+/// Sentinel in the dense glyph remap returned by
+/// [`Font::subset_glyphs_with_lookup`]: `lookup[old] == MISSING_GLYPH_REMAP`
+/// means glyph `old` is not part of the subset (glyph 0, `.notdef`, is always
+/// kept and always remaps to 0).
+pub const MISSING_GLYPH_REMAP: u16 = u16::MAX;
 
 /// OpenType variable fonts almost never exceed a handful of axes (`wght`,
 /// `wdth`, `opsz`, …). A hostile `fvar` can claim 65 535 axes at 20 bytes
@@ -1057,6 +1061,10 @@ impl Font {
     /// plus the old->new glyph id remap — for callers that pre-shaped a glyph
     /// sequence (e.g. GSUB ligatures) and must emit the renumbered ids.
     ///
+    /// The map is the ordered projection of [`Font::subset_glyphs_with_lookup`];
+    /// prefer that method when a dense lookup table is more useful than an
+    /// ordered map (same font bytes, no per-glyph tree nodes).
+    ///
     /// # Errors
     /// Returns `None` for a font without `glyf`/`loca` outlines or on a malformed
     /// read (same conditions as [`Font::subset`]).
@@ -1065,6 +1073,33 @@ impl Font {
         glyphs: &[u16],
         cmap_chars: &[char],
     ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
+        let (bytes, lookup) = self.subset_glyphs_with_lookup(glyphs, cmap_chars)?;
+        let mut new_of = std::collections::BTreeMap::new();
+        for (old, new) in lookup.into_iter().enumerate() {
+            if new != MISSING_GLYPH_REMAP {
+                new_of.insert(u16::try_from(old).ok()?, new);
+            }
+        }
+        Some((bytes, new_of))
+    }
+
+    /// Subset to an explicit glyph set (same closure and `cmap` construction as
+    /// [`Font::subset_glyphs`]), returning the font bytes plus the subsetter's
+    /// own dense old->new lookup: `lookup[old]` is the glyph's renumbered id in
+    /// the subset, or [`MISSING_GLYPH_REMAP`] when `old` is not part of it.
+    /// The vector has `max(num_glyphs, 1)` entries indexed by old gid — the
+    /// exact table the subsetter builds internally, so callers translating
+    /// pre-shaped glyph runs need neither an ordered map nor a rebuild of
+    /// this very vector. Font bytes are identical to [`Font::subset_glyphs`].
+    ///
+    /// # Errors
+    /// Returns `None` for a font without `glyf`/`loca` outlines or on a malformed
+    /// read (same conditions as [`Font::subset`]).
+    pub fn subset_glyphs_with_lookup(
+        &self,
+        glyphs: &[u16],
+        cmap_chars: &[char],
+    ) -> Option<(Vec<u8>, Vec<u16>)> {
         // PDF font programs do not require `OS/2`; leaving it out keeps the
         // embedded font streams (and existing golden PDF bytes) unchanged.
         self.subset_core(glyphs, cmap_chars, false)
@@ -1075,7 +1110,7 @@ impl Font {
         seed_glyphs: &[u16],
         cmap_chars: &[char],
         include_os2: bool,
-    ) -> Option<(Vec<u8>, std::collections::BTreeMap<u16, u16>)> {
+    ) -> Option<(Vec<u8>, Vec<u16>)> {
         // --- 1. Glyph closure ------------------------------------------------
         // Require TrueType outlines; CFF/`OTTO` fonts cannot be subset here.
         if !self.has_glyf_outlines() {
@@ -1106,13 +1141,13 @@ impl Font {
             }
         }
         let old_gids: Vec<u16> = set.into_iter().collect(); // ascending, 0 first
-
         // --- 2. Renumber old -> new -----------------------------------------
-        let mut new_of: std::collections::BTreeMap<u16, u16> = std::collections::BTreeMap::new();
+        // Dense table: new_of_lookup[old] = new gid (or MISSING_GLYPH_REMAP).
+        // Returned to callers directly (subset_glyphs_with_lookup); the
+        // ordered BTreeMap variant is reconstructed from it on demand.
         let mut new_of_lookup = vec![MISSING_GLYPH_REMAP; usize::from(self.num_glyphs).max(1)];
         for (i, &g) in old_gids.iter().enumerate() {
             let new_gid = u16::try_from(i).ok()?;
-            new_of.insert(g, new_gid);
             *new_of_lookup.get_mut(usize::from(g))? = new_gid;
         }
         let n = old_gids.len();
@@ -1281,7 +1316,7 @@ impl Font {
         let adj = 0xB1B0_AFBAu32.wrapping_sub(file_checksum);
         write_u32(&mut out, off(head_offset, 8)?, adj)?;
 
-        Some((out, new_of))
+        Some((out, new_of_lookup))
     }
 
     /// Glyph bytes for the subset: simple glyphs are copied without hinting
@@ -2668,6 +2703,92 @@ mod subset_degradation_tests {
             }
         }
         new_of
+    }
+
+    /// `subset_glyphs_with_lookup` must expose exactly the remap
+    /// `subset_glyphs` reports as a `BTreeMap` (same font bytes, same
+    /// old->new pairs, same absent-glyph semantics) for every face and
+    /// glyph-set shape, so the PDF path can consume the dense table without
+    /// rebuilding one.
+    #[test]
+    fn subset_glyphs_with_lookup_matches_btreemap_remap() {
+        fn assert_agree(font: &Font, glyphs: &[u16], cmap_chars: &[char]) {
+            let (map_bytes, remap) = font
+                .subset_glyphs(glyphs, cmap_chars)
+                .expect("map-path subset");
+            let (dense_bytes, lookup) = font
+                .subset_glyphs_with_lookup(glyphs, cmap_chars)
+                .expect("dense-path subset");
+            assert_eq!(map_bytes, dense_bytes, "font bytes must be identical");
+            assert_eq!(
+                lookup.len(),
+                usize::from(font.num_glyphs).max(1),
+                "dense lookup covers every source glyph"
+            );
+            let mut mapped = 0usize;
+            for (old, new) in lookup.iter().enumerate() {
+                if *new == MISSING_GLYPH_REMAP {
+                    assert!(
+                        remap.get(&(old as u16)).is_none(),
+                        "dense sentinel at {old} must be absent from the map"
+                    );
+                } else {
+                    mapped += 1;
+                    assert_eq!(
+                        remap.get(&(old as u16)).copied(),
+                        Some(*new),
+                        "dense entry {old} -> {new} must match the map"
+                    );
+                }
+            }
+            assert_eq!(remap.len(), mapped, "map and dense table cover the same glyphs");
+            // Ascending old-gid enumeration of the dense table reproduces the
+            // BTreeMap iteration order exactly (pdf.rs relied on that order
+            // to scatter-build its map_lookup table).
+            let dense_pairs: Vec<(u16, u16)> = lookup
+                .iter()
+                .enumerate()
+                .filter(|&(_, &v)| v != MISSING_GLYPH_REMAP)
+                .map(|(old, &v)| (old as u16, v))
+                .collect();
+            let map_pairs: Vec<(u16, u16)> = remap.iter().map(|(&k, &v)| (k, v)).collect();
+            assert_eq!(dense_pairs, map_pairs);
+        }
+
+        for font in all_faces() {
+            let a = font.glyph_index('A');
+            let b = font.glyph_index('B');
+            let q = font.glyph_index('Q');
+            // A composite glyph whose closure must pull in extra component
+            // gids beyond the seed (accented Latin in the bundled faces).
+            let composite = (0..font.num_glyphs)
+                .find(|&g| font.is_composite(g) && g != a && g != b && g != q);
+            // Empty seed, empty cmap: subset is .notdef-only.
+            assert_agree(&font, &[], &[]);
+            // Empty seed with a cmap char that maps to .notdef: same.
+            assert_agree(&font, &[], &['A', '\u{1D49C}']);
+            // Explicit .notdef-only seed.
+            assert_agree(&font, &[0], &[]);
+            // Plain runs.
+            assert_agree(&font, &[a, b, q], &['A', 'B', 'Q']);
+            // Out-of-order ids, duplicates, and ids past num_glyphs
+            // (which must be ignored exactly as before).
+            let over = font.num_glyphs.saturating_add(3);
+            assert_agree(
+                &font,
+                &[over, q, 0, u16::MAX, b, a, a, over],
+                &['A', 'B', 'Q'],
+            );
+            if let Some(comp) = composite {
+                assert_agree(&font, &[comp], &[]);
+                let (bytes, _) = font.subset_glyphs(&[comp], &[]).expect("composite subset");
+                let sub = Font::parse(bytes).expect("composite subset re-parses");
+                assert!(
+                    sub.num_glyphs > 2,
+                    "closure must have pulled components beyond .notdef + the composite"
+                );
+            }
+        }
     }
 
     fn simple_instruction_len(data: &[u8]) -> Option<usize> {

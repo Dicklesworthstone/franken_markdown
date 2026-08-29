@@ -753,6 +753,7 @@ pub fn render_pdf_configured_multi(
         .map_err(render_error_to_js)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pdf_options_configured(
     font: Option<String>,
     dark_mode: Option<String>,
@@ -1040,7 +1041,7 @@ fn in_memory_book(
     for root_path in &ordered {
         let source = files
             .get(root_path)
-            .expect("ordered book path must exist in in-memory map");
+            .ok_or_else(|| JsValue::from_str("ordered book path must exist in in-memory map"))?;
         let expanded = crate::transclude::expand_includes(source, &|requested, origin| {
             let including = if origin == "<input>" {
                 root_path.as_str()

@@ -267,6 +267,7 @@ fn wasm_bindgen_adapter_round_trips_package_api_shape() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .unwrap();
     let html_with_font_text = String::from_utf8(html_with_font.bytes()).unwrap();

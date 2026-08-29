@@ -3,7 +3,7 @@
 //! Compiles Mermaid flowcharts, sequence diagrams, and ASCII art diagrams
 //! into clean, standalone SVG vector graphics for HTML and PDF rendering.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,7 @@ struct FlowEdge {
 
 fn render_flowchart(src: &str) -> Option<String> {
     let mut dir = FlowDirection::TopToBottom;
-    let mut nodes: HashMap<String, FlowNode> = HashMap::new();
+    let mut nodes: BTreeMap<String, FlowNode> = BTreeMap::new();
     let mut node_order: Vec<String> = Vec::new();
     let mut edges: Vec<FlowEdge> = Vec::new();
 
@@ -129,7 +129,7 @@ fn render_flowchart(src: &str) -> Option<String> {
     assign_flowchart_layers(&mut nodes, &node_order, &edges);
 
     // Compute geometry
-    let (total_width, total_height) = layout_flowchart_nodes(&mut nodes, dir);
+    let (total_width, total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
 
     // Generate SVG
     let mut svg = String::with_capacity(4096);
@@ -275,7 +275,7 @@ fn render_flowchart(src: &str) -> Option<String> {
 
 fn parse_flowchart_line(
     line: &str,
-    nodes: &mut HashMap<String, FlowNode>,
+    nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &mut Vec<String>,
     edges: &mut Vec<FlowEdge>,
 ) {
@@ -321,7 +321,7 @@ fn parse_flowchart_line(
 
 fn parse_or_insert_node(
     s: &str,
-    nodes: &mut HashMap<String, FlowNode>,
+    nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &mut Vec<String>,
 ) -> (String, bool) {
     let s = s.trim();
@@ -380,12 +380,12 @@ fn parse_or_insert_node(
 }
 
 fn assign_flowchart_layers(
-    nodes: &mut HashMap<String, FlowNode>,
+    nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &[String],
     edges: &[FlowEdge],
 ) {
-    let mut in_degrees: HashMap<String, usize> = HashMap::new();
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    let mut in_degrees: BTreeMap<String, usize> = BTreeMap::new();
+    let mut adj: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for id in node_order {
         in_degrees.insert(id.clone(), 0);
@@ -402,13 +402,13 @@ fn assign_flowchart_layers(
     }
 
     let mut queue = VecDeque::new();
-    for (id, deg) in &in_degrees {
-        if *deg == 0 {
+    for id in node_order {
+        if in_degrees.get(id).copied().unwrap_or(0) == 0 {
             queue.push_back((id.clone(), 0usize));
         }
     }
 
-    let mut visited = HashSet::new();
+    let mut visited = BTreeSet::new();
     while let Some((id, layer)) = queue.pop_front() {
         if visited.contains(&id) {
             continue;
@@ -438,11 +438,17 @@ fn assign_flowchart_layers(
     }
 }
 
-fn layout_flowchart_nodes(nodes: &mut HashMap<String, FlowNode>, dir: FlowDirection) -> (f32, f32) {
-    // Group nodes by layer
+fn layout_flowchart_nodes(
+    nodes: &mut BTreeMap<String, FlowNode>,
+    node_order: &[String],
+    dir: FlowDirection,
+) -> (f32, f32) {
+    // Group nodes by layer respecting node_order
     let mut layers: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for (id, node) in nodes.iter() {
-        layers.entry(node.layer).or_default().push(id.clone());
+    for id in node_order {
+        if let Some(node) = nodes.get(id) {
+            layers.entry(node.layer).or_default().push(id.clone());
+        }
     }
 
     let margin = 24.0;
@@ -554,8 +560,6 @@ fn layout_flowchart_nodes(nodes: &mut HashMap<String, FlowNode>, dir: FlowDirect
     (max_w.max(160.0), max_h.max(80.0))
 }
 
-use std::collections::BTreeMap;
-
 fn get_edge_endpoints(from: &FlowNode, to: &FlowNode, dir: FlowDirection) -> (f32, f32, f32, f32) {
     match dir {
         FlowDirection::TopToBottom => (
@@ -612,10 +616,10 @@ enum SeqEvent {
 fn ensure_participant(
     id: &str,
     label: Option<&str>,
-    part_indices: &mut HashMap<String, usize>,
+    part_indices: &mut BTreeMap<String, usize>,
     participants: &mut Vec<SeqParticipant>,
 ) {
-    if let std::collections::hash_map::Entry::Vacant(e) = part_indices.entry(id.to_string()) {
+    if let std::collections::btree_map::Entry::Vacant(e) = part_indices.entry(id.to_string()) {
         e.insert(participants.len());
         participants.push(SeqParticipant {
             label: label.unwrap_or(id).to_string(),
@@ -626,7 +630,7 @@ fn ensure_participant(
 
 fn render_sequence_diagram(src: &str) -> Option<String> {
     let mut participants: Vec<SeqParticipant> = Vec::new();
-    let mut part_indices: HashMap<String, usize> = HashMap::new();
+    let mut part_indices: BTreeMap<String, usize> = BTreeMap::new();
     let mut events: Vec<SeqEvent> = Vec::new();
 
     for line in src.lines() {

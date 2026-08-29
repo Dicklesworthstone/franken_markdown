@@ -14155,11 +14155,7 @@ fn svg_hex_pair(high: u8, low: u8) -> Option<u8> {
 #[inline(always)]
 fn svg_hex_nibble(byte: u8) -> Option<u8> {
     let v = HEX_NIBBLE_TABLE[byte as usize];
-    if v != 0xFF {
-        Some(v)
-    } else {
-        None
-    }
+    if v != 0xFF { Some(v) } else { None }
 }
 
 fn parse_svg_color_mix_with_alpha(

@@ -32,7 +32,17 @@ intended decision change: a line 2 pt over the column does not fit with
 protrusion disabled, but its trailing period protrudes 550‰ × 10 pt = 5_500
 milli-points and the line then fits — an exact, deterministic delta.
 
-## Status: hooks done; default-render wiring is gated
+## Status: wired behind `--microtype protrusion` (opt-in since 0.4.2)
+
+The hooks are complete, tested, and now wired end-to-end for optical-margin
+protrusion in justified PDF body paragraphs: `TextBox.protrusion` is
+precomputed at box construction (font size known there), the Knuth-Plass
+breaker fits against protrusion-adjusted line widths (O(1) edge lookups in
+`MetricPrefixes`), the whole-paragraph fast path honors the same credit, and
+the emitter shifts line starts left by the credited protrusion. Default renders
+are byte-identical (tests/microtype_test.rs pins all four behaviors).
+Expansion (font stretch) remains hooks-only: spending the budget needs PDF
+glyph-scale emitter support — a separate increment.
 
 The hooks are complete, tested, and conservative-by-default. Enabling them inside
 the optimal line breaker is intentionally **not** done by default, per the

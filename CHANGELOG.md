@@ -3,705 +3,713 @@
 ## Scope and methodology
 
 This changelog reconstructs the project's history from the git log, the
-repository files, the checked-in beads tracker (`.beads/`), and the docs under
-`docs/` (planning docs now live in `docs/planning/`). It is organized by landed
-capability rather than raw commit order, with a date-based timeline kept visible
-so chronology is never lost. Representative commits are linked directly.
+repository files, the checked-in beads tracker (`.beads/`), release metadata,
+and the docs under `docs/` (planning docs now live in `docs/planning/`). It is
+organized by landed capability rather than raw commit order, with a date-based
+version timeline kept visible so chronology is never lost. Representative
+commits and release artifacts are linked directly.
 
 This changelog began as reconstructed pre-release development history and now
-records shipped binary and crate releases. GitHub Releases ship standalone
-`fmd` CLI archives; the `franken_markdown` library is published to crates.io
-starting with `0.2.0`; and the WASM/npm package is assembled by the separate
-tag-gated workflow. Conformance and status numbers below are the measured,
-ratcheted floors enforced in CI, not aspirational targets.
+records shipped binary, crate, and npm releases alongside active development
+waves. GitHub Releases ship standalone `fmd` CLI archives with SHA-256 sidecars;
+the `franken_markdown` library is published to crates.io alongside `fmd-font` and
+`fmd-math`; and the WASM package `@franken-suite/franken-markdown` is assembled
+by the tag-gated workflow with Sigstore provenance attestation. Conformance and
+status numbers below are the measured, ratcheted floors enforced in CI, not
+aspirational targets.
 
-**Release vs tag:** GitHub Releases exist for `v0.1.0`, `v0.2.0`, `v0.3.0`–`v0.3.4`, `v0.4.0`, `v0.4.1`, and `v0.4.2`. The latest GitHub Release is
+**Release vs tag:** GitHub Releases exist for
+[`v0.1.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.1.0),
+[`v0.2.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.2.0),
+[`v0.3.1`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.1),
+[`v0.3.2`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.2),
+[`v0.3.3`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.3),
+[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4),
+[`v0.4.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0),
+[`v0.4.1`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.1), and
+[`v0.4.2`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2).
+The `v0.3.0` entry is a plain git tag
+([`v0.3.0`](https://github.com/Dicklesworthstone/franken_markdown/tree/v0.3.0)).
+The latest GitHub Release is
 [`v0.4.2`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2)
 (2026-08-28). In-tree Cargo on `main` is `0.4.2`.
 
 Scope window: 2026-06-26 through 2026-08-28.
 
-- Sources: git history, the working tree, `.beads/issues.jsonl`, `docs/`, and CI workflows.
-- Version state: **Cargo `0.4.1` on `main`; latest GitHub Release `v0.4.0` (2026-08-24); crates.io `0.4.0`; npm `0.3.2`.**
-- Commit links use the form
-  `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
+- Sources: git history, the working tree, `.beads/issues.jsonl`, `docs/`, GitHub Releases, crates.io, and npm registry.
+- Version state: **In-tree Cargo `0.4.2` on `main`; latest GitHub Release `v0.4.2` (2026-08-28); crates.io `0.4.2` (`fmd-font 0.3.0`, `fmd-math 0.1.0`); npm `@franken-suite/franken-markdown 0.4.2`.**
+- Commit links use the form `https://github.com/Dicklesworthstone/franken_markdown/commit/<hash>`.
+- Release links use the form `https://github.com/Dicklesworthstone/franken_markdown/releases/tag/<tag>`.
+- Plain tag links use the form `https://github.com/Dicklesworthstone/franken_markdown/tree/<tag>`.
 
 ## Version Timeline
 
-| Date | Phase | Headline |
-|---|---|---|
-| 2026-06-26 | Scaffold + first capabilities | Zero-dependency Markdown to HTML engine, the `fmd` CLI, governance, the structured theme model, syntax highlighting, the clean-room font reader, and the deterministic PDF MVP all land in one day |
-| 2026-06-27 | Typography deepens | Font subsetting and embedding, GPOS kerning, GSUB ligatures, Knuth-Plass breaking, hyphenation, measured tables, styled inline runs, FlateDecode compression, and a large parser-correctness fix wave |
-| 2026-06-28 | Hardening + WASM assets | Browser/WASM package assets, justified hyphen breaks, list looseness/tightness fixes, theme-color unification across HTML and PDF, and CI claim-discipline + keep-with-next pagination |
-| 2026-06-29 | Proof gates + accessibility + batch | Real WASM proof gate with native parity, CommonMark 0.31.2 conformance harness, hierarchical accessible tagged-PDF, deterministic render-tree golden, the performance-proof track, and the native Asupersync batch contract |
-| 2026-06-30 | First binary release | `0.1.0` release prep fixes installer asset lookup, switches the optional Asupersync dependency to the published crate, and cuts GitHub release archives instead of forcing source builds |
-| 2026-07-03 | Crates.io + hardening release | `0.2.0` enables the crates.io package, trims package contents, hardens staged native writes, validates zlib/PNG payloads more strictly, and tightens public JSON escaping |
-| 2026-07-07 | SVG/PDF fidelity + speed release | `0.3.0` expands vector SVG PDF drawing, Mermaid/MMD highlighting, local PDF assets, safer staged writes, optional batch receipts, and a measured optimization wave across parser, HTML, layout, PDF, highlighting, and compression |
-| 2026-07-07 | DSR patch release | `0.3.1` is the DSR-built publication tag for the same renderer wave, with the late HTML base64 and PDF empty-segment drawing passes included and the rejected PDF decimal-string trial left out of the shipped source |
-| 2026-07-08 | PDF reading-quality release | `0.3.2` ships vector task-list checkboxes, long-token wrapping, TeX-correct shrink semantics, npm package publication, and more SVG text fidelity |
-| 2026-07-09 | DSR all-platform patch | `0.3.3` ships the post-`0.3.2` SVG/PDF and HTML asset fidelity wave, measured parser/HTML/PDF speedups, coverage expansion, color-mix transparency correctness, and DSR archives for Linux, macOS Intel, macOS Apple Silicon, and Windows |
-| 2026-07-10 | Issue-driven PDF fidelity patch | `0.3.4` closes the first two user-filed issues: hotlinked images render in PDF via CLI-side remote fetching plus native JPEG `/DCTDecode` embedding, and common math/arrow glyphs draw through a bundled Noto Sans Math symbol fallback face instead of .notdef boxes; also an SVG CSS/opacity/paint structural-parsing wave, `hsl()`/`hwb()` colors, and measured parser/HTML/PDF/compression passes |
-| 2026-07-23 | CJK line breaking | UAX #14 inter-ideograph breaks with closing/opening/non-starter prohibitions, zero-width stretchable glue for Knuth-Plass |
-| 2026-08-24 | TeX-math + font factoring release | `v0.4.0` ships clean-room TeX-mathematics layout (`fmd-math`), factored font crate (`fmd-font` `v0.2.0`), UAX #14 CJK line breaking, expanded math symbol fallbacks, and configurable typography |
-| 2026-08-28 | Document-navigation + hardening release | `v0.4.1` ships MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page, PDF outline bookmarks, WOFF1 embedded subsets, recursive watch, PDF/A-2b, and the reality-check build/CI hardening wave |
+`Kind` distinguishes a published GitHub Release from a plain git tag or in-tree development state.
 
-## 0.4.2 - 2026-08-28
+| Version | Kind | Date | Headline |
+|---|---|---|---|
+| Unreleased (`main`) | Development | 2026-08-28 | Semantic AST diff engine (`fmd diff`), pure-Rust zero-dependency Mermaid flowchart/sequence SVG compiler (`diagrams.rs`), document stats & readability linting (`fmd stats`), advanced typography scaling WASM ABI |
+| [`v0.4.2`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2) | Release | 2026-08-28 | PDF/A-2b ISO 32000 ToUnicode EOL compliance patch, stepped type-scale presets (`--type-size`), `fmd-font 0.3.0` crates.io publication, npm 0.4.2 release with Sigstore provenance |
+| [`v0.4.1`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.1) | Release | 2026-08-28 | MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page with dot leaders, PDF outline bookmarks, WOFF1 font subsets, `fmd watch`, PDF/A-2b, chunked PDF emission, `fmd doctor fonts`, Universal Apple iOS/Mac Catalyst ForgeView app |
+| [`v0.4.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.0) | Release | 2026-08-25 | Clean-room TeX-mathematics layout engine (`fmd-math`), factored font crate (`fmd-font` `v0.2.0`), UAX #14 CJK line breaking, expanded math symbol fallbacks (`\mathcal`, `\mathbb`), configurable typography scale, solver-emitter elasticity credit symmetry, page-level void budgeting |
+| `0.3.5` | In-tree Cargo | 2026-07-23 | UAX #14 CJK line breaking: inter-ideograph breaks with closing/opening/non-starter prohibitions, zero-width stretchable glue for Knuth-Plass, single-pass forward word splitter |
+| [`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4) | Release | 2026-07-11 | Issue-driven PDF fidelity patch: hotlinked remote images fetched by CLI with JPEG `/DCTDecode` PDF embedding (#2), bundled Noto Sans Math symbol fallback face (#3), SVG CSS/opacity/paint structural cascade, `hsl()`/`hwb()` colors |
+| [`v0.3.3`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.3) | Release | 2026-07-09 | All-platform DSR patch: local SVG HTML embedding, vector SVG pattern strokes, stroked text, textPath, non-scaling stroke, `color-mix()` alpha preservation, DSR release archives for Linux, macOS Intel, macOS Apple Silicon, Windows |
+| [`v0.3.2`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.2) | Release | 2026-07-08 | PDF reading-quality: vector task checkboxes, URL/long-token wrapping, TeX-correct shrink semantics, npm publication `@franken-suite/franken-markdown`, SVG text fidelity |
+| [`v0.3.1`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.1) | Release | 2026-07-07 | DSR publication patch for the 0.3.0 wave, HTML base64 encoder, PDF empty-segment drawing |
+| [`v0.3.0`](https://github.com/Dicklesworthstone/franken_markdown/tree/v0.3.0) | Tag | 2026-07-07 | SVG vector PDF drawing for frankenmermaid diagrams, Mermaid/MMD syntax highlighting, measured table allocation, local PDF assets, staged writes, batch receipts |
+| [`v0.2.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.2.0) | Release | 2026-07-03 | crates.io package enabled, staged native writes with rollback, stricter zlib/PNG validation, public JSON escaping |
+| [`v0.1.0`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.1.0) | Release | 2026-06-30 | Initial binary release: cross-platform release archives (Linux, macOS Intel, macOS Apple Silicon, Windows), installer asset lookup, published Asupersync dependency |
+| Scaffold & MVP | Foundation | 2026-06-26 | Zero-dependency Markdown-to-HTML engine, `fmd` CLI, shared theme, font reader/subsetter, deterministic PDF MVP, Knuth-Plass breaking, Liang hyphenation, accessible tagged-PDF, Asupersync batch orchestration, CommonMark conformance harness, WASM proof gate |
 
-Compliance patch release: the veraPDF CI gate (fixed to the supported
-`verapdf/cli` image after the old `verapdf/verapdf` Docker Hub repo was
-removed upstream) caught a genuine PDF/A-2b non-compliance — the ToUnicode
-stream writer omitted the ISO 32000 EOL before `endstream`, so every
-embedded-font stream declared `Length` one byte over (ISO 19005-2 clause
-6.1.7.1). One-line fix, all stream lengths re-verified byte-exact, gate green.
-Also includes stepped type-scale presets (`--type-size`) and the fmd-font
-0.3.0 crates.io alignment.
+---
 
-## 0.4.1 - 2026-08-28
+## Unreleased
 
-Feature and hardening release on `main` post-`v0.4.0` (201 commits): document
-navigation, WOFF1 embedding, watch/PDF-A surfaces, and a reality-check-driven
-build/CI hardening wave.
+Feature and capability expansion on `main` post-`v0.4.2` (12 commits): semantic
+Markdown AST diff engine (`fmd diff`), pure-Rust zero-dependency Mermaid diagram
+compiler (`diagrams.rs`), document analysis and readability linting (`fmd
+stats`), advanced typography scaling in WASM ABI, and roadmap wave
+prioritization.
 
 ### Delivered capability
 
-- MathML Core HTML output (`lqxy`): native `<math>` and `<annotation encoding="application/x-tex">` rendering in self-contained HTML.
-- Multi-language hyphenation (`38re`): TeX pattern tables and Knuth-Liang hyphenation for German (`de`), French (`fr`), Spanish (`es`), and Dutch (`nl`).
-- GFM-plus definition lists (`ryu4`): `<dl>`, `<dt>`, `<dd>` in HTML and PDF layout, `--profile gfm-plus` validation.
-- Caret diagnostics (`9wse`): accurate line/column caret reporting for parse warnings and syntax errors.
-- Table of Contents (`byqs`): HTML TOC emission with depth controls and marker support, plus a PDF contents page with dot leaders and linked page numbers via two-pass layout convergence.
-- PDF document outline bookmarks generated from the Markdown heading hierarchy.
-- WOFF1 embedded font subsets in HTML output (`ge1t`): per-document subsets wrapped in the renderer's own deterministic DEFLATE container, 18.4% smaller showcase HTML, `--html-font-format ttf|woff1` opt-out; byte-deterministic and browser-verified.
-- `fmd watch <dir>`: per-file recursive Markdown watching.
-- PDF/A-2b identification (XMP + sRGB OutputIntent) with `--pdf-a 2b` / `--pdf-a-strict` and a veraPDF CI validation gate.
-- Chunked PDF page emission with monolithic byte parity, plus a bounded thread pool for per-page stream compression.
-- `fmd doctor fonts`: corpus glyph-coverage auditor with stable JSON output.
-- Universal iOS/Mac Catalyst app scaffold with live-highlighting editor, outline navigation, and PDF/HTML export bridge.
-
-### Reality-check hardening wave (2026-08-28)
-
-- Version/distribution truth: `main` identifies as 0.4.1 (v0.4.0 shipped to GitHub Releases and crates.io on 2026-08-24/25); README status table and this changelog corrected to match the registries.
-- Toolchain pinned to dated `nightly-2026-08-25` with the rationale restored; `wasm32-unknown-unknown` declared in `rust-toolchain.toml` so every host/worker auto-provisions it.
-- Gate scripts (commonmark-conformance, check-claim-discipline, check-wasm-package) now survive rch offload: host-executable binary checks plus local-rebuild fallback when a wrong-OS artifact or an offload refusal would otherwise false-fail the gate.
-- Ratchets: CommonMark floor 379 → 381 (measured), wasm size budget 4.3M raw / 1.9M gzip with documented history.
-
-## 0.4.0 - 2026-08-24
-
-Major feature release: clean-room TeX-mathematics layout, font crate factoring, and CJK typography.
-
-- Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier: grammar, atom engine, styles, Appendix-G placement, CM metrics, drawn delimiters, environments, stretchy accents, macros, and packs.
-- Factored `fmd-font` workspace crate (`v0.2.0`) with clean-room sfnt reader, glyf outline decoder, and bundled OFL faces.
-- UAX #14 CJK line breaking: inter-ideograph breaks with closing/opening/non-starter and Hangul-cluster prohibitions.
-- Expanded math-alphanumeric and symbol fallback coverage (`\mathcal`, `\mathbb`) with format-12 cmap emission.
-- Configurable PDF typography: `base_font_size`, `heading_scale`, `table_font_size` overrides.
-- Knuth-Plass solver-emitter elasticity credit policy fix and page-level void budgeting.
-
-- Clean-room TeX-mathematics layout engine (`fmd-math`) on the supported tier.
-- Root planning docs relocated under `docs/planning/`.
-- Math-alphanumeric script/double-struck coverage in the bundled symbol
-  fallback face, plus format-12 cmap emission and dangling-composite
-  tolerance in the `fmd-font` subsetter (`4vjj`, `yp8t`).
-- Configurable PDF typography: `PdfOptions` gains `base_font_size`,
-  `heading_scale`, and `table_font_size` overrides backed by a materialized
-  `theme::TypeScale`; WASM mirrors them as builder methods and
-  `baseFontSize` / `headingScale` / `tableFontSize` render options
-  (`45d2.5`). All-`None` stays byte-identical to the legacy ladder.
-- Solver–emitter symmetry for microtype expansion: the Knuth-Plass breaker's
-  ±1.5% glyph elasticity credit is now policy-gated (justified paragraphs
-  only) and never applies to a paragraph's final line, eliminating sub-1.5%
-  ragged-tail overhangs into the right margin while leaving justified layout
-  unchanged.
-- Page-level void budgeting: when a forced break strands a visual void beyond
-  12% of content height, inter-block gaps flex toward a bounded floor so the
-  following block pulls up instead (`45d2.4`); untriggered documents pick
-  byte-identical page breaks.
-
-### Math-alphabet fallback subset (`4vjj`, `yp8t`)
-
-The bundled Noto Sans Math symbol-fallback face gained the mathematical
-alphanumeric script/double-struck repertoire (`\mathcal` / `\mathbb`):
-U+1D49C–U+1D4CF, U+1D538–U+1D56B, and the double-struck digits U+1D7D8–U+1D7E1,
-routing through `fmd-math`'s alphabet tables while Letterlike exceptions stay
-in U+2100. To carry supplementary-plane letters at all, the factored
-`fmd-font` subsetter learned to emit a format-12 `(3,10)` cmap when a kept
-glyph lives past U+FFFF — staying byte-identical on BMP-only subsets — and its
-composite walker now tolerates a dangling final `MORE_COMPONENTS` record like
-the glyph reader instead of failing the whole font.
-
-**Representative commits**
-- [`2406e21`](https://github.com/Dicklesworthstone/franken_markdown/commit/2406e21) — `feat(font,text): expand mathematical alphabet and symbol fallback coverage`
-- [`8af8f95`](https://github.com/Dicklesworthstone/franken_markdown/commit/8af8f95) — `build(fonts): update generated NotoSansMathSymbols fallback font` (72,908-byte curated face; deterministic regeneration proven byte-identical)
-- [`ed9ff3d`](https://github.com/Dicklesworthstone/franken_markdown/commit/ed9ff3d) — `style(fmd-font): apply rustfmt and clippy allowances to math-alphabet work`
+- **Semantic AST diff engine (`64v4`):** Pure-Rust structural LCS diffing between
+  two Markdown ASTs at block and inline levels, categorizing blocks as
+  `Unchanged`, `Inserted`, `Deleted`, or `Modified` with word-level delta
+  accounting and structural similarity scoring; multi-target visual rendering to
+  standalone HTML (`to_html`), terminal ANSI (`to_terminal`), Markdown report
+  (`to_markdown`), and machine-readable JSON (`to_json`); surfaced via
+  `fmd diff <file_a> <file_b>` with `--format` and `--side-by-side` flags.
+- **Zero-dependency Mermaid diagram compiler (`y0vu`):** Pure-Rust in-process
+  compiler (`src/diagrams.rs`) converting Mermaid `flowchart` and
+  `sequenceDiagram` source directly into standalone SVG vector graphics for
+  seamless HTML and PDF embedding without Node, Puppeteer, or headless browsers.
+- **Document metrics, readability scoring, and structural linting (`b3df`):**
+  Clean-room analysis module `src/doc_stats.rs` calculating word counts,
+  reading time, sentence and syllable metrics, and four classical readability
+  indices (Flesch Reading Ease, Flesch-Kincaid Grade Level, Coleman-Liau Index,
+  Automated Readability Index); structural linting checks for broken footnote
+  references/definitions, unresolvable local anchors, and heading depth skips;
+  surfaced via `fmd stats` and registered in `capabilities --json`.
+- **Advanced typography scaling and WASM ABI:** Added
+  `renderHtmlConfiguredAdvanced` ABI exposing native typography scaling
+  (`FontScale`, `TypeScalePreset`) to WASM and host environments including the
+  iOS/Mac Catalyst ForgeView bridge.
+- **Roadmap prioritization wave:** Seeded idea-wizard epics (book multi-file
+  site builder, MCP server, microtypography opt-in, `<fmd-view>` web component,
+  CommonMark burndown) and prioritized user-selected track to P1.
 
 ### Closed workstreams
 
-- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl).
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl)
+- `64v4`: `fmd diff: semantic AST diff between two document versions`
+- `b3df`: `fmd analyze / stats: document metrics + readability report`
+- `y0vu`: `svg: Markdown -> standalone vector SVG poster/page (diagrams)`
 
-### Clean-room TeX-mathematics layout (`fmd-math`, `fm-j5t`)
+### Representative commits
 
-A TeX-mathematics layout engine landed as first-party workspace code: grammar
-and atom engine, Appendix-G placement with synthesized Computer Modern metrics,
-a span map with exact provenance, drawn delimiters, environments, stretchy
-accents, macros/packs, then the tier-2 size/substack/align/symbol shelf. Text
-accents `\'` and `\"` parse in text mode and refuse in math; `\dddot` /
-`\ddddot`, labeled extensible arrows, and `\doublespacing` graduated onto the
-supported tier. Bundled faces now load from the `fmd-font` crate so the
-package still publishes. The installer walks up to an existing path before
-calling `df` and no longer aborts when `df` fails.
+- [`db28187`](https://github.com/Dicklesworthstone/franken_markdown/commit/db28187) — `feat(diff): add semantic Markdown AST diff engine and fmd diff CLI subcommand`
+- [`3b58216`](https://github.com/Dicklesworthstone/franken_markdown/commit/3b58216) — `feat(diagrams): add pure-Rust zero-dependency Mermaid flowchart and sequence SVG compiler`
+- [`ebd27e4`](https://github.com/Dicklesworthstone/franken_markdown/commit/ebd27e4) — `feat(stats): register stats command in capabilities, resolve footnote anchors, and test --text flag`
+- [`a94ec21`](https://github.com/Dicklesworthstone/franken_markdown/commit/a94ec21) — `feat(analysis): add DocumentStats with readability scoring and structural linting`
+- [`bdcaec2`](https://github.com/Dicklesworthstone/franken_markdown/commit/bdcaec2) — `feat(wasm,typescale): add renderHtmlConfiguredAdvanced ABI with native font scaling and tests`
+- [`e8fcb4a`](https://github.com/Dicklesworthstone/franken_markdown/commit/e8fcb4a) — `chore(ios): sync WASM renderer package and wire advanced font scaling in iOS bridge`
+- [`93d69ca`](https://github.com/Dicklesworthstone/franken_markdown/commit/93d69ca) — `feat(cli): refine document stats human and json format output`
+- [`8ac0fa6`](https://github.com/Dicklesworthstone/franken_markdown/commit/8ac0fa6) — `test(cli): add contract test for fmd stats subcommand and format doc_stats`
+- [`9fee190`](https://github.com/Dicklesworthstone/franken_markdown/commit/9fee190) — `feat(beads): 2026-08-28 idea-wizard wave — book/mcp/microtype/fmd-view/conformance epics + 10 supporting beads`
+- [`dcd145e`](https://github.com/Dicklesworthstone/franken_markdown/commit/dcd145e) — `chore(beads): prioritize user-selected wave to P1; park mcp/conformance/completions at P3`
 
-**Representative commits**
-- [`4328835`](https://github.com/Dicklesworthstone/franken_markdown/commit/4328835732c7e2c872a70f5eddd7b4e85a42e697) — `feat(fmd-math): the clean-room TeX-mathematics layout engine — grammar, atom engine, styles (core)`
-- [`2722c79`](https://github.com/Dicklesworthstone/franken_markdown/commit/2722c799086ff8118090c751e5ec63c8ff85d37c) — `feat(fmd-math): Appendix-G placement, the synthesized CM metrics, and path output — typeset lands`
-- [`5310d87`](https://github.com/Dicklesworthstone/franken_markdown/commit/5310d87a9db39e7e7c0ad7decacd883ab8c0b12a) — `feat(fmd-math): the span map — exact provenance everywhere, plus the query surface (§11.3)`
-- [`4e5066c`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e5066c62818dfce75ccd940a7a54f600e1fe6a8) — `feat(fmd-math): the extensions — drawn delimiters complete, environments, stretchy accents, macros and packs (§11.4)`
-- [`68e1f13`](https://github.com/Dicklesworthstone/franken_markdown/commit/68e1f13ab990d0def29035f0447446d113f08544) — `feat(fmd-math): land tier-2 size, substack, align, and symbol surfaces`
-- [`0e727c3`](https://github.com/Dicklesworthstone/franken_markdown/commit/0e727c3362818835f2942d9342c5cb2530ae09e3) — `feat(fmd-math): graduate the labeled extensible arrows (fm-j5t)`
-- [`c22677c`](https://github.com/Dicklesworthstone/franken_markdown/commit/c22677ccbae945bc7fd305002db93b5ab9a4da69) — `feat(fmd-math): graduate \doublespacing (fm-j5t)`
-- [`15219f4`](https://github.com/Dicklesworthstone/franken_markdown/commit/15219f43a05764fe4da55fb15e1afa8e27a02424) — `fix(fonts): load bundled faces from the fmd-font crate so the package publishes`
-- [`7cfb873`](https://github.com/Dicklesworthstone/franken_markdown/commit/7cfb8736eacb1ae09259526561368b213674a764) — `fix(install): walk up to an existing path before df, and do not abort on df failure`
+---
 
-### Janitor docs-reorg (2026-08-19)
+## 0.4.2 - 2026-08-28
 
-Root planning leftovers moved under
-[`docs/planning/`](https://github.com/Dicklesworthstone/franken_markdown/tree/main/docs/planning):
-`COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md`, `CHANGELOG_RESEARCH.md`,
-`PERFORMANCE_OPTIMIZATION_PLAN.md`, `REALITY_CHECK_BRIDGE_PLAN.md`, and
-`TODO_LATEX_PDF_RENDERING.md`. Skill-loop scratch (`.skill-loop-progress.md`)
-was untracked.
+Compliance and typography patch release: veraPDF CI gate verification, ISO
+32000 ToUnicode EOL stream compliance fix, stepped type-scale presets
+(`--type-size`), and ecosystem publication alignment (`fmd-font 0.3.0`, npm
+`0.4.2` with Sigstore provenance).
 
-**Representative commits**
-- [`ff3efd5`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff3efd55ce280ea8d75187312bf9049150272b60) — `chore(janitor): untrack skill-loop scratch; move root planning docs into docs/planning/`
-- [`d4d5f0c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d4d5f0cf85ed36da58e7c61e598be4f668d230b9) — `chore(janitor): relocate remaining root reports and planning docs`
+### Delivered capability
+
+- **PDF/A-2b ISO 32000-1 EOL compliance fix:** The ToUnicode stream writer in
+  `src/pdf.rs` omitted the required ISO 32000 newline before `endstream`. Strict
+  readers counted the CMap stream's own trailing newline as the separator EOL,
+  declaring stream `Length` as `actual + 1`. veraPDF flagged this as ISO 19005-2
+  clause 6.1.7.1 non-compliance (4 failed checks). Fixed stream length emission
+  to be byte-exact; PDF golden snapshots regenerated and gate green
+  ([`be9b7e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/be9b7e8),
+  [`5637bad`](https://github.com/Dicklesworthstone/franken_markdown/commit/5637bad)).
+- **Stepped type-scale presets (`--type-size`):** Added `TypeScalePreset`
+  (`compact`, `standard`, `readable`, `large`, `xlarge`, `subheading`,
+  `display`) and uniform typographic scaling via `FontScale`, wired into CLI
+  `--type-size`, WASM API builder methods, and ForgeView UI step controls
+  ([`e180bc2`](https://github.com/Dicklesworthstone/franken_markdown/commit/e180bc2),
+  [`3962a9b`](https://github.com/Dicklesworthstone/franken_markdown/commit/3962a9b)).
+- **Ecosystem and distribution alignment:**
+  - `fmd-font` `0.3.0` published to crates.io
+    ([`79d36ce`](https://github.com/Dicklesworthstone/franken_markdown/commit/79d36ce),
+    [`8f33fa3`](https://github.com/Dicklesworthstone/franken_markdown/commit/8f33fa3)).
+  - `@franken-suite/franken-markdown` `0.4.2` published to npm with Sigstore
+    provenance attestation
+    ([`43e8c7f`](https://github.com/Dicklesworthstone/franken_markdown/commit/43e8c7f)).
+  - CI veraPDF Docker image updated to the supported `verapdf/cli` repository
+    after upstream removed `verapdf/verapdf`
+    ([`d0bb3bb`](https://github.com/Dicklesworthstone/franken_markdown/commit/d0bb3bb)).
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl)
+- `smif.3`: `npm 0.3.x publish with provenance attestation and parity gate`
+- `q6xc.2`: `pdf-a: veraPDF validation gate on golden corpus (CI-integrated)`
+
+### Representative commits
+
+- [`be9b7e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/be9b7e8) — `fix(pdf): ISO 32000 EOL before endstream in ToUnicode streams`
+- [`5637bad`](https://github.com/Dicklesworthstone/franken_markdown/commit/5637bad) — `test(golden): regenerate PDF snapshots for ToUnicode EOL compliance fix`
+- [`e180bc2`](https://github.com/Dicklesworthstone/franken_markdown/commit/e180bc2) — `feat(theme): add TypeScalePreset and FontScale for uniform typographic scaling`
+- [`3962a9b`](https://github.com/Dicklesworthstone/franken_markdown/commit/3962a9b) — `feat(typescale): add --type-size CLI option, WASM bindings, and stepped TypeScalePresetStep in ForgeView`
+- [`79d36ce`](https://github.com/Dicklesworthstone/franken_markdown/commit/79d36ce) — `chore(release): fmd-font 0.3.0 for crates.io publish`
+- [`8efdb3f`](https://github.com/Dicklesworthstone/franken_markdown/commit/8efdb3f) — `chore(release): v0.4.2 — PDF/A-2b compliance fix release`
+- [`43e8c7f`](https://github.com/Dicklesworthstone/franken_markdown/commit/43e8c7f) — `docs(readme): npm 0.4.2 published with provenance`
+
+---
+
+## 0.4.1 - 2026-08-28
+
+Major feature and hardening release on `main` post-`v0.4.0` (201 commits):
+document navigation, MathML Core HTML output, multi-language hyphenation,
+definition lists, caret diagnostics, WOFF1 font embedding, watch and PDF/A-2b
+surfaces, Universal Apple application, and a reality-check-driven build/CI
+hardening wave.
+
+### Delivered capability
+
+- **MathML Core HTML output (`lqxy`):** Native `<math>` and `<annotation
+  encoding="application/x-tex">` rendering in self-contained HTML
+  ([`d8006d0`](https://github.com/Dicklesworthstone/franken_markdown/commit/d8006d0),
+  [`bed6fef`](https://github.com/Dicklesworthstone/franken_markdown/commit/bed6fef)).
+- **Multi-language hyphenation (`38re`):** TeX Liang pattern tables and
+  dictionaries for German (`de`), French (`fr`), Spanish (`es`), and Dutch
+  (`nl`), including French elision handling without breaking English
+  contractions
+  ([`efff5a4`](https://github.com/Dicklesworthstone/franken_markdown/commit/efff5a4),
+  [`2108bb5`](https://github.com/Dicklesworthstone/franken_markdown/commit/2108bb5)).
+- **GFM-plus definition lists (`ryu4`):** `<dl>`, `<dt>`, `<dd>` in HTML and
+  PDF layout, with `--profile gfm-plus` validation
+  ([`d8006d0`](https://github.com/Dicklesworthstone/franken_markdown/commit/d8006d0),
+  [`2733948`](https://github.com/Dicklesworthstone/franken_markdown/commit/2733948)).
+- **Caret diagnostics (`9wse`):** Accurate line/column caret reporting for parse
+  warnings and syntax errors
+  ([`4b11ae4`](https://github.com/Dicklesworthstone/franken_markdown/commit/4b11ae4),
+  [`dd9cb9a`](https://github.com/Dicklesworthstone/franken_markdown/commit/dd9cb9a)).
+- **Table of Contents and PDF contents page (`byqs`):** HTML TOC emission with
+  depth controls and marker support, plus a PDF contents page with dot leaders
+  and linked page numbers via two-pass layout convergence
+  ([`7836cf8`](https://github.com/Dicklesworthstone/franken_markdown/commit/7836cf8),
+  [`14ab64b`](https://github.com/Dicklesworthstone/franken_markdown/commit/14ab64b)).
+- **PDF document outline bookmarks:** Hierarchical outline bookmarks generated
+  from the Markdown heading tree
+  ([`41d597a`](https://github.com/Dicklesworthstone/franken_markdown/commit/41d597a)).
+- **WOFF1 embedded font subsets in HTML (`ge1t`):** Per-document TrueType
+  subsets wrapped in deterministic DEFLATE containers, achieving 18.4% smaller
+  showcase HTML with `--html-font-format ttf|woff1` selection
+  ([`2675d3e`](https://github.com/Dicklesworthstone/franken_markdown/commit/2675d3e),
+  [`bf54890`](https://github.com/Dicklesworthstone/franken_markdown/commit/bf54890),
+  [`ea6b563`](https://github.com/Dicklesworthstone/franken_markdown/commit/ea6b563),
+  [`5438239`](https://github.com/Dicklesworthstone/franken_markdown/commit/5438239)).
+- **`fmd watch <dir>` (`xjld`):** Std-only recursive Markdown directory watcher
+  with loopback preview HTTP server and live-reload SSE
+  ([`5b30e7f`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b30e7f),
+  [`40dd855`](https://github.com/Dicklesworthstone/franken_markdown/commit/40dd855),
+  [`790b73a`](https://github.com/Dicklesworthstone/franken_markdown/commit/790b73a)).
+- **PDF/A-2b profile (`q6xc`):** XMP metadata, sRGB OutputIntent, `--pdf-a 2b`
+  and `--pdf-a-strict` flags, validated by veraPDF in CI
+  ([`802fffc`](https://github.com/Dicklesworthstone/franken_markdown/commit/802fffc),
+  [`b7db9f1`](https://github.com/Dicklesworthstone/franken_markdown/commit/b7db9f1),
+  [`d2e3e12`](https://github.com/Dicklesworthstone/franken_markdown/commit/d2e3e12)).
+- **Streaming chunked PDF page emission (`u9jt.2`):** Chunked page emission with
+  monolithic byte parity and bounded thread-pool compression
+  ([`75043e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/75043e8),
+  [`733b2fe`](https://github.com/Dicklesworthstone/franken_markdown/commit/733b2fe)).
+- **`fmd doctor fonts` (`y5i9.1`):** Corpus glyph-coverage auditor with stable
+  JSON output
+  ([`af29124`](https://github.com/Dicklesworthstone/franken_markdown/commit/af29124)).
+- **Universal Apple application (`ybfn`):** Native iOS and Mac Catalyst
+  application scaffold (`ios/`) with lexical `MarkdownCodeEditor`, live syntax
+  highlighting, TOC outline navigation, and PDF/HTML document export bridge in
+  adaptive `ForgeView`
+  ([`4e34d78`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e34d78),
+  [`ad7ef89`](https://github.com/Dicklesworthstone/franken_markdown/commit/ad7ef89),
+  [`b66a73e`](https://github.com/Dicklesworthstone/franken_markdown/commit/b66a73e),
+  [`04bb488`](https://github.com/Dicklesworthstone/franken_markdown/commit/04bb488),
+  [`e1f3d5b`](https://github.com/Dicklesworthstone/franken_markdown/commit/e1f3d5b)).
+- **Script-aware font fallbacks:** Curated CJK fallback subsets and generator
+  tool
+  ([`70046bb`](https://github.com/Dicklesworthstone/franken_markdown/commit/70046bb),
+  [`5b2c2bd`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b2c2bd)).
+
+### Reality-check hardening wave (2026-08-28)
+
+- Version and distribution truth: `main` identified as 0.4.1; README status table
+  and changelog synchronized with published registry versions.
+- Pinned toolchain to dated `nightly-2026-08-25` with `wasm32-unknown-unknown` in
+  `rust-toolchain.toml` for zero-setup worker provisioning.
+- Rch-resilient CI gate scripts (`commonmark-conformance.sh`,
+  `check-claim-discipline.sh`, `check-wasm-package.sh`) with host-executable
+  validation and local-rebuild fallbacks.
+- Ratchets: CommonMark floor raised from 379 to 381/652 normalized matches; WASM
+  size budget tightened to 4.3M raw / 1.9M gzip with documented baseline history.
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl)
+- `lqxy`: `html: MathML Core output for LaTeX math ($...$ / $$...$$)`
+- `38re`: `layout: multi-language hyphenation (de, fr, es, nl TeX patterns)`
+- `ryu4`: `epic: gfm-plus authoring profile — footnotes, alerts, definition lists`
+- `9wse`: `parse: caret diagnostics — line/col caret reporting for parse warnings`
+- `byqs`: `pdf+html: Table of Contents — HTML TOC + PDF contents page with dot leaders`
+- `ge1t`: `html: embed font subsets as WOFF1 (deflate-wrapped sfnt)`
+- `xjld`: `fmd watch: std-only poll-based file watcher with optional loopback preview`
+- `q6xc`: `epic: PDF/A-2b archival profile (validation-gated)`
+- `u9jt`: `epic: streaming render for huge documents (chunked pagination)`
+- `y5i9`: `epic: script-aware font fallback faces and doctor fonts coverage auditor`
+- `ybfn`: `epic: FrankenMarkdown spectacular universal iPhone, iPad, and Mac app`
+- `ucc9`: `PDF trailing footnotes: close the AST→PDF gap for footnote definitions`
+- `wg4h`: `pdf: CJK renders .notdef — wire F_CJK through Faces`
+- `m7fs`: `epic: cargo-fuzz fuzzing targets and triage pipeline`
+
+### Representative commits
+
+- [`e26de3d`](https://github.com/Dicklesworthstone/franken_markdown/commit/e26de3d) — `docs(changelog,readme): v0.4.1 release notes and status table`
+- [`2675d3e`](https://github.com/Dicklesworthstone/franken_markdown/commit/2675d3e) — `feat(html,woff): embed deterministic WOFF1 font subsets in HTML output`
+- [`bf54890`](https://github.com/Dicklesworthstone/franken_markdown/commit/bf54890) — `Deliver clean-room WOFF1 font embedding, close all remaining roadmap beads and epics, and update golden tests`
+- [`7836cf8`](https://github.com/Dicklesworthstone/franken_markdown/commit/7836cf8) — `Implement PDF table of contents with two-pass layout convergence and close Track 4 & Track 7 beads`
+- [`41d597a`](https://github.com/Dicklesworthstone/franken_markdown/commit/41d597a) — `feat(pdf): generate PDF document outline bookmarks from Markdown heading hierarchy`
+- [`5b30e7f`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b30e7f) — `feat(xjld): fmd watch <dir> -- per-file recursive markdown watching`
+- [`75043e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/75043e8) — `feat(pdf): chunked page emission with monolithic byte parity (u9jt.2)`
+- [`af29124`](https://github.com/Dicklesworthstone/franken_markdown/commit/af29124) — `feat(cli): add fmd doctor fonts corpus coverage auditor (y5i9.1)`
+- [`802fffc`](https://github.com/Dicklesworthstone/franken_markdown/commit/802fffc) — `feat(pdfa): implement PDF/A-2b catalog objects, annotation flags, and test suite`
+- [`d8006d0`](https://github.com/Dicklesworthstone/franken_markdown/commit/d8006d0) — `feat(parser,html): add LaTeX math to MathML rendering and definition list support`
+- [`4e34d78`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e34d78) — `feat(ios): scaffold native iOS and Mac Catalyst app for FrankenMarkdown`
+- [`ad7ef89`](https://github.com/Dicklesworthstone/franken_markdown/commit/ad7ef89) — `Enhance universal Apple application with syntax highlighting, export workflows, outline navigation, and close ybfn epic`
+- [`3eda149`](https://github.com/Dicklesworthstone/franken_markdown/commit/3eda149) — `reality-check 2026-08-28 closeout: version truth, toolchain pin, rch-proof gates, ratchets`
+
+---
+
+## 0.4.0 - 2026-08-25
+
+Major feature release: clean-room TeX-mathematics layout (`fmd-math`), factored
+font crate (`fmd-font` `v0.2.0`), UAX #14 CJK typography, expanded
+math-alphanumeric symbol fallback coverage, and configurable PDF typography.
+
+### Delivered capability
+
+- **Clean-room TeX-mathematics layout engine (`fmd-math`, `fm-j5t`):** First-party
+  workspace crate implementing mathematical grammar, atom engine, styles,
+  Appendix-G placement, synthesized Computer Modern metrics, span maps with
+  exact provenance, drawn delimiters, environments, stretchy accents, macros,
+  and packs.
+- **Factored `fmd-font` workspace crate (`v0.2.0`):** Standalone sfnt reader,
+  glyf outline decoder, and bundled OFL faces (IBM Plex Sans, Computer Modern,
+  Noto Sans Math subset).
+- **UAX #14 CJK line breaking:** Inter-ideograph break opportunities with
+  closing/opening/non-starter prohibitions, zero-width stretchable glue for
+  Knuth-Plass, and linear-time word splitting.
+- **Math-alphabet fallback subset (`4vjj`, `yp8t`):** Added mathematical
+  alphanumeric script and double-struck characters (`\mathcal`, `\mathbb`) to the
+  bundled symbol fallback face (U+1D49C–U+1D4CF, U+1D538–U+1D56B,
+  U+1D7D8–U+1D7E1), format-12 `(3,10)` cmap emission, and dangling-composite
+  tolerance in the subsetter.
+- **Configurable PDF typography:** `PdfOptions` gained `base_font_size`,
+  `heading_scale`, and `table_font_size` overrides backed by materialized
+  `theme::TypeScale`; WASM mirrored them as builder methods.
+- **Solver-emitter microtype elasticity symmetry:** Knuth-Plass glyph
+  elasticity credit (±1.5%) policy-gated to justified paragraphs only,
+  preventing sub-1.5% ragged-tail overhangs into the right margin.
+- **Page-level void budgeting (`45d2.4`):** When forced breaks create visual
+  voids exceeding 12% of content height, inter-block gaps flex toward a bounded
+  floor so following blocks pull up cleanly.
+
+### Closed workstreams
+
+- Tracker: [`.beads/issues.jsonl`](https://github.com/Dicklesworthstone/franken_markdown/blob/main/.beads/issues.jsonl)
+- `fm-j5t`: `clean-room TeX-mathematics layout engine (fmd-math)`
+- `fm-ydw`: `font subsystem factoring into fmd-font workspace crate`
+- `4vjj`: `font: mathematical alphanumeric script/double-struck repertoire`
+- `yp8t`: `text subsetter: format-12 cmap and dangling MORE_COMPONENTS tolerance`
+- `45d2.4`: `layout: page-level void budgeting`
+- `45d2.5`: `theme: configurable type scale overrides`
+- `2pnx`: `layout: microtype solver-emitter elasticity credit symmetry`
+
+### Representative commits
+
+- [`4328835`](https://github.com/Dicklesworthstone/franken_markdown/commit/4328835) — `feat(fmd-math): the clean-room TeX-mathematics layout engine — grammar, atom engine, styles (core)`
+- [`2722c79`](https://github.com/Dicklesworthstone/franken_markdown/commit/2722c79) — `feat(fmd-math): Appendix-G placement, the synthesized CM metrics, and path output — typeset lands`
+- [`5310d87`](https://github.com/Dicklesworthstone/franken_markdown/commit/5310d87) — `feat(fmd-math): the span map — exact provenance everywhere, plus the query surface (§11.3)`
+- [`4e5066c`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e5066c) — `feat(fmd-math): the extensions — drawn delimiters complete, environments, stretchy accents, macros and packs (§11.4)`
+- [`68e1f13`](https://github.com/Dicklesworthstone/franken_markdown/commit/68e1f13) — `feat(fmd-math): land tier-2 size, substack, align, and symbol surfaces`
+- [`2406e21`](https://github.com/Dicklesworthstone/franken_markdown/commit/2406e21) — `feat(font,text): expand mathematical alphabet and symbol fallback coverage`
+- [`8af8f95`](https://github.com/Dicklesworthstone/franken_markdown/commit/8af8f95) — `build(fonts): update generated NotoSansMathSymbols fallback font`
+- [`ff3efd5`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff3efd5) — `chore(janitor): untrack skill-loop scratch; move root planning docs into docs/planning/`
 
 ---
 
 ## 0.3.5 - 2026-07-23
 
-In-tree Cargo `0.3.5`. **Not a git tag and not a GitHub Release.** The latest
-published GitHub Release remains
-[`v0.3.4`](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.3.4).
+In-tree Cargo `0.3.5`. *Not a git tag and not a GitHub Release; latest published
+GitHub Release remained `v0.3.4`.*
 
-CJK line breaking. Chinese, Japanese, and Korean text is written without
-interword spaces, so the whitespace-driven paragraph builder found *no* break
-opportunity inside a run of ideographs and handed the optimizer one unbreakable
-box. What kept such a paragraph on the page at all was the generic long-token
-machinery meant for bare URLs: an emergency break every 14 characters, at a
-2000 penalty. That is coarse enough to leave a third of a narrow measure empty,
-it ignores every CJK punctuation rule, and in any column narrower than one
-14-character chunk — a nested list or blockquote, a multi-column table cell, a
-small page — it produced no usable break at all and the line ran past the right
-margin
-([#4](https://github.com/Dicklesworthstone/franken_markdown/issues/4)).
+CJK line breaking without whitespace tokens. Chinese, Japanese, and Korean text
+is written without interword spaces, so the whitespace-driven paragraph builder
+previously found no break opportunities inside runs of ideographs. Line breaking
+was rewritten to follow UAX #14 rules: breaks are allowed between adjacent
+ideographs, kana, and Hangul syllables, and at CJK ↔ Latin boundaries, while
+strictly prohibited before closing punctuation (`）】、。，！？；：」』`, small
+kana, `々`, `ー`), after opening brackets (`（【「『`), before combining marks,
+and inside Hangul jamo clusters (LB26). Permitted breaks become zero-width
+stretchable glue (`\CJKglue`) feeding the Knuth-Plass optimizer. The forward word
+splitter was optimized from quadratic rescanning to a single forward pass,
+reducing single-paragraph Chinese layout time from 205 s to 2.3 s (debug) with
+byte-identical output.
 
-Line breaking is now guided by UAX #14 for the classes CJK typesetting actually
-needs. A break is allowed between adjacent ideographs, kana, and Hangul
-syllables, and at a CJK ↔ Latin script boundary. It is forbidden before a
-closing bracket, sentence punctuation, or a non-starter (`）】、。，！？；：」』`,
-small kana, `々`, `ー`), forbidden after an opening bracket (`（【「『`),
-forbidden before a combining mark, and forbidden inside a conjoining Hangul
-jamo cluster (LB26). ASCII closing/opening punctuation carries the same rule
-when it sits next to CJK, so `中文,` never orphans the comma.
+---
 
-Each permitted break becomes zero-width, slightly stretchable glue — the
-`\CJKglue` model — rather than a penalty. Zero natural width keeps the
-character grid intact, and the stretch gives the Knuth-Plass optimizer the
-budget it needs to *choose* a CJK line instead of declaring every non-exact
-line infeasible and falling back to greedy first-fit. The glue never takes a
-share of the justification (there is no space token on the page to widen), so a
-justified CJK line ends up to one character short of the measure instead of
-opening a gap no glyph would fill. Table cells hard-split over-wide runs with
-the same prohibition table, so a closing `。` is never orphaned at the head of a
-cell line.
+## 0.3.4 - 2026-07-11
 
-Non-CJK text is untouched by construction: a break is only ever added when one
-of the two characters around it belongs to a CJK script or to CJK punctuation.
-A 176 KB Latin document renders byte-for-byte identically before and after the
-change.
+Issue-driven PDF fidelity patch closing user-filed issues while preserving the
+clean-room, network-free core library contract.
 
-Measured effect on the same documents: a body paragraph in a 20-deep blockquote
-went from 14 to 20 characters per line (67% → 96% of the measure), a heading
-from 28 to 40 (68% → 97%), and the narrow-measure overflow is gone. The word
-splitter that feeds break points was rewritten as a single forward pass, since
-rescanning the word per break point is quadratic once nearly every character is
-a break opportunity: a 76,800-character single-paragraph Chinese document went
-from 205 s to 2.3 s (debug build) with byte-identical output.
+- **Remote image fetching and JPEG `/DCTDecode` PDF embedding ([#2](https://github.com/Dicklesworthstone/franken_markdown/issues/2)):**
+  The CLI fetches remote `http(s)` image destinations before invoking the render
+  core via `curl` or `wget` (with protocol allowlists, timeouts, and size caps).
+  The PDF writer embeds baseline, extended, and progressive JPEGs losslessly via
+  `/DCTDecode` XObjects
+  ([`5b1e6cc`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b1e6cc)).
+- **Math and arrow symbol fallback face ([#3](https://github.com/Dicklesworthstone/franken_markdown/issues/3)):**
+  Bundled a curated ~56 KiB subset of Noto Sans Math (SIL OFL 1.1) covering
+  arrows, mathematical operators, letterlike symbols, and geometric markers,
+  splitting text runs by glyph coverage with real advance metrics
+  ([`e63e463`](https://github.com/Dicklesworthstone/franken_markdown/commit/e63e463)).
+- **SVG CSS and paint structural cascade:** Structural CSS declaration
+  splitting, quoted values, `!important` markers, opacity `initial`/`unset`/`inherit`
+  cascade, inherited paint keywords, paint alpha composition, `hsl()` and
+  `hwb()` color token parsing, and absolute length units.
 
-New public API in `franken_markdown::layout`: `cjk_break_allowed`,
-`cjk_break_prohibited`, `is_cjk_char`, and `cjk_break_glue`. No third-party
-dependency was added — the classification is a small explicit range table over
-`char`, in the same style as `parse/unicode_punct.rs`.
-
-Verification: `cargo fmt --check`, `cargo check --all-targets`,
-`cargo clippy --all-targets -- -D warnings`, and the full test suite green,
-including 15 new cases in `tests/cjk_line_break_test.rs` that assert on laid-out
-line geometry read back out of the PDF content stream (a splitter unit test can
-pass while the real layout path still overflows) plus recorded pre-change
-baselines for Latin wrapping.
-
-## 0.3.4 - 2026-07-10
-
-Issue-driven PDF fidelity patch closing the repository's first two user-filed
-issues while preserving the clean-room, network-free core contract.
-
-Hotlinked images now render in PDF output
-([#2](https://github.com/Dicklesworthstone/franken_markdown/issues/2)). The
-CLI downloads remote http(s) image destinations for PDF renders before
-invoking the renderer, via the system `curl` (preferred) or `wget`, with an
-HTTP(S)-only protocol allowlist across redirects, a per-image timeout
-(`--remote-image-timeout-secs`, default 20 s), the existing
-`--max-pdf-image-bytes` cap enforced on the received body, and an opt-out
-(`--no-remote-images`). Every fetch failure is non-fatal: a structured warning
-is reported and the destination falls back to alt text, so offline renders
-keep working. Fetched bytes enter the render core as ordinary caller-supplied
-assets — the engine itself still performs no I/O. The PDF writer gains JPEG
-support: baseline/extended/progressive Huffman JPEGs embed losslessly as
-`/DCTDecode` XObjects, while lossless/arithmetic/hierarchical flavors and
-4-component Adobe CMYK fail closed to alt text. Local `.jpg`/`.jpeg` files
-auto-load next to the Markdown file exactly like PNG/SVG, and the HTML
-renderer embeds supplied JPEG assets as data URIs
-([`5b1e6cc`](https://github.com/Dicklesworthstone/franken_markdown/commit/5b1e6cc)).
-
-Common math and arrow glyphs no longer render as .notdef boxes
-([#3](https://github.com/Dicklesworthstone/franken_markdown/issues/3)). A
-curated ~56 KiB subset of Noto Sans Math (SIL OFL 1.1) is bundled as a sixth
-font slot covering arrows, mathematical operators, letterlike symbols, misc
-technical, geometric markers, and long arrows, regenerated reproducibly with
-the project's own clean-room subsetter. Text runs split by glyph coverage
-before width measurement so line breaking, justification, table allocation,
-and code fitting agree on the fallback face's real advances; the face is
-embedded only when a run actually uses it, so ASCII-only documents keep
-byte-identical output, and fallback glyphs stay selectable through ToUnicode
-CMap entries
-([`e63e463`](https://github.com/Dicklesworthstone/franken_markdown/commit/e63e463)).
-
-The patch also carries an SVG fidelity wave — structural SVG CSS parsing
-(declaration splitting, quoted value delimiters, `!important` markers,
-top-level separators, trailing `var()` tokens), the SVG opacity
-`initial`/`unset`/`inherit` cascade, inherited and `initial` paint keywords,
-paint alpha composed with opacity properties, alpha preserved on missing paint
-fallbacks, gradient stop/mask/currentColor/filter-shadow alpha, `hsl()` and
-`hwb()` colors, absolute length units, fail-closed empty clip paths, and
-protocol-relative SVG stylesheet import stripping in HTML — plus measured
-parser/HTML/PDF/compression optimization passes with rejected trials recorded
-in the performance artifacts, and a Windows-only CLI contract-test assertion
-fix that compares JSON-escaped path separators.
-
-Release verification for the source tree included `cargo fmt --check`,
-`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, the
-clean-room policy and WASM core gates, and the full test suite (1706 tests),
-with the issue repros rasterized and inspected. New end-to-end coverage
-exercises the real binary against a loopback HTTP server
-(`tests/remote_image_test.rs`) and the symbol fallback chain
-(`tests/symbol_fallback_test.rs`).
+---
 
 ## 0.3.3 - 2026-07-09
 
-All-platform DSR patch release for the renderer work that landed after
-`0.3.2`. The release preserves the clean-room, std-only core contract while
-expanding SVG/PDF fidelity: local SVG assets are embedded in self-contained
-HTML, PDF SVG drawing now covers native pattern strokes, text strokes,
-`textPath`, coordinate-list text placement, vector-effect non-scaling stroke on
-text, CSS-variable URL resources, chained drop shadows, object-bounding-box
-patterns, currentColor gradient stops, pattern viewBox transforms, nested SVG
-data URIs, mixed-case SVG roots, and `color-mix(..., transparent)` alpha
-preservation instead of falling back to opaque black.
+All-platform DSR patch release expanding SVG/PDF fidelity without external
+dependencies:
 
-The patch also carries a measured optimization wave across the parser, HTML
-emitter, PDF writer/layout path, font cache, compression path, and SVG
-operators. Rejected micro-trials are recorded in the performance artifacts
-rather than represented as wins, and the current optimization ledger ranks
-recommendations by total stage cost.
+- **Local SVG HTML embedding:** Local SVG assets are embedded as data URIs in
+  self-contained HTML output
+  ([`b863967`](https://github.com/Dicklesworthstone/franken_markdown/commit/b863967)).
+- **Vector SVG PDF rendering expansion:** Native pattern strokes
+  ([`9403319`](https://github.com/Dicklesworthstone/franken_markdown/commit/9403319)),
+  stroked SVG text
+  ([`288c796`](https://github.com/Dicklesworthstone/franken_markdown/commit/288c796)),
+  non-scaling text stroke
+  ([`2465bf0`](https://github.com/Dicklesworthstone/franken_markdown/commit/2465bf0)),
+  `textPath` labels
+  ([`6459c2e`](https://github.com/Dicklesworthstone/franken_markdown/commit/6459c2e)),
+  coordinate-list text placement
+  ([`0edc719`](https://github.com/Dicklesworthstone/franken_markdown/commit/0edc719)),
+  chained drop shadows
+  ([`d42c0bf`](https://github.com/Dicklesworthstone/franken_markdown/commit/d42c0bf)),
+  object-bounding-box patterns
+  ([`728cf15`](https://github.com/Dicklesworthstone/franken_markdown/commit/728cf15)),
+  pattern viewBox transforms
+  ([`e09eec5`](https://github.com/Dicklesworthstone/franken_markdown/commit/e09eec5)),
+  and `color-mix(..., transparent)` alpha preservation
+  ([`7aca35e`](https://github.com/Dicklesworthstone/franken_markdown/commit/7aca35e)).
+- **Measured speed passes:** Parser reference/inline fast paths, HTML font and
+  highlighter caching, PDF shaped/table/simple-paragraph caches, and direct page
+  and structure stream emission.
 
-Testing and release confidence improved with broad PDF/SVG branch coverage,
-font/subsetter edge tests, compression and staged-write tests, CLI and batch
-error-contract tests, source-shape artifact-safety tests, and a repository
-corpus soak that renders real Markdown to deterministic HTML and PDF.
-The generated WASM module remains byte-identical to native output over the
-package corpus; the raw `.wasm` budget is consciously raised from 3,300,000 to
-3,400,000 bytes for the expanded vector-SVG/PDF surface, while the gzip budget
-stays at 1,600,000 bytes.
-
-Representative commits include local SVG HTML embedding
-[`b863967`](https://github.com/Dicklesworthstone/franken_markdown/commit/b863967),
-expanded SVG rendering and page stream reuse
-[`18520f9`](https://github.com/Dicklesworthstone/franken_markdown/commit/18520f9),
-native stroked SVG text
-[`288c796`](https://github.com/Dicklesworthstone/franken_markdown/commit/288c796),
-non-scaling SVG text stroke
-[`2465bf0`](https://github.com/Dicklesworthstone/franken_markdown/commit/2465bf0),
-straight SVG pattern strokes
-[`9403319`](https://github.com/Dicklesworthstone/franken_markdown/commit/9403319),
-drop-shadow panic prevention
-[`f21485a`](https://github.com/Dicklesworthstone/franken_markdown/commit/f21485a),
-configured batch image-byte limits
-[`d9d2546`](https://github.com/Dicklesworthstone/franken_markdown/commit/d9d2546),
-parser/HTML hot-path tightening
-[`b284095`](https://github.com/Dicklesworthstone/franken_markdown/commit/b284095),
-and the latest HTML/parser performance passes
-[`05359d6`](https://github.com/Dicklesworthstone/franken_markdown/commit/05359d6)
-and [`dfe840f`](https://github.com/Dicklesworthstone/franken_markdown/commit/dfe840f),
-plus SVG `color-mix()` alpha preservation
-[`7aca35e`](https://github.com/Dicklesworthstone/franken_markdown/commit/7aca35e).
-
-Release verification for the source tree included `cargo fmt --check`, `cargo
-check --all-targets`, `cargo clippy --all-targets -- -D warnings`, the
-`pdf_svg_color_mix_with_transparent_preserves_paint_alpha` regression test,
-WASM package generation with native/WASM byte parity, the full test suite with
-the long corpus soak isolated, and DSR build/release verification for the four
-configured platform targets.
+---
 
 ## 0.3.2 - 2026-07-08
 
-PDF reading-quality release. Task-list markers now draw as vector checkboxes
-(rounded accent-filled box with a white check when done, neutral rounded
-outline when open) while the `[x]`/`[ ]` text stays selectable via invisible
-render mode; URLs, underscored identifiers, and other non-hyphenatable tokens
-gain separator and emergency break points so they wrap (with per-line link
-annotations) instead of running off the page, in body text and table cells
-alike; and `line_badness` now treats shrinking past the shrink budget as
-infeasible per TeX semantics, ending crushed-interword-space justification.
-Also carries the HTML embedded-font `OS/2` fix (Chromium's sanitizer accepts
-the subsets instead of silently falling back to system fonts), the published
-`@franken-suite/franken-markdown` npm package with an idempotent release
-workflow, SVG text fidelity work (`baseline-shift`, word spacing, explicit
-whitespace, aria-label alt text, separated code panels), and thirty-plus
-behavior-preserving performance passes across the PDF writer, compressor,
-parser, and HTML emitter.
+PDF reading-quality release:
+
+- **Vector task checkboxes:** Task list markers draw as vector checkboxes
+  (rounded accent-filled box with white check when done, neutral outline when
+  open) while `[x]`/`[ ]` remains selectable text.
+- **Long-token wrapping:** URLs and non-hyphenatable identifiers gain separator
+  and emergency break points with per-line link annotations in body and table
+  cells.
+- **TeX shrink semantics:** `line_badness` treats shrinking past the shrink
+  budget as infeasible, ending crushed interword spacing.
+- **HTML embedded fonts:** Added `OS/2` table compliance so Chromium's sanitizer
+  accepts font subsets instead of falling back to system fonts.
+- **npm publication:** Published `@franken-suite/franken-markdown` with
+  idempotent tag release workflow.
+
+---
 
 ## 0.3.1 - 2026-07-07
 
-Patch release for the DSR-built publication path. It preserves the `0.3.0`
-renderer feature set, includes the late HTML base64 encoder and PDF
-empty-segment drawing passes, records but does not ship the rejected PDF
-decimal-string trial, and keeps the release artifacts aligned to the tag and
-manifest generated by DSR rather than the canceled GitHub Actions binary
-workflow.
+Patch release for the DSR-built publication path: aligned release artifacts to
+the DSR manifest, included HTML base64 encoder and PDF empty-segment drawing
+passes, and preserved the `0.3.0` renderer feature set.
+
+---
 
 ## 0.3.0 - 2026-07-07
 
-This release turns the post-`0.2.0` renderer work into a tagged CLI/library
-ship. The headline is broader PDF fidelity without taking a browser dependency:
-frankenmermaid-generated SVG diagrams are drawn as vector PDF operators, with
-coverage for paths, shapes, text, transforms, gradients, spread modes, patterns,
-masks, clips, marker view boxes/orientation/units, marker-child `paint-order`,
-object-bounding-box clip/mask units, opacity, drop shadows, CSS
-variables/selectors, `use`/symbol reuse, embedded PNG data URIs, modern color
-tokens, text decorations, and current showcase output.
+*Plain git tag `v0.3.0`.* Major renderer feature wave:
 
-Markdown authoring got more useful for technical docs. HTML and PDF now share
-Mermaid/MMD source highlighting, PDF tables use measured column allocation, code
-blocks can include muted line numbers, ASCII diagram fences keep their geometry,
-and file-input PDF renders can auto-load relative local PNG/SVG destinations
-while hosts can still pass explicit image bytes through the CLI or library API.
-Native writes are staged where applicable, `--to both` rolls back sibling output
-on later failure, and the CLI refuses to overwrite the input file.
+- **frankenmermaid vector SVG drawing in PDF:** Native PDF drawing operators
+  for paths, shapes, text, transforms, gradients, spread modes, patterns, masks,
+  clips, markers, opacity, drop shadows, CSS variables/selectors, and `use`
+  symbol reuse
+  ([`af97a82`](https://github.com/Dicklesworthstone/franken_markdown/commit/af97a82),
+  [`5423d18`](https://github.com/Dicklesworthstone/franken_markdown/commit/5423d18)).
+- **Mermaid/MMD syntax highlighting:** Clean-room syntax highlighting for
+  Mermaid diagram source fences in HTML and PDF
+  ([`791a3c8`](https://github.com/Dicklesworthstone/franken_markdown/commit/791a3c8)).
+- **Measured PDF table allocation:** Per-column min/max content measurement with
+  wrapping-badness solver allocating column width where it reduces wrapping.
+- **Native safety:** Staged temporary writes with rollback on failure and input
+  overwrite prevention
+  ([`91afecc`](https://github.com/Dicklesworthstone/franken_markdown/commit/91afecc)).
 
-The release also carries a large behavior-preserving speed pass. Parser,
-highlighter, HTML emitter, PDF layout/writing, font subsetting, SVG drawing,
-zlib/DEFLATE compression, and optional Asupersync batch orchestration were
-profiled and tightened in small commits, with rejected trials recorded where
-they did not produce a real win. Representative commits include local PDF
-assets and safer writes
-[`91afecc`](https://github.com/Dicklesworthstone/franken_markdown/commit/91afecc),
-expanded SVG/table/typography rendering
-[`5423d18`](https://github.com/Dicklesworthstone/franken_markdown/commit/5423d18),
-Mermaid fence highlighting
-[`791a3c8`](https://github.com/Dicklesworthstone/franken_markdown/commit/791a3c8),
-SVG text decorations
-[`83d6663`](https://github.com/Dicklesworthstone/franken_markdown/commit/83d6663),
-symbol/use viewport scaling
-[`be813af`](https://github.com/Dicklesworthstone/franken_markdown/commit/be813af),
-SVG color-token parsing
-[`d469f67`](https://github.com/Dicklesworthstone/franken_markdown/commit/d469f67),
-checked-in frankenmermaid SVG rendering
-[`af97a82`](https://github.com/Dicklesworthstone/franken_markdown/commit/af97a82),
-and direct compression table indexing
-[`b6ddca1`](https://github.com/Dicklesworthstone/franken_markdown/commit/b6ddca1).
-
-WASM remains a real gate, not a source-shape claim. The `0.3.0` WASM package
-check builds the release `wasm-bindgen` artifact, loads it in headless Node, and
-asserts native/WASM byte parity over the HTML and PDF corpus. The raw `.wasm`
-budget is consciously raised from 3,200,000 to 3,300,000 bytes to account for
-the vector-SVG/PDF surface; the gzip budget stays at 1,600,000 bytes.
-
-Release verification included `cargo fmt --check`, `cargo check --all-targets`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`,
-`cargo check --no-default-features --lib`, `scripts/check-policy.sh`,
-`scripts/check-wasm-core.sh`, `scripts/check-determinism.sh`,
-`scripts/parser-diff.sh`, `scripts/check-claim-discipline.sh --self-test`,
-`scripts/commonmark-conformance.sh ci`, `scripts/batch-throughput.sh
---self-test`, `cargo test --features batch --lib batch::`, `cargo clippy
---features batch --lib -- -D warnings`, `scripts/e2e/run-all.sh ci`, and
-`scripts/release-smoke.sh` against a local release build. The crates.io package
-also passed `cargo publish --dry-run --locked --all-features`.
+---
 
 ## 0.2.0 - 2026-07-03
 
-Crate publishing is enabled for `franken_markdown`. The package metadata now
-uses `license-file = "LICENSE"` for the custom MIT plus OpenAI/Anthropic rider,
-removes the first-release `publish = false` guard, and excludes local Beads
-state, performance artifacts, and the untracked source PNG from crates.io
-packages.
+Crate publishing release for `franken_markdown`:
 
-Native output paths are safer. CLI renders, config saves, and batch renders now
-stage filesystem writes in same-directory temporary files, preflight duplicate
-and directory destinations, roll back already-committed siblings on later
-failures, and refuse batch output aliases that would overwrite the explicit
-input file.
+- Enabled crates.io publication with `license-file = "LICENSE"` and package
+  manifest trimming
+  ([`2d51cc8`](https://github.com/Dicklesworthstone/franken_markdown/commit/2d51cc8)).
+- Staged filesystem writes in temporary files with sibling rollback.
+- Stricter zlib inflater validation (Adler-32 trailers, length complements,
+  oversubscribed Huffman tables) and PNG predictor scanline validation.
+- Safe public JSON escaping for theme page sizes and WASM diagnostic severities.
 
-Binary asset validation is stricter. The clean-room zlib inflater now validates
-headers, Adler-32 trailers, stored-block length complements, final-block trailing
-data, and oversubscribed Huffman tables; the PDF PNG pipeline validates fast-path
-predictor payloads and rejects extra inflated scanline bytes.
-
-Output correctness and machine contracts were tightened: empty image
-destinations render alt text without an empty `src`, PDF warning collection
-includes raw HTML text preserved in layout, theme page-size names are escaped in
-public JSON, and WASM diagnostic severities are escaped like the rest of the
-diagnostic envelope.
-
-Release verification before the `0.2.0` metadata bump included
-`cargo fmt --check`, `cargo check --all-targets`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`,
-`cargo build --no-default-features`,
-`cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-bindgen --lib`,
-`cargo check --all-targets --features batch`,
-`cargo clippy --all-targets --features batch -- -D warnings`, and
-`cargo test --features batch`.
+---
 
 ## 0.1.0 - 2026-06-30
 
-Initial binary release of the `fmd` CLI and library source.
+Initial binary release:
 
-### Cross-platform release and installer hardening (08f)
+- Tag-gated `.github/workflows/release.yml` building standalone `fmd` CLI
+  archives for Linux (`x86_64-unknown-linux-gnu`), macOS Intel
+  (`x86_64-apple-darwin`), macOS Apple Silicon (`aarch64-apple-darwin`), and
+  Windows (`x86_64-pc-windows-msvc`) with SHA-256 sidecars and combined
+  `SHA256SUMS`.
+- Prebuilt binary installer (`install.sh` / `install.ps1`) with checksum
+  verification and smoke tests.
+- Switched optional `batch` feature to published `asupersync` crate.
 
-The release path is ready ahead of the first tag. A hand-rolled (no cargo-dist
-dependency), tag-gated `.github/workflows/release.yml` builds the `fmd` CLI for
-Linux (`x86_64-unknown-linux-gnu`), macOS Intel and Apple Silicon
-(`x86_64`/`aarch64-apple-darwin`), and Windows (`x86_64-pc-windows-msvc`),
-smoke-tests each freshly built binary (the Linux/macOS binaries via
-`scripts/release-smoke.sh`; Windows via an equivalent inline PowerShell smoke),
-packages it with a per-archive SHA-256, and attaches the archives plus a combined
-`SHA256SUMS` to the GitHub release. The browser/WASM npm package ships separately
-via the tag-gated `release-wasm.yml`. CI runs the macOS/Windows `platform-check`
-matrix, the Linux quality gate, and the WASM package gate;
-`scripts/release-smoke.sh` (version, help, `capabilities`/`doctor` JSON, HTML+PDF
-render, stdin, `--text`, and the error path) runs in the quality gate and on
-every Unix release binary. The working tree is kept free of untracked generated
-artifacts (`.gitignore` covers the regenerable check/smoke outputs), and the
-README's Installation section is updated to reflect the wired release workflows
-(prebuilt binaries with checksum verification, plus the npm package).
+---
+
+## Initial Capability Wave - 2026-06-26 to 2026-06-29
 
 ### Zero-dependency core and the `fmd` CLI
 
-The project began as a working clean-room Markdown-to-HTML engine with no
-third-party dependencies and a single shared CLI entrypoint feeding both the
-`fmd` and `franken_markdown` binaries. The CLI was built agent-first from the
-start: render aliasing so `fmd README.md`, `fmd -`, and `fmd --text '# Hi'` all
-work; stdout as data and stderr as diagnostics; stable exit codes; a global
-`--json`; and discovery surfaces (`capabilities`, `doctor`, `robot-docs guide`,
-`--robot-triage`). Native config persistence followed, using a dependency-free
-`key=value` file with `FMD_CONFIG`/XDG/platform resolution and `--no-config` for
-reproducible runs.
-
-- Scaffold, engine core, and both binaries: [`8b66477`](https://github.com/Dicklesworthstone/franken_markdown/commit/8b664778844fd8c7f5aac95c9bae386bd74ae55a)
-- Agent-ergonomic CLI surface (`capabilities`, `doctor`, `robot-docs`, `--text`, JSON): [`98c7f0b`](https://github.com/Dicklesworthstone/franken_markdown/commit/98c7f0bf3379f385df58d533bc8317697eddcf3e)
-- Hardened agent contract (`--robot-triage`, exit codes, typo normalization): [`0ab6879`](https://github.com/Dicklesworthstone/franken_markdown/commit/0ab6879385b27d989b3f7e5edaddb711300d76f4)
-- Native config persistence: [`95773aa`](https://github.com/Dicklesworthstone/franken_markdown/commit/95773aa9adf729cd21f9cd484f61a64332e25026)
-- Reconcile `--to pdf` default-output behavior with the docs: [`7e9b805`](https://github.com/Dicklesworthstone/franken_markdown/commit/7e9b8052e856f5525668fcce1e76a013d6ec310d), stdout-aware `--out -`: [`8c6b3e5`](https://github.com/Dicklesworthstone/franken_markdown/commit/8c6b3e52d568650a115717ec79b27311f2d417d1)
+The project began as a working clean-room Markdown-to-HTML engine with zero
+third-party dependencies and a single shared CLI entrypoint feeding both `fmd`
+and `franken_markdown` binaries
+([`8b66477`](https://github.com/Dicklesworthstone/franken_markdown/commit/8b66477)).
+The CLI was built agent-first from the start: render aliasing (`fmd README.md`,
+`fmd -`, `fmd --text '# Hi'`), stdout for data and stderr for diagnostics,
+stable exit codes, global `--json`, and discovery surfaces (`capabilities`,
+`doctor`, `robot-docs guide`, `--robot-triage`)
+([`98c7f0b`](https://github.com/Dicklesworthstone/franken_markdown/commit/98c7f0b),
+[`0ab6879`](https://github.com/Dicklesworthstone/franken_markdown/commit/0ab6879)).
+Native config persistence used a dependency-free `key=value` file with
+XDG/platform resolution and `--no-config` for reproducible runs
+([`95773aa`](https://github.com/Dicklesworthstone/franken_markdown/commit/95773aa)).
 
 ### Clean-room parser: CommonMark/GFM subset
 
-The parser grew a useful CommonMark/GFM subset and then a long correctness wave.
-Block features include setext headings, indented code blocks, reference-style
-links and images (full, collapsed, shortcut), lazy and nested lists, and
-blockquote lazy continuation. Inline features include character-reference
-decoding, robust link destinations, GFM bare-URL autolinks, and correct nested
-emphasis (including `***` as bold-italic and four-times emphasis). A focused fix
-wave tightened opener indentation, table-width validation, intraword
-underscores, ordered-list interruption, code-span pipes, list looseness, and not
-extracting reference definitions from inside fenced code. Source spans and
-recoverable diagnostics were added for editor/WASM tooling.
-
-- Setext headings: [`13ecaaa`](https://github.com/Dicklesworthstone/franken_markdown/commit/13ecaaa262281bad802ade3431b59cc4314e7824); reference links: [`25ae472`](https://github.com/Dicklesworthstone/franken_markdown/commit/25ae4725da11cdbc83a9761ee20de913564c4c9b); lazy/nested lists: [`2ef00e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ef00e80b74ca79e9b25c6e609dc6ba135e2a0d5); indented code: [`141303f`](https://github.com/Dicklesworthstone/franken_markdown/commit/141303fe6a9bb6105e483fa74da9ee3fe3674110)
-- Raw-HTML policy (escape by default, pass-through only with `--allow-html`): [`04b0ea8`](https://github.com/Dicklesworthstone/franken_markdown/commit/04b0ea8f8c0941bbc36929784e3ab5387b7feb47); source spans and diagnostics: [`c7587a2`](https://github.com/Dicklesworthstone/franken_markdown/commit/c7587a271f647af7260cff4e1bdddb55d0463fdd)
-- Character references: [`61439fc`](https://github.com/Dicklesworthstone/franken_markdown/commit/61439fc634cd09e2e605a8448843857e1fe08bbc); robust link destinations: [`31241a1`](https://github.com/Dicklesworthstone/franken_markdown/commit/31241a16872a1e4c846283177bfb5149bcf0a74e); bare-URL autolinks: [`39eab0e`](https://github.com/Dicklesworthstone/franken_markdown/commit/39eab0ebb1933db5fee48b1e74b3b5ec85d5efca)
-- Correctness fix wave (opener indentation, table widths, intraword underscores, list interruption, code-span pipes, escaped backticks): [`ff624e9`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff624e93dba9b1ae9aaf96ec2238b1a342bf7cf6), [`a84451a`](https://github.com/Dicklesworthstone/franken_markdown/commit/a84451abd8881e970533743a9621d8373f41d4fa), [`8ee5973`](https://github.com/Dicklesworthstone/franken_markdown/commit/8ee59731e4334357d2acc40803b9f1f0ddd7cce0), [`69795df`](https://github.com/Dicklesworthstone/franken_markdown/commit/69795dfa32378b2d5527d2ea27cd61c3eace5aa5), [`796d53c`](https://github.com/Dicklesworthstone/franken_markdown/commit/796d53cc07e714f0df9a8dba9c1e00515ba8681c)
-- List looseness/tightness correctness and bold-italic triple runs: [`193f762`](https://github.com/Dicklesworthstone/franken_markdown/commit/193f762d885cc1e60420f79eb87c03d4a56ddbd0), [`2973915`](https://github.com/Dicklesworthstone/franken_markdown/commit/297391551de40808445b57c97b9045a832824b00), [`3239366`](https://github.com/Dicklesworthstone/franken_markdown/commit/3239366b1dde463d4e97064d39e62d2b2eca425a), [`37c3b40`](https://github.com/Dicklesworthstone/franken_markdown/commit/37c3b40ffda3f52f1d36430eaff3a4019d7b0d34); reference defs not pulled from code fences: [`73190fc`](https://github.com/Dicklesworthstone/franken_markdown/commit/73190fcb8798d78d28709a11f2f384f6803a342d)
+The parser grew a conformant CommonMark/GFM subset: setext headings
+([`13ecaaa`](https://github.com/Dicklesworthstone/franken_markdown/commit/13ecaaa)),
+indented code
+([`141303f`](https://github.com/Dicklesworthstone/franken_markdown/commit/141303f)),
+reference-style links/images
+([`25ae472`](https://github.com/Dicklesworthstone/franken_markdown/commit/25ae472)),
+lazy and nested lists
+([`2ef00e8`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ef00e8)),
+character-reference decoding
+([`61439fc`](https://github.com/Dicklesworthstone/franken_markdown/commit/61439fc)),
+bare-URL autolinks
+([`39eab0e`](https://github.com/Dicklesworthstone/franken_markdown/commit/39eab0e)),
+nested emphasis
+([`193f762`](https://github.com/Dicklesworthstone/franken_markdown/commit/193f762)),
+safe raw-HTML escaping default with `--allow-html` opt-in
+([`04b0ea8`](https://github.com/Dicklesworthstone/franken_markdown/commit/04b0ea8)),
+and source spans with recoverable diagnostics
+([`c7587a2`](https://github.com/Dicklesworthstone/franken_markdown/commit/c7587a2)).
+A large correctness wave resolved opener indentation, table widths, intraword
+underscores, list interruption, code-span pipes, and list looseness
+([`ff624e9`](https://github.com/Dicklesworthstone/franken_markdown/commit/ff624e9),
+[`a84451a`](https://github.com/Dicklesworthstone/franken_markdown/commit/a84451a),
+[`8ee5973`](https://github.com/Dicklesworthstone/franken_markdown/commit/8ee5973),
+[`69795df`](https://github.com/Dicklesworthstone/franken_markdown/commit/69795df),
+[`796d53c`](https://github.com/Dicklesworthstone/franken_markdown/commit/796d53c)).
 
 ### HTML rendering and clean-room syntax highlighting
 
-The HTML emitter produces a single self-contained file with inlined CSS, a
-Cursor/GitHub-like light palette plus a dark-mode counterpart, table striping,
-blockquotes, task lists, and custom-stylesheet replacement. A clean-room syntax
-highlighter (no `syntect`, no regex engine) covers the languages common in
-technical writing and is wired into the emitter with token CSS and regression
-tests. Markdown URL schemes are sanitized to keep unsafe links out of output.
-
-- Clean-room syntax highlighting for code blocks: [`252c1a8`](https://github.com/Dicklesworthstone/franken_markdown/commit/252c1a88430326c81529326f4eb6b1ee2662ec53)
-- Sanitize unsafe Markdown URL schemes: [`d144c80`](https://github.com/Dicklesworthstone/franken_markdown/commit/d144c80f148367aab6996be0a321ccc71c582d73)
-- Tight nested lists render without spurious `<p>` wrappers: [`57149d7`](https://github.com/Dicklesworthstone/franken_markdown/commit/57149d756ae4aaad4e7cf864ad8c253f12d87843)
+The HTML emitter produces a single self-contained file with inlined CSS,
+light/dark palettes, table striping, blockquotes, task lists, and custom
+stylesheet replacement. A clean-room syntax highlighter (no `syntect`, no
+regex crate) covers Rust, Python, JS/TS, JSON, Shell, PowerShell, Go, C/C++,
+TOML, YAML, SQL, HTML/XML/SVG, CSS, and Markdown
+([`252c1a8`](https://github.com/Dicklesworthstone/franken_markdown/commit/252c1a8)).
+Markdown URL schemes are sanitized against script injection
+([`d144c80`](https://github.com/Dicklesworthstone/franken_markdown/commit/d144c80)).
 
 ### Shared theme model
 
-A structured, dependency-free theme replaced the original flat fields: body and
-mono font families, light and dark color tokens, spacing/measure/leading,
-table density, code theme, dark-mode policy, and a page contract (size and
-margins). It serializes to stable hand-rolled JSON for CLI/config/WASM callers.
-The doctrine is one theme model for both surfaces, and a later wave routed every
-PDF color through the same tokens the HTML stylesheet uses, so a theme change
-now moves HTML and PDF together.
-
-- Structured shared style model: [`064e4ab`](https://github.com/Dicklesworthstone/franken_markdown/commit/064e4ab943380a13bd357aaab5d7ccb73511d3a2)
-- Unify PDF colors onto the shared theme tokens (`mwm.6`): [`5e1eaf4`](https://github.com/Dicklesworthstone/franken_markdown/commit/5e1eaf46048389c97d21a113800242f8838dc3f5)
+A structured, typed theme replaced flat fields: font families, light/dark color
+tokens, spacing, table density, code themes, dark-mode policy, and page geometry
+([`064e4ab`](https://github.com/Dicklesworthstone/franken_markdown/commit/064e4ab)).
+PDF colors route through the same tokens the HTML stylesheet uses, ensuring
+coherent visual output across both formats
+([`5e1eaf4`](https://github.com/Dicklesworthstone/franken_markdown/commit/5e1eaf4)).
 
 ### Font and text subsystem (clean-room TrueType)
 
-The text subsystem is entirely the project's own code: a TrueType reader
-(metrics, cmap), `glyf`/`loca` outline parsing, a glyf subsetter, GPOS pair-
-kerning, and a GSUB standard-ligature parser. IBM Plex Sans and Computer Modern
-(both OFL) are vendored and bundled via `include_bytes!` so the PDF path can
-embed document-specific subsets with no system fonts.
-
-- TTF/OTF reader (metrics + cmap): [`102bc05`](https://github.com/Dicklesworthstone/franken_markdown/commit/102bc05e77aa9e0b9ad15d8d7f61ea68bf0c22c1); `glyf`/`loca` outlines: [`de6712d`](https://github.com/Dicklesworthstone/franken_markdown/commit/de6712d5a88e24a51eb3d24f98347021ba1215e6); glyf subsetter: [`38621ae`](https://github.com/Dicklesworthstone/franken_markdown/commit/38621ae480939c8e9fb80c480277ba55b0c8134a)
-- GPOS pair-kerning parser (`vxi.4`): [`d38bc62`](https://github.com/Dicklesworthstone/franken_markdown/commit/d38bc62bf504f2fd94ebd1fdbeaa5f5ee62ceb97); GSUB standard-ligature parser (`vxi.3`): [`60e7664`](https://github.com/Dicklesworthstone/franken_markdown/commit/60e7664a3b42095c1f2099009efca76e212c0c4d)
-- Vendored fonts and bundled registry: [`127e5c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/127e5c023309cf7835de2682609aedfbcb15e17d), [`6b58281`](https://github.com/Dicklesworthstone/franken_markdown/commit/6b582814b47427aa5f7acc793543588c2db4d282)
+Pure Rust TrueType reader (metrics and cmap)
+([`102bc05`](https://github.com/Dicklesworthstone/franken_markdown/commit/102bc05)),
+`glyf`/`loca` outline decoding
+([`de6712d`](https://github.com/Dicklesworthstone/franken_markdown/commit/de6712d)),
+glyf subsetter
+([`38621ae`](https://github.com/Dicklesworthstone/franken_markdown/commit/38621ae)),
+GPOS pair-kerning
+([`d38bc62`](https://github.com/Dicklesworthstone/franken_markdown/commit/d38bc62)),
+and GSUB standard-ligature parser
+([`60e7664`](https://github.com/Dicklesworthstone/franken_markdown/commit/60e7664)).
+Bundled IBM Plex Sans and Computer Modern (OFL) via `include_bytes!` for
+zero-dependency font embedding
+([`127e5c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/127e5c0),
+[`6b58281`](https://github.com/Dicklesworthstone/franken_markdown/commit/6b58281)).
 
 ### Layout: Knuth-Plass line breaking and hyphenation
 
-The layout engine provides fixed metrics, a Knuth-Plass optimal paragraph
-breaker, a deterministic hyphenation core that uses the full TeX English Liang
-patterns, microtype hooks, and preservation of styled inline runs through
-breaking. A later re-profile gate deferred deeper layout/hyphenation work behind
-evidence rather than speculation.
-
-- Fixed metrics and paragraph breaker: [`789e6e1`](https://github.com/Dicklesworthstone/franken_markdown/commit/789e6e134ac7c45dcfd0c88a7731c2a7ff09fd10); hyphenation core: [`22ad648`](https://github.com/Dicklesworthstone/franken_markdown/commit/22ad648f986df5a2bd36eb9736fc87b211501bc1); full TeX patterns: [`cef6d16`](https://github.com/Dicklesworthstone/franken_markdown/commit/cef6d161cb55d125772320aec47b49b0b28c26b9)
-- Preserve styled inline runs: [`e65aa68`](https://github.com/Dicklesworthstone/franken_markdown/commit/e65aa68a05121521b2f9113f9f58a28125db7838); microtype hooks: [`159ff5a`](https://github.com/Dicklesworthstone/franken_markdown/commit/159ff5a4e02ca133079e318d057dac39b8fd43aa)
+Fixed metrics and Knuth-Plass optimal paragraph breaker
+([`789e6e1`](https://github.com/Dicklesworthstone/franken_markdown/commit/789e6e1)),
+deterministic hyphenation with full TeX English Liang patterns
+([`22ad648`](https://github.com/Dicklesworthstone/franken_markdown/commit/22ad648),
+[`cef6d16`](https://github.com/Dicklesworthstone/franken_markdown/commit/cef6d16)),
+styled inline run preservation
+([`e65aa68`](https://github.com/Dicklesworthstone/franken_markdown/commit/e65aa68)),
+and microtype hooks
+([`159ff5a`](https://github.com/Dicklesworthstone/franken_markdown/commit/159ff5a)).
 
 ### PDF writer: deterministic, embedded fonts, real typography
 
-The PDF writer began as a deterministic PDF 1.7 MVP and grew into the project's
-differentiator. It embeds document-subset fonts as CIDFontType2/Identity-H,
-applies GPOS kerning through `TJ` positioning, shapes and embeds GSUB ligatures
-while keeping text selectable, FlateDecode-compresses font programs and large
-page streams, renders styled inline runs, does Knuth-Plass breaking with
-blockquote bars/link styling/code panels, lays tables out as a measured-column
-booktabs-style grid, and renders discretionary hyphen breaks with justified
-lines. A consolidation commit unified the best PDF and parser paths. Generalized
-keep-with-next pagination keeps headings, captions, and list intros with the
-block they introduce. The tagged-PDF structure tree was upgraded from a flat v0
-to a real accessible hierarchy rooted at one `/Document`, with decoration marked
-`/Artifact`.
-
-- Deterministic PDF MVP writer contract: [`e0f07ac`](https://github.com/Dicklesworthstone/franken_markdown/commit/e0f07ace7bb2647aeb39fe702d63d5d118c31d9a); embed document-subset fonts: [`91d4707`](https://github.com/Dicklesworthstone/franken_markdown/commit/91d4707c128ac1297a9b6ba8d6b13100f84de937)
-- GPOS kerning via `TJ`: [`2adbe44`](https://github.com/Dicklesworthstone/franken_markdown/commit/2adbe44b7b46bc4095b7044cd211149fd589b01e); shape + embed GSUB ligatures (selectable): [`20d41b4`](https://github.com/Dicklesworthstone/franken_markdown/commit/20d41b4ead4bb80b33e0a3d45a50e83d2c72375b); FlateDecode-compress font programs (`fep.5`): [`debbe82`](https://github.com/Dicklesworthstone/franken_markdown/commit/debbe82effd59c67e36474324b46352a5a6470bd)
-- Styled inline runs (`dy5.1`): [`247a074`](https://github.com/Dicklesworthstone/franken_markdown/commit/247a0746da7b601052feef3f639f0726580d1834); Knuth-Plass + blockquote bars + link styling + code panels: [`dd79635`](https://github.com/Dicklesworthstone/franken_markdown/commit/dd796357c9f57e6c1af238516af466a8a4824d8e); measured-column tables: [`4636265`](https://github.com/Dicklesworthstone/franken_markdown/commit/46362658235a4a46819f3d416714a780dd9c752d)
-- Consolidate the best-of PDF + parser pipeline: [`b1343da`](https://github.com/Dicklesworthstone/franken_markdown/commit/b1343da3dba2be5fc86bfa4caef4ddea8e4d06e7); discretionary hyphen breaks + justified lines: [`95d31bf`](https://github.com/Dicklesworthstone/franken_markdown/commit/95d31bf6856ff762d7df4690e236252acc99f20b)
-- Generalized keep-with-next pagination (`mwm.7`): [`b4560f6`](https://github.com/Dicklesworthstone/franken_markdown/commit/b4560f6a19a3004bd077784f063aecf51a13db0b); list-intro keep-with-next (`mwm.10`): [`d36b41e`](https://github.com/Dicklesworthstone/franken_markdown/commit/d36b41e18c36a08b2d7fd4d2dfe46f67da560b27)
-- Hierarchical accessible tagged-PDF structure tree (`qw1.9`): [`955dd50`](https://github.com/Dicklesworthstone/franken_markdown/commit/955dd505211ad730576d4290fb47cb44881fd926); see [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md)
+Deterministic PDF 1.7 writer embedding document-subset fonts as
+CIDFontType2/Identity-H
+([`e0f07ac`](https://github.com/Dicklesworthstone/franken_markdown/commit/e0f07ac),
+[`91d4707`](https://github.com/Dicklesworthstone/franken_markdown/commit/91d4707)),
+GPOS kerning via `TJ` arrays
+([`2adbe44`](https://github.com/Dicklesworthstone/franken_markdown/commit/2adbe44)),
+selectable GSUB ligatures
+([`20d41b4`](https://github.com/Dicklesworthstone/franken_markdown/commit/20d41b4)),
+FlateDecode compression for font programs and page streams
+([`debbe82`](https://github.com/Dicklesworthstone/franken_markdown/commit/debbe82)),
+booktabs measured-column tables
+([`4636265`](https://github.com/Dicklesworthstone/franken_markdown/commit/4636265)),
+discretionary hyphen breaks with justified lines
+([`95d31bf`](https://github.com/Dicklesworthstone/franken_markdown/commit/95d31bf)),
+keep-with-next pagination
+([`b4560f6`](https://github.com/Dicklesworthstone/franken_markdown/commit/b4560f6),
+[`d36b41e`](https://github.com/Dicklesworthstone/franken_markdown/commit/d36b41e)),
+and hierarchical accessible tagged-PDF structure tree
+([`955dd50`](https://github.com/Dicklesworthstone/franken_markdown/commit/955dd50)).
 
 ### WASM package and native parity
 
-The browser path is first-class. Browser package assets and a wasm-bindgen
-adapter landed, then a real "first-class WASM" proof gate that builds the release
-module, loads the generated module in headless node, renders HTML and PDF, and
-asserts byte-identical native parity over a corpus with a committed `.wasm` size
-budget. Determinism, negative-path, and size/checksum evidence followed, and the
-package was made publish-ready with a hardened manifest and a tag-gated npm
-release workflow. Capabilities now reports the package as
-`publishable_unpublished`: one tag push from publication, with a claim-discipline
-gate that blocks any `npm install` claim until it actually ships.
-
-- Browser package assets and PDF render hardening: [`54dc00a`](https://github.com/Dicklesworthstone/franken_markdown/commit/54dc00a84866704062fc2b122914b861e7d8c1d0)
-- Real WASM proof gate, headless render + native parity (`3i5.6`): [`e999d23`](https://github.com/Dicklesworthstone/franken_markdown/commit/e999d2355f03ea88d99934f96eab8511c188f61b); determinism/negative-path/size evidence (`3i5.5`): [`3bbf90b`](https://github.com/Dicklesworthstone/franken_markdown/commit/3bbf90b6c2668c62df8394079caefdf528aa9213)
-- Publish-ready package + list-intro keep (`mwm.10`, `3i5.7`): [`d36b41e`](https://github.com/Dicklesworthstone/franken_markdown/commit/d36b41e18c36a08b2d7fd4d2dfe46f67da560b27)
+WASM core with zero filesystem/runtime assumptions
+([`54dc00a`](https://github.com/Dicklesworthstone/franken_markdown/commit/54dc00a)),
+headless Node execution proof gate asserting native/WASM byte parity over a corpus
+([`e999d23`](https://github.com/Dicklesworthstone/franken_markdown/commit/e999d23),
+[`3bbf90b`](https://github.com/Dicklesworthstone/franken_markdown/commit/3bbf90b)),
+and publishable npm package manifest.
 
 ### CommonMark conformance harness
 
-An official CommonMark 0.31.2 conformance harness runs all 652 official
-examples, normalizes fmd's styled HTML, and reports a per-example gap ledger
-(pass / known-gap / intentional non-goal) plus a section summary. The current
-result is a committed, ratcheted floor of **379/652 matched** (with raw-HTML
-examples treated as intentional non-goals). The number is
-surfaced in `capabilities --json` with a drift guard tying the two together. The
-spec is vendored as dev-only test data.
-
-- CommonMark 0.31.2 spec harness, measured + ratcheted (`mwm.3`): [`2ce6f8c`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ce6f8cb051272d3bc158648c5c22df2c65a53b4); harness hardening: [`0719ca0`](https://github.com/Dicklesworthstone/franken_markdown/commit/0719ca0923153a0e636e6a8d0ed7d04b667b4037)
+Official CommonMark 0.31.2 conformance harness running all 652 examples with
+normalized HTML comparisons, establishing a ratcheted floor of 379/652 in-scope
+matches (with raw HTML treated as intentional non-goals) tied to
+`capabilities --json`
+([`2ce6f8c`](https://github.com/Dicklesworthstone/franken_markdown/commit/2ce6f8c),
+[`0719ca0`](https://github.com/Dicklesworthstone/franken_markdown/commit/0719ca0)).
 
 ### Asupersync batch and streaming orchestration
 
-The native batch path is scoped to keep the render core synchronous and
-dependency-free. A deterministic worker-budget policy and a native-only batch
-API/CLI contract landed as documents (`zmd.1.1`, `zmd.1.2`), defining the
-`fmd batch <inputs...>` subcommand, the budget math, and a deterministic
-`fmd-batch-receipt-v1`. The implementing module (`src/batch.rs`, bead `zmd.1.3`)
-follows that contract: round-robin sharding across exactly `workers` Asupersync
-tasks, per-file cancellation checkpoints, and receipts assembled in deterministic
-input order. The `batch` cargo feature is the only thing that pulls Asupersync;
-`scripts/check-wasm-core.sh` proves the core never sees it.
-
-- Worker-budget policy (`zmd.1.1`): [`4e36b9f`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e36b9f271d310dc3f96c3461666777dd7401c01); native-only batch API/CLI contract (`zmd.1.2`): [`60f09e3`](https://github.com/Dicklesworthstone/franken_markdown/commit/60f09e3aeccb20a19244560d2131ea1f041367df)
-- See [`docs/BATCH_ORCHESTRATION.md`](docs/BATCH_ORCHESTRATION.md) and [`docs/BATCH_WORKER_BUDGET.md`](docs/BATCH_WORKER_BUDGET.md)
+Native batch orchestration behind the opt-in `batch` feature: bounded worker
+budget policy (`zmd.1.1`), native batch CLI contract (`zmd.1.2`), and round-robin
+sharding across Asupersync tasks with deterministic receipt generation
+([`4e36b9f`](https://github.com/Dicklesworthstone/franken_markdown/commit/4e36b9f),
+[`60f09e3`](https://github.com/Dicklesworthstone/franken_markdown/commit/60f09e3)).
 
 ### Performance track (measurement-first)
 
-Performance work is gated on evidence. A measurement-first roadmap, a measured
-rendering gauntlet, and safe performance counters with run comparison make up
-the proof track. Hot-path layout scans were de-duplicated. The gauntlet's
-gates explicitly deferred a deeper layout/hyphenation rewrite and rejected a SIMD
-subtree because the evidence did not justify them.
-
-- Measurement-first optimization roadmap: [`470fa00`](https://github.com/Dicklesworthstone/franken_markdown/commit/470fa00fb832a78157fd68ffdd031d46aa1e9d9f); measured rendering gauntlet: [`d6c986c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d6c986c16878461c00f9d1d23e4838ba0fe7b7fc); de-duplicate line/hyphen scans: [`b76fb3e`](https://github.com/Dicklesworthstone/franken_markdown/commit/b76fb3ef8ce03141b8ba4959228d187d8ea43b85)
-- Safe counters + run comparison (`qw1.8`): [`9bf7007`](https://github.com/Dicklesworthstone/franken_markdown/commit/9bf7007c45da66b1b30b964dd2c76dee2baf55e5); re-profile gate defers the layout subtree (`qw1.7`): [`642c68c`](https://github.com/Dicklesworthstone/franken_markdown/commit/642c68c23995b09319d787e3f3008d6002eea0aa); reject SIMD subtree per the evidence gate (`qw1.6`): [`e983993`](https://github.com/Dicklesworthstone/franken_markdown/commit/e983993dcb56e90c75fb04382e1137c41ddf478b)
+Measurement-first optimization roadmap
+([`470fa00`](https://github.com/Dicklesworthstone/franken_markdown/commit/470fa00)),
+rendering gauntlet
+([`d6c986c`](https://github.com/Dicklesworthstone/franken_markdown/commit/d6c986c)),
+safe performance counters with run comparison
+([`9bf7007`](https://github.com/Dicklesworthstone/franken_markdown/commit/9bf7007)),
+and evidence gates that deferred unjustified rewrites and rejected speculative
+SIMD subtrees
+([`642c68c`](https://github.com/Dicklesworthstone/franken_markdown/commit/642c68c),
+[`e983993`](https://github.com/Dicklesworthstone/franken_markdown/commit/e983993)).
 
 ### Testing, CI, and quality gates
 
-Quality is enforced by standing gates rather than convention. CI runs
-formatting, all-target checks, a std-only core check, and four custom scripts: a
-clean-room policy gate (no third-party normal deps, no banned renderer/browser
-forests, no build scripts, unsafe-code forbidden), a WASM-core boundary gate, a
-deterministic-output gate (byte-for-byte across repeated JSON/HTML/PDF renders),
-and a README-to-`capabilities` claim-discipline gate. Test suites cover parser
-conformance/metamorphic/differential/spans, fonts, layout, kerning, ligatures,
-PDF structure and embedding, security, the WASM API and package, and a
-deterministic render-tree visual golden.
-
-- WASM core boundary gate: [`c460f00`](https://github.com/Dicklesworthstone/franken_markdown/commit/c460f00b717e1bb3e61ad9f74f6450ce6a2df0e2); clean-room policy gate: [`7d0b1c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/7d0b1c053a6c75d6b2cf69f5c8b143266a989551); deterministic output gate: [`d2b9da3`](https://github.com/Dicklesworthstone/franken_markdown/commit/d2b9da35b24c9b2c5789710e94ceb7127bad05c7)
-- README/capabilities claim-discipline gate (`mwm.9`): [`96f091b`](https://github.com/Dicklesworthstone/franken_markdown/commit/96f091ba89408712e8e86a7fc5f96bb2f6fbf021); metamorphic + fixture harness: [`951533e`](https://github.com/Dicklesworthstone/franken_markdown/commit/951533ee7456a8c0960d40d724fa2f2336ed8cd0); deterministic render-tree golden (`qw1.1.2`): [`2a12ebb`](https://github.com/Dicklesworthstone/franken_markdown/commit/2a12ebb37494208b4e89af0f816697fc809bfffa)
+Clean-room policy gate (`scripts/check-policy.sh`,
+[`7d0b1c0`](https://github.com/Dicklesworthstone/franken_markdown/commit/7d0b1c0)),
+WASM core boundary gate (`scripts/check-wasm-core.sh`,
+[`c460f00`](https://github.com/Dicklesworthstone/franken_markdown/commit/c460f00)),
+deterministic output gate (`scripts/check-determinism.sh`,
+[`d2b9da3`](https://github.com/Dicklesworthstone/franken_markdown/commit/d2b9da3)),
+claim-discipline gate (`scripts/check-claim-discipline.sh`,
+[`96f091b`](https://github.com/Dicklesworthstone/franken_markdown/commit/96f091b)),
+and deterministic render-tree golden tests
+([`2a12ebb`](https://github.com/Dicklesworthstone/franken_markdown/commit/2a12ebb)).
 
 ### Documentation, governance, and identity
 
-Governance and project intent are checked in: the MIT License with the
-OpenAI/Anthropic rider, project-local agent guidance (`AGENTS.md`), the
-comprehensive plan now at
-[`docs/planning/COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md`](docs/planning/COMPREHENSIVE_PLAN_FOR_FRANKEN_MARKDOWN.md),
-and reality-check bridge plans under `docs/planning/` that keep the README
-honest against the code. A hero illustration and a GitHub social-preview image
-were added.
+MIT License with OpenAI/Anthropic rider (`LICENSE`,
+[`e3cd358`](https://github.com/Dicklesworthstone/franken_markdown/commit/e3cd358)),
+`AGENTS.md` operational guidance, comprehensive and reality-check bridge plans
+in `docs/planning/`
+([`5c6af41`](https://github.com/Dicklesworthstone/franken_markdown/commit/5c6af41),
+[`5917b30`](https://github.com/Dicklesworthstone/franken_markdown/commit/5917b30)),
+and hero illustration assets
+([`b8a3904`](https://github.com/Dicklesworthstone/franken_markdown/commit/b8a3904)).
 
-- Project docs, governance, and license rider: [`e3cd358`](https://github.com/Dicklesworthstone/franken_markdown/commit/e3cd3587b7f14a58bb2826ad75419d1e82064105)
-- 2026-06-28 reality-check bridge plan + gap-closing beads: [`5c6af41`](https://github.com/Dicklesworthstone/franken_markdown/commit/5c6af418a1574f4f726d1e45c736f5d6f3fbcc9d); README reality-check after PDF typography landed: [`5917b30`](https://github.com/Dicklesworthstone/franken_markdown/commit/5917b30c435c48232a0ecf4e54d9d482fd912dcd)
-- Hero illustration + social preview image: [`b8a3904`](https://github.com/Dicklesworthstone/franken_markdown/commit/b8a3904605d9625ce980fe8df627b459ff67155f)
+---
 
 ## Notes for agents
 
 - **Rust crate publishing is enabled.** `franken_markdown` is published to
-  crates.io starting with `0.2.0`; the custom license rider is represented via
-  `license-file = "LICENSE"`. The npm package
-  (`@franken-suite/franken-markdown`) is handled by the separate tag-gated WASM
-  workflow.
-- **Status numbers are ratcheted floors, not goals.** CommonMark is 379/652
-  in-scope normalized matches and CI fails if it regresses;
-  `capabilities --json` reports the same number via a drift guard.
+  crates.io (`0.4.2`), accompanied by `fmd-font` (`0.3.0`) and `fmd-math`
+  (`0.1.0`). The custom license rider is represented via `license-file =
+  "LICENSE"`. The npm package (`@franken-suite/franken-markdown`, `0.4.2`) is
+  published via the tag-gated WASM workflow with Sigstore provenance.
+- **Status numbers are ratcheted floors, not goals.** CommonMark is 381/652
+  in-scope normalized matches and CI fails if it regresses; `capabilities
+  --json` reports the same number via a drift guard.
 - **The `batch` feature is the only Asupersync entry point.** The render core,
   `--no-default-features`, and wasm builds never compile it.
   `scripts/check-wasm-core.sh` is the standing proof.
-- **Determinism is enforced.** `scripts/check-determinism.sh` compares repeated
-  JSON/HTML/PDF output byte-for-byte; `SOURCE_DATE_EPOCH` controls PDF dates.
-- **The roadmap lives in beads.** `.beads/issues.jsonl` is the checked-in tracker;
-  bead ids referenced above (for example `mwm.*`, `qw1.*`, `zmd.1.*`, `vxi.*`,
-  `3i5.*`) map capability waves to their tracker entries.
-- **Where to look first:** `src/cli.rs` for the command contract, `src/pdf.rs`
-  and `src/layout.rs`/`src/text.rs` for typography, `src/parse/` for the parser,
-  `docs/` for the PDF accessibility and batch contracts, and
-  `docs/planning/` for the comprehensive plan and reality-check / performance
-  notes (moved off the repository root on 2026-08-19).
+- **Determinism is strictly enforced.** `scripts/check-determinism.sh` compares
+  repeated JSON/HTML/PDF output byte-for-byte; `SOURCE_DATE_EPOCH` controls PDF
+  dates.
+- **The roadmap lives in beads.** `.beads/issues.jsonl` is the checked-in
+  tracker; bead IDs referenced throughout this changelog map capability waves
+  to tracker entries.
+- **Where to look first:** `src/cli.rs` for the command contract, `src/diff.rs`
+  for the semantic AST diff engine, `src/doc_stats.rs` for document analysis and
+  linting, `src/diagrams.rs` for zero-dependency Mermaid SVG compilation,
+  `src/pdf.rs` and `src/layout.rs` for typography, `src/parse/` for the parser,
+  `fmd-math/` for TeX math typesetting, `fmd-font/` for the font subsystem, and
+  `docs/planning/` for comprehensive architecture plans and research notes.

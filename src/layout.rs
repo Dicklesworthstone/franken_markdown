@@ -3720,7 +3720,7 @@ pub fn compute_ragged_silhouette_demerits(
 ) -> i64 {
     let target_w = (measure.milli_points() as i64 * config.target_fill_permille as i64) / 1000;
     let curr_mp = w_curr.milli_points() as i64;
-    
+
     // Fill band deviation penalty: (W_target - w_curr)^2 / scale
     let fill_diff = target_w - curr_mp;
     let fill_penalty = (fill_diff.saturating_mul(fill_diff)) / 100_000;
@@ -3819,7 +3819,8 @@ pub fn detect_white_rivers(
 
     for i in 0..=line_spaces.len().saturating_sub(min_depth) {
         for start_space in &line_spaces[i] {
-            let mut curr_x = start_space.x.milli_points() as i64 + (start_space.width.milli_points() as i64 / 2);
+            let mut curr_x =
+                start_space.x.milli_points() as i64 + (start_space.width.milli_points() as i64 / 2);
             let mut depth = 1;
             let mut matched_x_sum = curr_x;
 
@@ -3943,10 +3944,7 @@ pub fn solve_convex_table_widths(
 
     if max_extra_sum <= extra_budget {
         // Budget satisfies all columns at their max widths
-        return curves
-            .iter()
-            .map(|c| c.max_width)
-            .collect();
+        return curves.iter().map(|c| c.max_width).collect();
     }
 
     // Binary search on dual multiplier lambda for convex resource distribution
@@ -4024,7 +4022,12 @@ impl ContinuousHzExpansion {
 
     /// Compute width delta in milli-points for a given glyph count and normalized variation value.
     #[must_use]
-    pub fn compute_width_delta(&self, _glyph_count: usize, natural_width: LayoutUnit, coord: i16) -> LayoutUnit {
+    pub fn compute_width_delta(
+        &self,
+        _glyph_count: usize,
+        natural_width: LayoutUnit,
+        coord: i16,
+    ) -> LayoutUnit {
         let clamped = coord.clamp(self.min_coord, self.max_coord) as i64;
         let scale_num = clamped * (self.delta_width_per_glyph_permille as i64);
         let delta = (natural_width.milli_points() as i64 * scale_num) / (1000 * 15);
@@ -4051,7 +4054,7 @@ impl Default for OpticalKerningConfig {
 /// Compute optical gap kerning adjustment between two character silhouettes using 1D quadrature.
 #[must_use]
 pub fn compute_optical_kerning(
-    left_silhouette: &[(LayoutUnit, LayoutUnit)],  // (y, rightmost_x)
+    left_silhouette: &[(LayoutUnit, LayoutUnit)], // (y, rightmost_x)
     right_silhouette: &[(LayoutUnit, LayoutUnit)], // (y, leftmost_x)
     natural_advance: LayoutUnit,
     target_area: LayoutUnit,
@@ -4066,7 +4069,8 @@ pub fn compute_optical_kerning(
 
     for i in 0..n {
         let right_edge_l = left_silhouette[i].1.milli_points() as i64;
-        let left_edge_r = right_silhouette[i].1.milli_points() as i64 + natural_advance.milli_points() as i64;
+        let left_edge_r =
+            right_silhouette[i].1.milli_points() as i64 + natural_advance.milli_points() as i64;
         let gap = (left_edge_r - right_edge_l).max(0);
         total_gap_area += gap;
     }
@@ -4103,8 +4107,12 @@ pub fn compute_drop_cap_profile(
     optical_gap: LayoutUnit,
 ) -> DropCapProfile {
     let base_width = match initial_char {
-        'W' | 'M' | 'O' | 'Q' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 9) / 10),
-        'I' | 'J' | 'l' | '1' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 3) / 10),
+        'W' | 'M' | 'O' | 'Q' => {
+            LayoutUnit::from_milli_points((font_size.milli_points as i32 * 9) / 10)
+        }
+        'I' | 'J' | 'l' | '1' => {
+            LayoutUnit::from_milli_points((font_size.milli_points as i32 * 3) / 10)
+        }
         'A' | 'V' => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 7) / 10),
         _ => LayoutUnit::from_milli_points((font_size.milli_points as i32 * 6) / 10),
     };
@@ -4117,8 +4125,9 @@ pub fn compute_drop_cap_profile(
             'V' => 1000 - (400 * (i as i32)) / (line_count.max(1) as i32),
             _ => 1000,
         };
-        let line_w = LayoutUnit::from_milli_points((base_width.milli_points() * taper_ratio) / 1000)
-            + optical_gap;
+        let line_w =
+            LayoutUnit::from_milli_points((base_width.milli_points() * taper_ratio) / 1000)
+                + optical_gap;
         line_widths.push(line_w);
     }
 
@@ -4184,8 +4193,10 @@ pub fn snap_blocks_to_baseline_grid(
             natural_target.clamp(min_y, max_y)
         };
 
-        let calculated_spring = (snapped - current_y)
-            .clamp(spring.min_height.milli_points() as i64, spring.max_height.milli_points() as i64);
+        let calculated_spring = (snapped - current_y).clamp(
+            spring.min_height.milli_points() as i64,
+            spring.max_height.milli_points() as i64,
+        );
 
         current_y += calculated_spring;
         resolved_springs.push(LayoutUnit::from_milli_points(calculated_spring as i32));
@@ -4320,18 +4331,36 @@ mod sota_typography_tests {
     #[test]
     fn test_white_river_detection() {
         let space_l1 = vec![
-            SpaceCoordinate { x: LayoutUnit::from_points(50), width: LayoutUnit::from_points(4) },
-            SpaceCoordinate { x: LayoutUnit::from_points(120), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(50),
+                width: LayoutUnit::from_points(4),
+            },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(120),
+                width: LayoutUnit::from_points(4),
+            },
         ];
         let space_l2 = vec![
             // Aligns directly at x=50
-            SpaceCoordinate { x: LayoutUnit::from_points(51), width: LayoutUnit::from_points(4) },
-            SpaceCoordinate { x: LayoutUnit::from_points(180), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(51),
+                width: LayoutUnit::from_points(4),
+            },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(180),
+                width: LayoutUnit::from_points(4),
+            },
         ];
         let space_l3 = vec![
             // Aligns directly at x=50 across 3 lines
-            SpaceCoordinate { x: LayoutUnit::from_points(50), width: LayoutUnit::from_points(4) },
-            SpaceCoordinate { x: LayoutUnit::from_points(210), width: LayoutUnit::from_points(4) },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(50),
+                width: LayoutUnit::from_points(4),
+            },
+            SpaceCoordinate {
+                x: LayoutUnit::from_points(210),
+                width: LayoutUnit::from_points(4),
+            },
         ];
 
         let line_spaces = vec![space_l1, space_l2, space_l3];
@@ -4370,8 +4399,15 @@ mod sota_typography_tests {
 
         assert_eq!(widths.len(), 2);
         let sum = widths[0] + widths[1];
-        assert_eq!(sum.milli_points(), total_w.milli_points(), "Total allocated width must match target exactly");
-        assert!(widths[1] > widths[0], "Dense column 2 must receive more width than column 1");
+        assert_eq!(
+            sum.milli_points(),
+            total_w.milli_points(),
+            "Total allocated width must match target exactly"
+        );
+        assert!(
+            widths[1] > widths[0],
+            "Dense column 2 must receive more width than column 1"
+        );
     }
 
     #[test]
@@ -4400,7 +4436,11 @@ mod sota_typography_tests {
 
         assert_eq!(resolved.len(), 2);
         let total_y1 = block_heights[0] + resolved[0];
-        assert_eq!(total_y1.milli_points() % grid.milli_points(), 0, "First baseline must snap to grid multiple");
+        assert_eq!(
+            total_y1.milli_points() % grid.milli_points(),
+            0,
+            "First baseline must snap to grid multiple"
+        );
     }
 
     #[test]
@@ -4433,4 +4473,3 @@ mod sota_typography_tests {
         assert!(!breaks.is_empty(), "Page break calculated successfully");
     }
 }
-

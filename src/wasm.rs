@@ -95,6 +95,12 @@ pub struct WasmRenderOptions {
     pub toc: bool,
     /// Maximum heading depth for table of contents (e.g. 1..=6).
     pub toc_depth: Option<u8>,
+    /// Optional target page count budget for PDF adaptive page fitting.
+    pub fit_to_pages: Option<usize>,
+    /// Opt-in microtypography for justified PDF body paragraphs (bead 544o):
+    /// optical-margin protrusion. DISABLED by default; default output stays
+    /// byte-identical.
+    pub microtype: crate::layout::MicrotypeOptions,
 }
 
 impl WasmRenderOptions {
@@ -131,6 +137,18 @@ impl WasmRenderOptions {
     #[must_use]
     pub fn with_toc_depth(mut self, depth: u8) -> Self {
         self.toc_depth = Some(depth);
+        self
+    }
+
+    /// Return a copy with microtypography protrusion enabled or disabled
+    /// (PDF path only; justified body paragraphs).
+    #[must_use]
+    pub fn with_microtype_protrusion(mut self, enabled: bool) -> Self {
+        self.microtype = if enabled {
+            crate::layout::MicrotypeOptions::CONSERVATIVE
+        } else {
+            crate::layout::MicrotypeOptions::DISABLED
+        };
         self
     }
 
@@ -324,6 +342,13 @@ impl WasmRenderOptions {
         self
     }
 
+    /// Return a copy with an adaptive target page budget for PDF generation.
+    #[must_use]
+    pub fn with_fit_to_pages(mut self, pages: usize) -> Self {
+        self.fit_to_pages = Some(pages);
+        self
+    }
+
     fn html_options(&self) -> HtmlOptions {
         let mut theme = self.theme.clone();
         if let Some(scale) = self.font_scale {
@@ -371,6 +396,8 @@ impl WasmRenderOptions {
             profile: self.profile,
             toc: self.toc,
             toc_depth: self.toc_depth,
+            fit_to_pages: self.fit_to_pages,
+            microtype: self.microtype,
         }
     }
 }

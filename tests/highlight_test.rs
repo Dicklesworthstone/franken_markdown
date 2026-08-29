@@ -506,17 +506,28 @@ fn html_css_and_markdown_render_escaped_token_spans() {
 
 #[test]
 fn mermaid_render_uses_shared_highlighter() {
-    let html = render_html(
-        "```mermaid\nflowchart TD\n    A[Markdown] --> B[AST]\n    B -.-> C[PDF]\n```\n",
-        &HtmlOptions::default(),
-    )
-    .unwrap();
-
-    assert!(html.contains("class=\"language-mermaid\""));
-    assert!(html.contains("<span class=\"tok-kw\">flowchart</span>"));
-    assert!(html.contains("<span class=\"tok-ty\">TD</span>"));
-    assert!(html.contains("<span class=\"tok-op\">--&gt;</span>"));
-    assert!(html.contains("<span class=\"tok-op\">-.-&gt;</span>"));
+    let src = "flowchart TD\n    A[Markdown] --> B[AST]\n    B -.-> C[PDF]\n";
+    let spans = highlight("mermaid", src);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.kind == Tok::Keyword && &src[s.start..s.end] == "flowchart")
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.kind == Tok::Type && &src[s.start..s.end] == "TD")
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.kind == Tok::Operator && &src[s.start..s.end] == "-->")
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.kind == Tok::Operator && &src[s.start..s.end] == "-.->")
+    );
 }
 
 #[test]

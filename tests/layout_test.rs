@@ -5,7 +5,7 @@ use franken_markdown::fonts::{FontStyle, load_body};
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FitnessClass, FontSize, HyphenationOptions, Hyphenator,
     INF_PENALTY, LayoutUnit, MicrotypeOptions, PairMetrics, ParagraphItem, ParagraphLayoutScratch,
-    Penalty, StyledRun, StyledText, TextBox, TextStyle, UNITS_PER_POINT,
+    Penalty, Protrusion, StyledRun, StyledText, TextBox, TextStyle, UNITS_PER_POINT,
     adjustment_to_layout_units, advance_to_layout_units, break_paragraph, break_paragraph_into,
     default_interword_glue, expansion_budget, hyphenated_paragraph_items_from_text,
     hyphenated_paragraph_items_from_text_into, measure_advances, measure_styled_text, measure_text,
@@ -459,6 +459,7 @@ fn break_paragraph_never_spans_an_interior_forced_break() {
             text: "A".to_string(),
             runs: StyledText::plain("A"),
             width: measure_text_with_pairs(&metrics, "A", size),
+            protrusion: Protrusion::default(),
         })
     };
     let forced = || {
@@ -611,6 +612,7 @@ fn fitting_paragraph_with_negative_penalty_still_uses_dp_path() {
             text: "alpha".to_string(),
             runs: StyledText::plain("alpha"),
             width: alpha,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
@@ -621,6 +623,7 @@ fn fitting_paragraph_with_negative_penalty_still_uses_dp_path() {
             text: "beta".to_string(),
             runs: StyledText::plain("beta"),
             width: beta,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
@@ -658,6 +661,7 @@ fn interior_forced_breaks_still_use_prefix_scratch_and_split_lines() {
             text: "alpha".to_string(),
             runs: StyledText::plain("alpha"),
             width: word_width,
+            protrusion: Protrusion::default(),
         })
     };
     let forced = || {
@@ -1393,6 +1397,7 @@ fn prohibited_penalty_is_not_a_breakpoint() {
             text: "left".to_string(),
             runs: StyledText::plain("left"),
             width: left,
+            protrusion: Protrusion::default(),
         }),
         // A prohibiting penalty (>= INF_PENALTY) must NOT become a candidate.
         ParagraphItem::Penalty(Penalty {
@@ -1404,6 +1409,7 @@ fn prohibited_penalty_is_not_a_breakpoint() {
             text: "right".to_string(),
             runs: StyledText::plain("right"),
             width: right,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
@@ -1443,12 +1449,14 @@ fn greedy_fallback_emits_overfull_leading_line_without_forced_tail() {
             text: "unbreakable".to_string(),
             runs: StyledText::plain("unbreakable"),
             width: lead,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Glue(default_interword_glue(space)),
         ParagraphItem::Box(TextBox {
             text: "word".to_string(),
             runs: StyledText::plain("word"),
             width: tail,
+            protrusion: Protrusion::default(),
         }),
     ];
     // Column narrower than the first word forces every DP edge infinite.
@@ -1475,6 +1483,7 @@ fn negative_non_forced_penalty_rewards_a_break() {
             text: "encouragement".to_string(),
             runs: StyledText::plain("encouragement"),
             width: head,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,
@@ -1485,6 +1494,7 @@ fn negative_non_forced_penalty_rewards_a_break() {
             text: "go".to_string(),
             runs: StyledText::plain("go"),
             width: tail,
+            protrusion: Protrusion::default(),
         }),
         ParagraphItem::Penalty(Penalty {
             width: LayoutUnit::ZERO,

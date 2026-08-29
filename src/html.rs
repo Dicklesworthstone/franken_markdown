@@ -932,22 +932,6 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-fn wrap(
-    out: &mut String,
-    tag: &str,
-    content: &[Inline],
-    opts: &HtmlOptions,
-    state: &mut RenderState<'_>,
-) {
-    out.push('<');
-    out.push_str(tag);
-    out.push('>');
-    render_inlines(content, out, opts, state);
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
-}
-
 fn push_u64(out: &mut String, value: u64) {
     let mut buf = [0u8; 20];
     let mut n = value;

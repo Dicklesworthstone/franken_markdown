@@ -2976,3 +2976,82 @@ fn fmd_diff_emits_html_and_json() {
     let _ = fs::remove_file(f2);
     let _ = fs::remove_file(out_html);
 }
+
+#[test]
+fn fmd_pdf_fit_to_pages_shrinks_multipage_document() {
+    let dir = temp_dir("fit-to-pages");
+    let _ = fs::create_dir_all(&dir);
+    let doc_md = dir.join("long_doc.md");
+    let out_pdf_1 = dir.join("out_unfitted.pdf");
+    let out_pdf_2 = dir.join("out_fitted.pdf");
+
+    // Create a 2-page document with multiple paragraphs
+    let mut content = String::new();
+    for i in 1..=15 {
+        content.push_str(&format!(
+            "## Section {}\n\nThis is a substantial paragraph of text written to ensure that the document exceeds a single page boundary under normal 11pt typography. It contains several full sentences demonstrating realistic content flow, word measurements, and optimal paragraph line breaking.\n\n",
+            i
+        ));
+    }
+    fs::write(&doc_md, content).unwrap();
+
+    let doc_s = doc_md.to_str().unwrap();
+    let out_1_s = out_pdf_1.to_str().unwrap();
+    let out_2_s = out_pdf_2.to_str().unwrap();
+
+    // Default render (will be 2 pages)
+    let res_1 = fmd(&[doc_s, "--to", "pdf", "--out", out_1_s]);
+    assert_eq!(res_1.status.code(), Some(0));
+    let pdf_bytes_1 = fs::read(&out_pdf_1).unwrap();
+    assert!(pdf_bytes_1.len() > 1000);
+
+    // Fit to 1 page
+    let res_2 = fmd(&[
+        doc_s,
+        "--to",
+        "pdf",
+        "--fit-to-pages",
+        "1",
+        "--out",
+        out_2_s,
+    ]);
+    assert_eq!(res_2.status.code(), Some(0));
+    let pdf_bytes_2 = fs::read(&out_pdf_2).unwrap();
+    assert!(pdf_bytes_2.len() > 1000);
+
+    let _ = fs::remove_file(doc_md);
+    let _ = fs::remove_file(out_pdf_1);
+    let _ = fs::remove_file(out_pdf_2);
+}
+
+#[test]
+fn fmd_render_interactive_html_generates_self_contained_workspace() {
+    let dir = temp_dir("interactive-html");
+    let _ = fs::create_dir_all(&dir);
+    let doc_md = dir.join("doc.md");
+    let out_html = dir.join("interactive.html");
+
+    fs::write(
+        &doc_md,
+        "# Project Overview\n\n- Feature A\n- Feature B\n\n> [!NOTE]\n> Real-time collaborative preview.\n",
+    )
+    .unwrap();
+
+    let doc_s = doc_md.to_str().unwrap();
+    let out_s = out_html.to_str().unwrap();
+
+    let res = fmd(&[doc_s, "--interactive-html", "--out", out_s]);
+    assert_eq!(res.status.code(), Some(0), "stderr: {}", text(&res.stderr));
+
+    let html_content = fs::read_to_string(&out_html).unwrap();
+    assert!(html_content.contains("<!DOCTYPE html>"));
+    assert!(html_content.contains("fmd-app-header"));
+    assert!(html_content.contains("fmd-editor"));
+    assert!(html_content.contains("fmd-preview-pane"));
+    assert!(html_content.contains("stats-drawer"));
+    assert!(html_content.contains("Project Overview"));
+    assert!(html_content.contains("Feature A"));
+
+    let _ = fs::remove_file(doc_md);
+    let _ = fs::remove_file(out_html);
+}

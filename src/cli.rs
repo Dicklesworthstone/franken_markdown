@@ -298,6 +298,10 @@ struct RenderArgs {
     /// Scales body, headings, code, tables, and layout measure proportionally without aliasing.
     #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
     font_scale: Option<String>,
+    /// Write a deterministic JSON search index (headings + anchored paragraph
+    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
+    #[arg(long, value_name = "PATH")]
+    search_index: Option<PathBuf>,
     /// Adaptive page budgeting solver to fit rendered PDF content into target pages.
     ///
     /// Automatically tunes micro-typographic scale (base font size, line height,
@@ -473,6 +477,9 @@ enum Target {
     Html,
     Pdf,
     Both,
+    /// EPUB 3 e-book (single file; a one-chapter book). Writes a real file —
+    /// binary zips cannot stream to stdout.
+    Epub,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -580,6 +587,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         toc: false,
         toc_depth: None,
         html_font_format: None,
+        search_index: None,
         interactive_html: false,
         font_scale: None,
         fit_to_pages: None,
@@ -1176,6 +1184,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
 
     let want_html = matches!(args.to, Target::Html | Target::Both);
     let want_pdf = matches!(args.to, Target::Pdf | Target::Both);
+    let want_epub = matches!(args.to, Target::Epub);
     let single = !matches!(args.to, Target::Both);
 
     // Refuse to overwrite the input file. `read_input` already slurped the
@@ -1189,6 +1198,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         file_targets.push(p);
     }
     if want_pdf && let Some(p) = out_path(&args, single, "pdf") {
+        file_targets.push(p);
+    }
+    if want_epub && let Some(p) = out_path(&args, single, "epub") {
         file_targets.push(p);
     }
     if let Some(clash) = find_input_overwrite(args.input.as_deref(), &file_targets) {
@@ -1360,6 +1372,45 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         None
     };
 
+    // EPUB: one-chapter book from the same AST (bead 28t8). Binary zip cannot
+    // stream; like PDF it needs a real path (derived from the input stem).
+    let epub_render = if want_epub {
+        let opts = HtmlOptions {
+            theme: theme.clone(),
+            title: args.title.clone(),
+            custom_css: None,
+            allow_raw_html: args.allow_html,
+            font_assets: FontAssets::default(),
+            image_assets: Vec::new(),
+            lang: args.lang.clone(),
+            profile,
+            toc: args.toc,
+            toc_depth: args.toc_depth,
+            html_font_format: HtmlFontFormat::default(),
+        };
+        match crate::render_epub(&doc, &opts) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => return fail_json(70, "render_error", &format!("epub render: {e}"), json),
+        }
+    } else {
+        None
+    };
+    let epub_path = if epub_render.is_some() {
+        match out_path(&args, single, "epub") {
+            Some(path) if !is_stdout_path(&path) => Some(path),
+            _ => {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    "EPUB output requires a real --out <path> (binary zip cannot stream to stdout)",
+                    json,
+                );
+            }
+        }
+    } else {
+        None
+    };
+
     let html_path = html_bytes
         .as_ref()
         .and_then(|_| out_path(&args, single, "html"));
@@ -1373,11 +1424,33 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     };
 
     let mut file_outputs = Vec::new();
+    // --search-index: deterministic JSON sidecar for docs-site search (r9z4).
+    // Built from the same AST; rides the staged write so a failure anywhere
+    // rolls back all outputs together.
+    let search_index_bytes = if let Some(index_path) = args.search_index.as_deref() {
+        let index = crate::search_index::build_search_index(&doc);
+        let bytes = crate::search_index::search_index_json(&index).into_bytes();
+        Some((index_path, bytes))
+    } else {
+        None
+    };
+    if let Some((path, bytes)) = search_index_bytes.as_ref() {
+        file_outputs.push(crate::file_write::OutputFile {
+            path,
+            bytes: bytes.as_slice(),
+        });
+    }
     if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
         file_outputs.push(crate::file_write::OutputFile { path, bytes });
     }
     if let (Some(path), Some((_, bytes))) = (pdf_path.as_deref(), pdf_render.as_ref()) {
         file_outputs.push(crate::file_write::OutputFile { path, bytes });
+    }
+    if let (Some(path), Some(bytes)) = (epub_path.as_deref(), epub_render.as_ref()) {
+        file_outputs.push(crate::file_write::OutputFile {
+            path,
+            bytes: bytes.as_slice(),
+        });
     }
     if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
         return fail_json(

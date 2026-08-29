@@ -28,6 +28,10 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(not(feature = "cli"), allow(dead_code))]
 
+// Lets in-crate modules written against `franken_markdown::...` public paths
+// compile both standalone (test harnesses) and in-tree.
+extern crate self as franken_markdown;
+
 pub mod ast;
 pub mod caret;
 pub mod compress;
@@ -53,9 +57,13 @@ pub use fmd_font as text;
 /// The TeX-mathematics layout and MathML engine, factored into the
 /// `fmd-math` workspace crate.
 pub use fmd_math as math;
+pub mod epub;
+pub mod interactive;
+pub mod search_index;
 pub mod theme;
 pub mod wasm;
 pub mod woff1;
+pub mod zip;
 
 #[cfg(feature = "wasm-bindgen")]
 pub mod wasm_abi;
@@ -83,7 +91,9 @@ pub use diff::{DiffBlock, DiffInline, DiffStats, DocumentDiff, compute_diff};
 pub use doc_stats::{
     DocFinding, DocumentStats, DocumentStructure, OutlineHeading, compute_doc_stats,
 };
+pub use epub::render_epub;
 pub use error::{RenderError, Result};
+pub use interactive::render_interactive_html;
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
@@ -95,6 +105,7 @@ pub use scanner::{
     classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
     find_pdf_escape, scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
 };
+pub use search_index::{SearchIndex, build_search_index, search_index_json};
 pub use span::{
     DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
     SpannedInline, SpannedListItem, SpannedTable,
@@ -103,6 +114,7 @@ pub use theme::{
     CodeTheme, DarkModePolicy, FontFamily, FontScale, MonoFontFamily, PageMargins, PageSize,
     PageStyle, Theme, ThemeColors, ThemeSpacing, TypeScale, TypeScalePreset,
 };
+pub use zip::{ZipWriter, crc32};
 
 /// Font container format for embedded `@font-face` subsets in HTML output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -574,6 +586,14 @@ pub struct PdfOptions {
     pub toc: bool,
     /// Maximum heading depth for table of contents (e.g. 1..=6).
     pub toc_depth: Option<u8>,
+    /// Optional target page count budget. When set to `Some(N)`, the PDF engine
+    /// runs a micro-typographic solver to fit the document into at most N pages.
+    pub fit_to_pages: Option<usize>,
+    /// Opt-in microtypography for justified body paragraphs (bead 544o):
+    /// optical-margin protrusion via the precomputed per-box hooks in
+    /// `layout` (docs/MICROTYPOGRAPHY.md). DISABLED by default — default
+    /// output stays byte-identical.
+    pub microtype: crate::layout::MicrotypeOptions,
 }
 
 impl PdfOptions {

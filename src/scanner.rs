@@ -209,7 +209,7 @@ const LINE_CHAR_FLAGS: [u8; 256] = {
 
 const MARKDOWN_SPECIAL_TABLE: [bool; 256] = {
     let mut table = [false; 256];
-    let specials = b"\\\n\r\t#-=*+_`~|[]()<>&:@0123456789";
+    let specials = b"\\\n\r\t#-=*+_`~|[]()<>!&:@0123456789";
     let mut i = 0;
     while i < specials.len() {
         table[specials[i] as usize] = true;

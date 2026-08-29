@@ -167,6 +167,11 @@ struct UrlCacheEntry {
     context: UrlContext,
     raw_url: String,
     was_safe: bool,
+    /// Byte range of the trimmed destination within `raw_url` (valid iff
+    /// `was_safe`), derived from the exact slice `safe_url` returned so cache
+    /// hits can re-slice without repeating the trim + scheme scan.
+    trim_start: usize,
+    trim_end: usize,
 }
 
 const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
@@ -251,17 +256,29 @@ impl<'a> RenderState<'a> {
             .find(|entry| entry.context == context && entry.raw_url == url)
         {
             return if entry.was_safe {
-                safe_url(url, context)
+                // `raw_url == url` byte-for-byte, so the cached range of the
+                // trimmed slice safe_url computed at miss time re-slices to the
+                // identical subslice of this url.
+                url.get(entry.trim_start..entry.trim_end)
             } else {
                 None
             };
         }
 
         let safe = safe_url(url, context);
+        let (trim_start, trim_end) = match safe {
+            Some(trimmed) => {
+                let start = trimmed.as_ptr() as usize - url.as_ptr() as usize;
+                (start, start + trimmed.len())
+            }
+            None => (0, 0),
+        };
         let entry = UrlCacheEntry {
             context,
             raw_url: url.to_string(),
             was_safe: safe.is_some(),
+            trim_start,
+            trim_end,
         };
         if self.url_cache.len() < URL_CACHE_MAX_ENTRIES {
             self.url_cache.push(entry);
@@ -2670,8 +2687,8 @@ mod tests {
         base64_encode, css_num, css_token, css_without_remote_imports, emit_highlighted_spans,
         escape_attr, escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
         html_image_asset_mime, initial_body_capacity, inlines_to_plain, push_escaped_attr,
-        push_html_image_asset_data_uri, push_u64, render, sanitize_custom_css, slug, slug_inlines,
-        svg_without_remote_style_imports,
+        push_html_image_asset_data_uri, push_u64, render, safe_url, sanitize_custom_css, slug,
+        slug_inlines, svg_without_remote_style_imports,
     };
 
     #[test]
@@ -2804,6 +2821,49 @@ mod tests {
             4,
             "the same raw URL has distinct safety decisions by render context"
         );
+    }
+
+    #[test]
+    fn url_cache_hit_re_slices_the_exact_safe_url_trim_range() {
+        // Hits must return the same bytes as the miss path without re-running
+        // safe_url. The trim class includes multi-byte control chars (e.g. U+0085
+        // NEL, 2 bytes), so the cached byte range must come from the slice
+        // safe_url itself returned, never from a byte-wise re-trim.
+        let cases: &[(&str, UrlContext)] = &[
+            (
+                "\u{85} https://example.com/path?q=1\u{85} ",
+                UrlContext::Link,
+            ),
+            ("\t\u{9c}relative/doc.md\u{7f}\n", UrlContext::Link),
+            ("mailto:team@example.com\u{a0}", UrlContext::Link),
+            ("#fragment-only", UrlContext::Link),
+            ("", UrlContext::Link),
+            ("   ", UrlContext::Link),
+            ("  https://imgs.example.com/a.png  ", UrlContext::Image),
+            ("", UrlContext::Image),
+            (" \u{85} ", UrlContext::Image),
+            ("  javascript:alert(1)  ", UrlContext::Link),
+            ("  data:image/png;base64,AAAA  ", UrlContext::Image),
+        ];
+        for &(url, context) in cases {
+            let mut state = RenderState::default();
+            let expected = safe_url(url, context);
+            assert_eq!(
+                state.safe_url_cached(url, context),
+                expected,
+                "miss must return safe_url verbatim for {url:?}"
+            );
+            assert_eq!(
+                state.safe_url_cached(url, context),
+                expected,
+                "hit must re-slice to the identical bytes for {url:?}"
+            );
+            assert_eq!(
+                state.safe_url_cached(url, context),
+                expected,
+                "third lookup stays byte-stable for {url:?}"
+            );
+        }
     }
 
     #[test]

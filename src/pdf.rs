@@ -25919,7 +25919,12 @@ fn draw_svg_text(
     let shaped = match shaped_cache[slot_idx].get(text.text.as_str()) {
         Some(run) => run.glyphs.as_slice(),
         None => {
-            fallback = shape_run(source, face.lig, &text.text);
+            fallback = shape_run(
+                source,
+                face.lig,
+                faces.face(slot).ascii_tables(),
+                &text.text,
+            );
             fallback.glyphs.as_slice()
         }
     };
@@ -26485,7 +26490,12 @@ fn draw_seg(
     let (shaped, cached_tj) = match shaped_cache[slot_idx].get(seg.text.as_str()) {
         Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
         None => {
-            fallback = shape_run(source, face.lig, &seg.text);
+            fallback = shape_run(
+                source,
+                face.lig,
+                faces.face(seg.slot).ascii_tables(),
+                &seg.text,
+            );
             (fallback.glyphs.as_slice(), None)
         }
     };
@@ -31663,7 +31673,7 @@ mod pdf_writer_tests {
             strike: false,
         };
 
-        let shaped = shape_run(&face.font, &face.lig, &tok.text);
+        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), &tok.text);
 
         assert_eq!(
             shaped.glyphs.len(),

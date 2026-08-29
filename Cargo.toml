@@ -88,6 +88,9 @@ wasm-bindgen = ["dep:wasm-bindgen"]
 # the render engine stays dependency-free and `scripts/check-wasm-core.sh`
 # remains green. See docs/BATCH_ORCHESTRATION.md.
 batch = ["cli", "dep:asupersync"]
+# Native-only MCP stdio server (bead yjmy / jqhm / uxhr). Exposes render,
+# verify, and capabilities as Model Context Protocol (MCP) tools for agents.
+mcp = ["cli"]
 
 [dependencies]
 # First-party: the factored font subsystem (this repo's own workspace crate;

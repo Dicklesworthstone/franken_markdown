@@ -26924,10 +26924,7 @@ fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
     }
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
     // Precompute break penalties once (they depend only on the index).
-    let mut penalties = vec![0.0f32; n + 1];
-    for j in 0..=n {
-        penalties[j] = break_penalty(lines, j);
-    }
+    let penalties: Vec<f32> = (0..=n).map(|j| break_penalty(lines, j)).collect();
     let inf = f32::INFINITY;
     let mut best = vec![inf; n + 1];
     let mut prev = vec![usize::MAX; n + 1];
@@ -38767,4 +38764,247 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
     }
     collect_links(&doc.blocks, &mut audit, &ids);
     audit
+}
+
+/// Plass-style optimal pagination (Plass & Li, 1981) — DP over page
+/// partitions minimizing the total void-badness + keep-penalty cost that the
+/// greedy path applies per page. Pins: plan legality (capacity, forced
+/// boundaries, full coverage), total-cost dominance over pure greedy, and
+/// that the DP is live (breaks differ on a myopia fixture where per-page
+/// greed strands a keep-together block).
+#[cfg(test)]
+mod plass_pagination_tests {
+    use super::*;
+
+    fn page(capacity: f32) -> PageGeom {
+        PageGeom {
+            width: 400.0,
+            height: capacity,
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            content_w: 400.0,
+        }
+    }
+
+    fn line(kind: FlowKind, group: u32, index: usize, count: usize) -> Line {
+        Line {
+            size: 11.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark {
+                group,
+                index,
+                count,
+                kind,
+                list_start: false,
+            },
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs: Vec::new(),
+            page_break_before: false,
+            image: None,
+        }
+    }
+
+    fn with_page_break(mut l: Line) -> Line {
+        l.page_break_before = true;
+        l
+    }
+
+    /// Total pagination cost of a page partition, replicating the DP edge
+    /// cost: quadratic void badness plus break penalties; the final page is
+    /// unpenalized (mirrors both breakers).
+    fn total_cost(lines: &[Line], ends: &[usize], page: PageGeom) -> f32 {
+        let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+        let mut total = 0.0f32;
+        let mut start = 0usize;
+        for &end in ends {
+            let capacity =
+                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+            if end != lines.len() {
+                let mut used = 0.0f32;
+                for l in &lines[start..end] {
+                    used += line_leading(l) + l.gap_after;
+                }
+                let remaining = (capacity - used).max(0.0);
+                total +=
+                    (remaining / capacity.max(1.0)).powi(2) * 10_000.0 + break_penalty(lines, end);
+            }
+            start = end;
+        }
+        total
+    }
+
+    fn plan_ends(lines: &[Line], page: PageGeom) -> Vec<usize> {
+        paginate_lines_with(lines, page, None)
+            .iter()
+            .map(|p| p.len())
+            .scan(0usize, |acc, n| {
+                *acc += n;
+                Some(*acc)
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn dp_ends(lines: &[Line], page: PageGeom) -> Vec<usize> {
+        let plan = optimal_page_breaks(lines, page);
+        let mut ends = Vec::new();
+        let mut start = 0usize;
+        while start < lines.len() {
+            let end = plan.end_for(start);
+            ends.push(end);
+            start = end;
+        }
+        ends
+    }
+
+    fn assert_plan_legal(lines: &[Line], ends: &[usize], page: PageGeom) {
+        let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+        assert_eq!(ends.last(), Some(&lines.len()), "plan covers every line");
+        let mut start = 0usize;
+        for &end in ends {
+            assert!(end > start, "every page places at least one line");
+            // Forced boundaries: a page may never span one.
+            for (i, line) in lines.iter().enumerate().take(end).skip(start + 1) {
+                assert!(
+                    !line.page_break_before,
+                    "edge {start}->{end} spans forced boundary at {i}"
+                );
+            }
+            let capacity =
+                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+            if end - start > 1 {
+                let mut used = 0.0f32;
+                for l in &lines[start..end - 1] {
+                    used += line_leading(l) + l.gap_after;
+                }
+                assert!(
+                    used + line_leading(&lines[end - 1]) <= capacity + 1e-4,
+                    "page {start}..{end} overflows capacity {capacity}"
+                );
+            }
+            start = end;
+        }
+    }
+
+    #[test]
+    fn dp_plan_is_legal_on_varied_fixtures() {
+        let pg = page(120.0);
+        // Uniform paragraphs.
+        let uniform: Vec<Line> = (0..30)
+            .map(|i| line(FlowKind::Paragraph, 1, i, 30))
+            .collect();
+        assert_plan_legal(&uniform, &dp_ends(&uniform, pg), pg);
+
+        // Headings interleaved with paragraph groups.
+        let mut mixed = Vec::new();
+        mixed.push(line(FlowKind::Heading, 0, 0, 1));
+        mixed.extend((0..8).map(|i| line(FlowKind::Paragraph, 1, i, 8)));
+        mixed.push(line(FlowKind::Heading, 2, 0, 1));
+        mixed.extend((0..6).map(|i| line(FlowKind::Paragraph, 3, i, 6)));
+        mixed.push(line(FlowKind::Heading, 4, 0, 1));
+        mixed.extend((0..10).map(|i| line(FlowKind::Paragraph, 5, i, 10)));
+        assert_plan_legal(&mixed, &dp_ends(&mixed, pg), pg);
+
+        // Forced boundary mid-document.
+        let mut forced = Vec::new();
+        forced.extend((0..10).map(|i| line(FlowKind::Paragraph, 1, i, 30)));
+        forced.push(with_page_break(line(FlowKind::Paragraph, 2, 10, 30)));
+        forced.extend((0..9).map(|i| line(FlowKind::Paragraph, 2, 11 + i, 30)));
+        let ends = dp_ends(&forced, pg);
+        assert_plan_legal(&forced, &ends, pg);
+        assert!(
+            ends.contains(&10),
+            "forced boundary at line 10 must start a page (ends: {ends:?})"
+        );
+
+        // Tall unbreakable table row (single line taller fits anyway: first
+        // line of a page is unconditional even when oversized).
+        let mut tall = Vec::new();
+        tall.push(line(FlowKind::TableHeader, 0, 0, 1));
+        let mut row = line(FlowKind::TableRow, 1, 0, 1);
+        row.size = 300.0;
+        tall.push(row);
+        tall.extend((0..5).map(|i| line(FlowKind::Paragraph, 2, i, 5)));
+        assert_plan_legal(&tall, &dp_ends(&tall, pg), pg);
+    }
+
+    #[test]
+    fn dp_total_cost_never_exceeds_greedy() {
+        let pg = page(120.0);
+        let fixtures: Vec<Vec<Line>> = vec![
+            (0..30)
+                .map(|i| line(FlowKind::Paragraph, 1, i, 30))
+                .collect(),
+            {
+                let mut v = vec![line(FlowKind::Heading, 0, 0, 1)];
+                v.extend((0..25).map(|i| line(FlowKind::Paragraph, 1, i, 25)));
+                v
+            },
+            {
+                let mut v: Vec<Line> = Vec::new();
+                for g in 0..6 {
+                    v.extend((0..5).map(|i| line(FlowKind::Paragraph, g, i, 5)));
+                }
+                v
+            },
+        ];
+        for (n, lines) in fixtures.iter().enumerate() {
+            let greedy = plan_ends(lines, pg);
+            let dp = dp_ends(lines, pg);
+            let cg = total_cost(lines, &greedy, pg);
+            let cd = total_cost(lines, &dp, pg);
+            assert!(
+                cd <= cg + 1e-3,
+                "fixture {n}: DP cost {cd} must not exceed greedy {cg}"
+            );
+        }
+    }
+
+    #[test]
+    fn dp_breaks_greedy_myopia_on_keep_block() {
+        // Greedy myopia: page 1 fills to the brim with body lines, which
+        // forces page 2 to split a short intro + captioned-table keep pair.
+        // Paying a little extra void on page 1 lets page 2 keep the block
+        // whole — exactly the trade the document-wide DP can see and the
+        // per-page greedy cannot.
+        let pg = page(60.0); // ~4 body lines per page
+        let mut lines: Vec<Line> = Vec::new();
+        // Body group 0: five lines (fills page 1 with one to spare).
+        lines.extend((0..5).map(|i| line(FlowKind::Paragraph, 0, i, 5)));
+        // Short intro (2 lines, group 1) + captioned table header (group 2):
+        // splitting between them costs the 1.2M keep penalty.
+        lines.push(line(FlowKind::Paragraph, 1, 0, 2));
+        lines.push(line(FlowKind::Paragraph, 1, 1, 2));
+        lines.push(line(FlowKind::TableHeader, 2, 0, 1));
+        lines.push(line(FlowKind::TableRule, 2, 0, 1));
+        lines.push(line(FlowKind::TableRow, 2, 0, 1));
+        // Tail body so the document spans several pages.
+        lines.extend((0..9).map(|i| line(FlowKind::Paragraph, 3, i, 9)));
+
+        let greedy = plan_ends(&lines, pg);
+        let dp = dp_ends(&lines, pg);
+        assert_plan_legal(&lines, &dp, pg);
+        let cg = total_cost(&lines, &greedy, pg);
+        let cd = total_cost(&lines, &dp, pg);
+        assert!(
+            cd < cg - 1e3,
+            "DP should beat greedy on the myopia fixture (dp {cd} vs greedy {cg})"
+        );
+    }
+
+    #[test]
+    fn dp_is_deterministic() {
+        let pg = page(120.0);
+        let lines: Vec<Line> = (0..40)
+            .map(|i| line(FlowKind::Paragraph, 1, i, 40))
+            .collect();
+        assert_eq!(dp_ends(&lines, pg), dp_ends(&lines, pg));
+    }
 }

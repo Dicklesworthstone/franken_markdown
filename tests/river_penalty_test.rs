@@ -55,8 +55,9 @@ fn seed_count(items: &[ParagraphItem], breaks: &[LineBreak], measure: LayoutUnit
         let (prev, cur) = (&pair[0], &pair[1]);
         // Last drawn glue of the previous line.
         let mut x_prev: Option<i64> = None;
-        for g in (prev.start..prev.end).rev() {
-            if let ParagraphItem::Glue(glue) = &items[g]
+        for (offset, item) in items[prev.start..prev.end].iter().enumerate().rev() {
+            let g = prev.start + offset;
+            if let ParagraphItem::Glue(glue) = item
                 && glue.width > LayoutUnit::ZERO
             {
                 x_prev = space_x(prev.start, g);
@@ -64,8 +65,9 @@ fn seed_count(items: &[ParagraphItem], breaks: &[LineBreak], measure: LayoutUnit
             }
         }
         let Some(x_prev) = x_prev else { continue };
-        for g in cur.start..cur.end {
-            if let ParagraphItem::Glue(glue) = &items[g]
+        for (offset, item) in items[cur.start..cur.end].iter().enumerate() {
+            let g = cur.start + offset;
+            if let ParagraphItem::Glue(glue) = item
                 && glue.width > LayoutUnit::ZERO
                 && let Some(x) = space_x(cur.start, g)
                 && (x_prev - x).abs() <= tolerance

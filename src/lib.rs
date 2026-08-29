@@ -84,6 +84,9 @@ pub mod watch;
 // `--no-default-features`, or wasm builds.
 #[cfg(feature = "batch")]
 pub mod batch;
+// Native-only MCP stdio server. Never compiled for the core or wasm builds.
+#[cfg(feature = "mcp")]
+pub mod mcp;
 
 pub use ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem, Table};
 pub use book::{

@@ -2104,9 +2104,8 @@ fn font_face_css_capacity(
         .saturating_add(encoded_len)
 }
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn base64_encode(bytes: &[u8]) -> String {
+#[allow(dead_code)]
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(base64_encoded_len(bytes.len()));
     push_base64_encoded(&mut out, bytes);
     out

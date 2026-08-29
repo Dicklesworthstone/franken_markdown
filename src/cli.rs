@@ -366,6 +366,12 @@ struct RenderArgs {
     /// inter-word spacing. Default off — classic behavior.
     #[arg(long = "typography-homogeneous")]
     typography_homogeneous: bool,
+    /// Enable river-seed demerits: penalize break candidates whose previous
+    /// line's last inter-word space aligns horizontally with a space in the
+    /// candidate line — breaking up vertical whitespace channels ("rivers").
+    /// Works for justified and ragged text. Default off — classic behavior.
+    #[arg(long = "typography-antiriver")]
+    typography_antiriver: bool,
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
@@ -1472,6 +1478,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             fit_to_pages: args.fit_to_pages,
             microtype: args.microtype.into(),
             gradual_demerits: args.typography_homogeneous,
+            river_penalty: args.typography_antiriver,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -2154,6 +2161,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         fit_to_pages: None,
         microtype: Default::default(),
         gradual_demerits: false,
+        river_penalty: false,
     };
 
     let plan = BatchPlan {

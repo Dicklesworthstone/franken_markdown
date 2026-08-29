@@ -399,6 +399,7 @@ impl WasmRenderOptions {
             fit_to_pages: self.fit_to_pages,
             microtype: self.microtype,
             gradual_demerits: false,
+            river_penalty: false,
         }
     }
 }

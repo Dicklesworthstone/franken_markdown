@@ -97,6 +97,8 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
         }
     }
 
+    findings.extend(audit_accessibility(doc));
+
     let verdict = if findings.is_empty() {
         "clean"
     } else {
@@ -118,6 +120,152 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
     let body = to_json_body(&report);
     report.digest = fnv1a64(body.as_bytes());
     Some(report)
+}
+
+/// Accessibility audit (bead jqls): authoring-time findings for the render
+/// surfaces — missing alt text, heading-level jumps, generic link text,
+/// tables without a header row. Codes are stable and additive; severity is
+/// warning-class (verdict wording unchanged).
+fn audit_accessibility(doc: &Document) -> Vec<VerifyFinding> {
+    let mut out = Vec::new();
+    audit_accessibility_blocks(&doc.blocks, &mut out, &mut None);
+    out
+}
+
+fn audit_accessibility_blocks(
+    blocks: &[crate::ast::Block],
+    out: &mut Vec<VerifyFinding>,
+    last_heading_level: &mut Option<u8>,
+) {
+    for block in blocks {
+        match block {
+            crate::ast::Block::Heading { level, inlines } => {
+                if let Some(prev) = *last_heading_level
+                    && *level > prev + 1
+                {
+                    out.push(VerifyFinding {
+                        code: "heading_level_skip",
+                        detail: format!(
+                            "heading level jumps from H{prev} to H{level}: {}",
+                            plain_inline_text(inlines)
+                        ),
+                    });
+                }
+                *last_heading_level = Some(*level);
+                audit_accessibility_inlines(inlines, out);
+            }
+            crate::ast::Block::Paragraph(inlines) => audit_accessibility_inlines(inlines, out),
+            crate::ast::Block::BlockQuote(inner) => {
+                audit_accessibility_blocks(inner, out, last_heading_level);
+            }
+            crate::ast::Block::List(list) => {
+                for item in &list.items {
+                    audit_accessibility_blocks(&item.blocks, out, last_heading_level);
+                }
+            }
+            crate::ast::Block::Table(table) => {
+                let header_empty = table
+                    .head
+                    .iter()
+                    .all(|cell| plain_inline_text(cell).trim().is_empty());
+                if header_empty {
+                    out.push(VerifyFinding {
+                        code: "table_missing_header",
+                        detail: "table has no header row text (screen readers lose column scope)"
+                            .to_string(),
+                    });
+                }
+                for cell in &table.head {
+                    audit_accessibility_inlines(cell, out);
+                }
+                for row in &table.rows {
+                    for cell in row {
+                        audit_accessibility_inlines(cell, out);
+                    }
+                }
+            }
+            crate::ast::Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        audit_accessibility_inlines(term, out);
+                    }
+                    for def in &item.definitions {
+                        audit_accessibility_inlines(def, out);
+                    }
+                }
+            }
+            crate::ast::Block::CodeBlock { .. }
+            | crate::ast::Block::ThematicBreak
+            | crate::ast::Block::HtmlBlock(_)
+            | crate::ast::Block::MathBlock(_)
+            | crate::ast::Block::FootnoteDefinition { .. } => {}
+        }
+    }
+}
+
+fn audit_accessibility_inlines(inlines: &[crate::ast::Inline], out: &mut Vec<VerifyFinding>) {
+    for inl in inlines {
+        match inl {
+            crate::ast::Inline::Image { alt, dest, .. } => {
+                if alt.trim().is_empty() {
+                    out.push(VerifyFinding {
+                        code: "missing_alt_text",
+                        detail: format!("image {dest} has empty alt text"),
+                    });
+                }
+            }
+            crate::ast::Inline::Link { content, .. } => {
+                let text = plain_inline_text(content);
+                let normalized = text.trim().to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "click here" | "here" | "link" | "read more" | "learn more" | "this"
+                ) {
+                    out.push(VerifyFinding {
+                        code: "generic_link_text",
+                        detail: format!(
+                            "link text \"{}\" is meaningless out of context",
+                            text.trim()
+                        ),
+                    });
+                }
+                audit_accessibility_inlines(content, out);
+            }
+            crate::ast::Inline::Emphasis(children)
+            | crate::ast::Inline::Strong(children)
+            | crate::ast::Inline::Strikethrough(children) => {
+                audit_accessibility_inlines(children, out);
+            }
+            crate::ast::Inline::Text(_)
+            | crate::ast::Inline::Code(_)
+            | crate::ast::Inline::SoftBreak
+            | crate::ast::Inline::HardBreak
+            | crate::ast::Inline::Html(_)
+            | crate::ast::Inline::FootnoteRef { .. }
+            | crate::ast::Inline::Math(_)
+            | crate::ast::Inline::DisplayMath(_) => {}
+        }
+    }
+}
+
+fn plain_inline_text(inlines: &[crate::ast::Inline]) -> String {
+    let mut out = String::new();
+    for inl in inlines {
+        match inl {
+            crate::ast::Inline::Text(t) | crate::ast::Inline::Code(t) => out.push_str(t),
+            crate::ast::Inline::Emphasis(c)
+            | crate::ast::Inline::Strong(c)
+            | crate::ast::Inline::Strikethrough(c) => out.push_str(&plain_inline_text(c)),
+            crate::ast::Inline::Link { content, .. } => out.push_str(&plain_inline_text(content)),
+            crate::ast::Inline::Image { alt, .. } => out.push_str(alt),
+            crate::ast::Inline::SoftBreak | crate::ast::Inline::HardBreak => out.push(' '),
+            crate::ast::Inline::Html(_)
+            | crate::ast::Inline::FootnoteRef { .. }
+            | crate::ast::Inline::Math(_)
+            | crate::ast::Inline::DisplayMath(_) => {}
+        }
+    }
+    out
 }
 
 /// Human-mode verify report: caret blocks for findings that map back into

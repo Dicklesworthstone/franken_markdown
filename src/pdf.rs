@@ -29214,12 +29214,7 @@ fn annotation_dict(
     Ok(match &annot.target {
         LinkTarget::Uri(uri) => {
             let drop_action = crate::pdfa::check_uri_action(pdf_a, uri)?;
-            let is_allowed = match pdf_url_scheme(uri) {
-                PdfUrlScheme::None => true,
-                PdfUrlScheme::Scheme(scheme) => allowed_pdf_url_scheme(&scheme),
-                PdfUrlScheme::Suspicious => false,
-            };
-            if drop_action || !is_allowed {
+            if drop_action {
                 format!("<< /Type /Annot /Subtype /Link /Rect {rect} /Border [0 0 0]{flags}{sp} >>")
             } else {
                 format!(
@@ -29688,10 +29683,7 @@ fn safe_pdf_link(url: &str) -> Option<LinkTarget> {
     }
     match pdf_url_scheme(trimmed) {
         PdfUrlScheme::None => Some(LinkTarget::Uri(trimmed.to_string())),
-        PdfUrlScheme::Scheme(scheme)
-            if allowed_pdf_url_scheme(&scheme)
-                || matches!(scheme.as_str(), "javascript" | "file") =>
-        {
+        PdfUrlScheme::Scheme(scheme) if allowed_pdf_url_scheme(&scheme) => {
             Some(LinkTarget::Uri(trimmed.to_string()))
         }
         PdfUrlScheme::Scheme(_) | PdfUrlScheme::Suspicious => None,

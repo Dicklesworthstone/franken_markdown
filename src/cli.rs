@@ -2792,6 +2792,12 @@ fn expand_file_includes(
 ) -> std::result::Result<String, String> {
     let input_p = Path::new(input_path);
     let base_dir = input_p.parent().unwrap_or_else(|| Path::new("."));
+    // Sandbox root: the canonical directory of the TOP input. Every include
+    // (including nested ones, which carry the including file's path as origin)
+    // must canonicalize inside it — `..` escapes are refused with a stable
+    // include_escape detail instead of being silently read.
+    let root = std::fs::canonicalize(base_dir)
+        .map_err(|e| format!("include sandbox root {}: {e}", base_dir.display()))?;
     crate::transclude::expand_includes(src, &|rel_path, origin| {
         let path = if origin == "<input>" {
             base_dir.join(rel_path)
@@ -2801,11 +2807,32 @@ fn expand_file_includes(
                 .unwrap_or(base_dir)
                 .join(rel_path)
         };
-        match std::fs::read(&path) {
-            Ok(bytes) if (bytes.len() as u64) <= max_input_bytes => {
-                String::from_utf8(bytes).ok()
-            }
-            _ => None,
+        let canon = match std::fs::canonicalize(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(None), // missing: core reports include_missing
+        };
+        if !canon.starts_with(&root) {
+            return Err(format!(
+                "include_escape: {} leaves the document root {}",
+                path.display(),
+                root.display()
+            ));
+        }
+        let bytes = match std::fs::read(&canon) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        if (bytes.len() as u64) > max_input_bytes {
+            return Err(format!(
+                "include_oversize: {} is {} bytes, over the {}-byte input cap",
+                path.display(),
+                bytes.len(),
+                max_input_bytes
+            ));
+        }
+        match String::from_utf8(bytes) {
+            Ok(text) => Ok(Some((text, canon.to_string_lossy().into_owned()))),
+            Err(_) => Err(format!("include_invalid_utf8: {} is not UTF-8", path.display())),
         }
     })
     .map_err(|e| e.to_string())

@@ -27,28 +27,33 @@ pub fn has_includes(src: &str) -> bool {
 /// pathological expansion.
 const MAX_DEPTH: usize = 16;
 
+/// Host resolver result: content, missing, or a policy refusal with a stable
+/// detail (sandbox escapes, size caps) that surfaces verbatim.
+pub type ResolveResult = std::result::Result<Option<(String, String)>, String>;
+
 /// Expand `{{#include path}}` directives in `src` recursively.
 ///
-/// `resolver(path, origin)` returns the file's content or None when
-/// unreadable. `origin` is the including document's path ("<input>" at the
-/// root), so hosts resolve relative includes against the INCLUDING file's
-/// directory and enforce their sandbox root.
+/// `resolver(path, origin)` returns `Ok(Some((content, resolved)))` when
+/// readable — `resolved` is the host's canonical key for the path (nested
+/// includes resolve against IT, keeping relative nesting correct) —
+/// `Ok(None)` when the path does not exist (reported as `include_missing`
+/// with the chain), or `Err(reason)` for a policy refusal (surfaced
+/// verbatim). `origin` is the including document's resolved key (`<input>`
+/// at the root).
 ///
 /// # Errors
-/// - `include_missing`: the resolver returned None for a path (chain named).
+/// - `include_missing`: the path did not resolve (chain named).
 /// - `include_cycle`: a path appears twice in the active include stack.
 /// - `include_depth`: nesting exceeded `MAX_DEPTH`.
-pub fn expand_includes(
-    src: &str,
-    resolver: &dyn Fn(&str, &str) -> Option<String>,
-) -> Result<String> {
+/// - the resolver's `Err` detail, unchanged.
+pub fn expand_includes(src: &str, resolver: &dyn Fn(&str, &str) -> ResolveResult) -> Result<String> {
     let mut stack = Vec::new();
     expand_inner(src, resolver, &mut stack, 0, "<input>")
 }
 
 fn expand_inner(
     src: &str,
-    resolver: &dyn Fn(&str, &str) -> Option<String>,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
     stack: &mut Vec<String>,
     depth: usize,
     origin: &str,
@@ -85,17 +90,21 @@ fn expand_inner(
                     chain.join(" -> ")
                 )));
             }
-            let Some(content) = resolver(path, origin) else {
-                let mut chain = stack.clone();
-                chain.push(path.to_string());
-                return Err(RenderError::InvalidInput(format!(
-                    "include_missing: cannot read {} (chain: {})",
-                    path,
-                    chain.join(" -> ")
-                )));
+            let (content, resolved) = match resolver(path, origin) {
+                Ok(Some(pair)) => pair,
+                Ok(None) => {
+                    let mut chain = stack.clone();
+                    chain.push(path.to_string());
+                    return Err(RenderError::InvalidInput(format!(
+                        "include_missing: cannot read {} (chain: {})",
+                        path,
+                        chain.join(" -> ")
+                    )));
+                }
+                Err(reason) => return Err(RenderError::InvalidInput(reason)),
             };
             stack.push(path.to_string());
-            let expanded = expand_inner(&content, resolver, stack, depth + 1, path)?;
+            let expanded = expand_inner(&content, resolver, stack, depth + 1, &resolved)?;
             stack.pop();
             out.push_str(&expanded);
             if !expanded.ends_with('\n') {
@@ -114,12 +123,12 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> Option<String> {
+    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> ResolveResult {
         let map: BTreeMap<String, String> = files
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        move |p: &str, _origin: &str| map.get(p).cloned()
+        move |p, _origin| Ok(map.get(p).map(|c| (c.clone(), p.to_string())))
     }
 
     #[test]
@@ -157,6 +166,15 @@ mod tests {
     }
 
     #[test]
+    fn policy_refusal_surfaces_verbatim() {
+        let r = |_: &str, _: &str| -> ResolveResult {
+            Err("include_escape: path leaves the document root".to_string())
+        };
+        let err = expand_includes("{{#include ../secret.md}}\n", &r).unwrap_err();
+        assert!(err.to_string().contains("include_escape"), "{err}");
+    }
+
+    #[test]
     fn nested_include_expands_transitively() {
         let r = resolver(&[
             ("a.md", "A\n{{#include b.md}}\n"),
@@ -169,17 +187,11 @@ mod tests {
 
     #[test]
     fn depth_cap_errors() {
-        // a0 includes a1 includes ... past MAX_DEPTH via self-similar chain.
         let files: Vec<(String, String)> = (0..20)
-            .map(|i| {
-                (
-                    format!("d{i}.md"),
-                    format!("{{{{#include d{}.md}}}}\n", i + 1),
-                )
-            })
+            .map(|i| (format!("d{i}.md"), format!("{{{{#include d{}.md}}}}\n", i + 1)))
             .collect();
         let map: BTreeMap<String, String> = files.into_iter().collect();
-        let r = move |p: &str, _o: &str| map.get(p).cloned();
+        let r = move |p: &str, _o: &str| Ok(map.get(p).map(|c| (c.clone(), p.to_string())));
         let err = expand_includes("{{#include d0.md}}\n", &r).unwrap_err();
         assert!(err.to_string().contains("include_depth"), "{err}");
     }

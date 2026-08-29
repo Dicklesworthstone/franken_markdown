@@ -734,8 +734,74 @@ pub fn render_pdf_document_pdfa(
     pdf_a: PdfASettings,
 ) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
+    if pdf_a.strict {
+        validate_doc_pdfa_strict(doc)?;
+    }
     let doc = transform_footnotes_for_pdf(doc);
     pdf::render(&doc, opts, pdf_a)
+}
+
+fn validate_doc_pdfa_strict(doc: &Document) -> Result<()> {
+    use crate::ast::{Block, Inline};
+
+    fn check_inlines(inlines: &[Inline]) -> Result<()> {
+        for inline in inlines {
+            match inline {
+                Inline::Link { dest, content, .. } => {
+                    crate::pdfa::check_uri_action(crate::pdfa::PdfASettings::a2b_strict(), dest)?;
+                    check_inlines(content)?;
+                }
+                Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
+                    check_inlines(c)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn check_blocks(blocks: &[Block]) -> Result<()> {
+        for block in blocks {
+            match block {
+                Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
+                    check_inlines(inlines)?;
+                }
+                Block::BlockQuote(b) => check_blocks(b)?,
+                Block::List(list) => {
+                    for item in &list.items {
+                        check_blocks(&item.blocks)?;
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in &table.head {
+                        check_inlines(cell)?;
+                    }
+                    for row in &table.rows {
+                        for cell in row {
+                            check_inlines(cell)?;
+                        }
+                    }
+                }
+                Block::FootnoteDefinition { blocks, .. } => {
+                    check_blocks(blocks)?;
+                }
+                Block::DefinitionList(groups) => {
+                    for item in groups {
+                        for t in &item.terms {
+                            check_inlines(t)?;
+                        }
+                        for d in &item.definitions {
+                            check_inlines(d)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    check_blocks(&doc.blocks)
 }
 
 /// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_pdfa`].

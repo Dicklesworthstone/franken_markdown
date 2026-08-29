@@ -2566,6 +2566,7 @@ pub fn break_paragraph_into(
                 }
             };
             let fitness = candidate_fitness(*candidate, segment, eff_line_width);
+            let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
             let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
             let line_demerit_val = line_demerits(
                 badness,
@@ -2574,6 +2575,8 @@ pub fn break_paragraph_into(
                 candidate.flagged,
                 prev_state.map(|(_, state)| state.fitness),
                 fitness,
+                prev_state.map(|(_, state)| state.line.fitness_milli),
+                fitness_milli,
             );
             // Overfull lines must carry a massive penalty so that any feasible or
             // stretchable underfull line strictly wins over bleeding into the margin.
@@ -2598,6 +2601,7 @@ pub fn break_paragraph_into(
                     natural_width: segment.width,
                     badness,
                     fitness,
+                    fitness_milli,
                     demerits,
                 },
                 flagged: candidate.flagged,
@@ -2816,6 +2820,8 @@ fn line_demerits(
     flagged: bool,
     prev_fitness: Option<FitnessClass>,
     fitness: FitnessClass,
+    prev_fitness_milli: Option<i32>,
+    fitness_milli: i32,
 ) -> i64 {
     let base = (badness as i64 + 1).saturating_pow(2);
     let penalty_cost = if penalty == FORCED_BREAK_PENALTY {
@@ -2826,14 +2832,38 @@ fn line_demerits(
         -((penalty as i64).saturating_pow(2))
     };
     let flagged_cost = if prev_flagged && flagged { 10_000 } else { 0 };
+    // Classic KP: binary check — penalize only when fitness classes are more
+    // than one apart. This is the coarse 4-class behavior, preserved as the
+    // default. (Verna DocEng '25 shows this misses most spacing homogeneity
+    // problems because the 4 classes are too wide.)
     let fitness_cost = if prev_fitness.is_some_and(|prev| fitness_distance(prev, fitness) > 1) {
         3_000
     } else {
         0
     };
+    // Gradual adjacent demerits (Verna DocEng '25, linear): penalize
+    // proportionally to the fine-grained fitness difference, clamped at the
+    // classic 3_000 value. When the paragraph policy disables gradual demerits,
+    // prev_fitness_milli is None and this arm is zero (byte-identical to the
+    // classic path). The formula: min(ADJACENT_DEMERITS, ADJACENT_DEMERITS *
+    // |c_i - c_j| / 10) where c are 10%-wide classes. Our fitness_milli is
+    // per-mille (1000 = 100%), so |fitness_milli difference| / 100 gives the
+    // class-distance in the same 10%-unit scale.
+    let gradual_cost = match prev_fitness_milli {
+        Some(prev_milli) => {
+            let class_distance = (prev_milli.abs_diff(fitness_milli) / 100) as i64;
+            if class_distance > 0 {
+                (3_000i64).min(3_000i64.saturating_mul(class_distance) / 10)
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    };
     base.saturating_add(penalty_cost)
         .saturating_add(flagged_cost)
         .saturating_add(fitness_cost)
+        .saturating_add(gradual_cost)
 }
 
 fn line_fitness(metrics: SegmentMetrics, line_width: LayoutUnit) -> FitnessClass {

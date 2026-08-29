@@ -12,11 +12,22 @@
 		1D8365E5647C8512DE998BB6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */; };
 		42AA8FBAEB45C36937DF447D /* ForgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 450492AA363B17872450BAF4 /* ForgeView.swift */; };
 		6264F508E1C65CE9E5E53C27 /* MarkdownCodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6131BEA50DECB58BD103AC5A /* MarkdownCodeEditor.swift */; };
+		6456E490B02827D4AF178F99 /* HTMLShareUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAE74FB96D32EC603E949618 /* HTMLShareUITests.swift */; };
 		66DDDDAB530D13E14E1407FB /* Renderer in Resources */ = {isa = PBXBuildFile; fileRef = 6141E231B487C77A5B1683E2 /* Renderer */; };
 		79AB0548B879EAC96926D540 /* DocumentLabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F24025622B57C8A027B6EE60 /* DocumentLabView.swift */; };
 		A87F806CDA194CF0402CAEA6 /* FrankenMarkdownApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */; };
 		C8B55CBEAEB2627B054A0626 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19C79608149D8DC651F4E806 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2D038A8E7D6AE5A9251920B7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 767528A0DBA4987FDFB366A4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1FF8F15FBB79A2F2D1F1210;
+			remoteInfo = FrankenMarkdown;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrankenMarkdownApp.swift; sourceTree = "<group>"; };
@@ -27,9 +38,11 @@
 		7FFA4E00AC64388053C263CF /* FrankenMarkdown.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FrankenMarkdown.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9FF0FC9185DD69073DCEFA93 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		B9867A57FB86816F535584A0 /* RendererHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererHost.swift; sourceTree = "<group>"; };
+		D3C5AF6F32DB55997B42C246 /* FrankenMarkdownUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FrankenMarkdownUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F24025622B57C8A027B6EE60 /* DocumentLabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentLabView.swift; sourceTree = "<group>"; };
 		F5364EFE11307299824181A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		FAE74FB96D32EC603E949618 /* HTMLShareUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLShareUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -48,10 +61,19 @@
 			path = Sources;
 			sourceTree = "<group>";
 		};
+		CFA9DCD90C70DA7758E49CAA /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				FAE74FB96D32EC603E949618 /* HTMLShareUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
 		E9A9F55347B740A9180D3024 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				7FFA4E00AC64388053C263CF /* FrankenMarkdown.app */,
+				D3C5AF6F32DB55997B42C246 /* FrankenMarkdownUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -62,6 +84,7 @@
 				19C79608149D8DC651F4E806 /* Assets.xcassets */,
 				6141E231B487C77A5B1683E2 /* Renderer */,
 				A3F92906F8DDD3CC75D2ACCE /* Sources */,
+				CFA9DCD90C70DA7758E49CAA /* UITests */,
 				E9A9F55347B740A9180D3024 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -69,6 +92,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		9F55F7C728EAE468B45ECA2E /* FrankenMarkdownUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3C5D5B369E456DF6BBA05CC4 /* Build configuration list for PBXNativeTarget "FrankenMarkdownUITests" */;
+			buildPhases = (
+				3D2943E2A5201E530979CC62 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FD88BA9C95B25F3AAE956264 /* PBXTargetDependency */,
+			);
+			name = FrankenMarkdownUITests;
+			packageProductDependencies = (
+			);
+			productName = FrankenMarkdownUITests;
+			productReference = D3C5AF6F32DB55997B42C246 /* FrankenMarkdownUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 92FAD5A58BAE68EFE2A79A63 /* Build configuration list for PBXNativeTarget "FrankenMarkdown" */;
@@ -96,6 +137,11 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					9F55F7C728EAE468B45ECA2E = {
+						DevelopmentTeam = AU8V2Z6NKY;
+						ProvisioningStyle = Automatic;
+						TestTargetID = A1FF8F15FBB79A2F2D1F1210;
+					};
 					A1FF8F15FBB79A2F2D1F1210 = {
 						DevelopmentTeam = AU8V2Z6NKY;
 						ProvisioningStyle = Automatic;
@@ -117,6 +163,7 @@
 			projectRoot = "";
 			targets = (
 				A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */,
+				9F55F7C728EAE468B45ECA2E /* FrankenMarkdownUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -135,6 +182,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		3D2943E2A5201E530979CC62 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6456E490B02827D4AF178F99 /* HTMLShareUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C65DC195C118A2E444FA686F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -149,6 +204,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FD88BA9C95B25F3AAE956264 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */;
+			targetProxy = 2D038A8E7D6AE5A9251920B7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		21C3E4A9066B35C8887FC62B /* Release */ = {
@@ -233,6 +296,40 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		6D17944D415D134ACEB0DC94 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.frankenmarkdown.FrankenMarkdownUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FrankenMarkdown;
+			};
+			name = Release;
+		};
+		BF1C8FCC721EDA4789F55A4A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.frankenmarkdown.FrankenMarkdownUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FrankenMarkdown;
+			};
+			name = Debug;
 		};
 		D62808A5775F6A8020F10FB3 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -327,6 +424,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		3C5D5B369E456DF6BBA05CC4 /* Build configuration list for PBXNativeTarget "FrankenMarkdownUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BF1C8FCC721EDA4789F55A4A /* Debug */,
+				6D17944D415D134ACEB0DC94 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		92FAD5A58BAE68EFE2A79A63 /* Build configuration list for PBXNativeTarget "FrankenMarkdown" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

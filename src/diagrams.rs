@@ -1274,10 +1274,10 @@ sequenceDiagram
 
     #[test]
     fn flowchart_view_box_uses_half_even_ties() {
-        // Two same-layer nodes with widths 91.5 (7-char label) and 83
+        // Same-layer nodes with widths 91.5 (7-char label: 8.5*7+32) and 83
         // (6-char label) give total_width = 202.5 + 48 = 250.5 exactly;
         // {:.0} half-even keeps "250" (a naive half-up writer would emit 251).
-        let code = "graph TD\n    A[sevens]\n    B[sixes]";
+        let code = "graph TD\n    A[abcd123]\n    B[abcde1]";
         let svg = render_diagram_svg(code, "mermaid").expect("should render flowchart");
         assert!(
             svg.starts_with(

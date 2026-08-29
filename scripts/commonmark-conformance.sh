@@ -23,6 +23,7 @@
 #   scripts/commonmark-conformance.sh --update-floor  # set floor to current pass count
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
+export RCH_SHIM_LOCAL_IDE=1
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
 # shellcheck source=scripts/validate-run-id.sh
 source scripts/validate-run-id.sh

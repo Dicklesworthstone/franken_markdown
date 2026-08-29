@@ -2541,28 +2541,29 @@ pub fn break_paragraph_into(
         return;
     }
     let candidates = &scratch.candidates;
-    if !candidate_stats.has_interior_forced_break
-        && !candidate_stats.has_rewarded_break
-        && let Some(&candidate) = candidates.last()
-        && let Some(width) = candidate_stats.trailing_forced_width
-    {
-        // Microtype (opt-in): the whole-paragraph single-line fast path must
-        // honor the same optical-margin credit the DP loop uses, or a
-        // paragraph exactly at the margin would break differently depending on
-        // which path ran. Zero for zero-protrusion boxes (default identical).
-        let (pl, pr) = paragraph_edge_protrusion(items);
-        let width = width.saturating_sub(LayoutUnit::from_milli_points(pl + pr));
-        if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width) {
-            scratch.forced_prefix.clear();
-            scratch.metrics.width.clear();
-            scratch.metrics.stretch.clear();
-            scratch.metrics.shrink.clear();
-            scratch.metrics.box_elasticity.clear();
-            scratch.states.clear();
-            scratch.metrics.next_box_left.clear();
-            scratch.metrics.prev_box_right.clear();
-            out.push(line);
-            return;
+    if !candidate_stats.has_interior_forced_break && !candidate_stats.has_rewarded_break {
+        if let (Some(&candidate), Some(width)) =
+            (candidates.last(), candidate_stats.trailing_forced_width)
+        {
+            // Microtype (opt-in): the whole-paragraph single-line fast path must
+            // honor the same optical-margin credit the DP loop uses, or a
+            // paragraph exactly at the margin would break differently depending on
+            // which path ran. Zero for zero-protrusion boxes (default identical).
+            let (pl, pr) = paragraph_edge_protrusion(items);
+            let width = width.saturating_sub(LayoutUnit::from_milli_points(pl + pr));
+            if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width)
+            {
+                scratch.forced_prefix.clear();
+                scratch.metrics.width.clear();
+                scratch.metrics.stretch.clear();
+                scratch.metrics.shrink.clear();
+                scratch.metrics.box_elasticity.clear();
+                scratch.states.clear();
+                scratch.metrics.next_box_left.clear();
+                scratch.metrics.prev_box_right.clear();
+                out.push(line);
+                return;
+            }
         }
     }
     scratch

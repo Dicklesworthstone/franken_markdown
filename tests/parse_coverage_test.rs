@@ -610,9 +610,10 @@ fn thematic_breaks_from_each_marker_and_the_too_short_reject() {
 #[test]
 fn backtick_fence_info_string_containing_a_backtick_is_not_a_fence() {
     // A ``` info string may not contain a backtick, so the opener is rejected and
-    // the line becomes paragraph text (with an inline code span).
-    let out = html("```rb`ruby\ncode\n```");
-    assert!(out.contains("<code>rb</code>ruby"));
+    // the line becomes paragraph text rather than a language-tagged code block.
+    let out = html("```rb`ruby\ncode");
+    assert!(!out.contains("<pre>"));
+    assert!(out.contains("<p>```rb`ruby\ncode</p>"));
 }
 
 #[test]

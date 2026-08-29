@@ -36,6 +36,7 @@ use crate::theme::{Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
@@ -171,6 +172,14 @@ const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
 struct Seg {
     x: f32,
     slot: u8,
+    /// FNV-1a 64-bit digest of `text`, computed once when the segment is built
+    /// and carried into the draw path so the shaped-run cache lookup keys on
+    /// it instead of re-hashing the text (the cache entry keeps the text and
+    /// verifies it byte-for-byte, so a digest collision between two distinct
+    /// Size impact: +8 bytes (`size_of::<Seg>()` 72 -> 80 on 64-bit,
+    /// measured; the digest rides the struct's alignment tail so the growth
+    /// is exactly one u64 per segment).
+    text_hash: u64,
     text: String,
     /// Active link target when this run is part of a safe inline link.
     link: Option<LinkTarget>,
@@ -2094,6 +2103,9 @@ struct ParagraphPolicy {
     /// Gradual adjacent demerits (Verna DocEng '25): opt-in refinement to
     /// the KP fitness-class penalty. Default false (classic behavior).
     gradual_demerits: bool,
+    /// Multi-objective (Pareto) line breaking (Holkner): opt-in bounded
+    /// fronts over (structure, hyphenation) demerit dimensions. Default false.
+    pareto_line_breaking: bool,
     /// River-seed demerits: opt-in penalty for aligned inter-word spaces on
     /// consecutive lines. Default false (classic behavior). Applies to ragged
     /// flows too — rivers form without justification, and detection uses
@@ -2107,6 +2119,7 @@ impl ParagraphPolicy {
         justify: false,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
         gradual_demerits: false,
+        pareto_line_breaking: false,
         river_penalty: false,
     };
     const TEX_PARAGRAPH: Self = Self {
@@ -2114,6 +2127,7 @@ impl ParagraphPolicy {
         justify: true,
         microtype: crate::layout::MicrotypeOptions::DISABLED,
         gradual_demerits: false,
+        pareto_line_breaking: false,
         river_penalty: false,
     };
 
@@ -2913,6 +2927,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
         let title_seg = Seg {
             x: left_x,
             slot: F_BODY,
+            text_hash: seg_text_hash(&entry.title),
             text: entry.title.clone(),
             link: Some(LinkTarget::Fragment(entry.id.clone())),
             fill: Fill::Black,
@@ -2927,6 +2942,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
             let dots_seg = Seg {
                 x: left_x + title_w + space_w,
                 slot: F_BODY,
+                text_hash: seg_text_hash(&dots_str),
                 text: dots_str,
                 link: Some(LinkTarget::Fragment(entry.id.clone())),
                 fill: Fill::Muted,
@@ -2941,6 +2957,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
         let page_seg = Seg {
             x: right_x - page_w,
             slot: F_BODY,
+            text_hash: seg_text_hash(&page_str),
             text: page_str,
             link: Some(LinkTarget::Fragment(entry.id.clone())),
             fill: Fill::Black,
@@ -3765,6 +3782,8 @@ impl LayoutCx<'_> {
             .set_gradual_demerits(policy.gradual_demerits);
         self.paragraph_scratch
             .set_river_penalty(policy.river_penalty);
+        self.paragraph_scratch
+            .set_pareto_breaking(policy.pareto_line_breaking);
         break_paragraph_into(
             items,
             line_width,
@@ -3957,6 +3976,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 segs.push(Seg {
                     x: x + number_col,
                     slot: F_MONO,
+                    text_hash: seg_text_hash(""),
                     text: String::new(),
                     link: None,
                     fill: Fill::Black,
@@ -17088,13 +17108,27 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     let mut columns = vec![TableColumnMetrics::default(); ncol];
     for (k, toks) in head_toks.iter().enumerate() {
         if let Some(column) = columns.get_mut(k) {
-            column.push(table_cell_measure(toks, size, faces, width_cache, true, &spec.links.targets));
+            column.push(table_cell_measure(
+                toks,
+                size,
+                faces,
+                width_cache,
+                true,
+                &spec.links.targets,
+            ));
         }
     }
     for row in &row_toks {
         for (k, toks) in row.iter().enumerate() {
             if let Some(column) = columns.get_mut(k) {
-                column.push(table_cell_measure(toks, size, faces, width_cache, false, &spec.links.targets));
+                column.push(table_cell_measure(
+                    toks,
+                    size,
+                    faces,
+                    width_cache,
+                    false,
+                    &spec.links.targets,
+                ));
             }
         }
     }
@@ -17135,13 +17169,27 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             columns = vec![TableColumnMetrics::default(); ncol];
             for (k, toks) in head_toks.iter().enumerate() {
                 if let Some(column) = columns.get_mut(k) {
-                    column.push(table_cell_measure(toks, size, faces, width_cache, true, &spec.links.targets));
+                    column.push(table_cell_measure(
+                        toks,
+                        size,
+                        faces,
+                        width_cache,
+                        true,
+                        &spec.links.targets,
+                    ));
                 }
             }
             for row in &row_toks {
                 for (k, toks) in row.iter().enumerate() {
                     if let Some(column) = columns.get_mut(k) {
-                        column.push(table_cell_measure(toks, size, faces, width_cache, false, &spec.links.targets));
+                        column.push(table_cell_measure(
+                            toks,
+                            size,
+                            faces,
+                            width_cache,
+                            false,
+                            &spec.links.targets,
+                        ));
                     }
                 }
             }
@@ -17260,6 +17308,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     segs.push(Seg {
                         x,
                         slot: run.slot,
+                        text_hash: seg_text_hash(&run.text),
                         text: run.text.clone(),
                         link: resolve_seg_link(link_targets, run.link),
                         fill,
@@ -17383,6 +17432,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         let marker_seg = Seg {
             x: marker_left + (marker_col - marker.width).max(0.0),
             slot: F_BODY,
+            text_hash: seg_text_hash(&marker.text),
             text: marker.text,
             link: None,
             fill: Fill::Black,
@@ -17534,13 +17584,7 @@ fn tokenize(
 }
 
 /// Split `text` into word + single-space tokens (preserving spaces) with `slot`.
-fn push_text_tokens(
-    text: &str,
-    slot: u8,
-    strike: bool,
-    link: Option<u32>,
-    out: &mut Vec<Tok>,
-) {
+fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: &mut Vec<Tok>) {
     let mut word_start = 0usize;
     for (idx, c) in text.char_indices() {
         if is_breakable_whitespace(c) {
@@ -17571,7 +17615,7 @@ fn push_text_tokens(
             slot,
             space: false,
             hard_break: false,
-                link,
+            link,
             strike,
         });
     }
@@ -18568,6 +18612,7 @@ fn layout_inlines(
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     // River seeds apply to ragged flows too (natural-width detection).
     policy.river_penalty = cx.opts.river_penalty;
+    policy.pareto_line_breaking = cx.opts.pareto_line_breaking;
     let built = build_paragraph(
         &toks,
         fs,
@@ -18705,6 +18750,7 @@ fn layout_prefixed_inlines(
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     policy.river_penalty = cx.opts.river_penalty;
+    policy.pareto_line_breaking = cx.opts.pareto_line_breaking;
     let built = build_paragraph(
         &toks,
         fs,
@@ -19405,6 +19451,7 @@ fn build_segs_adjusted(
         segs.push(Seg {
             x: seg_x,
             slot,
+            text_hash: seg_text_hash(&text),
             text,
             link: resolve_seg_link(links, link),
             fill: if link.is_some() {
@@ -19456,6 +19503,7 @@ fn build_single_adjusted_seg(
     Some(Seg {
         x: left - hang,
         slot,
+        text_hash: seg_text_hash(&text),
         text,
         link: resolve_seg_link(links, link),
         fill: if link.is_some() {
@@ -19906,6 +19954,7 @@ fn code_frags_to_segs(
             segs.push(Seg {
                 x,
                 slot,
+                text_hash: seg_text_hash(&run),
                 text: run.into_owned(),
                 link: None,
                 fill: frag.fill,
@@ -19943,6 +19992,7 @@ fn code_line_number_seg(
     Seg {
         x: x0 + (number_col - CODE_LINE_NUMBER_GAP - width).max(0.0),
         slot: F_MONO,
+        text_hash: seg_text_hash(&text),
         text,
         link: None,
         fill: Fill::Syntax(HighlightTok::Comment),
@@ -19957,6 +20007,7 @@ fn empty_code_seg(x: f32) -> Seg {
     Seg {
         x,
         slot: F_MONO,
+        text_hash: seg_text_hash(""),
         text: String::new(),
         link: None,
         fill: Fill::Black,
@@ -20127,11 +20178,10 @@ fn serialize(
         used_slot_started,
     );
 
-    // Subset each used face to the characters it renders, and keep the parsed
-    // subset (its cmap gives the new glyph ids we encode in the content stream).
     let mut subsets: Vec<EmbeddedFace<'_>> = Vec::with_capacity(used_slots.len());
-    let mut shaped_cache: ShapedRunCache =
-        std::array::from_fn(|slot_idx| HashMap::with_capacity(slot_texts[slot_idx].texts.len()));
+    let mut shaped_cache: ShapedRunCache = std::array::from_fn(|slot_idx| {
+        HashMap::with_capacity_and_hasher(slot_texts[slot_idx].texts.len(), U64PassThroughBuild)
+    });
     let mut shape_cache_hits = 0usize;
     let mut shape_cache_hit_bytes = 0usize;
     let mut shape_cache_misses = 0usize;
@@ -20164,7 +20214,17 @@ fn serialize(
         for &text in &slot_refs.texts {
             segment_count += 1;
             text_bytes += text.len();
-            if slot_cache.contains_key(text) {
+            // One entry traversal per text ref: the digest is computed once
+            // here and doubles as the draw-side cache key (see Seg::text_hash),
+            // so neither the hit path nor the insert path re-hashes the text.
+            let entry = slot_cache.entry(seg_text_hash(text));
+            // A hit requires the digest to be present AND the cached run's
+            // text to match byte-for-byte: two distinct texts sharing an
+            // FNV-1a digest (p ≈ 2^-64) must never reuse another run's
+            // glyphs, so it is treated as a miss (shaped fresh, not cached —
+            // inserting would displace the resident run).
+            let hit = matches!(&entry, Entry::Occupied(e) if e.get().text == text);
+            if hit {
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += text.len();
             } else {
@@ -20181,7 +20241,14 @@ fn serialize(
                     shape_run_with_scratch(source, lig, tables, text, &mut shape_scratch)
                 };
                 collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
-                slot_cache.insert(text.to_string(), shaped);
+                if let Entry::Vacant(slot_entry) = entry {
+                    slot_entry.insert(ShapedRun {
+                        text: text.to_string(),
+                        glyphs: shaped.glyphs,
+                        ligatures: shaped.ligatures,
+                        pdf_tj: shaped.pdf_tj,
+                    });
+                }
             }
         }
         profiler.record_since(
@@ -20471,11 +20538,7 @@ fn retained_pdf_bytes(
                 .len()
                 .saturating_mul(std::mem::size_of::<LinkAnnotation>()),
         );
-        n = n.saturating_add(
-            page.marks
-                .len()
-                .saturating_mul(STRUCT_MARK_RETAINED_BYTES),
-        );
+        n = n.saturating_add(page.marks.len().saturating_mul(STRUCT_MARK_RETAINED_BYTES));
         n = n.saturating_add(page.shadings.len().saturating_mul(64));
     }
     for stream in compressed {
@@ -21361,6 +21424,7 @@ fn generate_page_content(
         let footer_seg = Seg {
             x,
             slot: F_BODY,
+            text_hash: seg_text_hash(&footer_text),
             text: footer_text,
             link: None,
             fill: Fill::Muted,
@@ -21473,11 +21537,7 @@ impl SmallPath {
     fn from_slice(elems: &[SElem]) -> Self {
         if elems.len() <= INLINE_PATH_CAP {
             let mut path = Self::empty();
-            if let SmallPath::Inline {
-                elems: slots,
-                len,
-            } = &mut path
-            {
+            if let SmallPath::Inline { elems: slots, len } = &mut path {
                 slots[..elems.len()].copy_from_slice(elems);
                 *len = elems.len() as u8;
             }
@@ -22076,6 +22136,7 @@ mod font_slot_text_refs_tests {
         Seg {
             x: 0.0,
             slot,
+            text_hash: seg_text_hash(text),
             text: text.to_owned(),
             link: None,
             fill: Fill::Black,
@@ -26165,7 +26226,11 @@ fn draw_svg_text(
     };
     let source = faces.get(slot);
     let fallback;
-    let shaped = match shaped_cache[slot_idx].get(text.text.as_str()) {
+    let shaped = match shaped_run_lookup(
+        &shaped_cache[slot_idx],
+        &text.text,
+        seg_text_hash(&text.text),
+    ) {
         Some(run) => run.glyphs.as_slice(),
         None => {
             fallback = shape_run(
@@ -26736,18 +26801,19 @@ fn draw_seg(
     };
     let source = faces.get(seg.slot);
     let fallback;
-    let (shaped, cached_tj) = match shaped_cache[slot_idx].get(seg.text.as_str()) {
-        Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
-        None => {
-            fallback = shape_run(
-                source,
-                face.lig,
-                faces.face(seg.slot).ascii_tables(),
-                &seg.text,
-            );
-            (fallback.glyphs.as_slice(), None)
-        }
-    };
+    let (shaped, cached_tj) =
+        match shaped_run_lookup(&shaped_cache[slot_idx], &seg.text, seg.text_hash) {
+            Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
+            None => {
+                fallback = shape_run(
+                    source,
+                    face.lig,
+                    faces.face(seg.slot).ascii_tables(),
+                    &seg.text,
+                );
+                (fallback.glyphs.as_slice(), None)
+            }
+        };
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
         append_text_segment_operator_with_render_mode(
@@ -27659,6 +27725,7 @@ mod keep_with_next_tests {
         line.segs.push(Seg {
             x: 0.0,
             slot: F_BODY,
+            text_hash: seg_text_hash("x"),
             text: "x".to_string(),
             link: None,
             fill: Fill::Black,
@@ -28240,13 +28307,72 @@ impl EmbeddedFaceLookup {
 }
 
 /// Shaped source glyph stream for one exact segment text in one font slot.
+/// `text` keeps a copy of the segment text the run was shaped from: the cache
+/// is keyed by the text's FNV-1a digest (see [`seg_text_hash`]), so every hit
+/// verifies the text byte-for-byte and a digest collision between two distinct
+/// texts is detected instead of silently reusing the wrong glyph stream.
 struct ShapedRun {
+    text: String,
     glyphs: Vec<u16>,
     ligatures: Vec<(u16, String)>,
     pdf_tj: String,
 }
 
-type ShapedRunCache = [HashMap<String, ShapedRun>; PDF_FONT_SLOT_COUNT];
+/// [`Hasher`] for maps keyed by already-well-mixed `u64` values (FNV-1a
+/// digests here): passes the key through unchanged instead of re-running a
+/// general-purpose hash over it. Only ever used for `u64` keys; `write` folds
+/// defensively rather than panicking if some other type is ever keyed here.
+#[derive(Default)]
+struct U64PassThroughHasher(u64);
+
+impl std::hash::Hasher for U64PassThroughHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut buf = [0u8; 8];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            self.0 ^= u64::from_be_bytes(buf);
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct U64PassThroughBuild;
+
+impl std::hash::BuildHasher for U64PassThroughBuild {
+    type Hasher = U64PassThroughHasher;
+    fn build_hasher(&self) -> U64PassThroughHasher {
+        U64PassThroughHasher(0)
+    }
+}
+
+/// FNV-1a 64-bit digest of a segment text — the shaped-run cache key. Same
+/// construction as the rest of the file's fnv1a64 hashing.
+#[inline]
+fn seg_text_hash(text: &str) -> u64 {
+    let mut hash = FNV_OFFSET;
+    fnv1a64_update(&mut hash, text.as_bytes());
+    hash
+}
+
+/// Shaped-run cache lookup by precomputed text digest. The entry's text is
+/// verified byte-for-byte on every hit; a mismatch (two distinct texts sharing
+/// an FNV-1a digest, p ≈ 2^-64) returns `None` so callers fall back to
+/// shaping the actual text — a collision can never emit wrong glyphs.
+fn shaped_run_lookup<'a>(
+    cache: &'a HashMap<u64, ShapedRun, U64PassThroughBuild>,
+    text: &str,
+    text_hash: u64,
+) -> Option<&'a ShapedRun> {
+    cache.get(&text_hash).filter(|run| run.text == text)
+}
+
+type ShapedRunCache = [HashMap<u64, ShapedRun, U64PassThroughBuild>; PDF_FONT_SLOT_COUNT];
 
 struct PdfStream<'a> {
     bytes: Cow<'a, [u8]>,
@@ -30215,6 +30341,7 @@ fn shape_run_with_scratch(
         // 10 bytes per glyph plus the "[<"/">]" brackets covers the worst case.
         let pdf_tj = String::with_capacity(glyphs.len().saturating_mul(10).saturating_add(8));
         return ShapedRun {
+            text: text.to_string(),
             glyphs,
             ligatures: Vec::new(),
             pdf_tj,
@@ -30246,6 +30373,7 @@ fn shape_run_with_scratch(
     // per glyph plus the "[<"/">]" brackets covers the worst case.
     let pdf_tj = String::with_capacity(shaped.len().saturating_mul(10).saturating_add(8));
     ShapedRun {
+        text: text.to_string(),
         glyphs: shaped,
         ligatures: lig_uni,
         pdf_tj,
@@ -30797,18 +30925,17 @@ mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
         FORCED_BREAK_PENALTY, FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, Font,
-        HeadingIdState, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkIntern, LinkTarget,
-        ListMark, is_breakable_whitespace, resolve_seg_link, safe_pdf_link, slot_of,
-        PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem, ParagraphLayoutScratch,
-        ParagraphPolicy, PdfCidFontObjectParts, PdfFontDescriptorObjectParts, PdfImageColor,
-        PdfImageData, PdfImageStreamFilter, PdfOutlineItemObjectParts, PdfPageObjectParts,
-        PdfParentTreeObjectParts, PdfShading, PdfShadingKind, PdfStream,
-        PdfStructElementObjectParts, PdfType0FontObjectParts, Placed, SEPARATOR_BREAK_PENALTY,
-        SElem, SKey, SKid, SLOTS, SNode, Seg, SegRunShaper, ShapeScratch, ShapedRun,
-        SimpleParagraphLayoutCache, SvgClipPath, SvgCssAncestor, SvgCssRule, SvgCssVariable,
-        SvgDashPattern, SvgDominantBaseline, SvgElement, SvgFilterShadow, SvgGradientPaint,
-        SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap, SvgLineJoin, SvgMarker,
-        SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
+        HeadingIdState, INLINE_PATH_CAP, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkIntern,
+        LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem,
+        ParagraphLayoutScratch, ParagraphPolicy, PdfCidFontObjectParts,
+        PdfFontDescriptorObjectParts, PdfImageColor, PdfImageData, PdfImageStreamFilter,
+        PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfShading,
+        PdfShadingKind, PdfStream, PdfStructElementObjectParts, PdfType0FontObjectParts, Placed,
+        SEPARATOR_BREAK_PENALTY, SElem, SKey, SKid, SLOTS, SNode, Seg, SegRunShaper, ShapeScratch,
+        ShapedRun, SimpleParagraphLayoutCache, SmallPath, SvgClipPath, SvgCssAncestor, SvgCssRule,
+        SvgCssVariable, SvgDashPattern, SvgDominantBaseline, SvgElement, SvgFilterShadow,
+        SvgGradientPaint, SvgImageTransform, SvgLengthAdjust, SvgLine, SvgLineCap, SvgLineJoin,
+        SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
         SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText, SvgTextAnchor,
         SvgTextDecoration, SvgTextMatrix, SvgTransform, TABLE_LAYOUT_CACHE_MAX_INLINE_NODES,
         TAIL_NOGLYPH, TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache,
@@ -30835,22 +30962,23 @@ mod pdf_writer_tests {
         append_task_checkbox_marker_operator, append_text_segment_operator, append_xref_in_use_row,
         append_xref_offset, apply_svg_paint_attr, apply_svg_parent_text_length, build_paragraph,
         build_segs, build_segs_adjusted, cached_shaped_width, collect_svg_alpha_states,
-        container_prefix, decode_xml_entities, estimate_page_content_capacity, INLINE_PATH_CAP,
-        SmallPath,
+        container_prefix, decode_xml_entities, estimate_page_content_capacity,
         finish_page_content_stream, finite_pdf_scalar, first_visible_segment_index, fnv1a64_update,
         fnv1a64_update_bytewise_reference, font_size_of, hyphenator_for_word,
-        hyphenator_for_word_with_doc_lang, kerned_tj, kerned_tj_with_spacing, layout_inlines,
-        layout_inlines_greedy, layout_simple_text_paragraph, layout_table, layout_table_uncached,
-        left_protrusion_hang, line_has_visible_content, measure_word, normalize_svg_text_node,
-        parse_svg_attrs, parse_svg_background_color_token, parse_svg_baseline_shift,
+        hyphenator_for_word_with_doc_lang, is_breakable_whitespace, kerned_tj,
+        kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
+        layout_simple_text_paragraph, layout_table, layout_table_uncached, left_protrusion_hang,
+        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
+        parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
         parse_svg_marker_body, parse_svg_path_data, parse_svg_reusable_body_elements,
         parse_svg_root_background_image_value, parse_svg_root_background_layers,
         parse_svg_transform, pdf_ascii_alphabetic_word_break_points, pdf_fixed2, pdf_fixed3,
         pdf_num, pdf_shading_resource, pdf_text_string, pdf_word_break_points, pdf_word_plain_text,
-        pdf_word_stats, png_paeth, push_text_tokens, rounded_rect_fill, shape_run,
-        shape_run_with_scratch, shaped_width_points_for_layout, split_svg_top_level_slash,
+        pdf_word_stats, png_paeth, push_text_tokens, resolve_seg_link, rounded_rect_fill,
+        safe_pdf_link, seg_text_hash, shape_run, shape_run_with_scratch,
+        shaped_width_points_for_layout, slot_of, split_svg_top_level_slash,
         svg_alpha_extgstate_resource, svg_background_top_level_tokens, svg_clip_rect_ops,
         svg_color_mix_weights, svg_fill_shadings, svg_object_bbox_transform, svg_stroke_shadings,
         svg_style_with_non_scaling_stroke, svg_text_advance, svg_text_path_advance,
@@ -30965,6 +31093,7 @@ mod pdf_writer_tests {
                 .map(|text| Seg {
                     x: 0.0,
                     slot: F_BODY,
+                    text_hash: seg_text_hash(text),
                     text: (*text).to_string(),
                     link: None,
                     fill: Fill::Black,
@@ -32103,6 +32232,7 @@ mod pdf_writer_tests {
         }
         let pdf_tj = String::with_capacity(shaped.len().saturating_mul(10).saturating_add(8));
         ShapedRun {
+            text: text.to_string(),
             glyphs: shaped,
             ligatures: lig_uni,
             pdf_tj,
@@ -32563,6 +32693,7 @@ mod pdf_writer_tests {
             Seg {
                 x: 0.0,
                 slot,
+                text_hash: seg_text_hash(text),
                 text: text.to_string(),
                 link,
                 fill: Fill::Black,
@@ -32847,7 +32978,13 @@ mod pdf_writer_tests {
 
     /// Verbatim pre-pass-11 per-cell path construction (`clone_prefix_with_extra`
     /// plus the three table pushes the page builder made at the call site).
-    fn table_cell_path_reference(prefix: &[SElem], group: u32, row: u32, col: u32, header: bool) -> Vec<SElem> {
+    fn table_cell_path_reference(
+        prefix: &[SElem],
+        group: u32,
+        row: u32,
+        col: u32,
+        header: bool,
+    ) -> Vec<SElem> {
         let mut path = Vec::with_capacity(prefix.len().saturating_add(3));
         path.extend_from_slice(prefix);
         path.push(SElem {
@@ -32903,7 +33040,11 @@ mod pdf_writer_tests {
             ("list-1", vec![], vec![(1, 2)]),
             ("list-2", vec![], vec![(1, 2), (5, 6)]),
             ("list-3", vec![], vec![(1, 2), (5, 6), (9, 10)]),
-            ("list-4-path-spill", vec![], vec![(1, 2), (5, 6), (9, 10), (13, 14)]),
+            (
+                "list-4-path-spill",
+                vec![],
+                vec![(1, 2), (5, 6), (9, 10), (13, 14)],
+            ),
             ("quote-then-list", vec![3], vec![(7, 8)]),
             ("list-then-quote", vec![9], vec![(2, 3)]),
             ("interleaved", vec![9, 1], vec![(3, 4)]),
@@ -32963,7 +33104,10 @@ mod pdf_writer_tests {
         );
         let spilled = SmallPath::from_slice(&expected);
         assert!(matches!(spilled, SmallPath::Spilled(_)));
-        assert_eq!(path_signature(spilled.as_slice()), path_signature(&expected));
+        assert_eq!(
+            path_signature(spilled.as_slice()),
+            path_signature(&expected)
+        );
     }
 
     #[test]
@@ -32997,6 +33141,7 @@ mod pdf_writer_tests {
                     Seg {
                         x: 0.0,
                         slot: F_BODY,
+                        text_hash: seg_text_hash("a"),
                         text: String::from("a"),
                         link: None,
                         fill: Fill::Black,
@@ -33008,6 +33153,7 @@ mod pdf_writer_tests {
                     Seg {
                         x: 20.0,
                         slot: F_BODY,
+                        text_hash: seg_text_hash("b"),
                         text: String::from("b"),
                         link: None,
                         fill: Fill::Black,
@@ -33019,6 +33165,7 @@ mod pdf_writer_tests {
                     Seg {
                         x: 40.0,
                         slot: F_BODY,
+                        text_hash: seg_text_hash("c"),
                         text: String::from("c"),
                         link: None,
                         fill: Fill::Black,
@@ -33497,13 +33644,9 @@ mod pdf_writer_tests {
                     link,
                     out,
                 ),
-                Inline::Text(t) => push_text_tokens_reference(
-                    t,
-                    slot_of(bold, italic, false),
-                    strike,
-                    link,
-                    out,
-                ),
+                Inline::Text(t) => {
+                    push_text_tokens_reference(t, slot_of(bold, italic, false), strike, link, out)
+                }
                 Inline::Code(t) => push_text_tokens_reference(t, F_MONO, strike, link, out),
                 Inline::Strong(c) => tokenize_reference(c, true, italic, strike, link, out),
                 Inline::Emphasis(c) => tokenize_reference(c, bold, true, strike, link, out),
@@ -33517,13 +33660,9 @@ mod pdf_writer_tests {
                         tokenize_reference(content, bold, italic, strike, None, out);
                     }
                 }
-                Inline::Image { alt, .. } => push_text_tokens_reference(
-                    alt,
-                    slot_of(bold, italic, false),
-                    strike,
-                    link,
-                    out,
-                ),
+                Inline::Image { alt, .. } => {
+                    push_text_tokens_reference(alt, slot_of(bold, italic, false), strike, link, out)
+                }
                 Inline::SoftBreak => out.push(RefTok {
                     text: String::new(),
                     slot: slot_of(bold, italic, false),
@@ -33540,13 +33679,9 @@ mod pdf_writer_tests {
                     link: link.cloned(),
                     strike,
                 }),
-                Inline::Html(h) => push_text_tokens_reference(
-                    h,
-                    slot_of(bold, italic, false),
-                    strike,
-                    link,
-                    out,
-                ),
+                Inline::Html(h) => {
+                    push_text_tokens_reference(h, slot_of(bold, italic, false), strike, link, out)
+                }
                 Inline::Math(t) | Inline::DisplayMath(t) => {
                     push_text_tokens_reference(t, F_MONO, strike, link, out)
                 }
@@ -33662,17 +33797,15 @@ mod pdf_writer_tests {
             assert_eq!(resolved, r.link.as_ref(), "token {idx} link target");
         }
         // Content-keyed dedup: both occurrences of `long_uri` share an index.
-        let first = toks
-            .iter()
-            .find(|t| t.text == "link")
-            .and_then(|t| t.link);
-        let second = toks
-            .iter()
-            .find(|t| t.text == "same")
-            .and_then(|t| t.link);
+        let first = toks.iter().find(|t| t.text == "link").and_then(|t| t.link);
+        let second = toks.iter().find(|t| t.text == "same").and_then(|t| t.link);
         assert_eq!(first, second, "identical URIs must intern to one index");
         assert_eq!(
-            intern.targets.iter().filter(|t| **t == LinkTarget::Uri(long_uri.to_string())).count(),
+            intern
+                .targets
+                .iter()
+                .filter(|t| **t == LinkTarget::Uri(long_uri.to_string()))
+                .count(),
             1,
             "exactly one table entry per distinct URI"
         );
@@ -33703,10 +33836,21 @@ mod pdf_writer_tests {
         assert_eq!(segs[0].link, Some(LinkTarget::Uri(uri.to_string())));
         assert_eq!(segs[0].fill, Fill::Link);
 
-        let differing = vec![link(uri, "first "), link("https://example.org/other", "second")];
+        let differing = vec![
+            link(uri, "first "),
+            link("https://example.org/other", "second"),
+        ];
         let mut intern = LinkIntern::default();
         let mut toks = Vec::new();
-        tokenize(&differing, false, false, false, None, &mut intern, &mut toks);
+        tokenize(
+            &differing,
+            false,
+            false,
+            false,
+            None,
+            &mut intern,
+            &mut toks,
+        );
         let segs = build_segs(&toks, 10.0, 11.0, &faces, &intern.targets);
         assert_eq!(segs.len(), 2, "distinct URIs must split runs");
         assert_eq!(segs[0].link, Some(LinkTarget::Uri(uri.to_string())));
@@ -33887,6 +34031,7 @@ mod pdf_writer_tests {
                     cur = Some(Seg {
                         x,
                         slot: tok.slot,
+                        text_hash: seg_text_hash(text),
                         text: text.to_string(),
                         link: tok_link,
                         fill: if tok.link.is_some() {
@@ -35448,6 +35593,7 @@ mod pdf_writer_tests {
         let seg = Seg {
             x: 12.0,
             slot: F_BODY,
+            text_hash: seg_text_hash("[x]"),
             text: "[x]".to_string(),
             link: None,
             fill: Fill::Black,
@@ -37041,7 +37187,15 @@ mod table_wrap_tests {
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
         let width_cache = width_cache();
         let toks = cell_tokens(cell, header, faces, &mut LinkIntern::default());
-        table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, faces, &width_cache, header, &[]).max_content
+        table_cell_measure(
+            &toks,
+            TEST_TABLE_FONT_SIZE,
+            faces,
+            &width_cache,
+            header,
+            &[],
+        )
+        .max_content
     }
 
     fn total_table_badness(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
@@ -40098,5 +40252,346 @@ mod plass_pagination_tests {
             .map(|i| line(FlowKind::Paragraph, 1, i, 40))
             .collect();
         assert_eq!(dp_ends(&lines, pg), dp_ends(&lines, pg));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod shaped_cache_tests {
+    use super::*;
+
+    fn run(text: &str) -> ShapedRun {
+        ShapedRun {
+            text: text.to_string(),
+            glyphs: Vec::new(),
+            ligatures: Vec::new(),
+            pdf_tj: String::new(),
+        }
+    }
+
+    /// The digest-keyed cache must only return a run whose text matches the
+    /// queried text byte-for-byte. This locks the collision fallback: a hash
+    /// hit whose cached text differs (exactly the state a real FNV-1a digest
+    /// collision between two distinct texts produces) must miss so callers
+    /// re-shape the actual text instead of emitting the wrong glyphs.
+    #[test]
+    fn shaped_run_lookup_verifies_text_on_hash_hit() {
+        let mut cache: HashMap<u64, ShapedRun, U64PassThroughBuild> = HashMap::default();
+        let text = "fi";
+        let digest = seg_text_hash(text);
+        cache.insert(digest, run(text));
+
+        // Exact text: hit.
+        assert!(shaped_run_lookup(&cache, text, digest).is_some());
+        // Different text with its own digest: ordinary miss.
+        assert!(shaped_run_lookup(&cache, "fl", seg_text_hash("fl")).is_none());
+        // SIMULATED COLLISION: the query digest equals the resident entry's
+        // digest while the texts differ. Must not return the resident run.
+        assert!(shaped_run_lookup(&cache, "fl", digest).is_none());
+        // The empty text digests to the offset basis and cannot alias a
+        // nonempty text's digest.
+        assert_ne!(seg_text_hash(""), digest);
+    }
+
+    /// `seg_text_hash` is plain FNV-1a over the text bytes — the same
+    /// construction as the rest of the file's fnv1a64 hashing — and is
+    /// deterministic and byte-sensitive.
+    #[test]
+    fn seg_text_hash_is_fnv1a64_of_bytes() {
+        for text in ["", "a", "fi", "officer", "日本語", "hello, shaping world!"] {
+            let mut expected = FNV_OFFSET;
+            fnv1a64_update(&mut expected, text.as_bytes());
+            assert_eq!(seg_text_hash(text), expected);
+        }
+        assert_ne!(seg_text_hash("ab"), seg_text_hash("ba"));
+    }
+
+    /// In-process paired A/B for the pass-15 lookup lever (run with
+    /// `--ignored --nocapture`): the pre-pass-15 cache interface —
+    /// `HashMap<String, ShapedRun>` (SipHash over the full text per op)
+    /// probed with `contains_key` + `insert` in the collect loop — against
+    /// the digest-keyed pass-through cache (`entry` on a precomputed u64).
+    /// Interleaved windows cancel ambient load; the sink equality asserts
+    /// both caches answer identically for every text.
+    #[test]
+    #[ignore = "perf micro: cargo test --lib shaped_cache_tests -- --ignored --nocapture"]
+    fn shaped_cache_digest_key_vs_string_key_perf() {
+        let base = [
+            "the",
+            "shaping",
+            "cache",
+            "fi",
+            "officer",
+            "layout",
+            "segment",
+            "of",
+            "text",
+            "deterministic",
+            "glyphs",
+            "12",
+            "3.14159",
+            "fnv1a64",
+            "kerning",
+            "ligature",
+        ];
+        // Realistic ref stream: every distinct text repeats (like repeated
+        // words / footers across lines) — hits dominate after first touch.
+        let refs: Vec<&str> = (0..600)
+            .map(|i| base[i % base.len()])
+            .chain(std::iter::repeat_n("footer-42", 120))
+            .collect();
+
+        let collect_old = |refs: &[&str]| -> usize {
+            let mut old: HashMap<String, ShapedRun> = HashMap::default();
+            let mut sink = 0usize;
+            for text in refs {
+                if old.contains_key(*text) {
+                    sink += 1;
+                } else {
+                    old.insert((*text).to_string(), run(text));
+                }
+            }
+            sink + old.len()
+        };
+        let collect_new = |refs: &[&str]| -> usize {
+            let mut new: HashMap<u64, ShapedRun, U64PassThroughBuild> = HashMap::default();
+            let mut sink = 0usize;
+            for text in refs {
+                let entry = new.entry(seg_text_hash(text));
+                let hit = matches!(&entry, Entry::Occupied(e) if e.get().text == *text);
+                if hit {
+                    sink += 1;
+                } else if let Entry::Vacant(v) = entry {
+                    v.insert(run(text));
+                }
+            }
+            sink + new.len()
+        };
+        let lookup_old = |refs: &[&str], old: &HashMap<String, ShapedRun>| -> usize {
+            let mut sink = 0usize;
+            for text in refs {
+                sink += usize::from(old.get(*text).is_some());
+            }
+            sink
+        };
+        let lookup_new = |refs: &[&str],
+                          new: &HashMap<u64, ShapedRun, U64PassThroughBuild>|
+         -> usize {
+            let mut sink = 0usize;
+            for text in refs {
+                sink += usize::from(shaped_run_lookup(new, text, seg_text_hash(text)).is_some());
+            }
+            sink
+        };
+
+        let mut old: HashMap<String, ShapedRun> = HashMap::default();
+        for text in &base {
+            old.insert((*text).to_string(), run(text));
+        }
+        let mut new: HashMap<u64, ShapedRun, U64PassThroughBuild> = HashMap::default();
+        for text in &base {
+            new.insert(seg_text_hash(text), run(text));
+        }
+
+        // Behavior equality: both caches answer identically everywhere.
+        assert_eq!(collect_old(&refs), collect_new(&refs));
+        assert_eq!(lookup_old(&refs, &old), lookup_new(&refs, &new));
+        assert_eq!(lookup_old(&refs, &old), refs.len());
+
+        let mut old_ns = [0u128; 9];
+        let mut new_ns = [0u128; 9];
+        for round in 0..9 {
+            let t0 = std::time::Instant::now();
+            let a = collect_old(&refs) + lookup_old(&refs, &old);
+            old_ns[round] = t0.elapsed().as_nanos();
+            let t1 = std::time::Instant::now();
+            let b = collect_new(&refs) + lookup_new(&refs, &new);
+            new_ns[round] = t1.elapsed().as_nanos();
+            assert_eq!(a & 0xffff, b & 0xffff);
+        }
+        old_ns.sort_unstable();
+        new_ns.sort_unstable();
+        println!(
+            "shaped-cache collect+lookup (720 refs, 16 distinct texts, hit-dominated): \
+             string-key/SipHash {} ns vs digest-key/pass-through {} ns ({:+.1}%)",
+            old_ns[4],
+            new_ns[4],
+            (new_ns[4] as f64 - old_ns[4] as f64) / old_ns[4] as f64 * 100.0
+        );
+    }
+}
+
+/// Marx & Stuckey-style constrained table layout — conformance proof for the
+/// allocator. The production `allocate_table_column_widths` is a min-plus DP
+/// over the discretized extra-width grid minimizing total
+/// `table_column_badness` subject to the hard constraints (sum == budget,
+/// every column >= `TABLE_MIN_COL_WIDTH`). These tests verify the DP's output
+/// against EXHAUSTIVE enumeration of every legal grid allocation with the
+/// identical sub-unit `finish` post-processing applied, on synthetic columns
+/// whose wrap stats flow through the real cost functions. Any drift between
+/// the DP and brute force means the allocator stopped being optimal.
+#[cfg(test)]
+mod table_alloc_optimality_tests {
+    use super::*;
+
+    fn synth_column(cells: &[&[f32]], space: f32, weight: f32) -> TableColumnMetrics {
+        let mut column = TableColumnMetrics::default();
+        for words in cells {
+            let spaces = vec![space; words.len().saturating_sub(1)];
+            let min_content = words.iter().cloned().fold(0.0f32, f32::max);
+            let max_content =
+                words.iter().sum::<f32>() + space * words.len().saturating_sub(1) as f32;
+            // Mirror the measurer's sequential grouping: current starts at the
+            // first word; each decision is `(current + space) + word`.
+            let mut current = words.first().copied().unwrap_or(0.0);
+            let mut fit_break_max = current;
+            for &w in words.iter().skip(1) {
+                let decision = (current + space) + w;
+                fit_break_max = fit_break_max.max(decision);
+                current = decision;
+            }
+            column.push(TableCellMeasure {
+                lines: vec![TableCellMeasureLine {
+                    words: words.to_vec(),
+                    spaces,
+                    min_content,
+                    max_content,
+                    fit_width: max_content,
+                    fit_break_max,
+                }],
+                min_content,
+                max_content,
+                weight,
+            });
+        }
+        column
+    }
+
+    fn grid_cost(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
+        columns
+            .iter()
+            .zip(widths)
+            .map(|(c, w)| table_column_badness(c, *w))
+            .sum()
+    }
+
+    /// Exhaustive minimum over every legal split of `extra_units` across the
+    /// columns, each candidate finished exactly like the allocator's output.
+    fn brute_force_min(
+        columns: &[TableColumnMetrics],
+        target: f32,
+        unit: f32,
+        extra_units: usize,
+    ) -> f32 {
+        let ncol = columns.len();
+        let mut split = vec![0usize; ncol];
+        let mut best = f32::INFINITY;
+        fn walk(
+            col: usize,
+            remaining: usize,
+            split: &mut Vec<usize>,
+            columns: &[TableColumnMetrics],
+            target: f32,
+            unit: f32,
+            best: &mut f32,
+        ) {
+            if col == split.len() {
+                if remaining != 0 {
+                    return;
+                }
+                let mut widths: Vec<f32> = split
+                    .iter()
+                    .map(|&u| TABLE_MIN_COL_WIDTH + u as f32 * unit)
+                    .collect();
+                finish_table_allocated_widths(columns, &mut widths, target);
+                let cost = grid_cost(columns, &widths);
+                if cost < *best {
+                    *best = cost;
+                }
+                return;
+            }
+            for take in 0..=remaining {
+                split[col] = take;
+                walk(
+                    col + 1,
+                    remaining - take,
+                    split,
+                    columns,
+                    target,
+                    unit,
+                    best,
+                );
+            }
+        }
+        walk(0, extra_units, &mut split, columns, target, unit, &mut best);
+        best
+    }
+
+    #[test]
+    fn allocator_matches_exhaustive_search() {
+        let fixtures: Vec<(Vec<TableColumnMetrics>, f32)> = vec![
+            (
+                vec![
+                    synth_column(&[&[900.0], &[700.0, 400.0]], 60.0, 1.0),
+                    synth_column(&[&[1200.0]], 60.0, 1.0),
+                    synth_column(&[&[500.0, 300.0, 800.0], &[600.0]], 60.0, 1.0),
+                ],
+                300.0,
+            ),
+            (
+                vec![
+                    synth_column(&[&[1500.0, 900.0], &[800.0]], 50.0, 2.0),
+                    synth_column(&[&[400.0], &[350.0]], 50.0, 1.0),
+                    synth_column(&[&[1000.0]], 50.0, 1.5),
+                    synth_column(&[&[650.0, 450.0]], 50.0, 1.0),
+                ],
+                420.0,
+            ),
+            (
+                vec![
+                    synth_column(&[&[2000.0]], 40.0, 1.0),
+                    synth_column(&[&[300.0]], 40.0, 1.0),
+                    synth_column(&[&[700.0, 600.0, 500.0]], 40.0, 1.0),
+                ],
+                180.0,
+            ),
+        ];
+        for (n, (columns, target)) in fixtures.iter().enumerate() {
+            let widths = allocate_table_column_widths(columns, *target);
+            // Hard constraints: budget equality and per-column minimums.
+            let sum: f32 = widths.iter().sum();
+            assert!(
+                (sum - *target).abs() <= 0.01,
+                "fixture {n}: widths sum {sum} != budget {target}"
+            );
+            for (k, w) in widths.iter().enumerate() {
+                assert!(
+                    *w >= TABLE_MIN_COL_WIDTH - 1e-4,
+                    "fixture {n} col {k} below minimum"
+                );
+            }
+            // Grid parameters exactly as the allocator derives them.
+            let ncol = columns.len();
+            let min_total = ncol as f32 * TABLE_MIN_COL_WIDTH;
+            let extra_target = (*target - min_total).max(0.0);
+            let unit = if extra_target > 0.0 {
+                (extra_target / TABLE_ALLOC_MAX_EXTRA_STATES as f32).max(TABLE_ALLOC_MIN_UNIT_PT)
+            } else {
+                TABLE_ALLOC_MIN_UNIT_PT
+            };
+            let extra_units = (extra_target / unit).round().max(0.0) as usize;
+            let brute = if extra_units == 0 {
+                let mut w = vec![TABLE_MIN_COL_WIDTH; ncol];
+                finish_table_allocated_widths(columns, &mut w, *target);
+                grid_cost(columns, &w)
+            } else {
+                brute_force_min(columns, *target, unit, extra_units)
+            };
+            let cost = grid_cost(columns, &widths);
+            assert!(
+                cost <= brute + 1e-3,
+                "fixture {n}: allocator cost {cost} exceeds exhaustive optimum {brute}"
+            );
+        }
     }
 }

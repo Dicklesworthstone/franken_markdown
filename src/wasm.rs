@@ -401,6 +401,7 @@ impl WasmRenderOptions {
             gradual_demerits: false,
             river_penalty: false,
             optimal_pagination: false,
+            pareto_line_breaking: false,
         }
     }
 }

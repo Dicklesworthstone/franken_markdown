@@ -1,35 +1,35 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 381 / 652 (58.4%)**
-- in-scope match (excl. intentional non-goals): 381 / 591 (64.5%)
-- intentional_non_goal: 61 (raw-HTML default-escape policy)
-- known_gap: 210
+- **pass: 453 / 652 (69.5%)**
+- in-scope match (excl. intentional non-goals): 453 / 594 (76.3%)
+- intentional_non_goal: 58 (raw-HTML default-escape policy)
+- known_gap: 141
 
 | Section | Pass | Total |
 |---|---:|---:|
-| ATX headings | 16 | 18 |
-| Autolinks | 10 | 19 |
-| Backslash escapes | 6 | 13 |
+| ATX headings | 17 | 18 |
+| Autolinks | 14 | 19 |
+| Backslash escapes | 9 | 13 |
 | Blank lines | 1 | 1 |
-| Block quotes | 18 | 25 |
-| Code spans | 17 | 22 |
-| Emphasis and strong emphasis | 123 | 132 |
-| Entity and numeric character references | 10 | 17 |
+| Block quotes | 20 | 25 |
+| Code spans | 19 | 22 |
+| Emphasis and strong emphasis | 129 | 132 |
+| Entity and numeric character references | 12 | 17 |
 | Fenced code blocks | 29 | 29 |
 | HTML blocks | 0 | 44 |
-| Hard line breaks | 5 | 15 |
-| Images | 2 | 22 |
-| Indented code blocks | 7 | 12 |
+| Hard line breaks | 10 | 15 |
+| Images | 21 | 22 |
+| Indented code blocks | 8 | 12 |
 | Inlines | 1 | 1 |
-| Link reference definitions | 15 | 27 |
-| Links | 64 | 90 |
+| Link reference definitions | 18 | 27 |
+| Links | 68 | 90 |
 | List items | 18 | 48 |
 | Lists | 6 | 26 |
 | Paragraphs | 4 | 8 |
 | Precedence | 1 | 1 |
-| Raw HTML | 3 | 20 |
-| Setext headings | 10 | 27 |
+| Raw HTML | 6 | 20 |
+| Setext headings | 19 | 27 |
 | Soft line breaks | 1 | 2 |
 | Tabs | 5 | 11 |
 | Textual content | 3 | 3 |
-| Thematic breaks | 6 | 19 |
+| Thematic breaks | 14 | 19 |

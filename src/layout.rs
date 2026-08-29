@@ -2286,6 +2286,60 @@ struct BreakState {
     fitness: FitnessClass,
 }
 
+/// One member of a Pareto front in the multi-objective breaker (opt-in):
+/// a full break-path state carrying BOTH cost dimensions. `line.demerits`
+/// stays the classic scalar (`structure + hyphen` plus river/overfull edges)
+/// so downstream consumers are unchanged.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct ParetoState {
+    /// Predecessor as (candidate index, position in that candidate's front).
+    prev: Option<(usize, u16)>,
+    line: LineBreak,
+    flagged: bool,
+    fitness: FitnessClass,
+    /// Structure dimension: badness², fitness-class + gradual costs, river
+    /// seeds, overflow.
+    structure: i64,
+    /// Hyphenation dimension: squared break penalties + flagged-flag
+    /// adjacent demerits.
+    hyphen: i64,
+}
+
+/// Dominance-pruned insert into a Pareto front. Members are comparable only
+/// within the same (flagged, fitness) state — different states are kept
+/// side-by-side because future edge costs differ for them. A candidate is
+/// discarded when some member is at least as good in BOTH dimensions and in
+/// the classic scalar; members the candidate dominates are removed. Ties go
+/// to the existing member (insertion order), keeping the result
+/// deterministic. The front is scalar-sorted and truncated at the cap.
+fn pareto_insert(front: &mut Vec<ParetoState>, cand: ParetoState) {
+    let same_class = |s: &ParetoState| s.flagged == cand.flagged && s.fitness == cand.fitness;
+    if front.iter().any(|s| {
+        same_class(s)
+            && s.structure <= cand.structure
+            && s.hyphen <= cand.hyphen
+            && s.line.demerits <= cand.line.demerits
+    }) {
+        return;
+    }
+    front.retain(|s| {
+        !(same_class(s)
+            && cand.structure <= s.structure
+            && cand.hyphen <= s.hyphen
+            && cand.line.demerits <= s.line.demerits)
+    });
+    front.push(cand);
+    if front.len() > PARETO_FRONT_CAP {
+        front.sort_by_key(|s| s.line.demerits);
+        front.truncate(PARETO_FRONT_CAP);
+    }
+}
+
+/// Front cap: keeps the multi-objective DP bounded. 8 members is generous —
+/// with two dimensions most states are dominated well before this.
+const PARETO_FRONT_CAP: usize = 8;
+
 #[derive(Debug)]
 pub struct ParagraphLayoutScratch {
     hyphen_lower: String,
@@ -2311,6 +2365,14 @@ pub struct ParagraphLayoutScratch {
     /// space in the candidate line — the two-line seed of a visual river.
     /// Default false — byte-identical classic output.
     river_penalty: bool,
+    /// Enable multi-objective (Pareto) line breaking: track bounded fronts
+    /// of (structure, hyphenation) non-dominated states instead of the single
+    /// scalar-best state per candidate. Default false — byte-identical.
+    pareto_breaking: bool,
+    /// Per-candidate Pareto fronts, live only while `pareto_breaking` is set.
+    pareto_fronts: Vec<Vec<ParetoState>>,
+    /// Reusable pending-front buffer for the candidate under construction.
+    pareto_front_next: Vec<ParetoState>,
 }
 
 impl Default for ParagraphLayoutScratch {
@@ -2327,6 +2389,9 @@ impl Default for ParagraphLayoutScratch {
             expansion_permilli: 15,
             gradual_demerits: false,
             river_penalty: false,
+            pareto_breaking: false,
+            pareto_fronts: Vec::new(),
+            pareto_front_next: Vec::new(),
         }
     }
 }
@@ -2363,6 +2428,17 @@ impl ParagraphLayoutScratch {
     pub const fn river_penalty(&self) -> bool {
         self.river_penalty
     }
+
+    /// Enable or disable multi-objective (Pareto) line breaking.
+    /// Default: false.
+    pub fn set_pareto_breaking(&mut self, enabled: bool) {
+        self.pareto_breaking = enabled;
+    }
+
+    #[must_use]
+    pub const fn pareto_breaking(&self) -> bool {
+        self.pareto_breaking
+    }
     #[must_use]
     pub const fn expansion_permilli(&self) -> u16 {
         self.expansion_permilli
@@ -2381,6 +2457,11 @@ impl ParagraphLayoutScratch {
         self.metrics.shrink.clear();
         self.metrics.box_elasticity.clear();
         self.states.clear();
+        for front in &mut self.pareto_fronts {
+            front.clear();
+        }
+        self.pareto_fronts.clear();
+        self.pareto_front_next.clear();
     }
 
     /// Report retained capacities for tests and performance proof ledgers.
@@ -2490,6 +2571,9 @@ pub fn break_paragraph_into(
     scratch.states.clear();
     for (j, candidate) in candidates.iter().enumerate() {
         let mut best: Option<BreakState> = None;
+        if scratch.pareto_breaking() {
+            scratch.pareto_front_next.clear();
+        }
 
         // Predecessors are scanned NEAREST-first (prev_idx descending). Segment
         // width grows monotonically as the start moves earlier (prefix sums), so
@@ -2581,44 +2665,8 @@ pub fn break_paragraph_into(
                 continue;
             }
 
-            let prev_state = if prev_idx == j {
-                None
-            } else {
-                match scratch.states[prev_idx] {
-                    Some(state) => Some((prev_idx, state)),
-                    None => {
-                        // No reachable path through this predecessor. For an
-                        // overfull line every earlier predecessor is only more
-                        // overfull, so stop; otherwise keep scanning.
-                        if overfull {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-            };
             let fitness = candidate_fitness(*candidate, segment, eff_line_width);
             let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
-            let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
-            // Gradual demerits (Verna '25) are opt-in: pass the fine-grained
-            // ratio only when the paragraph policy enables them. When disabled,
-            // prev_fitness_milli is None and line_demerits' gradual arm is
-            // zero, producing byte-identical classic KP output.
-            let prev_fm = if scratch.gradual_demerits() {
-                prev_state.map(|(_, state)| state.line.fitness_milli)
-            } else {
-                None
-            };
-            let line_demerit_val = line_demerits(
-                badness,
-                candidate.penalty,
-                prev_state.is_some_and(|(_, state)| state.flagged),
-                candidate.flagged,
-                prev_state.map(|(_, state)| state.fitness),
-                fitness,
-                prev_fm,
-                fitness_milli,
-            );
             // Overfull lines must carry a massive penalty so that any feasible or
             // stretchable underfull line strictly wins over bleeding into the margin.
             // Scale by overflow amount so an overfull token is isolated to its own line
@@ -2629,44 +2677,195 @@ pub fn break_paragraph_into(
             } else {
                 0i64
             };
-            // River seeds (opt-in): penalize candidates whose previous line's
-            // last space aligns with a space in this line. prev_state's line
-            // gives the previous line's (start, end); the current line spans
-            // [start, candidate.item_index). No previous line (first line) → 0.
-            let river_cost = if scratch.river_penalty() {
-                river_seed_demerits(
-                    items,
-                    &scratch.metrics.width,
-                    prev_state.map(|(_, st)| (st.line.start, st.line.end)),
-                    start,
-                    candidate.item_index,
-                    eff_line_width,
-                )
-            } else {
-                0
-            };
-            let demerits = prev_demerits
-                .saturating_add(line_demerit_val)
-                .saturating_add(river_cost)
-                .saturating_add(overfull_cost);
 
-            let state = BreakState {
-                prev: prev_state.map(|(idx, _)| idx),
-                line: LineBreak {
-                    start,
-                    end: candidate.item_index,
-                    next: candidate.next,
-                    natural_width: segment.width,
+            if scratch.pareto_breaking() {
+                // Multi-objective path (Holkner): extend every non-dominated
+                // predecessor state with this edge's (structure, hyphen)
+                // components, dominance-pruning into the candidate's pending
+                // front (`pareto_front_next`). Scalar parity: for each
+                // extension, structure + hyphen equals the classic
+                // `prev_scalar + line_demerit_val + river + overfull`.
+                if prev_idx == j {
+                    // First-line edge: a single zero-cost pseudo-predecessor.
+                    let (ls, lh) = line_demerits_parts(
+                        badness,
+                        candidate.penalty,
+                        false,
+                        candidate.flagged,
+                        None,
+                        fitness,
+                        None,
+                        fitness_milli,
+                    );
+                    let structure = ls.saturating_add(overfull_cost);
+                    let hyphen = lh;
+                    pareto_insert(
+                        &mut scratch.pareto_front_next,
+                        ParetoState {
+                            prev: None,
+                            line: LineBreak {
+                                start,
+                                end: candidate.item_index,
+                                next: candidate.next,
+                                natural_width: segment.width,
+                                badness,
+                                fitness,
+                                fitness_milli,
+                                demerits: structure.saturating_add(hyphen),
+                            },
+                            flagged: candidate.flagged,
+                            fitness,
+                            structure,
+                            hyphen,
+                        },
+                    );
+                } else {
+                    let members: &[ParetoState] = scratch
+                        .pareto_fronts
+                        .get(prev_idx)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    if members.is_empty() {
+                        // No reachable path through this predecessor: same
+                        // pruning the classic path applies.
+                        if overfull {
+                            break;
+                        }
+                        continue;
+                    }
+                    for (pos, m) in members.iter().enumerate() {
+                        let prev_fm = if scratch.gradual_demerits() {
+                            Some(m.line.fitness_milli)
+                        } else {
+                            None
+                        };
+                        let (ls, lh) = line_demerits_parts(
+                            badness,
+                            candidate.penalty,
+                            m.flagged,
+                            candidate.flagged,
+                            Some(m.fitness),
+                            fitness,
+                            prev_fm,
+                            fitness_milli,
+                        );
+                        let river = if scratch.river_penalty() {
+                            river_seed_demerits(
+                                items,
+                                &scratch.metrics.width,
+                                Some((m.line.start, m.line.end)),
+                                start,
+                                candidate.item_index,
+                                eff_line_width,
+                            )
+                        } else {
+                            0
+                        };
+                        let structure = m
+                            .structure
+                            .saturating_add(ls)
+                            .saturating_add(river)
+                            .saturating_add(overfull_cost);
+                        let hyphen = m.hyphen.saturating_add(lh);
+                        pareto_insert(
+                            &mut scratch.pareto_front_next,
+                            ParetoState {
+                                prev: Some((prev_idx, pos as u16)),
+                                line: LineBreak {
+                                    start,
+                                    end: candidate.item_index,
+                                    next: candidate.next,
+                                    natural_width: segment.width,
+                                    badness,
+                                    fitness,
+                                    fitness_milli,
+                                    demerits: structure.saturating_add(hyphen),
+                                },
+                                flagged: candidate.flagged,
+                                fitness,
+                                structure,
+                                hyphen,
+                            },
+                        );
+                    }
+                }
+            } else {
+                let prev_state = if prev_idx == j {
+                    None
+                } else {
+                    match scratch.states[prev_idx] {
+                        Some(state) => Some((prev_idx, state)),
+                        None => {
+                            // No reachable path through this predecessor. For an
+                            // overfull line every earlier predecessor is only more
+                            // overfull, so stop; otherwise keep scanning.
+                            if overfull {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                };
+                // Gradual demerits (Verna '25) are opt-in: pass the fine-grained
+                // ratio only when the paragraph policy enables them. When disabled,
+                // prev_fitness_milli is None and line_demerits' gradual arm is
+                // zero, producing byte-identical classic KP output.
+                let prev_fm = if scratch.gradual_demerits() {
+                    prev_state.map(|(_, state)| state.line.fitness_milli)
+                } else {
+                    None
+                };
+                let (line_structure, line_hyphen) = line_demerits_parts(
                     badness,
+                    candidate.penalty,
+                    prev_state.is_some_and(|(_, state)| state.flagged),
+                    candidate.flagged,
+                    prev_state.map(|(_, state)| state.fitness),
                     fitness,
+                    prev_fm,
                     fitness_milli,
-                    demerits,
-                },
-                flagged: candidate.flagged,
-                fitness,
-            };
-            if best.is_none_or(|old| state.line.demerits <= old.line.demerits) {
-                best = Some(state);
+                );
+                let line_demerit_val = line_structure.saturating_add(line_hyphen);
+                // River seeds (opt-in): penalize candidates whose previous line's
+                // last space aligns with a space in this line. prev_state's line
+                // gives the previous line's (start, end); the current line spans
+                // [start, candidate.item_index). No previous line (first line) → 0.
+                let river_cost = if scratch.river_penalty() {
+                    river_seed_demerits(
+                        items,
+                        &scratch.metrics.width,
+                        prev_state.map(|(_, st)| (st.line.start, st.line.end)),
+                        start,
+                        candidate.item_index,
+                        eff_line_width,
+                    )
+                } else {
+                    0
+                };
+                let prev_demerits = prev_state.map_or(0, |(_, state)| state.line.demerits);
+                let demerits = prev_demerits
+                    .saturating_add(line_demerit_val)
+                    .saturating_add(river_cost)
+                    .saturating_add(overfull_cost);
+
+                let state = BreakState {
+                    prev: prev_state.map(|(idx, _)| idx),
+                    line: LineBreak {
+                        start,
+                        end: candidate.item_index,
+                        next: candidate.next,
+                        natural_width: segment.width,
+                        badness,
+                        fitness,
+                        fitness_milli,
+                        demerits,
+                    },
+                    flagged: candidate.flagged,
+                    fitness,
+                };
+                if best.is_none_or(|old| state.line.demerits <= old.line.demerits) {
+                    best = Some(state);
+                }
             }
             if overfull {
                 // Earlier inter-candidate predecessors are even more overfull
@@ -2674,7 +2873,41 @@ pub fn break_paragraph_into(
                 break;
             }
         }
-        scratch.states.push(best);
+        if scratch.pareto_breaking() {
+            let next = std::mem::take(&mut scratch.pareto_front_next);
+            scratch.pareto_fronts.push(next);
+        } else {
+            scratch.states.push(best);
+        }
+    }
+
+    if scratch.pareto_breaking() {
+        // Multi-objective reconstruction: pick the min-scalar member of the
+        // final front, then walk the (front index, position) chain back to
+        // the paragraph start. Ties keep the earliest member (deterministic).
+        let Some(last) = scratch.pareto_fronts.last() else {
+            return;
+        };
+        if last.is_empty() {
+            greedy_break_paragraph_into(candidates, line_width, &scratch.metrics, out);
+            return;
+        }
+        let mut best_pos = 0usize;
+        let mut best_scalar = i64::MAX;
+        for (pos, s) in last.iter().enumerate() {
+            if s.line.demerits <= best_scalar {
+                best_scalar = s.line.demerits;
+                best_pos = pos;
+            }
+        }
+        let mut cur = Some((scratch.pareto_fronts.len() - 1, best_pos as u16));
+        while let Some((idx, pos)) = cur {
+            let s = &scratch.pareto_fronts[idx][pos as usize];
+            out.push(s.line);
+            cur = s.prev;
+        }
+        out.reverse();
+        return;
     }
 
     let Some(mut idx) = scratch.states.len().checked_sub(1) else {
@@ -2928,8 +3161,29 @@ fn candidate_badness(
     }
 }
 
+/// Hyphenation-dimension cost of breaking at `penalty`: the squared penalty
+/// (negative penalties are rewards and yield negative cost). Forced breaks
+/// cost nothing.
+const fn hyphen_penalty_cost(penalty: i32) -> i64 {
+    if penalty == FORCED_BREAK_PENALTY {
+        0
+    } else if penalty >= 0 {
+        (penalty as i64).saturating_pow(2)
+    } else {
+        -((penalty as i64).saturating_pow(2))
+    }
+}
+
+/// The two Pareto dimensions of one line's demerits (multi-objective line
+/// breaking, opt-in):
+/// - `.0` structure: badness², fitness-class + gradual spacing costs, river
+///   seeds, and overflow — how well the line fits;
+/// - `.1` hyphenation: squared break penalty plus the flagged-flag adjacent
+///   demerits — the cost paid in hyphens.
+///
+/// Their sum equals the classic scalar `line_demerits` exactly.
 #[allow(clippy::too_many_arguments)]
-fn line_demerits(
+fn line_demerits_parts(
     badness: i32,
     penalty: i32,
     prev_flagged: bool,
@@ -2938,15 +3192,9 @@ fn line_demerits(
     fitness: FitnessClass,
     prev_fitness_milli: Option<i32>,
     fitness_milli: i32,
-) -> i64 {
+) -> (i64, i64) {
     let base = (badness as i64 + 1).saturating_pow(2);
-    let penalty_cost = if penalty == FORCED_BREAK_PENALTY {
-        0
-    } else if penalty >= 0 {
-        (penalty as i64).saturating_pow(2)
-    } else {
-        -((penalty as i64).saturating_pow(2))
-    };
+    let penalty_cost = hyphen_penalty_cost(penalty);
     let flagged_cost = if prev_flagged && flagged { 10_000 } else { 0 };
     // Classic KP: binary check — penalize only when fitness classes are more
     // than one apart. This is the coarse 4-class behavior, preserved as the
@@ -2976,10 +3224,35 @@ fn line_demerits(
         }
         _ => 0,
     };
-    base.saturating_add(penalty_cost)
-        .saturating_add(flagged_cost)
+    let structure = base
         .saturating_add(fitness_cost)
-        .saturating_add(gradual_cost)
+        .saturating_add(gradual_cost);
+    let hyphen = penalty_cost.saturating_add(flagged_cost);
+    (structure, hyphen)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn line_demerits(
+    badness: i32,
+    penalty: i32,
+    prev_flagged: bool,
+    flagged: bool,
+    prev_fitness: Option<FitnessClass>,
+    fitness: FitnessClass,
+    prev_fitness_milli: Option<i32>,
+    fitness_milli: i32,
+) -> i64 {
+    let (structure, hyphen) = line_demerits_parts(
+        badness,
+        penalty,
+        prev_flagged,
+        flagged,
+        prev_fitness,
+        fitness,
+        prev_fitness_milli,
+        fitness_milli,
+    );
+    structure.saturating_add(hyphen)
 }
 
 fn line_fitness(metrics: SegmentMetrics, line_width: LayoutUnit) -> FitnessClass {

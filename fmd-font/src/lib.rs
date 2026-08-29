@@ -2729,7 +2729,7 @@ mod subset_degradation_tests {
             for (old, new) in lookup.iter().enumerate() {
                 if *new == MISSING_GLYPH_REMAP {
                     assert!(
-                        remap.get(&(old as u16)).is_none(),
+                        !remap.contains_key(&(old as u16)),
                         "dense sentinel at {old} must be absent from the map"
                     );
                 } else {
@@ -2741,7 +2741,11 @@ mod subset_degradation_tests {
                     );
                 }
             }
-            assert_eq!(remap.len(), mapped, "map and dense table cover the same glyphs");
+            assert_eq!(
+                remap.len(),
+                mapped,
+                "map and dense table cover the same glyphs"
+            );
             // Ascending old-gid enumeration of the dense table reproduces the
             // BTreeMap iteration order exactly (pdf.rs relied on that order
             // to scatter-build its map_lookup table).
@@ -2761,8 +2765,8 @@ mod subset_degradation_tests {
             let q = font.glyph_index('Q');
             // A composite glyph whose closure must pull in extra component
             // gids beyond the seed (accented Latin in the bundled faces).
-            let composite = (0..font.num_glyphs)
-                .find(|&g| font.is_composite(g) && g != a && g != b && g != q);
+            let composite =
+                (0..font.num_glyphs).find(|&g| font.is_composite(g) && g != a && g != b && g != q);
             // Empty seed, empty cmap: subset is .notdef-only.
             assert_agree(&font, &[], &[]);
             // Empty seed with a cmap char that maps to .notdef: same.

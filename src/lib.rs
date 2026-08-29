@@ -625,6 +625,13 @@ pub struct PdfOptions {
     /// content is tight; O(lines × page-window) per render. Default false —
     /// greedy pagination, byte-identical output.
     pub optimal_pagination: bool,
+    /// Enable multi-objective (Pareto) line breaking (Holkner): track bounded
+    /// fronts of non-dominated states over two demerit dimensions (structure:
+    /// badness/fitness/rivers/overflow; hyphenation: break penalties and
+    /// flagged-flag adjacency) instead of a single scalar winner. The final
+    /// pick remains min-scalar, but paths that trade structure against
+    /// hyphenation survive the search. Default false — byte-identical.
+    pub pareto_line_breaking: bool,
 }
 
 impl PdfOptions {

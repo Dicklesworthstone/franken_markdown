@@ -38,12 +38,6 @@ const MAX_DEPTH: usize = 16;
 /// - `include_missing`: the resolver returned None for a path (chain named).
 /// - `include_cycle`: a path appears twice in the active include stack.
 /// - `include_depth`: nesting exceeded `MAX_DEPTH`.
-/// Check whether `src` contains any `{{#include` directives.
-#[must_use]
-pub fn has_includes(src: &str) -> bool {
-    src.contains(INCLUDE_PREFIX)
-}
-
 pub fn expand_includes(
     src: &str,
     resolver: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
@@ -126,7 +120,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> Option<String> {
+    fn resolver(
+        files: &[(&str, &str)],
+    ) -> impl Fn(&str, &str) -> std::result::Result<Option<String>, String> {
         let map: BTreeMap<String, String> = files
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))

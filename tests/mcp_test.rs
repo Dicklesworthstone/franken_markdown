@@ -118,7 +118,7 @@ fn mcp_tool_render_pdf_parity() {
     opts.page_numbers = true;
     let expected_pdf =
         franken_markdown::render_pdf(markdown, &opts).expect("direct render");
-    let expected_b64 = franken_markdown::html::base64_encode(&expected_pdf);
+    let expected_b64 = franken_markdown::mcp::base64_encode(&expected_pdf);
     assert_eq!(
         b64, expected_b64,
         "MCP PDF render must match direct library render bytes"
@@ -221,7 +221,8 @@ fn mcp_sequential_calls_session_stream() {
     let mut stream_buf = Vec::new();
     for i in 1..=10 {
         let msg = format!(
-            r#"{{"jsonrpc":"2.0","id":{i},"method":"tools/call","params":{{"name":"fmd.render_html","arguments":{{"markdown":"# Document {i}"}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"fmd.render_html","arguments":{{"markdown":"# Document {}"}}}}}}"#,
+            i, i
         );
         write_frame(&mut stream_buf, &msg).expect("write frame");
     }

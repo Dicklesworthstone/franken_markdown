@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::html::base64_encode;
+pub use crate::html::base64_encode;
 use crate::theme::Theme;
 use crate::{
     FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode, PdfASettings, PdfOptions,
@@ -914,7 +914,7 @@ fn handle_render_html(
         opts.theme = opts.theme.with_font_scale(scale);
     }
     if let Some(fmt_str) = args.get("htmlFontFormat").and_then(|f| f.as_str()) {
-        opts.font_format = match fmt_str.to_ascii_lowercase().as_str() {
+        opts.html_font_format = match fmt_str.to_ascii_lowercase().as_str() {
             "woff1" | "woff" => HtmlFontFormat::Woff1,
             "ttf" => HtmlFontFormat::Ttf,
             _ => {
@@ -931,10 +931,10 @@ fn handle_render_html(
         .get("interactiveHtml")
         .and_then(|i| i.as_bool())
         .unwrap_or(false);
+    let doc = parse_markdown(md);
     let html = if is_interactive {
-        crate::interactive::render_interactive_html(md, &opts)
+        crate::interactive::render_interactive_html(&doc, md, &opts)
     } else {
-        let doc = parse_markdown(md);
         render_html_document(&doc, &opts).map_err(|e| {
             (
                 ERROR_RENDER_FAILED,
@@ -1104,7 +1104,7 @@ fn handle_verify(
     })?;
 
     let json_text = if a11y_only {
-        let filtered = crate::verify::filter_a11y(&report);
+        let filtered = crate::verify::filter_a11y(report);
         crate::verify::to_json(&filtered)
     } else {
         crate::verify::to_json(&report)

@@ -2111,6 +2111,7 @@ pub struct LineBreak {
     /// from -1000 (fully tight) to +1000 (fully loose). Used for gradual
     /// adjacent demerits when the paragraph policy enables it; the coarse
     /// FitnessClass above remains the classic KP state-tracking key.
+    pub demerits: i64,
     pub fitness_milli: i32,
 }
 
@@ -2890,6 +2891,30 @@ fn line_fitness(metrics: SegmentMetrics, line_width: LayoutUnit) -> FitnessClass
         FitnessClass::VeryLoose
     }
 }
+
+/// Fine-grained fitness in per-mille for gradual adjacent demerits (Verna
+/// DocEng '25). Returns the LSAR (Line Spacing Adjustment Ratio) expressed
+/// as a signed per-mille value: -1000 = fully shrunk, 0 = natural,
+/// +1000 = fully stretched. Values beyond ±1000 are clamped to keep the
+/// gradual demerit formula well-behaved (the classic fitness_cost already
+/// handles the extreme cases).
+fn fitness_ratio_milli(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
+    let diff = line_width.milli_points() as i64 - metrics.width.milli_points() as i64;
+    if diff == 0 {
+        return 0;
+    }
+    let available = if diff > 0 {
+        metrics.stretch.milli_points() as i64
+    } else {
+        metrics.shrink.milli_points() as i64
+    };
+    if available <= 0 {
+        return 0; // degenerate: no elasticity info, neutral fitness
+    }
+    let ratio = diff.saturating_mul(1000) / available;
+    ratio.clamp(-1000, 1000) as i32
+}
+
 
 fn candidate_fitness(
     candidate: BreakCandidate,

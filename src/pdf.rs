@@ -195,7 +195,7 @@ struct Seg {
 /// Deterministic text fill color class. This enum, rather than raw floats, lets
 /// serialization track the current color exactly and avoid redundant `rg`
 /// operators while still resetting after colored code/link runs.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fill {
     Black,
     Link,
@@ -204,10 +204,49 @@ enum Fill {
 }
 
 /// Link destinations that are safe to make active in the PDF.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum LinkTarget {
     Uri(String),
     Fragment(String),
+}
+
+/// Per-render intern table for link targets. [`tokenize`] maps each inline
+/// link's destination to one `u32` index here (once per link span) and tokens
+/// copy that index instead of cloning the URI `String` per token. The
+/// content-keyed `ids` map guarantees index equality is exactly link-target
+/// equality, so every slot/link/strike run-merge and justification-extent
+/// decision is unchanged. Indices resolve back to owned targets when [`Seg`]s
+/// are built, before any draw path or annotation sees them.
+#[derive(Default)]
+struct LinkIntern {
+    targets: Vec<LinkTarget>,
+    ids: HashMap<LinkTarget, u32>,
+}
+
+impl LinkIntern {
+    /// Intern `target`, returning its stable index. Content-equal targets
+    /// share one index — required because run merging previously compared
+    /// target contents, so two adjacent spans with the same URI must still
+    /// merge into one segment.
+    fn intern(&mut self, target: LinkTarget) -> u32 {
+        if let Some(&id) = self.ids.get(&target) {
+            return id;
+        }
+        // More than u32::MAX distinct targets in one render is unreachable
+        // (the table alone would need exabytes); saturate defensively.
+        let id = u32::try_from(self.targets.len()).unwrap_or(u32::MAX);
+        self.targets.push(target.clone());
+        self.ids.insert(target, id);
+        id
+    }
+}
+
+/// Resolve a token link index to the owned target a `Seg` carries. Indices
+/// are only produced by [`LinkIntern::intern`] against the same table, so the
+/// lookup always succeeds; `get` keeps it panic-free by construction.
+#[inline]
+fn resolve_seg_link(links: &[LinkTarget], link: Option<u32>) -> Option<LinkTarget> {
+    link.and_then(|id| links.get(id as usize).cloned())
 }
 
 /// Tagged-PDF list membership, populated by [`layout_list`] for every line that
@@ -1936,8 +1975,12 @@ struct Tok {
     slot: u8,
     space: bool,
     hard_break: bool,
-    /// Active link target when this token came from safe inline link content.
-    link: Option<LinkTarget>,
+    /// Interned index (per-render [`LinkIntern`]) of the active link target
+    /// when this token came from safe inline link content; `None` = no link.
+    /// Index equality is exactly link-target equality (content-keyed intern),
+    /// so run merging and justification extents are unchanged, and tokens
+    /// copy a `u32` instead of cloning the URI `String` per token.
+    link: Option<u32>,
     /// True when this token is inside a `~~strikethrough~~` span.
     strike: bool,
 }
@@ -2957,6 +3000,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            links: LinkIntern::default(),
             toc_entries: Vec::new(),
             toc_page_map: BTreeMap::new(),
         };
@@ -2993,6 +3037,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            links: LinkIntern::default(),
             toc_entries: toc_entries.clone(),
             toc_page_map: page_map.clone(),
         };
@@ -3159,7 +3204,7 @@ fn collect_pdf_footnote_ref_order(blocks: &[Block]) -> Vec<String> {
 mod pdf_footnote_layout_tests {
     #![allow(clippy::expect_used)]
 
-    use super::{tokenize, verification_text_layer};
+    use super::{LinkIntern, tokenize, verification_text_layer};
     use crate::PdfOptions;
     use crate::ast::Inline;
 
@@ -3170,7 +3215,15 @@ mod pdf_footnote_layout_tests {
             Inline::FootnoteRef { id: "1".into() },
         ];
         let mut toks = Vec::new();
-        tokenize(&inlines, false, false, false, None, &mut toks);
+        tokenize(
+            &inlines,
+            false,
+            false,
+            false,
+            None,
+            &mut LinkIntern::default(),
+            &mut toks,
+        );
         let text: String = toks.iter().map(|t| t.text.as_str()).collect();
         assert!(text.contains("[^1]"), "{text:?}");
     }
@@ -3651,6 +3704,12 @@ struct LayoutCx<'a> {
     /// fresh span Vec allocation for every code line while preserving exact
     /// source-byte slicing and token colors.
     code_highlight_spans: Vec<highlight::Span>,
+    /// Per-render interned link targets ([`LinkIntern`]): `tokenize` maps
+    /// each inline link span to one index here and tokens copy the `u32`
+    /// instead of cloning the URI `String` per token; `Seg` construction
+    /// resolves indices back to owned targets. Lives for the whole render,
+    /// so every index outlives every consumer that resolves it.
+    links: LinkIntern,
     toc_entries: Vec<PdfTocEntry>,
     toc_page_map: BTreeMap<String, usize>,
 }
@@ -3724,7 +3783,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             gap(out, heading_gap_before(*level));
             // Headings render bold; inner emphasis becomes bold-italic.
             let mut toks = Vec::new();
-            tokenize(inlines, true, false, false, None, &mut toks);
+            tokenize(inlines, true, false, false, None, &mut cx.links, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             // H1/H2 get a subtle full-measure hairline rule beneath the text.
@@ -3765,7 +3824,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 return;
             }
             let mut toks = Vec::new();
-            tokenize(inlines, false, false, false, None, &mut toks);
+            tokenize(inlines, false, false, false, None, &mut cx.links, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
@@ -4023,7 +4082,7 @@ fn layout_definition_list(
     for item in items {
         for term in &item.terms {
             let mut toks = Vec::new();
-            tokenize(term, true, false, false, None, &mut toks);
+            tokenize(term, true, false, false, None, &mut cx.links, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             layout_inlines(
@@ -4041,7 +4100,7 @@ fn layout_definition_list(
         }
         for (def_idx, def) in item.definitions.iter().enumerate() {
             let mut toks = Vec::new();
-            tokenize(def, false, false, false, None, &mut toks);
+            tokenize(def, false, false, false, None, &mut cx.links, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
             let group = cx.alloc_flow();
             let is_last = def_idx + 1 == item.definitions.len();
@@ -15983,7 +16042,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
 struct CellRun {
     slot: u8,
     text: String,
-    link: Option<LinkTarget>,
+    link: Option<u32>,
     strike: bool,
     width: f32,
 }
@@ -15997,9 +16056,14 @@ struct CellWrapLine {
 /// Tokenize a cell's inlines into styled tokens, inheriting a bold base style for
 /// header cells (so `**x**`/`*x*`/`` `x` ``/links inside cells keep their faces,
 /// strikethrough, and clickable destinations instead of being flattened).
-fn cell_tokens(inlines: &[Inline], header: bool, faces: &Faces) -> Vec<Tok> {
+fn cell_tokens(
+    inlines: &[Inline],
+    header: bool,
+    faces: &Faces,
+    intern: &mut LinkIntern,
+) -> Vec<Tok> {
     let mut toks = Vec::new();
-    tokenize(inlines, header, false, false, None, &mut toks);
+    tokenize(inlines, header, false, false, None, intern, &mut toks);
     apply_symbol_fallback(&mut toks, faces);
     split_cell_separator_tokens(toks)
 }
@@ -16024,7 +16088,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>) -> Vec<Tok> {
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
-                    link: tok.link.clone(),
+                    link: tok.link,
                     strike: tok.strike,
                 });
                 start = end_idx;
@@ -16039,7 +16103,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>) -> Vec<Tok> {
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
-                    link: tok.link.clone(),
+                    link: tok.link,
                     strike: tok.strike,
                 });
             } else {
@@ -16104,6 +16168,7 @@ fn table_cell_measure(
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
     header: bool,
+    links: &[LinkTarget],
 ) -> TableCellMeasure {
     let t0 = wrap_perf_enabled().then(std::time::Instant::now);
     let mut cell = TableCellMeasure {
@@ -16168,7 +16233,7 @@ fn table_cell_measure(
             u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
         });
         let key = (
-            wrap_perf_tok_hash(toks),
+            wrap_perf_tok_hash(toks, links),
             u64::from(size.to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15),
         );
         wrap_perf::add_measure(ns, 1, Some(key));
@@ -16312,7 +16377,7 @@ fn wrap_cell_styled(
                         slot: t.slot,
                         space: false,
                         hard_break: false,
-                        link: t.link.clone(),
+                        link: t.link,
                         strike: t.strike,
                     };
                     lines.push(build_cell_line_owned(
@@ -16342,7 +16407,7 @@ fn wrap_cell_styled(
                     slot: t.slot,
                     space: false,
                     hard_break: false,
-                    link: t.link.clone(),
+                    link: t.link,
                     strike: t.strike,
                 });
                 cur_w = chunk_w;
@@ -16693,7 +16758,6 @@ fn finish_table_allocated_widths(columns: &[TableColumnMetrics], widths: &mut [f
 /// Lay out a GFM pipe table as a measured-column grid: a bold header row with a
 /// rule beneath it and a closing rule (booktabs-style). Column widths are chosen
 /// by minimizing predicted wrapping badness under the available page measure.
-#[derive(Clone, Copy)]
 struct TableLayoutSpec<'a> {
     indent: f32,
     page: PageGeom,
@@ -16701,6 +16765,10 @@ struct TableLayoutSpec<'a> {
     nominal_size: f32,
     faces: &'a Faces,
     width_cache: &'a RefCell<WidthCache>,
+    /// Per-render interned link targets: cell tokenization interns link
+    /// destinations here once per link span, and `Seg` construction resolves
+    /// the token indices back to owned targets.
+    links: &'a mut LinkIntern,
 }
 
 // TEMP PERF INSTRUMENTATION (pass 3) — env-gated via FMD_WRAP_PERF, fully reverted.
@@ -16801,14 +16869,14 @@ fn wrap_perf_enabled() -> bool {
     }
 }
 
-fn wrap_perf_tok_hash(toks: &[Tok]) -> u64 {
+fn wrap_perf_tok_hash(toks: &[Tok], links: &[LinkTarget]) -> u64 {
     let mut hash = FNV_OFFSET;
     for t in toks {
         fnv1a64_update_u64(&mut hash, u64::from(t.slot));
         fnv1a64_update_byte(&mut hash, u8::from(t.space));
         fnv1a64_update_byte(&mut hash, u8::from(t.hard_break));
         fnv1a64_update_byte(&mut hash, u8::from(t.strike));
-        match &t.link {
+        match t.link.and_then(|id| links.get(id as usize)) {
             None => fnv1a64_update_byte(&mut hash, 0),
             Some(LinkTarget::Uri(s)) => {
                 fnv1a64_update_byte(&mut hash, 1);
@@ -16841,6 +16909,7 @@ fn layout_table(
         nominal_size,
         faces: cx.faces,
         width_cache: &cx.width_cache,
+        links: &mut cx.links,
     };
     let Some(key) = TableLayoutKey::new(table, indent, page, nominal_size) else {
         layout_table_uncached(table, spec, out);
@@ -16965,14 +17034,14 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     let head_toks: Vec<Vec<Tok>> = table
         .head
         .iter()
-        .map(|cell| cell_tokens(cell, true, faces))
+        .map(|cell| cell_tokens(cell, true, faces, &mut *spec.links))
         .collect();
     let row_toks: Vec<Vec<Vec<Tok>>> = table
         .rows
         .iter()
         .map(|row| {
             row.iter()
-                .map(|cell| cell_tokens(cell, false, faces))
+                .map(|cell| cell_tokens(cell, false, faces, &mut *spec.links))
                 .collect()
         })
         .collect();
@@ -16991,13 +17060,13 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     let mut columns = vec![TableColumnMetrics::default(); ncol];
     for (k, toks) in head_toks.iter().enumerate() {
         if let Some(column) = columns.get_mut(k) {
-            column.push(table_cell_measure(toks, size, faces, width_cache, true));
+            column.push(table_cell_measure(toks, size, faces, width_cache, true, &spec.links.targets));
         }
     }
     for row in &row_toks {
         for (k, toks) in row.iter().enumerate() {
             if let Some(column) = columns.get_mut(k) {
-                column.push(table_cell_measure(toks, size, faces, width_cache, false));
+                column.push(table_cell_measure(toks, size, faces, width_cache, false, &spec.links.targets));
             }
         }
     }
@@ -17038,13 +17107,13 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             columns = vec![TableColumnMetrics::default(); ncol];
             for (k, toks) in head_toks.iter().enumerate() {
                 if let Some(column) = columns.get_mut(k) {
-                    column.push(table_cell_measure(toks, size, faces, width_cache, true));
+                    column.push(table_cell_measure(toks, size, faces, width_cache, true, &spec.links.targets));
                 }
             }
             for row in &row_toks {
                 for (k, toks) in row.iter().enumerate() {
                     if let Some(column) = columns.get_mut(k) {
-                        column.push(table_cell_measure(toks, size, faces, width_cache, false));
+                        column.push(table_cell_measure(toks, size, faces, width_cache, false, &spec.links.targets));
                     }
                 }
             }
@@ -17096,6 +17165,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         })
         .collect();
 
+    let link_targets = &spec.links.targets;
     let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
@@ -17108,7 +17178,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                         u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
                     });
                     let key = (
-                        wrap_perf_tok_hash(toks),
+                        wrap_perf_tok_hash(toks, link_targets),
                         cw.to_bits() as u64 | (u64::from(size.to_bits()) << 32),
                     );
                     // (hash, size_bits) — size widened to u64 to match
@@ -17163,7 +17233,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                         x,
                         slot: run.slot,
                         text: run.text.clone(),
-                        link: run.link.clone(),
+                        link: resolve_seg_link(link_targets, run.link),
                         fill,
                         strike: run.strike,
                         task: None,
@@ -17309,7 +17379,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         let mut toks = Vec::new();
         for b in leading {
             if let Block::Paragraph(inl) = b {
-                tokenize(inl, false, false, false, None, &mut toks);
+                tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
             }
         }
         apply_symbol_fallback(&mut toks, cx.faces);
@@ -17382,7 +17452,8 @@ fn tokenize(
     bold: bool,
     italic: bool,
     strike: bool,
-    link: Option<&LinkTarget>,
+    link: Option<u32>,
+    intern: &mut LinkIntern,
     out: &mut Vec<Tok>,
 ) {
     for inl in inlines {
@@ -17400,15 +17471,12 @@ fn tokenize(
             }
             Inline::Text(t) => push_text_tokens(t, slot_of(bold, italic, false), strike, link, out),
             Inline::Code(t) => push_text_tokens(t, F_MONO, strike, link, out),
-            Inline::Strong(c) => tokenize(c, true, italic, strike, link, out),
-            Inline::Emphasis(c) => tokenize(c, bold, true, strike, link, out),
-            Inline::Strikethrough(c) => tokenize(c, bold, italic, true, link, out),
+            Inline::Strong(c) => tokenize(c, true, italic, strike, link, intern, out),
+            Inline::Emphasis(c) => tokenize(c, bold, true, strike, link, intern, out),
+            Inline::Strikethrough(c) => tokenize(c, bold, italic, true, link, intern, out),
             Inline::Link { dest, content, .. } => {
-                if let Some(target) = safe_pdf_link(dest) {
-                    tokenize(content, bold, italic, strike, Some(&target), out);
-                } else {
-                    tokenize(content, bold, italic, strike, None, out);
-                }
+                let target = safe_pdf_link(dest).map(|target| intern.intern(target));
+                tokenize(content, bold, italic, strike, target, intern, out);
             }
             Inline::Image { alt, .. } => {
                 push_text_tokens(alt, slot_of(bold, italic, false), strike, link, out);
@@ -17418,7 +17486,7 @@ fn tokenize(
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: false,
-                link: link.cloned(),
+                link,
                 strike,
             }),
             Inline::HardBreak => out.push(Tok {
@@ -17426,7 +17494,7 @@ fn tokenize(
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: true,
-                link: link.cloned(),
+                link,
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
@@ -17442,7 +17510,7 @@ fn push_text_tokens(
     text: &str,
     slot: u8,
     strike: bool,
-    link: Option<&LinkTarget>,
+    link: Option<u32>,
     out: &mut Vec<Tok>,
 ) {
     let mut word_start = 0usize;
@@ -17454,7 +17522,7 @@ fn push_text_tokens(
                     slot,
                     space: false,
                     hard_break: false,
-                    link: link.cloned(),
+                    link,
                     strike,
                 });
             }
@@ -17463,7 +17531,7 @@ fn push_text_tokens(
                 slot,
                 space: true,
                 hard_break: false,
-                link: link.cloned(),
+                link,
                 strike,
             });
             word_start = idx + c.len_utf8();
@@ -17475,7 +17543,7 @@ fn push_text_tokens(
             slot,
             space: false,
             hard_break: false,
-            link: link.cloned(),
+                link,
             strike,
         });
     }
@@ -17593,7 +17661,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
             i += 1;
             continue;
         }
-        let link = tok.link.clone();
+        let link = tok.link;
         let strike = tok.strike;
         let replaced = runs.len();
         toks.splice(
@@ -17603,7 +17671,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 slot: run_slot,
                 space: false,
                 hard_break: false,
-                link: link.clone(),
+                link,
                 strike,
             }),
         );
@@ -17650,7 +17718,7 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
                 }
                 current = Some(TokMeasureRun {
                     slot: tok.slot,
-                    link: tok.link.clone(),
+                    link: tok.link,
                     strike: tok.strike,
                     text: text.to_string(),
                 });
@@ -17689,7 +17757,7 @@ fn measure_word_cached(
                 }
                 current = Some(TokMeasureRun {
                     slot: tok.slot,
-                    link: tok.link.clone(),
+                    link: tok.link,
                     strike: tok.strike,
                     text: text.to_string(),
                 });
@@ -17738,7 +17806,7 @@ fn shaped_width_points_for_layout(
 
 struct TokMeasureRun {
     slot: u8,
-    link: Option<LinkTarget>,
+    link: Option<u32>,
     strike: bool,
     text: String,
 }
@@ -18091,7 +18159,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
-                    link: tok.link.clone(),
+                    link: tok.link,
                     strike: tok.strike,
                 });
                 let hyphen_width = hyphen_tok.as_ref().map_or(LayoutUnit::ZERO, |tok| {
@@ -18492,7 +18560,16 @@ fn layout_inlines(
     cx.break_paragraph(&built.items, content_w, policy);
     if cx.line_breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
-        layout_inlines_greedy(toks, indent, size, gap_after, cx.faces, cx.page, out);
+        layout_inlines_greedy(
+            toks,
+            indent,
+            size,
+            gap_after,
+            cx.faces,
+            cx.page,
+            &cx.links.targets,
+            out,
+        );
         mark_flow(out, start, flow.group, flow.kind);
         return;
     }
@@ -18555,6 +18632,7 @@ fn layout_inlines(
             cx.faces,
             Some(&cx.width_cache),
             policy.microtype.max_expansion_per_mille,
+            &cx.links.targets,
         );
         out.push(Line {
             size,
@@ -18641,6 +18719,7 @@ fn layout_prefixed_inlines(
             spec.gap_after,
             cx.faces,
             cx.page,
+            &cx.links.targets,
             out,
         );
         if let Some(first) = out.get_mut(before) {
@@ -18669,6 +18748,7 @@ fn layout_prefixed_inlines(
             cx.faces,
             Some(&cx.width_cache),
             policy.microtype.max_expansion_per_mille,
+            &cx.links.targets,
         );
         if i == 0 {
             if let Some(marker) = marker.take() {
@@ -18696,6 +18776,7 @@ fn layout_prefixed_inlines(
 
 /// The original greedy wrapper, kept as an emergency fallback (and as a
 /// regression oracle in tests).
+#[allow(clippy::too_many_arguments)]
 fn layout_inlines_greedy(
     toks: Vec<Tok>,
     indent: f32,
@@ -18703,6 +18784,7 @@ fn layout_inlines_greedy(
     gap_after: f32,
     faces: &Faces,
     page: PageGeom,
+    links: &[LinkTarget],
     out: &mut Vec<Line>,
 ) {
     let left = page.left + indent;
@@ -18738,7 +18820,7 @@ fn layout_inlines_greedy(
     }
     let n = lines.len();
     for (i, line) in lines.into_iter().enumerate() {
-        let segs = build_segs(&line, left, size, faces);
+        let segs = build_segs(&line, left, size, faces, links);
         out.push(Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
@@ -18956,7 +19038,7 @@ fn glue_flex(glue: Glue, delta: i64) -> i64 {
 
 /// Group consecutive same-slot, same-link tokens into positioned segments,
 /// accumulating each segment's shaped layout advance width.
-fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
+fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces, links: &[LinkTarget]) -> Vec<Seg> {
     let line_toks = toks
         .iter()
         .cloned()
@@ -18965,7 +19047,7 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces) -> Vec<Seg> {
             extra_advance: 0.0,
         })
         .collect::<Vec<_>>();
-    build_segs_adjusted(&line_toks, left, size, faces, None, 0)
+    build_segs_adjusted(&line_toks, left, size, faces, None, 0, links)
 }
 
 fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
@@ -19216,8 +19298,9 @@ fn build_segs_adjusted(
     faces: &Faces,
     width_cache: Option<&RefCell<WidthCache>>,
     expansion_permille_budget: u16,
+    links: &[LinkTarget],
 ) -> Vec<Seg> {
-    if let Some(seg) = build_single_adjusted_seg(toks, left, size, faces, width_cache) {
+    if let Some(seg) = build_single_adjusted_seg(toks, left, size, faces, width_cache, links) {
         return vec![seg];
     }
 
@@ -19238,7 +19321,7 @@ fn build_segs_adjusted(
     let mut i = 0usize;
     while let Some(first) = toks.get(i) {
         let slot = first.tok.slot;
-        let link = &first.tok.link;
+        let link = first.tok.link;
         let strike = first.tok.strike;
         // Run extent: consecutive same-slot/link/strike tokens, stopping
         // after a space that carries justification stretch (it must flush
@@ -19247,7 +19330,7 @@ fn build_segs_adjusted(
         let mut text_len = 0usize;
         while let Some(line_tok) = toks.get(end) {
             let tok = &line_tok.tok;
-            if end > i && (tok.slot != slot || &tok.link != link || tok.strike != strike) {
+            if end > i && (tok.slot != slot || tok.link != link || tok.strike != strike) {
                 break;
             }
             text_len = text_len.saturating_add(token_visible_text(tok).len());
@@ -19295,7 +19378,7 @@ fn build_segs_adjusted(
             x: seg_x,
             slot,
             text,
-            link: link.clone(),
+            link: resolve_seg_link(links, link),
             fill: if link.is_some() {
                 Fill::Link
             } else {
@@ -19328,10 +19411,11 @@ fn build_single_adjusted_seg(
     size: f32,
     faces: &Faces,
     width_cache: Option<&RefCell<WidthCache>>,
+    links: &[LinkTarget],
 ) -> Option<Seg> {
     let first = toks.first()?;
     let slot = first.tok.slot;
-    let link = &first.tok.link;
+    let link = first.tok.link;
     let strike = first.tok.strike;
     let text_len = single_adjusted_seg_text_len(toks, slot, link, strike)?;
     let mut text = String::with_capacity(text_len);
@@ -19345,7 +19429,7 @@ fn build_single_adjusted_seg(
         x: left - hang,
         slot,
         text,
-        link: link.clone(),
+        link: resolve_seg_link(links, link),
         fill: if link.is_some() {
             Fill::Link
         } else {
@@ -19361,7 +19445,7 @@ fn build_single_adjusted_seg(
 fn single_adjusted_seg_text_len(
     toks: &[LineTok],
     slot: u8,
-    link: &Option<LinkTarget>,
+    link: Option<u32>,
     strike: bool,
 ) -> Option<usize> {
     let mut len = 0usize;
@@ -19369,7 +19453,7 @@ fn single_adjusted_seg_text_len(
         let tok = &line_tok.tok;
         if line_tok.extra_advance != 0.0
             || tok.slot != slot
-            || tok.link != *link
+            || tok.link != link
             || tok.strike != strike
         {
             return None;
@@ -30677,7 +30761,8 @@ mod pdf_writer_tests {
     use super::{
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
         FORCED_BREAK_PENALTY, FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, Font,
-        HeadingIdState, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkTarget, ListMark,
+        HeadingIdState, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkIntern, LinkTarget,
+        ListMark, is_breakable_whitespace, resolve_seg_link, safe_pdf_link, slot_of,
         PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem, ParagraphLayoutScratch,
         ParagraphPolicy, PdfCidFontObjectParts, PdfFontDescriptorObjectParts, PdfImageColor,
         PdfImageData, PdfImageStreamFilter, PdfOutlineItemObjectParts, PdfPageObjectParts,
@@ -30889,6 +30974,7 @@ mod pdf_writer_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            links: LinkIntern::default(),
             toc_entries: Vec::new(),
             toc_page_map: std::collections::BTreeMap::new(),
         }
@@ -30938,7 +31024,7 @@ mod pdf_writer_tests {
         .collect();
         let mut out = Vec::new();
 
-        layout_inlines_greedy(toks, 0.0, 12.0, 3.0, &faces, page, &mut out);
+        layout_inlines_greedy(toks, 0.0, 12.0, 3.0, &faces, page, &[], &mut out);
 
         assert!(
             out.len() >= 2,
@@ -31516,6 +31602,7 @@ mod pdf_writer_tests {
             nominal_size: cx.type_scale.table,
             faces: cx.faces,
             width_cache: &cx.width_cache,
+            links: &mut cx.links,
         };
         layout_table_uncached(table, spec, out);
         (start, group)
@@ -33104,7 +33191,7 @@ mod pdf_writer_tests {
             "breakable whitespace tokens should not own a space payload"
         );
 
-        let segs = build_segs(&toks, 10.0, 11.0, &faces);
+        let segs = build_segs(&toks, 10.0, 11.0, &faces, &[]);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "alpha  beta");
         assert!(
@@ -33152,7 +33239,15 @@ mod pdf_writer_tests {
             Inline::Text("gamma".to_string()),
         ];
         let mut toks = Vec::new();
-        tokenize(&inlines, false, false, false, None, &mut toks);
+        tokenize(
+            &inlines,
+            false,
+            false,
+            false,
+            None,
+            &mut LinkIntern::default(),
+            &mut toks,
+        );
 
         let soft_tokens = toks
             .iter()
@@ -33177,7 +33272,7 @@ mod pdf_writer_tests {
             .take_while(|tok| !tok.hard_break)
             .cloned()
             .collect();
-        let segs = build_segs(&before_hard, 10.0, 11.0, &faces);
+        let segs = build_segs(&before_hard, 10.0, 11.0, &faces, &[]);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "alpha beta");
         Ok(())
@@ -33222,7 +33317,7 @@ mod pdf_writer_tests {
             "fixture must expose a cross-token ligature width difference"
         );
 
-        let segs = build_segs(&toks, 10.0, size, &faces);
+        let segs = build_segs(&toks, 10.0, size, &faces, &[]);
         assert_eq!(segs.len(), 2, "body run plus bold run");
         assert!(
             (segs[0].width - combined).abs() < 0.01,
@@ -33266,7 +33361,7 @@ mod pdf_writer_tests {
             },
         ];
 
-        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0);
+        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0, &[]);
 
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "fi");
@@ -33320,7 +33415,7 @@ mod pdf_writer_tests {
             },
         ];
 
-        let segs = build_segs_adjusted(&line_toks, left, size, &faces, None, 0);
+        let segs = build_segs_adjusted(&line_toks, left, size, &faces, None, 0, &[]);
 
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].text, "alpha ");
@@ -33336,6 +33431,361 @@ mod pdf_writer_tests {
         );
         Ok(())
     }
+
+    /// Token shape before pass-12 link interning: every token owned its
+    /// `LinkTarget` (cloning the URI `String` per token). Verbatim replica of
+    /// the pre-change tokenizer for the differential test.
+    struct RefTok {
+        text: String,
+        slot: u8,
+        space: bool,
+        hard_break: bool,
+        link: Option<LinkTarget>,
+        strike: bool,
+    }
+
+    fn tokenize_reference(
+        inlines: &[Inline],
+        bold: bool,
+        italic: bool,
+        strike: bool,
+        link: Option<&LinkTarget>,
+        out: &mut Vec<RefTok>,
+    ) {
+        for inl in inlines {
+            match inl {
+                Inline::FootnoteRef { id } => push_text_tokens_reference(
+                    &format!("[^{id}]"),
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                ),
+                Inline::Text(t) => push_text_tokens_reference(
+                    t,
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                ),
+                Inline::Code(t) => push_text_tokens_reference(t, F_MONO, strike, link, out),
+                Inline::Strong(c) => tokenize_reference(c, true, italic, strike, link, out),
+                Inline::Emphasis(c) => tokenize_reference(c, bold, true, strike, link, out),
+                Inline::Strikethrough(c) => {
+                    tokenize_reference(c, bold, italic, true, link, out);
+                }
+                Inline::Link { dest, content, .. } => {
+                    if let Some(target) = safe_pdf_link(dest) {
+                        tokenize_reference(content, bold, italic, strike, Some(&target), out);
+                    } else {
+                        tokenize_reference(content, bold, italic, strike, None, out);
+                    }
+                }
+                Inline::Image { alt, .. } => push_text_tokens_reference(
+                    alt,
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                ),
+                Inline::SoftBreak => out.push(RefTok {
+                    text: String::new(),
+                    slot: slot_of(bold, italic, false),
+                    space: true,
+                    hard_break: false,
+                    link: link.cloned(),
+                    strike,
+                }),
+                Inline::HardBreak => out.push(RefTok {
+                    text: String::new(),
+                    slot: slot_of(bold, italic, false),
+                    space: true,
+                    hard_break: true,
+                    link: link.cloned(),
+                    strike,
+                }),
+                Inline::Html(h) => push_text_tokens_reference(
+                    h,
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                ),
+                Inline::Math(t) | Inline::DisplayMath(t) => {
+                    push_text_tokens_reference(t, F_MONO, strike, link, out)
+                }
+            }
+        }
+    }
+
+    fn push_text_tokens_reference(
+        text: &str,
+        slot: u8,
+        strike: bool,
+        link: Option<&LinkTarget>,
+        out: &mut Vec<RefTok>,
+    ) {
+        let mut word_start = 0usize;
+        for (idx, c) in text.char_indices() {
+            if is_breakable_whitespace(c) {
+                if word_start < idx {
+                    out.push(RefTok {
+                        text: text[word_start..idx].to_string(),
+                        slot,
+                        space: false,
+                        hard_break: false,
+                        link: link.cloned(),
+                        strike,
+                    });
+                }
+                out.push(RefTok {
+                    text: String::new(),
+                    slot,
+                    space: true,
+                    hard_break: false,
+                    link: link.cloned(),
+                    strike,
+                });
+                word_start = idx + c.len_utf8();
+            }
+        }
+        if word_start < text.len() {
+            out.push(RefTok {
+                text: text[word_start..].to_string(),
+                slot,
+                space: false,
+                hard_break: false,
+                link: link.cloned(),
+                strike,
+            });
+        }
+    }
+
+    #[test]
+    fn tokenize_link_interning_matches_per_token_clone_reference() {
+        let long_uri = "https://example.com/a/very/long/destination/that/was/cloned/per/token";
+        let link = |dest: &str, content: Vec<Inline>| Inline::Link {
+            dest: dest.to_string(),
+            title: None,
+            content,
+        };
+        let inlines = vec![
+            Inline::Text("plain words here ".to_string()),
+            link(
+                long_uri,
+                vec![
+                    Inline::Text("link one ".to_string()),
+                    Inline::Strong(vec![Inline::Code("inner code".to_string())]),
+                    Inline::SoftBreak,
+                    Inline::Emphasis(vec![Inline::Text("emph tail".to_string())]),
+                ],
+            ),
+            Inline::Text(" between ".to_string()),
+            // Same destination again: must intern to the same index so
+            // run-merge equality (URI content) is preserved.
+            link(
+                long_uri,
+                vec![Inline::Text("same dest words again".to_string())],
+            ),
+            // Different destination: distinct index, runs must not merge.
+            link(
+                "https://example.org/#fragment-target",
+                vec![
+                    Inline::Text("other ".to_string()),
+                    Inline::Strikethrough(vec![Inline::Text("struck".to_string())]),
+                ],
+            ),
+            // Unsafe scheme: renders as plain text with no link (fail-closed).
+            link(
+                "javascript:alert(1)",
+                vec![Inline::Text("unsafe scheme".to_string())],
+            ),
+            Inline::HardBreak,
+            Inline::Text("end".to_string()),
+        ];
+        let mut intern = LinkIntern::default();
+        let mut toks = Vec::new();
+        tokenize(&inlines, false, false, false, None, &mut intern, &mut toks);
+        let mut refs = Vec::new();
+        tokenize_reference(&inlines, false, false, false, None, &mut refs);
+        assert_eq!(toks.len(), refs.len(), "token count");
+        assert!(toks.iter().any(|t| t.link.is_some()), "fixture must link");
+        for (idx, (tok, r)) in toks.iter().zip(refs.iter()).enumerate() {
+            assert_eq!(
+                (
+                    tok.text.as_str(),
+                    tok.slot,
+                    tok.space,
+                    tok.hard_break,
+                    tok.strike
+                ),
+                (r.text.as_str(), r.slot, r.space, r.hard_break, r.strike),
+                "token {idx} shape"
+            );
+            let resolved = tok.link.and_then(|id| intern.targets.get(id as usize));
+            assert_eq!(resolved, r.link.as_ref(), "token {idx} link target");
+        }
+        // Content-keyed dedup: both occurrences of `long_uri` share an index.
+        let first = toks
+            .iter()
+            .find(|t| t.text == "link")
+            .and_then(|t| t.link);
+        let second = toks
+            .iter()
+            .find(|t| t.text == "same")
+            .and_then(|t| t.link);
+        assert_eq!(first, second, "identical URIs must intern to one index");
+        assert_eq!(
+            intern.targets.iter().filter(|t| **t == LinkTarget::Uri(long_uri.to_string())).count(),
+            1,
+            "exactly one table entry per distinct URI"
+        );
+    }
+
+    #[test]
+    fn interned_link_indices_merge_same_uri_spans_into_one_seg() -> crate::Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        let uri = "https://example.com/shared";
+        let link = |dest: &str, text: &str| Inline::Link {
+            dest: dest.to_string(),
+            title: None,
+            content: vec![Inline::Text(text.to_string())],
+        };
+        let same = vec![link(uri, "first "), link(uri, "second")];
+        let mut intern = LinkIntern::default();
+        let mut toks = Vec::new();
+        tokenize(&same, false, false, false, None, &mut intern, &mut toks);
+        let ids: Vec<Option<u32>> = toks.iter().map(|t| t.link).collect();
+        assert!(ids.iter().all(|id| *id == ids[0] && id.is_some()));
+        let segs = build_segs(&toks, 10.0, 11.0, &faces, &intern.targets);
+        assert_eq!(
+            segs.len(),
+            1,
+            "adjacent spans with identical URIs must merge exactly as per-token clones did"
+        );
+        assert_eq!(segs[0].text, "first second");
+        assert_eq!(segs[0].link, Some(LinkTarget::Uri(uri.to_string())));
+        assert_eq!(segs[0].fill, Fill::Link);
+
+        let differing = vec![link(uri, "first "), link("https://example.org/other", "second")];
+        let mut intern = LinkIntern::default();
+        let mut toks = Vec::new();
+        tokenize(&differing, false, false, false, None, &mut intern, &mut toks);
+        let segs = build_segs(&toks, 10.0, 11.0, &faces, &intern.targets);
+        assert_eq!(segs.len(), 2, "distinct URIs must split runs");
+        assert_eq!(segs[0].link, Some(LinkTarget::Uri(uri.to_string())));
+        assert_eq!(
+            segs[1].link,
+            Some(LinkTarget::Uri("https://example.org/other".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "perf micro: cargo test --profile release-perf -- --ignored tokenize_link_interning_perf"]
+    fn tokenize_link_interning_perf_clone_vs_intern() {
+        let long_uri =
+            "https://example.com/a/very/long/destination/path/that/used/to/be/cloned/per/token";
+        let mut inlines = Vec::new();
+        for para_link in 0..24 {
+            let dest = if para_link % 3 == 0 {
+                long_uri.to_string()
+            } else {
+                format!("{long_uri}/{para_link}")
+            };
+            let mut content = Vec::new();
+            for w in 0..20 {
+                content.push(Inline::Text(format!("word{w} ").to_string()));
+            }
+            inlines.push(Inline::Link {
+                dest,
+                title: None,
+                content,
+            });
+            inlines.push(Inline::Text("plain filler text ".to_string()));
+        }
+        // Round-trip sink: merge runs exactly like build_cell_line_owned's
+        // slot/link/strike grouping (the string-compare shape pre-pass-12).
+        let run_ref = |toks: &[RefTok]| {
+            let mut sink: usize = 0;
+            let mut cur: Option<(u8, Option<LinkTarget>, bool, String)> = None;
+            for t in toks {
+                let visible = if t.space {
+                    if t.hard_break { "" } else { " " }
+                } else {
+                    t.text.as_str()
+                };
+                match &mut cur {
+                    Some((slot, link, strike, buf))
+                        if *slot == t.slot && *link == t.link && *strike == t.strike =>
+                    {
+                        buf.push_str(visible);
+                    }
+                    _ => {
+                        if let Some((_, _, _, buf)) = cur.take() {
+                            sink = sink.wrapping_add(buf.len());
+                        }
+                        cur = Some((t.slot, t.link.clone(), t.strike, visible.to_string()));
+                    }
+                }
+            }
+            if let Some((_, _, _, buf)) = cur {
+                sink = sink.wrapping_add(buf.len());
+            }
+            sink
+        };
+        let run_interned = |toks: &[Tok], intern: &LinkIntern| {
+            let mut sink: usize = 0;
+            let mut cur: Option<(u8, Option<u32>, bool, String)> = None;
+            for t in toks {
+                let visible = token_visible_text(t);
+                match &mut cur {
+                    Some((slot, link, strike, buf))
+                        if *slot == t.slot && *link == t.link && *strike == t.strike =>
+                    {
+                        buf.push_str(visible);
+                    }
+                    _ => {
+                        if let Some((_, _, _, buf)) = cur.take() {
+                            sink = sink.wrapping_add(buf.len());
+                        }
+                        cur = Some((t.slot, t.link, t.strike, visible.to_string()));
+                    }
+                }
+            }
+            if let Some((_, _, _, buf)) = cur {
+                sink = sink.wrapping_add(buf.len());
+            }
+            let _ = intern;
+            sink
+        };
+        let mut ref_ns = [0u128; 9];
+        let mut new_ns = [0u128; 9];
+        let mut sink = 0usize;
+        for round in 0..9 {
+            let t0 = std::time::Instant::now();
+            let mut refs = Vec::new();
+            tokenize_reference(&inlines, false, false, false, None, &mut refs);
+            sink = sink.wrapping_add(run_ref(&refs));
+            ref_ns[round] = t0.elapsed().as_nanos();
+
+            let t1 = std::time::Instant::now();
+            let mut intern = LinkIntern::default();
+            let mut toks = Vec::new();
+            tokenize(&inlines, false, false, false, None, &mut intern, &mut toks);
+            sink = sink.wrapping_add(run_interned(&toks, &intern));
+            new_ns[round] = t1.elapsed().as_nanos();
+        }
+        ref_ns.sort_unstable();
+        new_ns.sort_unstable();
+        println!(
+            "tokenize link-heavy corpus (24 links x 20 words, clone-per-token vs interned): reference {} ns vs interned {} ns ({:+.1}%), sink {sink}",
+            ref_ns[4],
+            new_ns[4],
+            (new_ns[4] as f64 - ref_ns[4] as f64) / ref_ns[4] as f64 * 100.0
+        );
+    }
+
     /// The per-token emitter this replaced: re-shapes the whole merged text
     /// at every token (`shaped_width_points_for_layout` per growing prefix).
     /// Kept as the reference for the incremental shaper's differential test.
@@ -33347,6 +33797,7 @@ mod pdf_writer_tests {
         faces: &Faces,
         width_cache: Option<&std::cell::RefCell<WidthCache>>,
         expansion_permille_budget: u16,
+        links: &[LinkTarget],
     ) -> Vec<Seg> {
         let use_expansion = expansion_permille_budget > 0;
         let mut word_extra_milli: f64 = 0.0;
@@ -33359,9 +33810,10 @@ mod pdf_writer_tests {
         for line_tok in toks {
             let tok = &line_tok.tok;
             let text = token_visible_text(tok);
+            let tok_link = resolve_seg_link(links, tok.link);
             let advance;
             match &mut cur {
-                Some(s) if s.slot == tok.slot && s.link == tok.link && s.strike == tok.strike => {
+                Some(s) if s.slot == tok.slot && s.link == tok_link && s.strike == tok.strike => {
                     let old_width = s.width;
                     s.text.push_str(text);
                     let natural =
@@ -33400,7 +33852,7 @@ mod pdf_writer_tests {
                         x,
                         slot: tok.slot,
                         text: text.to_string(),
-                        link: tok.link.clone(),
+                        link: tok_link,
                         fill: if tok.link.is_some() {
                             Fill::Link
                         } else {
@@ -33511,7 +33963,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
-                link: Some(LinkTarget::Uri("https://example.com".to_string())),
+                link: Some(0),
                 strike: false,
             },
             extra_advance: 0.0,
@@ -33568,6 +34020,12 @@ mod pdf_writer_tests {
         ]
     }
 
+    /// Link-target table matching `differential_line_toks`' `linked` helper
+    /// (index 0 = `https://example.com`).
+    fn differential_links() -> Vec<LinkTarget> {
+        vec![LinkTarget::Uri("https://example.com".to_string())]
+    }
+
     #[test]
     #[ignore = "perf micro: cargo test --profile release-perf -- --ignored segs_adjusted_perf"]
     fn segs_adjusted_perf_reference_vs_incremental() -> crate::Result<()> {
@@ -33617,7 +34075,8 @@ mod pdf_writer_tests {
                 // Fresh cache per line: the real emitter creates one per
                 // render, so cold-ish lookups dominate as they do live.
                 let cache = std::cell::RefCell::new(WidthCache::default());
-                let segs = build_segs_adjusted_reference(toks, 10.0, size, &faces, Some(&cache), 0);
+                let segs =
+                    build_segs_adjusted_reference(toks, 10.0, size, &faces, Some(&cache), 0, &[]);
                 sink += segs.len();
             }
             sink
@@ -33626,7 +34085,7 @@ mod pdf_writer_tests {
             let mut sink = 0usize;
             for toks in lines {
                 let cache = std::cell::RefCell::new(WidthCache::default());
-                let segs = build_segs_adjusted(toks, 10.0, size, &faces, Some(&cache), 0);
+                let segs = build_segs_adjusted(toks, 10.0, size, &faces, Some(&cache), 0, &[]);
                 sink += segs.len();
             }
             sink
@@ -33705,9 +34164,24 @@ mod pdf_writer_tests {
         let left = 17.0;
         for (idx, toks) in differential_line_toks().into_iter().enumerate() {
             for budget in [0u16, 15] {
-                let new = build_segs_adjusted(&toks, left, size, &faces, None, budget);
-                let reference =
-                    build_segs_adjusted_reference(&toks, left, size, &faces, None, budget);
+                let new = build_segs_adjusted(
+                    &toks,
+                    left,
+                    size,
+                    &faces,
+                    None,
+                    budget,
+                    &differential_links(),
+                );
+                let reference = build_segs_adjusted_reference(
+                    &toks,
+                    left,
+                    size,
+                    &faces,
+                    None,
+                    budget,
+                    &differential_links(),
+                );
                 assert_same_segs(&new, &reference, &format!("case {idx} budget {budget}"));
             }
         }
@@ -33720,8 +34194,24 @@ mod pdf_writer_tests {
         let size = 11.0;
         let cache = std::cell::RefCell::new(WidthCache::default());
         for (idx, toks) in differential_line_toks().into_iter().enumerate() {
-            let new = build_segs_adjusted(&toks, 5.0, size, &faces, Some(&cache), 0);
-            let reference = build_segs_adjusted_reference(&toks, 5.0, size, &faces, None, 0);
+            let new = build_segs_adjusted(
+                &toks,
+                5.0,
+                size,
+                &faces,
+                Some(&cache),
+                0,
+                &differential_links(),
+            );
+            let reference = build_segs_adjusted_reference(
+                &toks,
+                5.0,
+                size,
+                &faces,
+                None,
+                0,
+                &differential_links(),
+            );
             assert_same_segs(&new, &reference, &format!("cached case {idx}"));
         }
         Ok(())
@@ -33757,7 +34247,7 @@ mod pdf_writer_tests {
         };
         let line_toks = vec![word("of"), word("fi"), word("ce"), space(2.5), word("next")];
 
-        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0);
+        let segs = build_segs_adjusted(&line_toks, 10.0, size, &faces, Some(&cache), 0, &[]);
 
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].text, "office ");
@@ -36431,7 +36921,7 @@ mod svg_text_path_tests {
 mod table_wrap_tests {
     use super::{
         CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
-        Faces, Fill, LayoutCx, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER,
+        Faces, Fill, LayoutCx, LinkIntern, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER,
         TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
         code_fragments, fitted_code_font_size, layout_list, list_marker_layouts,
         preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
@@ -36477,13 +36967,14 @@ mod table_wrap_tests {
         faces: &Faces,
         width_cache: &std::cell::RefCell<super::WidthCache>,
     ) {
-        let toks = cell_tokens(cell, header, faces);
+        let toks = cell_tokens(cell, header, faces, &mut LinkIntern::default());
         column.push(table_cell_measure(
             &toks,
             TEST_TABLE_FONT_SIZE,
             faces,
             width_cache,
             header,
+            &[],
         ));
     }
 
@@ -36513,8 +37004,8 @@ mod table_wrap_tests {
 
     fn measured_cell_max_content(cell: &[Inline], header: bool, faces: &Faces) -> f32 {
         let width_cache = width_cache();
-        let toks = cell_tokens(cell, header, faces);
-        table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, faces, &width_cache, header).max_content
+        let toks = cell_tokens(cell, header, faces, &mut LinkIntern::default());
+        table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, faces, &width_cache, header, &[]).max_content
     }
 
     fn total_table_badness(columns: &[TableColumnMetrics], widths: &[f32]) -> f32 {
@@ -36590,7 +37081,7 @@ mod table_wrap_tests {
         let width_cache = width_cache();
         // A single 200-character word with no break opportunities.
         let cell = vec![Inline::Text("X".repeat(200))];
-        let toks = cell_tokens(&cell, false, &faces);
+        let toks = cell_tokens(&cell, false, &faces, &mut LinkIntern::default());
         let max_width = 100.0;
         let lines = wrap_cell_styled(&toks, max_width, 10.0, &faces, &width_cache);
         assert!(
@@ -36617,15 +37108,22 @@ mod table_wrap_tests {
             Inline::Strong(vec![Inline::Text("repeat".to_string())]),
             Inline::Text(" repeat".to_string()),
         ]);
-        let toks = cell_tokens(&cell, false, &faces);
-        let uncached =
-            table_cell_measure(&toks, TEST_TABLE_FONT_SIZE, &faces, &width_cache(), false);
+        let toks = cell_tokens(&cell, false, &faces, &mut LinkIntern::default());
+        let uncached = table_cell_measure(
+            &toks,
+            TEST_TABLE_FONT_SIZE,
+            &faces,
+            &width_cache(),
+            false,
+            &[],
+        );
         let measured = table_cell_measure(
             &toks,
             TEST_TABLE_FONT_SIZE,
             &faces,
             &shared_width_cache,
             false,
+            &[],
         );
 
         assert_eq!(measured.lines.len(), uncached.lines.len());
@@ -36768,6 +37266,7 @@ mod table_wrap_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            links: LinkIntern::default(),
             toc_entries: Vec::new(),
             toc_page_map: std::collections::BTreeMap::new(),
         };
@@ -38775,6 +39274,7 @@ mod coverage_gap_tests {
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
+            links: LinkIntern::default(),
             toc_entries: Vec::new(),
             toc_page_map: BTreeMap::new(),
         }
@@ -38931,7 +39431,7 @@ mod coverage_gap_tests {
         let inlines = vec![Inline::Text(text.to_string())];
         let opts = PdfOptions::default();
         let faces = Faces::load(&opts).unwrap();
-        let toks = cell_tokens(&inlines, false, &faces);
+        let toks = cell_tokens(&inlines, false, &faces, &mut LinkIntern::default());
         let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
         assert!(texts.contains(&"Accounting/"));
         assert!(texts.contains(&"forensic"));

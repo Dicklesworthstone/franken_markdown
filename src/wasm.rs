@@ -349,7 +349,7 @@ impl WasmRenderOptions {
         self
     }
 
-    fn html_options(&self) -> HtmlOptions {
+    pub(crate) fn html_options(&self) -> HtmlOptions {
         let mut theme = self.theme.clone();
         if let Some(scale) = self.font_scale {
             theme = theme.with_font_scale(crate::FontScale::from_factor(scale));
@@ -369,7 +369,7 @@ impl WasmRenderOptions {
         }
     }
 
-    fn pdf_options(&self) -> PdfOptions {
+    pub(crate) fn pdf_options(&self) -> PdfOptions {
         let mut theme = self.theme.clone();
         let mut base_font_size = self.base_font_size;
         if let Some(scale) = self.font_scale {
@@ -520,11 +520,13 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
 #[must_use]
 pub fn capabilities_json() -> String {
     "{\"schema\":\"fmd-wasm-capabilities-v1\",\
-     \"outputs\":[\"html\",\"pdf\"],\
+     \"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"],\
      \"input\":\"markdown_utf8\",\
      \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
      \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
+     \"document_intelligence\":{\"stats\":true,\"readability\":true,\"structural_lint\":true,\"accessibility_audit\":true,\"search_index\":true},\
+     \"workflows\":{\"semantic_ast_diff\":true,\"in_memory_book_builder\":true,\"recursive_transclusion\":true,\"mermaid_to_svg\":true},\
      \"runtime_assumptions\":{\"filesystem\":false,\"process\":false,\"network\":false,\"threads\":false},\
      \"theme\":"
         .to_string()

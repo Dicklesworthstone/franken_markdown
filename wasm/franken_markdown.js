@@ -1,7 +1,17 @@
 import initWasm, {
+  accessibilityAudit as wasmAccessibilityAudit,
   capabilities as wasmCapabilities,
+  documentStats as wasmDocumentStats,
+  renderBookPdf as wasmRenderBookPdf,
+  renderBookSite as wasmRenderBookSite,
+  renderEpubConfigured,
   renderHtmlConfiguredAdvanced,
-  renderPdfConfiguredMulti
+  renderInteractiveHtmlConfigured,
+  renderPdfConfiguredMulti,
+  renderSemanticDiffHtml as wasmRenderSemanticDiffHtml,
+  renderSvgConfigured,
+  searchIndex as wasmSearchIndex,
+  semanticDiff as wasmSemanticDiff
 } from "./pkg/franken_markdown.js";
 
 let initPromise = null;
@@ -54,7 +64,10 @@ export async function renderHtml(markdown, options = {}) {
       fontWeightsForSlots(fontAssets),
       destinations,
       flatBytes,
-      lengths
+      lengths,
+      stringOption(options.lang),
+      Boolean(options.toc),
+      integerOption(options.tocDepth, "tocDepth")
     )
   );
 }
@@ -101,17 +114,131 @@ export async function renderPdf(markdown, options = {}) {
       baseFontSize,
       numberOption(options.headingScale),
       numberOption(options.tableFontSize),
-      Boolean(options.pageNumbers)
+      Boolean(options.pageNumbers),
+      fontScale,
+      stringOption(options.lang),
+      Boolean(options.toc),
+      integerOption(options.tocDepth, "tocDepth"),
+      integerOption(options.fitToPages, "fitToPages"),
+      options.microtype === "protrusion" || options.microtypeProtrusion === true
     )
   );
+}
+
+export async function renderSvg(markdown, options = {}) {
+  await init();
+  return normalizeResult(renderSvgConfigured(
+    String(markdown),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    fontScaleOption(options.fontScale ?? options.typeSize),
+    numberOption(options.maxWidthPt)
+  ));
+}
+
+export async function renderEpub(markdown, options = {}) {
+  await init();
+  return normalizeResult(renderEpubConfigured(
+    String(markdown),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    verbatimOption(options.title),
+    stringOption(options.lang),
+    fontScaleOption(options.fontScale ?? options.typeSize)
+  ));
+}
+
+export async function renderInteractiveHtml(markdown, options = {}) {
+  await init();
+  return normalizeResult(renderInteractiveHtmlConfigured(
+    String(markdown),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    verbatimOption(options.title),
+    stringOption(options.lang),
+    fontScaleOption(options.fontScale ?? options.typeSize)
+  ));
+}
+
+export async function documentStats(markdown) {
+  await init();
+  return parseJson(wasmDocumentStats(String(markdown)), "document stats JSON");
+}
+
+export async function searchIndex(markdown) {
+  await init();
+  return parseJson(wasmSearchIndex(String(markdown)), "search index JSON");
+}
+
+export async function accessibilityAudit(markdown) {
+  await init();
+  return parseJson(wasmAccessibilityAudit(String(markdown)), "accessibility audit JSON");
+}
+
+export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {
+  await init();
+  return parseJson(wasmSemanticDiff(
+    String(oldMarkdown),
+    String(newMarkdown),
+    verbatimOption(options.oldName),
+    verbatimOption(options.newName)
+  ), "semantic diff JSON");
+}
+
+export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {}) {
+  await init();
+  return normalizeResult(wasmRenderSemanticDiffHtml(
+    String(oldMarkdown),
+    String(newMarkdown),
+    verbatimOption(options.oldName),
+    verbatimOption(options.newName)
+  ));
+}
+
+export async function renderBookSite(files, options = {}) {
+  await init();
+  const normalized = bookFilesOption(files);
+  return normalizeResult(wasmRenderBookSite(
+    normalized.map((file) => file.path),
+    normalized.map((file) => file.source),
+    verbatimOption(options.title),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    fontScaleOption(options.fontScale ?? options.typeSize)
+  ));
+}
+
+export async function renderBookPdf(files, options = {}) {
+  await init();
+  const normalized = bookFilesOption(files);
+  return normalizeResult(wasmRenderBookPdf(
+    normalized.map((file) => file.path),
+    normalized.map((file) => file.source),
+    verbatimOption(options.title),
+    verbatimOption(options.author),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    fontScaleOption(options.fontScale ?? options.typeSize),
+    options.pageNumbers !== false
+  ));
 }
 
 export async function createRenderer(input) {
   await init(input);
   return Object.freeze({
     capabilities,
+    accessibilityAudit,
+    documentStats,
+    renderBookPdf,
+    renderBookSite,
+    renderEpub,
     renderHtml,
-    renderPdf
+    renderInteractiveHtml,
+    renderPdf,
+    renderSemanticDiff,
+    renderSvg,
+    searchIndex,
+    semanticDiff
   });
 }
 
@@ -238,6 +365,32 @@ function numberOption(value) {
     throw new TypeError("typography overrides must be finite numbers");
   }
   return value;
+}
+
+function integerOption(value, label) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function bookFilesOption(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError("book files must be a non-empty array of { path, source } objects");
+  }
+  return value.map((file, index) => {
+    if (file === null || typeof file !== "object") {
+      throw new TypeError(`book files[${index}] must be an object`);
+    }
+    const path = stringOption(file.path);
+    if (path === undefined) {
+      throw new TypeError(`book files[${index}].path must be a non-empty string`);
+    }
+    return Object.freeze({ path, source: String(file.source ?? "") });
+  });
 }
 
 function fontScaleOption(value) {

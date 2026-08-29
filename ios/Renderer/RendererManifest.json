@@ -1,5 +1,5 @@
 {
   "schema": "frankenmarkdown-ios-renderer-v1",
-  "wrapperSha256": "dc6c491d6478fa6dcc7b85b90af3d3180d9b03feafe4dcd6f6991b8ea4b3e8c3",
-  "wasmSha256": "ec59e550e3900548fa61c21ab9246bfa7b0ba2354255a51fb30075a8f5aaf965"
+  "wrapperSha256": "d184ab09f78e6395a7d601414db48ce0c61732410705ccae99522b2b24efc1f0",
+  "wasmSha256": "8a6b08f470a6979f6e0fbd44a7f92ac0808ea9ae23dbd05b9f23b0cc05a21b46"
 }

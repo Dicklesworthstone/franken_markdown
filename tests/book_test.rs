@@ -366,6 +366,53 @@ fn test_math_in_chapter_heading_title() {
     assert_eq!(b.chapters[0].title, "Theorem E=mc^2");
 }
 
+#[test]
+fn test_cli_book_transclusion() {
+    let temp = temp_dir("transclude");
+    let book_dir = temp.join("book");
+    let out_dir = temp.join("dist");
+    fs::create_dir_all(&book_dir).expect("create book dir");
+
+    // Shared snippet
+    fs::write(
+        book_dir.join("snippet.md"),
+        "This is included shared snippet content.\n",
+    )
+    .expect("write snippet");
+
+    // Chapter including snippet
+    fs::write(
+        book_dir.join("01_main.md"),
+        "# Main Chapter\n\n{{#include snippet.md}}\n\nAfter include.\n",
+    )
+    .expect("write main");
+
+    let fmd_bin = env!("CARGO_BIN_EXE_fmd");
+    let output = Command::new(fmd_bin)
+        .args([
+            "book",
+            book_dir.to_str().unwrap(),
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+            "--to",
+            "html",
+            "--json",
+        ])
+        .output()
+        .expect("run fmd book");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let main_html = fs::read_to_string(out_dir.join("01_main.html")).expect("read 01_main.html");
+    assert!(
+        main_html.contains("This is included shared snippet content."),
+        "Included content must appear in rendered chapter"
+    );
+}
+
 fn collect_link_dests(doc: &franken_markdown::Document) -> Vec<String> {
     use franken_markdown::ast::{Block, Inline};
     let mut out = Vec::new();

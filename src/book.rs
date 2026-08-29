@@ -91,20 +91,26 @@ pub fn out_name(path: &str) -> String {
         .or_else(|| path.strip_prefix('/'))
         .or_else(|| path.strip_prefix('\\'))
         .unwrap_or(path);
-    let no_ext = clean
-        .strip_suffix(".markdown")
-        .or_else(|| clean.strip_suffix(".md"))
-        .unwrap_or(clean);
+    let no_ext = if clean.to_ascii_lowercase().ends_with(".markdown") {
+        &clean[..clean.len() - ".markdown".len()]
+    } else if clean.to_ascii_lowercase().ends_with(".md") {
+        &clean[..clean.len() - ".md".len()]
+    } else {
+        clean
+    };
     format!("{}.html", no_ext.replace(['/', '\\'], "__"))
 }
 
 fn path_stem(path: &str) -> String {
     let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    filename
-        .strip_suffix(".markdown")
-        .or_else(|| filename.strip_suffix(".md"))
-        .unwrap_or(filename)
-        .to_string()
+    let stem = if filename.to_ascii_lowercase().ends_with(".markdown") {
+        &filename[..filename.len() - ".markdown".len()]
+    } else if filename.to_ascii_lowercase().ends_with(".md") {
+        &filename[..filename.len() - ".md".len()]
+    } else {
+        filename
+    };
+    stem.to_string()
 }
 
 fn first_heading_text(doc: &Document) -> Option<String> {
@@ -234,20 +240,26 @@ fn rewrite_inline_links(
                 if !dest.starts_with("http://")
                     && !dest.starts_with("https://")
                     && !dest.starts_with("//")
+                    && !dest.starts_with("mailto:")
+                    && !dest.starts_with("data:")
                 {
                     if let Some((page, anchor)) = dest.split_once('#') {
-                        if page.ends_with(".md") || page.ends_with(".markdown") {
+                        let page_lower = page.to_ascii_lowercase();
+                        if page_lower.ends_with(".md") || page_lower.ends_with(".markdown") {
                             let page_html = out_name(page);
                             if known.contains(&page_html) {
                                 *dest = format!("{page_html}#{anchor}");
                                 *count += 1;
                             }
                         }
-                    } else if dest.ends_with(".md") || dest.ends_with(".markdown") {
-                        let page_html = out_name(dest);
-                        if known.contains(&page_html) {
-                            *dest = page_html;
-                            *count += 1;
+                    } else {
+                        let dest_lower = dest.to_ascii_lowercase();
+                        if dest_lower.ends_with(".md") || dest_lower.ends_with(".markdown") {
+                            let page_html = out_name(dest);
+                            if known.contains(&page_html) {
+                                *dest = page_html;
+                                *count += 1;
+                            }
                         }
                     }
                 }

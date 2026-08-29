@@ -2990,7 +2990,8 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         } else {
             list_marker(lines[i])
         };
-        let Some(m) = marker.filter(|m| m.ordered == ordered && m.marker_char == first.marker_char) else {
+        let Some(m) = marker.filter(|m| m.ordered == ordered && m.marker_char == first.marker_char)
+        else {
             break;
         };
         let mut item_lines = vec![m.rest];
@@ -3034,7 +3035,13 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
 
             if let Some(next) = list_marker(lines[i])
                 && next.indent <= m.indent
+                && ((next.ordered == ordered && next.marker_char == first.marker_char)
+                    || marker_interrupts_paragraph(next))
             {
+                break;
+            }
+
+            if is_thematic_break(lines[i]) && leading_spaces(lines[i]) <= m.indent {
                 break;
             }
 
@@ -4431,8 +4438,8 @@ fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> 
                 dest.push(ch);
                 *i += 1;
             }
-            '<' | '\n' => return None,
-            ch if ch == ' ' || ch == '\t' || ch == '\r' => break,
+            '<' => return None,
+            ch if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' => break,
             ch if ch.is_ascii_control() => return None,
             '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {
                 dest.push(chars[*i + 1]);

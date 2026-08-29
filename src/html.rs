@@ -1584,7 +1584,7 @@ fn safe_url(url: &str, context: UrlContext) -> Option<&str> {
 fn url_scheme(url: &str) -> UrlScheme<'_> {
     let mut skipped_gap = false;
     for (idx, byte) in url.bytes().enumerate() {
-        if matches!(byte, b'/' | b'?' | b'#') {
+        if matches!(byte, b'/' | b'?' | b'#' | b'(' | b')' | b'\\') {
             return UrlScheme::None;
         }
         if byte == b':' {

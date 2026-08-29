@@ -1273,11 +1273,18 @@ fn email_autolink_local_part_edges() {
             content: vec![text("a.b@ex.com")],
         }]
     );
-    // A disallowed local-part character rejects the email; the `<...>` is instead
-    // captured as opaque inline HTML.
+    // A disallowed local-part character rejects the angle autolink; the bare email matches.
     assert_eq!(
         parse_inlines("<a\"b@ex.com>"),
-        vec![Inline::Html("<a\"b@ex.com>".into())]
+        vec![
+            text("<a\""),
+            Inline::Link {
+                dest: "mailto:b@ex.com".into(),
+                title: None,
+                content: vec![text("b@ex.com")],
+            },
+            text(">")
+        ]
     );
 }
 
@@ -1285,7 +1292,7 @@ fn email_autolink_local_part_edges() {
 fn email_autolink_domain_edges_all_reject() {
     // Empty domain, an empty dot-separated label, a label starting or ending with
     // `-`, and a label with a disallowed character each reject the email; the
-    // token is captured as inline HTML rather than a mailto link.
+    // token stays as literal text.
     for src in [
         "<foo@>",
         "<a@ex..com>",
@@ -1293,18 +1300,11 @@ fn email_autolink_domain_edges_all_reject() {
         "<a@ex-.com>",
         "<a@ex_.com>",
     ] {
-        assert_eq!(
-            parse_inlines(src),
-            vec![Inline::Html(src.to_string())],
-            "{src}"
-        );
+        assert_eq!(parse_inlines(src), vec![text(src)], "{src}");
     }
     // A domain label longer than 63 chars is rejected.
     let long_label = format!("<a@{}.com>", "x".repeat(64));
-    assert_eq!(
-        parse_inlines(&long_label),
-        vec![Inline::Html(long_label.clone())]
-    );
+    assert_eq!(parse_inlines(&long_label), vec![text(&long_label)]);
 }
 
 // ---- link destination / title: non-punct escape and non-entity `&` ----------

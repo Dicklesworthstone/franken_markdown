@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 > | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.2`** | `Cargo.toml` `version` field |
 > | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.2`** (2026-08-28) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2 |
 > | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.0, `fmd-math` 0.1.0) | **`0.4.2`** | https://crates.io/crates/franken_markdown |
-> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.3.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
+> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
 > The latest tagged release is **v0.4.2** (shipped to GitHub Releases and crates.io), carrying MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page, PDF outline bookmarks, WOFF1 embedded font subsets, recursive watch mode, and PDF/A-2b. For the current `0.4.2` CLI use the GitHub release archives; for the in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
 > The current renderer ships shared HTML/PDF syntax
@@ -415,9 +415,8 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 The browser/WASM build is assembled separately as
 `@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
 published on npm (`npm install @franken-suite/franken-markdown`). As checked on
-August 28, 2026, the registry latest is `0.3.2`; the `0.4.2` package is built,
-gated, and proven at tag `v0.4.2`, and publishes as soon as the repo's
-`NPM_TOKEN` secret is set (the workflow skips versions already on the registry).
+August 28, 2026, the registry latest is `0.4.2`, published by the tag workflow
+with Sigstore provenance attestation.
 
 ---
 

@@ -19,7 +19,9 @@ RUN_ID="${1:-run-all}"
 
 # Discover suites before build/cleanup so every derived artifact id can be
 # validated before any directory is removed or expensive work starts.
-SUITES=(cli-surface render-matrix error-paths)
+SUITES=(cli-surface render-matrix error-paths sota-typography diagrams doc-intelligence epub-pdfa)
+[ "${E2E_SKIP_BATCH:-0}" != "1" ] && SUITES+=(batch-orchestration)
+[ -f scripts/e2e/wasm-browser.sh ] && SUITES+=(wasm-browser)
 [ -f scripts/e2e/parity.sh ] && [ "${E2E_RUN_PARITY:-0}" = "1" ] && SUITES+=(parity)
 [ -f scripts/e2e/installer.sh ] && [ "${E2E_RUN_INSTALLER:-0}" = "1" ] && SUITES+=(installer)
 

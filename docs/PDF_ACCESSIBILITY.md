@@ -109,3 +109,18 @@ Closing `qw1.9` cited:
 - `scripts/check-determinism.sh` — byte-identical tagged PDF across runs.
 - `scripts/check-policy.sh` — clean-room, no new dependencies, no `unsafe`.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
+
+## PDF/UA-1 measured conformance (2026-08-28, veraPDF `ua1`)
+
+The `pdf-a-validation` workflow runs a PDF/UA-1 leg on a fixed fixture and
+ratchets `failedRules` against `tests/fixtures/pdfua-baseline.txt` (currently
+**3**; worse fails CI, better tightens the baseline on review). Measured gaps:
+
+| veraPDF rule | What it flags |
+|---|---|
+| clause 7.1, test 9 | heading-structure detail (H4–H6 collapse to generic `/H`) |
+| clause 7.1, test 10 | heading-structure detail (same roadmap item) |
+| clause 5, test 1 | document-level requirement (viewer/title metadata class) |
+
+These rows map to the roadmap items above (H4–H6 exact tags; document title
+display). When they land, tighten the baseline in the same commit.

@@ -1182,8 +1182,16 @@ sequenceDiagram
     }
 
     fn assert_matches_std(v: f32) {
-        assert_eq!(svg_fixed(v, 1), format!("{v:.1}"), "mismatch at {v:e} ({{:.1}})");
-        assert_eq!(svg_fixed(v, 0), format!("{v:.0}"), "mismatch at {v:e} ({{:.0}})");
+        assert_eq!(
+            svg_fixed(v, 1),
+            format!("{v:.1}"),
+            "mismatch at {v:e} ({{:.1}})"
+        );
+        assert_eq!(
+            svg_fixed(v, 0),
+            format!("{v:.0}"),
+            "mismatch at {v:e} ({{:.0}})"
+        );
     }
 
     #[test]
@@ -1218,7 +1226,18 @@ sequenceDiagram
             assert_matches_std(-v);
             j += 99_933;
         }
-        for v in [0.049_999_996, 0.05, 0.06, 0.25, 0.5, 0.75, 1.5, 2.65, 69.75, 91.5] {
+        for v in [
+            0.049_999_996,
+            0.05,
+            0.06,
+            0.25,
+            0.5,
+            0.75,
+            1.5,
+            2.65,
+            69.75,
+            91.5,
+        ] {
             assert_eq!(format!("{}", SvgNum(v)), format!("{v:.1}"), "SvgNum({v:e})");
             assert_eq!(format!("{}", SvgInt(v)), format!("{v:.0}"), "SvgInt({v:e})");
         }

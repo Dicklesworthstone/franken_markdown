@@ -43,7 +43,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
     let needs_toc = opts.toc || has_toc_marker(&doc.blocks);
     let mut state = RenderState {
-        footnote_defs: collect_footnote_defs(&doc.blocks),
+        root_blocks: &doc.blocks,
         toc_entries: if needs_toc {
             collect_toc_entries(&doc.blocks)
         } else {
@@ -63,7 +63,7 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
     let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
     let needs_toc = opts.toc || has_toc_marker(blocks);
     let mut state = RenderState {
-        footnote_defs: collect_footnote_defs(blocks),
+        root_blocks: blocks,
         toc_entries: if needs_toc {
             collect_toc_entries(blocks)
         } else {
@@ -136,9 +136,15 @@ struct RenderState<'a> {
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: HashMap<String, usize>,
-    /// GFM footnotes: definitions collected before rendering (source id ->
-    /// content blocks), in document order.
+    /// Root blocks of this render call — the source of the lazy
+    /// footnote-definition walk (see `ensure_footnote_defs`).
+    root_blocks: &'a [Block],
+    /// GFM footnotes: definitions (source id -> content blocks), in document
+    /// order. Filled lazily at the first footnote reference; reference-free
+    /// documents — the common case — never pay the walk.
     footnote_defs: Vec<(&'a str, &'a [Block])>,
+    /// Whether the footnote-definition walk has run (`footnote_defs` valid).
+    footnote_defs_scanned: bool,
     /// Footnote numbers by first-reference appearance (render-time assignment).
     footnote_numbers: BTreeMap<String, usize>,
     /// Footnote ids in number order (insertion order of first reference).
@@ -190,6 +196,20 @@ struct UrlCacheEntry {
 }
 
 impl<'a> RenderState<'a> {
+    /// Collect footnote definitions on first need. The collection is read
+    /// only for ids a footnote reference mentions (the `has_def` check) or
+    /// by the trailing notes section, which requires a reference — so
+    /// deferring the walk to the first `Inline::FootnoteRef` is
+    /// output-identical while reference-free documents skip it entirely.
+    /// Runs at most once per render, over the immutable root tree.
+    fn ensure_footnote_defs(&mut self) {
+        if !self.footnote_defs_scanned {
+            self.footnote_defs_scanned = true;
+            let root = self.root_blocks;
+            self.footnote_defs = collect_footnote_defs(root);
+        }
+    }
+
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
         let mut base = slug_inlines(inlines);
         if base.is_empty() {
@@ -1293,8 +1313,9 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
 }
 
 /// Collect GFM footnote definitions in document order (container-aware), for
-/// the trailing notes section. References may precede their definitions, so
-/// this runs before the block walk.
+/// the trailing notes section. Run lazily by `ensure_footnote_defs` at the
+/// first footnote reference: references may precede their definitions, so
+/// whenever the walk runs it must still cover the whole tree.
 fn collect_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
     let mut defs = Vec::new();
     fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
@@ -1355,6 +1376,7 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
 /// section entry. The first reference to a footnote carries the backref
 /// anchor id. References without definitions stay literal text (GFM).
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
+    state.ensure_footnote_defs();
     let has_def = state.footnote_defs.iter().any(|(def_id, _)| *def_id == id);
     if !has_def {
         out.push_str("[^");
@@ -1575,7 +1597,7 @@ fn url_scheme(url: &str) -> UrlScheme<'_> {
             if valid_url_scheme(scheme) {
                 return UrlScheme::Scheme(scheme);
             }
-            return UrlScheme::None;
+            return UrlScheme::Suspicious;
         }
         if byte.is_ascii_whitespace() || byte.is_ascii_control() {
             skipped_gap = true;
@@ -1862,7 +1884,6 @@ impl FontCharSet {
         }
     }
 
-
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn extend_text_slow_reference(&mut self, text: &str) {
@@ -1919,8 +1940,7 @@ impl CharsetWordMemo {
 
     #[inline]
     fn word_mask(&mut self, word: u64) -> u128 {
-        let idx =
-            (word.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - Self::BITS)) as usize;
+        let idx = (word.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - Self::BITS)) as usize;
         let stored = !word;
         if self.keys[idx] != stored {
             let mut bits = 0u128;
@@ -2793,12 +2813,12 @@ mod tests {
 
     use super::{
         FontCharSet, HTML_FONT_SEED, MATH_CACHE_MAX_ENTRIES, RenderState, UrlContext,
-        ascii_char_mask, ascii_char_masks,
-        base64_encode, css_num, css_token, css_without_remote_imports, emit_highlighted_spans,
-        escape_attr, escape_text, find_ascii_case_insensitive, highlighted_span_kind_is_html_safe,
-        html_image_asset_mime, initial_body_capacity, inlines_to_plain, push_escaped_attr,
-        push_html_image_asset_data_uri, push_u64, render, safe_url, sanitize_custom_css, slug,
-        slug_inlines, svg_without_remote_style_imports,
+        ascii_char_mask, ascii_char_masks, base64_encode, css_num, css_token,
+        css_without_remote_imports, emit_highlighted_spans, escape_attr, escape_text,
+        find_ascii_case_insensitive, highlighted_span_kind_is_html_safe, html_image_asset_mime,
+        initial_body_capacity, inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri,
+        push_u64, render, safe_url, sanitize_custom_css, slug, slug_inlines,
+        svg_without_remote_style_imports,
     };
 
     #[test]

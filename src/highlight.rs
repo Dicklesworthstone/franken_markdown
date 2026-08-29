@@ -1082,7 +1082,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
                 line_comments: &["//"],
                 block_comment: Some(("/*", "*/")),
                 strings: &['"', '\'', '`'],
-                    hash_directives: false,
+                hash_directives: false,
             }))
         }
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
@@ -1184,11 +1184,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
 /// ASCII-lowercase one byte. Hand-rolled so every helper in this block stays
 /// callable from `const` table building without toolchain-version questions.
 const fn fold_ascii(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' {
-        b + 32
-    } else {
-        b
-    }
+    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
 }
 
 /// A keyword/type table grouped by its entries' (case-folded for the
@@ -1293,12 +1289,28 @@ const fn kw_offsets_slice(entries: &[&str], fold: bool) -> [u16; 129] {
     offsets
 }
 
-
 const CSS_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "auto", "block", "border-box", "center", "currentColor", "flex", "grid", "inherit", "initial",
-        "inline", "inline-block", "none", "revert", "solid", "transparent", "unset",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "auto",
+            "block",
+            "border-box",
+            "center",
+            "currentColor",
+            "flex",
+            "grid",
+            "inherit",
+            "initial",
+            "inline",
+            "inline-block",
+            "none",
+            "revert",
+            "solid",
+            "transparent",
+            "unset",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1307,13 +1319,51 @@ const CSS_KW: KwTable = {
 };
 
 const MERMAID_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "accdescr", "acctitle", "activate", "actor", "alt", "as", "autonumber", "class", "classdef",
-        "classdiagram", "click", "critical", "deactivate", "direction", "else", "end", "erdiagram",
-        "flowchart", "gantt", "gitgraph", "graph", "journey", "loop", "mindmap", "note", "opt", "over",
-        "par", "participant", "pie", "rect", "section", "sequencediagram", "statediagram",
-        "statediagram-v2", "style", "subgraph", "theme", "timeline", "title",
-    ], true);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "accdescr",
+            "acctitle",
+            "activate",
+            "actor",
+            "alt",
+            "as",
+            "autonumber",
+            "class",
+            "classdef",
+            "classdiagram",
+            "click",
+            "critical",
+            "deactivate",
+            "direction",
+            "else",
+            "end",
+            "erdiagram",
+            "flowchart",
+            "gantt",
+            "gitgraph",
+            "graph",
+            "journey",
+            "loop",
+            "mindmap",
+            "note",
+            "opt",
+            "over",
+            "par",
+            "participant",
+            "pie",
+            "rect",
+            "section",
+            "sequencediagram",
+            "statediagram",
+            "statediagram-v2",
+            "style",
+            "subgraph",
+            "theme",
+            "timeline",
+            "title",
+        ],
+        true,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, true),
@@ -1322,9 +1372,12 @@ const MERMAID_KW: KwTable = {
 };
 
 const MERMAID_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "BT", "LR", "RL", "TB", "TD", "bottom", "left", "right", "top",
-    ], true);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "BT", "LR", "RL", "TB", "TD", "bottom", "left", "right", "top",
+        ],
+        true,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, true),
@@ -1333,12 +1386,15 @@ const MERMAID_TY: KwTable = {
 };
 
 const RUST_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-        "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-        "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "union",
-        "unsafe", "use", "where", "while",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+            "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+            "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
+            "trait", "true", "type", "union", "unsafe", "use", "where", "while",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1347,12 +1403,50 @@ const RUST_KW: KwTable = {
 };
 
 const PS_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "begin", "break", "catch", "class", "continue", "data", "default", "do", "dynamicparam", "else",
-        "elseif", "end", "exit", "filter", "finally", "for", "foreach", "from", "function", "hidden",
-        "if", "in", "param", "process", "return", "switch", "throw", "trap", "try", "until", "using",
-        "var", "while", "workflow", "curl", "iex", "irm", "iwr", "wget",
-    ], true);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "begin",
+            "break",
+            "catch",
+            "class",
+            "continue",
+            "data",
+            "default",
+            "do",
+            "dynamicparam",
+            "else",
+            "elseif",
+            "end",
+            "exit",
+            "filter",
+            "finally",
+            "for",
+            "foreach",
+            "from",
+            "function",
+            "hidden",
+            "if",
+            "in",
+            "param",
+            "process",
+            "return",
+            "switch",
+            "throw",
+            "trap",
+            "try",
+            "until",
+            "using",
+            "var",
+            "while",
+            "workflow",
+            "curl",
+            "iex",
+            "irm",
+            "iwr",
+            "wget",
+        ],
+        true,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, true),
@@ -1361,10 +1455,14 @@ const PS_KW: KwTable = {
 };
 
 const RUST_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8", "u16",
-        "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8",
+            "u16", "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result", "Box", "Rc",
+            "Arc",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1373,12 +1471,15 @@ const RUST_TY: KwTable = {
 };
 
 const PY_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
-        "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda",
-        "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "False", "try", "while",
-        "with", "yield", "self",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+            "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in",
+            "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+            "False", "try", "while", "with", "yield", "self",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1387,9 +1488,12 @@ const PY_KW: KwTable = {
 };
 
 const PY_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1398,13 +1502,54 @@ const PY_TY: KwTable = {
 };
 
 const JS_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-        "default", "delete", "do", "else", "export", "extends", "finally", "for", "from", "function",
-        "if", "import", "in", "instanceof", "interface", "let", "new", "null", "of", "return", "super",
-        "switch", "this", "throw", "true", "false", "try", "type", "typeof", "var", "void", "while",
-        "yield",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "as",
+            "async",
+            "await",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "debugger",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "export",
+            "extends",
+            "finally",
+            "for",
+            "from",
+            "function",
+            "if",
+            "import",
+            "in",
+            "instanceof",
+            "interface",
+            "let",
+            "new",
+            "null",
+            "of",
+            "return",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "false",
+            "try",
+            "type",
+            "typeof",
+            "var",
+            "void",
+            "while",
+            "yield",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1416,9 +1561,12 @@ const JS_KW: KwTable = {
 /// keeps every lexer path uniform, and the bucket probe is still just one
 /// offset pair.
 const JS_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "string", "number", "boolean", "object", "any", "unknown", "never", "void",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "string", "number", "boolean", "object", "any", "unknown", "never", "void",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1427,10 +1575,14 @@ const JS_TY: KwTable = {
 };
 
 const SH_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if", "in",
-        "local", "read", "return", "select", "then", "until", "while", "echo", "set", "unset", "source",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if",
+            "in", "local", "read", "return", "select", "then", "until", "while", "echo", "set",
+            "unset", "source",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1439,11 +1591,39 @@ const SH_KW: KwTable = {
 };
 
 const GO_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for",
-        "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return",
-        "select", "struct", "switch", "type", "var", "nil", "true", "false",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "break",
+            "case",
+            "chan",
+            "const",
+            "continue",
+            "default",
+            "defer",
+            "else",
+            "fallthrough",
+            "for",
+            "func",
+            "go",
+            "goto",
+            "if",
+            "import",
+            "interface",
+            "map",
+            "package",
+            "range",
+            "return",
+            "select",
+            "struct",
+            "switch",
+            "type",
+            "var",
+            "nil",
+            "true",
+            "false",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1452,10 +1632,13 @@ const GO_KW: KwTable = {
 };
 
 const GO_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "bool", "byte", "rune", "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8",
-        "uint16", "uint32", "uint64", "float32", "float64", "error",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "bool", "byte", "rune", "string", "int", "int8", "int16", "int32", "int64", "uint",
+            "uint8", "uint16", "uint32", "uint64", "float32", "float64", "error",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1464,12 +1647,47 @@ const GO_TY: KwTable = {
 };
 
 const C_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern", "for",
-        "goto", "if", "inline", "register", "return", "sizeof", "static", "struct", "switch", "typedef",
-        "union", "volatile", "while", "class", "namespace", "template", "public", "private",
-        "protected", "virtual", "new", "delete", "nullptr", "true", "false",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "auto",
+            "break",
+            "case",
+            "const",
+            "continue",
+            "default",
+            "do",
+            "else",
+            "enum",
+            "extern",
+            "for",
+            "goto",
+            "if",
+            "inline",
+            "register",
+            "return",
+            "sizeof",
+            "static",
+            "struct",
+            "switch",
+            "typedef",
+            "union",
+            "volatile",
+            "while",
+            "class",
+            "namespace",
+            "template",
+            "public",
+            "private",
+            "protected",
+            "virtual",
+            "new",
+            "delete",
+            "nullptr",
+            "true",
+            "false",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1478,10 +1696,13 @@ const C_KW: KwTable = {
 };
 
 const C_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "bool", "char", "double", "float", "int", "long", "short", "signed", "unsigned", "void",
-        "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-    ], false);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "bool", "char", "double", "float", "int", "long", "short", "signed", "unsigned",
+            "void", "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+        ],
+        false,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
@@ -1497,12 +1718,50 @@ const C_TY: KwTable = {
 /// entry still matches (`keyword_table_tests` pins the dedupe and arbitrary
 /// mixed-case probes).
 const SQL_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
-        "TABLE", "DROP", "ALTER", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY",
-        "ORDER", "HAVING", "LIMIT", "AS", "AND", "OR", "NOT", "NULL", "IN", "IS", "DISTINCT", "UNION",
-        "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "INDEX", "DEFAULT",
-    ], true);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "INSERT",
+            "INTO",
+            "VALUES",
+            "UPDATE",
+            "SET",
+            "DELETE",
+            "CREATE",
+            "TABLE",
+            "DROP",
+            "ALTER",
+            "JOIN",
+            "LEFT",
+            "RIGHT",
+            "INNER",
+            "OUTER",
+            "ON",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "AS",
+            "AND",
+            "OR",
+            "NOT",
+            "NULL",
+            "IN",
+            "IS",
+            "DISTINCT",
+            "UNION",
+            "PRIMARY",
+            "KEY",
+            "FOREIGN",
+            "REFERENCES",
+            "INDEX",
+            "DEFAULT",
+        ],
+        true,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, true),
@@ -1511,10 +1770,25 @@ const SQL_KW: KwTable = {
 };
 
 const SQL_TY: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte([
-        "INT", "INTEGER", "BIGINT", "TEXT", "VARCHAR", "CHAR", "BOOLEAN", "DATE", "TIMESTAMP", "REAL",
-        "FLOAT", "DECIMAL", "SERIAL", "BLOB",
-    ], true);
+    const GROUPED: &[&str] = &group_by_first_byte(
+        [
+            "INT",
+            "INTEGER",
+            "BIGINT",
+            "TEXT",
+            "VARCHAR",
+            "CHAR",
+            "BOOLEAN",
+            "DATE",
+            "TIMESTAMP",
+            "REAL",
+            "FLOAT",
+            "DECIMAL",
+            "SERIAL",
+            "BLOB",
+        ],
+        true,
+    );
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, true),
@@ -1544,17 +1818,13 @@ const BOOL_KW: KwTable = {
 
 /// YAML keyword literals.
 const YAML_KW: KwTable = {
-    const GROUPED: &[&str] = &group_by_first_byte(
-        ["true", "false", "null", "yes", "no"],
-        false,
-    );
+    const GROUPED: &[&str] = &group_by_first_byte(["true", "false", "null", "yes", "no"], false);
     KwTable {
         entries: GROUPED,
         offsets: &kw_offsets_slice(GROUPED, false),
         fold: false,
     }
 };
-
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1850,7 +2120,7 @@ mod char_classifier_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod keyword_table_tests {
     use super::{
-        BOOL_KW, CSS_KW, JSON_KW, JS_TY, KwTable, MERMAID_KW, MERMAID_TY, Tok, YAML_KW, highlight,
+        BOOL_KW, CSS_KW, JS_TY, JSON_KW, KwTable, MERMAID_KW, MERMAID_TY, Tok, YAML_KW, highlight,
         lexer,
     };
 
@@ -1885,8 +2155,18 @@ mod keyword_table_tests {
     fn all_tables() -> Vec<(&'static str, KwTable)> {
         let mut tables: Vec<(&'static str, KwTable)> = Vec::new();
         for lang in [
-            "rust", "python", "javascript", "json", "bash", "powershell", "go", "c", "toml",
-            "ini", "yaml", "sql",
+            "rust",
+            "python",
+            "javascript",
+            "json",
+            "bash",
+            "powershell",
+            "go",
+            "c",
+            "toml",
+            "ini",
+            "yaml",
+            "sql",
         ] {
             let Some(super::Lexer::Generic(rules)) = lexer(lang) else {
                 panic!("expected a generic lexer for {lang}");
@@ -1908,10 +2188,7 @@ mod keyword_table_tests {
     #[test]
     fn bucket_offsets_partition_the_entries() {
         for (lang, table) in all_tables() {
-            assert_eq!(
-                table.offsets[0], 0,
-                "{lang} offsets must start at zero"
-            );
+            assert_eq!(table.offsets[0], 0, "{lang} offsets must start at zero");
             assert_eq!(
                 table.offsets[128] as usize,
                 table.entries.len(),

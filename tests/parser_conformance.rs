@@ -736,7 +736,7 @@ fn inline_links_support_balanced_destinations_and_title_forms() {
     assert!(out.contains("<a href=\"https://example.test/wiki/Markdown_(syntax)\">wiki</a>"));
     assert!(out.contains("<a href=\"https://example.test/a(b(c)d)e\">nested</a>"));
     assert!(
-        out.contains("<a href=\"https://example.test/a b?q=1\" title=\"Angle title\">angle</a>")
+        out.contains("<a href=\"https://example.test/a%20b?q=1\" title=\"Angle title\">angle</a>")
     );
     assert!(out.contains("<a href=\"dest\" title=\"Paren title\">paren</a>"));
     assert!(out.contains("<a href=\"foo)bar\" title=\"T&quot;x\">escaped</a>"));
@@ -747,7 +747,7 @@ fn inline_images_share_robust_destination_and_title_parsing() {
     let out = html("![alt](<images/final diagram.svg> 'Final diagram')");
 
     assert!(
-        out.contains("<img src=\"images/final diagram.svg\" alt=\"alt\" title=\"Final diagram\">")
+        out.contains("<img src=\"images/final%20diagram.svg\" alt=\"alt\" title=\"Final diagram\">")
     );
 }
 
@@ -772,7 +772,7 @@ fn top_level_indented_code_blocks_strip_one_code_indent() {
 fn list_item_indentation_still_belongs_to_the_list_item() {
     let out = html("- item\n    still item text");
 
-    assert!(out.contains("<li>item\n  still item text</li>"));
+    assert!(out.contains("<li>item\nstill item text</li>"));
     assert!(!out.contains("<pre><code>still item text"));
 }
 
@@ -984,14 +984,11 @@ fn multiline_paragraph_with_inline_syntax_uses_full_inline_parser() {
 }
 
 #[test]
-fn reference_definition_with_empty_angle_destination_is_rejected() {
-    // `<>` is an empty angle destination, so the line is not a valid reference
-    // definition and stays as visible paragraph text; `[a]` does not resolve.
+fn reference_definition_with_empty_angle_destination_is_accepted() {
+    // `<>` is a valid empty angle destination per CommonMark; `[a]` resolves with empty href.
     let out = html("[a]: <>\n\nUse [a].");
 
-    assert!(out.contains("[a]: &lt;&gt;"));
-    assert!(out.contains("Use [a]."));
-    assert!(!out.contains("<a href"));
+    assert!(out.contains("Use <a href=\"\">a</a>."));
 }
 
 #[test]
@@ -1213,11 +1210,11 @@ fn bare_link_destination_rejects_angle_and_unbalanced_parens() {
 }
 
 #[test]
-fn link_title_spanning_a_newline_is_not_a_link() {
-    // The title quote is interrupted by a line break, so the link does not form.
+fn link_title_spanning_a_newline_is_a_valid_link() {
+    // The title quote can span across lines without blank lines.
     let out = html("[x](/u \"a\nb\")");
-    assert!(!out.contains("href=\"/u\""));
-    assert!(out.contains("[x](/u"));
+    assert!(out.contains("href=\"/u\""));
+    assert!(out.contains("title=\"a\nb\""));
 }
 
 #[test]

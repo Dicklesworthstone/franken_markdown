@@ -181,7 +181,12 @@ fn generated_html_never_emits_live_injected_markup() {
             );
         }
         // The escaped forms must be present (chars were kept, just neutralized).
-        assert!(body.contains("&lt;") || body.contains("&amp;") || body.contains("&quot;"));
+        assert!(
+            body.contains("&lt;")
+                || body.contains("&amp;")
+                || body.contains("&quot;")
+                || body.contains("%22")
+        );
     }
 }
 

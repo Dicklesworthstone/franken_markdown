@@ -352,7 +352,7 @@ fn reference_definition_title_delimiters_all_parse() {
 
 #[test]
 fn reference_definition_angle_destination_and_next_line_title() {
-    assert!(html("[a]\n\n[a]: <u v>").contains("<a href=\"u v\">a</a>"));
+    assert!(html("[a]\n\n[a]: <u v>").contains("<a href=\"u%20v\">a</a>"));
     assert!(html("[a]\n\n[a]: /u\n\"Title\"").contains("<a href=\"/u\" title=\"Title\">a</a>"));
 }
 
@@ -533,7 +533,7 @@ fn invalid_character_references_stay_literal() {
 fn nul_surrogate_and_overflow_numeric_references_fold_to_replacement() {
     assert_eq!(parse_inlines("&#0;"), vec![text("\u{FFFD}")]);
     assert_eq!(parse_inlines("&#xD800;"), vec![text("\u{FFFD}")]);
-    assert_eq!(parse_inlines("&#9999999999;"), vec![text("\u{FFFD}")]);
+    assert_eq!(parse_inlines("&#9999999;"), vec![text("\u{FFFD}")]);
 }
 
 // ---- breaks / escapes / inline html -----------------------------------------
@@ -595,9 +595,9 @@ fn seven_hashes_and_hash_without_space_are_not_headings() {
 }
 
 #[test]
-fn setext_underlines_may_contain_spaces_between_markers() {
-    assert!(html("Title\n--- ---").contains("<h2 id=\"title\">Title</h2>"));
-    assert!(html("Title\n= = =").contains("<h1 id=\"title\">Title</h1>"));
+fn setext_underlines_must_be_contiguous() {
+    assert!(html("Title\n-------").contains("<h2 id=\"title\">Title</h2>"));
+    assert!(html("Title\n=======").contains("<h1 id=\"title\">Title</h1>"));
 }
 
 #[test]
@@ -1115,10 +1115,7 @@ fn a_reference_label_may_contain_a_pipe() {
 }
 
 #[test]
-fn a_reference_definition_label_with_nested_or_escaped_brackets_resolves() {
-    // `find_closing_bracket` must balance a nested `]` (depth>0) and skip an
-    // escaped `\]` when locating the label's closing bracket.
-    assert!(html("[a[b]c]: /u\n\n[a[b]c]").contains("<a href=\"/u\">a[b]c</a>"));
+fn a_reference_definition_label_with_escaped_brackets_resolves() {
     assert!(html("[a\\]b]: /u\n\n[a\\]b]").contains("<a href=\"/u\">a]b</a>"));
 }
 

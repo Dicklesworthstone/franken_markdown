@@ -2306,6 +2306,11 @@ pub struct ParagraphLayoutScratch {
     /// to the fine-grained LSAR difference. Default false — classic KP
     /// behavior, byte-identical output.
     gradual_demerits: bool,
+    /// Enable river-seed demerits: penalize break candidates whose previous
+    /// line's last inter-word space aligns (within 1% of the measure) with a
+    /// space in the candidate line — the two-line seed of a visual river.
+    /// Default false — byte-identical classic output.
+    river_penalty: bool,
 }
 
 impl Default for ParagraphLayoutScratch {
@@ -2321,6 +2326,7 @@ impl Default for ParagraphLayoutScratch {
             states: Vec::new(),
             expansion_permilli: 15,
             gradual_demerits: false,
+            river_penalty: false,
         }
     }
 }
@@ -2343,10 +2349,19 @@ impl ParagraphLayoutScratch {
     pub fn set_gradual_demerits(&mut self, enabled: bool) {
         self.gradual_demerits = enabled;
     }
-
     #[must_use]
     pub const fn gradual_demerits(&self) -> bool {
         self.gradual_demerits
+    }
+
+    /// Enable or disable river-seed demerits. Default: false.
+    pub fn set_river_penalty(&mut self, enabled: bool) {
+        self.river_penalty = enabled;
+    }
+
+    #[must_use]
+    pub const fn river_penalty(&self) -> bool {
+        self.river_penalty
     }
     #[must_use]
     pub const fn expansion_permilli(&self) -> u16 {
@@ -2614,8 +2629,25 @@ pub fn break_paragraph_into(
             } else {
                 0i64
             };
+            // River seeds (opt-in): penalize candidates whose previous line's
+            // last space aligns with a space in this line. prev_state's line
+            // gives the previous line's (start, end); the current line spans
+            // [start, candidate.item_index). No previous line (first line) → 0.
+            let river_cost = if scratch.river_penalty() {
+                river_seed_demerits(
+                    items,
+                    &scratch.metrics.width,
+                    prev_state.map(|(_, st)| (st.line.start, st.line.end)),
+                    start,
+                    candidate.item_index,
+                    eff_line_width,
+                )
+            } else {
+                0
+            };
             let demerits = prev_demerits
                 .saturating_add(line_demerit_val)
+                .saturating_add(river_cost)
                 .saturating_add(overfull_cost);
 
             let state = BreakState {
@@ -2828,6 +2860,60 @@ fn line_badness(metrics: SegmentMetrics, line_width: LayoutUnit) -> i32 {
         .saturating_mul(ratio_milli)
         / 1_000_000_000u128;
     badness.min(INF_PENALTY as u128) as i32
+}
+
+/// Demerit charged when a candidate line plants the seed of a visual river:
+/// its previous line's LAST drawn inter-word space aligns horizontally (within
+/// 1% of the measure) with a space in the candidate line. Both positions are
+/// natural-width prefix sums measured from the shared left margin, so the
+/// check is O(candidate line) with early exit on the first alignment.
+///
+/// v1 checks the previous line's last space only — the strongest visual
+/// signal (rightmost channel) and the cheap one; full all-pairs river
+/// detection would make the DP edge cost quadratic in line length.
+const RIVER_SEED_DEMERITS: i64 = 1_000;
+
+fn river_seed_demerits(
+    items: &[ParagraphItem],
+    widths: &[i64],
+    prev_line: Option<(usize, usize)>,
+    line_start: usize,
+    line_end: usize,
+    line_width: LayoutUnit,
+) -> i64 {
+    let Some((prev_start, prev_end)) = prev_line else {
+        return 0;
+    };
+    // Rightmost drawn space of the previous line: scan back from its end.
+    // A glue at item g sits at natural x = widths[g] - widths[prev_start].
+    let mut x_prev: Option<i64> = None;
+    for g in (prev_start..prev_end).rev() {
+        if let ParagraphItem::Glue(glue) = &items[g]
+            && glue.width > LayoutUnit::ZERO
+        {
+            x_prev = Some(
+                widths.get(g).copied().unwrap_or(0)
+                    - widths.get(prev_start).copied().unwrap_or(0),
+            );
+            break;
+        }
+    }
+    let Some(x_prev) = x_prev else {
+        return 0;
+    };
+    let tolerance = (line_width.milli_points() as i64) / 100;
+    for g in line_start..line_end {
+        if let ParagraphItem::Glue(glue) = &items[g]
+            && glue.width > LayoutUnit::ZERO
+        {
+            let x = widths.get(g).copied().unwrap_or(0)
+                - widths.get(line_start).copied().unwrap_or(0);
+            if (x_prev - x).abs() <= tolerance {
+                return RIVER_SEED_DEMERITS;
+            }
+        }
+    }
+    0
 }
 
 fn candidate_badness(

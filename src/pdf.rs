@@ -1428,6 +1428,7 @@ struct Face {
 }
 
 struct AsciiWidthTables {
+    glyphs: [u16; 128],
     advances: [u32; 128],
     kern: Box<[i32]>,
     lig_start: [bool; 128],
@@ -1534,6 +1535,7 @@ fn build_ascii_tables(font: &Font, kern: &Kerning, lig: &Ligatures) -> AsciiWidt
         );
     }
     AsciiWidthTables {
+        glyphs: glyph_ids,
         advances,
         kern: kern_pairs.into_boxed_slice(),
         lig_start,
@@ -20010,10 +20012,14 @@ fn serialize(
     let mut shape_cache_hit_bytes = 0usize;
     let mut shape_cache_misses = 0usize;
     let mut shape_cache_miss_bytes = 0usize;
+    // One scratch set for the whole render: every slot's unique segment texts
+    // reuse the same char/gid/substitution buffers (see ShapeScratch).
+    let mut shape_scratch = ShapeScratch::default();
     for &slot in &used_slots {
         let face = faces.face(slot);
         let source = face.font.as_ref();
         let lig = face.lig.as_ref();
+        let tables = face.ascii_tables();
         let tail = subset_tail_enabled();
         let mut tail_shape_ns = 0u128;
         let mut tail_subset_ns = 0u128;
@@ -20040,15 +20046,20 @@ fn serialize(
             } else {
                 chars.extend(text.chars());
                 shape_cache_misses += 1;
-                shape_cache_miss_bytes += text.len();
                 let shaped = if tail {
                     tail_misses += 1;
                     let t0 = subset_tail_now();
-                    let s = shape_run(source, lig, text);
+                    let s = shape_run_with_scratch(
+                        source,
+                        lig,
+                        tables,
+                        text,
+                        &mut shape_scratch,
+                    );
                     subset_tail_since(t0, &mut tail_shape_ns);
                     s
                 } else {
-                    shape_run(source, lig, text)
+                    shape_run_with_scratch(source, lig, tables, text, &mut shape_scratch)
                 };
                 collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
                 slot_cache.insert(text.to_string(), shaped);
@@ -29764,23 +29775,72 @@ fn widths_array(font: &Font) -> String {
 
 /// Shape `text` with `source`'s ligatures, returning the shaped SOURCE glyph ids
 /// and, for each emitted ligature, its source characters (so a `ToUnicode` entry
-/// can keep the ligated text selectable).
-fn shape_run(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
-    let chars: Vec<char> = text.chars().collect();
-    let gids: Vec<u16> = chars
-        .iter()
-        .map(|&c| {
-            if *TAIL_NOGLYPH {
-                0
-            } else {
-                source.glyph_index(c)
-            }
-        })
-        .collect();
+/// can keep the ligated text selectable). `tables` must be the ASCII tables of
+/// the same face `source`/`lig` come from (they gate the fast route).
+fn shape_run(source: &Font, lig: &Ligatures, tables: &AsciiWidthTables, text: &str) -> ShapedRun {
+    let mut scratch = ShapeScratch::default();
+    shape_run_with_scratch(source, lig, tables, text, &mut scratch)
+}
+
+/// Reusable shaping scratch: the char vector, raw cmap glyph ids, and
+/// substitution spans of one segment. The segment-cache builder holds one per
+/// render so consecutive [`shape_run_with_scratch`] calls reuse their capacity
+/// instead of allocating three fresh buffers per segment.
+#[derive(Default)]
+struct ShapeScratch {
+    chars: Vec<char>,
+    gids: Vec<u16>,
+    subst: Vec<(u16, usize)>,
+}
+
+/// [`shape_run`] with caller-owned scratch. Two routes, bit-identical output:
+///
+/// * Fast route — pure-ASCII text where no byte's glyph begins a ligature
+///   rule (`tables.lig_start`): substitution is provably the identity, so the
+///   shaped run is just the per-byte table glyph ids (`tables.glyphs` holds
+///   exactly `font.glyph_index(b as u8 as char)` for every byte). No char
+///   vector, no substitution pass, no per-char cmap search.
+/// * General route — the original algorithm verbatim, with the intermediate
+///   buffers borrowed from `scratch`.
+fn shape_run_with_scratch(
+    source: &Font,
+    lig: &Ligatures,
+    tables: &AsciiWidthTables,
+    text: &str,
+    scratch: &mut ShapeScratch,
+) -> ShapedRun {
+    let bytes = text.as_bytes();
+    // `tables.glyphs` mirrors the unchecked cmap, so the debug toggle that
+    // forces `.notdef` ids must keep taking the general route.
+    if !*TAIL_NOGLYPH
+        && bytes.iter().all(|&b| b < 128)
+        && !bytes.iter().any(|&b| tables.lig_start[usize::from(b)])
+    {
+        let glyphs: Vec<u16> = bytes.iter().map(|&b| tables.glyphs[usize::from(b)]).collect();
+        // Pre-size the TJ buffer: each glyph emits 4 hex digits, and a kerned
+        // pair can add '>', a sign, up to 3 digits, and '<' between glyphs, so
+        // 10 bytes per glyph plus the "[<"/">]" brackets covers the worst case.
+        let pdf_tj = String::with_capacity(glyphs.len().saturating_mul(10).saturating_add(8));
+        return ShapedRun {
+            glyphs,
+            ligatures: Vec::new(),
+            pdf_tj,
+        };
+    }
+    let ShapeScratch { chars, gids, subst } = scratch;
+    chars.clear();
+    chars.extend(text.chars());
+    gids.clear();
+    if *TAIL_NOGLYPH {
+        gids.resize(chars.len(), 0);
+    } else {
+        gids.extend(chars.iter().map(|&c| source.glyph_index(c)));
+    }
+    lig.substitute_with_spans_into(gids, subst);
     let mut shaped = Vec::with_capacity(gids.len());
     let mut lig_uni = Vec::new();
     let mut ci = 0;
-    for (gid, count) in lig.substitute_with_spans(&gids) {
+    for &(gid, count) in subst.iter() {
         shaped.push(gid);
         if count > 1 {
             let s: String = chars.get(ci..ci + count).unwrap_or(&[]).iter().collect();

@@ -848,6 +848,28 @@ fn collect_link_reference_metadata_into(
                 // Leading reference definitions do not themselves open a paragraph.
                 in_paragraph = false;
                 continue;
+            } else if !in_paragraph
+                && let Some(label) = parse_reference_definition_label(line)
+                && let Some(dest_line) = lines.get(i + 1)
+                && let Some((dest, maybe_title)) = parse_reference_destination_line(dest_line)
+            {
+                let mut used = 2usize;
+                let mut title = maybe_title;
+                if title.is_none()
+                    && let Some(title_line) = lines.get(i + 2)
+                    && let Some(parsed_title) = parse_reference_title_line(title_line)
+                {
+                    title = Some(parsed_title);
+                    used = 3;
+                }
+
+                refs.entry(label).or_insert(LinkReference { dest, title });
+                if let Some(consumed) = consumed.as_mut() {
+                    push_consumed_reference_range(consumed, i..i + used);
+                }
+                i += used;
+                in_paragraph = false;
+                continue;
             }
 
             kept_reference_candidate = true;

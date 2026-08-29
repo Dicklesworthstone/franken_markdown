@@ -186,3 +186,49 @@ fn pdf_pareto_default_off_and_optin_deterministic() {
     assert_eq!(c, d, "opt-in deterministic");
     assert!(c.starts_with(b"%PDF-"), "still a valid PDF");
 }
+
+#[test]
+fn pareto_with_reused_scratch_matches_fresh_scratch_per_paragraph() {
+    // Production reuses ONE ParagraphLayoutScratch across every paragraph in
+    // a document. A regression here (fronts not cleared per paragraph) made
+    // paragraph N+1 read paragraph N's fronts — wrong items, wrong classes,
+    // corrupt reconstruction. Fresh-scratch and reused-scratch results must
+    // agree for every paragraph, and both must stay scalar-bounded by the
+    // classic path run on the same scratch discipline.
+    let docs: Vec<Vec<&str>> = vec![
+        vec![
+            "Extraordinarily incomprehensible misinterpretations decontaminating reconstructing typography.",
+            "The thorough oxymoron quizzed the phenomenological zeitgeist examining skepticism again.",
+            "Deterministic incremental hyphenation algorithms balance stubborn arithmetic of breaks.",
+        ],
+        vec![
+            "First paragraph alone with a few words to break across the measure.",
+        ],
+        vec![
+            "Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike.",
+            "November oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu.",
+        ],
+    ];
+    for paragraphs in &docs {
+        let mut reused = ParagraphLayoutScratch::new();
+        reused.set_pareto_breaking(true);
+        for text in paragraphs {
+            let items = paragraph_items_from_text(&FlatMetrics, text, FontSize::from_points(11));
+            let w = LayoutUnit::from_points(150);
+            let mut out_reused = Vec::new();
+            break_paragraph_into(&items, w, &mut reused, &mut out_reused);
+            let out_fresh = breaks_pareto(&items, w);
+            assert_eq!(
+                out_reused, out_fresh,
+                "reused scratch diverged from fresh scratch for: {text}"
+            );
+            let classic = break_paragraph(&items, w);
+            assert!(
+                scalar_sum(&out_reused) <= scalar_sum(&classic),
+                "reused-scratch pareto scalar {} exceeded classic {}",
+                scalar_sum(&out_reused),
+                scalar_sum(&classic)
+            );
+        }
+    }
+}

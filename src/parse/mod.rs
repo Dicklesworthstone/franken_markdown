@@ -3118,7 +3118,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                     && list_marker(lines[j]).is_some_and(|next| {
                         next.ordered == ordered
                             && next.marker_char == first.marker_char
-                            && next.indent == m.indent
+                            && next.indent < m.content_indent
                     })
                 {
                     tight = false;

@@ -280,11 +280,11 @@ pub fn parse_document_profiled(src: &str) -> ParseProfile {
     }
 }
 
-fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+fn expand_leading_tabs_with_col(line: &str, start_col: usize) -> std::borrow::Cow<'_, str> {
     if !line.contains('\t') {
         return std::borrow::Cow::Borrowed(line);
     }
-    let mut col = 0usize;
+    let mut col = start_col;
     let mut expanded_prefix = String::new();
     let mut rest_idx = None;
     for (idx, ch) in line.char_indices() {
@@ -311,6 +311,10 @@ fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
     };
     expanded_prefix.push_str(&line[idx..]);
     std::borrow::Cow::Owned(expanded_prefix)
+}
+
+fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+    expand_leading_tabs_with_col(line, 0)
 }
 
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
@@ -862,15 +866,15 @@ fn collect_link_reference_metadata_into(
         // phantom-defined the label. Definitions genuinely inside the quote are
         // collected separately by `collect_nested_references`.
         if scan.maybe_blockquote && blockquote_marker_start(line) {
-            let mut last_inner: Option<&str> = None;
+            let mut last_inner: Option<std::borrow::Cow<'_, str>> = None;
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
                     kept_reference_candidate |= lines[i].contains("]:");
                     last_inner = Some(strip_blockquote_marker(lines[i]));
                     i += 1;
-                } else if blockquote_lazy_continuation(last_inner, lines[i]) {
+                } else if blockquote_lazy_continuation(last_inner.as_deref(), lines[i]) {
                     kept_reference_candidate |= lines[i].contains("]:");
-                    last_inner = Some(trim_start_space_tab(lines[i]));
+                    last_inner = Some(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
                     i += 1;
                 } else {
                     break;
@@ -1165,20 +1169,21 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             continue;
         }
         if scan.maybe_blockquote && blockquote_marker_start(line) {
-            let mut inner: Vec<&str> = Vec::new();
+            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
                     inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
-                } else if blockquote_lazy_continuation(inner.last().copied(), lines[i]) {
-                    inner.push(trim_start_space_tab(lines[i]));
+                } else if blockquote_lazy_continuation(inner.last().map(|c| c.as_ref()), lines[i]) {
+                    inner.push(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
                     i += 1;
                 } else {
                     break;
                 }
             }
-            collect_link_reference_metadata_into(&inner, None, refs);
-            collect_nested_references(&inner, refs, depth + 1);
+            let inner_borrowed: Vec<&str> = inner.iter().map(|c| c.as_ref()).collect();
+            collect_link_reference_metadata_into(&inner_borrowed, None, refs);
+            collect_nested_references(&inner_borrowed, refs, depth + 1);
             in_paragraph = false;
             continue;
         }
@@ -1203,7 +1208,7 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         if scan.maybe_list_marker
             && let Some(marker) = list_marker(line)
         {
-            if in_paragraph && !marker_interrupts_paragraph(marker) {
+            if in_paragraph && !marker_interrupts_paragraph(&marker) {
                 i += 1;
                 continue;
             }
@@ -1360,7 +1365,7 @@ fn scanned_list_marker(scan: BlockStartScan<'_>) -> Option<Marker<'_>> {
 }
 
 fn scanned_list_marker_interrupts_paragraph(scan: BlockStartScan<'_>) -> bool {
-    scanned_list_marker(scan).is_some_and(marker_interrupts_paragraph)
+    scanned_list_marker(scan).as_ref().is_some_and(marker_interrupts_paragraph)
 }
 
 fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
@@ -1586,9 +1591,7 @@ fn parse_blocks_with_refs_profiled(
             let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
-                    inner.push(std::borrow::Cow::Borrowed(strip_blockquote_marker(
-                        lines[i],
-                    )));
+                    inner.push(strip_blockquote_marker(lines[i]));
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().map(|s| s.as_ref()), lines[i]) {
                     // CommonMark lazy continuation: a non-blank, non-`>` line that
@@ -2463,12 +2466,25 @@ fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
 
 /// The content of a `>`-quoted line with the marker and one optional following
 /// space removed, borrowed from the input (no allocation).
-fn strip_blockquote_marker(line: &str) -> &str {
+fn strip_blockquote_marker(line: &str) -> std::borrow::Cow<'_, str> {
     let Some(marker) = blockquote_marker_offset(line) else {
-        return line;
+        return std::borrow::Cow::Borrowed(line);
     };
     let rest = &line[marker + 1..];
-    rest.strip_prefix(' ').unwrap_or(rest)
+    if let Some(after_tab) = rest.strip_prefix('\t') {
+        let col = marker + 1;
+        let tab_width = 4 - (col % 4);
+        let spaces_left = tab_width - 1;
+        let expanded = expand_leading_tabs_with_col(after_tab, col + tab_width);
+        let mut s = String::with_capacity(spaces_left + expanded.len());
+        for _ in 0..spaces_left {
+            s.push(' ');
+        }
+        s.push_str(expanded.as_ref());
+        std::borrow::Cow::Owned(s)
+    } else {
+        std::borrow::Cow::Borrowed(rest.strip_prefix(' ').unwrap_or(rest))
+    }
 }
 
 fn blockquote_marker_offset(line: &str) -> Option<usize> {
@@ -2489,12 +2505,41 @@ fn blockquote_marker_start(line: &str) -> bool {
 fn innermost_is_open_paragraph(mut p: &str) -> bool {
     loop {
         if blockquote_marker_start(p) {
-            p = strip_blockquote_marker(p);
-            continue;
+            let stripped = strip_blockquote_marker(p);
+            match stripped {
+                std::borrow::Cow::Borrowed(s) => {
+                    p = s;
+                    continue;
+                }
+                std::borrow::Cow::Owned(s) => {
+                    let trimmed = trim_space_tab(&s);
+                    if is_blank_line(trimmed) || leading_spaces(&s) >= 4 {
+                        return false;
+                    }
+                    return !is_thematic_break(&s)
+                        && atx_heading(&s).is_none()
+                        && open_fence(&s).is_none()
+                        && !html_block_start(&s);
+                }
+            }
         }
         if let Some(m) = list_marker(p) {
-            p = m.rest;
-            continue;
+            match m.rest {
+                std::borrow::Cow::Borrowed(s) => {
+                    p = s;
+                    continue;
+                }
+                std::borrow::Cow::Owned(s) => {
+                    let trimmed = trim_space_tab(&s);
+                    if is_blank_line(trimmed) || leading_spaces(&s) >= 4 {
+                        return false;
+                    }
+                    return !is_thematic_break(&s)
+                        && atx_heading(&s).is_none()
+                        && open_fence(&s).is_none()
+                        && !html_block_start(&s);
+                }
+            }
         }
         break;
     }
@@ -3022,14 +3067,14 @@ mod html_block_classifier_tests {
 
 // ---- lists ------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Marker<'a> {
     indent: usize,
     ordered: bool,
     start: u64,
     marker_char: char,
     content_indent: usize,
-    rest: &'a str,
+    rest: std::borrow::Cow<'a, str>,
 }
 
 fn list_marker(line: &str) -> Option<Marker<'_>> {
@@ -3076,33 +3121,47 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
     None
 }
 
-fn marker_padding(after_marker: &str, column_after_marker: usize) -> Option<(&str, usize)> {
+fn marker_padding<'a>(
+    after_marker: &'a str,
+    column_after_marker: usize,
+) -> Option<(std::borrow::Cow<'a, str>, usize)> {
     if after_marker.is_empty() {
-        return Some(("", 1));
+        return Some((std::borrow::Cow::Borrowed(""), 1));
     }
     let first = after_marker.chars().next()?;
     if first == '\t' {
-        let padding = 4 - (column_after_marker % 4);
-        return Some((&after_marker[1..], padding));
+        let tab_width = 4 - (column_after_marker % 4);
+        let spaces_left = tab_width - 1;
+        let expanded =
+            expand_leading_tabs_with_col(&after_marker[1..], column_after_marker + tab_width);
+        let mut s = String::with_capacity(spaces_left + expanded.len());
+        for _ in 0..spaces_left {
+            s.push(' ');
+        }
+        s.push_str(expanded.as_ref());
+        return Some((std::borrow::Cow::Owned(s), 1));
     }
     if first == ' ' {
         let space_count = after_marker.bytes().take_while(|&b| b == b' ').count();
         if space_count == after_marker.len() {
-            return Some(("", 1));
+            return Some((std::borrow::Cow::Borrowed(""), 1));
         }
         if space_count <= 4 {
-            return Some((&after_marker[space_count..], space_count));
+            return Some((
+                std::borrow::Cow::Borrowed(&after_marker[space_count..]),
+                space_count,
+            ));
         }
-        return Some((&after_marker[1..], 1));
+        return Some((std::borrow::Cow::Borrowed(&after_marker[1..]), 1));
     }
     None
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {
-    list_marker(line).is_some_and(marker_interrupts_paragraph)
+    list_marker(line).as_ref().is_some_and(marker_interrupts_paragraph)
 }
 
-fn marker_interrupts_paragraph(marker: Marker<'_>) -> bool {
+fn marker_interrupts_paragraph(marker: &Marker<'_>) -> bool {
     // CommonMark: a list interrupts a paragraph only when the first item has
     // content on the marker line, is indented <= 3 spaces, and (for ordered lists) starts at 1.
     if marker.indent > 3 || marker.rest.is_empty() {
@@ -3154,7 +3213,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
     let mut i = 0;
     while i < lines.len() {
         let marker = if i == 0 {
-            Some(first)
+            Some(first.clone())
         } else {
             list_marker(lines[i])
         };
@@ -3162,13 +3221,16 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         else {
             break;
         };
-        let mut item_lines: Vec<std::borrow::Cow<'a, str>> =
-            vec![std::borrow::Cow::Borrowed(m.rest)];
+        let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
         let mut open_fence_state: Option<(char, usize)> =
-            open_fence(m.rest).map(|(ch, len, _)| (ch, len));
+            open_fence(m.rest.as_ref()).map(|(ch, len, _)| (ch, len));
         i += 1;
 
-        if items.is_empty() && is_blank_line(m.rest) && i < lines.len() && is_blank_line(lines[i]) {
+        if items.is_empty()
+            && is_blank_line(m.rest.as_ref())
+            && i < lines.len()
+            && is_blank_line(lines[i])
+        {
             let (task, first_body) = split_task_marker(item_lines[0].as_ref());
             item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
             items.push((task, item_lines));
@@ -7921,16 +7983,16 @@ mod commonmark_blank_line_tests {
 
     #[test]
     fn tab_after_list_marker_uses_tab_stop_columns() {
-        // `-` at column 0, tab from column 1 → stop 4, so content_indent is 4.
+        // `-` at column 0, tab from column 1 → stop 4, consuming 1 delimiter space and leaving 2 spaces in rest.
         let m = list_marker("-\tfoo").expect("list marker");
-        assert_eq!(m.content_indent, 4);
-        assert_eq!(m.rest, "foo");
+        assert_eq!(m.content_indent, 2);
+        assert_eq!(m.rest.as_ref(), "  foo");
         let m = list_marker("1.\tfoo").expect("ordered marker");
-        assert_eq!(m.content_indent, 4);
-        assert_eq!(m.rest, "foo");
+        assert_eq!(m.content_indent, 3);
+        assert_eq!(m.rest.as_ref(), " foo");
         let m = list_marker("- foo").expect("space padding");
         assert_eq!(m.content_indent, 2);
-        assert_eq!(m.rest, "foo");
+        assert_eq!(m.rest.as_ref(), "foo");
     }
 
     #[test]

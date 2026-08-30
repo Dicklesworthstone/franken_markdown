@@ -3111,7 +3111,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             open_fence(m.rest).map(|(ch, len, _)| (ch, len));
         i += 1;
 
-        if is_blank_line(m.rest) && i < lines.len() && is_blank_line(lines[i]) {
+        if items.is_empty() && is_blank_line(m.rest) && i < lines.len() && is_blank_line(lines[i]) {
             let (task, first_body) = split_task_marker(item_lines[0].as_ref());
             item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
             items.push((task, item_lines));

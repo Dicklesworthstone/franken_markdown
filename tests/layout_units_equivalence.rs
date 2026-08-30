@@ -147,7 +147,7 @@ fn crossing_advances(m: u32) -> Vec<u32> {
         return v;
     }
     let m128 = u128::from(m);
-    let bound = (u128::from(i32::MAX as u32) * 1000 + m128 - 1) / m128;
+    let bound = (u128::from(i32::MAX as u32) * 1000).div_ceil(m128);
     if let Ok(a0) = u32::try_from(bound) {
         for a in a0.saturating_sub(16)..=a0.saturating_add(16) {
             v.push(a);
@@ -235,7 +235,7 @@ fn fast_paths_match_reference_on_truncation_edges() {
         let size = FontSize::from_milli_points(m);
         let m128 = u128::from(m);
         for &limit in &[u128::from(i32::MAX as u32), u128::from(2_147_483_648u32)] {
-            let bound = (limit * 1000 + m128 - 1) / m128;
+            let bound = (limit * 1000).div_ceil(m128);
             let Ok(d0) = i32::try_from(bound) else {
                 continue;
             };
@@ -250,7 +250,7 @@ fn fast_paths_match_reference_on_truncation_edges() {
                 );
             }
         }
-        if let Ok(a0) = u32::try_from((u128::from(i32::MAX as u32) * 1000 + m128 - 1) / m128) {
+        if let Ok(a0) = u32::try_from((u128::from(i32::MAX as u32) * 1000).div_ceil(m128)) {
             for a in a0.saturating_sub(2048)..=a0.saturating_add(2048) {
                 assert_eq!(
                     advance_to_layout_units(a, size).milli_points(),
@@ -269,7 +269,6 @@ fn fast_paths_match_reference_on_strided_full_domain() {
     // `x >> 32` cycles the whole u32 range uniformly.
     const STRIDE: u64 = 0x9E37_79B9_7F4A_7C15;
     const SAMPLES: u64 = 1 << 19;
-    let mut state: u64 = 0x243F_6A88_85A3_08D3;
 
     // Every 4th corner keeps the per-corner sweep set ~45 sizes/advances.
     let corners = corner_u32s();

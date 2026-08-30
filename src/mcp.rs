@@ -257,9 +257,31 @@ fn parse_string_raw(chars: &[char], idx: &mut usize) -> Result<String, String> {
                         *idx += 4;
                         let code = u32::from_str_radix(&hex, 16)
                             .map_err(|e| format!("invalid hex in unicode escape: {e}"))?;
-                        let ch = char::from_u32(code)
-                            .ok_or_else(|| format!("invalid unicode code point: {code}"))?;
-                        s.push(ch);
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            if *idx + 6 <= chars.len()
+                                && chars[*idx] == '\\'
+                                && chars[*idx + 1] == 'u'
+                            {
+                                let low_hex: String = chars[*idx + 2..*idx + 6].iter().collect();
+                                if let Ok(low_code) = u32::from_str_radix(&low_hex, 16) {
+                                    if (0xDC00..=0xDFFF).contains(&low_code) {
+                                        *idx += 6;
+                                        let scalar = 0x10000
+                                            + (((code - 0xD800) << 10) | (low_code - 0xDC00));
+                                        let ch = char::from_u32(scalar).unwrap_or('\u{FFFD}');
+                                        s.push(ch);
+                                        continue;
+                                    }
+                                }
+                            }
+                            s.push('\u{FFFD}');
+                        } else if (0xDC00..=0xDFFF).contains(&code) {
+                            s.push('\u{FFFD}');
+                        } else {
+                            let ch = char::from_u32(code)
+                                .ok_or_else(|| format!("invalid unicode code point: {code}"))?;
+                            s.push(ch);
+                        }
                     }
                     _ => s.push(esc),
                 }
@@ -416,8 +438,8 @@ pub fn read_frame<R: BufRead>(
             return Ok(Some(trimmed.to_string()));
         }
 
-        if let Some(rest) = trimmed.strip_prefix("Content-Length:") {
-            let len_str = rest.trim();
+        if trimmed.len() >= 15 && trimmed[..15].eq_ignore_ascii_case("content-length:") {
+            let len_str = trimmed[15..].trim();
             let len = len_str.parse::<usize>().map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -1520,5 +1542,25 @@ mod tests {
         };
         assert!(text.contains("\"schema_version\""));
         assert!(text.contains("\"verdict\""));
+    }
+
+    #[test]
+    fn json_parser_handles_utf16_surrogate_pairs() {
+        // \uD83D\uDE00 is 😀 (U+1F600)
+        let json = r#"{"emoji":"\uD83D\uDE00","clef":"\uD834\uDD1E"}"#;
+        let val = parse_json(json).expect("parse surrogates");
+        assert_eq!(val.get("emoji").and_then(|v| v.as_str()), Some("😀"));
+        assert_eq!(val.get("clef").and_then(|v| v.as_str()), Some("𝄞"));
+    }
+
+    #[test]
+    fn read_frame_accepts_lowercase_content_length() {
+        let msg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
+        let raw = format!("content-length: {}\r\n\r\n{msg}", msg.len());
+        let mut cursor = std::io::Cursor::new(raw.as_bytes());
+        let read = read_frame(&mut cursor, MAX_FRAME_BYTES)
+            .expect("read frame")
+            .expect("some message");
+        assert_eq!(read, msg);
     }
 }

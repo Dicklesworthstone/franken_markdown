@@ -3297,10 +3297,10 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                     if next.indent == m.indent && next.ordered == ordered {
                         true
                     } else {
-                        marker_interrupts_paragraph(next)
+                        marker_interrupts_paragraph(&next)
                     }
                 } else if next.indent < m.content_indent {
-                    marker_interrupts_paragraph(next)
+                    marker_interrupts_paragraph(&next)
                 } else {
                     false
                 };

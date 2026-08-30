@@ -874,46 +874,16 @@ fn collect_link_reference_metadata_into(
         // Extract a reference definition only at a block boundary, never as a
         // paragraph continuation.
         if scan.maybe_reference {
-            if !in_paragraph && let Some((label, mut reference)) = parse_reference_definition(line)
+            if !in_paragraph
+                && let Some((label, reference, used)) =
+                    parse_multiline_reference_definition(&lines[i..])
             {
-                let mut used = 1usize;
-                if reference.title.is_none()
-                    && let Some(title_line) = lines.get(i + 1)
-                    && leading_spaces(title_line) < 4
-                    && let Some(title) = parse_reference_title_line(title_line)
-                {
-                    reference.title = Some(title);
-                    used = 2;
-                }
-
                 refs.entry(label).or_insert(reference);
                 if let Some(consumed) = consumed.as_mut() {
                     push_consumed_reference_range(consumed, i..i + used);
                 }
                 i += used;
                 // Leading reference definitions do not themselves open a paragraph.
-                in_paragraph = false;
-                continue;
-            } else if !in_paragraph
-                && let Some(label) = parse_reference_definition_label(line)
-                && let Some(dest_line) = lines.get(i + 1)
-                && let Some((dest, maybe_title)) = parse_reference_destination_line(dest_line)
-            {
-                let mut used = 2usize;
-                let mut title = maybe_title;
-                if title.is_none()
-                    && let Some(title_line) = lines.get(i + 2)
-                    && let Some(parsed_title) = parse_reference_title_line(title_line)
-                {
-                    title = Some(parsed_title);
-                    used = 3;
-                }
-
-                refs.entry(label).or_insert(LinkReference { dest, title });
-                if let Some(consumed) = consumed.as_mut() {
-                    push_consumed_reference_range(consumed, i..i + used);
-                }
-                i += used;
                 in_paragraph = false;
                 continue;
             }
@@ -1932,6 +1902,115 @@ fn collect_inline_chars_from_text(text: &str) -> Vec<char> {
     let mut chars = Vec::with_capacity(text.len());
     chars.extend(text.chars());
     chars
+}
+
+fn skip_spaces_or_newline(chars: &[char], i: &mut usize) {
+    while *i < chars.len() && (chars[*i] == ' ' || chars[*i] == '\t' || chars[*i] == '\n') {
+        *i += 1;
+    }
+}
+
+fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkReference, usize)> {
+    if lines.is_empty() || leading_spaces(lines[0]) > 3 {
+        return None;
+    }
+    let first_trimmed = trim_start_space_tab(lines[0]);
+    if !first_trimmed.starts_with('[') {
+        return None;
+    }
+
+    // Try single-line fast ascii path first
+    if let Some((label, ref_def)) = parse_simple_ascii_reference_definition(lines[0]) {
+        if ref_def.title.is_none()
+            && let Some(line2) = lines.get(1)
+            && leading_spaces(line2) < 4
+            && let Some(title) = parse_reference_title_line(line2)
+        {
+            return Some((label, LinkReference { dest: ref_def.dest, title: Some(title) }, 2));
+        }
+        return Some((label, ref_def, 1));
+    }
+
+    // Collect candidate lines up to 8 lines without blank lines
+    let max_lines = lines.len().min(8);
+    let mut candidate_lines = Vec::with_capacity(max_lines);
+    for line in &lines[..max_lines] {
+        if is_blank_line(line) {
+            break;
+        }
+        candidate_lines.push(*line);
+    }
+
+    if candidate_lines.is_empty() {
+        return None;
+    }
+
+    // First check single line and 2-line title extensions with standard definition parser
+    if let Some((label, mut ref_def)) = parse_reference_definition(candidate_lines[0]) {
+        if ref_def.title.is_none()
+            && let Some(line2) = candidate_lines.get(1)
+            && leading_spaces(line2) < 4
+            && let Some(title) = parse_reference_title_line(line2)
+        {
+            ref_def.title = Some(title);
+            return Some((label, ref_def, 2));
+        }
+        return Some((label, ref_def, 1));
+    }
+
+    // Check multiline combinations
+    for k in 2..=candidate_lines.len() {
+        let joined = candidate_lines[..k].join("\n");
+        let chars: Vec<char> = joined.chars().collect();
+        let mut i = 0usize;
+        skip_spaces(&chars, &mut i);
+        if chars.get(i) != Some(&'[') {
+            continue;
+        }
+        let close = match find_closing_bracket(&chars, i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if chars.get(close + 1) != Some(&':') {
+            continue;
+        }
+        let label = match normalize_reference_label_chars(&chars[i + 1..close]) {
+            Some(l) => l,
+            None => continue,
+        };
+        let mut j = close + 2;
+        skip_spaces_or_newline(&chars, &mut j);
+        if j >= chars.len() {
+            continue;
+        }
+        let dest = match parse_link_destination(&chars, &mut j) {
+            Some(d) => d,
+            None => continue,
+        };
+        let spaces_start = j;
+        skip_spaces_or_newline(&chars, &mut j);
+        let title = if j >= chars.len() {
+            None
+        } else {
+            if j == spaces_start {
+                continue;
+            }
+            let title_str = match parse_link_title(&chars, &mut j) {
+                Some(t) => t,
+                None => continue,
+            };
+            skip_spaces(&chars, &mut j);
+            if j != chars.len() {
+                continue;
+            }
+            Some(title_str)
+        };
+        skip_spaces(&chars, &mut j);
+        if j == chars.len() {
+            return Some((label, LinkReference { dest, title }, k));
+        }
+    }
+    None
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {

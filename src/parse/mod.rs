@@ -325,7 +325,11 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // renders as a thematic break or paragraph text.
     let (_frontmatter, src) = split_frontmatter(src);
     let tab_storage: Option<Vec<String>> = if src.contains('\t') {
-        Some(src.lines().map(|l| expand_leading_tabs(l).into_owned()).collect())
+        Some(
+            src.lines()
+                .map(|l| expand_leading_tabs(l).into_owned())
+                .collect(),
+        )
     } else {
         None
     };
@@ -1365,7 +1369,9 @@ fn scanned_list_marker(scan: BlockStartScan<'_>) -> Option<Marker<'_>> {
 }
 
 fn scanned_list_marker_interrupts_paragraph(scan: BlockStartScan<'_>) -> bool {
-    scanned_list_marker(scan).as_ref().is_some_and(marker_interrupts_paragraph)
+    scanned_list_marker(scan)
+        .as_ref()
+        .is_some_and(marker_interrupts_paragraph)
 }
 
 fn scanned_setext_underline(scan: BlockStartScan<'_>) -> Option<u8> {
@@ -3158,7 +3164,9 @@ fn marker_padding<'a>(
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {
-    list_marker(line).as_ref().is_some_and(marker_interrupts_paragraph)
+    list_marker(line)
+        .as_ref()
+        .is_some_and(marker_interrupts_paragraph)
 }
 
 fn marker_interrupts_paragraph(marker: &Marker<'_>) -> bool {

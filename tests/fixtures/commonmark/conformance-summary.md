@@ -1,9 +1,9 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 573 / 652 (87.9%)**
-- in-scope match (excl. intentional non-goals): 573 / 595 (96.3%)
+- **pass: 577 / 652 (88.5%)**
+- in-scope match (excl. intentional non-goals): 577 / 595 (97.0%)
 - intentional_non_goal: 57 (raw-HTML default-escape policy)
-- known_gap: 22
+- known_gap: 18
 
 | Section | Pass | Total |
 |---|---:|---:|
@@ -30,6 +30,6 @@
 | Raw HTML | 7 | 20 |
 | Setext headings | 27 | 27 |
 | Soft line breaks | 2 | 2 |
-| Tabs | 7 | 11 |
+| Tabs | 11 | 11 |
 | Textual content | 3 | 3 |
 | Thematic breaks | 19 | 19 |

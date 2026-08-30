@@ -8,15 +8,16 @@
 //! asserts this equality as a proof obligation (`profiled_bytes_equal_normal_pdf`)
 //! and used to abort the whole `corpus` scenario for footnote-bearing inputs.
 //! These tests pin the fix at the library boundary.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::{parse_markdown, render_pdf_document, render_pdf_document_profiled};
 
 fn assert_profiled_bytes_equal_normal(src: &str) {
     let doc = parse_markdown(src);
-    let normal = render_pdf_document(&doc, &Default::default())
-        .unwrap_or_else(|e| panic!("normal render failed: {e}"));
+    let normal =
+        render_pdf_document(&doc, &Default::default()).expect("normal render should succeed");
     let profiled = render_pdf_document_profiled(&doc, &Default::default())
-        .unwrap_or_else(|e| panic!("profiled render failed: {e}"));
+        .expect("profiled render should succeed");
     assert_eq!(
         normal.len(),
         profiled.bytes.len(),
@@ -28,7 +29,7 @@ fn assert_profiled_bytes_equal_normal(src: &str) {
     );
     // Repeated profiled renders must also be stable against each other.
     let again = render_pdf_document_profiled(&doc, &Default::default())
-        .unwrap_or_else(|e| panic!("second profiled render failed: {e}"));
+        .expect("second profiled render should succeed");
     assert_eq!(
         profiled.bytes, again.bytes,
         "profiled renders are not stable"

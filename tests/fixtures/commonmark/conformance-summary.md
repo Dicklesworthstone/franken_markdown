@@ -1,9 +1,9 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 518 / 652 (79.4%)**
-- in-scope match (excl. intentional non-goals): 518 / 595 (87.1%)
+- **pass: 536 / 652 (82.2%)**
+- in-scope match (excl. intentional non-goals): 536 / 595 (90.1%)
 - intentional_non_goal: 57 (raw-HTML default-escape policy)
-- known_gap: 77
+- known_gap: 59
 
 | Section | Pass | Total |
 |---|---:|---:|
@@ -19,17 +19,17 @@
 | HTML blocks | 0 | 44 |
 | Hard line breaks | 13 | 15 |
 | Images | 22 | 22 |
-| Indented code blocks | 9 | 12 |
+| Indented code blocks | 10 | 12 |
 | Inlines | 1 | 1 |
 | Link reference definitions | 24 | 27 |
-| Links | 84 | 90 |
-| List items | 21 | 48 |
-| Lists | 9 | 26 |
+| Links | 85 | 90 |
+| List items | 26 | 48 |
+| Lists | 18 | 26 |
 | Paragraphs | 8 | 8 |
 | Precedence | 1 | 1 |
 | Raw HTML | 7 | 20 |
 | Setext headings | 27 | 27 |
 | Soft line breaks | 2 | 2 |
-| Tabs | 6 | 11 |
+| Tabs | 7 | 11 |
 | Textual content | 3 | 3 |
-| Thematic breaks | 18 | 19 |
+| Thematic breaks | 19 | 19 |

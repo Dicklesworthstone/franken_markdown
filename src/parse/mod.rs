@@ -5471,6 +5471,26 @@ fn compute_bracket_pairs(chars: &[char]) -> BracketPairs {
     }
 }
 
+fn unicode_case_fold_char(ch: char) -> Option<&'static str> {
+    match ch {
+        'ß' | 'ẞ' => Some("ss"),
+        'İ' => Some("i\u{0307}"),
+        'ς' => Some("σ"),
+        'ϑ' => Some("θ"),
+        'ϕ' => Some("φ"),
+        'ϖ' => Some("π"),
+        'ϰ' => Some("κ"),
+        'ϱ' => Some("ρ"),
+        'ϵ' => Some("ε"),
+        'ẛ' => Some("s\u{0307}"),
+        'ι' => Some("ι"),
+        'Ω' => Some("ω"),
+        'K' => Some("k"),
+        'Å' => Some("å"),
+        _ => None,
+    }
+}
+
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
     let mut escaped = false;
     for &ch in label {
@@ -5501,8 +5521,12 @@ fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
         if pending_space && !out.is_empty() {
             out.push(' ');
         }
-        for lower in ch.to_lowercase() {
-            out.push(lower);
+        if let Some(folded) = unicode_case_fold_char(ch) {
+            out.push_str(folded);
+        } else {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
         }
         pending_space = false;
     }
@@ -7382,14 +7406,58 @@ mod code_span_normalize_tests {
     #[test]
     fn normalize_code_span_matches_replace_semantics_across_all_shapes() {
         let shapes = [
-            "", " ", "  ", "   ", "\n", "\n\n", " \n ", "\t", "\t \t", " \t ",
-            "a", " a", "a ", " a ", "  a  ", "  a", "a  ", "a\t", "\ta",
-            "code", "foo bar baz", "x", "a b c d e f",
-            "a\nb", "a\n\nb", "a\n\n\nb", "line1\nline2\nline3", "\na", "a\n", "\na\n",
-            " a\nb ", " \na ", " a\n ", " \n\n ", "\n a \n", " \n\na\n\n ", "\n \n \n",
-            " a b ", "  `x`  ", " tab\tsep ", "\ta\nb\t",
-            "héllo wörld", " aé ", " é ", "é", "emoji 🎉 here", " 🎉 ", "🎉\n🎉",
-            "a\u{00a0}b", " a\u{00a0} ", "é\nö", " é\nö ",
+            "",
+            " ",
+            "  ",
+            "   ",
+            "\n",
+            "\n\n",
+            " \n ",
+            "\t",
+            "\t \t",
+            " \t ",
+            "a",
+            " a",
+            "a ",
+            " a ",
+            "  a  ",
+            "  a",
+            "a  ",
+            "a\t",
+            "\ta",
+            "code",
+            "foo bar baz",
+            "x",
+            "a b c d e f",
+            "a\nb",
+            "a\n\nb",
+            "a\n\n\nb",
+            "line1\nline2\nline3",
+            "\na",
+            "a\n",
+            "\na\n",
+            " a\nb ",
+            " \na ",
+            " a\n ",
+            " \n\n ",
+            "\n a \n",
+            " \n\na\n\n ",
+            "\n \n \n",
+            " a b ",
+            "  `x`  ",
+            " tab\tsep ",
+            "\ta\nb\t",
+            "héllo wörld",
+            " aé ",
+            " é ",
+            "é",
+            "emoji 🎉 here",
+            " 🎉 ",
+            "🎉\n🎉",
+            "a\u{00a0}b",
+            " a\u{00a0} ",
+            "é\nö",
+            " é\nö ",
             "  spaces  and\nnewlines  mixed  ",
         ];
         for s in shapes {
@@ -7839,9 +7907,7 @@ mod commonmark_blank_line_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod trim_byte_class_tests {
-    use super::{
-        trim_end_unicode_ws, trim_space_tab, trim_start_unicode_ws, trim_unicode_ws,
-    };
+    use super::{trim_end_unicode_ws, trim_space_tab, trim_start_unicode_ws, trim_unicode_ws};
 
     fn oracle_start(s: &str) -> &str {
         s.trim_start_matches(char::is_whitespace)
@@ -7904,8 +7970,8 @@ mod trim_byte_class_tests {
         assert_eq!(ws.len(), 25, "White_Space set size changed");
 
         let anchors = [
-            'x', '$', '|', ':', '-', '#', '>', '*', '\u{7f}', 'é', 'あ', '😀',
-            '\u{80}', '\u{a1}', '\u{200b}', '\u{feff}', '\u{3fff}',
+            'x', '$', '|', ':', '-', '#', '>', '*', '\u{7f}', 'é', 'あ', '😀', '\u{80}', '\u{a1}',
+            '\u{200b}', '\u{feff}', '\u{3fff}',
         ];
         let runs: [String; 3] = [String::new(), " ".to_string(), "  \t".to_string()];
         for &w in &ws {
@@ -7936,8 +8002,24 @@ mod trim_byte_class_tests {
             .filter_map(char::from_u32)
             .filter(|c| c.is_whitespace())
             .chain([
-                'x', '$', '|', ':', '-', '\\', '`', '\u{0}', '\u{7f}', 'é', 'あ', '😀',
-                '\u{84}', '\u{8b}', '\u{200b}', '\u{feff}', '\u{1f600}', '中',
+                'x',
+                '$',
+                '|',
+                ':',
+                '-',
+                '\\',
+                '`',
+                '\u{0}',
+                '\u{7f}',
+                'é',
+                'あ',
+                '😀',
+                '\u{84}',
+                '\u{8b}',
+                '\u{200b}',
+                '\u{feff}',
+                '\u{1f600}',
+                '中',
             ])
             .collect();
         let mut state = 0x243F6A8885A308D3u64;

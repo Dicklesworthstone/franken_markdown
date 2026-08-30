@@ -163,15 +163,26 @@ impl PairMetrics for Font {
 pub fn advance_to_layout_units(advance_1000: u32, size: FontSize) -> LayoutUnit {
     // width_pt = advance_1000 / 1000 * font_size_pt
     // width_mpt = advance_1000 * font_size_mpt / 1000
-    let width = (advance_1000 as u128 * size.milli_points() as u128) / 1000;
-    LayoutUnit(clamp_u128_to_i32(width))
+    //
+    // Both operands are u32, so their product is at most
+    // (2^32 - 1)^2 = 2^64 - 2^33 + 1 < 2^64: the u64 multiply is exact and
+    // equals the u128 widening product on every input, and division by 1000
+    // then clamping see the same value on both widths. Pinned exhaustively
+    // against the u128 reference in tests/layout_units_equivalence.rs.
+    let width = (advance_1000 as u64 * size.milli_points() as u64) / 1000;
+    LayoutUnit(clamp_u64_to_i32(width))
 }
 
 /// Convert a signed 1/1000-em pair adjustment to layout units.
 #[must_use]
 pub fn adjustment_to_layout_units(adjustment_1000: i32, size: FontSize) -> LayoutUnit {
-    let width = (adjustment_1000 as i128 * size.milli_points() as i128) / 1000;
-    LayoutUnit(clamp_i128_to_i32(width))
+    // |adjustment_1000| <= 2^31 - 1 and milli_points <= 2^32 - 1, so the
+    // product magnitude is < 2^63: the i64 multiply is exact and equals the
+    // i128 reference product on every input. Signed division by 1000
+    // truncates toward zero identically on both widths, and the clamp sees
+    // the same value. Pinned exhaustively in tests/layout_units_equivalence.rs.
+    let width = (adjustment_1000 as i64 * size.milli_points() as i64) / 1000;
+    LayoutUnit(clamp_i64_to_i32(width))
 }
 
 /// Measure text by summing per-character advances in deterministic order.
@@ -3418,6 +3429,14 @@ fn greedy_break_paragraph_into(
 
 const fn clamp_u128_to_i32(value: u128) -> i32 {
     if value > i32::MAX as u128 {
+        i32::MAX
+    } else {
+        value as i32
+    }
+}
+
+const fn clamp_u64_to_i32(value: u64) -> i32 {
+    if value > i32::MAX as u64 {
         i32::MAX
     } else {
         value as i32

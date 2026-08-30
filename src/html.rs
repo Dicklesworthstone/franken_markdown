@@ -554,7 +554,15 @@ fn render_list<'a, 'b>(
                 }
                 out.push_str("> ");
             }
-            None => out.push_str("<li>"),
+            None => {
+                let starts_with_tight_paragraph =
+                    list.tight && matches!(item.blocks.first(), Some(Block::Paragraph(_)));
+                if starts_with_tight_paragraph {
+                    out.push_str("<li>");
+                } else {
+                    out.push_str("<li>\n");
+                }
+            }
         }
         // Tight lists strip the <p> wrapper from every direct-child paragraph of
         // an item (CommonMark tight-list rendering) — including items that also

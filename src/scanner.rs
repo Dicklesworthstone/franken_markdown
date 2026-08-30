@@ -1,7 +1,8 @@
 //! Scalar byte/line scanners: small, safe, allocation-free, and portable.
 //!
 //! [`find_html_text_escape`] and [`find_html_escape`] back the HTML emitter's
-//! bulk-copy escaping in production. The remaining line classifiers
+//! bulk-copy escaping in production, and [`find_xml_attr_escape`] backs the
+//! EPUB writer's. The remaining line classifiers
 //! ([`scan_markdown_line`], [`scan_table_or_fence_candidate`]) are the
 //! behavioral reference a future, explicitly-approved SIMD acceleration island
 //! must match exactly (see AGENTS.md on the SIMD/font-parsing island policy).
@@ -112,6 +113,13 @@ pub fn find_html_text_escape(bytes: &[u8]) -> Option<usize> {
 #[must_use]
 pub fn find_html_escape(bytes: &[u8]) -> Option<usize> {
     find_any_of_4(bytes, b'&', b'<', b'>', b'"')
+}
+
+/// Find the first byte that must be escaped in XML double-quoted attribute
+/// output (`&`, `<`, `>`, `"`, `'`) — the EPUB writer's escaping set.
+#[must_use]
+pub fn find_xml_attr_escape(bytes: &[u8]) -> Option<usize> {
+    find_any_of_5(bytes, b'&', b'<', b'>', b'"', b'\'')
 }
 
 /// Find the first byte that must be escaped in a PDF literal string.
@@ -346,6 +354,14 @@ fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
     )
 }
 
+fn find_any_of_5(bytes: &[u8], a: u8, b: u8, c: u8, d: u8, e: u8) -> Option<usize> {
+    find_needles(
+        bytes,
+        |word| word_contains_any_of_5(word, a, b, c, d, e),
+        |byte| byte == a || byte == b || byte == c || byte == d || byte == e,
+    )
+}
+
 #[inline(always)]
 fn word_contains_any_of_3(word: u64, a: u8, b: u8, c: u8) -> bool {
     const ONES: u64 = 0x0101_0101_0101_0101;
@@ -374,6 +390,24 @@ fn word_contains_any_of_4(word: u64, a: u8, b: u8, c: u8, d: u8) -> bool {
     let has_c = mc.wrapping_sub(ONES) & !mc;
     let has_d = md.wrapping_sub(ONES) & !md;
     (has_a | has_b | has_c | has_d) & HIGHS != 0
+}
+
+#[inline(always)]
+fn word_contains_any_of_5(word: u64, a: u8, b: u8, c: u8, d: u8, e: u8) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+
+    let ma = word ^ (ONES * u64::from(a));
+    let mb = word ^ (ONES * u64::from(b));
+    let mc = word ^ (ONES * u64::from(c));
+    let md = word ^ (ONES * u64::from(d));
+    let me = word ^ (ONES * u64::from(e));
+    let has_a = ma.wrapping_sub(ONES) & !ma;
+    let has_b = mb.wrapping_sub(ONES) & !mb;
+    let has_c = mc.wrapping_sub(ONES) & !mc;
+    let has_d = md.wrapping_sub(ONES) & !md;
+    let has_e = me.wrapping_sub(ONES) & !me;
+    (has_a | has_b | has_c | has_d | has_e) & HIGHS != 0
 }
 
 /// Chunked first-index scan at 32 (AVX2 width), 16 (NEON/SSE2 width), or 8

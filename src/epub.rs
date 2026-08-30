@@ -32,7 +32,9 @@
 use std::collections::BTreeMap;
 
 use franken_markdown::ast::{Block, Document, Inline};
-use franken_markdown::{HtmlOptions, RenderError, Result};
+use franken_markdown::{
+    HtmlOptions, RenderError, Result, find_html_text_escape, find_xml_attr_escape,
+};
 
 use crate::zip::ZipWriter;
 
@@ -126,7 +128,14 @@ fn extract_main_body(page: &str) -> Option<String> {
 fn html_fragment_to_xhtml(html: &str) -> String {
     let mut out = String::with_capacity(html.len() + 16);
     let mut rest = html;
-    while !rest.is_empty() {
+    // Bulk-copy pass: the renderer's text nodes arrive already escaped, so
+    // every byte before the next '<' is pass-through — copy the whole run in
+    // one push_str and only stop to inspect tag openers. '<' is ASCII, so the
+    // find always lands on a UTF-8 char boundary and multi-byte characters in
+    // a clean run never need per-character decoding.
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        rest = &rest[lt..];
         if let Some(stripped) = rest.strip_prefix("<br>") {
             out.push_str("<br/>");
             rest = stripped;
@@ -172,10 +181,11 @@ fn html_fragment_to_xhtml(html: &str) -> String {
             }
             continue;
         }
-        let ch_len = rest.chars().next().map_or(1, char::len_utf8);
-        out.push_str(&rest[..ch_len]);
-        rest = &rest[ch_len..];
+        // A '<' that opens none of the rewritable spellings is pass-through.
+        out.push('<');
+        rest = &rest[1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -222,30 +232,43 @@ fn push_void_tag_xhtml(tag: &str, out: &mut String) {
 // ---------------------------------------------------------------------------
 // XML escaping (total: every text node and attribute value passes through).
 
-/// XML text-node escaping: `&`, `<`, `>`.
+/// XML text-node escaping: `&`, `<`, `>` — the same byte set as the scanner's
+/// HTML text scanner, so bulk-copy clean runs between escapable bytes. All
+/// specials are ASCII, so byte indexing is UTF-8-safe.
 fn escape_xml_text(s: &str, out: &mut String) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(ch),
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = find_html_text_escape(&bytes[start..]) {
+        let pos = start + rel;
+        out.push_str(&s[start..pos]);
+        match bytes[pos] {
+            b'&' => out.push_str("&amp;"),
+            b'<' => out.push_str("&lt;"),
+            _ => out.push_str("&gt;"),
         }
+        start = pos + 1;
     }
+    out.push_str(&s[start..]);
 }
 
-/// XML double-quoted attribute escaping: `&`, `<`, `>`, `"`, `'`.
+/// XML double-quoted attribute escaping: `&`, `<`, `>`, `"`, `'` — bulk-copy
+/// clean runs between escapable bytes (the scanner's XML attribute set).
 fn escape_xml_attr(s: &str, out: &mut String) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = find_xml_attr_escape(&bytes[start..]) {
+        let pos = start + rel;
+        out.push_str(&s[start..pos]);
+        match bytes[pos] {
+            b'&' => out.push_str("&amp;"),
+            b'<' => out.push_str("&lt;"),
+            b'>' => out.push_str("&gt;"),
+            b'"' => out.push_str("&quot;"),
+            _ => out.push_str("&apos;"),
         }
+        start = pos + 1;
     }
+    out.push_str(&s[start..]);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,5 +587,192 @@ mod tests {
             Some("<p>Content</p>\n".to_string())
         );
         assert_eq!(extract_main_body("invalid"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Differential oracles: the verbatim pre-bulk per-char reference bodies.
+
+    fn html_fragment_to_xhtml_reference(html: &str) -> String {
+        let mut out = String::with_capacity(html.len() + 16);
+        let mut rest = html;
+        while !rest.is_empty() {
+            if let Some(stripped) = rest.strip_prefix("<br>") {
+                out.push_str("<br/>");
+                rest = stripped;
+                continue;
+            }
+            if let Some(stripped) = rest.strip_prefix("<br/>") {
+                out.push_str("<br/>");
+                rest = stripped;
+                continue;
+            }
+            if let Some(stripped) = rest.strip_prefix("<br />") {
+                out.push_str("<br/>");
+                rest = stripped;
+                continue;
+            }
+            if let Some(stripped) = rest.strip_prefix("<hr>") {
+                out.push_str("<hr/>");
+                rest = stripped;
+                continue;
+            }
+            if let Some(stripped) = rest.strip_prefix("<hr/>") {
+                out.push_str("<hr/>");
+                rest = stripped;
+                continue;
+            }
+            if let Some(stripped) = rest.strip_prefix("<hr />") {
+                out.push_str("<hr/>");
+                rest = stripped;
+                continue;
+            }
+            if rest.starts_with("<img ") || rest.starts_with("<input ") {
+                match rest.find('>') {
+                    Some(end) => {
+                        let tag_body = rest[..end].trim_end_matches([' ', '/']);
+                        push_void_tag_xhtml(tag_body, &mut out);
+                        out.push_str("/>");
+                        rest = &rest[end + 1..];
+                    }
+                    None => {
+                        out.push_str(rest);
+                        rest = "";
+                    }
+                }
+                continue;
+            }
+            let ch_len = rest.chars().next().map_or(1, char::len_utf8);
+            out.push_str(&rest[..ch_len]);
+            rest = &rest[ch_len..];
+        }
+        out
+    }
+
+    fn escape_xml_text_reference(s: &str, out: &mut String) {
+        for ch in s.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                _ => out.push(ch),
+            }
+        }
+    }
+
+    fn escape_xml_attr_reference(s: &str, out: &mut String) {
+        for ch in s.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(ch),
+            }
+        }
+    }
+
+    /// Hostile corpus for the escapers: every escapable character, dense
+    /// mixes, multi-byte UTF-8 next to specials, empty input, long clean
+    /// runs, and a boundary sweep placing a special at every offset around
+    /// the scanner's 8/16/32-byte chunk edges.
+    fn escape_hostile_corpus() -> Vec<String> {
+        let mut cases: Vec<String> = vec![
+            String::new(),
+            "&".to_string(),
+            "<".to_string(),
+            ">".to_string(),
+            "\"".to_string(),
+            "'".to_string(),
+            "&<>\"'".to_string(),
+            "&<>&<>&<>".to_string(),
+            "&amp; already named".to_string(),
+            "\u{00e9}\u{4e2d}\u{6587}\u{1f680} caf\u{00e9}".to_string(),
+            "&\u{1f680}<\"\u{e9}'\u{4e2d}>".to_string(),
+            "\u{1f680}\u{1f680}\u{1f680}".to_string(),
+            "a".repeat(4096),
+            "clean ascii words only ".repeat(64),
+            "\u{4e2d}\u{6587}".repeat(1024),
+            "&".repeat(2048),
+            "&f&f&f&f".repeat(256),
+        ];
+        for len in 0..=40usize {
+            for pos in 0..len {
+                for special in ["&", "<", ">", "\"", "'"] {
+                    let mut s = String::from("z".repeat(len).as_str());
+                    s.replace_range(pos..pos + 1, special);
+                    cases.push(s);
+                }
+            }
+        }
+        for align in 0..64usize {
+            let mut s = String::from("z".repeat(128).as_str());
+            s.replace_range(align..align + 1, "\"");
+            cases.push(s);
+        }
+        cases
+    }
+
+    #[test]
+    fn xml_escapers_match_per_char_reference() {
+        for case in escape_hostile_corpus() {
+            let mut bulk = String::new();
+            let mut reference = String::new();
+            escape_xml_text(&case, &mut bulk);
+            escape_xml_text_reference(&case, &mut reference);
+            assert_eq!(bulk, reference, "text escape diverged for {case:?}");
+
+            let mut bulk = String::new();
+            let mut reference = String::new();
+            escape_xml_attr(&case, &mut bulk);
+            escape_xml_attr_reference(&case, &mut reference);
+            assert_eq!(bulk, reference, "attr escape diverged for {case:?}");
+        }
+    }
+
+    /// Hostile corpus for the fragment converter: all void-tag spellings,
+    /// stray and truncated `<` openers, specials inside attribute values,
+    /// multi-byte UTF-8, long clean runs, and the empty string.
+    #[test]
+    fn xhtml_conversion_matches_per_char_reference() {
+        let mut cases: Vec<String> = vec![
+            String::new(),
+            "<p>plain paragraph & entity \u{2014} em dash</p>".to_string(),
+            "text < stray bracket <b <br <bra <brx <img <input".to_string(),
+            "<p>line 1<br>line 2<br/>line 3<br />line 4</p>".to_string(),
+            "<hr><hr/><hr />".to_string(),
+            "<img src=\"test.png\" alt=\"pic\"><img src=\"test.png\" alt=\"pic\" />".to_string(),
+            "<img src=\"x.png\" alt=\"a<b & c>d 'quote' \\\"q\\\"\">".to_string(),
+            "<input type=\"checkbox\" disabled checked>".to_string(),
+            "<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/>".to_string(),
+            "<img src=\"unterminated".to_string(),
+            "<input value=\"no closing gt".to_string(),
+            "<".to_string(),
+            "<<<<".to_string(),
+            "> alone".to_string(),
+            "& alone".to_string(),
+            "\u{4e2d}\u{6587}<br>\u{1f680}<hr/>\u{00e9}".to_string(),
+            "z".repeat(4096),
+            "\u{1f680}".repeat(1024),
+            "<p>tail br<br>".to_string(),
+            "<br><br/><br /><hr><hr/><hr />".to_string(),
+        ];
+        for len in 0..=40usize {
+            for pos in 0..=len {
+                let mut s = "y".repeat(len);
+                s.insert_str(pos, "<br>");
+                cases.push(s);
+                let mut s = "y".repeat(len);
+                s.insert(pos, '<');
+                cases.push(s);
+            }
+        }
+        for case in &cases {
+            assert_eq!(
+                html_fragment_to_xhtml(case),
+                html_fragment_to_xhtml_reference(case),
+                "fragment conversion diverged for {case:?}"
+            );
+        }
     }
 }

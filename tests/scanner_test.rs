@@ -3,7 +3,8 @@
 
 use franken_markdown::{
     classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
-    find_pdf_escape, scan_byte_candidates, scan_markdown_line, scan_table_or_fence_candidate,
+    find_pdf_escape, find_xml_attr_escape, scan_byte_candidates, scan_markdown_line,
+    scan_table_or_fence_candidate,
 };
 
 fn naive_markdown_special(bytes: &[u8]) -> Option<usize> {
@@ -56,11 +57,18 @@ fn naive_pdf_escape(bytes: &[u8]) -> Option<usize> {
         .position(|byte| matches!(byte, b'(' | b')' | b'\\' | b'\r' | b'\n'))
 }
 
+fn naive_xml_attr_escape(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .iter()
+        .position(|byte| matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\''))
+}
+
 fn assert_byte_scanners(bytes: &[u8]) {
     assert_eq!(find_any_special_byte(bytes), naive_markdown_special(bytes));
     assert_eq!(find_html_text_escape(bytes), naive_html_text_escape(bytes));
     assert_eq!(find_html_escape(bytes), naive_html_escape(bytes));
     assert_eq!(find_pdf_escape(bytes), naive_pdf_escape(bytes));
+    assert_eq!(find_xml_attr_escape(bytes), naive_xml_attr_escape(bytes));
 
     let combined = scan_byte_candidates(bytes);
     assert_eq!(
@@ -222,7 +230,7 @@ fn log_check(id: &str, subject: &str, outcome: &str) {
 
 #[test]
 fn chunked_scanners_match_oracle_at_every_alignment_and_chunk_edge() {
-    let needles = *b"&<>\"()\\\n#";
+    let needles = *b"&<>\"'()\\\n#";
     let mut cases: Vec<Vec<u8>> = Vec::new();
     for &n in &needles {
         cases.push(vec![n]);
@@ -280,6 +288,9 @@ fn chunked_scanners_match_oracle_for_lcg_adversarial_buffers() {
             fail += 1;
         }
         if find_pdf_escape(&buf) != naive_pdf_escape(&buf) {
+            fail += 1;
+        }
+        if find_xml_attr_escape(&buf) != naive_xml_attr_escape(&buf) {
             fail += 1;
         }
         if fail != before {

@@ -322,8 +322,8 @@ fn empty_list_markers_are_valid_empty_items() {
     let unordered = html("-\n- filled");
     let ordered = html("1.\n2. filled");
 
-    assert!(unordered.contains("<ul>\n<li>\n</li>\n<li>filled</li>\n</ul>"));
-    assert!(ordered.contains("<ol>\n<li>\n</li>\n<li>filled</li>\n</ol>"));
+    assert!(unordered.contains("<ul>\n<li></li>\n<li>filled</li>\n</ul>"));
+    assert!(ordered.contains("<ol>\n<li></li>\n<li>filled</li>\n</ol>"));
 }
 
 #[test]

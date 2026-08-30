@@ -25,10 +25,19 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
         return true;
     }
     let trimmed = code.trim();
-    trimmed.starts_with("graph ")
-        || trimmed.starts_with("flowchart ")
-        || trimmed.starts_with("sequenceDiagram")
-        || (trimmed.starts_with("+---") && trimmed.contains('|'))
+    let first_directive = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("%%"))
+        .unwrap_or("");
+    first_directive.starts_with("graph ")
+        || first_directive.starts_with("graph\n")
+        || first_directive == "graph"
+        || first_directive.starts_with("flowchart ")
+        || first_directive.starts_with("flowchart\n")
+        || first_directive == "flowchart"
+        || first_directive.starts_with("sequenceDiagram")
+        || (first_directive.starts_with("+---") && trimmed.contains('|'))
 }
 
 /// Parse and render a diagram to an SVG string.
@@ -37,15 +46,24 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
 pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     let trimmed = code.trim();
     let lower_lang = lang.trim().to_ascii_lowercase();
+    let first_directive = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("%%"))
+        .unwrap_or("");
 
-    if lower_lang == "sequence" || trimmed.starts_with("sequenceDiagram") {
+    if lower_lang == "sequence" || first_directive.starts_with("sequenceDiagram") {
         render_sequence_diagram(trimmed)
-    } else if lower_lang == "ditaa" || (trimmed.starts_with("+---") && trimmed.contains('|')) {
+    } else if lower_lang == "ditaa"
+        || (first_directive.starts_with("+---") && trimmed.contains('|'))
+    {
         render_ascii_diagram(trimmed)
     } else if lower_lang == "flowchart"
         || lower_lang == "mermaid"
-        || trimmed.starts_with("graph ")
-        || trimmed.starts_with("flowchart ")
+        || first_directive.starts_with("graph ")
+        || first_directive == "graph"
+        || first_directive.starts_with("flowchart ")
+        || first_directive == "flowchart"
     {
         render_flowchart(trimmed)
     } else {
@@ -235,7 +253,11 @@ fn render_flowchart(src: &str) -> Option<String> {
             continue;
         }
 
-        if line.starts_with("graph ") || line.starts_with("flowchart ") {
+        if line == "graph"
+            || line == "flowchart"
+            || line.starts_with("graph ")
+            || line.starts_with("flowchart ")
+        {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 dir = match parts[1].to_ascii_uppercase().as_str() {
@@ -441,9 +463,19 @@ fn parse_flowchart_line(
             let left_part = &line[..pos];
             let right_part = &line[pos + pat.len()..];
 
-            let (from_id, _) = parse_or_insert_node(left_part.trim(), nodes, node_order);
+            let mut left_trimmed = left_part.trim();
+            let mut edge_label = None;
+            if let Some((node_part, lbl_part)) = left_trimmed.split_once("--") {
+                let lbl = lbl_part.trim();
+                if !lbl.is_empty() {
+                    edge_label = Some(lbl.to_string());
+                    left_trimmed = node_part.trim();
+                }
+            }
 
-            let (mut edge_label, mut dest_str) = if pat.ends_with('|') {
+            let (from_id, _) = parse_or_insert_node(left_trimmed, nodes, node_order);
+
+            let (right_edge_label, mut dest_str) = if pat.ends_with('|') {
                 if let Some(pipe_pos) = right_part.find('|') {
                     (
                         Some(right_part[..pipe_pos].trim().to_string()),
@@ -456,7 +488,9 @@ fn parse_flowchart_line(
                 (None, right_part.trim())
             };
 
-            if edge_label.is_none() && dest_str.starts_with('|') {
+            if right_edge_label.is_some() {
+                edge_label = right_edge_label;
+            } else if edge_label.is_none() && dest_str.starts_with('|') {
                 if let Some(second_pipe) = dest_str[1..].find('|') {
                     let pipe_pos = 1 + second_pipe;
                     edge_label = Some(dest_str[1..pipe_pos].trim().to_string());
@@ -514,6 +548,10 @@ fn parse_or_insert_node(
             shape = NodeShape::Diamond;
             label = rest[1..rest.len() - 1].to_string();
         }
+    }
+
+    if label.starts_with('"') && label.ends_with('"') && label.len() >= 2 {
+        label = label[1..label.len() - 1].to_string();
     }
 
     let is_new = !nodes.contains_key(&id);
@@ -808,7 +846,22 @@ fn render_sequence_diagram(src: &str) -> Option<String> {
 
     for line in src.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("%%") || line.starts_with("sequenceDiagram") {
+        if line.is_empty()
+            || line.starts_with("%%")
+            || line.starts_with("sequenceDiagram")
+            || line.starts_with("autonumber")
+            || line.starts_with("activate ")
+            || line.starts_with("deactivate ")
+            || line.starts_with("title ")
+            || line.starts_with("accTitle:")
+            || line.starts_with("accDescr:")
+            || line.starts_with("loop ")
+            || line.starts_with("alt ")
+            || line.starts_with("else ")
+            || line.starts_with("opt ")
+            || line == "end"
+            || line.starts_with("rect ")
+        {
             continue;
         }
 
@@ -1305,5 +1358,52 @@ sequenceDiagram
             "unexpected header: {}",
             svg.lines().next().unwrap_or_default()
         );
+    }
+
+    #[test]
+    fn render_sequence_with_leading_comments_and_keywords() {
+        let code = r#"
+%% Header comment
+sequenceDiagram
+    autonumber
+    title Authentication Flow
+    Alice->>Bob: Login request
+    activate Bob
+    Bob-->>Alice: Login response
+    deactivate Bob
+"#;
+        let svg =
+            render_diagram_svg(code, "mermaid").expect("should render sequence with comments");
+        assert!(svg.contains("fmd-sequence"));
+        assert!(svg.contains("Alice"));
+        assert!(svg.contains("Bob"));
+        assert!(svg.contains("Login request"));
+        assert!(svg.contains("Login response"));
+    }
+
+    #[test]
+    fn render_flowchart_with_quoted_labels_and_arrow_text() {
+        let code = r#"
+%% Flowchart with special labels
+flowchart LR
+    A["Initial (State)"] -- Next --> B["Done [100%]"]
+"#;
+        let svg = render_diagram_svg(code, "mermaid").expect("should render flowchart");
+        assert!(svg.contains("fmd-flowchart"));
+        assert!(svg.contains("Initial (State)"));
+        assert!(svg.contains("Done [100%]"));
+        assert!(svg.contains("Next"));
+        // Quotes should be stripped
+        assert!(!svg.contains("&quot;Initial (State)&quot;"));
+    }
+
+    #[test]
+    fn is_diagram_code_handles_comments_and_bare_keywords() {
+        assert!(is_diagram_code("%% comment\ngraph\n  A --> B", ""));
+        assert!(is_diagram_code(
+            "%% comment\nsequenceDiagram\n  A->>B: Hi",
+            ""
+        ));
+        assert!(is_diagram_code("flowchart\n  A --> B", ""));
     }
 }

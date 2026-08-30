@@ -842,17 +842,25 @@ impl Engine {
         })
     }
 
+    #[inline]
     fn metrics_of(&self, face: FaceId, gid: u16) -> GlyphMetrics {
+        // Hot path: one RefCell read + two Vec reads. Misses and the
+        // table decodes live out of line in `metrics_of_miss` so the
+        // inlined body at every glyph site stays as small as the
+        // unmemoized call it replaced.
+        if let Some(hit) = self
+            .glyph_memo
+            .borrow()
+            .get(face.0)
+            .and_then(|per_face| per_face.get(usize::from(gid)))
+            .and_then(|slot| *slot)
         {
-            let memo = self.glyph_memo.borrow();
-            if let Some(hit) = memo
-                .get(face.0)
-                .and_then(|per_face| per_face.get(usize::from(gid)))
-                .and_then(|slot| *slot)
-            {
-                return hit;
-            }
+            return hit;
         }
+        self.metrics_of_miss(face, gid)
+    }
+
+    fn metrics_of_miss(&self, face: FaceId, gid: u16) -> GlyphMetrics {
         let Some(font) = self.faces.font(face) else {
             // A face outside the roster can never be memoized under a
             // bounded index; the default is its constant result.

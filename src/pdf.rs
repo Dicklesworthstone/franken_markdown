@@ -20790,7 +20790,7 @@ fn serialize_pages_chunked(
                 // The uncompressed stream moves to a worker; the main thread
                 // proceeds to lay out the next page while DEFLATE runs.
                 let stream = std::mem::take(&mut content.stream);
-                pipeline.submit(page_idx, stream, &mut compressed);
+                pipeline.submit(page_idx, stream, &mut compressed)?;
             }
             None => {
                 let stream = page_stream(&content.stream, &mut zlib_scratch);
@@ -20824,7 +20824,7 @@ fn serialize_pages_chunked(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(pipeline) = pipeline.as_mut() {
-        pipeline.finish(&mut compressed);
+        pipeline.finish(&mut compressed)?;
     }
     profiler.record_since(
         "pagination",
@@ -20999,12 +20999,18 @@ impl ChunkedCompressPipeline {
 
     /// Hand one page stream to the pool. While the in-flight cap is
     /// saturated, block until the next in-order result drains.
-    fn submit(&mut self, page_idx: usize, stream: String, out: &mut Vec<OwnedPdfStream>) {
+    fn submit(
+        &mut self,
+        page_idx: usize,
+        stream: String,
+        out: &mut Vec<OwnedPdfStream>,
+    ) -> Result<()> {
         if self.submitted > self.drained && self.submitted - self.drained >= self.in_flight_cap {
-            self.drain_next(out);
+            self.drain_next(out)?;
         }
         self.queue.push((page_idx, stream));
         self.submitted += 1;
+        Ok(())
     }
 
     /// Non-blocking drain of every result that has already completed, in page
@@ -21026,27 +21032,33 @@ impl ChunkedCompressPipeline {
     }
 
     /// Blocking in-order drain of the next result. Requires a live pool.
-    fn drain_next(&mut self, out: &mut Vec<OwnedPdfStream>) {
+    fn drain_next(&mut self, out: &mut Vec<OwnedPdfStream>) -> Result<()> {
         loop {
             if let Some(owned) = self.done.remove(&self.drained) {
                 out.push(owned);
                 self.drained += 1;
-                return;
+                return Ok(());
             }
-            let Ok((page_idx, owned)) = self.result_rx.recv() else {
-                break;
-            };
+            let (page_idx, owned) = self.result_rx.recv().map_err(|_| {
+                // Do not spin forever if every compressor exits before returning all submitted
+                // pages. Worker failures are not expected, but a disconnected result channel is
+                // terminal: `finish` previously retried without changing either counter.
+                RenderError::PdfGeneration(
+                    "chunked PDF compression workers exited before all pages completed",
+                )
+            })?;
             self.done.insert(page_idx, owned);
         }
     }
 
     /// Drain every submitted page so `compressed` is complete and in page
     /// order, then release the workers by closing the work queue.
-    fn finish(&mut self, out: &mut Vec<OwnedPdfStream>) {
+    fn finish(&mut self, out: &mut Vec<OwnedPdfStream>) -> Result<()> {
         while self.submitted > self.drained {
-            self.drain_next(out);
+            self.drain_next(out)?;
         }
         self.queue.close();
+        Ok(())
     }
 }
 
@@ -21055,6 +21067,28 @@ impl Drop for ChunkedCompressPipeline {
     fn drop(&mut self) {
         self.queue.close();
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn disconnected_chunked_compression_pool_fails_instead_of_spinning() {
+    let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    drop(result_tx);
+    let mut pipeline = ChunkedCompressPipeline {
+        queue,
+        result_rx,
+        in_flight_cap: 1,
+        submitted: 1,
+        drained: 0,
+        done: std::collections::BTreeMap::new(),
+    };
+
+    let error = pipeline
+        .finish(&mut Vec::new())
+        .expect_err("a dead worker pool must fail closed");
+
+    assert!(error.to_string().contains("compression workers exited"));
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1165,8 +1165,9 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             }
             let split = split_list_items_with_first_marker(&lines[i..], marker);
             for (_, body) in &split.items {
-                collect_link_reference_metadata_into(body, None, refs);
-                collect_nested_references(body, refs, depth + 1);
+                let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
+                collect_link_reference_metadata_into(&str_refs, None, refs);
+                collect_nested_references(&str_refs, refs, depth + 1);
             }
             i += split.used.max(1);
             in_paragraph = false;
@@ -1551,7 +1552,10 @@ fn parse_blocks_with_refs_profiled(
                     // paragraph instead of ending the quote. A lazy line cannot be a
                     // setext heading underline (CommonMark §4.3).
                     let trimmed = trim_start_space_tab(lines[i]);
-                    if setext_underline(trimmed).is_some() {
+                    if setext_underline(trimmed).is_some()
+                        || (list_marker(trimmed).is_some()
+                            && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
+                    {
                         inner.push(std::borrow::Cow::Owned(format!("\\{trimmed}")));
                     } else {
                         inner.push(std::borrow::Cow::Borrowed(trimmed));
@@ -3047,8 +3051,8 @@ fn list_marker_interrupts_paragraph(line: &str) -> bool {
 
 fn marker_interrupts_paragraph(marker: Marker<'_>) -> bool {
     // CommonMark: a list interrupts a paragraph only when the first item has
-    // content on the marker line. Ordered lists must also start at 1.
-    if marker.rest.is_empty() {
+    // content on the marker line, is indented <= 3 spaces, and (for ordered lists) starts at 1.
+    if marker.indent > 3 || marker.rest.is_empty() {
         return false;
     }
     !marker.ordered || marker.start == 1
@@ -3072,7 +3076,7 @@ struct ListSplit<'a> {
     start: u64,
     tight: bool,
     /// `(task marker, body lines)` per item.
-    items: Vec<(Option<bool>, Vec<&'a str>)>,
+    items: Vec<(Option<bool>, Vec<std::borrow::Cow<'a, str>>)>,
     used: usize,
 }
 
@@ -3092,7 +3096,7 @@ fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
 fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) -> ListSplit<'a> {
     let ordered = first.ordered;
     let start = first.start;
-    let mut items: Vec<(Option<bool>, Vec<&str>)> = Vec::new();
+    let mut items: Vec<(Option<bool>, Vec<std::borrow::Cow<'a, str>>)> = Vec::new();
     let mut tight = true;
     let mut i = 0;
     while i < lines.len() {
@@ -3105,14 +3109,15 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         else {
             break;
         };
-        let mut item_lines = vec![m.rest];
+        let mut item_lines: Vec<std::borrow::Cow<'a, str>> =
+            vec![std::borrow::Cow::Borrowed(m.rest)];
         let mut open_fence_state: Option<(char, usize)> =
             open_fence(m.rest).map(|(ch, len, _)| (ch, len));
         i += 1;
 
         if is_blank_line(m.rest) && i < lines.len() && is_blank_line(lines[i]) {
-            let (task, first_body) = split_task_marker(item_lines[0]);
-            item_lines[0] = first_body;
+            let (task, first_body) = split_task_marker(item_lines[0].as_ref());
+            item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
             items.push((task, item_lines));
             break;
         }
@@ -3127,7 +3132,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 if is_close_fence(stripped, ch, len) {
                     open_fence_state = None;
                 }
-                item_lines.push(stripped);
+                item_lines.push(std::borrow::Cow::Borrowed(stripped));
                 i += 1;
                 continue;
             }
@@ -3162,7 +3167,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                         tight = false;
                     }
                 }
-                item_lines.push("");
+                item_lines.push(std::borrow::Cow::Borrowed(""));
                 i += 1;
                 continue;
             }
@@ -3201,16 +3206,21 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 // one tight list — do not split it.
                 let prev_is_list_item = item_lines
                     .last()
-                    .is_some_and(|prev| list_marker(prev).is_some());
+                    .is_some_and(|prev| list_marker(prev.as_ref()).is_some());
                 if !prev_is_list_item
                     && list_marker(stripped)
                         .is_some_and(|marker| marker.ordered && marker.start != 1)
-                    && item_lines.last().is_some_and(|prev| !is_blank_line(prev))
+                    && item_lines
+                        .last()
+                        .is_some_and(|prev| !is_blank_line(prev.as_ref()))
                 {
-                    item_lines.push("");
+                    item_lines.push(std::borrow::Cow::Borrowed(""));
                 }
-                item_lines.push(stripped);
-            } else if item_lines.last().is_some_and(|prev| is_blank_line(prev)) {
+                item_lines.push(std::borrow::Cow::Borrowed(stripped));
+            } else if item_lines
+                .last()
+                .is_some_and(|prev| is_blank_line(prev.as_ref()))
+            {
                 // A blank line separates this unindented line from the item, so
                 // there is no open paragraph to lazily continue: it begins a new
                 // top-level block and ends the list. (CommonMark lazy continuation
@@ -3223,13 +3233,20 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 if let Some((ch, len, _)) = open_fence(lazy) {
                     open_fence_state = Some((ch, len));
                 }
-                item_lines.push(lazy);
+                if setext_underline(lazy).is_some()
+                    || (list_marker(lazy).is_some()
+                        && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
+                {
+                    item_lines.push(std::borrow::Cow::Owned(format!("\\{lazy}")));
+                } else {
+                    item_lines.push(std::borrow::Cow::Borrowed(lazy));
+                }
             }
             i += 1;
         }
 
-        let (task, first_body) = split_task_marker(item_lines[0]);
-        item_lines[0] = first_body;
+        let (task, first_body) = split_task_marker(item_lines[0].as_ref());
+        item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
         items.push((task, item_lines));
     }
     ListSplit {
@@ -3267,14 +3284,15 @@ fn parse_list_split(
 ) -> (List, usize) {
     let mut items = Vec::with_capacity(split.items.len());
     for (task, body) in split.items {
+        let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
         // Remove reference-definition lines from the item body so they are not
         // rendered as literal text; they were already collected into the shared
         // `refs` map by `collect_nested_references`.
-        let kept = if body.iter().any(|line| line.contains("]:")) {
-            let (consumed, _) = collect_link_reference_metadata(&body);
-            strip_consumed_references(&body, &consumed)
+        let kept = if str_refs.iter().any(|line| line.contains("]:")) {
+            let (consumed, _) = collect_link_reference_metadata(&str_refs);
+            strip_consumed_references(&str_refs, &consumed)
         } else {
-            body
+            str_refs
         };
         items.push(ListItem {
             task,

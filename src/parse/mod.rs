@@ -3106,9 +3106,25 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             break;
         };
         let mut item_lines = vec![m.rest];
+        let mut open_fence_state: Option<(char, usize)> =
+            open_fence(m.rest).map(|(ch, len, _)| (ch, len));
         i += 1;
 
         while i < lines.len() {
+            if let Some((ch, len)) = open_fence_state {
+                let stripped = if leading_spaces(lines[i]) >= m.content_indent {
+                    strip_n(lines[i], m.content_indent)
+                } else {
+                    trim_start_space_tab(lines[i])
+                };
+                if is_close_fence(stripped, ch, len) {
+                    open_fence_state = None;
+                }
+                item_lines.push(stripped);
+                i += 1;
+                continue;
+            }
+
             if is_blank_line(lines[i]) {
                 let mut j = i + 1;
                 while j < lines.len() && is_blank_line(lines[j]) {
@@ -3118,7 +3134,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                     && list_marker(lines[j]).is_some_and(|next| {
                         next.ordered == ordered
                             && next.marker_char == first.marker_char
-                            && next.indent == m.indent
+                            && next.indent < m.content_indent
                     })
                 {
                     tight = false;
@@ -3167,6 +3183,9 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
 
             if leading_spaces(lines[i]) >= m.content_indent {
                 let stripped = strip_n(lines[i], m.content_indent);
+                if let Some((ch, len, _)) = open_fence(stripped) {
+                    open_fence_state = Some((ch, len));
+                }
                 // A non-1-start ordered marker cannot interrupt a paragraph, so
                 // after prose it would be lazily absorbed; a blank line forces it
                 // into its own sub-list. But when the previous content line is
@@ -3193,7 +3212,11 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
                 // continues the current OPEN paragraph/list item.
-                item_lines.push(trim_start_space_tab(lines[i]));
+                let lazy = trim_start_space_tab(lines[i]);
+                if let Some((ch, len, _)) = open_fence(lazy) {
+                    open_fence_state = Some((ch, len));
+                }
+                item_lines.push(lazy);
             }
             i += 1;
         }

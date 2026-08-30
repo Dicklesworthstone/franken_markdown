@@ -993,13 +993,17 @@ fn transform_footnotes_for_pdf(doc: &Document) -> Document {
 ///
 /// This is intended for benchmarks, optimization beads, and diagnostics. Normal
 /// render callers should use [`render_pdf_document`], which does not read clocks
-/// or collect stage ledgers.
+/// or collect stage ledgers. The profiled path applies the exact same
+/// document transforms as [`render_pdf_document`] — including
+/// [`transform_footnotes_for_pdf`] — so its bytes are byte-for-byte identical
+/// to the production entry point (the perf harness asserts this).
 ///
 /// # Errors
 /// See [`render_pdf_document`].
 pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
     opts.font_assets.validate()?;
-    pdf::render_profiled(doc, opts)
+    let doc = transform_footnotes_for_pdf(doc);
+    pdf::render_profiled(&doc, opts)
 }
 
 /// Render Markdown source to a complete, self-contained HTML document string.

@@ -2384,12 +2384,8 @@ fn parse_indented_code(lines: &[&str]) -> (String, usize) {
         .sum::<usize>();
     let mut code = String::with_capacity(body_bytes);
     for line in lines.iter().take(used) {
-        if is_blank_line(line) {
-            code.push('\n');
-        } else {
-            code.push_str(strip_n(line, 4));
-            code.push('\n');
-        }
+        code.push_str(strip_n(line, 4));
+        code.push('\n');
     }
     (code, used)
 }

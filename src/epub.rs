@@ -123,10 +123,6 @@ fn extract_main_body(page: &str) -> Option<String> {
     (end >= start).then(|| page[start..end].to_string())
 }
 
-/// Rewrite the HTML5 void-element spellings the crate emitter produces into
-/// XML self-closing form. Attribute values never contain a raw `>` (the
-/// emitter escapes it as `&gt;`), so scanning to the next `>` terminates a
-/// tag exactly.
 fn html_fragment_to_xhtml(html: &str) -> String {
     let mut out = String::with_capacity(html.len() + 16);
     let mut rest = html;
@@ -136,7 +132,27 @@ fn html_fragment_to_xhtml(html: &str) -> String {
             rest = stripped;
             continue;
         }
+        if let Some(stripped) = rest.strip_prefix("<br/>") {
+            out.push_str("<br/>");
+            rest = stripped;
+            continue;
+        }
+        if let Some(stripped) = rest.strip_prefix("<br />") {
+            out.push_str("<br/>");
+            rest = stripped;
+            continue;
+        }
         if let Some(stripped) = rest.strip_prefix("<hr>") {
+            out.push_str("<hr/>");
+            rest = stripped;
+            continue;
+        }
+        if let Some(stripped) = rest.strip_prefix("<hr/>") {
+            out.push_str("<hr/>");
+            rest = stripped;
+            continue;
+        }
+        if let Some(stripped) = rest.strip_prefix("<hr />") {
             out.push_str("<hr/>");
             rest = stripped;
             continue;
@@ -144,7 +160,8 @@ fn html_fragment_to_xhtml(html: &str) -> String {
         if rest.starts_with("<img ") || rest.starts_with("<input ") {
             match rest.find('>') {
                 Some(end) => {
-                    push_void_tag_xhtml(&rest[..end], &mut out);
+                    let tag_body = rest[..end].trim_end_matches([' ', '/']);
+                    push_void_tag_xhtml(tag_body, &mut out);
                     out.push_str("/>");
                     rest = &rest[end + 1..];
                 }
@@ -172,11 +189,16 @@ fn push_void_tag_xhtml(tag: &str, out: &mut String) {
     let mut in_quotes = false;
     let mut i = 0;
     while i < bytes.len() {
-        if !in_quotes && bytes[i] == b' ' {
+        if !in_quotes
+            && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+        {
             let after = &tag[i + 1..];
             let matched = BOOL_ATTRS.iter().find(|name| {
                 after.starts_with(**name)
-                    && after[name.len()..].chars().next().is_none_or(|c| c == ' ')
+                    && after[name.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| c.is_ascii_whitespace() || c == '/')
             });
             if let Some(name) = matched {
                 out.push(' ');
@@ -492,4 +514,55 @@ fn first_heading_text(doc: &Document) -> Option<String> {
         Block::Heading { inlines, .. } => Some(inlines_to_plain(inlines)),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xhtml_void_element_conversion() {
+        assert_eq!(
+            html_fragment_to_xhtml("<p>line 1<br>line 2<br/>line 3<br />line 4</p>"),
+            "<p>line 1<br/>line 2<br/>line 3<br/>line 4</p>"
+        );
+        assert_eq!(html_fragment_to_xhtml("<hr><hr/><hr />"), "<hr/><hr/><hr/>");
+        assert_eq!(
+            html_fragment_to_xhtml(
+                "<img src=\"test.png\" alt=\"pic\"><img src=\"test.png\" alt=\"pic\" />"
+            ),
+            "<img src=\"test.png\" alt=\"pic\"/><img src=\"test.png\" alt=\"pic\"/>"
+        );
+        assert_eq!(
+            html_fragment_to_xhtml("<input type=\"checkbox\" disabled checked>"),
+            "<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/>"
+        );
+        assert_eq!(
+            html_fragment_to_xhtml(
+                "<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/>"
+            ),
+            "<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/>"
+        );
+    }
+
+    #[test]
+    fn content_identifier_format_and_stability() {
+        let id1 = content_identifier("Doc Title", "en", "<p>Hello</p>");
+        let id2 = content_identifier("Doc Title", "en", "<p>Hello</p>");
+        let id3 = content_identifier("Doc Title", "fr", "<p>Bonjour</p>");
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+        assert!(id1.starts_with("urn:uuid:"));
+        assert_eq!(id1.len(), 45); // urn:uuid: (9) + 8-4-4-4-12 (36) = 45
+    }
+
+    #[test]
+    fn extract_main_body_boundaries() {
+        let full = "<html><head></head><body>\n<main class=\"fmd\">\n<p>Content</p>\n</main>\n</body></html>";
+        assert_eq!(
+            extract_main_body(full),
+            Some("<p>Content</p>\n".to_string())
+        );
+        assert_eq!(extract_main_body("invalid"), None);
+    }
 }

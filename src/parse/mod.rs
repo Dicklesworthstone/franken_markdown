@@ -3145,13 +3145,13 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             }
 
             if let Some(next) = list_marker(lines[i]) {
-                let is_item_break = if next.indent == m.indent {
-                    if next.ordered == ordered {
+                let is_item_break = if next.indent <= m.indent {
+                    if next.indent == m.indent && next.ordered == ordered {
                         true
                     } else {
                         marker_interrupts_paragraph(next)
                     }
-                } else if next.indent < m.indent {
+                } else if next.indent < m.content_indent {
                     marker_interrupts_paragraph(next)
                 } else {
                     false

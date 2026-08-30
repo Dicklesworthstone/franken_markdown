@@ -3159,7 +3159,12 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 // none of those loosen THIS list.
                 if j < lines.len() {
                     let next_indent = leading_spaces(lines[j]);
-                    if next_indent == m.content_indent || next_indent >= m.content_indent + 4 {
+                    let has_open_nested_list = item_lines
+                        .iter()
+                        .any(|line| list_marker(line.as_ref()).is_some());
+                    if next_indent == m.content_indent
+                        || (!has_open_nested_list && next_indent >= m.content_indent + 4)
+                    {
                         tight = false;
                     }
                 }

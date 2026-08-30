@@ -104,7 +104,7 @@ pub use error::MathError;
 pub use faces::FaceSet;
 pub use layout::Engine;
 pub use macros::MacroSet;
-pub use mathml::{mathml_well_formed, to_mathml, to_mathml_element};
+pub use mathml::{mathml_well_formed, to_mathml, to_mathml_element, to_mathml_with_capacity};
 pub use mbox::{FaceId, Layout, PathContour, PathSeg, PlacedGlyph, PlacedPath, PlacedRule};
 pub use metrics::MathConstants;
 pub use node::{Node, NodeKind, Span};

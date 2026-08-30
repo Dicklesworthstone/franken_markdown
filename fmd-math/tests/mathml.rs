@@ -4,7 +4,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use fmd_math::{mathml_well_formed, parse, parse_text, to_mathml, to_mathml_element};
+use fmd_math::{
+    mathml_well_formed, parse, parse_text, to_mathml, to_mathml_element, to_mathml_with_capacity,
+};
 
 fn log_check(id: &str, subject: &str, outcome: &str) {
     eprintln!("check={id} subject={subject} outcome={outcome}");
@@ -367,5 +369,84 @@ fn chaos_parse_then_mathml_never_panics_and_stays_well_formed() {
         "corpus",
         parsed > 0,
         "chaos loop parsed zero inputs",
+    );
+}
+
+#[test]
+fn to_mathml_with_capacity_is_byte_identical_across_hints() {
+    // R1 mathml-writer-presize differential: the capacity hint must never
+    // leak into the emitted bytes. Sweep hint values (0, tiny, exact,
+    // oversized) against the unhinted reference over golden shapes plus
+    // styled-group stress (scriptstyle/scriptscriptstyle, the size ladder,
+    // color, stacked markers) where the mstyle attr machinery changed from
+    // a heap Vec to a stack array and mathsize from a format! String to a
+    // stack digit write.
+    let cases: &[&str] = &[
+        "x",
+        "7",
+        "+",
+        r"\frac{a}{b}",
+        r"\sqrt[3]{x}",
+        r"x_i^2",
+        r"\binom{n}{k}",
+        r"\left( \frac{a}{b} \right)",
+        r"\begin{matrix} a & b \\ c & d \end{matrix}",
+        r"\begin{cases} x & x > 0 \\ -x & x \le 0 \end{cases}",
+        r"\begin{aligned} p &= q \end{aligned}",
+        r"\sum_{n=1}^N",
+        r"a\,b",
+        r"\mathbb{R}",
+        r"\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}",
+        r"\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}",
+        r"\nabla \times \mathbf{B} = \mu_0 \mathbf{J} + \mu_0\epsilon_0\frac{\partial \mathbf{E}}{\partial t}",
+        r"\scriptstyle x",
+        r"\scriptscriptstyle \frac{a}{b}",
+        r"\textstyle \sum_{i=1}^n i",
+        r"\tiny x",
+        r"\footnotesize x + y",
+        r"\small \frac{a}{b}",
+        r"\large x",
+        r"\Large \sum_{n=1}^{\infty} \frac{1}{n^2}",
+        r"\huge x",
+        r"\color{red} x + y",
+        r"\color{#00ff00} \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}",
+        r"\scriptstyle \color{blue} \tiny x^2 + y^2",
+        r"a \color{red} b \color{blue} c",
+    ];
+    let mut checked = 0u32;
+    for tex in cases {
+        if let Ok(node) = parse(tex) {
+            for display in [true, false] {
+                let reference = to_mathml(&node, display);
+                for hint in [0usize, 1, 2, 7, 13, tex.len(), tex.len() * 4, 1 << 20] {
+                    assert_eq!(
+                        to_mathml_with_capacity(&node, display, hint),
+                        reference,
+                        "hint {hint} diverged for `{tex}` display {display}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+    }
+    if let Ok(node) = parse_text("hello $x^2$") {
+        let reference = to_mathml(&node, false);
+        for hint in [0usize, 1, 31, 1 << 20] {
+            assert_eq!(
+                to_mathml_with_capacity(&node, false, hint),
+                reference,
+                "hint {hint} diverged on the parse_text surface"
+            );
+        }
+        checked += 1;
+    }
+    log_check(
+        "capacity-hint-isomorphism",
+        &format!("hint sweep vs unhinted over {checked} (tex, display) shapes"),
+        "PASS",
+    );
+    assert!(
+        checked > 40,
+        "differential corpus shrank unexpectedly: {checked} shapes"
     );
 }

@@ -160,7 +160,8 @@ struct RenderState<'a> {
     highlight_cache_next: usize,
     /// Bounded per-render cache for repeated formulas. Keyed by the trimmed
     /// TeX source plus the display flag — the exact inputs fmd_math::parse
-    /// and to_mathml consume (see push_mathml_cached for the purity audit).
+    /// and to_mathml_with_capacity consume (the capacity hint is the key's
+    /// own byte length; see push_mathml_cached for the purity audit).
     math_cache: Vec<MathCacheEntry>,
     math_cache_next: usize,
     /// Bounded per-render cache for repeated link/image destinations.
@@ -286,8 +287,10 @@ impl<'a> RenderState<'a> {
     /// Purity: `fmd_math::parse` is a pure function of its source string (the
     /// only state it touches is an idempotent empty `MacroSet` OnceLock, and
     /// `\newcommand` expansion is driven by the source itself), and
-    /// `to_mathml` reads nothing but the parsed node and the display flag —
-    /// no render options or surrounding context enter either call. So the
+    /// `to_mathml_with_capacity` reads nothing but the parsed node, the
+    /// display flag, and a buffer-capacity hint derived from the key itself
+    /// (trimmed.len()) — no render options or surrounding context enter
+    /// either call, and capacity never leaks into the emitted bytes. So the
     /// MathML bytes are exactly a function of (trimmed tex, display), which
     /// is the cache key. Unparseable sources return false and are NOT cached:
     /// their fallback output embeds the untrimmed tex, so it varies beyond
@@ -306,7 +309,7 @@ impl<'a> RenderState<'a> {
 
         match fmd_math::parse(trimmed) {
             Ok(node) => {
-                let mathml = fmd_math::to_mathml(&node, display);
+                let mathml = fmd_math::to_mathml_with_capacity(&node, display, trimmed.len());
                 out.push_str(&mathml);
                 self.remember_math(trimmed, display, mathml);
                 true

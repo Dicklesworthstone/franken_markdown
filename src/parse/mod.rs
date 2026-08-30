@@ -1275,7 +1275,7 @@ fn parse_blocks_bounded(
 ) -> Vec<Block> {
     if profiler.block_depth >= MAX_BLOCK_NESTING_DEPTH {
         let text = lines.join("\n");
-        let trimmed = text.trim();
+        let trimmed = trim_unicode_ws(&text);
         if trimmed.is_empty() {
             return Vec::new();
         }
@@ -1426,7 +1426,7 @@ fn parse_blocks_with_refs_profiled(
         if let Some((fence_ch, fence_len, info)) = scanned_open_fence(scan) {
             let started = profiler.checkpoint();
             let lang = {
-                let decoded = decode_info_string(info.trim());
+                let decoded = decode_info_string(trim_unicode_ws(info));
                 decoded
                     .split_whitespace()
                     .next()
@@ -1474,11 +1474,11 @@ fn parse_blocks_with_refs_profiled(
             }
             continue;
         }
-        if leading_spaces(line) < 4 && line.trim_start().starts_with("$$") {
+        if leading_spaces(line) < 4 && trim_start_unicode_ws(line).starts_with("$$") {
             let started = profiler.checkpoint();
-            let trimmed = line.trim();
+            let trimmed = trim_unicode_ws(line);
             if trimmed.len() >= 4 && trimmed.ends_with("$$") && trimmed != "$$" {
-                let code = trimmed[2..trimmed.len() - 2].trim().to_string();
+                let code = trim_unicode_ws(&trimmed[2..trimmed.len() - 2]).to_string();
                 profiler.record_since(
                     "math_block",
                     1,
@@ -1493,7 +1493,7 @@ fn parse_blocks_with_refs_profiled(
             } else if trimmed == "$$" || (trimmed.starts_with("$$") && !trimmed[2..].contains("$$"))
             {
                 let mut code = String::new();
-                let initial = trimmed[2..].trim();
+                let initial = trim_unicode_ws(&trimmed[2..]);
                 if !initial.is_empty() {
                     code.push_str(initial);
                     code.push('\n');
@@ -1501,12 +1501,12 @@ fn parse_blocks_with_refs_profiled(
                 let mut used = 1usize;
                 while i + used < lines.len() {
                     let l = lines[i + used];
-                    let t = l.trim();
+                    let t = trim_unicode_ws(l);
                     if t == "$$" {
                         used += 1;
                         break;
                     } else if let Some(inner) = t.strip_suffix("$$") {
-                        let inner = inner.trim_end();
+                        let inner = trim_end_unicode_ws(inner);
                         if !inner.is_empty() {
                             code.push_str(inner);
                             code.push('\n');
@@ -2161,7 +2161,7 @@ fn normalize_simple_ascii_reference_label(label: &str) -> Option<String> {
     }) {
         return None;
     }
-    let trimmed = label.trim_matches(|ch| matches!(ch, ' ' | '\t'));
+    let trimmed = trim_space_tab(label);
     if trimmed.is_empty() {
         return None;
     }
@@ -2948,7 +2948,7 @@ fn list_marker(line: &str) -> Option<Marker<'_>> {
     // *actual* leading whitespace by pattern — using the column count as a byte
     // index panics on any tab-indented line (a tab is 1 byte but >= 1 column).
     let indent = leading_spaces(line);
-    let t = line.trim_start_matches(is_space_or_tab);
+    let t = trim_start_space_tab(line);
     if let Some(first) = t.chars().next()
         && (first == '-' || first == '*' || first == '+')
     {
@@ -3264,7 +3264,7 @@ where
     }
     let mut count = 0usize;
     for cell in table_delimiter_row_inner_from_trimmed(t).split('|') {
-        let cell = cell.trim();
+        let cell = trim_unicode_ws(cell);
         if !cell.is_empty() {
             let core = cell.trim_start_matches(':').trim_end_matches(':');
             if core.is_empty() || !core.as_bytes().iter().all(|byte| *byte == b'-') {
@@ -3346,7 +3346,7 @@ fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
-        cells.extend(t.split('|').map(str::trim));
+        cells.extend(t.split('|').map(trim_unicode_ws));
         return;
     }
     // Split on unescaped `|` outside inline code spans.
@@ -3369,7 +3369,7 @@ fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
             continue;
         }
         if c == b'|' && !prev_backslash && code_ticks == 0 {
-            cells.push(t[cell_start..i].trim());
+            cells.push(trim_unicode_ws(&t[cell_start..i]));
             cell_start = i + 1;
         } else {
             if c == b'\\' && !prev_backslash {
@@ -3381,7 +3381,7 @@ fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
         prev_backslash = false;
         i += 1;
     }
-    cells.push(t[cell_start..].trim());
+    cells.push(trim_unicode_ws(&t[cell_start..]));
 }
 
 #[cfg(test)]
@@ -5594,12 +5594,159 @@ fn is_blank_line(line: &str) -> bool {
     trim_space_tab(line).is_empty()
 }
 
+/// Byte-scan form of `s.trim_start_matches(is_space_or_tab)`: `' '` and `'\t'`
+/// are single-byte chars and no multi-byte UTF-8 sequence can contain either
+/// byte (continuation/lead bytes are >= 0x80), so skipping exactly those bytes
+/// from the front lands on the same char boundary the char-pattern trim does —
+/// without decoding each char.
 fn trim_start_space_tab(s: &str) -> &str {
-    s.trim_start_matches(is_space_or_tab)
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && is_space_or_tab_byte(bytes[i]) {
+        i += 1;
+    }
+    debug_assert!(s.is_char_boundary(i));
+    &s[i..]
 }
 
+/// Byte-scan form of `s.trim_end_matches(is_space_or_tab)`; same equivalence
+/// argument as [`trim_start_space_tab`], mirrored: the first non-space/tab byte
+/// met from the right can only be the last byte of a char the char-pattern trim
+/// would also stop at, so `end` stays a char boundary.
 fn trim_end_space_tab(s: &str) -> &str {
-    s.trim_end_matches(is_space_or_tab)
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && is_space_or_tab_byte(bytes[end - 1]) {
+        end -= 1;
+    }
+    debug_assert!(s.is_char_boundary(end));
+    &s[..end]
+}
+
+/// ASCII bytes that are Unicode whitespace (White_Space): U+0009..U+000D and
+/// U+0020. This is the whole ASCII part of `char::is_whitespace`.
+const UNICODE_WS_ASCII_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    table[0x09] = true;
+    table[0x0A] = true;
+    table[0x0B] = true;
+    table[0x0C] = true;
+    table[0x0D] = true;
+    table[0x20] = true;
+    table
+};
+
+#[inline(always)]
+const fn is_unicode_ws_ascii(byte: u8) -> bool {
+    UNICODE_WS_ASCII_TABLE[byte as usize]
+}
+
+/// If a multi-byte Unicode-whitespace char starts at `i`, return its byte
+/// length. The complete non-ASCII White_Space set, as UTF-8 bytes:
+/// U+0085 (C2 85), U+00A0 (C2 A0), U+1680 (E1 9A 80), U+2000..U+200A
+/// (E2 80 80..8A), U+2028/U+2029 (E2 80 A8/A9), U+202F (E2 80 AF),
+/// U+205F (E2 81 9F), U+3000 (E3 80 80). Each sequence is the unique UTF-8
+/// encoding of its codepoint, and no other codepoint encodes to these bytes,
+/// so matching bytes decides whitespace exactly like `char::is_whitespace`
+/// without decoding. (U+200B and U+FEFF are NOT White_Space — deliberately
+/// absent, and pinned by tests.)
+#[inline(always)]
+fn multibyte_unicode_ws_len(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes.get(i) {
+        Some(0xC2) => match bytes.get(i + 1) {
+            Some(0x85) | Some(0xA0) => Some(2),
+            _ => None,
+        },
+        Some(0xE1) => {
+            if bytes.get(i + 1) == Some(&0x9A) && bytes.get(i + 2) == Some(&0x80) {
+                Some(3)
+            } else {
+                None
+            }
+        }
+        Some(0xE2) => match bytes.get(i + 1) {
+            Some(&0x80) => match bytes.get(i + 2) {
+                Some(0x80..=0x8A) | Some(0xA8) | Some(0xA9) | Some(0xAF) => Some(3),
+                _ => None,
+            },
+            Some(&0x81) if bytes.get(i + 2) == Some(&0x9F) => Some(3),
+            _ => None,
+        },
+        Some(0xE3) => {
+            if bytes.get(i + 1) == Some(&0x80) && bytes.get(i + 2) == Some(&0x80) {
+                Some(3)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Byte-level `str::trim_start()`: skip Unicode whitespace from the front
+/// without decoding chars. Exactly equivalent to
+/// `s.trim_start_matches(char::is_whitespace)` on every valid UTF-8 input:
+/// ASCII whitespace bytes are matched by table, and a lead byte is matched only
+/// when the full multi-byte sequence is one of the 19 non-ASCII whitespace
+/// chars; every other char stops the scan at the boundary it starts on.
+fn trim_start_unicode_ws(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte < 0x80 {
+            if !is_unicode_ws_ascii(byte) {
+                break;
+            }
+            i += 1;
+        } else {
+            match multibyte_unicode_ws_len(bytes, i) {
+                Some(len) => i += len,
+                None => break,
+            }
+        }
+    }
+    debug_assert!(s.is_char_boundary(i));
+    &s[i..]
+}
+
+/// Byte-level `str::trim_end()`: skip Unicode whitespace from the back. ASCII
+/// whitespace bytes are single-byte chars; the first byte >= 0x80 met from the
+/// right is the last byte of a multi-byte char, whose start is found by walking
+/// back over continuation bytes (0b10xxxxxx) — the whole char is then removed
+/// only if it is one of the 19 non-ASCII whitespace chars. Equivalence to
+/// `s.trim_end_matches(char::is_whitespace)` is pinned exhaustively by tests.
+fn trim_end_unicode_ws(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 {
+        let byte = bytes[end - 1];
+        if byte < 0x80 {
+            if !is_unicode_ws_ascii(byte) {
+                break;
+            }
+            end -= 1;
+            continue;
+        }
+        let mut start = end - 1;
+        while start > 0 && (bytes[start] & 0xC0) == 0x80 {
+            start -= 1;
+        }
+        if multibyte_unicode_ws_len(bytes, start) == Some(end - start) {
+            end = start;
+        } else {
+            break;
+        }
+    }
+    debug_assert!(s.is_char_boundary(end));
+    &s[..end]
+}
+
+/// Byte-level `str::trim()`: exactly `s.trim_matches(char::is_whitespace)`.
+/// Ordering of the start/end scans is immaterial — both bound the same
+/// first/last non-whitespace chars — matching std's `trim_matches` result.
+fn trim_unicode_ws(s: &str) -> &str {
+    trim_start_unicode_ws(trim_end_unicode_ws(s))
 }
 
 fn starts_space_or_tab(s: &str) -> bool {
@@ -7686,5 +7833,155 @@ mod commonmark_blank_line_tests {
             matches!(empty_at_boundary.blocks.first(), Some(Block::List(_))),
             "an empty bullet at a block boundary is still a list: {empty_at_boundary:?}"
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod trim_byte_class_tests {
+    use super::{
+        trim_end_unicode_ws, trim_space_tab, trim_start_unicode_ws, trim_unicode_ws,
+    };
+
+    fn oracle_start(s: &str) -> &str {
+        s.trim_start_matches(char::is_whitespace)
+    }
+
+    fn oracle_end(s: &str) -> &str {
+        s.trim_end_matches(char::is_whitespace)
+    }
+
+    fn oracle_full(s: &str) -> &str {
+        s.trim_matches(char::is_whitespace)
+    }
+
+    fn oracle_space_tab(s: &str) -> &str {
+        s.trim_matches(|ch| ch == ' ' || ch == '\t')
+    }
+
+    /// All four byte-class trims must agree with their std char-pattern
+    /// equivalents on every input, byte for byte.
+    fn check_all(s: &str) {
+        assert_eq!(trim_start_unicode_ws(s), oracle_start(s), "start: {s:?}");
+        assert_eq!(trim_end_unicode_ws(s), oracle_end(s), "end: {s:?}");
+        assert_eq!(trim_unicode_ws(s), oracle_full(s), "full: {s:?}");
+        assert_eq!(trim_space_tab(s), oracle_space_tab(s), "space/tab: {s:?}");
+    }
+
+    /// Exhaustive over every scalar value: each codepoint solo and at each edge
+    /// of a string. This is the classification boundary — every codepoint that
+    /// std trims must be trimmed, and every codepoint it keeps must be kept,
+    /// including multi-byte chars whose UTF-8 bytes could confuse a byte-level
+    /// scanner (lead/continuation lookalikes, U+200B, U+FEFF, 4-byte chars).
+    #[test]
+    fn byte_class_trims_match_std_for_every_codepoint() {
+        let mut buf = String::with_capacity(8);
+        for cp in 0u32..=0x10FFFFu32 {
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            };
+            buf.clear();
+            buf.push(c);
+            check_all(&buf);
+            buf.push('x');
+            check_all(&buf);
+            buf.insert(0, 'x');
+            check_all(&buf);
+        }
+    }
+
+    /// The complete Unicode White_Space set cross every edge mix: runs of each
+    /// whitespace char (mixed with space/tab), interior anchors that are ASCII,
+    /// 2/3/4-byte, delimiter-shaped, and control bytes.
+    #[test]
+    fn byte_class_trims_match_std_on_whitespace_edge_matrix() {
+        let ws: Vec<char> = (0u32..=0x10FFFFu32)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_whitespace())
+            .collect();
+        // Unicode White_Space has exactly 25 codepoints; if this ever changes,
+        // the byte-level helper set must be regenerated to match.
+        assert_eq!(ws.len(), 25, "White_Space set size changed");
+
+        let anchors = [
+            'x', '$', '|', ':', '-', '#', '>', '*', '\u{7f}', 'é', 'あ', '😀',
+            '\u{80}', '\u{a1}', '\u{200b}', '\u{feff}', '\u{3fff}',
+        ];
+        let runs: [String; 3] = [String::new(), " ".to_string(), "  \t".to_string()];
+        for &w in &ws {
+            let wstr = w.to_string();
+            let double: String = std::iter::repeat_n(w, 2).collect();
+            let mixed: String = format!(" {w}\t");
+            for left in [&runs[0], &runs[1], &runs[2], &wstr, &double, &mixed] {
+                for right in [&runs[0], &runs[1], &runs[2], &wstr, &double, &mixed] {
+                    for anchor in anchors {
+                        let s = format!("{left}{anchor}{right}");
+                        check_all(&s);
+                        // Whitespace-only strings and anchors sandwiched
+                        // between whitespace runs.
+                        check_all(&format!("{left}{right}"));
+                        check_all(&format!("{left}{anchor}{right}{anchor}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deterministic fuzz over a hostile alphabet: every whitespace char,
+    /// lookalike non-whitespace (U+200B, U+FEFF, U+0084, U+008B), multi-byte
+    /// anchors, delimiters, and control bytes.
+    #[test]
+    fn byte_class_trims_match_std_on_fuzz() {
+        let alphabet: Vec<char> = (0u32..=0x10FFFFu32)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_whitespace())
+            .chain([
+                'x', '$', '|', ':', '-', '\\', '`', '\u{0}', '\u{7f}', 'é', 'あ', '😀',
+                '\u{84}', '\u{8b}', '\u{200b}', '\u{feff}', '\u{1f600}', '中',
+            ])
+            .collect();
+        let mut state = 0x243F6A8885A308D3u64;
+        let mut buf = String::with_capacity(48);
+        for _ in 0..40_000 {
+            // xorshift64* keeps this deterministic and platform-independent.
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len = ((state >> 33) % 24) as usize;
+            buf.clear();
+            for _ in 0..len {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let idx = ((state >> 33) % alphabet.len() as u64) as usize;
+                buf.push(alphabet[idx]);
+            }
+            check_all(&buf);
+        }
+    }
+
+    /// The call-site shapes the helpers replaced: padded table cells, math
+    /// lines, fence info strings — with Unicode whitespace at the edges.
+    #[test]
+    fn byte_class_trims_match_std_on_call_site_shapes() {
+        let shapes = [
+            "| a | b |",
+            "|  a\u{00a0} | \u{3000}b |",
+            "| \u{2028}x\u{2029} | y\u{1680} |",
+            "$$ x = 1 $$",
+            "\u{205f}$$x$$\u{a0}",
+            "  \t```rust  ",
+            "~~~\u{85}info\u{85}~~~",
+            "a\u{2000}\u{2001}\u{2002}b",
+            "\u{85}\u{a0}\u{1680}\u{2000}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}",
+            "",
+            " ",
+            "\u{0}",
+            "x",
+            "\u{feff}x\u{200b}",
+        ];
+        for shape in shapes {
+            check_all(shape);
+        }
     }
 }

@@ -280,6 +280,39 @@ pub fn parse_document_profiled(src: &str) -> ParseProfile {
     }
 }
 
+fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains('\t') {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let mut col = 0usize;
+    let mut expanded_prefix = String::new();
+    let mut rest_idx = None;
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            ' ' => {
+                col += 1;
+                expanded_prefix.push(' ');
+            }
+            '\t' => {
+                let spaces = 4 - (col % 4);
+                col += spaces;
+                for _ in 0..spaces {
+                    expanded_prefix.push(' ');
+                }
+            }
+            _ => {
+                rest_idx = Some(idx);
+                break;
+            }
+        }
+    }
+    let Some(idx) = rest_idx else {
+        return std::borrow::Cow::Owned(expanded_prefix);
+    };
+    expanded_prefix.push_str(&line[idx..]);
+    std::borrow::Cow::Owned(expanded_prefix)
+}
+
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
@@ -287,10 +320,21 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // metadata, not content: split it off before line scanning so it never
     // renders as a thematic break or paragraph text.
     let (_frontmatter, src) = split_frontmatter(src);
+    let tab_storage: Option<Vec<String>> = if src.contains('\t') {
+        Some(src.lines().map(|l| expand_leading_tabs(l).into_owned()).collect())
+    } else {
+        None
+    };
     let lines = profiler.measure(
         "line_split",
         "strip UTF-8 BOM if present and split source into logical lines",
-        || split_logical_lines(src),
+        || {
+            if let Some(storage) = &tab_storage {
+                storage.iter().map(|s| s.as_str()).collect()
+            } else {
+                split_logical_lines(src)
+            }
+        },
         |lines| (lines.len(), src.len(), 1),
     );
     let reference_started = profiler.checkpoint();

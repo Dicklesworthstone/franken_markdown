@@ -1100,11 +1100,10 @@ fn a_nested_ordered_sublist_keeps_its_non_one_start_in_one_list() {
 
 #[test]
 fn a_blank_then_a_nested_marker_makes_a_sublist_not_a_loose_item() {
-    // After a blank line a deeper marker begins a sublist; the outer list stays
-    // tight (the loosen check requires a non-marker line at the content column).
+    // After a blank line a deeper marker begins a sublist in a loose outer item.
     let out = html("- a\n\n  - b");
     assert!(
-        out.contains("<ul>\n<li>a\n<ul>\n<li>b</li>\n</ul>\n</li>\n</ul>"),
+        out.contains("<ul>\n<li>\n<p>a</p>\n<ul>\n<li>b</li>\n</ul>\n</li>\n</ul>"),
         "{out}"
     );
 }

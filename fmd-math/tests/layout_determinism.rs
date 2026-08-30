@@ -82,20 +82,12 @@ fn warm_engine_memo_matches_cold_engine_byte_for_byte() {
             let engine = Engine::bundled().unwrap();
             let layout = engine.typeset(src, Style::Display).unwrap();
             let contours = resolve_paths(&engine, &layout).unwrap();
-            format!(
-                "{}{}",
-                layout_dump(&layout),
-                canonical_dump(&contours)
-            )
+            format!("{}{}", layout_dump(&layout), canonical_dump(&contours))
         };
         let hot = {
             let layout = warm.typeset(src, Style::Display).unwrap();
             let contours = resolve_paths(&warm, &layout).unwrap();
-            format!(
-                "{}{}",
-                layout_dump(&layout),
-                canonical_dump(&contours)
-            )
+            format!("{}{}", layout_dump(&layout), canonical_dump(&contours))
         };
         assert_eq!(cold, hot, "`{src}` differs between cold and warm engine");
     }

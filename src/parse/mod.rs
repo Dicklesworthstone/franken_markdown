@@ -1923,7 +1923,14 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
                 return Some((label, ref_def, 1));
             }
             if let Some(title) = parse_reference_title_line(line2) {
-                return Some((label, LinkReference { dest: ref_def.dest, title: Some(title) }, 2));
+                return Some((
+                    label,
+                    LinkReference {
+                        dest: ref_def.dest,
+                        title: Some(title),
+                    },
+                    2,
+                ));
             }
         }
         fallback_without_title = Some((label, ref_def, 1));
@@ -3021,16 +3028,21 @@ fn marker_padding(after_marker: &str, column_after_marker: usize) -> Option<(&st
         return Some(("", 1));
     }
     let first = after_marker.chars().next()?;
-    // CommonMark W+N: one space is 1 column; a tab advances to the next
-    // 4-column stop from the column after the marker. Treating a tab as 1
-    // made `-\\tfoo` content_indent 2 instead of 4, so continuation strips
-    // ate the wrong number of columns.
-    let padding = match first {
-        ' ' => 1,
-        '\t' => 4 - (column_after_marker % 4),
-        _ => return None,
-    };
-    Some((&after_marker[first.len_utf8()..], padding))
+    if first == '\t' {
+        let padding = 4 - (column_after_marker % 4);
+        return Some((&after_marker[1..], padding));
+    }
+    if first == ' ' {
+        let space_count = after_marker.bytes().take_while(|&b| b == b' ').count();
+        if space_count == after_marker.len() {
+            return Some(("", 1));
+        }
+        if space_count <= 4 {
+            return Some((&after_marker[space_count..], space_count));
+        }
+        return Some((&after_marker[1..], 1));
+    }
+    None
 }
 
 fn list_marker_interrupts_paragraph(line: &str) -> bool {
@@ -3125,10 +3137,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 // a nested sub-list (whose own blank loosens it via recursion), a
                 // marker continues a sub-list, and a dedent is a trailing blank —
                 // none of those loosen THIS list.
-                if j < lines.len()
-                    && leading_spaces(lines[j]) == m.content_indent
-                    && list_marker(strip_n(lines[j], m.content_indent)).is_none()
-                {
+                if j < lines.len() && leading_spaces(lines[j]) == m.content_indent {
                     tight = false;
                 }
                 item_lines.push("");
@@ -6117,10 +6126,10 @@ mod char_ref_dos_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
     use super::{
-        collect_link_references, line_is_paragraph_text,
-        no_indent_paragraph_loop_fast_path, parse_document,
-        parse_simple_ascii_reference_definition, parse_simple_ascii_reference_title_line,
-        push_consumed_reference_range, reference_collector_needs_block_scan_after_indent,
+        collect_link_references, line_is_paragraph_text, no_indent_paragraph_loop_fast_path,
+        parse_document, parse_simple_ascii_reference_definition,
+        parse_simple_ascii_reference_title_line, push_consumed_reference_range,
+        reference_collector_needs_block_scan_after_indent,
         reference_collector_plain_line_fast_path,
         reference_collector_plain_nonblank_line_fast_path, source_lines, span_for_lines,
         table_body_row_starts_at, table_ends_at, table_extent,

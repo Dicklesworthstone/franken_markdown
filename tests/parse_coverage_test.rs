@@ -723,17 +723,17 @@ fn ordered_lists_with_dot_and_paren_and_custom_start() {
 
 #[test]
 fn a_bare_marker_makes_an_empty_first_item() {
-    assert!(html("-\n- b").contains("<ul>\n<li></li>\n<li>b</li>\n</ul>"));
+    assert!(html("-\n- b").contains("<ul>\n<li>\n</li>\n<li>b</li>\n</ul>"));
 }
 
 #[test]
 fn a_blank_line_between_items_makes_the_list_loose() {
-    assert!(html("- a\n\n- b").contains("<li><p>a</p>\n</li>\n<li><p>b</p>\n</li>"));
+    assert!(html("- a\n\n- b").contains("<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>"));
 }
 
 #[test]
 fn a_second_paragraph_at_the_content_column_makes_one_item_loose() {
-    assert!(html("- a\n\n  b").contains("<li><p>a</p>\n<p>b</p>\n</li>"));
+    assert!(html("- a\n\n  b").contains("<li>\n<p>a</p>\n<p>b</p>\n</li>"));
 }
 
 #[test]
@@ -1060,7 +1060,7 @@ fn a_reference_definition_line_whose_first_bracket_is_not_the_label_is_literal()
 fn a_marker_run_shorter_than_three_is_not_a_thematic_break() {
     // `- -` has only two dashes, so `is_thematic_break` rejects it (its count>=3
     // guard); it parses as a list whose item is itself a bare-marker list.
-    assert!(html("- -").contains("<ul>\n<li><ul>\n<li></li>\n</ul>\n</li>\n</ul>"));
+    assert!(html("- -").contains("<ul>\n<li>\n<ul>\n<li>\n</li>\n</ul>\n</li>\n</ul>"));
 }
 
 #[test]

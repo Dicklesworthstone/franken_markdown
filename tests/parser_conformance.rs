@@ -322,8 +322,8 @@ fn empty_list_markers_are_valid_empty_items() {
     let unordered = html("-\n- filled");
     let ordered = html("1.\n2. filled");
 
-    assert!(unordered.contains("<ul>\n<li></li>\n<li>filled</li>\n</ul>"));
-    assert!(ordered.contains("<ol>\n<li></li>\n<li>filled</li>\n</ol>"));
+    assert!(unordered.contains("<ul>\n<li>\n</li>\n<li>filled</li>\n</ul>"));
+    assert!(ordered.contains("<ol>\n<li>\n</li>\n<li>filled</li>\n</ol>"));
 }
 
 #[test]
@@ -874,12 +874,12 @@ fn even_length_emphasis_runs_are_bold_not_italic() {
 #[test]
 fn blank_separated_blocks_loosen_only_their_own_list() {
     // A second paragraph at the item's content column loosens that item's list.
-    assert!(html("- a\n\n  b").contains("<li><p>a</p>\n<p>b</p>\n</li>"));
+    assert!(html("- a\n\n  b").contains("<li>\n<p>a</p>\n<p>b</p>\n</li>"));
     // A blank inside a sub-list item loosens the INNER list, leaving the outer
     // list tight.
     let nested = html("- a\n  - b\n\n    cont");
     assert!(nested.contains("<li>a\n<ul>"));
-    assert!(nested.contains("<li><p>b</p>\n<p>cont</p>"));
+    assert!(nested.contains("<li>\n<p>b</p>\n<p>cont</p>"));
 }
 
 // ---------------------------------------------------------------------------

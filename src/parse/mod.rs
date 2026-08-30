@@ -3110,6 +3110,13 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
             open_fence(m.rest).map(|(ch, len, _)| (ch, len));
         i += 1;
 
+        if is_blank_line(m.rest) && i < lines.len() && is_blank_line(lines[i]) {
+            let (task, first_body) = split_task_marker(item_lines[0]);
+            item_lines[0] = first_body;
+            items.push((task, item_lines));
+            break;
+        }
+
         while i < lines.len() {
             if let Some((ch, len)) = open_fence_state {
                 let stripped = if leading_spaces(lines[i]) >= m.content_indent {

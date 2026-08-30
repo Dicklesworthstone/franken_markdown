@@ -3137,8 +3137,11 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                 // a nested sub-list (whose own blank loosens it via recursion), a
                 // marker continues a sub-list, and a dedent is a trailing blank —
                 // none of those loosen THIS list.
-                if j < lines.len() && leading_spaces(lines[j]) == m.content_indent {
-                    tight = false;
+                if j < lines.len() {
+                    let next_indent = leading_spaces(lines[j]);
+                    if next_indent == m.content_indent || next_indent >= m.content_indent + 4 {
+                        tight = false;
+                    }
                 }
                 item_lines.push("");
                 i += 1;

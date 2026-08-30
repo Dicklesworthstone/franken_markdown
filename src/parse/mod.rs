@@ -1436,7 +1436,19 @@ fn parse_blocks_with_refs_profiled(
             // CommonMark: up to N columns of leading indentation are removed from
             // each content line, where N is the opening fence's own indentation.
             let fence_indent = leading_spaces(line);
-            let mut code = String::new();
+            // Presize the body: sum the raw byte lengths of the content lines
+            // (plus one newline each) up to the closing fence. Stripping the
+            // fence indent only shrinks lines, so this over-estimates at
+            // most; capacity is invisible to the collected bytes.
+            let mut body_bytes = 0usize;
+            {
+                let mut scan = i + 1;
+                while scan < lines.len() && !is_close_fence(lines[scan], fence_ch, fence_len) {
+                    body_bytes += lines[scan].len() + 1;
+                    scan += 1;
+                }
+            }
+            let mut code = String::with_capacity(body_bytes);
             i += 1;
             while i < lines.len() {
                 if is_close_fence(lines[i], fence_ch, fence_len) {
@@ -2325,7 +2337,16 @@ fn indented_code_start(line: &str) -> bool {
 
 fn parse_indented_code(lines: &[&str]) -> (String, usize) {
     let used = indented_code_extent(lines, |line| *line);
-    let mut code = String::new();
+    // Presize the body from the extent: raw byte lengths plus one newline per
+    // line. Blank lines push only '\n' and content lines drop at most four
+    // leading columns, so the estimate never under-grows; capacity is
+    // invisible to the collected bytes.
+    let body_bytes = lines
+        .iter()
+        .take(used)
+        .map(|line| line.len() + 1)
+        .sum::<usize>();
+    let mut code = String::with_capacity(body_bytes);
     for line in lines.iter().take(used) {
         if is_blank_line(line) {
             code.push('\n');

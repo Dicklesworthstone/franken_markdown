@@ -245,12 +245,10 @@ const PDF_ESCAPE_TABLE: [bool; 256] = {
 pub fn scan_markdown_line(line: &str) -> ParserLineScan {
     let bytes = line.as_bytes();
     let mut accum_flags = 0u8;
-    let mut has_reference_colon = false;
     let mut maybe_url_prefix = false;
     let mut first_special_byte = None;
     let mut leading_spaces = 0usize;
     let mut in_leading_spaces = true;
-    let mut previous = 0u8;
 
     for (idx, &byte) in bytes.iter().enumerate() {
         if in_leading_spaces {
@@ -261,16 +259,12 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
             }
         }
         accum_flags |= LINE_CHAR_FLAGS[byte as usize];
-        if previous == b']' && byte == b':' {
-            has_reference_colon = true;
-        }
         if !maybe_url_prefix && maybe_url_prefix_at(bytes, idx, byte) {
             maybe_url_prefix = true;
         }
         if first_special_byte.is_none() && is_markdown_special_byte(byte) {
             first_special_byte = Some(idx);
         }
-        previous = byte;
     }
 
     let first = bytes.get(leading_spaces).copied();
@@ -297,7 +291,7 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
         maybe_heading_marker: indented_as_block && first == Some(b'#'),
         maybe_list_marker,
         maybe_html: contains_open_angle,
-        maybe_reference: leading_spaces <= 3 && has_reference_colon && contains_open_bracket,
+        maybe_reference: leading_spaces <= 3 && contains_open_bracket,
         maybe_table_delimiter: contains_pipe || contains_dash || contains_colon,
         maybe_autolink: contains_open_angle || contains_at || maybe_url_prefix,
         maybe_fence: indented_as_block && matches!(first, Some(b'`' | b'~')),

@@ -953,22 +953,10 @@ fn reference_collector_needs_block_scan_after_indent(line: &str, indent: usize) 
     };
 
     match first {
-        b'[' => tail.contains(&b'|') || contains_reference_colon(tail),
-        b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => true,
+        b'[' | b'#' | b'>' | b'<' | b'`' | b'~' | b'=' | b'-' | b'*' | b'_' | b'+' => true,
         b'0'..=b'9' => reference_collector_ordered_marker_candidate(tail) || tail.contains(&b'|'),
         _ => tail.contains(&b'|'),
     }
-}
-
-fn contains_reference_colon(bytes: &[u8]) -> bool {
-    let mut previous = 0u8;
-    for &byte in bytes {
-        if previous == b']' && byte == b':' {
-            return true;
-        }
-        previous = byte;
-    }
-    false
 }
 
 fn reference_collector_ordered_marker_candidate(bytes: &[u8]) -> bool {
@@ -1194,18 +1182,8 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
         // on each container body, so this branch only advances and resets state.
         if !in_paragraph
             && scan.maybe_reference
-            && let Some((_, reference)) = parse_reference_definition(line)
+            && let Some((_, _, used)) = parse_multiline_reference_definition(&lines[i..])
         {
-            let used = if reference.title.is_none()
-                && lines
-                    .get(i + 1)
-                    .and_then(|l| parse_reference_title_line(l))
-                    .is_some()
-            {
-                2
-            } else {
-                1
-            };
             in_paragraph = false;
             i += used;
             continue;
@@ -1919,18 +1897,6 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
         return None;
     }
 
-    // Try single-line fast ascii path first
-    if let Some((label, ref_def)) = parse_simple_ascii_reference_definition(lines[0]) {
-        if ref_def.title.is_none()
-            && let Some(line2) = lines.get(1)
-            && leading_spaces(line2) < 4
-            && let Some(title) = parse_reference_title_line(line2)
-        {
-            return Some((label, LinkReference { dest: ref_def.dest, title: Some(title) }, 2));
-        }
-        return Some((label, ref_def, 1));
-    }
-
     // Collect candidate lines up to 8 lines without blank lines
     let max_lines = lines.len().min(8);
     let mut candidate_lines = Vec::with_capacity(max_lines);
@@ -1945,17 +1911,42 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
         return None;
     }
 
-    // First check single line and 2-line title extensions with standard definition parser
-    if let Some((label, mut ref_def)) = parse_reference_definition(candidate_lines[0]) {
-        if ref_def.title.is_none()
-            && let Some(line2) = candidate_lines.get(1)
-            && leading_spaces(line2) < 4
-            && let Some(title) = parse_reference_title_line(line2)
-        {
-            ref_def.title = Some(title);
-            return Some((label, ref_def, 2));
+    let mut fallback_without_title: Option<(String, LinkReference, usize)> = None;
+
+    // Check single-line fast ascii path first
+    if let Some((label, ref_def)) = parse_simple_ascii_reference_definition(candidate_lines[0]) {
+        if ref_def.title.is_some() {
+            return Some((label, ref_def, 1));
         }
-        return Some((label, ref_def, 1));
+        if let Some(line2) = candidate_lines.get(1) {
+            if leading_spaces(line2) >= 4 {
+                return Some((label, ref_def, 1));
+            }
+            if let Some(title) = parse_reference_title_line(line2) {
+                return Some((label, LinkReference { dest: ref_def.dest, title: Some(title) }, 2));
+            }
+        }
+        fallback_without_title = Some((label, ref_def, 1));
+    } else if let Some((label, ref_def)) = parse_reference_definition(candidate_lines[0]) {
+        if ref_def.title.is_some() {
+            return Some((label, ref_def, 1));
+        }
+        if let Some(line2) = candidate_lines.get(1) {
+            if leading_spaces(line2) >= 4 {
+                return Some((label, ref_def, 1));
+            }
+            if let Some(title) = parse_reference_title_line(line2) {
+                return Some((
+                    label,
+                    LinkReference {
+                        dest: ref_def.dest,
+                        title: Some(title),
+                    },
+                    2,
+                ));
+            }
+        }
+        fallback_without_title = Some((label, ref_def, 1));
     }
 
     // Check multiline combinations
@@ -2007,10 +1998,14 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
         };
         skip_spaces(&chars, &mut j);
         if j == chars.len() {
-            return Some((label, LinkReference { dest, title }, k));
+            if title.is_some() {
+                return Some((label, LinkReference { dest, title }, k));
+            } else if fallback_without_title.is_none() {
+                fallback_without_title = Some((label, LinkReference { dest, title }, k));
+            }
         }
     }
-    None
+    fallback_without_title
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
@@ -2056,51 +2051,6 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     };
 
     Some((label, LinkReference { dest, title }))
-}
-
-fn parse_reference_definition_label(line: &str) -> Option<String> {
-    if leading_spaces(line) > 3 {
-        return None;
-    }
-    let t = trim_start_space_tab(line);
-    let chars: Vec<char> = t.chars().collect();
-    if chars.first() != Some(&'[') {
-        return None;
-    }
-    let close = find_closing_bracket(&chars, 0)?;
-    if chars.get(close + 1) != Some(&':') {
-        return None;
-    }
-    let label = normalize_reference_label_chars(&chars[1..close])?;
-    let mut i = close + 2;
-    skip_spaces(&chars, &mut i);
-    if i == chars.len() { Some(label) } else { None }
-}
-
-fn parse_reference_destination_line(line: &str) -> Option<(String, Option<String>)> {
-    let t = trim_start_space_tab(line);
-    if t.is_empty() {
-        return None;
-    }
-    let chars: Vec<char> = t.chars().collect();
-    let mut k = 0usize;
-    let dest = parse_link_destination(&chars, &mut k)?;
-    let spaces_start = k;
-    skip_spaces(&chars, &mut k);
-    let title = if k < chars.len() {
-        if k == spaces_start {
-            return None;
-        }
-        let title = parse_link_title(&chars, &mut k)?;
-        skip_spaces(&chars, &mut k);
-        if k != chars.len() {
-            return None;
-        }
-        Some(title)
-    } else {
-        None
-    };
-    Some((dest, title))
 }
 
 fn parse_reference_title_line(line: &str) -> Option<String> {
@@ -6167,7 +6117,7 @@ mod char_ref_dos_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod refdef_paragraph_tests {
     use super::{
-        collect_link_references, contains_reference_colon, line_is_paragraph_text,
+        collect_link_references, line_is_paragraph_text,
         no_indent_paragraph_loop_fast_path, parse_document,
         parse_simple_ascii_reference_definition, parse_simple_ascii_reference_title_line,
         push_consumed_reference_range, reference_collector_needs_block_scan_after_indent,
@@ -6530,9 +6480,6 @@ mod refdef_paragraph_tests {
 
     #[test]
     fn private_reference_and_table_helpers_cover_boundary_edges() {
-        assert!(contains_reference_colon(b"[a]: /url"));
-        assert!(!contains_reference_colon(b"[a] : /url"));
-
         assert!(!reference_collector_needs_block_scan_after_indent("   ", 3));
         assert!(reference_collector_needs_block_scan_after_indent(
             "1. item", 0

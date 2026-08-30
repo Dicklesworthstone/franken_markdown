@@ -29,6 +29,8 @@
 //! row stacking (`\jot`-opened for `align`), `\vcenter` axis centering,
 //! and the rule-19 delimiter wrap for the delimited matrices.
 
+use std::cell::RefCell;
+
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
 use crate::faces::{
@@ -47,6 +49,15 @@ use crate::style::{Style, StyleCtx};
 pub struct Engine {
     faces: FaceSet,
     consts: MathConstants,
+    /// Memoized [`faces::glyph_metrics`](crate::faces::glyph_metrics) per
+    /// `(face, gid)`: one lazily-grown slot vector per face. The roster is
+    /// immutable after construction and `glyph_metrics` reads only font
+    /// tables, so the value at a slot is a constant — a warm memo returns
+    /// bit-identical metrics to a cold computation (pinned by the
+    /// warm-engine determinism test). Math documents resolve to few
+    /// distinct glyphs repeated across many spans, so the memo turns each
+    /// repeat from a `hmtx` + `glyf` re-decode into one Vec read.
+    glyph_memo: RefCell<Vec<Vec<Option<GlyphMetrics>>>>,
 }
 
 impl Engine {
@@ -56,6 +67,7 @@ impl Engine {
         Self {
             faces,
             consts: crate::metrics::CM,
+            glyph_memo: RefCell::new(Vec::new()),
         }
     }
 
@@ -831,10 +843,32 @@ impl Engine {
     }
 
     fn metrics_of(&self, face: FaceId, gid: u16) -> GlyphMetrics {
-        self.faces
-            .font(face)
-            .map(|font| glyph_metrics(font, gid))
-            .unwrap_or_default()
+        {
+            let memo = self.glyph_memo.borrow();
+            if let Some(hit) = memo
+                .get(face.0)
+                .and_then(|per_face| per_face.get(usize::from(gid)))
+                .and_then(|slot| *slot)
+            {
+                return hit;
+            }
+        }
+        let Some(font) = self.faces.font(face) else {
+            // A face outside the roster can never be memoized under a
+            // bounded index; the default is its constant result.
+            return GlyphMetrics::default();
+        };
+        let m = glyph_metrics(font, gid);
+        let mut memo = self.glyph_memo.borrow_mut();
+        if memo.len() <= face.0 {
+            memo.resize(face.0 + 1, Vec::new());
+        }
+        let per_face = &mut memo[face.0];
+        if per_face.len() <= usize::from(gid) {
+            per_face.resize(usize::from(gid) + 1, None);
+        }
+        per_face[usize::from(gid)] = Some(m);
+        m
     }
 
     fn space_width(&self, ctx: LayCtx) -> f64 {
@@ -846,7 +880,7 @@ impl Engine {
                 if gid == 0 {
                     self.consts.fallback_space
                 } else {
-                    glyph_metrics(font, gid).advance
+                    self.metrics_of(FACE_REGULAR, gid).advance
                 }
             })
             .unwrap_or(self.consts.fallback_space);

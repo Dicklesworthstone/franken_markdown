@@ -56,3 +56,47 @@ fn text_mode_typesetting_is_deterministic() {
     };
     assert_eq!(a, b);
 }
+
+#[test]
+fn warm_engine_memo_matches_cold_engine_byte_for_byte() {
+    // The per-(face, gid) metrics memo must be invisible in the output: a
+    // reused engine (warm memo from earlier formulas) typesets byte-identically
+    // to a fresh engine computing every glyph metric from the font tables.
+    let warmups = [
+        r"\alpha\beta\gamma + 1234567890",
+        r"\sqrt[3]{\frac{x^2 y'}{z_{ij}}} \ne \int_{-\infty}^{\infty}",
+    ];
+    let srcs = [
+        r"\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}",
+        r"\int_0^1 \sqrt{1 - x^2} \, dx + 42 x_i^2 \cdot y'_j",
+        r"e^{i\pi} + 1 = 0 \qquad \left( a + b \right)^n",
+        r"\textbf{x} \in \mathbb{R}^{7 \times 7}",
+    ];
+    let warm = Engine::bundled().unwrap();
+    for w in warmups {
+        // Populate the memo with glyphs the measured sources also use.
+        std::hint::black_box(warm.typeset(w, Style::Display).unwrap());
+    }
+    for src in srcs {
+        let cold = {
+            let engine = Engine::bundled().unwrap();
+            let layout = engine.typeset(src, Style::Display).unwrap();
+            let contours = resolve_paths(&engine, &layout).unwrap();
+            format!(
+                "{}{}",
+                layout_dump(&layout),
+                canonical_dump(&contours)
+            )
+        };
+        let hot = {
+            let layout = warm.typeset(src, Style::Display).unwrap();
+            let contours = resolve_paths(&warm, &layout).unwrap();
+            format!(
+                "{}{}",
+                layout_dump(&layout),
+                canonical_dump(&contours)
+            )
+        };
+        assert_eq!(cold, hot, "`{src}` differs between cold and warm engine");
+    }
+}

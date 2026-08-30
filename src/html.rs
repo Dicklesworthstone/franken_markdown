@@ -555,8 +555,9 @@ fn render_list<'a, 'b>(
                 out.push_str("> ");
             }
             None => {
-                let starts_with_tight_paragraph =
-                    list.tight && matches!(item.blocks.first(), Some(Block::Paragraph(_)));
+                let starts_with_tight_paragraph = list.tight
+                    && (item.blocks.is_empty()
+                        || matches!(item.blocks.first(), Some(Block::Paragraph(_))));
                 if starts_with_tight_paragraph {
                     out.push_str("<li>");
                 } else {

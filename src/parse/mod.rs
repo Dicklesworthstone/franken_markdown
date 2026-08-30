@@ -2442,21 +2442,34 @@ fn blockquote_marker_start(line: &str) -> bool {
 /// that omits the `>` marker ("laziness"), provided the previous quoted line was
 /// open paragraph text and the continuation line would not itself start a new
 /// block. `prev` is the previously collected (already `>`-stripped) quote line.
+fn innermost_is_open_paragraph(mut p: &str) -> bool {
+    loop {
+        if blockquote_marker_start(p) {
+            p = strip_blockquote_marker(p);
+            continue;
+        }
+        if let Some(m) = list_marker(p) {
+            p = m.rest;
+            continue;
+        }
+        break;
+    }
+    if is_blank_line(p) || leading_spaces(p) >= 4 {
+        return false;
+    }
+    !is_thematic_break(p)
+        && atx_heading(p).is_none()
+        && open_fence(p).is_none()
+        && !html_block_start(p)
+}
+
 fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
     if is_blank_line(line) {
         return false;
     }
-    // Only an OPEN paragraph can be lazily continued: the previous quoted line
-    // must be plain paragraph text, not a blank or another block's opener.
-    let prev_is_open_paragraph = prev.is_some_and(|p| {
-        !is_blank_line(p)
-            && !is_thematic_break(p)
-            && atx_heading(p).is_none()
-            && open_fence(p).is_none()
-            && list_marker(p).is_none()
-            && !html_block_start(p)
-            && !blockquote_marker_start(p)
-    });
+    // Only an OPEN paragraph can be lazily continued: the innermost quoted line
+    // must be plain paragraph text, not a blank, indented code block, or block opener.
+    let prev_is_open_paragraph = prev.is_some_and(innermost_is_open_paragraph);
     if !prev_is_open_paragraph {
         return false;
     }

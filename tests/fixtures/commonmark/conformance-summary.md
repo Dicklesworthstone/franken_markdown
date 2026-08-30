@@ -1,9 +1,9 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 569 / 652 (87.3%)**
-- in-scope match (excl. intentional non-goals): 569 / 595 (95.6%)
+- **pass: 573 / 652 (87.9%)**
+- in-scope match (excl. intentional non-goals): 573 / 595 (96.3%)
 - intentional_non_goal: 57 (raw-HTML default-escape policy)
-- known_gap: 26
+- known_gap: 22
 
 | Section | Pass | Total |
 |---|---:|---:|
@@ -11,7 +11,7 @@
 | Autolinks | 16 | 19 |
 | Backslash escapes | 12 | 13 |
 | Blank lines | 1 | 1 |
-| Block quotes | 22 | 25 |
+| Block quotes | 25 | 25 |
 | Code spans | 21 | 22 |
 | Emphasis and strong emphasis | 129 | 132 |
 | Entity and numeric character references | 16 | 17 |
@@ -23,7 +23,7 @@
 | Inlines | 1 | 1 |
 | Link reference definitions | 26 | 27 |
 | Links | 86 | 90 |
-| List items | 47 | 48 |
+| List items | 48 | 48 |
 | Lists | 24 | 26 |
 | Paragraphs | 8 | 8 |
 | Precedence | 1 | 1 |

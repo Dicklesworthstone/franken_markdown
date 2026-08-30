@@ -86,8 +86,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - *Pass 28–29:* Implemented branchless static lookup tables for hex nibble decoding in the SVG color parser.
   - *Pass 30:* Finalized regression benchmarks and verified byte-for-byte golden output fidelity across all targets.
 
----
+- **30-Pass Extreme Software Optimization Loop, Round 2 (profile-driven, passes 1..30):**
+  Every pass profiled first (samply + the `fmd_perf_harness` scenarios), changed one lever, and proved byte-identical output via paired before/after binaries, differential tests, and archived optimization proofs under `tests/artifacts/perf/round2-*`.
+  - *Pass 1–2:* Process-wide memoization of the per-render 128×128 ASCII kern/advance/ligature tables (pointer-keyed, host fonts build locally), plus building the kern matrix by enumerating GPOS pair coverage instead of probing all 16,384 cells (6× faster per face) — `pdf-showcase` p50 −52%.
+  - *Pass 3–6:* LZ77 scratch generation-epoch scheme (fresh-table equivalence with zero-fill grow-only init, replacing the 256 KiB sweep), shared scratch across PDF streams/font programs/WOFF1/ZIP/HTML font embedding, u32 hash-chain indices with a ≥4 GiB usize fallback, and batched literal-run Adler-32 — `compress-corpus` p50 −22%, `pdf-large` −8%.
+  - *Pass 7–8:* ToUnicode CMap emission into one presized buffer (stage p50 −62%) and zero-copy `EmbeddedFace` kern/ligature borrows (−278 KiB + 129 allocations per render).
+  - *Pass 9–16:* Single-pass incremental run shaping in `build_segs_adjusted` (O(k²)→O(k), −88% on long-run corpora, f32 bit-equality differential tests), `shape_run` scratch reuse with an ASCII fast route (shaping stage −42%), inline small-capacity structure-tree paths, u32 link-target interning (`Tok` 64→40 B), single-hash shaped-run cache keyed by precomputed FNV digests with collision fallback, additive `subset_glyphs_with_lookup` dense-vec API, LayoutCx cache carry across the TOC fixpoint (TOC documents −26%), and append-style image/annotation writers (−7% on image-heavy serialization).
+  - *Pass 17:* Compile-time first-byte bucket index for highlighter keyword tables (binary search measured slower and rejected with data) — −83% per lookup, keyword-dense HTML −11%.
+  - *Pass 18–22:* Word-fold memoized `FontCharSet::extend_text`, safe-URL trimmed-range cache (−82% per repeated link), bounded MathML cache keyed `(tex, display)` (math-heavy HTML −88%), exact integer fixed-point SVG float formatting with half-even tie reproduction (18.3 M differential comparisons, `html-large` −14%), and lazy footnote-definition collection (walk −99.99% on footnote-free documents).
+  - *Pass 23–28:* Two-hit admission for the inline parse cache, char-slice nested inline parsing without String round-trips, compact u32 bracket-pair tables, single-collect code spans (−15.6% on code-span corpora), presized fenced/indented code bodies (reallocs → 0), and byte-class Unicode-whitespace trim scanners (13.4 M differential comparisons).
+  - *Pass 29–30:* u64/i64 fast paths in the layout-unit converters (105 M differential comparisons vs the 128-bit oracle) and per-(face, glyph) math-metrics memoization.
+  - Net end-to-end vs the round-2 baseline (same-session paired measurements per pass): `pdf-showcase` p50 −54%, `html-code-heavy` −24%, `font-subset` −26%, `html-showcase` −20%, `html-large` −17%, `hyphen-corpus` −14%, `compress-corpus` −11%.
 
+---
 ## [0.4.2] - 2026-08-28
 
 ### Added

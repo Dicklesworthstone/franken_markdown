@@ -61,16 +61,19 @@ pub(crate) enum Stretch {
 }
 
 /// Line-segment helper.
+#[inline(always)]
 fn line(to: (f64, f64)) -> PathSeg {
     PathSeg::Line { to }
 }
 
 /// Quadratic-segment helper.
+#[inline(always)]
 fn quad(ctrl: (f64, f64), to: (f64, f64)) -> PathSeg {
     PathSeg::Quad { ctrl, to }
 }
 
 /// One closed contour from a start point and segments.
+#[inline(always)]
 fn contour(start: (f64, f64), segments: Vec<PathSeg>) -> PathContour {
     PathContour { start, segments }
 }

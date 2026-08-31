@@ -220,19 +220,23 @@ pub(crate) fn encode_woff1_with_scratch(
     Ok(out)
 }
 
-fn padded4(len: usize) -> usize {
+#[inline(always)]
+const fn padded4(len: usize) -> usize {
     (len + 3) & !3
 }
 
+#[inline(always)]
 fn usize_from_u32(v: u32) -> usize {
     usize::try_from(v).unwrap_or(usize::MAX)
 }
 
+#[inline(always)]
 fn u32_len(slice: &[u8]) -> Result<u32> {
     u32::try_from(slice.len())
         .map_err(|_| RenderError::InvalidInput("woff1: table larger than 4 GiB".into()))
 }
 
+#[inline(always)]
 fn u32_from_usize(v: usize) -> Result<u32> {
     u32::try_from(v)
         .map_err(|_| RenderError::InvalidInput("woff1: output larger than 4 GiB".into()))

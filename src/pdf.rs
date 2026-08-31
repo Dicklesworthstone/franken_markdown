@@ -81,6 +81,7 @@ fn subset_tail_since(t: (), acc: &mut u128) {
     let _ = (t, acc);
 }
 
+#[inline(always)]
 fn subset_tail_slot_name(slot: u8) -> &'static str {
     match slot {
         F_BODY => "body",

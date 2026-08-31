@@ -1028,10 +1028,12 @@ fn css_import_at_rule_boundary(css: &str, import_start: usize) -> bool {
     idx == 0 || matches!(bytes[idx - 1], b';' | b'}')
 }
 
+#[inline(always)]
 fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
     find_ascii_case_insensitive(haystack, needle).is_some()
 }
 
+#[inline(always)]
 fn starts_with_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
     haystack
         .as_bytes()
@@ -1039,6 +1041,7 @@ fn starts_with_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+#[inline(always)]
 fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let needle = needle.as_bytes();
     if needle.is_empty() {

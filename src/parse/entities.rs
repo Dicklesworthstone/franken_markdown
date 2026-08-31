@@ -2135,7 +2135,7 @@ pub(crate) static HTML5_ENTITIES: &[(&str, &str)] = &[
 
 /// Resolve a named character reference body (the text between `&` and `;`) to
 /// its replacement string, or `None` if it is not a recognized HTML5 entity.
-#[inline]
+#[inline(always)]
 pub(crate) fn lookup(name: &str) -> Option<&'static str> {
     // Fast-path common entities to avoid binary search over 2134 entries.
     match name {

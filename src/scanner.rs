@@ -341,6 +341,7 @@ const fn is_pdf_escape_byte(byte: u8) -> bool {
     PDF_ESCAPE_TABLE[byte as usize]
 }
 
+#[inline(always)]
 fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
     find_needles(
         bytes,
@@ -349,6 +350,7 @@ fn find_any_of_3(bytes: &[u8], a: u8, b: u8, c: u8) -> Option<usize> {
     )
 }
 
+#[inline(always)]
 fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
     find_needles(
         bytes,
@@ -357,6 +359,7 @@ fn find_any_of_4(bytes: &[u8], a: u8, b: u8, c: u8, d: u8) -> Option<usize> {
     )
 }
 
+#[inline(always)]
 fn find_any_of_5(bytes: &[u8], a: u8, b: u8, c: u8, d: u8, e: u8) -> Option<usize> {
     find_needles(
         bytes,

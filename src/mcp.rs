@@ -56,6 +56,7 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
+    #[inline(always)]
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -64,6 +65,7 @@ impl JsonValue {
         }
     }
 
+    #[inline(always)]
     #[must_use]
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -72,6 +74,7 @@ impl JsonValue {
         }
     }
 
+    #[inline(always)]
     #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
@@ -80,6 +83,7 @@ impl JsonValue {
         }
     }
 
+    #[inline(always)]
     #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         match self {
@@ -88,6 +92,7 @@ impl JsonValue {
         }
     }
 
+    #[inline(always)]
     #[must_use]
     pub fn as_object(&self) -> Option<&BTreeMap<String, JsonValue>> {
         match self {
@@ -96,6 +101,7 @@ impl JsonValue {
         }
     }
 
+    #[inline(always)]
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&JsonValue> {
         match self {

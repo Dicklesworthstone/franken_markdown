@@ -39,7 +39,13 @@ const DIST_EXTRA: [u8; 30] = [
 // LSB-first.
 struct BitWriter {
     out: Vec<u8>,
-    bitbuf: u32,
+    // u64 bit buffer drains up to 8 bytes per drain-iteration instead of 1
+    // (round-2 reserve R4). Same LSB-first contract; the per-call n <= 24 and
+    // entry bitcount < 8 invariants still hold (write_bits never pushes past
+    // 24 bits, the drain loop runs before bitcount can exceed 8). The 8-byte
+    // bulk emission is the common case for streams where literal bytes
+    // dominate the writes.
+    bitbuf: u64,
     bitcount: u32,
 }
 
@@ -52,17 +58,32 @@ impl BitWriter {
         }
     }
 
-    /// Write the low `n` bits of `value`, LSB-first. `n` must be <= 24; in this
-    /// crate the largest single call is 13 (distance extra bits) and `bitcount`
-    /// is always < 8 on entry, so `bitbuf` (u32) never overflows.
+    /// Write the low `n` bits of `value`, LSB-first. `n` must be <= 24; in
+    /// this crate the largest single call is 13 (distance extra bits) and
+    /// `bitcount` is always < 8 on entry, so the u64 bitbuf never overflows.
     #[inline(always)]
     fn write_bits(&mut self, value: u32, n: u32) {
         if n == 0 {
             return;
         }
         let mask = if n >= 32 { u32::MAX } else { (1u32 << n) - 1 };
-        self.bitbuf |= (value & mask) << self.bitcount;
+        self.bitbuf |= u64::from(value & mask).wrapping_shl(self.bitcount);
         self.bitcount += n;
+        // 8-byte bulk drain when at least 64 bits are buffered (common case
+        // for long runs of literal bytes). The byte-level loop then handles
+        // the 8..=63 remainder.
+        if self.bitcount >= 64 {
+            self.out.push((self.bitbuf & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 8) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 16) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 24) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 32) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 40) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 48) & 0xFF) as u8);
+            self.out.push(((self.bitbuf >> 56) & 0xFF) as u8);
+            self.bitbuf = self.bitbuf.wrapping_shr(64);
+            self.bitcount -= 64;
+        }
         while self.bitcount >= 8 {
             self.out.push((self.bitbuf & 0xFF) as u8);
             self.bitbuf >>= 8;

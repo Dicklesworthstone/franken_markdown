@@ -21071,6 +21071,7 @@ impl Drop for ChunkedCompressPipeline {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 fn disconnected_chunked_compression_pool_fails_instead_of_spinning() {
     let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
     let (result_tx, result_rx) = std::sync::mpsc::channel();

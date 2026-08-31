@@ -5199,6 +5199,21 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
         return None;
     }
 
+    // A URL inside `< ... >` is an attempted angle autolink, not an extended bare URL.
+    let mut prev_non_ws = i;
+    while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
+        prev_non_ws -= 1;
+    }
+    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' {
+        let mut next_non_ws = end;
+        while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
+            next_non_ws += 1;
+        }
+        if next_non_ws < chars.len() && chars[next_non_ws] == '>' {
+            return None;
+        }
+    }
+
     let label = chars[i..end].iter().collect::<String>();
     let dest = if is_www {
         format!("http://{label}")
@@ -5250,6 +5265,22 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
     if !chars[domain_start..end].contains(&'.') {
         return None;
     }
+
+    // An email inside `< ... >` is an attempted angle autolink, not an extended bare email.
+    let mut prev_non_ws = i;
+    while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
+        prev_non_ws -= 1;
+    }
+    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' {
+        let mut next_non_ws = end;
+        while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
+            next_non_ws += 1;
+        }
+        if next_non_ws < chars.len() && chars[next_non_ws] == '>' {
+            return None;
+        }
+    }
+
     let label: String = chars[i..end].iter().collect();
     let dest = format!("mailto:{label}");
     Some((label, dest, end))

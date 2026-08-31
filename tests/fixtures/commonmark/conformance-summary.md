@@ -1,14 +1,14 @@
 # CommonMark 0.31.2 conformance (normalized match)
 
-- **pass: 577 / 652 (88.5%)**
-- in-scope match (excl. intentional non-goals): 577 / 595 (97.0%)
+- **pass: 578 / 652 (88.7%)**
+- in-scope match (excl. intentional non-goals): 578 / 595 (97.1%)
 - intentional_non_goal: 57 (raw-HTML default-escape policy)
-- known_gap: 18
+- known_gap: 17
 
 | Section | Pass | Total |
 |---|---:|---:|
 | ATX headings | 18 | 18 |
-| Autolinks | 16 | 19 |
+| Autolinks | 17 | 19 |
 | Backslash escapes | 12 | 13 |
 | Blank lines | 1 | 1 |
 | Block quotes | 25 | 25 |

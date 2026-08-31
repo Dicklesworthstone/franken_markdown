@@ -971,6 +971,9 @@ fn derive_sibling_html(md_path: &Path) -> PathBuf {
     md_path.with_extension("html")
 }
 
+#[cfg(debug_assertions)]
+const WATCH_MEASURE_BUDGET_MS: f64 = 500.0;
+#[cfg(not(debug_assertions))]
 const WATCH_MEASURE_BUDGET_MS: f64 = 150.0;
 
 fn run_watch_measure(

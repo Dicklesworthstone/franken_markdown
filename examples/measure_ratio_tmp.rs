@@ -148,16 +148,19 @@ fn main() {
         ("bytes/6", Box::new(|b, _| b / 6)),
         ("bytes/5", Box::new(|b, _| b / 5)),
         ("bytes/4", Box::new(|b, _| b / 4)),
-        ("max(bytes/6, 4)", Box::new(|b, _| (b / 6).max(4))),
+        ("bytes/3 + 4", Box::new(|b, _| b / 3 + 4)),
+        ("bytes/2 + 4", Box::new(|b, _| b / 2 + 4)),
+        ("bytes + 4", Box::new(|b, _| b + 4)),
+        ("words*3 + 1", Box::new(|_, w| w * 3 + 1)),
+        ("words*4 + 1", Box::new(|_, w| w * 4 + 1)),
+        ("words*6 + 1", Box::new(|_, w| w * 6 + 1)),
     ];
     for (label, f) in &formulas {
         let mut worst = 0_f64;
         for (name, text) in &inputs {
             let bytes = text.len();
             let cap = f(bytes, text.split_whitespace().count());
-            // we approximate actual item count via the items-per-byte ratio for this input
             let styled = StyledText::plain(text);
-            let items_styled = paragraph_items_from_styled_text(&font, &styled, size);
             let mut items_hyphen: Vec<ParagraphItem> = Vec::new();
             let mut scratch = ParagraphLayoutScratch::new();
             hyphenated_paragraph_items_from_text_into(

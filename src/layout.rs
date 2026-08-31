@@ -471,7 +471,21 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
     text: &StyledText,
     size: FontSize,
 ) -> Vec<ParagraphItem> {
-    let mut items = Vec::new();
+    // Capacity-only presize: count breakable-whitespace chars (≈ word
+    // boundaries) in the input runs, then use the per-word estimate
+    // `2 * words + 4` — measured items-per-word ratio is 2.0 for plain
+    // text and stays tight for CJK-heavy inputs (CJK adds +1 Glue per
+    // break opportunity, well under our 2× budget). Capacity is
+    // unobservable: same items, same order, same values.
+    let mut word_count: usize = 0;
+    for run in &text.runs {
+        for ch in run.text.chars() {
+            if is_breakable_whitespace(ch) {
+                word_count += 1;
+            }
+        }
+    }
+    let mut items = Vec::with_capacity(word_count * 2 + 4);
     let space = measure_text_with_pairs(metrics, " ", size);
     let interword = default_interword_glue(space);
     let mut current = StyledText::default();
@@ -662,7 +676,9 @@ pub fn hyphenated_paragraph_items_from_text<M: PairMetrics>(
     text: &str,
     size: FontSize,
 ) -> Vec<ParagraphItem> {
-    let mut items = Vec::new();
+    // Capacity-only presize: see `hyphenated_paragraph_items_from_text_into`.
+    let word_count = text.split_whitespace().count();
+    let mut items = Vec::with_capacity(word_count * 6 + 4);
     let mut scratch = ParagraphLayoutScratch::new();
     hyphenated_paragraph_items_from_text_into(
         metrics,
@@ -694,7 +710,20 @@ pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
     scratch.hyphen_dotted.clear();
     scratch.hyphen_scores.clear();
     scratch.hyphen_points.clear();
+    // Capacity-only presize: estimate items from a whitespace count.
+    // Measured items-per-word ratio is up to 5.504 on hyphen-bearing
+    // inputs (paragraph-1000 corpus); `words * 6 + 4` is a tight ceiling
+    // across all observed shapes. We `reserve` rather than `with_capacity`
+    // because the caller already owns `out` and we want to preserve any
+    // previously retained capacity (the harness reuses one items Vec
+    // across every paragraph in a render pass).
+    let word_count = text.split_whitespace().count();
+    let required = word_count * 6 + 4;
+    if out.capacity() < required {
+        out.reserve(required - out.capacity());
+    }
     let mut words = breakable_words(text).peekable();
+
     let space = measure_text_with_pairs(metrics, " ", size);
     let hyphen_width = measure_text_with_pairs(metrics, "-", size);
     while let Some(word) = words.next() {

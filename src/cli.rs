@@ -1121,14 +1121,28 @@ fn refresh_watch_preview(preview: &WatchPreview, args: &WatchArgs, no_config: bo
             let mut slot = preview.html.lock().unwrap_or_else(|e| e.into_inner());
             *slot = html;
         }
-        let mut clients = preview.clients.lock().unwrap_or_else(|e| e.into_inner());
-        clients.retain_mut(|stream| {
+        retain_watch_clients(&preview.clients, |stream| {
             stream
                 .write_all(sse_reload_event().as_bytes())
                 .and_then(|()| stream.flush())
                 .is_ok()
         });
     }
+}
+
+fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T) -> bool) {
+    // SAFETY: detach the current generation before invoking caller-controlled or blocking work.
+    // The accept loop can therefore register new clients while a slow socket is timing out, and
+    // concurrent broadcasts cannot retain this registry mutex across external I/O.
+    let mut detached = {
+        let mut registered = clients.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *registered)
+    };
+    detached.retain_mut(&mut keep);
+    clients
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .append(&mut detached);
 }
 
 fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, String> {
@@ -4263,6 +4277,24 @@ mod font_pin_warning_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod helper_tests {
     use super::*;
+
+    #[test]
+    fn preview_broadcast_never_holds_client_registry_across_external_work() {
+        let clients = Mutex::new(vec![1_u8]);
+        for _ in 0..10 {
+            retain_watch_clients(&clients, |_| {
+                assert!(
+                    clients.try_lock().is_ok(),
+                    "socket work must run after the client registry is unlocked"
+                );
+                true
+            });
+        }
+        assert_eq!(
+            *clients.lock().unwrap_or_else(|error| error.into_inner()),
+            vec![1]
+        );
+    }
 
     #[test]
     fn wget_https_urls_enable_https_only_to_block_file_redirects() {

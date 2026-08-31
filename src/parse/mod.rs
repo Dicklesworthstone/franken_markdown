@@ -100,6 +100,7 @@ impl InlineParseCache {
     }
 }
 
+#[inline(always)]
 fn inline_cache_size_allows(text: &str) -> bool {
     text.len() >= INLINE_PARSE_CACHE_MIN_BYTES && text.len() <= INLINE_PARSE_CACHE_MAX_KEY_BYTES
 }
@@ -107,6 +108,7 @@ fn inline_cache_size_allows(text: &str) -> bool {
 /// FNV-1a 64-bit admission hash — the same construction used for content
 /// fingerprints elsewhere in the crate (batch, compress, verify). Used for
 /// admission only: a collision costs one pointless insert, never a false hit.
+#[inline(always)]
 fn inline_cache_text_hash(text: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -5875,12 +5877,14 @@ fn strip_fence_indent(line: &str, n: usize) -> &str {
     &line[byte..]
 }
 
+#[inline(always)]
 fn trim_space_tab(s: &str) -> &str {
     trim_start_space_tab(trim_end_space_tab(s))
 }
 
 /// CommonMark blank line: only U+0020 and U+0009. Unicode `trim()` also strips
 /// NBSP/Zs and would drop a line that is only `\u{00A0}`.
+#[inline(always)]
 fn is_blank_line(line: &str) -> bool {
     trim_space_tab(line).is_empty()
 }
@@ -5890,6 +5894,7 @@ fn is_blank_line(line: &str) -> bool {
 /// byte (continuation/lead bytes are >= 0x80), so skipping exactly those bytes
 /// from the front lands on the same char boundary the char-pattern trim does —
 /// without decoding each char.
+#[inline(always)]
 fn trim_start_space_tab(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -5904,6 +5909,7 @@ fn trim_start_space_tab(s: &str) -> &str {
 /// argument as [`trim_start_space_tab`], mirrored: the first non-space/tab byte
 /// met from the right can only be the last byte of a char the char-pattern trim
 /// would also stop at, so `end` stays a char boundary.
+#[inline(always)]
 fn trim_end_space_tab(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut end = bytes.len();

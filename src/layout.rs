@@ -471,21 +471,25 @@ pub fn paragraph_items_from_styled_text<M: PairMetrics>(
     text: &StyledText,
     size: FontSize,
 ) -> Vec<ParagraphItem> {
-    // Capacity-only presize: count breakable-whitespace chars (≈ word
-    // boundaries) in the input runs, then use the per-word estimate
-    // `2 * words + 4` — measured items-per-word ratio is 2.0 for plain
-    // text and stays tight for CJK-heavy inputs (CJK adds +1 Glue per
-    // break opportunity, well under our 2× budget). Capacity is
-    // unobservable: same items, same order, same values.
-    let mut word_count: usize = 0;
+    // Capacity-only presize: count non-whitespace chars (= word content
+    // chars across all runs); for Latin ASCII ≈ bytes, for CJK without
+    // whitespace ≈ word chars (each char is its own "word"). The styled
+    // builder emits at most ~2 Boxes per Box (one for the word itself,
+    // one per in-word CJK break) and one interword Glue between boxes;
+    // pure-CJK inputs therefore produce ~3 items per content char.
+    // `content_chars * 4 + 4` covers both Latin (~3 items/word / 6 chars
+    // per word ⇒ ~0.5 items/char, 8x slack) and CJK (~3 items/char, 33%
+    // slack). Capacity is unobservable: same items, same order, same
+    // values.
+    let mut content_chars: usize = 0;
     for run in &text.runs {
         for ch in run.text.chars() {
-            if is_breakable_whitespace(ch) {
-                word_count += 1;
+            if !is_breakable_whitespace(ch) {
+                content_chars += 1;
             }
         }
     }
-    let mut items = Vec::with_capacity(word_count * 2 + 4);
+    let mut items = Vec::with_capacity(content_chars * 4 + 4);
     let space = measure_text_with_pairs(metrics, " ", size);
     let interword = default_interword_glue(space);
     let mut current = StyledText::default();
@@ -677,8 +681,8 @@ pub fn hyphenated_paragraph_items_from_text<M: PairMetrics>(
     size: FontSize,
 ) -> Vec<ParagraphItem> {
     // Capacity-only presize: see `hyphenated_paragraph_items_from_text_into`.
-    let word_count = text.split_whitespace().count();
-    let mut items = Vec::with_capacity(word_count * 6 + 4);
+    let char_count = text.chars().count();
+    let mut items = Vec::with_capacity(char_count * 4 + 4);
     let mut scratch = ParagraphLayoutScratch::new();
     hyphenated_paragraph_items_from_text_into(
         metrics,
@@ -710,15 +714,20 @@ pub fn hyphenated_paragraph_items_from_text_into<M: PairMetrics>(
     scratch.hyphen_dotted.clear();
     scratch.hyphen_scores.clear();
     scratch.hyphen_points.clear();
-    // Capacity-only presize: estimate items from a whitespace count.
-    // Measured items-per-word ratio is up to 5.504 on hyphen-bearing
-    // inputs (paragraph-1000 corpus); `words * 6 + 4` is a tight ceiling
-    // across all observed shapes. We `reserve` rather than `with_capacity`
-    // because the caller already owns `out` and we want to preserve any
-    // previously retained capacity (the harness reuses one items Vec
-    // across every paragraph in a render pass).
-    let word_count = text.split_whitespace().count();
-    let required = word_count * 6 + 4;
+    // Capacity-only presize. The hyphen builder emits up to ~5.5 items
+    // per Latin word (paragraph-1000 corpus) and up to ~3 items per
+    // char on pure CJK (each char is its own "word" plus CJK Glue
+    // breaks). We count `chars` directly so a CJK paragraph without
+    // whitespace still gets full capacity. Latin worst-case is ~1.1
+    // items/char (5.5 items/word, ~5 chars/word); CJK worst case is
+    // ~3 items/char. So `chars * 4 + 4` covers both with comfortable
+    // headroom (8x on Latin ASCII, 33% slack on CJK). We `reserve`
+    // rather than `with_capacity` because the caller owns `out` and
+    // we want to preserve any previously retained capacity (the
+    // harness reuses one items Vec across every paragraph in a render
+    // pass).
+    let char_count = text.chars().count();
+    let required = char_count * 4 + 4;
     if out.capacity() < required {
         out.reserve(required - out.capacity());
     }

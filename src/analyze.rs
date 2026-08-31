@@ -372,39 +372,38 @@ fn count_sentences(text: &str) -> usize {
 ///    (`table` keeps its final group, `make` loses it).
 /// 5. Every word with letters has at least one syllable.
 fn count_syllables(word: &str) -> usize {
-    let letters: Vec<char> = word
-        .chars()
-        .filter(char::is_ascii_alphabetic)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    if letters.is_empty() {
+    let mut buf = [0u8; 64];
+    let mut n = 0usize;
+    for &b in word.as_bytes() {
+        if b.is_ascii_alphabetic() && n < buf.len() {
+            buf[n] = b.to_ascii_lowercase();
+            n += 1;
+        }
+    }
+    if n == 0 {
         return 0;
     }
-    if letters.len() <= 3 {
+    if n <= 3 {
         return 1;
     }
-    let is_vowel_char = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u');
+    let is_vowel_byte = |b: u8| matches!(b, b'a' | b'e' | b'i' | b'o' | b'u');
     let is_vowel_at = |i: usize| -> bool {
-        is_vowel_char(letters[i])
-            || (letters[i] == 'y'
-                && i > 0
-                && !is_vowel_char(letters[i - 1])
-                && letters[i - 1] != 'y')
+        is_vowel_byte(buf[i])
+            || (buf[i] == b'y' && i > 0 && !is_vowel_byte(buf[i - 1]) && buf[i - 1] != b'y')
     };
     let mut groups = 0usize;
     let mut prev_vowel = false;
-    for i in 0..letters.len() {
+    for i in 0..n {
         let vowel = is_vowel_at(i);
         if vowel && !prev_vowel {
             groups += 1;
         }
         prev_vowel = vowel;
     }
-    let n = letters.len();
-    if letters[n - 1] == 'e'
+    if buf[n - 1] == b'e'
         && groups > 1
-        && !matches!(letters[n - 2], 'e' | 'y')
-        && !(letters[n - 2] == 'l' && n >= 3 && !is_vowel_char(letters[n - 3]))
+        && !matches!(buf[n - 2], b'e' | b'y')
+        && !(buf[n - 2] == b'l' && n >= 3 && !is_vowel_byte(buf[n - 3]))
     {
         groups -= 1;
     }

@@ -162,6 +162,7 @@ fn list_span(items: &[Node], fallback: usize) -> Span {
 /// Map a direct math-mode character to its math codepoint (the G0-3
 /// ratification's char→math-codepoint table: hyphen is a minus sign,
 /// asterisk an operator).
+#[inline(always)]
 const fn map_math_char(ch: char) -> char {
     match ch {
         '-' => '−',
@@ -188,10 +189,12 @@ impl<'s> Parser<'s> {
         }
     }
 
+    #[inline(always)]
     fn peek(&self) -> Option<&Tok<'s>> {
         self.toks.get(self.pos)
     }
 
+    #[inline(always)]
     fn next_tok(&mut self) -> Option<Tok<'s>> {
         let tok = self.toks.get(self.pos).cloned();
         if tok.is_some() {
@@ -200,6 +203,7 @@ impl<'s> Parser<'s> {
         tok
     }
 
+    #[inline(always)]
     fn skip_spaces(&mut self) {
         while matches!(self.peek().map(|t| t.kind), Some(TokKind::Space)) {
             self.pos += 1;
@@ -207,6 +211,7 @@ impl<'s> Parser<'s> {
     }
 
     /// Byte offset used for "at end of input" errors.
+    #[inline(always)]
     fn here(&self) -> usize {
         self.peek().map_or(self.src.len(), |t| t.span.start)
     }

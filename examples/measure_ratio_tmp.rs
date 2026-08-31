@@ -3,12 +3,6 @@
 //! Runs paragraph_items_from_styled_text and hyphenated_paragraph_items_from_text_into
 //! over the fmd_layout_perf corpus inputs + showcase, counts items, and reports
 //! the items-per-byte ratio so we can pick a capacity formula.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::type_complexity,
-    clippy::cast_precision_loss
-)]
 
 use franken_markdown::FontFamily;
 use franken_markdown::fonts::{self, FontStyle};
@@ -151,22 +145,29 @@ fn main() {
 
     // Capacity formulas — pick the one with smallest worst-case overshoot.
     println!("\n--- heuristic capacity formulas (input-bytes → capacity) ---");
-    let formulas: Vec<(&str, Box<dyn Fn(usize, usize) -> usize>)> = vec![
-        ("bytes/6", Box::new(|b, _| b / 6)),
-        ("bytes/5", Box::new(|b, _| b / 5)),
-        ("bytes/4", Box::new(|b, _| b / 4)),
-        ("bytes/3 + 4", Box::new(|b, _| b / 3 + 4)),
-        ("bytes/2 + 4", Box::new(|b, _| b / 2 + 4)),
-        ("bytes + 4", Box::new(|b, _| b + 4)),
-        ("words*3 + 1", Box::new(|_, w| w * 3 + 1)),
-        ("words*4 + 1", Box::new(|_, w| w * 4 + 1)),
-        ("words*6 + 1", Box::new(|_, w| w * 6 + 1)),
+    // Each formula gets (bytes, words, chars); we provide both word- and
+    // char-based estimators so the chosen `chars * 4 + 4` is in the table.
+    let formulas: Vec<(&str, Box<dyn Fn(usize, usize, usize) -> usize>)> = vec![
+        ("bytes/6", Box::new(|b, _, _| b / 6)),
+        ("bytes/5", Box::new(|b, _, _| b / 5)),
+        ("bytes/4", Box::new(|b, _, _| b / 4)),
+        ("bytes/3 + 4", Box::new(|b, _, _| b / 3 + 4)),
+        ("bytes/2 + 4", Box::new(|b, _, _| b / 2 + 4)),
+        ("bytes + 4", Box::new(|b, _, _| b + 4)),
+        ("words*3 + 1", Box::new(|_, w, _| w * 3 + 1)),
+        ("words*4 + 1", Box::new(|_, w, _| w * 4 + 1)),
+        ("words*6 + 1", Box::new(|_, w, _| w * 6 + 1)),
+        ("chars*4 + 4 (CHOSEN)", Box::new(|_, _, c| c * 4 + 4)),
     ];
     for (label, f) in &formulas {
         let mut worst = 0_f64;
+        let mut worst_styled_under = 0_f64;
+        let mut worst_hyphen_under = 0_f64;
         for (name, text) in &inputs {
             let bytes = text.len();
-            let cap = f(bytes, text.split_whitespace().count());
+            let words = text.split_whitespace().count();
+            let chars = text.chars().count();
+            let cap = f(bytes, words, chars);
             let styled = StyledText::plain(text);
             let items_styled = paragraph_items_from_styled_text(&font, &styled, size);
             let mut items_hyphen: Vec<ParagraphItem> = Vec::new();
@@ -179,25 +180,38 @@ fn main() {
                 &mut scratch,
                 &mut items_hyphen,
             );
-            let actual = items_styled.len() + items_hyphen.len();
-            let overshoot = (cap as f64 - actual as f64) / actual.max(1) as f64;
+            let is_count = items_styled.len();
+            let ih_count = items_hyphen.len();
+            let combined = is_count + ih_count;
+            let overshoot = (cap as f64 - combined as f64) / combined.max(1) as f64;
+            let styled_over = (cap as f64 - is_count as f64) / is_count.max(1) as f64;
+            let hyphen_over = (cap as f64 - ih_count as f64) / ih_count.max(1) as f64;
             if overshoot > worst {
                 worst = overshoot;
             }
+            if styled_over < worst_styled_under {
+                worst_styled_under = styled_over;
+            }
+            if hyphen_over < worst_hyphen_under {
+                worst_hyphen_under = hyphen_over;
+            }
             println!(
-                "{}  input={} bytes={} capacity={} actual={} overshoot_pct={:.2}",
+                "{}  input={} bytes={} capacity={} actual_styled={} actual_hyphen={} combined_overshoot_pct={:.2}",
                 label,
                 name,
                 bytes,
                 cap,
-                actual,
+                is_count,
+                ih_count,
                 overshoot * 100.0
             );
         }
         println!(
-            "{}  worst_overshoot_pct = {:.2} (target: cap >= actual; positive = slack)",
+            "{}  combined_worst_overshoot_pct = {:.2}, styled_worst_undershoot_pct = {:.2}, hyphen_worst_undershoot_pct = {:.2}",
             label,
-            worst * 100.0
+            worst * 100.0,
+            worst_styled_under * 100.0,
+            worst_hyphen_under * 100.0
         );
         println!();
     }

@@ -439,16 +439,26 @@ fn json_num(value: f32) -> String {
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0..=0x1f | 0x7f => " ",
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
     out
 }
@@ -607,16 +617,49 @@ impl TypeScalePreset {
     ];
 
     /// Parse stable preset spelling or shorthand (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`).
+    #[inline]
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "xs" | "x-small" | "extra-small" | "extrasmall" | "tiny" => Some(Self::ExtraSmall),
-            "sm" | "small" | "compact" => Some(Self::Small),
-            "md" | "medium" | "normal" | "default" | "regular" | "standard" => Some(Self::Medium),
-            "lg" | "large" | "comfortable" => Some(Self::Large),
-            "xl" | "x-large" | "extra-large" | "extralarge" => Some(Self::ExtraLarge),
-            "2xl" | "xxl" | "huge" | "display" => Some(Self::Huge),
-            _ => None,
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("xs")
+            || t.eq_ignore_ascii_case("x-small")
+            || t.eq_ignore_ascii_case("extra-small")
+            || t.eq_ignore_ascii_case("extrasmall")
+            || t.eq_ignore_ascii_case("tiny")
+        {
+            Some(Self::ExtraSmall)
+        } else if t.eq_ignore_ascii_case("sm")
+            || t.eq_ignore_ascii_case("small")
+            || t.eq_ignore_ascii_case("compact")
+        {
+            Some(Self::Small)
+        } else if t.eq_ignore_ascii_case("md")
+            || t.eq_ignore_ascii_case("medium")
+            || t.eq_ignore_ascii_case("normal")
+            || t.eq_ignore_ascii_case("default")
+            || t.eq_ignore_ascii_case("regular")
+            || t.eq_ignore_ascii_case("standard")
+        {
+            Some(Self::Medium)
+        } else if t.eq_ignore_ascii_case("lg")
+            || t.eq_ignore_ascii_case("large")
+            || t.eq_ignore_ascii_case("comfortable")
+        {
+            Some(Self::Large)
+        } else if t.eq_ignore_ascii_case("xl")
+            || t.eq_ignore_ascii_case("x-large")
+            || t.eq_ignore_ascii_case("extra-large")
+            || t.eq_ignore_ascii_case("extralarge")
+        {
+            Some(Self::ExtraLarge)
+        } else if t.eq_ignore_ascii_case("2xl")
+            || t.eq_ignore_ascii_case("xxl")
+            || t.eq_ignore_ascii_case("huge")
+            || t.eq_ignore_ascii_case("display")
+        {
+            Some(Self::Huge)
+        } else {
+            None
         }
     }
 

@@ -92,7 +92,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let body = extract_main_body(&page).ok_or_else(|| {
         RenderError::InvalidInput("epub: HTML renderer <main> wrapper not found".to_string())
     })?;
-    let chapter_body = html_fragment_to_xhtml(&body);
+    let chapter_body = html_fragment_to_xhtml(body);
 
     let identifier = content_identifier(&title, &lang, &chapter_body);
 

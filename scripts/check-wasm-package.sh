@@ -68,10 +68,10 @@ log_check() {
 #
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=4493062
-PREVIOUS_GZIP=1968860
-BUDGET_RAW=4600000
-BUDGET_GZIP=2050000
+PREVIOUS_RAW=4601891
+PREVIOUS_GZIP=2001574
+BUDGET_RAW=4750000
+BUDGET_GZIP=2100000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"

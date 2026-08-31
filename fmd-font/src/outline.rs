@@ -44,10 +44,11 @@ pub struct Point {
 }
 
 impl Point {
+    #[inline(always)]
     fn midpoint(self, other: Point) -> Point {
         Point {
-            x: (self.x + other.x) / 2.0,
-            y: (self.y + other.y) / 2.0,
+            x: (self.x + other.x) * 0.5,
+            y: (self.y + other.y) * 0.5,
         }
     }
 }
@@ -72,6 +73,7 @@ pub enum Segment {
 
 impl Segment {
     /// The segment's endpoint.
+    #[inline(always)]
     #[must_use]
     pub fn to(&self) -> Point {
         match self {

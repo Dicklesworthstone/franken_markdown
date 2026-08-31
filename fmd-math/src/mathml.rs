@@ -83,6 +83,7 @@ impl Writer {
         }
     }
 
+    #[inline(always)]
     fn open(&mut self, tag: &str, attrs: &[(&str, &str)]) {
         self.buf.push('<');
         self.buf.push_str(tag);
@@ -96,6 +97,7 @@ impl Writer {
         self.buf.push('>');
     }
 
+    #[inline(always)]
     fn close(&mut self, tag: &str) {
         self.buf.push('<');
         self.buf.push('/');
@@ -103,10 +105,12 @@ impl Writer {
         self.buf.push('>');
     }
 
+    #[inline(always)]
     fn text(&mut self, s: &str) {
         push_escaped(&mut self.buf, s, false);
     }
 
+    #[inline(always)]
     fn char_text(&mut self, ch: char) {
         match ch {
             '&' => self.buf.push_str("&amp;"),
@@ -126,14 +130,24 @@ fn push_escaped(buf: &mut String, s: &str, attr: bool) {
         buf.push_str(s);
         return;
     }
-    for ch in s.chars() {
-        match ch {
-            '&' => buf.push_str("&amp;"),
-            '<' => buf.push_str("&lt;"),
-            '>' => buf.push_str("&gt;"),
-            '"' if attr => buf.push_str("&quot;"),
-            _ => buf.push(ch),
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' if attr => "&quot;",
+            _ => continue,
+        };
+        if clean_start < i {
+            buf.push_str(&s[clean_start..i]);
         }
+        buf.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        buf.push_str(&s[clean_start..]);
     }
 }
 

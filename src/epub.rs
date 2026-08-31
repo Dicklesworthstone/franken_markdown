@@ -117,12 +117,12 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
 /// Extract the `<main class="fmd">` body from a full renderer document. The
 /// renderer's shell is a fixed byte sequence, so this is exact string surgery
 /// on two constant markers, not parsing.
-fn extract_main_body(page: &str) -> Option<String> {
+fn extract_main_body(page: &str) -> Option<&str> {
     const OPEN: &str = "<main class=\"fmd\">\n";
     const CLOSE: &str = "</main>";
     let start = page.find(OPEN)? + OPEN.len();
     let end = page.rfind(CLOSE)?;
-    (end >= start).then(|| page[start..end].to_string())
+    (end >= start).then(|| &page[start..end])
 }
 
 fn html_fragment_to_xhtml(html: &str) -> String {
@@ -582,10 +582,7 @@ mod tests {
     #[test]
     fn extract_main_body_boundaries() {
         let full = "<html><head></head><body>\n<main class=\"fmd\">\n<p>Content</p>\n</main>\n</body></html>";
-        assert_eq!(
-            extract_main_body(full),
-            Some("<p>Content</p>\n".to_string())
-        );
+        assert_eq!(extract_main_body(full), Some("<p>Content</p>\n"));
         assert_eq!(extract_main_body("invalid"), None);
     }
 

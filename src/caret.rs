@@ -220,6 +220,7 @@ pub fn style_for_stderr(mode: ColorMode, is_tty: bool, columns: Option<usize>) -
 }
 
 /// Display column (0-based) of `byte_off` inside `line`.
+#[inline]
 #[must_use]
 pub fn byte_to_col(line: &str, byte_off: usize) -> usize {
     let mut col = 0usize;
@@ -233,8 +234,12 @@ pub fn byte_to_col(line: &str, byte_off: usize) -> usize {
 }
 
 /// Terminal display width of `ch`: 0 combining, 2 East-Asian/fullwidth, else 1.
+#[inline(always)]
 #[must_use]
 pub fn display_width(ch: char) -> usize {
+    if ch.is_ascii() {
+        return 1;
+    }
     if is_combining(ch) {
         0
     } else if is_wide(ch) {

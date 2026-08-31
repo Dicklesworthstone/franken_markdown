@@ -97,7 +97,7 @@ pub fn build_search_index(doc: &Document) -> SearchIndex {
 /// so the output is always valid JSON for arbitrary document text.
 #[must_use]
 pub fn search_index_json(index: &SearchIndex) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(64 + index.entries.len().saturating_mul(128));
     out.push_str("{\"schema\":\"");
     out.push_str(SEARCH_INDEX_SCHEMA);
     out.push_str("\",\"entries\":[");
@@ -305,7 +305,12 @@ fn plain_normalized(inlines: &[Inline]) -> String {
 /// Mirror of `push_usize` (src/html.rs:954-966). The buffer only ever holds
 /// ASCII digits, so the UTF-8 conversion cannot fail; `unwrap_or` keeps the
 /// crate's no-`unwrap` lint satisfied.
+#[inline(always)]
 fn push_usize(out: &mut String, value: usize) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut idx = buf.len();

@@ -87,12 +87,13 @@ impl PdfASettings {
 }
 
 /// True when a URI action is forbidden in PDF/A-2b (`javascript:`, `file:`).
+#[inline]
 #[must_use]
 pub fn uri_forbidden_in_pdfa(uri: &str) -> bool {
     let t = uri.trim();
-    let head = t.get(..11).unwrap_or(t);
-    let lower = head.to_ascii_lowercase();
-    lower.starts_with("javascript:") || lower.starts_with("file:")
+    t.get(..11)
+        .is_some_and(|s| s.eq_ignore_ascii_case("javascript:"))
+        || t.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("file:"))
 }
 
 /// Named strict-mode rejection. `code` is stable for robot/JSON output.
@@ -107,7 +108,11 @@ pub fn check_uri_action(settings: PdfASettings, uri: &str) -> Result<bool> {
         return Ok(false);
     }
     if settings.strict {
-        let kind = if uri.trim().to_ascii_lowercase().starts_with("javascript:") {
+        let kind = if uri
+            .trim()
+            .get(..11)
+            .is_some_and(|s| s.eq_ignore_ascii_case("javascript:"))
+        {
             "pdf_a_javascript_uri"
         } else {
             "pdf_a_file_uri"

@@ -149,12 +149,17 @@ fn parse_gvar(d: &[u8], table_off: usize, table_len: usize, n_axes: usize) -> Op
     })
 }
 
+#[inline(always)]
 fn be_u16_at(d: &[u8], base: usize, delta: usize) -> Option<u16> {
     be_u16(d, off(base, delta)?)
 }
+
+#[inline(always)]
 fn be_u32_at(d: &[u8], base: usize, delta: usize) -> Option<u32> {
     be_u32(d, off(base, delta)?)
 }
+
+#[inline(always)]
 fn f2dot14(v: i16) -> f32 {
     f32::from(v) / 16384.0
 }

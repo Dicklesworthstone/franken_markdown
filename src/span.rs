@@ -24,33 +24,45 @@ impl SourceSpan {
     }
 
     /// Length in bytes, saturating to zero for malformed ranges.
+    #[inline(always)]
     #[must_use]
-    pub fn len(self) -> usize {
+    pub const fn len(self) -> usize {
         self.end.saturating_sub(self.start)
     }
 
     /// True when the span has no byte width.
+    #[inline(always)]
     #[must_use]
-    pub fn is_empty(self) -> bool {
+    pub const fn is_empty(self) -> bool {
         self.start >= self.end
     }
 
     /// True when `offset` is inside `[start, end)`.
+    #[inline(always)]
     #[must_use]
-    pub fn contains(self, offset: usize) -> bool {
+    pub const fn contains(self, offset: usize) -> bool {
         self.start <= offset && offset < self.end
     }
 
     /// Return a span covering both inputs.
+    #[inline(always)]
     #[must_use]
-    pub fn merge(self, other: Self) -> Self {
-        Self {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-        }
+    pub const fn merge(self, other: Self) -> Self {
+        let start = if self.start < other.start {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end > other.end {
+            self.end
+        } else {
+            other.end
+        };
+        Self { start, end }
     }
 
     /// Borrow the original source slice covered by this span.
+    #[inline]
     #[must_use]
     pub fn slice(self, source: &str) -> Option<&str> {
         if self.start <= self.end {

@@ -884,7 +884,7 @@ impl Font {
 
     /// The glyph id for a character, or `0` (`.notdef`) if unmapped.
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn glyph_index(&self, ch: char) -> u16 {
         let cp = ch as u32;
         if cp < 256 {
@@ -902,7 +902,7 @@ impl Font {
     /// (so a tofu box still occupies its natural width); only an unparsable face
     /// with `units_per_em == 0` yields `0`.
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn advance_1000(&self, ch: char) -> u32 {
         let cp = ch as u32;
         if cp < 256 {

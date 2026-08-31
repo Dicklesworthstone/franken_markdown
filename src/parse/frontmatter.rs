@@ -118,7 +118,10 @@ fn parse_frontmatter_lines(lines: &[&str]) -> Option<Frontmatter> {
                 None
             };
         } else if key.eq_ignore_ascii_case("toc_depth") {
-            fm.toc_depth = value_unquoted.parse::<u8>().ok().filter(|d| (1..=6).contains(d));
+            fm.toc_depth = value_unquoted
+                .parse::<u8>()
+                .ok()
+                .filter(|d| (1..=6).contains(d));
         } else {
             fm.unknown_keys.push(key.to_string());
         }

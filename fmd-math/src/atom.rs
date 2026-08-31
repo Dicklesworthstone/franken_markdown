@@ -45,6 +45,7 @@ pub const ATOM_CLASSES: [AtomClass; 8] = [
 
 impl AtomClass {
     /// Row/column index in the spacing table.
+    #[inline(always)]
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -75,6 +76,7 @@ pub enum Spacing {
 
 impl Spacing {
     /// The glue amount in mu (1 mu = 1/18 em at the current size).
+    #[inline(always)]
     #[must_use]
     pub const fn mu(self) -> i32 {
         match self {
@@ -171,6 +173,7 @@ pub const SPACING_TABLE: [[PairSpacing; 8]; 8] = [
 ];
 
 /// The raw table entry for a pair.
+#[inline(always)]
 #[must_use]
 pub const fn pair_spacing(left: AtomClass, right: AtomClass) -> PairSpacing {
     SPACING_TABLE[left.index()][right.index()]
@@ -180,6 +183,7 @@ pub const fn pair_spacing(left: AtomClass, right: AtomClass) -> PairSpacing {
 /// suppression rule applied. Impossible pairs yield no space (the engine
 /// never produces them after degradation; tolerating them here keeps the
 /// function total for untrusted callers).
+#[inline(always)]
 #[must_use]
 pub const fn spacing_in_style(left: AtomClass, right: AtomClass, style: Style) -> Spacing {
     match pair_spacing(left, right) {

@@ -527,6 +527,11 @@ fn count_syllables_in_word(word: &str) -> usize {
 
 fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut s = String::new();
+    push_inlines_to_plain(inlines, &mut s);
+    s
+}
+
+fn push_inlines_to_plain(inlines: &[Inline], s: &mut String) {
     for inl in inlines {
         match inl {
             Inline::Text(t)
@@ -535,15 +540,14 @@ fn inlines_to_plain(inlines: &[Inline]) -> String {
             | Inline::Math(t)
             | Inline::DisplayMath(t) => s.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                s.push_str(&inlines_to_plain(c));
+                push_inlines_to_plain(c, s);
             }
-            Inline::Link { content, .. } => s.push_str(&inlines_to_plain(content)),
+            Inline::Link { content, .. } => push_inlines_to_plain(content, s),
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => s.push(' '),
             Inline::FootnoteRef { .. } => {}
         }
     }
-    s
 }
 
 fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>) -> String {
@@ -911,19 +915,34 @@ impl DocumentStats {
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0..=0x1f => {
+                if clean_start < i {
+                    out.push_str(&s[clean_start..i]);
+                }
                 use std::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", c as u32);
+                let _ = write!(out, "\\u{b:04x}");
+                clean_start = i + 1;
+                continue;
             }
-            c => out.push(c),
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
     out
 }

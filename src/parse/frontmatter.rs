@@ -85,32 +85,42 @@ fn parse_frontmatter_lines(lines: &[&str]) -> Option<Frontmatter> {
         let Some((key, value)) = pair else {
             continue;
         };
-        let key = key.trim().to_ascii_lowercase();
+        let key = key.trim();
         let value = value.trim();
-        let value = if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+        let value_unquoted = if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
             || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
         {
-            &value[1..value.len() - 1]
+            value[1..value.len() - 1].trim()
         } else {
             value
         };
-        let value = value.trim().to_string();
         saw_any = true;
-        match key.as_str() {
-            "title" => fm.title = Some(value),
-            "author" => fm.author = Some(value),
-            "lang" => fm.lang = Some(value),
-            "toc" => {
-                fm.toc = match value.to_ascii_lowercase().as_str() {
-                    "true" | "yes" | "on" | "1" => Some(true),
-                    "false" | "no" | "off" | "0" => Some(false),
-                    _ => None,
-                };
-            }
-            "toc_depth" => {
-                fm.toc_depth = value.parse::<u8>().ok().filter(|d| (1..=6).contains(d));
-            }
-            other => fm.unknown_keys.push(other.to_string()),
+        if key.eq_ignore_ascii_case("title") {
+            fm.title = Some(value_unquoted.to_string());
+        } else if key.eq_ignore_ascii_case("author") {
+            fm.author = Some(value_unquoted.to_string());
+        } else if key.eq_ignore_ascii_case("lang") {
+            fm.lang = Some(value_unquoted.to_string());
+        } else if key.eq_ignore_ascii_case("toc") {
+            fm.toc = if value_unquoted.eq_ignore_ascii_case("true")
+                || value_unquoted.eq_ignore_ascii_case("yes")
+                || value_unquoted.eq_ignore_ascii_case("on")
+                || value_unquoted == "1"
+            {
+                Some(true)
+            } else if value_unquoted.eq_ignore_ascii_case("false")
+                || value_unquoted.eq_ignore_ascii_case("no")
+                || value_unquoted.eq_ignore_ascii_case("off")
+                || value_unquoted == "0"
+            {
+                Some(false)
+            } else {
+                None
+            };
+        } else if key.eq_ignore_ascii_case("toc_depth") {
+            fm.toc_depth = value_unquoted.parse::<u8>().ok().filter(|d| (1..=6).contains(d));
+        } else {
+            fm.unknown_keys.push(key.to_string());
         }
     }
     saw_any.then_some(fm)

@@ -341,20 +341,34 @@ fn decimal_len_usize(mut value: usize) -> usize {
 /// UTF-8, which is valid JSON.
 fn push_json_escaped(out: &mut String, s: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if u32::from(c) < 0x20 => {
-                let n = u32::from(c);
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            b if b < 0x20 => {
+                if clean_start < i {
+                    out.push_str(&s[clean_start..i]);
+                }
                 out.push_str("\\u00");
-                out.push(char::from(HEX[((n >> 4) & 0xF) as usize]));
-                out.push(char::from(HEX[(n & 0xF) as usize]));
+                out.push(char::from(HEX[((b >> 4) & 0xF) as usize]));
+                out.push(char::from(HEX[(b & 0xF) as usize]));
+                clean_start = i + 1;
+                continue;
             }
-            c => out.push(c),
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
 }

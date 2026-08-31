@@ -127,20 +127,24 @@ fn first_heading_text(doc: &Document) -> Option<String> {
 
 fn plain_inlines(inlines: &[Inline]) -> String {
     let mut out = String::new();
+    push_plain_inlines(inlines, &mut out);
+    out
+}
+
+fn push_plain_inlines(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
             Inline::Text(t) | Inline::Code(t) => out.push_str(t),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                out.push_str(&plain_inlines(c));
+                push_plain_inlines(c, out);
             }
-            Inline::Link { content, .. } => out.push_str(&plain_inlines(content)),
+            Inline::Link { content, .. } => push_plain_inlines(content, out),
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::Math(m) | Inline::DisplayMath(m) => out.push_str(m),
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
             Inline::Html(_) | Inline::FootnoteRef { .. } => {}
         }
     }
-    out
 }
 
 /// Collect a chapter's headings (text only; anchors are renderer-assigned at

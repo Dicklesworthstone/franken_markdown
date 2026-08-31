@@ -295,51 +295,84 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
     if n == 0 {
         return old.iter().cloned().map(RawDiffItem::Deleted).collect();
     }
-    // Cap the quadratic DP: beyond the cell budget, fall back to reporting the
-    // entire old side deleted + the entire new side inserted (correct, just
-    // not minimal). The block-pairing pass above still detects Modified for
-    // same-kind blocks, so the output stays useful.
-    if m.saturating_mul(n) > LCS_MAX_CELLS {
-        let mut out = Vec::with_capacity(m + n);
-        out.extend(old.iter().cloned().map(RawDiffItem::Deleted));
-        out.extend(new.iter().cloned().map(RawDiffItem::Inserted));
-        return out;
-    }
-    let stride = n + 1;
-    let mut dp = vec![0u32; (m + 1) * stride];
 
-    for i in 0..m {
-        for j in 0..n {
-            if old[i] == new[j] {
-                dp[(i + 1) * stride + (j + 1)] = dp[i * stride + j] + 1;
-            } else {
-                let up = dp[i * stride + (j + 1)];
-                let left = dp[(i + 1) * stride + j];
-                dp[(i + 1) * stride + (j + 1)] = up.max(left);
+    // Fast-path: trim common prefix
+    let mut start = 0;
+    while start < m && start < n && old[start] == new[start] {
+        start += 1;
+    }
+
+    // Fast-path: trim common suffix
+    let mut end_old = m;
+    let mut end_new = n;
+    while end_old > start && end_new > start && old[end_old - 1] == new[end_new - 1] {
+        end_old -= 1;
+        end_new -= 1;
+    }
+
+    let mut out = Vec::with_capacity(m + n);
+    for item in &old[..start] {
+        out.push(RawDiffItem::Unchanged(item.clone()));
+    }
+
+    let sub_old = &old[start..end_old];
+    let sub_new = &new[start..end_new];
+    let sub_m = sub_old.len();
+    let sub_n = sub_new.len();
+
+    if sub_m > 0 || sub_n > 0 {
+        if sub_m == 0 {
+            out.extend(sub_new.iter().cloned().map(RawDiffItem::Inserted));
+        } else if sub_n == 0 {
+            out.extend(sub_old.iter().cloned().map(RawDiffItem::Deleted));
+        } else if sub_m.saturating_mul(sub_n) > LCS_MAX_CELLS {
+            out.extend(sub_old.iter().cloned().map(RawDiffItem::Deleted));
+            out.extend(sub_new.iter().cloned().map(RawDiffItem::Inserted));
+        } else {
+            let stride = sub_n + 1;
+            let mut dp = vec![0u32; (sub_m + 1) * stride];
+
+            for i in 0..sub_m {
+                for j in 0..sub_n {
+                    if sub_old[i] == sub_new[j] {
+                        dp[(i + 1) * stride + (j + 1)] = dp[i * stride + j] + 1;
+                    } else {
+                        let up = dp[i * stride + (j + 1)];
+                        let left = dp[(i + 1) * stride + j];
+                        dp[(i + 1) * stride + (j + 1)] = up.max(left);
+                    }
+                }
             }
+
+            let mut mid_diff = Vec::with_capacity(sub_m + sub_n);
+            let mut i = sub_m;
+            let mut j = sub_n;
+
+            while i > 0 || j > 0 {
+                if i > 0 && j > 0 && sub_old[i - 1] == sub_new[j - 1] {
+                    mid_diff.push(RawDiffItem::Unchanged(sub_old[i - 1].clone()));
+                    i -= 1;
+                    j -= 1;
+                } else if j > 0 && (i == 0 || dp[i * stride + (j - 1)] >= dp[(i - 1) * stride + j])
+                {
+                    mid_diff.push(RawDiffItem::Inserted(sub_new[j - 1].clone()));
+                    j -= 1;
+                } else if i > 0 && (j == 0 || dp[i * stride + (j - 1)] < dp[(i - 1) * stride + j]) {
+                    mid_diff.push(RawDiffItem::Deleted(sub_old[i - 1].clone()));
+                    i -= 1;
+                }
+            }
+
+            mid_diff.reverse();
+            out.extend(mid_diff);
         }
     }
 
-    let mut diff = Vec::with_capacity(m + n);
-    let mut i = m;
-    let mut j = n;
-
-    while i > 0 || j > 0 {
-        if i > 0 && j > 0 && old[i - 1] == new[j - 1] {
-            diff.push(RawDiffItem::Unchanged(old[i - 1].clone()));
-            i -= 1;
-            j -= 1;
-        } else if j > 0 && (i == 0 || dp[i * stride + (j - 1)] >= dp[(i - 1) * stride + j]) {
-            diff.push(RawDiffItem::Inserted(new[j - 1].clone()));
-            j -= 1;
-        } else if i > 0 && (j == 0 || dp[i * stride + (j - 1)] < dp[(i - 1) * stride + j]) {
-            diff.push(RawDiffItem::Deleted(old[i - 1].clone()));
-            i -= 1;
-        }
+    for item in &old[end_old..] {
+        out.push(RawDiffItem::Unchanged(item.clone()));
     }
 
-    diff.reverse();
-    diff
+    out
 }
 
 fn count_block_words(block: &Block, count: &mut usize) {

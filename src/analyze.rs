@@ -371,6 +371,7 @@ fn count_sentences(text: &str) -> usize {
 ///    more than one group, and does not end in `ee`/`ye` or consonant + `le`
 ///    (`table` keeps its final group, `make` loses it).
 /// 5. Every word with letters has at least one syllable.
+#[inline]
 fn count_syllables(word: &str) -> usize {
     let mut buf = [0u8; 64];
     let mut n = 0usize;

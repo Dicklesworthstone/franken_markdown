@@ -478,6 +478,7 @@ impl StatsCollector {
     }
 }
 
+#[inline]
 fn count_syllables_in_word(word: &str) -> usize {
     let mut buf = [0u8; 64];
     let mut len = 0usize;

@@ -1255,7 +1255,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         return fail_json(
             64,
             "usage_error",
-            "`--out -` writes HTML/SVG/interactive-html to stdout only; PDF and --to both require a real output path",
+            "`--out -` writes HTML/SVG to stdout only; PDF and --to both require a real output path",
             json,
         );
     }

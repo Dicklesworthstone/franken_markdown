@@ -85,6 +85,12 @@ fn corpus_inputs() -> Vec<(&'static str, String)> {
     inputs
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::type_complexity,
+    clippy::panic
+)]
 fn main() {
     let font = fonts::load_body(FontFamily::Sans, FontStyle::Regular).expect("font load");
     let size = FontSize::from_points(11);

@@ -266,11 +266,17 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             let bytes = code.as_bytes();
             while p < len {
                 let b = bytes[p];
-                if b.is_ascii_alphanumeric() || b == b'.' || b == b'_' {
+                if b == b'.' {
+                    if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) {
+                        p += 1;
+                    } else {
+                        break;
+                    }
+                } else if b.is_ascii_alphanumeric() || b == b'_' {
                     p += 1;
                 } else if b >= 0x80 {
                     let ch = first_char_at(code, p);
-                    if ch.is_alphanumeric() || ch == '.' || ch == '_' {
+                    if ch.is_alphanumeric() || ch == '_' {
                         p += ch.len_utf8();
                     } else {
                         break;
@@ -2309,5 +2315,27 @@ mod keyword_table_tests {
                 .first()
                 .is_some_and(|s| s.kind == Tok::Keyword)
         );
+    }
+
+    #[test]
+    fn number_literal_lexing_distinguishes_floats_and_methods() {
+        let spans = highlight("rust", "10.to_string()");
+        assert_eq!(spans[0].kind, Tok::Number);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 2); // "10"
+        assert_eq!(spans[1].kind, Tok::Punct); // "."
+        assert_eq!(spans[2].kind, Tok::Func); // "to_string"
+
+        let spans_float = highlight("rust", "3.14159");
+        assert_eq!(spans_float.len(), 1);
+        assert_eq!(spans_float[0].kind, Tok::Number);
+        assert_eq!(spans_float[0].end, 7); // "3.14159"
+
+        let spans_range = highlight("rust", "1..10");
+        assert_eq!(spans_range[0].kind, Tok::Number); // "1"
+        assert_eq!(spans_range[0].end, 1);
+        assert_eq!(spans_range[1].kind, Tok::Punct); // "."
+        assert_eq!(spans_range[2].kind, Tok::Punct); // "."
+        assert_eq!(spans_range[3].kind, Tok::Number); // "10"
     }
 }

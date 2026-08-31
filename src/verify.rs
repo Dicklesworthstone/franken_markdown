@@ -480,16 +480,34 @@ fn to_json_body(report: &VerifyReport) -> String {
 
 fn json_escape_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0..=0x1f => {
+                if clean_start < i {
+                    out.push_str(&s[clean_start..i]);
+                }
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{b:04x}");
+                clean_start = i + 1;
+                continue;
+            }
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
     out
 }

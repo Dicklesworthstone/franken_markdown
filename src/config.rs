@@ -464,16 +464,26 @@ fn json_num(value: f32) -> String {
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0..=0x1f | 0x7f => " ",
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
     out
 }

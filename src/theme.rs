@@ -17,12 +17,19 @@ pub enum FontFamily {
 
 impl FontFamily {
     /// Parse a CLI/config string (`sans`/`serif`).
+    #[inline]
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "sans" | "sans-serif" | "sansserif" => Some(Self::Sans),
-            "serif" => Some(Self::Serif),
-            _ => None,
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("sans")
+            || trimmed.eq_ignore_ascii_case("sans-serif")
+            || trimmed.eq_ignore_ascii_case("sansserif")
+        {
+            Some(Self::Sans)
+        } else if trimmed.eq_ignore_ascii_case("serif") {
+            Some(Self::Serif)
+        } else {
+            None
         }
     }
 

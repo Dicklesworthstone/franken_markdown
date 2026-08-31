@@ -97,6 +97,7 @@ pub(crate) struct OpenTypeLayoutTables {
 }
 
 /// Raw TTF bytes for a proportional body face.
+#[inline(always)]
 #[must_use]
 pub fn body_bytes(family: FontFamily, style: FontStyle) -> &'static [u8] {
     match (family, style) {
@@ -113,6 +114,7 @@ pub fn body_bytes(family: FontFamily, style: FontStyle) -> &'static [u8] {
 
 /// Raw TTF bytes for the monospace (code) face. CM Typewriter ships a single
 /// upright weight, so every style currently resolves to it.
+#[inline(always)]
 #[must_use]
 pub fn mono_bytes(_style: FontStyle) -> &'static [u8] {
     MONO_REGULAR
@@ -147,6 +149,7 @@ pub(crate) fn mono_font(_style: FontStyle) -> Result<&'static Font, FontError> {
 }
 
 /// Raw TTF bytes for the symbol fallback face (single regular weight).
+#[inline(always)]
 #[must_use]
 pub fn symbol_bytes() -> &'static [u8] {
     SYMBOL_REGULAR
@@ -204,6 +207,7 @@ pub(crate) fn mono_layout_tables(
     Ok(cached_layout_tables(&MONO_REGULAR_LAYOUT, font))
 }
 
+#[inline(always)]
 fn cached_font(
     cache: &'static OnceLock<Result<Font, FontError>>,
     bytes: &'static [u8],
@@ -214,6 +218,7 @@ fn cached_font(
     }
 }
 
+#[inline(always)]
 fn cached_layout_tables(
     cache: &'static OnceLock<OpenTypeLayoutTables>,
     font: &'static Font,

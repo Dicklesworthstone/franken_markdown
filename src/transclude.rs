@@ -18,6 +18,7 @@ const INCLUDE_PREFIX: &str = "{{#include";
 
 /// True when the source may contain an include directive (cheap pre-filter so
 /// include-free documents never pay for the expansion walk).
+#[inline(always)]
 #[must_use]
 pub fn has_includes(src: &str) -> bool {
     src.contains(INCLUDE_PREFIX)

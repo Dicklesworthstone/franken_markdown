@@ -28411,6 +28411,7 @@ fn seg_text_hash(text: &str) -> u64 {
 /// verified byte-for-byte on every hit; a mismatch (two distinct texts sharing
 /// an FNV-1a digest, p ≈ 2^-64) returns `None` so callers fall back to
 /// shaping the actual text — a collision can never emit wrong glyphs.
+#[inline(always)]
 fn shaped_run_lookup<'a>(
     cache: &'a HashMap<u64, ShapedRun, U64PassThroughBuild>,
     text: &str,

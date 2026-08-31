@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-31
+
+### Fixed
+
+- **Multi-platform release restoration** (#5): releases again ship macOS
+  (aarch64 + x86_64), Linux aarch64, and Windows x86_64 (MSVC, cross-built via
+  cargo-xwin) alongside Linux x86_64. v0.4.0 shipped Linux-only and
+  v0.4.1/v0.4.2 lacked Linux arm64 and Windows because the release tooling's
+  per-host paths and target lists had drifted; the dsr configs are reconciled
+  (repos.d as source of truth) and the mac build host path now points at the
+  real checkout. Linux gnu builds keep the glibc-2.28 floor via cargo-zigbuild.
+
 ### Added
 
 - **SOTA typography optimization (Verna DocEng '25 + Hàn Thế Thành pdfTeX):** (Verna DocEng '25 + Hàn Thế Thành pdfTeX):**
@@ -253,7 +265,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WASM compilation target with byte-for-byte output parity.
   - CommonMark 0.31.2 conformance test harness and verification test suite.
 
-[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.3.5...v0.4.0

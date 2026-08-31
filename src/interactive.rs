@@ -12,15 +12,25 @@ use crate::ast::Document;
 use crate::html::render_fragment;
 
 fn escape_html_to(s: &str, out: &mut String) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
+    let bytes = s.as_bytes();
+    let mut clean_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&#39;",
+            _ => continue,
+        };
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
         }
+        out.push_str(esc);
+        clean_start = i + 1;
+    }
+    if clean_start < s.len() {
+        out.push_str(&s[clean_start..]);
     }
 }
 

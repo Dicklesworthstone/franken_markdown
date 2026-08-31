@@ -463,6 +463,22 @@ fn pdf_and_both_without_out_derive_paths_from_the_input_filename() {
 }
 
 #[test]
+fn render_to_interactive_html_generates_self_hosting_workspace() {
+    let out = fmd(&[
+        "--text",
+        "# Interactive Workspace\n\nLive editing in the browser.",
+        "--to",
+        "interactive-html",
+    ]);
+    assert!(out.status.success());
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("<!DOCTYPE html>"));
+    assert!(stdout.contains("fmd-editor"));
+    assert!(stdout.contains("fmd-preview-pane"));
+    assert!(stdout.contains("Interactive Workspace"));
+}
+
+#[test]
 fn render_refuses_inputs_over_the_configured_byte_limit() {
     let raw = "123456789";
     let text_out = fmd(&[

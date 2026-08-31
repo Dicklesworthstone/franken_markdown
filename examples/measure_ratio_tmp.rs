@@ -3,13 +3,19 @@
 //! Runs paragraph_items_from_styled_text and hyphenated_paragraph_items_from_text_into
 //! over the fmd_layout_perf corpus inputs + showcase, counts items, and reports
 //! the items-per-byte ratio so we can pick a capacity formula.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::type_complexity,
+    clippy::cast_precision_loss
+)]
 
+use franken_markdown::FontFamily;
 use franken_markdown::fonts::{self, FontStyle};
 use franken_markdown::layout::{
     FontSize, Hyphenator, ParagraphItem, ParagraphLayoutScratch, StyledText,
     hyphenated_paragraph_items_from_text_into, paragraph_items_from_styled_text,
 };
-use franken_markdown::FontFamily;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -86,13 +92,14 @@ fn corpus_inputs() -> Vec<(&'static str, String)> {
 }
 
 fn main() {
-    let font = fonts::load_body(FontFamily::Sans, FontStyle::Regular)
-        .expect("font load");
+    let font = fonts::load_body(FontFamily::Sans, FontStyle::Regular).expect("font load");
     let size = FontSize::from_points(11);
     let hyphenator = Hyphenator::english();
 
     let inputs = corpus_inputs();
-    println!("input\tbytes\twords\titems_styled\titems_hyphen\tratio_styled\titems_per_word_hyphen");
+    println!(
+        "input\tbytes\twords\titems_styled\titems_hyphen\tratio_styled\titems_per_word_hyphen"
+    );
     let mut all_items_per_byte = Vec::new();
     let mut all_items_per_word_hyphen = Vec::new();
     let mut max_overshoot_ratio = 0.0_f64;
@@ -161,6 +168,7 @@ fn main() {
             let bytes = text.len();
             let cap = f(bytes, text.split_whitespace().count());
             let styled = StyledText::plain(text);
+            let items_styled = paragraph_items_from_styled_text(&font, &styled, size);
             let mut items_hyphen: Vec<ParagraphItem> = Vec::new();
             let mut scratch = ParagraphLayoutScratch::new();
             hyphenated_paragraph_items_from_text_into(

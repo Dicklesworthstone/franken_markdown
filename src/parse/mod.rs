@@ -4235,6 +4235,7 @@ fn inline_tree_node_count(inlines: &[Inline]) -> usize {
         .sum()
 }
 
+#[inline(always)]
 fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {
     match chars.get(idx) {
         Some('h' | 'H') => {
@@ -4246,6 +4247,7 @@ fn inline_chars_maybe_bare_url_start(chars: &[char], idx: usize) -> bool {
     }
 }
 
+#[inline(always)]
 const fn inline_char_maybe_bare_email_start(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '+')
 }
@@ -4575,6 +4577,7 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
     }
 }
 
+#[inline(always)]
 fn run_len(chars: &[char], i: usize, ch: char) -> usize {
     chars[i..].iter().take_while(|&&c| c == ch).count()
 }
@@ -4588,6 +4591,7 @@ fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
     before.is_some_and(|ch| ch.is_alphanumeric()) && after.is_some_and(|ch| ch.is_alphanumeric())
 }
 
+#[inline(always)]
 fn find_code_close(chars: &[char], from: usize, ch: char, n: usize) -> Option<usize> {
     // A code span opened by `n` backticks closes only on a *maximal* backtick run
     // of exactly `n`. Stepping by 1 would let a position `m - n` bytes into a
@@ -5199,17 +5203,21 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
         return None;
     }
 
-    // A URL inside `< ... >` is an attempted angle autolink, not an extended bare URL.
+    // A URL inside unescaped `< ... >` is an attempted angle autolink, not an extended bare URL.
     let mut prev_non_ws = i;
     while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
         prev_non_ws -= 1;
     }
-    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' {
+    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' && !is_char_escaped(chars, prev_non_ws - 1)
+    {
         let mut next_non_ws = end;
         while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
             next_non_ws += 1;
         }
-        if next_non_ws < chars.len() && chars[next_non_ws] == '>' {
+        if next_non_ws < chars.len()
+            && chars[next_non_ws] == '>'
+            && !is_char_escaped(chars, next_non_ws)
+        {
             return None;
         }
     }
@@ -5266,17 +5274,21 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
         return None;
     }
 
-    // An email inside `< ... >` is an attempted angle autolink, not an extended bare email.
+    // An email inside unescaped `< ... >` is an attempted angle autolink, not an extended bare email.
     let mut prev_non_ws = i;
     while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
         prev_non_ws -= 1;
     }
-    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' {
+    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' && !is_char_escaped(chars, prev_non_ws - 1)
+    {
         let mut next_non_ws = end;
         while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
             next_non_ws += 1;
         }
-        if next_non_ws < chars.len() && chars[next_non_ws] == '>' {
+        if next_non_ws < chars.len()
+            && chars[next_non_ws] == '>'
+            && !is_char_escaped(chars, next_non_ws)
+        {
             return None;
         }
     }
@@ -5286,6 +5298,7 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
     Some((label, dest, end))
 }
 
+#[inline(always)]
 fn starts_with_ascii_chars_ignore_case(chars: &[char], i: usize, needle: &[u8]) -> bool {
     let Some(end) = i.checked_add(needle.len()) else {
         return false;
@@ -5300,6 +5313,16 @@ fn starts_with_ascii_chars_ignore_case(chars: &[char], i: usize, needle: &[u8]) 
         }
     }
     true
+}
+
+fn is_char_escaped(chars: &[char], idx: usize) -> bool {
+    let mut bs = 0;
+    let mut p = idx;
+    while p > 0 && chars[p - 1] == '\\' {
+        bs += 1;
+        p -= 1;
+    }
+    bs % 2 == 1
 }
 
 fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
@@ -6135,6 +6158,33 @@ mod inline_autolink_candidate_tests {
             "uppercase scheme must not take the plain-text inline fast path"
         );
         assert!(super::inline_text_needs_full_parse("See WWW.example.test"));
+    }
+
+    #[test]
+    fn bare_autolink_angle_bracket_enclosure_and_escaping() {
+        use super::{is_char_escaped, parse_inlines};
+        use crate::ast::Inline;
+
+        let chars_escaped: Vec<char> = "\\< https://foo.bar >".chars().collect();
+        assert!(is_char_escaped(&chars_escaped, 1));
+        let chars_unescaped: Vec<char> = "< https://foo.bar >".chars().collect();
+        assert!(!is_char_escaped(&chars_unescaped, 0));
+        let chars_double_bs: Vec<char> = "\\\\< https://foo.bar >".chars().collect();
+        assert!(!is_char_escaped(&chars_double_bs, 2));
+
+        let inlines = parse_inlines("< https://foo.bar >");
+        assert!(
+            !inlines.iter().any(|i| matches!(i, Inline::Link { .. })),
+            "URL in unescaped < ... > must not be bare autolinked"
+        );
+
+        let inlines_email = parse_inlines("< foo@bar.com >");
+        assert!(
+            !inlines_email
+                .iter()
+                .any(|i| matches!(i, Inline::Link { .. })),
+            "Email in unescaped < ... > must not be bare autolinked"
+        );
     }
 
     #[test]

@@ -97,32 +97,89 @@ pub fn render_svg_with_report(doc: &Document, opts: &SvgOptions) -> (Vec<u8>, Sv
 // Deterministic number formatting (integer round-trip; no float printing).
 // ---------------------------------------------------------------------------
 
+#[inline(always)]
+fn push_u64_fast(out: &mut String, value: u64) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut n = value;
+    let mut idx = buf.len();
+    loop {
+        idx -= 1;
+        buf[idx] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
+}
+
+#[inline(always)]
+fn push_q2(out: &mut String, v: f64) {
+    let q = (v * 100.0).round() as i64;
+    let a = q.unsigned_abs();
+    if q < 0 {
+        out.push('-');
+    }
+    let int = a / 100;
+    let frac = a % 100;
+    push_u64_fast(out, int);
+    out.push('.');
+    out.push((b'0' + (frac / 10) as u8) as char);
+    out.push((b'0' + (frac % 10) as u8) as char);
+}
+
 /// Quantize to the 0.01 grid with two fixed decimals ("12.00", "-3.45").
 /// Rounds through an integer so output never carries float noise; negative
 /// zero collapses to "0.00".
+#[allow(dead_code)]
 fn q2(v: f64) -> String {
-    let q = (v * 100.0).round() as i64;
-    let a = q.unsigned_abs();
-    let sign = if q < 0 { "-" } else { "" };
-    format!("{sign}{}.{:02}", a / 100, a % 100)
+    let mut s = String::with_capacity(8);
+    push_q2(&mut s, v);
+    s
 }
 
-/// Quantize to 1/10 000 with trailing zeros trimmed (for scale factors).
-fn trim4(v: f64) -> String {
+#[inline(always)]
+fn push_trim4(out: &mut String, v: f64) {
     let q = (v * 10_000.0).round() as i64;
     let a = q.unsigned_abs();
-    let sign = if q < 0 { "-" } else { "" };
+    if q < 0 {
+        out.push('-');
+    }
     let int = a / 10_000;
     let mut frac = a % 10_000;
+    push_u64_fast(out, int);
     if frac == 0 {
-        return format!("{sign}{int}");
+        return;
     }
+    out.push('.');
     let mut width = 4;
     while frac % 10 == 0 {
         frac /= 10;
         width -= 1;
     }
-    format!("{}{}.{:0w$}", sign, int, frac, w = width)
+    let mut buf = [0u8; 4];
+    let mut f = frac;
+    let mut pos = width;
+    while pos > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (f % 10) as u8;
+        f /= 10;
+    }
+    if let Ok(s) = std::str::from_utf8(&buf[..width]) {
+        out.push_str(s);
+    }
+}
+
+/// Quantize to 1/10 000 with trailing zeros trimmed (for scale factors).
+#[allow(dead_code)]
+fn trim4(v: f64) -> String {
+    let mut s = String::with_capacity(8);
+    push_trim4(&mut s, v);
+    s
 }
 
 /// XML double-quoted attribute escaping: `&`, `<`, `>`, `"`, `'`.
@@ -927,26 +984,26 @@ impl Poster {
         let mut d = String::new();
         for contour in &outline.contours {
             d.push('M');
-            d.push_str(&q2(contour.start.x * k));
+            push_q2(&mut d, contour.start.x * k);
             d.push(' ');
-            d.push_str(&q2(-contour.start.y * k));
+            push_q2(&mut d, -contour.start.y * k);
             for seg in &contour.segments {
                 match seg {
                     Segment::Line { to } => {
                         d.push('L');
-                        d.push_str(&q2(to.x * k));
+                        push_q2(&mut d, to.x * k);
                         d.push(' ');
-                        d.push_str(&q2(-to.y * k));
+                        push_q2(&mut d, -to.y * k);
                     }
                     Segment::Quad { ctrl, to } => {
                         d.push('Q');
-                        d.push_str(&q2(ctrl.x * k));
+                        push_q2(&mut d, ctrl.x * k);
                         d.push(' ');
-                        d.push_str(&q2(-ctrl.y * k));
+                        push_q2(&mut d, -ctrl.y * k);
                         d.push(' ');
-                        d.push_str(&q2(to.x * k));
+                        push_q2(&mut d, to.x * k);
                         d.push(' ');
-                        d.push_str(&q2(-to.y * k));
+                        push_q2(&mut d, -to.y * k);
                     }
                 }
             }
@@ -978,20 +1035,20 @@ impl Poster {
         let mut out = String::with_capacity(64 * 1024);
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-        out.push_str(&q2(self.width));
+        push_q2(&mut out, self.width);
         out.push_str("pt\" height=\"");
-        out.push_str(&q2(height));
+        push_q2(&mut out, height);
         out.push_str("pt\" viewBox=\"0 0 ");
-        out.push_str(&q2(self.width));
+        push_q2(&mut out, self.width);
         out.push(' ');
-        out.push_str(&q2(height));
+        push_q2(&mut out, height);
         out.push_str("\">\n");
 
         // Page background.
         out.push_str("<rect width=\"");
-        out.push_str(&q2(self.width));
+        push_q2(&mut out, self.width);
         out.push_str("\" height=\"");
-        out.push_str(&q2(height));
+        push_q2(&mut out, height);
         out.push_str("\" fill=\"");
         esc_attr(&self.colors.bg, &mut out);
         out.push_str("\"/>\n");
@@ -1000,7 +1057,7 @@ impl Poster {
         for (key, path) in &defs {
             if let (Some(path), Some(id)) = (path, ids.get(key)) {
                 out.push_str("<path id=\"g");
-                out.push_str(&id.to_string());
+                push_u64_fast(&mut out, *id as u64);
                 out.push_str("\" d=\"");
                 out.push_str(path);
                 out.push_str("\"/>\n");
@@ -1020,13 +1077,13 @@ impl Poster {
                     stroke,
                 } => {
                     out.push_str("<rect x=\"");
-                    out.push_str(&q2(*x));
+                    push_q2(&mut out, *x);
                     out.push_str("\" y=\"");
-                    out.push_str(&q2(*y));
+                    push_q2(&mut out, *y);
                     out.push_str("\" width=\"");
-                    out.push_str(&q2(*w));
+                    push_q2(&mut out, *w);
                     out.push_str("\" height=\"");
-                    out.push_str(&q2(*h));
+                    push_q2(&mut out, *h);
                     out.push_str("\" fill=\"");
                     esc_attr(fill.hex(&self.colors), &mut out);
                     out.push('"');
@@ -1046,17 +1103,17 @@ impl Poster {
                     w,
                 } => {
                     out.push_str("<line x1=\"");
-                    out.push_str(&q2(*x1));
+                    push_q2(&mut out, *x1);
                     out.push_str("\" y1=\"");
-                    out.push_str(&q2(*y1));
+                    push_q2(&mut out, *y1);
                     out.push_str("\" x2=\"");
-                    out.push_str(&q2(*x2));
+                    push_q2(&mut out, *x2);
                     out.push_str("\" y2=\"");
-                    out.push_str(&q2(*y2));
+                    push_q2(&mut out, *y2);
                     out.push_str("\" stroke=\"");
                     esc_attr(ink.hex(&self.colors), &mut out);
                     out.push_str("\" stroke-width=\"");
-                    out.push_str(&q2(*w));
+                    push_q2(&mut out, *w);
                     out.push_str("\"/>\n");
                 }
                 Op::Glyph {
@@ -1072,13 +1129,13 @@ impl Poster {
                         continue; // outline failed to decode; no def to reference
                     };
                     out.push_str("<use href=\"#g");
-                    out.push_str(&id.to_string());
+                    push_u64_fast(&mut out, *id as u64);
                     out.push_str("\" transform=\"translate(");
-                    out.push_str(&q2(*x));
+                    push_q2(&mut out, *x);
                     out.push(' ');
-                    out.push_str(&q2(*y));
+                    push_q2(&mut out, *y);
                     out.push_str(") scale(");
-                    out.push_str(&trim4(*size / DEF_EM_PT));
+                    push_trim4(&mut out, *size / DEF_EM_PT);
                     out.push_str(")\" fill=\"");
                     esc_attr(ink.hex(&self.colors), &mut out);
                     out.push_str("\"/>\n");

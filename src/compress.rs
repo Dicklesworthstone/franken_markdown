@@ -55,6 +55,7 @@ impl BitWriter {
     /// Write the low `n` bits of `value`, LSB-first. `n` must be <= 24; in this
     /// crate the largest single call is 13 (distance extra bits) and `bitcount`
     /// is always < 8 on entry, so `bitbuf` (u32) never overflows.
+    #[inline(always)]
     fn write_bits(&mut self, value: u32, n: u32) {
         if n == 0 {
             return;
@@ -71,10 +72,12 @@ impl BitWriter {
 
     /// Write a pre-reversed Huffman code. DEFLATE still stores bits LSB-first;
     /// fixed-code tables keep the reversed representation ready for emission.
+    #[inline(always)]
     fn write_reversed_huffman(&mut self, code: u16, len: u8) {
         self.write_bits(u32::from(code), u32::from(len));
     }
 
+    #[inline(always)]
     fn pending_byte_len(&self) -> usize {
         self.out.len() + usize::from(self.bitcount > 0)
     }
@@ -82,6 +85,7 @@ impl BitWriter {
     /// Pad the current partial byte with zero bits and flush. Leaves the writer
     /// byte-aligned and reusable (used both for end-of-stream padding and to
     /// align before a stored block's LEN/NLEN/raw bytes).
+    #[inline(always)]
     fn finish(&mut self) {
         if self.bitcount > 0 {
             self.out.push((self.bitbuf & 0xFF) as u8);

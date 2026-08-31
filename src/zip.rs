@@ -231,20 +231,24 @@ impl ZipWriter {
     }
 }
 
+#[inline(always)]
 fn push_u16(out: &mut Vec<u8>, v: u16) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
+#[inline(always)]
 fn push_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
 /// Classic ZIP size fields are 32-bit. EPUB-scale archives never approach the
 /// limit; saturate rather than panic (see module precondition note).
+#[inline(always)]
 fn to_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
+#[inline(always)]
 fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }

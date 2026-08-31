@@ -166,8 +166,8 @@ pub fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Bl
     let trimmed = text.trim_start_matches([' ', '\t']);
     let rest = trimmed.strip_prefix("[!")?;
     let close = rest.find(']')?;
-    let tag_raw = rest[..close].to_ascii_lowercase();
-    let (tag, label) = TAGS.iter().find(|(t, _)| *t == tag_raw)?;
+    let tag_raw = &rest[..close];
+    let (tag, label) = TAGS.iter().find(|(t, _)| t.eq_ignore_ascii_case(tag_raw))?;
 
     // GFM: the first line is only the marker (optional trailing space/tab).
     // Same-line prose (`> [!NOTE] urgent`) stays a normal blockquote so the
@@ -178,14 +178,16 @@ pub fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Bl
     if inlines.len() > 1 && !matches!(inlines[1], Inline::SoftBreak | Inline::HardBreak) {
         return None;
     }
-    let mut body_inlines: Vec<Inline> = Vec::new();
-    body_inlines.extend_from_slice(&inlines[1..]);
-    if matches!(
-        body_inlines.first(),
+    let rest_inlines = &inlines[1..];
+    let start_idx = if matches!(
+        rest_inlines.first(),
         Some(Inline::SoftBreak | Inline::HardBreak)
     ) {
-        body_inlines.remove(0);
-    }
+        1
+    } else {
+        0
+    };
+    let body_inlines = rest_inlines[start_idx..].to_vec();
     let mut body: Vec<Block> = Vec::new();
     if !body_inlines.is_empty() {
         body.push(Block::Paragraph(body_inlines));

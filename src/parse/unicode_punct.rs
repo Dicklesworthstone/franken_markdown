@@ -9,14 +9,44 @@
 
 use std::cmp::Ordering;
 
+const LATIN1_PUNCT_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut cp = 0u32;
+    while cp < 256 {
+        if cp < 128 {
+            let b = cp as u8;
+            table[cp as usize] = matches!(
+                b,
+                b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~'
+            );
+        } else {
+            table[cp as usize] = matches!(
+                cp,
+                0x00A1..=0x00A9
+                    | 0x00AB..=0x00AC
+                    | 0x00AE..=0x00B1
+                    | 0x00B4
+                    | 0x00B6..=0x00B8
+                    | 0x00BB
+                    | 0x00BF
+                    | 0x00D7
+                    | 0x00F7
+            );
+        }
+        cp += 1;
+    }
+    table
+};
+
 /// True for the CommonMark flanking notion of a punctuation character: ASCII
 /// punctuation, or a non-ASCII code point in the Unicode P or S general
 /// categories.
+#[inline(always)]
 pub(crate) fn is_unicode_punctuation(c: char) -> bool {
-    if c.is_ascii() {
-        return c.is_ascii_punctuation();
-    }
     let cp = c as u32;
+    if cp < 256 {
+        return LATIN1_PUNCT_TABLE[cp as usize];
+    }
     PS_RANGES
         .binary_search_by(|&(lo, hi)| {
             if cp < lo {
@@ -418,6 +448,33 @@ mod tests {
                 assert!(lo > p, "ranges must be sorted and non-overlapping");
             }
             prev_hi = Some(hi);
+        }
+    }
+
+    #[test]
+    fn latin1_table_matches_reference() {
+        for cp in 0u32..256 {
+            let c = char::from_u32(cp).unwrap();
+            let is_ascii_p = if c.is_ascii() {
+                c.is_ascii_punctuation()
+            } else {
+                super::PS_RANGES
+                    .binary_search_by(|&(lo, hi)| {
+                        if cp < lo {
+                            std::cmp::Ordering::Greater
+                        } else if cp > hi {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .is_ok()
+            };
+            assert_eq!(
+                is_unicode_punctuation(c),
+                is_ascii_p,
+                "mismatch at cp {cp:#x}"
+            );
         }
     }
 }

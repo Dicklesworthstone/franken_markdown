@@ -1214,9 +1214,7 @@ impl KwTable {
         self.entries.is_empty()
     }
 
-    /// Membership test. An empty word misses; a non-ASCII first byte misses
-    /// (every table entry starts with an ASCII byte).
-    #[inline]
+    #[inline(always)]
     fn contains(self, word: &str) -> bool {
         let Some(&first) = word.as_bytes().first() else {
             return false;
@@ -1227,12 +1225,21 @@ impl KwTable {
         }
         let lo = self.offsets[key] as usize;
         let hi = self.offsets[key + 1] as usize;
+        if lo == hi {
+            return false;
+        }
+        let slice = &self.entries[lo..hi];
+        if slice.len() == 1 {
+            return if self.fold {
+                slice[0].eq_ignore_ascii_case(word)
+            } else {
+                slice[0] == word
+            };
+        }
         if self.fold {
-            self.entries[lo..hi]
-                .iter()
-                .any(|entry| entry.eq_ignore_ascii_case(word))
+            slice.iter().any(|entry| entry.eq_ignore_ascii_case(word))
         } else {
-            self.entries[lo..hi].contains(&word)
+            slice.contains(&word)
         }
     }
 }

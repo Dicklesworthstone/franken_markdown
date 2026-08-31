@@ -1050,7 +1050,12 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
+#[inline(always)]
 fn push_u64(out: &mut String, value: u64) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut idx = buf.len();
@@ -1065,7 +1070,12 @@ fn push_u64(out: &mut String, value: u64) {
     out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
 }
 
+#[inline(always)]
 fn push_usize(out: &mut String, value: usize) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut idx = buf.len();
@@ -1514,22 +1524,11 @@ fn push_escaped_attr(s: &str, out: &mut String) {
     out.push_str(&s[start..]);
 }
 
-fn push_escaped_url(s: &str, out: &mut String) {
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'%'
-            && i + 2 < bytes.len()
-            && bytes[i + 1].is_ascii_hexdigit()
-            && bytes[i + 2].is_ascii_hexdigit()
-        {
-            out.push('%');
-            out.push(bytes[i + 1] as char);
-            out.push(bytes[i + 2] as char);
-            i += 3;
-        } else if b.is_ascii_alphanumeric()
+const URL_CHAR_KIND: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut b = 0u8;
+    loop {
+        if b.is_ascii_alphanumeric()
             || matches!(
                 b,
                 b'-' | b'_'
@@ -1543,7 +1542,6 @@ fn push_escaped_url(s: &str, out: &mut String) {
                     | b';'
                     | b':'
                     | b'@'
-                    | b'&'
                     | b'='
                     | b'+'
                     | b'$'
@@ -1553,18 +1551,67 @@ fn push_escaped_url(s: &str, out: &mut String) {
                     | b'#'
             )
         {
-            if b == b'&' {
-                out.push_str("&amp;");
-            } else {
-                out.push(b as char);
-            }
-            i += 1;
-        } else {
-            out.push('%');
-            out.push(HEX_DIGITS[(b >> 4) as usize] as char);
-            out.push(HEX_DIGITS[(b & 0x0F) as usize] as char);
-            i += 1;
+            table[b as usize] = 1;
+        } else if b == b'&' {
+            table[b as usize] = 2;
+        } else if b == b'%' {
+            table[b as usize] = 3;
         }
+        if b == 255 {
+            break;
+        }
+        b += 1;
+    }
+    table
+};
+
+fn push_escaped_url(s: &str, out: &mut String) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut clean_start = 0usize;
+    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    while i < bytes.len() {
+        let b = bytes[i];
+        let kind = URL_CHAR_KIND[b as usize];
+        if kind == 1 {
+            i += 1;
+            continue;
+        }
+        if clean_start < i {
+            out.push_str(&s[clean_start..i]);
+        }
+        match kind {
+            2 => {
+                out.push_str("&amp;");
+                i += 1;
+                clean_start = i;
+            }
+            3 => {
+                if i + 2 < bytes.len()
+                    && bytes[i + 1].is_ascii_hexdigit()
+                    && bytes[i + 2].is_ascii_hexdigit()
+                {
+                    out.push_str(&s[i..i + 3]);
+                    i += 3;
+                } else {
+                    out.push('%');
+                    out.push(HEX_DIGITS[(b >> 4) as usize] as char);
+                    out.push(HEX_DIGITS[(b & 0x0F) as usize] as char);
+                    i += 1;
+                }
+                clean_start = i;
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX_DIGITS[(b >> 4) as usize] as char);
+                out.push(HEX_DIGITS[(b & 0x0F) as usize] as char);
+                i += 1;
+                clean_start = i;
+            }
+        }
+    }
+    if clean_start < bytes.len() {
+        out.push_str(&s[clean_start..]);
     }
 }
 

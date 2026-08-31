@@ -457,13 +457,12 @@ impl StatsCollector {
         }
 
         for word in text.split_whitespace() {
-            let trimmed: String = word
+            let has_word_char = word
                 .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '\'')
-                .collect();
-            if !trimmed.is_empty() {
+                .any(|c| c.is_alphanumeric() || c == '-' || c == '\'');
+            if has_word_char {
                 self.words += 1;
-                self.syllables += count_syllables_in_word(&trimmed);
+                self.syllables += count_syllables_in_word(word);
             }
         }
 
@@ -480,13 +479,18 @@ impl StatsCollector {
 }
 
 fn count_syllables_in_word(word: &str) -> usize {
-    let lower = word.to_ascii_lowercase();
-    let cleaned: String = lower.chars().filter(|c| c.is_ascii_alphabetic()).collect();
-    if cleaned.is_empty() {
+    let mut buf = [0u8; 64];
+    let mut len = 0usize;
+    for &b in word.as_bytes() {
+        if b.is_ascii_alphabetic() && len < buf.len() {
+            buf[len] = b.to_ascii_lowercase();
+            len += 1;
+        }
+    }
+    if len == 0 {
         return 0;
     }
-    let bytes = cleaned.as_bytes();
-    let len = bytes.len();
+    let bytes = &buf[..len];
     if len <= 3 {
         return 1;
     }

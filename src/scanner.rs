@@ -267,7 +267,10 @@ pub fn scan_markdown_line(line: &str) -> ParserLineScan {
             }
         }
         accum_flags |= LINE_CHAR_FLAGS[byte as usize];
-        if !maybe_url_prefix && maybe_url_prefix_at(bytes, idx, byte) {
+        if !maybe_url_prefix
+            && matches!(byte, b'w' | b'W' | b'h' | b'H')
+            && maybe_url_prefix_at(bytes, idx, byte)
+        {
             maybe_url_prefix = true;
         }
         if first_special_byte.is_none() && is_markdown_special_byte(byte) {
@@ -523,11 +526,12 @@ fn word_contains_byte(word: u64, byte: u8) -> bool {
     matches.wrapping_sub(ONES) & !matches & HIGHS != 0
 }
 
+#[inline(always)]
 fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {
     let tail = bytes.get(idx..).unwrap_or(&[]);
-    match byte.to_ascii_lowercase() {
-        b'w' => starts_with_ignore_ascii_case(tail, b"www."),
-        b'h' => {
+    match byte {
+        b'w' | b'W' => starts_with_ignore_ascii_case(tail, b"www."),
+        b'h' | b'H' => {
             starts_with_ignore_ascii_case(tail, b"http://")
                 || starts_with_ignore_ascii_case(tail, b"https://")
         }
@@ -535,6 +539,7 @@ fn maybe_url_prefix_at(bytes: &[u8], idx: usize, byte: u8) -> bool {
     }
 }
 
+#[inline(always)]
 fn starts_with_ignore_ascii_case(bytes: &[u8], needle: &[u8]) -> bool {
     bytes
         .get(..needle.len())

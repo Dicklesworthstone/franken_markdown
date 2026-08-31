@@ -28815,7 +28815,12 @@ fn append_xref_in_use_row(out: &mut Vec<u8>, offset: usize) {
     out.extend_from_slice(b" 00000 n \n");
 }
 
+#[inline(always)]
 fn append_decimal_u64_string(out: &mut String, value: u64) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut pos = buf.len();
@@ -28832,7 +28837,12 @@ fn append_decimal_u64_string(out: &mut String, value: u64) {
     }
 }
 
+#[inline(always)]
 fn append_decimal_usize_string(out: &mut String, value: usize) {
+    if value < 10 {
+        out.push((b'0' + value as u8) as char);
+        return;
+    }
     let mut buf = [0u8; 20];
     let mut n = value;
     let mut pos = buf.len();

@@ -33,6 +33,7 @@ struct SfntTable {
     length: u32,
 }
 
+#[inline(always)]
 fn read_u16(buf: &[u8], off: usize) -> Result<u16> {
     let bytes = buf.get(off..off + 2).ok_or_else(|| {
         RenderError::InvalidInput("woff1: truncated sfnt (u16 read out of bounds)".into())
@@ -40,6 +41,7 @@ fn read_u16(buf: &[u8], off: usize) -> Result<u16> {
     Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
+#[inline(always)]
 fn read_u32(buf: &[u8], off: usize) -> Result<u32> {
     let bytes = buf.get(off..off + 4).ok_or_else(|| {
         RenderError::InvalidInput("woff1: truncated sfnt (u32 read out of bounds)".into())
@@ -47,10 +49,12 @@ fn read_u32(buf: &[u8], off: usize) -> Result<u32> {
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
+#[inline(always)]
 fn push_u16(out: &mut Vec<u8>, v: u16) {
     out.extend_from_slice(&v.to_be_bytes());
 }
 
+#[inline(always)]
 fn push_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_be_bytes());
 }

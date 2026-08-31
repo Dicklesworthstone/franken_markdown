@@ -160,6 +160,7 @@ impl PairMetrics for Font {
 
 /// Convert one 1/1000-em advance to a deterministic layout distance.
 #[must_use]
+#[inline(always)]
 pub fn advance_to_layout_units(advance_1000: u32, size: FontSize) -> LayoutUnit {
     // width_pt = advance_1000 / 1000 * font_size_pt
     // width_mpt = advance_1000 * font_size_mpt / 1000
@@ -175,6 +176,7 @@ pub fn advance_to_layout_units(advance_1000: u32, size: FontSize) -> LayoutUnit 
 
 /// Convert a signed 1/1000-em pair adjustment to layout units.
 #[must_use]
+#[inline(always)]
 pub fn adjustment_to_layout_units(adjustment_1000: i32, size: FontSize) -> LayoutUnit {
     // |adjustment_1000| <= 2^31 - 1 and milli_points <= 2^32 - 1, so the
     // product magnitude is < 2^63: the i64 multiply is exact and equals the
@@ -3427,6 +3429,7 @@ fn greedy_break_paragraph_into(
     }
 }
 
+#[inline(always)]
 const fn clamp_u128_to_i32(value: u128) -> i32 {
     if value > i32::MAX as u128 {
         i32::MAX
@@ -3435,6 +3438,7 @@ const fn clamp_u128_to_i32(value: u128) -> i32 {
     }
 }
 
+#[inline(always)]
 const fn clamp_u64_to_i32(value: u64) -> i32 {
     if value > i32::MAX as u64 {
         i32::MAX
@@ -3443,6 +3447,7 @@ const fn clamp_u64_to_i32(value: u64) -> i32 {
     }
 }
 
+#[inline(always)]
 const fn clamp_i128_to_i32(value: i128) -> i32 {
     if value > i32::MAX as i128 {
         i32::MAX
@@ -3453,6 +3458,7 @@ const fn clamp_i128_to_i32(value: i128) -> i32 {
     }
 }
 
+#[inline(always)]
 const fn clamp_i128_to_u64(value: i128) -> u64 {
     if value < 0 {
         0
@@ -3463,6 +3469,7 @@ const fn clamp_i128_to_u64(value: i128) -> u64 {
     }
 }
 
+#[inline(always)]
 const fn clamp_i64_to_i32(value: i64) -> i32 {
     if value > i32::MAX as i64 {
         i32::MAX
@@ -3473,6 +3480,7 @@ const fn clamp_i64_to_i32(value: i64) -> i32 {
     }
 }
 
+#[inline(always)]
 const fn clamp_usize_to_u32(value: usize) -> u32 {
     if value > u32::MAX as usize {
         u32::MAX

@@ -126,21 +126,7 @@ impl JsonValue {
                 }
             }
             Self::String(s) => {
-                out.push('"');
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\r' => out.push_str("\\r"),
-                        '\t' => out.push_str("\\t"),
-                        '\u{08}' => out.push_str("\\b"),
-                        '\u{0c}' => out.push_str("\\f"),
-                        c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
-                        c => out.push(c),
-                    }
-                }
-                out.push('"');
+                write_json_str(s, out);
             }
             Self::Array(arr) => {
                 out.push('[');
@@ -158,7 +144,7 @@ impl JsonValue {
                     if i > 0 {
                         out.push(',');
                     }
-                    Self::String(k.clone()).write_json(out);
+                    write_json_str(k, out);
                     out.push(':');
                     v.write_json(out);
                 }
@@ -166,6 +152,24 @@ impl JsonValue {
             }
         }
     }
+}
+
+fn write_json_str(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 pub fn parse_json(input: &str) -> Result<JsonValue, String> {

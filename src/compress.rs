@@ -175,15 +175,18 @@ const fn litlen_code(sym: usize) -> (u16, u8) {
     }
 }
 
+#[inline(always)]
 fn emit_litlen(bw: &mut BitWriter, sym: usize) {
     let (code, len) = FIXED_LITLEN_CODES[sym];
     bw.write_reversed_huffman(code, len);
 }
 
+#[inline(always)]
 fn emit_literal(bw: &mut BitWriter, b: u8) {
     emit_litlen(bw, b as usize);
 }
 
+#[inline(always)]
 fn emit_match(bw: &mut BitWriter, len: usize, dist: usize) {
     // Length symbol 257..=285 + extra bits (LSB-first). The static lookup table
     // is the old highest-base<=value search, precomputed for every legal match.
@@ -303,6 +306,7 @@ impl Adler32 {
     }
 }
 
+#[inline(always)]
 fn hash3(data: &[u8], i: usize) -> usize {
     debug_assert!(i + 2 < data.len());
     let b0 = data[i] as u32;
@@ -312,6 +316,7 @@ fn hash3(data: &[u8], i: usize) -> usize {
     ((v.wrapping_mul(2654435761) >> (32 - HASH_BITS)) as usize) & (HASH_SIZE - 1)
 }
 
+#[inline(always)]
 fn match_len(data: &[u8], a: usize, b: usize, max: usize) -> usize {
     let max = max
         .min(data.len().saturating_sub(a))

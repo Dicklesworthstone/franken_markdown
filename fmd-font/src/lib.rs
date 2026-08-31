@@ -110,8 +110,8 @@ pub struct Font {
     /// Optional OpenType variations (`fvar` + optional `avar`). Absent for
     /// static faces and for fonts whose variation tables fail validation.
     variation: Option<FontVariation>,
-    ascii_glyphs: [u16; 128],
-    ascii_advances_1000: [u32; 128],
+    latin1_glyphs: [u16; 256],
+    latin1_advances_1000: [u32; 256],
 }
 
 /// One `fvar` variation axis (`wght`, `wdth`, `opsz`, …).
@@ -640,22 +640,22 @@ impl Font {
             loca_long,
             kern0,
             variation,
-            ascii_glyphs: [0; 128],
-            ascii_advances_1000: [0; 128],
+            latin1_glyphs: [0; 256],
+            latin1_advances_1000: [0; 256],
         };
-        for b in 0..128 {
+        for b in 0..256 {
             let gid = match font.cmap_format {
                 4 => font.cmap4_lookup(b as u32).unwrap_or(0),
                 12 => font.cmap12_lookup(b as u32).unwrap_or(0),
                 _ => 0,
             };
-            font.ascii_glyphs[b] = gid;
+            font.latin1_glyphs[b] = gid;
         }
         if font.units_per_em > 0 {
-            for b in 0..128 {
-                let gid = font.ascii_glyphs[b];
+            for b in 0..256 {
+                let gid = font.latin1_glyphs[b];
                 let aw = font.advance_width(gid) as u32;
-                font.ascii_advances_1000[b] = aw * 1000 / font.units_per_em as u32;
+                font.latin1_advances_1000[b] = aw * 1000 / font.units_per_em as u32;
             }
         }
         Ok(font)
@@ -884,10 +884,11 @@ impl Font {
 
     /// The glyph id for a character, or `0` (`.notdef`) if unmapped.
     #[must_use]
+    #[inline]
     pub fn glyph_index(&self, ch: char) -> u16 {
         let cp = ch as u32;
-        if cp < 128 {
-            return self.ascii_glyphs[cp as usize];
+        if cp < 256 {
+            return self.latin1_glyphs[cp as usize];
         }
         match self.cmap_format {
             4 => self.cmap4_lookup(cp).unwrap_or(0),
@@ -901,10 +902,11 @@ impl Font {
     /// (so a tofu box still occupies its natural width); only an unparsable face
     /// with `units_per_em == 0` yields `0`.
     #[must_use]
+    #[inline]
     pub fn advance_1000(&self, ch: char) -> u32 {
         let cp = ch as u32;
-        if cp < 128 {
-            return self.ascii_advances_1000[cp as usize];
+        if cp < 256 {
+            return self.latin1_advances_1000[cp as usize];
         }
         if self.units_per_em == 0 {
             return 0;

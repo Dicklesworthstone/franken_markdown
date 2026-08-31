@@ -761,6 +761,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
 /// G0-4 corpus uses only code 51 — the checkmark, whose glyph resolves
 /// through the symbol faces as U+2713 (the `\checkmark` codepoint, which
 /// those faces carry). Any other code fails precisely, by name.
+#[inline(always)]
 pub(crate) fn ding_char(code: u32) -> Option<char> {
     match code {
         51 => Some('✓'),
@@ -769,6 +770,7 @@ pub(crate) fn ding_char(code: u32) -> Option<char> {
 }
 
 /// Look up an environment name.
+#[inline(always)]
 pub(crate) fn lookup_env(name: &str) -> Option<EnvDef> {
     match name {
         "array" => Some(EnvDef { has_spec: true }),
@@ -781,6 +783,7 @@ pub(crate) fn lookup_env(name: &str) -> Option<EnvDef> {
 /// The line-alignment environments (`flushleft`, `center`, `flushright`):
 /// text-mode blocks aligning their `\\`-split lines within the widest
 /// line's width.
+#[inline(always)]
 pub(crate) fn line_align_env(name: &str) -> Option<LineAlign> {
     match name {
         "flushleft" => Some(LineAlign::Left),
@@ -793,6 +796,7 @@ pub(crate) fn line_align_env(name: &str) -> Option<LineAlign> {
 /// True when the control *symbol* is known tier-2 vocabulary. Empty since
 /// the text accents `\'` and `\"` graduated (fm-j5t); kept so the next
 /// tier-2 control symbol has its slot back.
+#[inline(always)]
 pub(crate) fn control_symbol_is_t2(ch: char) -> bool {
     let _ = ch;
     false

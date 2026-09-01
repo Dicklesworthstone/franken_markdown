@@ -42,18 +42,21 @@ impl LayoutUnit {
     pub const ZERO: Self = Self(0);
 
     /// Construct from raw milli-points.
+    #[inline(always)]
     #[must_use]
     pub const fn from_milli_points(value: i32) -> Self {
         Self(value)
     }
 
     /// Construct from whole PDF points.
+    #[inline(always)]
     #[must_use]
     pub const fn from_points(points: i32) -> Self {
         Self(points.saturating_mul(UNITS_PER_POINT))
     }
 
     /// Raw milli-point value.
+    #[inline(always)]
     #[must_use]
     pub const fn milli_points(self) -> i32 {
         self.0
@@ -63,18 +66,21 @@ impl LayoutUnit {
     ///
     /// This is for final output serialization only; layout decisions should use
     /// integer comparisons on [`Self::milli_points`].
+    #[inline(always)]
     #[must_use]
     pub fn to_points_f32(self) -> f32 {
         self.0 as f32 / UNITS_PER_POINT as f32
     }
 
     /// Saturating addition.
+    #[inline(always)]
     #[must_use]
     pub const fn saturating_add(self, rhs: Self) -> Self {
         Self(self.0.saturating_add(rhs.0))
     }
 
     /// Saturating subtraction.
+    #[inline(always)]
     #[must_use]
     pub const fn saturating_sub(self, rhs: Self) -> Self {
         Self(self.0.saturating_sub(rhs.0))
@@ -84,12 +90,14 @@ impl LayoutUnit {
 impl core::ops::Add for LayoutUnit {
     type Output = Self;
 
+    #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
         self.saturating_add(rhs)
     }
 }
 
 impl core::ops::AddAssign for LayoutUnit {
+    #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         *self = self.saturating_add(rhs);
     }
@@ -98,6 +106,7 @@ impl core::ops::AddAssign for LayoutUnit {
 impl core::ops::Sub for LayoutUnit {
     type Output = Self;
 
+    #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
         self.saturating_sub(rhs)
     }
@@ -111,6 +120,7 @@ pub struct FontSize {
 
 impl FontSize {
     /// Construct from whole PDF points.
+    #[inline(always)]
     #[must_use]
     pub const fn from_points(points: u16) -> Self {
         Self {
@@ -119,12 +129,14 @@ impl FontSize {
     }
 
     /// Construct from milli-points, e.g. `9500` for `9.5pt`.
+    #[inline(always)]
     #[must_use]
     pub const fn from_milli_points(milli_points: u32) -> Self {
         Self { milli_points }
     }
 
     /// Raw milli-point value.
+    #[inline(always)]
     #[must_use]
     pub const fn milli_points(self) -> u32 {
         self.milli_points
@@ -139,6 +151,7 @@ pub trait AdvanceMetrics {
 }
 
 impl AdvanceMetrics for Font {
+    #[inline(always)]
     fn advance_1000(&self, ch: char) -> u32 {
         Font::advance_1000(self, ch)
     }

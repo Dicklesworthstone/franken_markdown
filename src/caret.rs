@@ -57,6 +57,7 @@ impl ColorMode {
     }
 
     /// Whether this mode plus TTY-ness should emit ANSI.
+    #[inline(always)]
     #[must_use]
     pub fn enabled(self, is_tty: bool) -> bool {
         match self {

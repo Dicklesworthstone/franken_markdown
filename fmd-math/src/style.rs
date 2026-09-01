@@ -28,6 +28,7 @@ pub enum Style {
 impl Style {
     /// True for the script styles, where medium/thick inter-atom spaces are
     /// suppressed and `\sum`-class operators stop taking display limits.
+    #[inline(always)]
     #[must_use]
     pub const fn is_script(self) -> bool {
         matches!(self, Self::Script | Self::ScriptScript)
@@ -35,6 +36,7 @@ impl Style {
 
     /// The glyph-size factor of the style relative to text size (CM's
     /// 10 pt / 7 pt / 5 pt family).
+    #[inline(always)]
     #[must_use]
     pub const fn size_factor(self) -> f64 {
         match self {
@@ -45,6 +47,7 @@ impl Style {
     }
 
     /// The style of a superscript on an atom in `self`.
+    #[inline(always)]
     #[must_use]
     pub const fn sup(self) -> Self {
         match self {
@@ -54,6 +57,7 @@ impl Style {
     }
 
     /// The style of a fraction numerator in `self`.
+    #[inline(always)]
     #[must_use]
     pub const fn num(self) -> Self {
         match self {
@@ -77,6 +81,7 @@ pub struct StyleCtx {
 
 impl StyleCtx {
     /// An uncramped context in the given style.
+    #[inline(always)]
     #[must_use]
     pub const fn new(style: Style) -> Self {
         Self {
@@ -86,6 +91,7 @@ impl StyleCtx {
     }
 
     /// Display, uncramped: the default whole-formula context.
+    #[inline(always)]
     #[must_use]
     pub const fn display() -> Self {
         Self::new(Style::Display)
@@ -93,6 +99,7 @@ impl StyleCtx {
 
     /// The context of a superscript: style goes up one script level,
     /// cramping is preserved.
+    #[inline(always)]
     #[must_use]
     pub const fn sup(self) -> Self {
         Self {
@@ -102,6 +109,7 @@ impl StyleCtx {
     }
 
     /// The context of a subscript: like [`Self::sup`] but always cramped.
+    #[inline(always)]
     #[must_use]
     pub const fn sub(self) -> Self {
         Self {
@@ -112,6 +120,7 @@ impl StyleCtx {
 
     /// The context of a fraction numerator: style goes down one fraction
     /// level, cramping preserved.
+    #[inline(always)]
     #[must_use]
     pub const fn num(self) -> Self {
         Self {
@@ -122,6 +131,7 @@ impl StyleCtx {
 
     /// The context of a fraction denominator: like [`Self::num`] but always
     /// cramped.
+    #[inline(always)]
     #[must_use]
     pub const fn den(self) -> Self {
         Self {
@@ -131,6 +141,7 @@ impl StyleCtx {
     }
 
     /// The same style, cramped (radicands, accent bases).
+    #[inline(always)]
     #[must_use]
     pub const fn cramp(self) -> Self {
         Self {
@@ -140,6 +151,7 @@ impl StyleCtx {
     }
 
     /// Glyph-size factor of the current style.
+    #[inline(always)]
     #[must_use]
     pub const fn size_factor(self) -> f64 {
         self.style.size_factor()

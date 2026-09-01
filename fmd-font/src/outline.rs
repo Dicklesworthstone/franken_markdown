@@ -201,6 +201,7 @@ const USE_MY_METRICS: u16 = 0x0200;
 const SCALED_COMPONENT_OFFSET: u16 = 0x0800;
 const UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
+#[inline(always)]
 fn f2dot14(v: i16) -> f64 {
     f64::from(v) / 16384.0
 }

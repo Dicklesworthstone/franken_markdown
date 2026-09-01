@@ -55,6 +55,7 @@ pub enum Tok {
 
 impl Tok {
     /// CSS class for this token, or `None` for plain text (no span).
+    #[inline(always)]
     #[must_use]
     pub fn css_class(self) -> Option<&'static str> {
         Some(match self {
@@ -104,6 +105,7 @@ enum Lexer {
 }
 
 /// True when a focused lexer exists for `lang`.
+#[inline(always)]
 #[must_use]
 pub fn is_supported(lang: &str) -> bool {
     lexer(lang).is_some()

@@ -142,6 +142,7 @@ pub(crate) fn lex(source: &str) -> Vec<Tok<'_>> {
     toks
 }
 
+#[inline(always)]
 fn single(kind: TokKind<'static>, start: usize, len: usize) -> Tok<'static> {
     Tok {
         kind,
@@ -153,6 +154,7 @@ fn single(kind: TokKind<'static>, start: usize, len: usize) -> Tok<'static> {
 /// (out-of-bounds would mean a lexer bug; degrade to an empty name rather
 /// than panic — the parser then reports an unknown command, which is at
 /// least a precise failure).
+#[inline(always)]
 fn name_slice(source: &str, start: usize, end: usize) -> &str {
     source.get(start..end).unwrap_or("")
 }

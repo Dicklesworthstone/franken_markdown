@@ -215,6 +215,7 @@ enum Ink {
 }
 
 impl Ink {
+    #[inline(always)]
     fn hex(self, colors: &ThemeColors) -> &str {
         match self {
             Self::Fg => &colors.fg,

@@ -121,6 +121,7 @@ impl Writer {
     }
 }
 
+#[inline(always)]
 fn push_escaped(buf: &mut String, s: &str, attr: bool) {
     if !s
         .as_bytes()
@@ -524,6 +525,7 @@ fn emit_superscript(w: &mut Writer, sup: Option<&Node>, primes: &[Span], style: 
     w.close("mrow");
 }
 
+#[inline(always)]
 fn scripts_as_limits(base: Option<&Node>, style: Style) -> bool {
     let Some(node) = base else {
         return false;
@@ -639,6 +641,7 @@ fn emit_accent(w: &mut Writer, accent: AccentKind, base: &Node, style: Style) {
     w.close(tag);
 }
 
+#[inline(always)]
 fn accent_char(kind: AccentKind) -> &'static str {
     match kind {
         AccentKind::Hat | AccentKind::WideHat => "\u{02C6}",
@@ -837,6 +840,7 @@ fn emit_environment(
     }
 }
 
+#[inline(always)]
 fn env_fences(name: &str) -> Option<(Option<char>, Option<char>)> {
     match name {
         "pmatrix" => Some((Some('('), Some(')'))),

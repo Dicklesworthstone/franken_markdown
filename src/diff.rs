@@ -161,6 +161,7 @@ pub fn compute_diff(
     }
 }
 
+#[inline(always)]
 fn can_pair_blocks(a: &Block, b: &Block) -> bool {
     matches!(
         (a, b),
@@ -437,6 +438,7 @@ fn count_block_words(block: &Block, count: &mut usize) {
     }
 }
 
+#[inline(always)]
 fn count_inline_words(inline: &Inline, count: &mut usize) {
     match inline {
         Inline::Text(t)

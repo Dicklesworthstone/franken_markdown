@@ -51,6 +51,9 @@ pub fn expand_includes(
     src: &str,
     resolver: &dyn Fn(&str, &str) -> ResolveResult,
 ) -> Result<String> {
+    if !has_includes(src) {
+        return Ok(src.to_string());
+    }
     let mut stack = Vec::new();
     expand_inner(src, resolver, &mut stack, 0, "<input>")
 }
@@ -68,7 +71,7 @@ fn expand_inner(
         )));
     }
     // Fast path: no directive present at all.
-    if !src.contains(INCLUDE_PREFIX) {
+    if !has_includes(src) {
         return Ok(src.to_string());
     }
     let mut out = String::with_capacity(src.len());

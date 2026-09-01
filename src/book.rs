@@ -101,6 +101,7 @@ pub fn out_name(path: &str) -> String {
     format!("{}.html", no_ext.replace(['/', '\\'], "__"))
 }
 
+#[inline(always)]
 fn path_stem(path: &str) -> String {
     let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let stem = if filename.to_ascii_lowercase().ends_with(".markdown") {
@@ -113,6 +114,7 @@ fn path_stem(path: &str) -> String {
     stem.to_string()
 }
 
+#[inline(always)]
 fn first_heading_text(doc: &Document) -> Option<String> {
     for block in &doc.blocks {
         if let Block::Heading { inlines, .. } = block {
@@ -125,6 +127,7 @@ fn first_heading_text(doc: &Document) -> Option<String> {
     None
 }
 
+#[inline(always)]
 fn plain_inlines(inlines: &[Inline]) -> String {
     let mut out = String::new();
     push_plain_inlines(inlines, &mut out);

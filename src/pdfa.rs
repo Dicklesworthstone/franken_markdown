@@ -28,6 +28,7 @@ impl PdfAMode {
     }
 
     /// Stable spelling for capabilities / JSON.
+    #[inline(always)]
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -37,6 +38,7 @@ impl PdfAMode {
     }
 
     /// True when XMP + OutputIntent objects should be emitted.
+    #[inline(always)]
     #[must_use]
     pub const fn is_a2b(self) -> bool {
         matches!(self, Self::A2b)
@@ -62,6 +64,7 @@ impl PdfASettings {
     };
 
     /// PDF/A-2b emission, non-strict (forbidden URI actions are dropped).
+    #[inline(always)]
     #[must_use]
     pub const fn a2b() -> Self {
         Self {
@@ -71,6 +74,7 @@ impl PdfASettings {
     }
 
     /// PDF/A-2b emission, fail closed on non-conformable constructs.
+    #[inline(always)]
     #[must_use]
     pub const fn a2b_strict() -> Self {
         Self {
@@ -80,6 +84,7 @@ impl PdfASettings {
     }
 
     /// Extra PDF objects appended after Info/SMask when this profile is on.
+    #[inline(always)]
     #[must_use]
     pub const fn extra_object_count(self) -> usize {
         if self.mode.is_a2b() { 3 } else { 0 }
@@ -87,7 +92,7 @@ impl PdfASettings {
 }
 
 /// True when a URI action is forbidden in PDF/A-2b (`javascript:`, `file:`).
-#[inline]
+#[inline(always)]
 #[must_use]
 pub fn uri_forbidden_in_pdfa(uri: &str) -> bool {
     let t = uri.trim();

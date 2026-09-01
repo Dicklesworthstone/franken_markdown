@@ -43,7 +43,7 @@ pub fn resolve_paths(engine: &Engine, layout: &Layout) -> Result<Vec<PathContour
         let upm = f64::from(font.units_per_em.max(1));
         let s = glyph.size / upm;
         for contour in &outline.contours {
-            let mut segments = Vec::new();
+            let mut segments = Vec::with_capacity(contour.segments.len());
             let start = (glyph.x + contour.start.x * s, glyph.y + contour.start.y * s);
             for seg in &contour.segments {
                 segments.push(match seg {

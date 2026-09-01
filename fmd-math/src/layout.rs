@@ -842,7 +842,7 @@ impl Engine {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     fn metrics_of(&self, face: FaceId, gid: u16) -> GlyphMetrics {
         // Hot path: one RefCell read + two Vec reads. Misses and the
         // table decodes live out of line in `metrics_of_miss` so the

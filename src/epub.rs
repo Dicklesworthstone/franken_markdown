@@ -117,6 +117,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
 /// Extract the `<main class="fmd">` body from a full renderer document. The
 /// renderer's shell is a fixed byte sequence, so this is exact string surgery
 /// on two constant markers, not parsing.
+#[inline(always)]
 fn extract_main_body(page: &str) -> Option<&str> {
     const OPEN: &str = "<main class=\"fmd\">\n";
     const CLOSE: &str = "</main>";
@@ -347,6 +348,7 @@ fn content_opf(title: &str, lang: &str, identifier: &str) -> String {
 // Deterministic content identifier.
 
 /// FNV-1a 64-bit over `bytes`, chained from `seed`.
+#[inline(always)]
 fn fnv1a64(seed: u64, bytes: &[u8]) -> u64 {
     let mut h = seed;
     for &b in bytes {

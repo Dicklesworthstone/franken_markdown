@@ -259,6 +259,7 @@ fn diff_block_inlines(old: &Block, new: &Block, stats: &mut DiffStats) -> Vec<Di
     }
 }
 
+#[inline(always)]
 fn collect_inline_words<'a>(inline: &'a Inline, words: &mut Vec<&'a str>) {
     match inline {
         Inline::Text(t)
@@ -770,6 +771,7 @@ fn render_diff_inline(inline: &Inline, out: &mut String) {
     }
 }
 
+#[inline(always)]
 fn is_safe_href(url: &str) -> bool {
     let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('/') {
@@ -1008,6 +1010,7 @@ impl KeyedBlock {
 }
 
 /// Coarse, stable block-kind tags.
+#[inline(always)]
 fn block_tag(block: &Block) -> u8 {
     match block {
         Block::Heading { .. } => 0,
@@ -1025,6 +1028,7 @@ fn block_tag(block: &Block) -> u8 {
     }
 }
 
+#[inline(always)]
 fn block_name(tag: u8) -> &'static str {
     match tag {
         0 => "heading",
@@ -1788,6 +1792,7 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
     }
 }
 
+#[inline(always)]
 fn change_kind_str(kind: &ChangeKind) -> &'static str {
     match kind {
         ChangeKind::HeadingAdded => "heading_added",
@@ -1803,9 +1808,13 @@ fn change_kind_str(kind: &ChangeKind) -> &'static str {
     }
 }
 
+#[inline(always)]
 fn push_opt_index(out: &mut String, index: Option<usize>) {
     match index {
-        Some(i) => out.push_str(&i.to_string()),
+        Some(i) => {
+            use std::fmt::Write;
+            let _ = write!(out, "{i}");
+        }
         None => out.push_str("null"),
     }
 }

@@ -394,6 +394,7 @@ fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
     None
 }
 
+#[inline(always)]
 fn find_source_span(source: &str, needle: &str) -> Option<SourceSpan> {
     if needle.is_empty() {
         return None;
@@ -528,6 +529,7 @@ fn json_num(value: f32) -> String {
     if s.is_empty() { "0".to_string() } else { s }
 }
 
+#[inline(always)]
 fn fnv1a64(data: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

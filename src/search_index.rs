@@ -43,6 +43,7 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
+    #[inline(always)]
     fn as_str(self) -> &'static str {
         match self {
             EntryKind::Heading => "heading",
@@ -249,6 +250,7 @@ fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bo
 /// Mirror of `push_slug_char` (src/html.rs:1047-1057): ASCII alphanumerics
 /// are kept (lowercased); space, `-`, and `_` collapse to a single dash;
 /// every other character is dropped without touching the pending-dash state.
+#[inline(always)]
 fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
     if c.is_ascii_alphanumeric() {
         if *pending_dash && !out.is_empty() {
@@ -326,6 +328,7 @@ fn push_usize(out: &mut String, value: usize) {
 }
 
 /// Mirror of `decimal_len_usize` (src/html.rs:969-976).
+#[inline(always)]
 fn decimal_len_usize(mut value: usize) -> usize {
     let mut len = 1;
     while value >= 10 {
@@ -339,6 +342,7 @@ fn decimal_len_usize(mut value: usize) -> usize {
 /// newline/carriage-return/tab, and `\u00XX` for every other C0 control
 /// character. All other characters (including non-ASCII) pass through as
 /// UTF-8, which is valid JSON.
+#[inline(always)]
 fn push_json_escaped(out: &mut String, s: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let bytes = s.as_bytes();

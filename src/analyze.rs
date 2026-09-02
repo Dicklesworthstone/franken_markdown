@@ -176,17 +176,20 @@ pub fn analysis_json(analysis: &Analysis) -> String {
 }
 
 /// `word_count / 200` words per minute, in seconds, rounded half-up.
+#[inline(always)]
 fn reading_time_secs(word_count: usize) -> u32 {
     let secs = (word_count as u64).saturating_mul(60).saturating_add(100) / 200;
     u32::try_from(secs).unwrap_or(u32::MAX)
 }
 
 /// Round half away from zero to one decimal, in f64.
+#[inline(always)]
 fn round_one_decimal(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
 /// Emit an f32 with exactly one decimal; normalizes negative zero to `0.0`.
+#[inline(always)]
 fn push_f32_one_decimal(out: &mut String, value: f32) {
     let rounded = round_one_decimal(f64::from(value));
     if rounded == 0.0 {
@@ -196,6 +199,7 @@ fn push_f32_one_decimal(out: &mut String, value: f32) {
     }
 }
 
+#[inline(always)]
 fn push_json_usize(out: &mut String, key: &str, value: usize) {
     let _ = write!(out, ",\"{key}\":{value}");
 }
@@ -371,7 +375,7 @@ fn count_sentences(text: &str) -> usize {
 ///    more than one group, and does not end in `ee`/`ye` or consonant + `le`
 ///    (`table` keeps its final group, `make` loses it).
 /// 5. Every word with letters has at least one syllable.
-#[inline]
+#[inline(always)]
 fn count_syllables(word: &str) -> usize {
     let mut buf = [0u8; 64];
     let mut n = 0usize;

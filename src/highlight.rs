@@ -799,6 +799,7 @@ fn previous_non_space_is_tag_open(code: &str, start: usize) -> bool {
     matches!(prev, Some('<' | '/'))
 }
 
+#[inline(always)]
 fn looks_like_html_tag(rest: &str) -> bool {
     let mut chars = rest.chars();
     if chars.next() != Some('<') {
@@ -818,10 +819,12 @@ fn looks_like_html_tag(rest: &str) -> bool {
     ch.is_ascii_alphabetic() || matches!(ch, '!' | '?')
 }
 
+#[inline(always)]
 fn is_html_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.' | '!' | '?')
 }
 
+#[inline(always)]
 const fn is_generic_operator_char(ch: char) -> bool {
     matches!(
         ch,
@@ -843,26 +846,32 @@ const fn is_generic_operator_char(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 const fn is_generic_punct_char(ch: char) -> bool {
     matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.')
 }
 
+#[inline(always)]
 fn is_css_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || matches!(ch, '_' | '-')
 }
 
+#[inline(always)]
 fn is_css_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
 }
 
+#[inline(always)]
 fn is_css_number_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '%' | '-')
 }
 
+#[inline(always)]
 const fn is_css_punct_char(ch: char) -> bool {
     matches!(ch, ':' | ';' | '{' | '}' | '(' | ')' | ',' | '[' | ']')
 }
 
+#[inline(always)]
 const fn is_css_operator_char(ch: char) -> bool {
     matches!(
         ch,
@@ -870,14 +879,17 @@ const fn is_css_operator_char(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 const fn is_markdown_emphasis_marker(ch: char) -> bool {
     matches!(ch, '*' | '_' | '~')
 }
 
+#[inline(always)]
 const fn is_markdown_punct_char(ch: char) -> bool {
     matches!(ch, '[' | ']' | '(' | ')' | '!' | '|' | ':')
 }
 
+#[inline(always)]
 const fn is_markdown_plain_stop_char(ch: char) -> bool {
     matches!(
         ch,
@@ -885,18 +897,22 @@ const fn is_markdown_plain_stop_char(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 fn is_mermaid_number_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '%' | '-')
 }
 
+#[inline(always)]
 fn is_mermaid_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
 }
 
+#[inline(always)]
 fn is_mermaid_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
 }
 
+#[inline(always)]
 fn is_mermaid_operator_char(ch: char) -> bool {
     matches!(
         ch,
@@ -904,6 +920,7 @@ fn is_mermaid_operator_char(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 const fn is_mermaid_punct_char(ch: char) -> bool {
     matches!(
         ch,
@@ -911,6 +928,7 @@ const fn is_mermaid_punct_char(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 fn starts_hex_color(code: &str, pos: usize) -> bool {
     let mut count = 0usize;
     for ch in code[pos + 1..].chars() {

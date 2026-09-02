@@ -94,6 +94,7 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<(u32, Vec<SfntTable>)> {
 }
 
 /// Slice one table's bytes, clamping an over-long final table to the file end.
+#[inline(always)]
 fn slice_table(sfnt: &[u8], table: SfntTable, is_last: bool) -> Result<&[u8]> {
     let start = usize::try_from(table.offset)
         .map_err(|_| RenderError::InvalidInput("woff1: table offset does not fit usize".into()))?;
@@ -117,6 +118,7 @@ fn slice_table(sfnt: &[u8], table: SfntTable, is_last: bool) -> Result<&[u8]> {
 
 /// Read `head.fontRevision` (fixed 16.16) for the WOFF version fields.
 /// Absent or malformed head falls back to 1.0 — cosmetic metadata only.
+#[inline(always)]
 fn font_revision(sfnt: &[u8], tables: &[SfntTable]) -> (u16, u16) {
     let Some(head) = tables.iter().find(|t| &t.tag == b"head") else {
         return (1, 0);

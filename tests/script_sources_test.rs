@@ -284,6 +284,41 @@ fn wasm_package_gate_prints_signed_delta_against_the_last_ratchet() -> TestResul
 }
 
 #[test]
+fn ios_renderer_sync_rebuilds_before_copy_and_keeps_check_mode_read_only() -> TestResult {
+    let script = fs::read_to_string("ios/sync-renderer.sh")?;
+    let default_rebuild = script
+        .find("if [[ \"$check_only\" -eq 0 ]]; then\n  build_verified_package")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "default renderer sync must rebuild the verified package",
+            )
+        })?;
+    let first_copy = script
+        .find("cp -f \"$pkg_dir/franken_markdown.js\"")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "renderer copy is missing"))?;
+
+    assert!(
+        default_rebuild < first_copy,
+        "the current source package must be rebuilt before any iOS renderer bytes are copied"
+    );
+    assert!(
+        script.contains(
+            "elif [[ ! -d \"$pkg_dir\" || ! -f \"$pkg_dir/pkg/franken_markdown_bg.wasm\" ]]; then"
+        ),
+        "check mode must reject a missing verified package instead of building one"
+    );
+    assert!(
+        script.contains(
+            "ERROR: verified renderer package is missing; run ios/sync-renderer.sh first"
+        ),
+        "check mode should explain how to create the missing package"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn artifact_scripts_reject_unsafe_run_ids_before_artifact_paths() -> TestResult {
     for (script, marker) in [
         (

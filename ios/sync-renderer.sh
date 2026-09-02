@@ -17,8 +17,19 @@ pkg_dir="target/fmd-checks/wasm-package"
 dest_dir="ios/Renderer"
 manifest="$dest_dir/RendererManifest.json"
 
-if [[ ! -d "$pkg_dir" || ! -f "$pkg_dir/pkg/franken_markdown_bg.wasm" ]]; then
+build_verified_package() {
   bash scripts/check-wasm-package.sh local
+}
+
+# A pre-existing target/ package is not proof that it was built from the current
+# source fence. The mutating sync command therefore rebuilds and verifies the
+# package every time before copying it. Check mode stays read-only and refuses
+# to compare against a missing package instead of manufacturing one.
+if [[ "$check_only" -eq 0 ]]; then
+  build_verified_package
+elif [[ ! -d "$pkg_dir" || ! -f "$pkg_dir/pkg/franken_markdown_bg.wasm" ]]; then
+  echo "ERROR: verified renderer package is missing; run ios/sync-renderer.sh first" >&2
+  exit 1
 fi
 
 wrapper_src="$pkg_dir/franken_markdown.js"

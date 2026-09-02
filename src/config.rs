@@ -89,6 +89,7 @@ impl ConfigError {
     }
 }
 
+#[inline(always)]
 fn parse_line_number(msg: &str) -> Option<usize> {
     let rest = msg.strip_prefix("line ")?;
     let digits = rest.split(':').next()?.trim();
@@ -406,6 +407,7 @@ pub enum EmojiStrategy {
 impl EmojiStrategy {
     /// Stable machine selector for robot/JSON output. The strings are
     /// the values the CLI accepts in `key=value` form.
+    #[inline(always)]
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -430,6 +432,7 @@ fn normalize_key(key: &str) -> String {
     key.trim().replace('-', "_").to_ascii_lowercase()
 }
 
+#[inline(always)]
 fn unquote(value: &str) -> &str {
     value
         .strip_prefix('"')
@@ -437,6 +440,7 @@ fn unquote(value: &str) -> &str {
         .unwrap_or(value)
 }
 
+#[inline(always)]
 fn contains_line_break(value: &str) -> bool {
     value.chars().any(|ch| matches!(ch, '\n' | '\r'))
 }

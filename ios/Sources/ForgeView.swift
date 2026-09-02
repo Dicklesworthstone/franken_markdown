@@ -61,6 +61,7 @@ private enum TypeScalePresetStep: String, CaseIterable, Identifiable {
 
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
     @StateObject private var renderer = MarkdownRendererModel()
     @State private var lane: ForgeLane = .write
@@ -177,7 +178,6 @@ struct ForgeView: View {
                     }
                 }
             }
-            .preferredColorScheme(.dark)
         }
         .fullScreenCover(isPresented: $showDocumentLab) {
             DocumentLabView(renderer: renderer)
@@ -193,19 +193,20 @@ struct ForgeView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(Color.black.opacity(0.85), in: Capsule())
+                .background(Lab.panelStrong, in: Capsule())
                 .overlay(Capsule().stroke(Lab.emerald.opacity(0.4)))
                 .padding(.top, 16)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .preferredColorScheme((LabAppearance(rawValue: appearance) ?? .dark).colorScheme)
     }
 
     private var masthead: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { brand; Spacer(); actionButtons; statusPill }
+            HStack(spacing: 12) { brand; Spacer(); actionButtons; LabAppearanceButton(selection: $appearance); statusPill }
             VStack(alignment: .leading, spacing: 10) {
-                HStack { brand; Spacer(); statusPill }
+                HStack { brand; Spacer(); LabAppearanceButton(selection: $appearance); statusPill }
                 actionButtons
             }
         }
@@ -249,7 +250,7 @@ struct ForgeView: View {
                     .foregroundStyle(Lab.text)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
@@ -278,7 +279,7 @@ struct ForgeView: View {
                         .foregroundStyle(Lab.text)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -301,7 +302,7 @@ struct ForgeView: View {
                         .foregroundStyle(Lab.text)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
                 }
 #endif
@@ -324,7 +325,7 @@ struct ForgeView: View {
                     .foregroundStyle(Lab.text)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Lab.stroke))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
@@ -344,7 +345,7 @@ struct ForgeView: View {
         .foregroundStyle(statusColor)
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
-        .background(Color.black.opacity(0.38), in: Capsule())
+        .background(Lab.panelStrong, in: Capsule())
         .overlay(Capsule().stroke(statusColor.opacity(0.28)))
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -404,7 +405,7 @@ struct ForgeView: View {
                         .foregroundStyle(Lab.secondary)
                 }
                 MarkdownCodeEditor(text: $renderer.source, isFocused: $editorFocused)
-                    .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
+                    .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 12))
                     .frame(minHeight: 320)
 #if !targetEnvironment(macCatalyst)
                 if horizontalSizeClass == .compact {

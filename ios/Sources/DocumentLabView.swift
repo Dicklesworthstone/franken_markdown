@@ -113,7 +113,7 @@ struct DocumentLabView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.black.opacity(0.82), for: .navigationBar)
+            .toolbarBackground(Lab.panelStrong, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -134,7 +134,6 @@ struct DocumentLabView: View {
                 destination(route)
             }
         }
-        .preferredColorScheme(.dark)
         .sheet(isPresented: $showShare) {
             if let exportURL { ShareActivityView(fileURL: exportURL) }
         }
@@ -220,7 +219,7 @@ struct DocumentLabView: View {
                     LinearGradient(
                         colors: [
                             Color(red: 0.02, green: 0.17, blue: 0.11),
-                            Color.black.opacity(0.9),
+                            Lab.panelStrong,
                             Color(red: 0.03, green: 0.08, blue: 0.14)
                         ],
                         startPoint: .topLeading,
@@ -400,7 +399,7 @@ struct DocumentLabView: View {
             .frame(maxWidth: .infinity, minHeight: compact ? 198 : 220, alignment: .leading)
             .background(
                 LinearGradient(
-                    colors: [route.tint.opacity(0.085), Color.black.opacity(0.48)],
+                    colors: [route.tint.opacity(0.085), Lab.panel],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
@@ -427,7 +426,7 @@ struct DocumentLabView: View {
                         .foregroundStyle(Lab.secondary)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.035), in: Capsule())
+                        .background(Lab.panelSoft, in: Capsule())
                         .overlay(Capsule().stroke(Lab.stroke))
                 }
             }
@@ -615,7 +614,7 @@ struct DocumentLabView: View {
                 .frame(maxWidth: 560)
         }
         .frame(maxWidth: .infinity, minHeight: 280)
-        .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Lab.panel, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(Lab.amber.opacity(0.15)))
     }
 
@@ -693,7 +692,7 @@ struct DocumentLabView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 15))
+        .background(Lab.panelSoft, in: RoundedRectangle(cornerRadius: 15))
     }
 
     private var templateStudio: some View {
@@ -734,7 +733,7 @@ struct DocumentLabView: View {
                     .frame(maxWidth: .infinity, minHeight: 230, alignment: .leading)
                     .background(
                         LinearGradient(
-                            colors: [templateColor(preset.id).opacity(0.08), Color.black.opacity(0.46)],
+                            colors: [templateColor(preset.id).opacity(0.08), Lab.panel],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -895,7 +894,7 @@ struct DocumentLabView: View {
         .font(.system(size: Lab.size(10)))
         .foregroundStyle(Lab.text)
         .padding(10)
-        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .background(Lab.panelSoft, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func findingsPanel(_ analysis: DocumentAnalysis) -> some View {
@@ -1053,7 +1052,7 @@ struct DocumentLabView: View {
             .buttonStyle(.plain)
         }
         .padding(13)
-        .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 15).stroke(Lab.amber.opacity(0.35)))
     }
 

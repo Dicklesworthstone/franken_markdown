@@ -1,16 +1,29 @@
 import SwiftUI
 import UIKit
 
+enum LabAppearance: String {
+    static let storageKey = "frankenmarkdown.appearance"
+    case dark
+    case light
+    var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+}
+
 enum Lab {
-    static let background = Color(red: 0.006, green: 0.027, blue: 0.019)
-    static let panel = Color.black.opacity(0.54)
-    static let stroke = Color.white.opacity(0.075)
-    static let emerald = Color(red: 0.204, green: 0.827, blue: 0.6)
-    static let cyan = Color(red: 0.25, green: 0.82, blue: 0.96)
-    static let amber = Color(red: 0.98, green: 0.75, blue: 0.14)
-    static let danger = Color(red: 0.97, green: 0.44, blue: 0.44)
-    static let text = Color(red: 0.89, green: 0.91, blue: 0.94)
-    static let secondary = Color(red: 0.58, green: 0.64, blue: 0.72)
+    static let background = adaptive(dark: UIColor(red: 0.006, green: 0.027, blue: 0.019, alpha: 1), light: UIColor(red: 0.945, green: 0.968, blue: 0.938, alpha: 1))
+    static let panel = adaptive(dark: UIColor(white: 0, alpha: 0.54), light: UIColor(red: 0.992, green: 0.998, blue: 0.988, alpha: 0.97))
+    static let panelStrong = adaptive(dark: UIColor(white: 0, alpha: 0.88), light: UIColor(red: 0.885, green: 0.935, blue: 0.895, alpha: 0.98))
+    static let panelSoft = adaptive(dark: UIColor(white: 1, alpha: 0.035), light: UIColor(red: 0.04, green: 0.20, blue: 0.11, alpha: 0.055))
+    static let stroke = adaptive(dark: UIColor(white: 1, alpha: 0.075), light: UIColor(red: 0.03, green: 0.22, blue: 0.12, alpha: 0.16))
+    static let emerald = adaptive(dark: UIColor(red: 0.204, green: 0.827, blue: 0.6, alpha: 1), light: UIColor(red: 0.015, green: 0.405, blue: 0.235, alpha: 1))
+    static let cyan = adaptive(dark: UIColor(red: 0.25, green: 0.82, blue: 0.96, alpha: 1), light: UIColor(red: 0.015, green: 0.405, blue: 0.535, alpha: 1))
+    static let amber = adaptive(dark: UIColor(red: 0.98, green: 0.75, blue: 0.14, alpha: 1), light: UIColor(red: 0.65, green: 0.37, blue: 0.005, alpha: 1))
+    static let danger = adaptive(dark: UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1), light: UIColor(red: 0.70, green: 0.12, blue: 0.16, alpha: 1))
+    static let text = adaptive(dark: UIColor(red: 0.89, green: 0.91, blue: 0.94, alpha: 1), light: UIColor(red: 0.045, green: 0.115, blue: 0.075, alpha: 1))
+    static let secondary = adaptive(dark: UIColor(red: 0.58, green: 0.64, blue: 0.72, alpha: 1), light: UIColor(red: 0.285, green: 0.365, blue: 0.315, alpha: 1))
+
+    private static func adaptive(dark: UIColor, light: UIColor) -> Color {
+        Color(uiColor: UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
+    }
 
     static func size(_ base: CGFloat) -> CGFloat {
 #if targetEnvironment(macCatalyst)
@@ -18,6 +31,29 @@ enum Lab {
 #else
         UIFontMetrics(forTextStyle: .body).scaledValue(for: base)
 #endif
+    }
+}
+
+struct LabAppearanceButton: View {
+    @Binding var selection: String
+    private var appearance: LabAppearance { LabAppearance(rawValue: selection) ?? .dark }
+
+    var body: some View {
+        Button {
+            selection = appearance == .dark ? LabAppearance.light.rawValue : LabAppearance.dark.rawValue
+        } label: {
+            Image(systemName: appearance == .dark ? "sun.max.fill" : "moon.stars.fill")
+                .font(.system(size: Lab.size(14), weight: .bold))
+                .frame(width: 44, height: 44)
+                .background(Lab.panelStrong, in: Circle())
+                .overlay(Circle().stroke(Lab.stroke))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(appearance == .dark ? Lab.amber : Lab.cyan)
+        .accessibilityIdentifier("appearance-toggle")
+        .accessibilityLabel(appearance == .dark ? "Switch to light mode" : "Switch to dark mode")
+        .accessibilityValue(appearance == .dark ? "Dark mode" : "Light mode")
+        .accessibilityHint("Remembers this choice for future launches")
     }
 }
 

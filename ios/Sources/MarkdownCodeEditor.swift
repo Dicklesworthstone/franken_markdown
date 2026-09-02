@@ -7,6 +7,7 @@ import UIKit
 struct MarkdownCodeEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -33,7 +34,8 @@ struct MarkdownCodeEditor: UIViewRepresentable {
     func updateUIView(_ container: MarkdownEditorContainer, context: Context) {
         let view = container.textView
         context.coordinator.parent = self
-        if view.text != text {
+        if view.text != text || context.coordinator.lastColorScheme != colorScheme {
+            context.coordinator.lastColorScheme = colorScheme
             context.coordinator.applyHighlight(to: view, replacingText: text)
         } else {
             context.coordinator.refreshTypingAttributes(in: view)
@@ -47,6 +49,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownCodeEditor
+        var lastColorScheme: ColorScheme?
         private var isApplyingHighlight = false
 
         init(_ parent: MarkdownCodeEditor) { self.parent = parent }
@@ -82,7 +85,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
                 string: source,
                 attributes: [
                     .font: baseFont,
-                    .foregroundColor: UIColor(red: 0.72, green: 0.81, blue: 0.76, alpha: 1),
+                    .foregroundColor: UIColor(Lab.text),
                     .paragraphStyle: paragraph
                 ]
             )
@@ -106,21 +109,21 @@ struct MarkdownCodeEditor: UIViewRepresentable {
                 .font: UIFontMetrics(forTextStyle: .body).scaledFont(
                     for: .monospacedSystemFont(ofSize: 15, weight: .regular)
                 ),
-                .foregroundColor: UIColor(red: 0.72, green: 0.81, blue: 0.76, alpha: 1)
+                .foregroundColor: UIColor(Lab.text)
             ]
         }
     }
 }
 
 private enum MarkdownLexicalHighlighter {
-    private static let marker = UIColor(red: 0.31, green: 0.44, blue: 0.37, alpha: 1)
+    private static let marker = UIColor(Lab.secondary)
     private static let heading = UIColor(Lab.emerald)
-    private static let bold = UIColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 1)
-    private static let emphasis = UIColor(red: 0.84, green: 0.91, blue: 0.87, alpha: 1)
+    private static let bold = UIColor(Lab.text)
+    private static let emphasis = UIColor(Lab.secondary)
     private static let amber = UIColor(Lab.amber)
-    private static let codeBlock = UIColor(red: 0.62, green: 0.75, blue: 0.68, alpha: 1)
-    private static let link = UIColor(red: 0.43, green: 0.91, blue: 0.72, alpha: 1)
-    private static let quote = UIColor(red: 0.56, green: 0.70, blue: 0.63, alpha: 1)
+    private static let codeBlock = UIColor(Lab.secondary)
+    private static let link = UIColor(Lab.cyan)
+    private static let quote = UIColor(Lab.secondary)
 
     static func highlight(_ source: String, storage: NSMutableAttributedString) {
         let nsSource = source as NSString

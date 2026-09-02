@@ -11,6 +11,7 @@ use crate::HtmlOptions;
 use crate::ast::Document;
 use crate::html::render_fragment;
 
+#[inline(always)]
 fn escape_html_to(s: &str, out: &mut String) {
     let bytes = s.as_bytes();
     let mut clean_start = 0;

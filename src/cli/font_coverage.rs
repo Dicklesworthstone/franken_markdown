@@ -33,6 +33,7 @@ enum Script {
 }
 
 impl Script {
+    #[inline(always)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Arabic => "arabic",
@@ -60,6 +61,7 @@ enum Verdict {
 }
 
 impl Verdict {
+    #[inline(always)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Covered => "covered",
@@ -68,6 +70,7 @@ impl Verdict {
         }
     }
 
+    #[inline(always)]
     fn worse(self, other: Self) -> Self {
         use Verdict::*;
         match (self, other) {
@@ -183,6 +186,7 @@ const BLOCKS: &[Block] = &[
     },
 ];
 
+#[inline(always)]
 fn script_of(cp: u32) -> Script {
     match cp {
         0x0000..=0x024F | 0x1E00..=0x1EFF | 0x2C60..=0x2C7F => Script::Latin,
@@ -201,6 +205,7 @@ fn script_of(cp: u32) -> Script {
     }
 }
 
+#[inline(always)]
 fn block_of(cp: u32) -> Block {
     for block in BLOCKS {
         if cp >= block.start && cp <= block.end {
@@ -214,6 +219,7 @@ fn block_of(cp: u32) -> Block {
     }
 }
 
+#[inline(always)]
 fn skip_char(ch: char) -> bool {
     ch.is_whitespace() || ch.is_control()
 }

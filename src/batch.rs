@@ -48,6 +48,7 @@ pub enum BatchMode {
 }
 
 impl BatchMode {
+    #[inline(always)]
     fn as_str(self) -> &'static str {
         match self {
             BatchMode::Interactive => "interactive",
@@ -138,6 +139,7 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    #[inline(always)]
     fn as_str(self) -> &'static str {
         match self {
             OutputFormat::Html => "html",
@@ -145,9 +147,11 @@ impl OutputFormat {
             OutputFormat::Both => "both",
         }
     }
+    #[inline(always)]
     fn wants_html(self) -> bool {
         matches!(self, OutputFormat::Html | OutputFormat::Both)
     }
+    #[inline(always)]
     fn wants_pdf(self) -> bool {
         matches!(self, OutputFormat::Pdf | OutputFormat::Both)
     }

@@ -15,6 +15,7 @@ pub enum DiagramKind {
 }
 
 /// Detect if code block contains a recognized diagram DSL.
+#[inline(always)]
 #[must_use]
 pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();

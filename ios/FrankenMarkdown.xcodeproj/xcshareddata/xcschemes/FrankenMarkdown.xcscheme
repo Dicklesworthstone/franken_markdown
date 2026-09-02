@@ -29,6 +29,20 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "597D14D597A1ADD55612B67A"
+               BuildableName = "FrankenMarkdownTests.xctest"
+               BlueprintName = "FrankenMarkdownTests"
+               ReferencedContainer = "container:FrankenMarkdown.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "9F55F7C728EAE468B45ECA2E"
                BuildableName = "FrankenMarkdownUITests.xctest"
                BlueprintName = "FrankenMarkdownUITests"
@@ -53,6 +67,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "597D14D597A1ADD55612B67A"
+               BuildableName = "FrankenMarkdownTests.xctest"
+               BlueprintName = "FrankenMarkdownTests"
+               ReferencedContainer = "container:FrankenMarkdown.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
          <TestableReference
             skipped = "NO"
             parallelizable = "NO">

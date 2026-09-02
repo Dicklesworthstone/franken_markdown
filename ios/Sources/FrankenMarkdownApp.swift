@@ -21,6 +21,11 @@ struct FrankenMarkdownApp: App {
                     NotificationCenter.default.post(name: .newMarkdownDocument, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Button("Open Markdown…") {
+                    NotificationCenter.default.post(name: .openMarkdownDocument, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: .command)
             }
             CommandMenu("Render") {
                 Button("Render Document") {
@@ -74,4 +79,5 @@ extension Notification.Name {
     static let exportPdfNow = Notification.Name("FrankenMarkdown.exportPdfNow")
     static let exportHtmlNow = Notification.Name("FrankenMarkdown.exportHtmlNow")
     static let newMarkdownDocument = Notification.Name("FrankenMarkdown.newDocument")
+    static let openMarkdownDocument = Notification.Name("FrankenMarkdown.openDocument")
 }

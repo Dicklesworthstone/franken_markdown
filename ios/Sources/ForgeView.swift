@@ -76,6 +76,8 @@ struct ForgeView: View {
     @State private var showCopiedAlert = false
     @State private var auxiliaryPanel: AuxiliaryPanel?
     @State private var showDocumentLab = false
+    @State private var showSourceImporter = false
+    @State private var sourceImportError: String?
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
@@ -86,6 +88,11 @@ struct ForgeView: View {
     }
 
     var body: some View {
+        forgePresentation
+            .preferredColorScheme((LabAppearance(rawValue: appearance) ?? .dark).colorScheme)
+    }
+
+    private var forgeLayout: some View {
         GeometryReader { geometry in
             ZStack {
                 LaboratoryBackground()
@@ -108,6 +115,10 @@ struct ForgeView: View {
                 .padding(.top, 12)
             }
         }
+    }
+
+    private var forgeModelObservers: some View {
+        forgeLayout
         .onChange(of: renderer.source) { _, _ in renderer.scheduleRender() }
         .onChange(of: renderer.fontFamily) { _, _ in renderer.renderNow() }
         .onChange(of: renderer.darkMode) { _, _ in renderer.renderNow() }
@@ -134,11 +145,21 @@ struct ForgeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .exportHtmlNow)) { _ in
             triggerHtmlExport()
         }
+    }
+
+    private var forgeDocumentEvents: some View {
+        forgeModelObservers
         .onReceive(NotificationCenter.default.publisher(for: .newMarkdownDocument)) { _ in
-            renderer.source = "# New Document\n\nStart writing..."
-            lane = .write
+            newSourceDocument()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openMarkdownDocument)) { _ in
+            showSourceImporter = true
         }
         .onOpenURL { url in
+            if url.isFileURL {
+                loadSourceDocument(from: url)
+                return
+            }
             guard url.scheme?.lowercased() == "frankenmarkdown" else { return }
             switch url.host?.lowercased() {
             case "lab":
@@ -153,6 +174,24 @@ struct ForgeView: View {
                 break
             }
         }
+        .fileImporter(
+            isPresented: $showSourceImporter,
+            allowedContentTypes: [.plainText],
+            allowsMultipleSelection: false,
+            onCompletion: importSourceDocument
+        )
+        .alert("Couldn’t Open Document", isPresented: Binding(
+            get: { sourceImportError != nil },
+            set: { if !$0 { sourceImportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { sourceImportError = nil }
+        } message: {
+            Text(sourceImportError ?? "The selected document could not be opened.")
+        }
+    }
+
+    private var forgePresentation: some View {
+        forgeDocumentEvents
         .sheet(isPresented: $showShareSheet) {
             if let url = exportItemUrl {
                 ShareActivityView(fileURL: url)
@@ -199,7 +238,6 @@ struct ForgeView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .preferredColorScheme((LabAppearance(rawValue: appearance) ?? .dark).colorScheme)
     }
 
     private var masthead: some View {
@@ -237,6 +275,17 @@ struct ForgeView: View {
     private var actionButtons: some View {
         HStack(spacing: 8) {
             Menu {
+                Button {
+                    showSourceImporter = true
+                } label: {
+                    Label("Open Markdown…", systemImage: "folder")
+                }
+                Button {
+                    newSourceDocument()
+                } label: {
+                    Label("New Document", systemImage: "doc.badge.plus")
+                }
+                Divider()
                 ForEach(MarkdownRendererModel.presets) { preset in
                     Button {
                         renderer.source = preset.markdown
@@ -245,7 +294,7 @@ struct ForgeView: View {
                     }
                 }
             } label: {
-                Label("Presets", systemImage: "folder")
+                Label("Document", systemImage: "doc.text")
                     .font(.system(size: Lab.size(11), weight: .bold, design: .monospaced))
                     .foregroundStyle(Lab.text)
                     .padding(.horizontal, 10)
@@ -711,6 +760,38 @@ struct ForgeView: View {
                 isExporting = false
             } catch {
                 isExporting = false
+            }
+        }
+    }
+
+    private func importSourceDocument(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            loadSourceDocument(from: url)
+        } catch {
+            sourceImportError = error.localizedDescription
+        }
+    }
+
+    private func newSourceDocument() {
+        renderer.source = "# New Document\n\nStart writing..."
+        renderer.documentTitle = ""
+        lane = .write
+        sourceImportError = nil
+    }
+
+    private func loadSourceDocument(from url: URL) {
+        Task {
+            do {
+                let document = try await Task.detached(priority: .userInitiated) {
+                    try MarkdownSourceLoader.load(from: url)
+                }.value
+                renderer.source = document.source
+                renderer.documentTitle = document.suggestedTitle
+                lane = .write
+                sourceImportError = nil
+            } catch {
+                sourceImportError = error.localizedDescription
             }
         }
     }

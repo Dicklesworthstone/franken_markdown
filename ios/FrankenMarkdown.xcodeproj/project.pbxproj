@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		07E2F669D4601F7D3C8FE142 /* MarkdownSourceLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */; };
 		0BE81F4DB798081463B42E73 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF0FC9185DD69073DCEFA93 /* Theme.swift */; };
 		102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9867A57FB86816F535584A0 /* RendererHost.swift */; };
 		1D8365E5647C8512DE998BB6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */; };
@@ -15,6 +16,7 @@
 		6456E490B02827D4AF178F99 /* HTMLShareUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAE74FB96D32EC603E949618 /* HTMLShareUITests.swift */; };
 		66DDDDAB530D13E14E1407FB /* Renderer in Resources */ = {isa = PBXBuildFile; fileRef = 6141E231B487C77A5B1683E2 /* Renderer */; };
 		79AB0548B879EAC96926D540 /* DocumentLabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F24025622B57C8A027B6EE60 /* DocumentLabView.swift */; };
+		94C6BBC2098B3065B15E7C29 /* MarkdownSourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA75FE52F3AAB9FF5146E4FF /* MarkdownSourceLoader.swift */; };
 		A87F806CDA194CF0402CAEA6 /* FrankenMarkdownApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */; };
 		C8B55CBEAEB2627B054A0626 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19C79608149D8DC651F4E806 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -27,18 +29,28 @@
 			remoteGlobalIDString = A1FF8F15FBB79A2F2D1F1210;
 			remoteInfo = FrankenMarkdown;
 		};
+		5C255B8CF919BE105FB5467D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 767528A0DBA4987FDFB366A4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1FF8F15FBB79A2F2D1F1210;
+			remoteInfo = FrankenMarkdown;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrankenMarkdownApp.swift; sourceTree = "<group>"; };
 		19C79608149D8DC651F4E806 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		450492AA363B17872450BAF4 /* ForgeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForgeView.swift; sourceTree = "<group>"; };
+		46EFEDDFF98848CB6F98750A /* FrankenMarkdownTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FrankenMarkdownTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceLoaderTests.swift; sourceTree = "<group>"; };
 		6131BEA50DECB58BD103AC5A /* MarkdownCodeEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownCodeEditor.swift; sourceTree = "<group>"; };
 		6141E231B487C77A5B1683E2 /* Renderer */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Renderer; sourceTree = SOURCE_ROOT; };
 		7FFA4E00AC64388053C263CF /* FrankenMarkdown.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FrankenMarkdown.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9FF0FC9185DD69073DCEFA93 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		B9867A57FB86816F535584A0 /* RendererHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererHost.swift; sourceTree = "<group>"; };
 		D3C5AF6F32DB55997B42C246 /* FrankenMarkdownUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FrankenMarkdownUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA75FE52F3AAB9FF5146E4FF /* MarkdownSourceLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceLoader.swift; sourceTree = "<group>"; };
 		EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F24025622B57C8A027B6EE60 /* DocumentLabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentLabView.swift; sourceTree = "<group>"; };
 		F5364EFE11307299824181A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -46,6 +58,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		0DA6CDB953D908901DE1CE21 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		A3F92906F8DDD3CC75D2ACCE /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -54,6 +74,7 @@
 				088D2E26742F136E7857BB86 /* FrankenMarkdownApp.swift */,
 				F5364EFE11307299824181A8 /* Info.plist */,
 				6131BEA50DECB58BD103AC5A /* MarkdownCodeEditor.swift */,
+				EA75FE52F3AAB9FF5146E4FF /* MarkdownSourceLoader.swift */,
 				EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */,
 				B9867A57FB86816F535584A0 /* RendererHost.swift */,
 				9FF0FC9185DD69073DCEFA93 /* Theme.swift */,
@@ -73,6 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				7FFA4E00AC64388053C263CF /* FrankenMarkdown.app */,
+				46EFEDDFF98848CB6F98750A /* FrankenMarkdownTests.xctest */,
 				D3C5AF6F32DB55997B42C246 /* FrankenMarkdownUITests.xctest */,
 			);
 			name = Products;
@@ -84,6 +106,7 @@
 				19C79608149D8DC651F4E806 /* Assets.xcassets */,
 				6141E231B487C77A5B1683E2 /* Renderer */,
 				A3F92906F8DDD3CC75D2ACCE /* Sources */,
+				0DA6CDB953D908901DE1CE21 /* Tests */,
 				CFA9DCD90C70DA7758E49CAA /* UITests */,
 				E9A9F55347B740A9180D3024 /* Products */,
 			);
@@ -92,6 +115,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		597D14D597A1ADD55612B67A /* FrankenMarkdownTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A8EB8C3F2249698447ABEF7 /* Build configuration list for PBXNativeTarget "FrankenMarkdownTests" */;
+			buildPhases = (
+				7C13F83BD5D8A0479990A5A5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3098DDB2DC4A4209A01ECA78 /* PBXTargetDependency */,
+			);
+			name = FrankenMarkdownTests;
+			packageProductDependencies = (
+			);
+			productName = FrankenMarkdownTests;
+			productReference = 46EFEDDFF98848CB6F98750A /* FrankenMarkdownTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		9F55F7C728EAE468B45ECA2E /* FrankenMarkdownUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3C5D5B369E456DF6BBA05CC4 /* Build configuration list for PBXNativeTarget "FrankenMarkdownUITests" */;
@@ -137,6 +178,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					597D14D597A1ADD55612B67A = {
+						DevelopmentTeam = AU8V2Z6NKY;
+						ProvisioningStyle = Automatic;
+					};
 					9F55F7C728EAE468B45ECA2E = {
 						DevelopmentTeam = AU8V2Z6NKY;
 						ProvisioningStyle = Automatic;
@@ -164,6 +209,7 @@
 			targets = (
 				A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */,
 				9F55F7C728EAE468B45ECA2E /* FrankenMarkdownUITests */,
+				597D14D597A1ADD55612B67A /* FrankenMarkdownTests */,
 			);
 		};
 /* End PBXProject section */
@@ -190,6 +236,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7C13F83BD5D8A0479990A5A5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				07E2F669D4601F7D3C8FE142 /* MarkdownSourceLoaderTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C65DC195C118A2E444FA686F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -198,6 +252,7 @@
 				42AA8FBAEB45C36937DF447D /* ForgeView.swift in Sources */,
 				A87F806CDA194CF0402CAEA6 /* FrankenMarkdownApp.swift in Sources */,
 				6264F508E1C65CE9E5E53C27 /* MarkdownCodeEditor.swift in Sources */,
+				94C6BBC2098B3065B15E7C29 /* MarkdownSourceLoader.swift in Sources */,
 				102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */,
 				0BE81F4DB798081463B42E73 /* Theme.swift in Sources */,
 			);
@@ -206,6 +261,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		3098DDB2DC4A4209A01ECA78 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */;
+			targetProxy = 5C255B8CF919BE105FB5467D /* PBXContainerItemProxy */;
+		};
 		FD88BA9C95B25F3AAE956264 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A1FF8F15FBB79A2F2D1F1210 /* FrankenMarkdown */;
@@ -275,6 +335,23 @@
 				SWIFT_VERSION = 5.10;
 			};
 			name = Release;
+		};
+		37DD440F78283A09E48E62B5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.frankenmarkdown.FrankenMarkdownTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FrankenMarkdown.app/FrankenMarkdown";
+			};
+			name = Debug;
 		};
 		4B7084D888629005496E9FE1 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -421,6 +498,23 @@
 			};
 			name = Debug;
 		};
+		EC58E4CC3E2011EEB7403E3C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.frankenmarkdown.FrankenMarkdownTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FrankenMarkdown.app/FrankenMarkdown";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -429,6 +523,15 @@
 			buildConfigurations = (
 				BF1C8FCC721EDA4789F55A4A /* Debug */,
 				6D17944D415D134ACEB0DC94 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		5A8EB8C3F2249698447ABEF7 /* Build configuration list for PBXNativeTarget "FrankenMarkdownTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				37DD440F78283A09E48E62B5 /* Debug */,
+				EC58E4CC3E2011EEB7403E3C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

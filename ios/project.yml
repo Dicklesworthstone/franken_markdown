@@ -20,9 +20,11 @@ schemes:
     build:
       targets:
         FrankenMarkdown: all
+        FrankenMarkdownTests: [test]
         FrankenMarkdownUITests: [test]
     test:
       targets:
+        - FrankenMarkdownTests
         - FrankenMarkdownUITests
 
 targets:
@@ -87,5 +89,15 @@ targets:
         TEST_TARGET_NAME: FrankenMarkdown
     sources:
       - UITests
+    dependencies:
+      - target: FrankenMarkdown
+  FrankenMarkdownTests:
+    type: bundle.unit-test
+    platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
+    sources:
+      - Tests
     dependencies:
       - target: FrankenMarkdown

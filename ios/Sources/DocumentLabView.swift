@@ -219,7 +219,7 @@ struct DocumentLabView: View {
                     LinearGradient(
                         colors: [
                             Color(red: 0.02, green: 0.17, blue: 0.11),
-                            Lab.panelStrong,
+                            Color(red: 0.015, green: 0.09, blue: 0.065),
                             Color(red: 0.03, green: 0.08, blue: 0.14)
                         ],
                         startPoint: .topLeading,
@@ -260,7 +260,7 @@ struct DocumentLabView: View {
 
                 Text("Inspect its structure, perfect its language, compare its meaning, then publish it as anything—without your work leaving this device.")
                     .font(.system(size: Lab.size(width < 600 ? 14 : 17), weight: .medium))
-                    .foregroundStyle(Lab.text.opacity(0.82))
+                    .foregroundStyle(Color.white.opacity(0.78))
                     .frame(maxWidth: width < 600 ? .infinity : 620, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -327,7 +327,7 @@ struct DocumentLabView: View {
             VStack(spacing: 0) {
                 Text("\(Int(analysis.stats.fleschReadingEase.rounded()))")
                     .font(.system(size: Lab.size(19), weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Lab.text)
                 Text(findings == 0 ? "CLEAR" : "\(findings) NOTES")
                     .font(.system(size: Lab.size(7), weight: .black, design: .monospaced))
                     .foregroundStyle(tint)
@@ -379,7 +379,7 @@ struct DocumentLabView: View {
                         .foregroundStyle(route.tint)
                     Text(route.title)
                         .font(.system(size: Lab.size(20), weight: .black, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Lab.text)
                     Text(route.detail)
                         .font(.system(size: Lab.size(12), weight: .medium))
                         .foregroundStyle(Lab.secondary)
@@ -477,7 +477,7 @@ struct DocumentLabView: View {
                     .foregroundStyle(route.tint)
                 Text(route.title)
                     .font(.system(size: Lab.size(29), weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Lab.text)
                 Text(route.detail)
                     .font(.system(size: Lab.size(13), weight: .medium))
                     .foregroundStyle(Lab.secondary)
@@ -553,7 +553,7 @@ struct DocumentLabView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(baseline.isEmpty ? "Give the forge a ‘before’" : "Baseline armed")
                                 .font(.system(size: Lab.size(18), weight: .black, design: .rounded))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Lab.text)
                             Text(baseline.isEmpty ? "Import an earlier Markdown file or snapshot the current source." : "\(baseline.utf8.count) bytes ready for structural alignment")
                                 .font(.system(size: Lab.size(12), weight: .medium))
                                 .foregroundStyle(Lab.secondary)
@@ -606,7 +606,7 @@ struct DocumentLabView: View {
                 .foregroundStyle(Lab.amber)
             Text("Lines are noisy. Meaning is signal.")
                 .font(.system(size: Lab.size(22), weight: .black, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Lab.text)
             Text("FrankenMarkdown aligns semantic blocks first, then reveals word-level changes only where ideas actually changed.")
                 .font(.system(size: Lab.size(13), weight: .medium))
                 .foregroundStyle(Lab.secondary)
@@ -627,7 +627,7 @@ struct DocumentLabView: View {
                             LabLabel(text: "Publication manifest")
                             Text(bookFiles.isEmpty ? "No chapters selected" : "\(bookFiles.count) chapter\(bookFiles.count == 1 ? "" : "s") ready")
                                 .font(.system(size: Lab.size(20), weight: .black, design: .rounded))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Lab.text)
                         }
                         Spacer()
                         Button(bookFiles.isEmpty ? "Choose folder" : "Replace") { showBookImporter = true }
@@ -719,7 +719,7 @@ struct DocumentLabView: View {
                         }
                         Text(preset.title)
                             .font(.system(size: Lab.size(19), weight: .black, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Lab.text)
                         Text(preset.description)
                             .font(.system(size: Lab.size(12), weight: .medium))
                             .foregroundStyle(Lab.secondary)
@@ -975,7 +975,7 @@ struct DocumentLabView: View {
                 }
                 Text(title)
                     .font(.system(size: Lab.size(18), weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Lab.text)
                 Text(detail)
                     .font(.system(size: Lab.size(11), weight: .medium))
                     .foregroundStyle(Lab.secondary)

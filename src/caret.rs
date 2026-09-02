@@ -221,7 +221,7 @@ pub fn style_for_stderr(mode: ColorMode, is_tty: bool, columns: Option<usize>) -
 }
 
 /// Display column (0-based) of `byte_off` inside `line`.
-#[inline]
+#[inline(always)]
 #[must_use]
 pub fn byte_to_col(line: &str, byte_off: usize) -> usize {
     let mut col = 0usize;
@@ -250,6 +250,7 @@ pub fn display_width(ch: char) -> usize {
     }
 }
 
+#[inline(always)]
 fn is_combining(ch: char) -> bool {
     matches!(
         ch as u32,
@@ -263,6 +264,7 @@ fn is_combining(ch: char) -> bool {
     )
 }
 
+#[inline(always)]
 fn is_wide(ch: char) -> bool {
     let c = ch as u32;
     (0x1100..=0x115F).contains(&c)
@@ -327,6 +329,7 @@ fn locate(source: &str, lines: &[(usize, usize)], byte: usize) -> (usize, usize)
     (lines.len() - 1, byte_to_col(text, text.len()))
 }
 
+#[inline(always)]
 fn caret_width(line: &str, span: SourceSpan, line_start: usize) -> usize {
     let lo = span.start.max(line_start);
     let hi = span.end.min(line_start.saturating_add(line.len()));
@@ -338,8 +341,14 @@ fn caret_width(line: &str, span: SourceSpan, line_start: usize) -> usize {
     end_col.saturating_sub(start_col).max(1)
 }
 
-fn digits(n: usize) -> usize {
-    if n == 0 { 1 } else { n.to_string().len() }
+#[inline(always)]
+fn digits(mut n: usize) -> usize {
+    let mut count = 1;
+    while n >= 10 {
+        n /= 10;
+        count += 1;
+    }
+    count
 }
 
 fn write_header(

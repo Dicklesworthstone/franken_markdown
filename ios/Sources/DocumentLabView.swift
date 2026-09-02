@@ -1012,7 +1012,7 @@ struct DocumentLabView: View {
 
     private var processingBanner: some View {
         HStack(spacing: 12) {
-            ProgressView().tint(.black)
+            ProgressView().tint(Lab.onEmerald)
             VStack(alignment: .leading, spacing: 1) {
                 Text("THE FORGE IS WORKING")
                     .font(.system(size: Lab.size(9), weight: .black, design: .monospaced))
@@ -1022,7 +1022,7 @@ struct DocumentLabView: View {
             Spacer()
             Image(systemName: "bolt.fill")
         }
-        .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+        .foregroundStyle(Lab.onEmerald)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Lab.emerald, in: Capsule())

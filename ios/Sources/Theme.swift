@@ -33,6 +33,10 @@ enum Lab {
         dark: UIColor(red: 0.204, green: 0.827, blue: 0.6, alpha: 1),
         light: UIColor(red: 0.015, green: 0.405, blue: 0.235, alpha: 1)
     )
+    static let onEmerald = adaptive(
+        dark: UIColor(red: 0.01, green: 0.08, blue: 0.05, alpha: 1),
+        light: UIColor(white: 1, alpha: 0.98)
+    )
     static let cyan = adaptive(
         dark: UIColor(red: 0.25, green: 0.82, blue: 0.96, alpha: 1),
         light: UIColor(red: 0.015, green: 0.405, blue: 0.535, alpha: 1)
@@ -222,7 +226,7 @@ struct PrimaryButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: Lab.size(12), weight: .black, design: .monospaced))
             .textCase(.uppercase)
-            .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+            .foregroundStyle(Lab.onEmerald)
             .padding(.horizontal, 18)
             .padding(.vertical, 11)
             .background(

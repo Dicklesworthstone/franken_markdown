@@ -310,7 +310,7 @@ struct ForgeView: View {
             } label: {
                 Label("Document Lab", systemImage: "bolt.horizontal.circle.fill")
                     .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
-                    .foregroundStyle(Color(red: 0.01, green: 0.08, blue: 0.05))
+                    .foregroundStyle(Lab.onEmerald)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Lab.emerald, in: Capsule())

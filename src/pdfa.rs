@@ -18,6 +18,7 @@ pub enum PdfAMode {
 
 impl PdfAMode {
     /// Parse CLI/API spelling: `2b`, `pdf-a-2b`, `PDF/A-2b`.
+    #[inline(always)]
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -203,6 +204,7 @@ fn xmp_date(epoch: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
+#[inline(always)]
 fn civil_from_days(unix_days: u64) -> (u32, u32, u32) {
     // Howard Hinnant's civil_from_days, Unix epoch 1970-01-01 = day 0.
     let z = i64::try_from(unix_days).unwrap_or(i64::MAX) + 719_468;
@@ -218,6 +220,7 @@ fn civil_from_days(unix_days: u64) -> (u32, u32, u32) {
     (y as u32, m as u32, d as u32)
 }
 
+#[inline(always)]
 fn push_xml_escaped(out: &mut String, s: &str) {
     if !s
         .bytes()

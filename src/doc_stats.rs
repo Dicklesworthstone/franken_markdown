@@ -478,7 +478,7 @@ impl StatsCollector {
     }
 }
 
-#[inline]
+#[inline(always)]
 fn count_syllables_in_word(word: &str) -> usize {
     let mut buf = [0u8; 64];
     let mut len = 0usize;
@@ -526,6 +526,7 @@ fn count_syllables_in_word(word: &str) -> usize {
     count.max(1)
 }
 
+#[inline(always)]
 fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut s = String::new();
     push_inlines_to_plain(inlines, &mut s);
@@ -576,6 +577,7 @@ fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>)
     }
 }
 
+#[inline(always)]
 fn slug_inlines(inlines: &[Inline]) -> String {
     let mut s = String::new();
     let mut pending_dash = false;

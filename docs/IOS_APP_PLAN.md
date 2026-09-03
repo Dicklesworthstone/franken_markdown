@@ -83,6 +83,8 @@ Supported outputs:
 
 Document autosave uses `FileDocument` and normal conflict handling. Untitled work is state-restored. Destructive replacement is always explicit and undoable through the editor’s undo manager.
 
+The current single-window shell now provides crash-safe active-draft recovery while full `FileDocument` multiwindow support remains open. It stores bounded, versioned source plus safe presentation settings in Application Support using atomic writes and complete file protection, excludes the recovery cache from backup, and refuses malformed or oversized state. Raw-HTML trust is intentionally never restored across launches.
+
 ## 5. Information architecture
 
 ### 5.1 Shared surfaces
@@ -219,4 +221,3 @@ Planned source of truth: `ios/project.yml` generated with XcodeGen.
 8. Add Share extension, widget, App Intents, Spotlight opt-in, and Handoff.
 9. Install and test on real devices and Mac, then fresh-eyes review all new code.
 10. Create the App Store Connect record only after bundle identity, signing, icon, privacy posture, and builds are real.
-

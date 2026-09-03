@@ -205,6 +205,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published private(set) var elapsedMS: Double?
     @Published private(set) var outputBytes = 0
     @Published private(set) var diagnosticCount = 0
+    @Published private(set) var draftStatus = "Local recovery ready"
 
     let webView: WKWebView
     private var requestID = 0
@@ -212,6 +213,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var activeRenderPhaseGeneration: Int?
     private var activeExportPhaseGeneration: Int?
     private var scheduledRender: Task<Void, Never>?
+    private var scheduledDraftSave: Task<Void, Never>?
+    private let draftStore = MarkdownDraftStore()
 
     private var pdfContinuations: [Int: CheckedContinuation<(Data, Int, Int), Error>] = [:]
     private var htmlContinuations: [Int: CheckedContinuation<(String, Int, Int), Error>] = [:]
@@ -245,6 +248,21 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         configuration.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        if let draft = draftStore.load() {
+            source = draft.source
+            documentTitle = draft.title
+            documentAuthor = draft.author
+            fontFamily = draft.fontFamily
+            darkMode = draft.rendererDarkMode
+            toc = draft.tableOfContents
+            tocDepth = draft.tableOfContentsDepth
+            pageNumbers = draft.pageNumbers
+            codeLineNumbers = draft.codeLineNumbers
+            language = draft.language
+            microtypeProtrusion = draft.microtypeProtrusion
+            fitToPages = draft.fitToPages
+            draftStatus = "Recovered local draft"
+        }
         configuration.userContentController.add(self, name: "frankenBridge")
         webView.navigationDelegate = self
         webView.isOpaque = false
@@ -255,6 +273,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     deinit {
         scheduledRender?.cancel()
+        scheduledDraftSave?.cancel()
         pdfTimeouts.values.forEach { $0.cancel() }
         htmlTimeouts.values.forEach { $0.cancel() }
         let error = NSError(
@@ -307,6 +326,58 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             guard !Task.isCancelled, let self, self.source == expectedSource else { return }
             self.renderNow()
         }
+    }
+
+    func scheduleDraftSave() {
+        scheduledDraftSave?.cancel()
+        draftStatus = "Saving locally…"
+        let draft = activeDraft()
+        scheduledDraftSave = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled, let self, self.matchesCurrentDraft(draft) else { return }
+                try self.draftStore.save(draft)
+                self.draftStatus = "Saved locally"
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.draftStatus = "Local draft not saved"
+            }
+        }
+    }
+
+    private func activeDraft(now: Date = .now) -> MarkdownActiveDraft {
+        MarkdownActiveDraft(
+            schema: MarkdownActiveDraft.currentSchema,
+            savedAtMilliseconds: Int64((now.timeIntervalSince1970 * 1_000).rounded()),
+            source: source,
+            title: documentTitle,
+            author: documentAuthor,
+            fontFamily: fontFamily,
+            rendererDarkMode: validatedDarkMode,
+            tableOfContents: toc,
+            tableOfContentsDepth: tocDepth,
+            pageNumbers: pageNumbers,
+            codeLineNumbers: codeLineNumbers,
+            language: language,
+            microtypeProtrusion: microtypeProtrusion,
+            fitToPages: fitToPages
+        )
+    }
+
+    private func matchesCurrentDraft(_ draft: MarkdownActiveDraft) -> Bool {
+        draft.source == source &&
+            draft.title == documentTitle &&
+            draft.author == documentAuthor &&
+            draft.fontFamily == fontFamily &&
+            draft.rendererDarkMode == validatedDarkMode &&
+            draft.tableOfContents == toc &&
+            draft.tableOfContentsDepth == tocDepth &&
+            draft.pageNumbers == pageNumbers &&
+            draft.codeLineNumbers == codeLineNumbers &&
+            draft.language == language &&
+            draft.microtypeProtrusion == microtypeProtrusion &&
+            draft.fitToPages == fitToPages
     }
 
     func renderNow() {

@@ -117,16 +117,50 @@ struct ForgeView: View {
         }
     }
 
-    private var forgeModelObservers: some View {
+    private var forgeRenderObservers: some View {
         forgeLayout
-        .onChange(of: renderer.source) { _, _ in renderer.scheduleRender() }
-        .onChange(of: renderer.fontFamily) { _, _ in renderer.renderNow() }
-        .onChange(of: renderer.darkMode) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.source) { _, _ in
+            renderer.scheduleRender()
+            renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.fontFamily) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.darkMode) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
         .onChange(of: renderer.allowRawHtml) { _, _ in renderer.renderNow() }
-        .onChange(of: renderer.toc) { _, _ in renderer.renderNow() }
-        .onChange(of: renderer.tocDepth) { _, _ in renderer.renderNow() }
-        .onChange(of: renderer.language) { _, _ in renderer.renderNow() }
-        .onChange(of: renderer.documentTitle) { _, _ in renderer.renderNow() }
+        .onChange(of: renderer.toc) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.tocDepth) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
+    }
+
+    private var forgeMetadataObservers: some View {
+        forgeRenderObservers
+        .onChange(of: renderer.language) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.documentTitle) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.documentAuthor) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.pageNumbers) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.codeLineNumbers) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.microtypeProtrusion) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.fitToPages) { _, _ in renderer.scheduleDraftSave() }
+    }
+
+    private var forgeModelObservers: some View {
+        forgeMetadataObservers
         .onChange(of: renderFontScale) { _, scale in
             renderer.renderFontScale = clampedRenderFontScale(scale)
             renderer.renderNow()
@@ -447,9 +481,13 @@ struct ForgeView: View {
         LabPanel {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    LabLabel(text: "01 · The Source")
-                    Spacer()
-                    Text("\(renderer.source.utf8.count) bytes · \(characterCount) chars · \(wordCount) words")
+                LabLabel(text: "01 · The Source")
+                Spacer()
+                Label(renderer.draftStatus, systemImage: "externaldrive.badge.checkmark")
+                    .font(.system(size: Lab.size(9), design: .monospaced))
+                    .foregroundStyle(Lab.emerald)
+                    .accessibilityHint("The active draft stays on this device")
+                Text("\(renderer.source.utf8.count) bytes · \(characterCount) chars · \(wordCount) words")
                         .font(.system(size: Lab.size(9), design: .monospaced))
                         .foregroundStyle(Lab.secondary)
                 }

@@ -186,7 +186,6 @@ impl HuffmanTree {
     #[inline(always)]
     fn decode(&self, br: &mut BitReader<'_>) -> Result<u16> {
         if let Some(sym) = self.single_symbol {
-            eprintln!("DEBUG decode single_symbol: {}", sym);
             return Ok(sym);
         }
         let mut code = 0i32;
@@ -365,7 +364,7 @@ fn build_huffman_lengths(freqs: &[u32], max_bits: usize) -> Vec<u8> {
     }
 
     let target = 1u32 << max_bits;
-    for _ in 0..100 {
+    loop {
         let current_sum: u32 = lengths
             .iter()
             .map(|&l| if l > 0 { target >> l } else { 0 })
@@ -374,33 +373,31 @@ fn build_huffman_lengths(freqs: &[u32], max_bits: usize) -> Vec<u8> {
             break;
         }
         if current_sum > target {
-            let max_d = lengths.iter().copied().max().unwrap_or(0);
-            let mut adjusted = false;
-            for l in lengths.iter_mut() {
-                if *l == max_d && (*l as usize) < max_bits {
-                    *l += 1;
-                    adjusted = true;
-                    break;
+            let mut best_pos = None;
+            let mut best_val = 0u8;
+            for (idx, &l) in lengths.iter().enumerate() {
+                if l > 0 && (l as usize) < max_bits && l > best_val {
+                    best_val = l;
+                    best_pos = Some(idx);
                 }
             }
-            if !adjusted {
+            if let Some(idx) = best_pos {
+                lengths[idx] += 1;
+            } else {
                 break;
             }
         } else {
-            let mut adjusted = false;
-            let mut min_pos = None;
-            let mut min_val = u8::MAX;
+            let mut best_pos = None;
+            let mut best_val = 0u8;
             for (idx, &l) in lengths.iter().enumerate() {
-                if l > 1 && l < min_val {
-                    min_val = l;
-                    min_pos = Some(idx);
+                if l > 1 && l > best_val {
+                    best_val = l;
+                    best_pos = Some(idx);
                 }
             }
-            if let Some(idx) = min_pos {
+            if let Some(idx) = best_pos {
                 lengths[idx] -= 1;
-                adjusted = true;
-            }
-            if !adjusted {
+            } else {
                 break;
             }
         }
@@ -481,12 +478,15 @@ fn write_prefix_code(bw: &mut BitWriter, lengths: &[u8], alphabet_size: usize) {
         // Complex prefix code (RFC 7932 Section 3.5)
         bw.write_bits(0, 2); // HSKIP = 0
 
+        let last_non_zero_sym = lengths.iter().rposition(|&l| l > 0).unwrap_or(0);
+        let active_lengths = &lengths[..=last_non_zero_sym];
+
         let mut rle: Vec<(u8, u32, u8)> = Vec::new();
         let mut i = 0;
-        while i < lengths.len() {
-            let l = lengths[i];
+        while i < active_lengths.len() {
+            let l = active_lengths[i];
             let mut j = i + 1;
-            while j < lengths.len() && lengths[j] == l {
+            while j < active_lengths.len() && active_lengths[j] == l {
                 j += 1;
             }
             let mut count = (j - i) as u32;
@@ -495,6 +495,10 @@ fn write_prefix_code(bw: &mut BitWriter, lengths: &[u8], alphabet_size: usize) {
                     let rep = count.min(10);
                     rle.push((17, rep - 3, 3));
                     count -= rep;
+                    if count >= 3 {
+                        rle.push((0, 0, 0));
+                        count -= 1;
+                    }
                 }
                 for _ in 0..count {
                     rle.push((0, 0, 0));
@@ -506,6 +510,10 @@ fn write_prefix_code(bw: &mut BitWriter, lengths: &[u8], alphabet_size: usize) {
                     let rep = count.min(6);
                     rle.push((16, rep - 3, 2));
                     count -= rep;
+                    if count >= 3 {
+                        rle.push((l, 0, 0));
+                        count -= 1;
+                    }
                 }
                 for _ in 0..count {
                     rle.push((l, 0, 0));
@@ -522,17 +530,17 @@ fn write_prefix_code(bw: &mut BitWriter, lengths: &[u8], alphabet_size: usize) {
         }
         let cl_lengths = build_huffman_lengths(&cl_freqs, CODE_LENGTH_MAX_BITS);
 
-        let mut last_non_zero = 0;
-        for (idx, &sym) in CL_ORDER.iter().enumerate() {
-            if cl_lengths.get(sym).copied().unwrap_or(0) > 0 {
-                last_non_zero = idx;
-            }
-        }
-
-        for &sym in &CL_ORDER[..=last_non_zero] {
+        let mut kraft = 0u32;
+        for &sym in &CL_ORDER {
             let l = cl_lengths.get(sym).copied().unwrap_or(0) as usize;
             let (v, nb) = CL_VLC[l.min(5)];
             bw.write_bits(v, u32::from(nb));
+            if l > 0 {
+                kraft += 32 >> l;
+                if kraft >= 32 {
+                    break;
+                }
+            }
         }
 
         let cl_codes = build_canonical_codes(&cl_lengths);
@@ -729,7 +737,6 @@ pub fn brotli_compress_with_scratch(
         let (cp_code, _, _) = get_copy_code(cmd.copy_len);
         let cmd_code = get_cmd_code(ins_code, cp_code);
         scratch.cmd_freqs[cmd_code as usize] += 1;
-        eprintln!("ENCODER: cmd_code={}, ins_len={}, cp_len={}, dist={}", cmd_code, cmd.lit_len, cmd.copy_len, cmd.distance);
 
         if let Ok((dcode, _, _)) = get_dist_code(cmd.distance) {
             scratch.dist_freqs[dcode] += 1;
@@ -1062,7 +1069,6 @@ pub fn brotli_decompress(data: &[u8], max_len: usize) -> Result<Vec<u8>> {
         };
 
         if dist == 0 || dist as usize > out.len() {
-            eprintln!("DEBUG: dist={}, out.len()={}, dist_is_zero={}", dist, out.len(), dist_is_zero);
             return Err(RenderError::InvalidInput(
                 "brotli: distance out of bounds".into(),
             ));
@@ -1105,5 +1111,41 @@ mod tests {
         assert!(compressed.len() < bytes.len());
         let decompressed = brotli_decompress(&compressed, bytes.len() + 100).expect("decompress");
         assert_eq!(decompressed, bytes);
+    }
+
+    #[test]
+    fn round_trip_font_data() {
+        let ttf = include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+        let chunk = &ttf[..8192];
+        let compressed = brotli_compress(chunk);
+        assert!(compressed.len() < chunk.len());
+        let decompressed = brotli_decompress(&compressed, chunk.len() + 100).expect("decompress");
+        assert_eq!(decompressed, chunk);
+    }
+
+    #[test]
+    fn external_brotli_cli_compatibility() {
+        let brotli_path = "/opt/homebrew/bin/brotli";
+        if std::path::Path::new(brotli_path).exists() {
+            let ttf = include_bytes!("../fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+            let chunk = &ttf[..8192];
+            let compressed = brotli_compress(chunk);
+            let mut child = std::process::Command::new(brotli_path)
+                .arg("-d")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn brotli");
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .expect("stdin")
+                .write_all(&compressed)
+                .expect("write");
+            let output = child.wait_with_output().expect("wait");
+            assert!(output.status.success(), "system brotli failed to decompress");
+            assert_eq!(output.stdout, chunk);
+        }
     }
 }

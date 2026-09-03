@@ -1,0 +1,38 @@
+name: Apple app
+
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/apple.yml"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/apple.yml"]
+
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install project generator
+        run: brew install xcodegen
+      - name: Prove generated project is current
+        working-directory: ios
+        run: |
+          xcodegen generate --spec project.yml
+          git diff --exit-code -- FrankenMarkdown.xcodeproj Sources/Info.plist
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: >-
+          xcodebuild -project FrankenMarkdown.xcodeproj -scheme FrankenMarkdown
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Run Mac Catalyst unit tests
+        working-directory: ios
+        run: >-
+          xcodebuild -project FrankenMarkdown.xcodeproj -scheme FrankenMarkdown
+          -destination 'platform=macOS,variant=Mac Catalyst'
+          CODE_SIGNING_ALLOWED=NO test -only-testing:FrankenMarkdownTests

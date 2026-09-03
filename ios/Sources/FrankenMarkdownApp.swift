@@ -25,7 +25,6 @@ struct FrankenMarkdownApp: App {
                 Button("Open Markdown…") {
                     NotificationCenter.default.post(name: .openMarkdownDocument, object: nil)
                 }
-                .keyboardShortcut("o", modifiers: .command)
             }
             CommandMenu("Render") {
                 Button("Render Document") {

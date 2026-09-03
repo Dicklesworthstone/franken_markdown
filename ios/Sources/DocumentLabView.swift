@@ -152,7 +152,7 @@ struct DocumentLabView: View {
         )
         .fileImporter(
             isPresented: $showStylesheetImporter,
-            allowedContentTypes: [.plainText],
+            allowedContentTypes: [UTType(filenameExtension: "css") ?? .plainText, .plainText],
             allowsMultipleSelection: false,
             onCompletion: importStylesheet
         )
@@ -821,7 +821,7 @@ struct DocumentLabView: View {
                             .foregroundStyle(Lab.cyan)
                         }
                     }
-                    Text("Only UTF-8 text up to 256 KB is accepted. Styles never leave this device.")
+                    Text("Only UTF-8 text up to 256 KB is accepted. Rendering grants the stylesheet no network access.")
                         .font(.system(size: Lab.size(9), weight: .medium))
                         .foregroundStyle(Lab.secondary)
                 }
@@ -847,6 +847,7 @@ struct DocumentLabView: View {
                             value: $renderer.pdfBaseFontSize,
                             range: 6 ... 24,
                             step: 0.5,
+                            fractionDigits: 1,
                             suffix: "pt"
                         )
                         typographySlider(
@@ -854,6 +855,7 @@ struct DocumentLabView: View {
                             value: $renderer.pdfHeadingScale,
                             range: 1.05 ... 2,
                             step: 0.05,
+                            fractionDigits: 2,
                             suffix: "×"
                         )
                         typographySlider(
@@ -864,6 +866,7 @@ struct DocumentLabView: View {
                             ),
                             range: 5 ... max(5, renderer.pdfBaseFontSize),
                             step: 0.5,
+                            fractionDigits: 1,
                             suffix: "pt"
                         )
                         Text("These controls affect single-document PDF exports. Collection books and web formats keep the editorial profile above.")
@@ -882,20 +885,24 @@ struct DocumentLabView: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
+        fractionDigits: Int,
         suffix: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let formattedValue = value.wrappedValue.formatted(
+            .number.precision(.fractionLength(fractionDigits))
+        )
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
                 Spacer()
-                Text(String(format: "%.2g%@", value.wrappedValue, suffix))
+                Text("\(formattedValue)\(suffix)")
                     .font(.system(size: Lab.size(10), weight: .black, design: .monospaced))
                     .foregroundStyle(Lab.emerald)
             }
             Slider(value: value, in: range, step: step)
                 .tint(Lab.emerald)
                 .accessibilityLabel(title)
-                .accessibilityValue(String(format: "%.2g %@", value.wrappedValue, suffix))
+                .accessibilityValue("\(formattedValue) \(suffix)")
         }
     }
 

@@ -67,6 +67,7 @@ pub mod transclude;
 pub mod wasm;
 pub mod brotli;
 pub mod woff1;
+pub mod woff2;
 pub mod zip;
 
 #[cfg(feature = "wasm-bindgen")]

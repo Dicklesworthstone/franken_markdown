@@ -2085,6 +2085,7 @@ fn embedded_font_css(
     // byte-identical to a fresh scratch per call, so this only skips the
     // per-call table regrowth across the five faces.
     let mut woff_scratch = crate::compress::ZlibCompressScratch::new();
+    let mut woff2_scratch = crate::brotli::BrotliCompressScratch::new();
 
     push_font_face(
         &mut css,
@@ -2095,6 +2096,7 @@ fn embedded_font_css(
         &usage.body_regular,
         format,
         &mut woff_scratch,
+        &mut woff2_scratch,
     );
     has_body |= !usage.body_regular.is_empty();
 
@@ -2107,6 +2109,7 @@ fn embedded_font_css(
         &usage.body_bold,
         format,
         &mut woff_scratch,
+        &mut woff2_scratch,
     );
     has_body |= !usage.body_bold.is_empty();
 
@@ -2119,6 +2122,7 @@ fn embedded_font_css(
         &usage.body_italic,
         format,
         &mut woff_scratch,
+        &mut woff2_scratch,
     );
     has_body |= !usage.body_italic.is_empty();
 
@@ -2131,6 +2135,7 @@ fn embedded_font_css(
         &usage.body_bold_italic,
         format,
         &mut woff_scratch,
+        &mut woff2_scratch,
     );
     has_body |= !usage.body_bold_italic.is_empty();
 
@@ -2143,6 +2148,7 @@ fn embedded_font_css(
         &usage.mono,
         format,
         &mut woff_scratch,
+        &mut woff2_scratch,
     );
     has_mono |= !usage.mono.is_empty();
 
@@ -2338,6 +2344,7 @@ fn push_font_face(
     chars: &FontCharSet,
     format: crate::HtmlFontFormat,
     woff_scratch: &mut crate::compress::ZlibCompressScratch,
+    woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
 ) {
     if chars.is_empty() {
         return;
@@ -2356,11 +2363,13 @@ fn push_font_face(
             parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
-    // WOFF1 wraps the subset in the renderer's own deterministic DEFLATE
-    // (src/compress.rs); encoding only fails on malformed sfnt, which the
-    // validated bundled/host faces cannot produce — the TTF arm is the
-    // deterministic fallback, never a silent content change.
     let (payload, mime, format_hint) = match format {
+        crate::HtmlFontFormat::Woff2 => {
+            match crate::woff2::encode_woff2_with_scratch(&subset, woff2_scratch) {
+                Ok(woff2) => (woff2, "font/woff2", "woff2"),
+                Err(_) => (subset.clone(), "font/ttf", "truetype"),
+            }
+        }
         crate::HtmlFontFormat::Woff1 => {
             match crate::woff1::encode_woff1_with_scratch(&subset, woff_scratch) {
                 Ok(woff) => (woff, "font/woff", "woff"),

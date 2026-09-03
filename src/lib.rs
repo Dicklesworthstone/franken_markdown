@@ -58,6 +58,7 @@ pub use fmd_font as text;
 /// The TeX-mathematics layout and MathML engine, factored into the
 /// `fmd-math` workspace crate.
 pub use fmd_math as math;
+pub mod brotli;
 pub mod epub;
 pub mod interactive;
 pub mod search_index;
@@ -65,7 +66,6 @@ pub mod svg;
 pub mod theme;
 pub mod transclude;
 pub mod wasm;
-pub mod brotli;
 pub mod woff1;
 pub mod woff2;
 pub mod zip;
@@ -141,6 +141,10 @@ pub enum HtmlFontFormat {
     /// supported by every modern browser. Default since 0.4.1 (bead ge1t).
     #[default]
     Woff1,
+    /// WOFF2-wrapped subset (`data:font/woff2`) compressed with the renderer's
+    /// own clean-room Brotli encoder. ~65% smaller on the bundled faces and
+    /// ~20% smaller than WOFF1. Supported by every modern browser.
+    Woff2,
 }
 
 impl HtmlFontFormat {
@@ -150,6 +154,7 @@ impl HtmlFontFormat {
         match value.trim().to_ascii_lowercase().as_str() {
             "ttf" | "truetype" => Some(Self::Ttf),
             "woff" | "woff1" => Some(Self::Woff1),
+            "woff2" => Some(Self::Woff2),
             _ => None,
         }
     }
@@ -160,6 +165,7 @@ impl HtmlFontFormat {
         match self {
             Self::Ttf => "ttf",
             Self::Woff1 => "woff1",
+            Self::Woff2 => "woff2",
         }
     }
 }

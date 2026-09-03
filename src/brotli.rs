@@ -26,14 +26,11 @@ const COPY_EXTRA: [u8; 24] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 10, 24,
 ];
 const COPY_BASE: [u32; 24] = [
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54, 70, 102, 134, 198, 326, 582, 1094,
-    2118,
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 22, 30, 38, 54, 70, 102, 134, 198, 326, 582, 1094, 2118,
 ];
 
 // RFC 7932 Section 3.5: Order of code lengths for the code length alphabet
-const CL_ORDER: [usize; 18] = [
-    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-];
+const CL_ORDER: [usize; 18] = [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 // Fixed variable-length code for code lengths (RFC 7932 Section 3.5)
 // (value, num_bits)
@@ -255,7 +252,9 @@ fn get_dist_code(dist: u32) -> Result<(usize, u32, u8)> {
             return Ok((dcode, dextra, ndistbits));
         }
     }
-    Err(RenderError::InvalidInput("brotli: distance too large".into()))
+    Err(RenderError::InvalidInput(
+        "brotli: distance too large".into(),
+    ))
 }
 
 #[inline(always)]
@@ -330,7 +329,9 @@ fn build_huffman_lengths(freqs: &[u32], max_bits: usize) -> Vec<u8> {
     while heap.len() > 1 {
         let a = heap.remove(0);
         let b = heap.remove(0);
-        let w = pool[a as usize].weight.saturating_add(pool[b as usize].weight);
+        let w = pool[a as usize]
+            .weight
+            .saturating_add(pool[b as usize].weight);
         let new_idx = pool.len() as u16;
         pool.push(Node {
             weight: w,
@@ -607,10 +608,7 @@ pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
 }
 
 /// Compress input bytes using a caller-owned scratch buffer to skip reallocations.
-pub fn brotli_compress_with_scratch(
-    data: &[u8],
-    scratch: &mut BrotliCompressScratch,
-) -> Vec<u8> {
+pub fn brotli_compress_with_scratch(data: &[u8], scratch: &mut BrotliCompressScratch) -> Vec<u8> {
     if data.is_empty() {
         let mut bw = BitWriter::with_capacity(1);
         bw.write_bits(1, 1); // WBITS flag
@@ -1030,7 +1028,7 @@ pub fn brotli_decompress(data: &[u8], max_len: usize) -> Result<Vec<u8>> {
             dist_ring[(dist_idx - 1) & 3]
         } else {
             let dcode = dist_tree.decode(&mut br)? as usize;
-            let d = if dcode == 0 {
+            if dcode == 0 {
                 dist_ring[(dist_idx - 1) & 3]
             } else if dcode == 1 {
                 let val = dist_ring[(dist_idx - 2) & 3];
@@ -1064,8 +1062,7 @@ pub fn brotli_decompress(data: &[u8], max_len: usize) -> Result<Vec<u8>> {
                 dist_ring[dist_idx & 3] = val;
                 dist_idx += 1;
                 val
-            };
-            d
+            }
         };
 
         if dist == 0 || dist as usize > out.len() {
@@ -1144,7 +1141,10 @@ mod tests {
                 .write_all(&compressed)
                 .expect("write");
             let output = child.wait_with_output().expect("wait");
-            assert!(output.status.success(), "system brotli failed to decompress");
+            assert!(
+                output.status.success(),
+                "system brotli failed to decompress"
+            );
             assert_eq!(output.stdout, chunk);
         }
     }

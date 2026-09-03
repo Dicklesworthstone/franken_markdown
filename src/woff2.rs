@@ -6,7 +6,7 @@
 //! Uses the clean-room Brotli engine in [`crate::brotli`] to compress concatenated
 //! font table payloads, achieving superior compression over WOFF1 and uncompressed TTF/OTF.
 
-use crate::brotli::{brotli_compress_with_scratch, brotli_decompress, BrotliCompressScratch};
+use crate::brotli::{BrotliCompressScratch, brotli_compress_with_scratch, brotli_decompress};
 use crate::{RenderError, Result};
 
 pub const WOFF2_SIGNATURE: u32 = 0x774F_4632; // "wOF2"
@@ -67,7 +67,7 @@ fn parse_sfnt_directory(sfnt: &[u8]) -> Result<(u32, Vec<SfntTable>)> {
         tag.copy_from_slice(&sfnt[off..off + 4]);
         tables.push(SfntTable {
             tag,
-            checksum: read_u32(sfnt, off + 4)?,
+            _checksum: read_u32(sfnt, off + 4)?,
             offset: read_u32(sfnt, off + 8)?,
             length: read_u32(sfnt, off + 12)?,
         });
@@ -197,9 +197,7 @@ pub fn encode_woff2_with_scratch(
         total_sfnt_size += (orig_len + 3) & !3;
 
         // Match against known table tags
-        let known_idx = KNOWN_TABLE_TAGS
-            .iter()
-            .position(|&&tag| tag == table.tag);
+        let known_idx = KNOWN_TABLE_TAGS.iter().position(|&&tag| tag == table.tag);
 
         let (flags, custom_tag) = match known_idx {
             Some(idx) => {
@@ -269,9 +267,7 @@ pub fn decode_woff2(woff2: &[u8]) -> Result<Vec<u8>> {
     }
     let signature = read_u32(woff2, 0)?;
     if signature != WOFF2_SIGNATURE {
-        return Err(RenderError::InvalidInput(
-            "woff2: invalid signature".into(),
-        ));
+        return Err(RenderError::InvalidInput("woff2: invalid signature".into()));
     }
     let flavor = read_u32(woff2, 4)?;
     let length = read_u32(woff2, 8)? as usize;
@@ -304,9 +300,10 @@ pub fn decode_woff2(woff2: &[u8]) -> Result<Vec<u8>> {
             pos += 4;
             [s[0], s[1], s[2], s[3]]
         } else {
-            *KNOWN_TABLE_TAGS.get(tag_idx).copied().ok_or_else(|| {
-                RenderError::InvalidInput("woff2: unknown tag index".into())
-            })?
+            *KNOWN_TABLE_TAGS
+                .get(tag_idx)
+                .copied()
+                .ok_or_else(|| RenderError::InvalidInput("woff2: unknown tag index".into()))?
         };
 
         let orig_len = decode_base128(woff2, &mut pos)? as usize;
@@ -323,9 +320,9 @@ pub fn decode_woff2(woff2: &[u8]) -> Result<Vec<u8>> {
         });
     }
 
-    let compressed_data = woff2.get(pos..pos + total_compressed_size).ok_or_else(|| {
-        RenderError::InvalidInput("woff2: compressed data out of bounds".into())
-    })?;
+    let compressed_data = woff2
+        .get(pos..pos + total_compressed_size)
+        .ok_or_else(|| RenderError::InvalidInput("woff2: compressed data out of bounds".into()))?;
 
     let uncompressed_stream = brotli_decompress(compressed_data, total_sfnt_size)?;
 

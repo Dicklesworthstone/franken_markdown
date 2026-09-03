@@ -65,6 +65,7 @@ pub mod svg;
 pub mod theme;
 pub mod transclude;
 pub mod wasm;
+pub mod brotli;
 pub mod woff1;
 pub mod zip;
 

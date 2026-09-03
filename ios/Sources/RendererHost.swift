@@ -205,7 +205,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published private(set) var elapsedMS: Double?
     @Published private(set) var outputBytes = 0
     @Published private(set) var diagnosticCount = 0
-    @Published private(set) var draftStatus = "Local recovery ready"
+    @Published private(set) var draftStatus = "Checking local recovery…"
 
     let webView: WKWebView
     private var requestID = 0
@@ -248,27 +248,13 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         configuration.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        if let draft = draftStore.load() {
-            source = draft.source
-            documentTitle = draft.title
-            documentAuthor = draft.author
-            fontFamily = draft.fontFamily
-            darkMode = draft.rendererDarkMode
-            toc = draft.tableOfContents
-            tocDepth = draft.tableOfContentsDepth
-            pageNumbers = draft.pageNumbers
-            codeLineNumbers = draft.codeLineNumbers
-            language = draft.language
-            microtypeProtrusion = draft.microtypeProtrusion
-            fitToPages = draft.fitToPages
-            draftStatus = "Recovered local draft"
-        }
         configuration.userContentController.add(self, name: "frankenBridge")
         webView.navigationDelegate = self
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
         webView.load(URLRequest(url: URL(string: "frankenmd://bundle/bridge.html")!))
+        restoreDraftIfUnedited()
     }
 
     deinit {
@@ -363,6 +349,35 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             microtypeProtrusion: microtypeProtrusion,
             fitToPages: fitToPages
         )
+    }
+
+    private func restoreDraftIfUnedited() {
+        let store = draftStore
+        Task { [weak self] in
+            let draft = await Task.detached(priority: .utility) { store.load() }.value
+            guard let self else { return }
+            guard self.source == Self.sample, self.documentTitle.isEmpty else {
+                self.draftStatus = "Active draft changed"
+                return
+            }
+            guard let draft else {
+                self.draftStatus = "Local recovery ready"
+                return
+            }
+            self.source = draft.source
+            self.documentTitle = draft.title
+            self.documentAuthor = draft.author
+            self.fontFamily = draft.fontFamily
+            self.darkMode = draft.rendererDarkMode
+            self.toc = draft.tableOfContents
+            self.tocDepth = draft.tableOfContentsDepth
+            self.pageNumbers = draft.pageNumbers
+            self.codeLineNumbers = draft.codeLineNumbers
+            self.language = draft.language
+            self.microtypeProtrusion = draft.microtypeProtrusion
+            self.fitToPages = draft.fitToPages
+            self.draftStatus = "Recovered local draft"
+        }
     }
 
     private func matchesCurrentDraft(_ draft: MarkdownActiveDraft) -> Bool {

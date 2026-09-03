@@ -340,7 +340,7 @@ struct RenderArgs {
     #[arg(long)]
     toc_depth: Option<u8>,
     /// Font container format for embedded HTML font subsets: woff1 (default,
-    /// ~half the bytes, every modern browser) or ttf (raw subset bytes).
+    /// ~half the bytes), woff2 (clean-room Brotli, ~65% smaller), or ttf (raw subset bytes).
     #[arg(long, value_enum)]
     html_font_format: Option<HtmlFontFormatArg>,
     /// Generate an interactive, self-hosting single-file HTML workspace with live editor,

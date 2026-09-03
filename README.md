@@ -501,7 +501,7 @@ fmd --text '<markdown>' --out out.html
 | `--to html\|pdf\|both\|epub` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book (binary; requires a real `--out` path like PDF) |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
-| `--html-font-format woff1\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `ttf` keeps raw TrueType data URLs) |
+| `--html-font-format woff1\|woff2\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `woff2` uses clean-room Brotli for ~22–30% savings; `ttf` keeps raw TrueType data URLs) |
 | `--microtype off\|protrusion` | Optical-margin protrusion for justified PDF body paragraphs (punctuation hangs into the margin; default `off` keeps output byte-identical) |
 | `--search-index <path>` | Also write a deterministic JSON search index (headings + anchored paragraphs, schema `fmd-search-index-v1`) for docs-site search |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
@@ -821,10 +821,11 @@ Honest about what the renderer does not do yet.
   examples match** after normalizing fmd's styled HTML (97.1% of the 595 in-scope
   examples across 16 fully passing sections; the raw-HTML examples are intentional
   non-goals, since fmd escapes raw HTML by default). This is a ratcheted floor: CI fails if it drops.
-- **HTML font subsets are WOFF1 data URLs by default.** Per-document subsets are
+- **HTML font subsets are WOFF1 data URLs by default, with WOFF2 available.** Per-document subsets are
   wrapped in the renderer's own deterministic DEFLATE container (measured 18.4%
-  smaller HTML on the showcase document; `--html-font-format ttf` opts back to
-  raw TrueType data URLs). WOFF2 (Brotli-based) remains future work.
+  smaller HTML on the showcase document). Clean-room WOFF2 (Brotli-based) is
+  supported via `--html-font-format woff2` for an additional ~5–10% savings,
+  while `--html-font-format ttf` opts back to raw TrueType data URLs.
 - **Browser visual/golden fixtures are still early.** The npm package
   (`@franken-suite/franken-markdown`) is published with proven native parity and
   gated manifest/size budgets, but browser-side visual fixtures remain thin.

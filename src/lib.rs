@@ -547,8 +547,8 @@ pub struct HtmlOptions {
     pub toc: bool,
     /// Maximum heading depth for table of contents (e.g. 1..=6).
     pub toc_depth: Option<u8>,
-    /// Font container format for embedded subsets. WOFF1 (the default) is
-    /// byte-deterministic and ~half the bytes of raw TTF subsets.
+    /// Font container format for embedded subsets. WOFF1 (the default) and
+    /// WOFF2 are byte-deterministic and ~half to a third the bytes of raw TTF subsets.
     pub html_font_format: HtmlFontFormat,
 }
 

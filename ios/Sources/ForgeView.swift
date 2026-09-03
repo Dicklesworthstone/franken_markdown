@@ -140,6 +140,10 @@ struct ForgeView: View {
             renderer.renderNow()
             renderer.scheduleDraftSave()
         }
+        .onChange(of: renderer.customCSS) { _, _ in
+            renderer.renderNow()
+            renderer.scheduleDraftSave()
+        }
     }
 
     private var forgeMetadataObservers: some View {
@@ -157,6 +161,10 @@ struct ForgeView: View {
         .onChange(of: renderer.codeLineNumbers) { _, _ in renderer.scheduleDraftSave() }
         .onChange(of: renderer.microtypeProtrusion) { _, _ in renderer.scheduleDraftSave() }
         .onChange(of: renderer.fitToPages) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.customizePDFTypography) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.pdfBaseFontSize) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.pdfHeadingScale) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.pdfTableFontSize) { _, _ in renderer.scheduleDraftSave() }
     }
 
     private var forgeModelObservers: some View {

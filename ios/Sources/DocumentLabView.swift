@@ -92,6 +92,7 @@ struct DocumentLabView: View {
     @State private var diffPreview: SemanticDiffPreview?
     @State private var showBaselineImporter = false
     @State private var showBookImporter = false
+    @State private var showStylesheetImporter = false
     @State private var bookFiles: [BookSourceFile] = []
 
     init(renderer: MarkdownRendererModel) {
@@ -148,6 +149,12 @@ struct DocumentLabView: View {
             allowedContentTypes: [.folder, .plainText],
             allowsMultipleSelection: true,
             onCompletion: importBookFiles
+        )
+        .fileImporter(
+            isPresented: $showStylesheetImporter,
+            allowedContentTypes: [.plainText],
+            allowsMultipleSelection: false,
+            onCompletion: importStylesheet
         )
         .safeAreaInset(edge: .top, spacing: 0) {
             if let errorMessage {
@@ -779,6 +786,116 @@ struct DocumentLabView: View {
                 .font(.system(size: Lab.size(13), weight: .medium))
                 .foregroundStyle(Lab.text)
             }
+            LabPanel {
+                VStack(alignment: .leading, spacing: 12) {
+                    LabLabel(text: "Web stylesheet")
+                    Text(
+                        renderer.customCSS.isEmpty
+                            ? "Bundled editorial styling is active."
+                            : "Custom CSS replaces the complete bundled stylesheet for preview and HTML-family exports."
+                    )
+                    .font(.system(size: Lab.size(11), weight: .medium))
+                    .foregroundStyle(Lab.secondary)
+                    HStack {
+                        Button {
+                            showStylesheetImporter = true
+                        } label: {
+                            Label(
+                                renderer.customCSS.isEmpty ? "Choose CSS…" : "Replace CSS…",
+                                systemImage: "paintbrush.pointed.fill"
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Lab.emerald)
+                        .accessibilityIdentifier("custom-css-import")
+                        if !renderer.customCSS.isEmpty {
+                            Button("Remove", role: .destructive) { renderer.customCSS = "" }
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("custom-css-remove")
+                            Spacer()
+                            Text(ByteCountFormatter.string(
+                                fromByteCount: Int64(renderer.customCSS.utf8.count),
+                                countStyle: .file
+                            ))
+                            .font(.system(size: Lab.size(9), weight: .black, design: .monospaced))
+                            .foregroundStyle(Lab.cyan)
+                        }
+                    }
+                    Text("Only UTF-8 text up to 256 KB is accepted. Styles never leave this device.")
+                        .font(.system(size: Lab.size(9), weight: .medium))
+                        .foregroundStyle(Lab.secondary)
+                }
+                .foregroundStyle(Lab.text)
+            }
+            LabPanel {
+                VStack(alignment: .leading, spacing: 15) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            LabLabel(text: "PDF type system")
+                            Text("Use the Rust press’s precise body, heading, and table controls.")
+                                .font(.system(size: Lab.size(11), weight: .medium))
+                                .foregroundStyle(Lab.secondary)
+                        }
+                        Spacer()
+                        Toggle("Custom PDF typography", isOn: $renderer.customizePDFTypography)
+                            .labelsHidden()
+                            .accessibilityIdentifier("custom-pdf-typography-toggle")
+                    }
+                    if renderer.customizePDFTypography {
+                        typographySlider(
+                            title: "Body",
+                            value: $renderer.pdfBaseFontSize,
+                            range: 6 ... 24,
+                            step: 0.5,
+                            suffix: "pt"
+                        )
+                        typographySlider(
+                            title: "Heading ratio",
+                            value: $renderer.pdfHeadingScale,
+                            range: 1.05 ... 2,
+                            step: 0.05,
+                            suffix: "×"
+                        )
+                        typographySlider(
+                            title: "Tables",
+                            value: Binding(
+                                get: { min(renderer.pdfTableFontSize, renderer.pdfBaseFontSize) },
+                                set: { renderer.pdfTableFontSize = min($0, renderer.pdfBaseFontSize) }
+                            ),
+                            range: 5 ... max(5, renderer.pdfBaseFontSize),
+                            step: 0.5,
+                            suffix: "pt"
+                        )
+                        Text("These controls affect single-document PDF exports. Collection books and web formats keep the editorial profile above.")
+                            .font(.system(size: Lab.size(10), weight: .medium))
+                            .foregroundStyle(Lab.secondary)
+                    }
+                }
+                .font(.system(size: Lab.size(13), weight: .medium))
+                .foregroundStyle(Lab.text)
+            }
+        }
+    }
+
+    private func typographySlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        suffix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%.2g%@", value.wrappedValue, suffix))
+                    .font(.system(size: Lab.size(10), weight: .black, design: .monospaced))
+                    .foregroundStyle(Lab.emerald)
+            }
+            Slider(value: value, in: range, step: step)
+                .tint(Lab.emerald)
+                .accessibilityLabel(title)
+                .accessibilityValue(String(format: "%.2g %@", value.wrappedValue, suffix))
         }
     }
 
@@ -1163,6 +1280,14 @@ struct DocumentLabView: View {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    private func importStylesheet(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            renderer.customCSS = try readSecurityScopedStyle(url)
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     private func markdownFiles(at url: URL) throws -> [BookSourceFile] {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -1194,6 +1319,21 @@ struct DocumentLabView: View {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    private func readSecurityScopedStyle(_ url: URL) throws -> String {
+        guard url.isFileURL else { throw ImportError.invalidStylesheet }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let maximum = MarkdownActiveDraft.maximumCustomCSSBytes
+        let data = try handle.read(upToCount: maximum + 1) ?? Data()
+        guard data.count <= maximum else { throw ImportError.stylesheetTooLarge }
+        guard let stylesheet = String(data: data, encoding: .utf8) else {
+            throw ImportError.invalidStylesheet
+        }
+        return stylesheet
+    }
+
     private func presetSymbol(_ id: String) -> String {
         switch id {
         case "executive": "chart.bar.doc.horizontal.fill"
@@ -1220,11 +1360,15 @@ struct DocumentLabView: View {
 private enum ImportError: LocalizedError {
     case noMarkdownFiles
     case invalidArtifact
+    case stylesheetTooLarge
+    case invalidStylesheet
 
     var errorDescription: String? {
         switch self {
         case .noMarkdownFiles: "No .md or .markdown files were found in that selection."
         case .invalidArtifact: "The document engine returned an invalid artifact."
+        case .stylesheetTooLarge: "That stylesheet is larger than the supported 256 KB limit."
+        case .invalidStylesheet: "Choose a UTF-8 CSS text file."
         }
     }
 }

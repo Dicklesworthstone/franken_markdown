@@ -197,6 +197,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published var language = "en"
     @Published var microtypeProtrusion = false
     @Published var fitToPages = 0
+    @Published var customizePDFTypography = false
+    @Published var pdfBaseFontSize = 11.0
+    @Published var pdfHeadingScale = 1.25
+    @Published var pdfTableFontSize = 10.0
+    @Published var customCSS = ""
     @Published private(set) var analysis: DocumentAnalysis?
     @Published private(set) var analysisIsStale = true
     var renderFontScale = 1.0
@@ -300,6 +305,21 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         ]
         if !documentTitle.isEmpty { options["title"] = documentTitle }
         if !documentAuthor.isEmpty { options["author"] = documentAuthor }
+        if !customCSS.isEmpty { options["customCss"] = customCSS }
+        return options
+    }
+
+    private func pdfOptions(includePageNumbers: Bool = true) -> [String: Any] {
+        var options = sharedOptions
+        if includePageNumbers { options["pageNumbers"] = pageNumbers }
+        options["codeLineNumbers"] = codeLineNumbers
+        options["microtype"] = microtypeProtrusion ? "protrusion" : "disabled"
+        if fitToPages > 0 { options["fitToPages"] = fitToPages }
+        if customizePDFTypography {
+            options["baseFontSize"] = pdfBaseFontSize
+            options["headingScale"] = pdfHeadingScale
+            options["tableFontSize"] = min(pdfTableFontSize, pdfBaseFontSize)
+        }
         return options
     }
 
@@ -347,7 +367,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             codeLineNumbers: codeLineNumbers,
             language: language,
             microtypeProtrusion: microtypeProtrusion,
-            fitToPages: fitToPages
+            fitToPages: fitToPages,
+            customizePDFTypography: customizePDFTypography,
+            pdfBaseFontSize: pdfBaseFontSize,
+            pdfHeadingScale: pdfHeadingScale,
+            pdfTableFontSize: pdfTableFontSize,
+            customCSS: customCSS.isEmpty ? nil : customCSS
         )
     }
 
@@ -376,6 +401,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             self.language = draft.language
             self.microtypeProtrusion = draft.microtypeProtrusion
             self.fitToPages = draft.fitToPages
+            self.customizePDFTypography = draft.customizePDFTypography ?? false
+            self.pdfBaseFontSize = draft.pdfBaseFontSize ?? 11
+            self.pdfHeadingScale = draft.pdfHeadingScale ?? 1.25
+            self.pdfTableFontSize = draft.pdfTableFontSize ?? 10
+            self.customCSS = draft.customCSS ?? ""
             self.draftStatus = "Recovered local draft"
         }
     }
@@ -392,7 +422,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             draft.codeLineNumbers == codeLineNumbers &&
             draft.language == language &&
             draft.microtypeProtrusion == microtypeProtrusion &&
-            draft.fitToPages == fitToPages
+            draft.fitToPages == fitToPages &&
+            draft.customizePDFTypography == customizePDFTypography &&
+            draft.pdfBaseFontSize == pdfBaseFontSize &&
+            draft.pdfHeadingScale == pdfHeadingScale &&
+            draft.pdfTableFontSize == pdfTableFontSize &&
+            (draft.customCSS ?? "") == customCSS
     }
 
     func renderNow() {
@@ -435,11 +470,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func exportPdf() async throws -> (Data, Int, Int) {
         requestID += 1
         let req = requestID
-        var options = sharedOptions
-        options["pageNumbers"] = pageNumbers
-        options["codeLineNumbers"] = codeLineNumbers
-        options["microtype"] = microtypeProtrusion ? "protrusion" : "disabled"
-        if fitToPages > 0 { options["fitToPages"] = fitToPages }
+        let options = pdfOptions()
         let command: [String: Any] = [
             "requestID": req,
             "markdown": source,

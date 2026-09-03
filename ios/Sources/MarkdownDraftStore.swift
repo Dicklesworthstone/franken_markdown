@@ -2,6 +2,7 @@ import Foundation
 
 struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     static let currentSchema = 1
+    static let maximumCustomCSSBytes = 256 * 1_024
 
     let schema: Int
     let savedAtMilliseconds: Int64
@@ -17,6 +18,11 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     let language: String
     let microtypeProtrusion: Bool
     let fitToPages: Int
+    let customizePDFTypography: Bool?
+    let pdfBaseFontSize: Double?
+    let pdfHeadingScale: Double?
+    let pdfTableFontSize: Double?
+    let customCSS: String?
 }
 
 struct MarkdownDraftStore: Sendable {
@@ -26,7 +32,9 @@ struct MarkdownDraftStore: Sendable {
     }
 
     static let maximumSourceBytes = 8 * 1_024 * 1_024
-    static let maximumEncodedBytes = maximumSourceBytes + 64 * 1_024
+    static let maximumEncodedBytes = maximumSourceBytes
+        + MarkdownActiveDraft.maximumCustomCSSBytes
+        + 64 * 1_024
 
     let fileURL: URL
 
@@ -85,6 +93,10 @@ struct MarkdownDraftStore: Sendable {
             ["auto", "disabled"].contains(draft.rendererDarkMode) &&
             (1...6).contains(draft.tableOfContentsDepth) &&
             (0...10_000).contains(draft.fitToPages) &&
+            (draft.pdfBaseFontSize.map { (6...24).contains($0) } ?? true) &&
+            (draft.pdfHeadingScale.map { (1.05...2).contains($0) } ?? true) &&
+            (draft.pdfTableFontSize.map { (5...24).contains($0) } ?? true) &&
+            (draft.customCSS?.utf8.count ?? 0) <= MarkdownActiveDraft.maximumCustomCSSBytes &&
             !draft.language.isEmpty && draft.language.utf8.count <= 64
     }
 }

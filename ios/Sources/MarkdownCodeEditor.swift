@@ -348,7 +348,7 @@ private enum MarkdownLexicalHighlighter {
 }
 
 final class MarkdownEditorContainer: UIView {
-    static let gutterWidth: CGFloat = 44
+    static var gutterWidth: CGFloat { max(44, Lab.size(32)) }
 
     let textView = MarkdownTextView()
     private let gutterView = MarkdownLineNumberView()

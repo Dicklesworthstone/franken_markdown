@@ -187,7 +187,7 @@ struct ForgeView: View {
             renderer.renderFontScale = clamped
         }
         .onReceive(NotificationCenter.default.publisher(for: .renderMarkdownNow)) { _ in
-            renderer.renderNow()
+            renderAndRevealPreview()
         }
         .onReceive(NotificationCenter.default.publisher(for: .exportPdfNow)) { _ in
             triggerPdfExport()
@@ -514,8 +514,7 @@ struct ForgeView: View {
                 if horizontalSizeClass == .compact {
                     HStack {
                         Button {
-                            editorFocused = false
-                            renderer.renderNow()
+                            renderAndRevealPreview()
                         } label: {
                             Label("Forge Preview", systemImage: "sparkles.rectangle.stack")
                         }
@@ -554,6 +553,12 @@ struct ForgeView: View {
                 }
             }
         }
+    }
+
+    private func renderAndRevealPreview() {
+        editorFocused = false
+        renderer.renderNow()
+        withAnimation(.snappy) { lane = .preview }
     }
 
     private var outlinePanel: some View {

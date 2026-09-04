@@ -9,6 +9,12 @@ enum LabAppearance: String {
 }
 
 enum Lab {
+    static let textScaleStorageKey = "frankenmarkdown.uiTextScale"
+    static let defaultTextScale = 1.0
+    static let minimumTextScale = 0.8
+    static let maximumTextScale = 1.6
+    static let textScaleStep = 0.1
+
     static let background = adaptive(
         dark: UIColor(red: 0.006, green: 0.027, blue: 0.019, alpha: 1),
         light: UIColor(red: 0.965, green: 0.982, blue: 0.972, alpha: 1)
@@ -66,11 +72,27 @@ enum Lab {
         Color(uiColor: UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
     }
 
+    static func clampedTextScale(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultTextScale }
+        return min(maximumTextScale, max(minimumTextScale, value))
+    }
+
+    static func adjustedTextScale(_ value: Double, steps: Int) -> Double {
+        let adjusted = clampedTextScale(value) + Double(steps) * textScaleStep
+        return (clampedTextScale(adjusted) * 10).rounded() / 10
+    }
+
+    private static var currentTextScale: CGFloat {
+        let stored = (UserDefaults.standard.object(forKey: textScaleStorageKey) as? NSNumber)?.doubleValue
+        return CGFloat(clampedTextScale(stored ?? defaultTextScale))
+    }
+
     static func size(_ base: CGFloat) -> CGFloat {
+        let scaledBase = base * currentTextScale
 #if targetEnvironment(macCatalyst)
-        base * 1.38
+        return scaledBase * 1.38
 #else
-        UIFontMetrics(forTextStyle: .body).scaledValue(for: base)
+        return UIFontMetrics(forTextStyle: .body).scaledValue(for: scaledBase)
 #endif
     }
 }

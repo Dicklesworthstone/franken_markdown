@@ -8,6 +8,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(Lab.textScaleStorageKey) private var uiTextScale = Lab.defaultTextScale
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -27,6 +28,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         view.tintColor = UIColor(Lab.emerald)
         view.accessibilityLabel = "Markdown source editor"
         view.accessibilityHint = "Edit Markdown with syntax highlighting. The Rust renderer supplies authoritative diagnostics."
+        context.coordinator.lastTextScale = Lab.clampedTextScale(uiTextScale)
         context.coordinator.applyHighlight(to: view, replacingText: text)
         return container
     }
@@ -34,8 +36,12 @@ struct MarkdownCodeEditor: UIViewRepresentable {
     func updateUIView(_ container: MarkdownEditorContainer, context: Context) {
         let view = container.textView
         context.coordinator.parent = self
-        if view.text != text || context.coordinator.lastColorScheme != colorScheme {
+        let clampedTextScale = Lab.clampedTextScale(uiTextScale)
+        if view.text != text
+            || context.coordinator.lastColorScheme != colorScheme
+            || context.coordinator.lastTextScale != clampedTextScale {
             context.coordinator.lastColorScheme = colorScheme
+            context.coordinator.lastTextScale = clampedTextScale
             context.coordinator.applyHighlight(to: view, replacingText: text)
         } else {
             context.coordinator.refreshTypingAttributes(in: view)
@@ -50,6 +56,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownCodeEditor
         var lastColorScheme: ColorScheme?
+        var lastTextScale: Double?
         private var isApplyingHighlight = false
 
         init(_ parent: MarkdownCodeEditor) { self.parent = parent }
@@ -75,9 +82,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
             let contentOffset = view.contentOffset
             if let replacement { view.text = replacement }
             let source = view.text ?? ""
-            let baseFont = UIFontMetrics(forTextStyle: .body).scaledFont(
-                for: .monospacedSystemFont(ofSize: 15, weight: .regular)
-            )
+            let baseFont = UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: .regular)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 4
             paragraph.paragraphSpacing = 1
@@ -106,9 +111,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
 
         func refreshTypingAttributes(in view: UITextView) {
             view.typingAttributes = [
-                .font: UIFontMetrics(forTextStyle: .body).scaledFont(
-                    for: .monospacedSystemFont(ofSize: 15, weight: .regular)
-                ),
+                .font: UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: .regular),
                 .foregroundColor: UIColor(Lab.text)
             ]
         }
@@ -289,15 +292,14 @@ private enum MarkdownLexicalHighlighter {
     }
 
     private static func font(_ weight: UIFont.Weight) -> UIFont {
-        UIFontMetrics(forTextStyle: .body).scaledFont(
-            for: .monospacedSystemFont(ofSize: 15, weight: weight)
-        )
+        UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: weight)
     }
 
     private static func italicFont() -> UIFont {
-        let base = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+        let size = Lab.size(15)
+        let base = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
         let descriptor = base.fontDescriptor.withSymbolicTraits(.traitItalic) ?? base.fontDescriptor
-        return UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(descriptor: descriptor, size: 15))
+        return UIFont(descriptor: descriptor, size: size)
     }
 
     private static func intersects(_ range: NSRange, _ protected: [NSRange]) -> Bool {
@@ -450,7 +452,7 @@ private final class MarkdownLineNumberView: UIView {
         divider.stroke()
 
         let nsText = textView.text as NSString
-        let numberFont = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        let numberFont = UIFont.monospacedDigitSystemFont(ofSize: Lab.size(10), weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: numberFont,
             .foregroundColor: UIColor(Lab.secondary).withAlphaComponent(0.58)

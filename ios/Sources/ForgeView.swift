@@ -62,6 +62,7 @@ private enum TypeScalePresetStep: String, CaseIterable, Identifiable {
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
+    @AppStorage(Lab.textScaleStorageKey) private var uiTextScale = Lab.defaultTextScale
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
     @StateObject private var renderer = MarkdownRendererModel()
     @State private var lane: ForgeLane = .write
@@ -89,6 +90,13 @@ struct ForgeView: View {
 
     var body: some View {
         forgePresentation
+            .onAppear {
+                uiTextScale = Lab.clampedTextScale(uiTextScale)
+            }
+            .onChange(of: uiTextScale) { _, value in
+                let clamped = Lab.clampedTextScale(value)
+                if clamped != value { uiTextScale = clamped }
+            }
             .preferredColorScheme((LabAppearance(rawValue: appearance) ?? .dark).colorScheme)
     }
 

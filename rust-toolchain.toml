@@ -13,7 +13,7 @@
 # changing state unrelated work depended on.
 #
 # Bump this deliberately, not accidentally.
-channel = "nightly-2026-08-25"
+channel = "nightly-2026-08-31"
 components = ["clippy", "rustfmt"]
 # The WASM gates (check-wasm-core.sh, check-wasm-package.sh, CI) always need
 # the browser target; declaring it here makes rustup provision it on every

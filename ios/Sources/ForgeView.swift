@@ -294,7 +294,12 @@ struct ForgeView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) { brand; Spacer(); actionButtons; LabAppearanceButton(selection: $appearance); statusPill }
             VStack(alignment: .leading, spacing: 10) {
-                HStack { brand; Spacer(); LabAppearanceButton(selection: $appearance); statusPill }
+                brand
+                HStack(spacing: 10) {
+                    LabAppearanceButton(selection: $appearance)
+                    Spacer(minLength: 8)
+                    statusPill
+                }
                 actionButtons
             }
         }
@@ -318,6 +323,9 @@ struct ForgeView: View {
                 Text("DOCUMENT_PRESS // private · offline · Rust")
                     .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
                     .foregroundStyle(Lab.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .allowsTightening(true)
             }
         }
     }

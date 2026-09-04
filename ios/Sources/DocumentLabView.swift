@@ -207,6 +207,7 @@ struct DocumentLabView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .accessibilityIdentifier("document-forge-home")
     }
 
     private func routeColumns(width: CGFloat) -> [GridItem] {
@@ -416,6 +417,7 @@ struct DocumentLabView: View {
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("document-forge-route-\(route.rawValue)")
     }
 
     private var capabilityRibbon: some View {
@@ -463,6 +465,7 @@ struct DocumentLabView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier("document-forge-route-scroll-\(route.rawValue)")
         }
         .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.inline)

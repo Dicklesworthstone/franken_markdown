@@ -1,6 +1,6 @@
 # FrankenMarkdown for Apple Platforms
 
-Status: implementation plan, reviewed before application code is added
+Status: implementation plan plus current delivery boundary
 
 ## 1. Product promise
 
@@ -83,7 +83,9 @@ Supported outputs:
 
 Document autosave uses `FileDocument` and normal conflict handling. Untitled work is state-restored. Destructive replacement is always explicit and undoable through the editor’s undo manager.
 
-The current single-window shell now provides crash-safe active-draft recovery while full `FileDocument` multiwindow support remains open. It stores bounded, versioned source plus safe presentation settings in Application Support using atomic writes and complete file protection, excludes the recovery cache from backup, and refuses malformed or oversized state. Raw-HTML trust is intentionally never restored across launches.
+The current single-window shell now provides both crash-safe active-draft recovery and real source-file ownership. It keeps security-scoped current-file identity, preserves an explicit UTF-8 byte-order mark, saves in place through coordinated atomic replacement, refuses to overwrite an external edit, offers Save a Copy, and persists at most six filename/bookmark recents without document contents. It stores bounded, versioned recovery source plus safe presentation settings in Application Support using atomic writes and complete file protection, excludes the recovery cache from backup, and refuses malformed or oversized state. Raw-HTML trust is intentionally never restored across launches or document adoption.
+
+Full `DocumentGroup` browser ownership, automatic current-document restoration, document autosave, and multiwindow support remain open. The source-complete document-session tranche is tracked by Bead `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-3ady`; Xcode, Simulator, and executable DSR evidence must be added only after the storage guard admits those lanes.
 
 ## 5. Information architecture
 

@@ -26,6 +26,17 @@ struct FrankenMarkdownApp: App {
                     NotificationCenter.default.post(name: .openMarkdownDocument, object: nil)
                 }
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") {
+                    NotificationCenter.default.post(name: .saveMarkdownDocument, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: .command)
+
+                Button("Save a Copy…") {
+                    NotificationCenter.default.post(name: .saveMarkdownDocumentCopy, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            }
             CommandMenu("Render") {
                 Button("Render Document") {
                     NotificationCenter.default.post(name: .renderMarkdownNow, object: nil)
@@ -107,4 +118,6 @@ extension Notification.Name {
     static let exportHtmlNow = Notification.Name("FrankenMarkdown.exportHtmlNow")
     static let newMarkdownDocument = Notification.Name("FrankenMarkdown.newDocument")
     static let openMarkdownDocument = Notification.Name("FrankenMarkdown.openDocument")
+    static let saveMarkdownDocument = Notification.Name("FrankenMarkdown.saveDocument")
+    static let saveMarkdownDocumentCopy = Notification.Name("FrankenMarkdown.saveDocumentCopy")
 }

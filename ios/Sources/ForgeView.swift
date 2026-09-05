@@ -15,48 +15,9 @@ private enum AuxiliaryPanel: String, Identifiable {
     var id: Self { self }
 }
 
-private enum TypeScalePresetStep: String, CaseIterable, Identifiable {
-    case extraSmall = "XS"
-    case small = "SM"
-    case medium = "MD"
-    case large = "LG"
-    case extraLarge = "XL"
-    case huge = "2XL"
-
-    var id: Self { self }
-
-    var scale: Double {
-        switch self {
-        case .extraSmall: 0.75
-        case .small: 0.875
-        case .medium: 1.0
-        case .large: 1.125
-        case .extraLarge: 1.25
-        case .huge: 1.5
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .extraSmall: "XS · 75%"
-        case .small: "SM · 87.5%"
-        case .medium: "MD · 100%"
-        case .large: "LG · 112.5%"
-        case .extraLarge: "XL · 125%"
-        case .huge: "2XL · 150%"
-        }
-    }
-
-    static func closest(to scale: Double) -> Self {
-        allCases.min(by: { abs($0.scale - scale) < abs($1.scale - scale) }) ?? .medium
-    }
-
-    func next(delta: Int) -> Self {
-        let all = Self.allCases
-        guard let idx = all.firstIndex(of: self) else { return self }
-        let target = min(all.count - 1, max(0, idx + delta))
-        return all[target]
-    }
+private enum SourceExportPurpose: Equatable {
+    case saveNewDocument
+    case saveCopy
 }
 
 struct ForgeView: View {
@@ -65,6 +26,7 @@ struct ForgeView: View {
     @AppStorage(Lab.textScaleStorageKey) private var uiTextScale = Lab.defaultTextScale
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
     @StateObject private var renderer = MarkdownRendererModel()
+    @StateObject private var documentSession: MarkdownDocumentSession
     @State private var lane: ForgeLane = .write
     @State private var editorFocused = false
 
@@ -78,10 +40,20 @@ struct ForgeView: View {
     @State private var auxiliaryPanel: AuxiliaryPanel?
     @State private var showDocumentLab = false
     @State private var showSourceImporter = false
+    @State private var showSourceExporter = false
+    @State private var sourceFileToExport = MarkdownSourceFile(source: "")
+    @State private var sourceExportPurpose = SourceExportPurpose.saveCopy
     @State private var sourceImportError: String?
+    @State private var documentError: String?
+    @State private var pendingDocument: MarkdownSourceDocument?
+    @State private var confirmingNewDocument = false
+    @State private var confirmingRevert = false
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
+        _documentSession = StateObject(
+            wrappedValue: MarkdownDocumentSession(initialSource: MarkdownRendererModel.sample)
+        )
         _lane = State(initialValue: ForgeLane(rawValue: requested ?? "") ?? .write)
         _showDocumentLab = State(
             initialValue: ProcessInfo.processInfo.environment["FMD_OPEN_DOCUMENT_LAB"] == "1"
@@ -106,6 +78,11 @@ struct ForgeView: View {
                 LaboratoryBackground()
                 VStack(spacing: 14) {
                     masthead
+                    MarkdownDocumentStatusBar(
+                        session: documentSession,
+                        source: renderer.source,
+                        save: saveCurrentSource
+                    )
                     if geometry.size.width >= 1_180 {
                         wideForge
                     } else if geometry.size.width >= 760 {
@@ -200,10 +177,16 @@ struct ForgeView: View {
     private var forgeDocumentEvents: some View {
         forgeModelObservers
         .onReceive(NotificationCenter.default.publisher(for: .newMarkdownDocument)) { _ in
-            newSourceDocument()
+            requestNewSourceDocument()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openMarkdownDocument)) { _ in
             showSourceImporter = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveMarkdownDocument)) { _ in
+            saveCurrentSource()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveMarkdownDocumentCopy)) { _ in
+            beginSourceExport(.saveCopy)
         }
         .onOpenURL { url in
             if url.isFileURL {
@@ -226,10 +209,18 @@ struct ForgeView: View {
         }
         .fileImporter(
             isPresented: $showSourceImporter,
-            allowedContentTypes: [.plainText],
+            allowedContentTypes: [.frankenMarkdownSource, .plainText],
             allowsMultipleSelection: false,
             onCompletion: importSourceDocument
         )
+        .fileExporter(
+            isPresented: $showSourceExporter,
+            document: sourceFileToExport,
+            contentType: .frankenMarkdownSource,
+            defaultFilename: documentSession.suggestedFilename()
+        ) { result in
+            finishSourceExport(result)
+        }
         .alert("Couldn’t Open Document", isPresented: Binding(
             get: { sourceImportError != nil },
             set: { if !$0 { sourceImportError = nil } }
@@ -237,6 +228,46 @@ struct ForgeView: View {
             Button("OK", role: .cancel) { sourceImportError = nil }
         } message: {
             Text(sourceImportError ?? "The selected document could not be opened.")
+        }
+        .alert("Couldn’t Save Document", isPresented: Binding(
+            get: { documentError != nil },
+            set: { if !$0 { documentError = nil } }
+        )) {
+            Button("OK", role: .cancel) { documentError = nil }
+        } message: {
+            Text(documentError ?? "The document could not be saved.")
+        }
+        .alert(
+            "Open \(pendingDocument?.displayName ?? "this document")?",
+            isPresented: Binding(
+                get: { pendingDocument != nil },
+                set: { if !$0 { pendingDocument = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { pendingDocument = nil }
+            Button("Discard Edits and Open", role: .destructive) {
+                guard let document = pendingDocument else { return }
+                pendingDocument = nil
+                adopt(document)
+            }
+        } message: {
+            Text("The current Markdown has unsaved edits. Use Save a Copy first if you want to keep them.")
+        }
+        .alert("Start a New Document?", isPresented: $confirmingNewDocument) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard Edits and Start New", role: .destructive) {
+                newSourceDocument()
+            }
+        } message: {
+            Text("The current Markdown has unsaved edits. Use Save or Save a Copy first if you want to keep them.")
+        }
+        .alert("Reopen Saved Version?", isPresented: $confirmingRevert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard Edits and Reopen", role: .destructive) {
+                reloadCurrentDocument()
+            }
+        } message: {
+            Text("This replaces the current edits with the latest version from Files.")
         }
     }
 
@@ -292,7 +323,13 @@ struct ForgeView: View {
 
     private var masthead: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { brand; Spacer(); actionButtons; LabAppearanceButton(selection: $appearance); statusPill }
+            HStack(spacing: 12) {
+                brand
+                Spacer()
+                actionButtons
+                LabAppearanceButton(selection: $appearance)
+                statusPill
+            }
             VStack(alignment: .leading, spacing: 10) {
                 brand
                 HStack(spacing: 10) {
@@ -334,14 +371,49 @@ struct ForgeView: View {
         HStack(spacing: 8) {
             Menu {
                 Button {
+                    saveCurrentSource()
+                } label: {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                }
+                .disabled(
+                    documentSession.isSaving
+                        || (documentSession.hasCurrentDocument
+                            && !documentSession.isDirty(source: renderer.source))
+                )
+                Button {
+                    beginSourceExport(.saveCopy)
+                } label: {
+                    Label("Save a Copy…", systemImage: "doc.on.doc")
+                }
+                if documentSession.hasCurrentDocument {
+                    Button {
+                        requestReopenCurrentDocument()
+                    } label: {
+                        Label("Reopen from Files", systemImage: "arrow.clockwise")
+                    }
+                }
+                Divider()
+                Button {
                     showSourceImporter = true
                 } label: {
                     Label("Open Markdown…", systemImage: "folder")
                 }
                 Button {
-                    newSourceDocument()
+                    requestNewSourceDocument()
                 } label: {
                     Label("New Document", systemImage: "doc.badge.plus")
+                }
+                if !documentSession.recentDocuments.isEmpty {
+                    Divider()
+                    Section("Recent Files") {
+                        ForEach(documentSession.recentDocuments) { recent in
+                            Button {
+                                openRecent(recent)
+                            } label: {
+                                Label(recent.displayName, systemImage: "clock.arrow.circlepath")
+                            }
+                        }
+                    }
                 }
                 Divider()
                 ForEach(MarkdownRendererModel.presets) { preset in
@@ -362,6 +434,7 @@ struct ForgeView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .accessibilityIdentifier("markdown-document-menu")
 
             Button {
                 showDocumentLab = true
@@ -375,6 +448,7 @@ struct ForgeView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .accessibilityIdentifier("document-lab-button")
 
             if horizontalSizeClass == .regular {
 #if targetEnvironment(macCatalyst)
@@ -438,6 +512,7 @@ struct ForgeView: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
             .disabled(isExporting)
+            .accessibilityIdentifier("publish-document-menu")
         }
     }
 
@@ -626,7 +701,7 @@ struct ForgeView: View {
                         Text("RENDERED TEXT SIZE")
                             .font(.system(size: Lab.size(9), weight: .bold, design: .monospaced))
                             .foregroundStyle(Lab.secondary)
-                        renderFontSizeControl
+                        MarkdownRenderFontSizeControl(renderFontScale: $renderFontScale)
                         Text("Changes the reading view and exported document—not the editor or app controls.")
                             .font(.system(size: Lab.size(9)))
                             .foregroundStyle(Lab.secondary)
@@ -697,7 +772,10 @@ struct ForgeView: View {
     private var footer: some View {
         VStack(spacing: 4) {
             Text("Rendered entirely on this device · nothing is uploaded")
-            Text("If you like this free app, please show your appreciation by trying out my paid skills site at [JeffreysSkills.md](https://jeffreys-skills.md).")
+            Text(
+                "If you like this free app, please show your appreciation by trying out my paid skills "
+                    + "site at [JeffreysSkills.md](https://jeffreys-skills.md)."
+            )
                 .tint(Lab.emerald)
                 .frame(maxWidth: 560)
         }
@@ -705,44 +783,6 @@ struct ForgeView: View {
         .foregroundStyle(Lab.secondary.opacity(0.78))
         .multilineTextAlignment(.center)
         .padding(.bottom, 8)
-    }
-
-    private var renderFontSizeControl: some View {
-        let currentStep = TypeScalePresetStep.closest(to: renderFontScale)
-        return HStack(spacing: 8) {
-            Button {
-                let nextStep = currentStep.next(delta: -1)
-                renderFontScale = nextStep.scale
-            } label: {
-                Image(systemName: "textformat.size.smaller")
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.bordered)
-            .disabled(currentStep == .extraSmall)
-            .accessibilityLabel("Decrease rendered type size to smaller preset")
-
-            Button {
-                renderFontScale = 1.0
-            } label: {
-                Text(currentStep.label)
-                    .font(.system(size: Lab.size(11), weight: .black, design: .monospaced))
-                    .frame(minWidth: 88)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Rendered type size \(currentStep.label). Tap to reset to standard size")
-
-            Button {
-                let nextStep = currentStep.next(delta: 1)
-                renderFontScale = nextStep.scale
-            } label: {
-                Image(systemName: "textformat.size.larger")
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.bordered)
-            .disabled(currentStep == .huge)
-            .accessibilityLabel("Increase rendered type size to larger preset")
-        }
-        .tint(Lab.emerald)
     }
 
     private func clampedRenderFontScale(_ value: Double) -> Double {
@@ -840,50 +880,125 @@ struct ForgeView: View {
         }
     }
 
+    private func requestNewSourceDocument() {
+        if documentSession.isDirty(source: renderer.source) {
+            confirmingNewDocument = true
+        } else {
+            newSourceDocument()
+        }
+    }
+
     private func newSourceDocument() {
-        renderer.source = "# New Document\n\nStart writing..."
+        let source = "# New Document\n\nStart writing..."
+        documentSession.beginUntitled(source: source)
+        renderer.source = source
         renderer.documentTitle = ""
+        renderer.allowRawHtml = false
         lane = .write
         sourceImportError = nil
+        documentError = nil
     }
 
     private func loadSourceDocument(from url: URL) {
         Task {
             do {
-                let document = try await Task.detached(priority: .userInitiated) {
-                    try MarkdownSourceLoader.load(from: url)
-                }.value
-                renderer.source = document.source
-                renderer.documentTitle = document.suggestedTitle
-                lane = .write
-                sourceImportError = nil
+                requestAdoption(of: try await MarkdownSourceLoader.open(from: url))
             } catch {
                 sourceImportError = error.localizedDescription
             }
         }
     }
-}
 
-struct ShareActivityView: UIViewControllerRepresentable {
-    let fileURL: URL
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let contentType = UTType(filenameExtension: fileURL.pathExtension) ?? .data
-        let provider = NSItemProvider()
-        provider.suggestedName = fileURL.lastPathComponent
-        provider.registerFileRepresentation(
-            forTypeIdentifier: contentType.identifier,
-            fileOptions: [],
-            visibility: .all
-        ) { completion in
-            // Register only a copied file representation. A bare HTML URL can
-            // otherwise be interpreted as a web link or text by destinations.
-            completion(fileURL, false, nil)
-            return nil
+    private func openRecent(_ recent: MarkdownRecentDocument) {
+        Task {
+            do {
+                requestAdoption(of: try await documentSession.openRecent(recent))
+            } catch {
+                sourceImportError = error.localizedDescription
+            }
         }
-        let configuration = UIActivityItemsConfiguration(itemProviders: [provider])
-        return UIActivityViewController(activityItemsConfiguration: configuration)
     }
 
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+    private func requestAdoption(of document: MarkdownSourceDocument) {
+        editorFocused = false
+        if documentSession.isDirty(source: renderer.source) {
+            pendingDocument = document
+        } else {
+            adopt(document)
+        }
+    }
+
+    private func adopt(_ document: MarkdownSourceDocument) {
+        documentSession.adopt(document)
+        renderer.source = document.source
+        renderer.documentTitle = document.suggestedTitle
+        renderer.allowRawHtml = false
+        lane = .write
+        sourceImportError = nil
+        documentError = nil
+    }
+
+    private func saveCurrentSource() {
+        editorFocused = false
+        guard documentSession.hasCurrentDocument else {
+            beginSourceExport(.saveNewDocument)
+            return
+        }
+        Task {
+            do {
+                try await documentSession.save(source: renderer.source)
+            } catch {
+                documentError = error.localizedDescription
+            }
+        }
+    }
+
+    private func beginSourceExport(_ purpose: SourceExportPurpose) {
+        editorFocused = false
+        sourceFileToExport = MarkdownSourceFile(source: renderer.source)
+        sourceExportPurpose = purpose
+        showSourceExporter = true
+    }
+
+    private func finishSourceExport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            guard sourceExportPurpose == .saveNewDocument else { return }
+            let expectedSource = sourceFileToExport.source
+            Task {
+                do {
+                    let document = try await MarkdownSourceLoader.open(from: url)
+                    guard document.source == expectedSource else {
+                        throw MarkdownSourceLoader.DocumentError.savedCopyMismatch
+                    }
+                    adopt(document)
+                } catch {
+                    documentError = error.localizedDescription
+                }
+            }
+        case .failure(let error):
+            let cocoaError = error as NSError
+            guard cocoaError.code != CocoaError.Code.userCancelled.rawValue else { return }
+            documentError = error.localizedDescription
+        }
+    }
+
+    private func requestReopenCurrentDocument() {
+        if documentSession.isDirty(source: renderer.source) {
+            confirmingRevert = true
+        } else {
+            reloadCurrentDocument()
+        }
+    }
+
+    private func reloadCurrentDocument() {
+        guard let url = documentSession.currentDocument?.url else { return }
+        Task {
+            do {
+                adopt(try await MarkdownSourceLoader.open(from: url))
+            } catch {
+                documentError = error.localizedDescription
+            }
+        }
+    }
 }

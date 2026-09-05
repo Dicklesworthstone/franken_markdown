@@ -80,6 +80,33 @@ final class FrankenMarkdownAppearanceUITests: XCTestCase {
         keepScreenshot(of: app, named: "Editorial Studio precise PDF typography")
     }
 
+    func testPhoneExposesDocumentOwnershipWithoutHidingAuthoringAndPublishing() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let status = app.otherElements["markdown-document-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 12), app.debugDescription)
+
+        let save = app.buttons["save-markdown-document"]
+        XCTAssertTrue(save.exists, app.debugDescription)
+        XCTAssertTrue(save.isHittable, app.debugDescription)
+        XCTAssertGreaterThanOrEqual(save.frame.height, 44)
+
+        let editor = app.textViews["Markdown source editor"]
+        XCTAssertTrue(editor.exists, "The native authoring surface must remain visible")
+        XCTAssertTrue(app.buttons["document-lab-button"].exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["publish-document-menu"].exists, app.debugDescription)
+        keepScreenshot(of: app, named: "Document ownership with authoring and publishing")
+
+        let documentMenu = app.buttons["markdown-document-menu"]
+        XCTAssertTrue(documentMenu.isHittable, app.debugDescription)
+        documentMenu.tap()
+        XCTAssertTrue(app.buttons["Save"].waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.buttons["Save a Copy…"].exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["Open Markdown…"].exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["New Document"].exists, app.debugDescription)
+    }
+
     private func keepScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

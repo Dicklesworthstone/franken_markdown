@@ -119,8 +119,9 @@ pub use scanner::{
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
 pub use span::{
-    DiagnosticSeverity, ParseDiagnostic, SourceSpan, Spanned, SpannedBlock, SpannedDocument,
-    SpannedInline, SpannedListItem, SpannedTable,
+    DiagnosticSeverity, ParseDiagnostic, ProvenanceError, ProvenanceKind, ProvenanceNode,
+    SourceSpan, Spanned, SpannedBlock, SpannedDocument, SpannedInline, SpannedListItem,
+    SpannedTable,
 };
 pub use svg::{SvgOptions, SvgReport, render_svg, render_svg_with_report};
 pub use theme::{

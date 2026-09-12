@@ -6,7 +6,7 @@
 //! constant is caught. Added after `scripts/mutation.sh` reported survivors here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::SourceSpan;
+use franken_markdown::{ProvenanceError, ProvenanceKind, ProvenanceNode, SourceSpan};
 
 #[test]
 fn new_and_len_measure_the_byte_range() {
@@ -72,4 +72,70 @@ fn default_span_is_empty_at_origin() {
     assert_eq!(d.start, 0);
     assert_eq!(d.end, 0);
     assert!(d.is_empty());
+}
+
+#[test]
+fn provenance_tree_exposes_exact_top_level_blocks_for_hit_testing() {
+    let source = "# Heading\n\nParagraph\n";
+    let document = franken_markdown::parse_markdown_spanned(source);
+    let tree = document.provenance_tree().unwrap();
+
+    assert_eq!(tree.kind, ProvenanceKind::Document);
+    assert_eq!(tree.span, SourceSpan::new(0, source.len()));
+    assert_eq!(tree.children.len(), 2);
+    assert_eq!(tree.children[0].span.slice(source), Some("# Heading"));
+    assert_eq!(tree.children[1].span.slice(source), Some("Paragraph"));
+    assert_eq!(tree.hit_test(2).unwrap().kind, ProvenanceKind::Block);
+    assert_eq!(tree.hit_test(source.len()), None);
+}
+
+#[test]
+fn provenance_validation_rejects_reversed_outside_and_overlapping_ranges() {
+    assert_eq!(
+        ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(8, 3)),
+        Err(ProvenanceError::ReversedSpan {
+            span: SourceSpan::new(8, 3)
+        })
+    );
+
+    let outside = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(2, 12)).unwrap();
+    assert_eq!(
+        ProvenanceNode::try_new(
+            ProvenanceKind::Block,
+            SourceSpan::new(0, 10),
+            vec![outside]
+        ),
+        Err(ProvenanceError::ChildOutsideParent {
+            parent: SourceSpan::new(0, 10),
+            child: SourceSpan::new(2, 12),
+        })
+    );
+
+    let first = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(1, 5)).unwrap();
+    let second = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(4, 8)).unwrap();
+    assert_eq!(
+        ProvenanceNode::try_new(
+            ProvenanceKind::Block,
+            SourceSpan::new(0, 10),
+            vec![first, second],
+        ),
+        Err(ProvenanceError::OverlappingChildren {
+            previous: SourceSpan::new(1, 5),
+            next: SourceSpan::new(4, 8),
+        })
+    );
+}
+
+#[test]
+fn generated_empty_nodes_do_not_capture_source_hits() {
+    let generated =
+        ProvenanceNode::leaf(ProvenanceKind::Generated, SourceSpan::new(3, 3)).unwrap();
+    let block = ProvenanceNode::try_new(
+        ProvenanceKind::Block,
+        SourceSpan::new(0, 8),
+        vec![generated],
+    )
+    .unwrap();
+
+    assert_eq!(block.hit_test(3).unwrap().kind, ProvenanceKind::Block);
 }

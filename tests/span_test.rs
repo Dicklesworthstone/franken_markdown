@@ -127,6 +127,24 @@ fn provenance_validation_rejects_reversed_outside_and_overlapping_ranges() {
 }
 
 #[test]
+fn provenance_validation_rejects_disjoint_children_in_reverse_source_order() {
+    let later = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(6, 8)).unwrap();
+    let earlier = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(1, 3)).unwrap();
+
+    assert_eq!(
+        ProvenanceNode::try_new(
+            ProvenanceKind::Block,
+            SourceSpan::new(0, 10),
+            vec![later, earlier],
+        ),
+        Err(ProvenanceError::OutOfOrderChildren {
+            previous: SourceSpan::new(6, 8),
+            next: SourceSpan::new(1, 3),
+        })
+    );
+}
+
+#[test]
 fn generated_empty_nodes_do_not_capture_source_hits() {
     let generated =
         ProvenanceNode::leaf(ProvenanceKind::Generated, SourceSpan::new(3, 3)).unwrap();

@@ -107,6 +107,11 @@ pub enum ProvenanceError {
         previous: SourceSpan,
         next: SourceSpan,
     },
+    /// Two source-backed siblings are disjoint but not in source order.
+    OutOfOrderChildren {
+        previous: SourceSpan,
+        next: SourceSpan,
+    },
 }
 
 /// A nested, renderer-neutral source provenance node.
@@ -163,6 +168,12 @@ impl ProvenanceNode {
                 });
             }
             if let Some(previous) = previous {
+                if child.span.start < previous.start {
+                    return Err(ProvenanceError::OutOfOrderChildren {
+                        previous,
+                        next: child.span,
+                    });
+                }
                 if child.span.start < previous.end {
                     return Err(ProvenanceError::OverlappingChildren {
                         previous,

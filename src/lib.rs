@@ -48,6 +48,7 @@ pub mod md_gen;
 pub mod parse;
 pub mod pdf;
 pub mod pdfa;
+pub mod resume;
 pub mod scanner;
 pub mod span;
 /// The font subsystem, factored into the `fmd-font` workspace crate

@@ -158,7 +158,7 @@ impl ProvenanceNode {
             return Err(ProvenanceError::ReversedSpan { span: self.span });
         }
 
-        let mut previous = None;
+        let mut previous: Option<SourceSpan> = None;
         for child in &self.children {
             child.validate()?;
             if child.span.start < self.span.start || child.span.end > self.span.end {

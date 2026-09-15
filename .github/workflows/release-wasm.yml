@@ -1,0 +1,42 @@
+name: Release WASM package
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CARGO_HTTP_USER_AGENT: "OpenAI File Downloader, XaiImageApiFetch/1.0"
+  npm_config_user_agent: "OpenAI File Downloader, XaiImageApiFetch/1.0"
+
+jobs:
+  publish-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install matching WASM tooling
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: Build and verify runtime, parity, manifest, and size
+        run: scripts/check-wasm-package.sh release
+      - name: Publish verified package with provenance
+        working-directory: target/fmd-checks/wasm-package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo 'NPM_TOKEN is required'; exit 1; }
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "${name}@${version} is already published"
+            exit 0
+          fi
+          npm publish --provenance --access public

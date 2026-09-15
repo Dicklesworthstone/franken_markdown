@@ -209,7 +209,7 @@ pub struct CancelToken(Option<bool>);
 /// close the string). Single-quoted strings terminate at a newline (Python
 /// forbids spanning lines without triple quotes). Unterminated strings run
 /// to end of input as the provisional trailing span.
-fn scan_string_end(code: &str, open: usize, raw: bool, fstring: bool) -> usize {
+fn scan_string_end(code: &str, open: usize, _raw: bool, fstring: bool) -> usize {
     let bytes = code.as_bytes();
     let len = code.len();
     let quote = bytes[open];

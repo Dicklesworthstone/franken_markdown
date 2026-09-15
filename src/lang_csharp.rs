@@ -552,7 +552,10 @@ mod tests {
         let spans = kinds("public class Widget {\n    var count = Read();\n}");
         assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "public"));
         assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "class"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Type && text == "Widget"));
+        assert!(
+            spans.iter().any(|(kind, text)| *kind == Tok::Type && text == "Widget"),
+            "spans: {spans:?}"
+        );
         assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "var"));
         assert!(spans.iter().any(|(kind, text)| *kind == Tok::Func && text == "Read"));
     }
@@ -607,9 +610,12 @@ mod tests {
             *kind == Tok::Keyword && text == "#nullable"
         }));
         // Mid-line hash is operator punctuation, not a directive.
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Operator && text == "#"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Operator && text == "#"),
+            "spans: {spans:?}"
+        );
     }
 
     #[test]
@@ -620,7 +626,7 @@ mod tests {
             .filter(|(kind, _)| *kind == Tok::Number)
             .map(|(_, text)| text.as_str())
             .collect();
-        assert!(numbers.contains(&"0xFF_ul"));
+        assert!(numbers.contains(&"0xFF_ul"), "numbers: {numbers:?}");
         assert!(numbers.contains(&"0b1010"));
         assert!(numbers.contains(&"1.5m"));
         assert!(numbers.contains(&"3e-2f"));

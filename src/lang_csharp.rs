@@ -19,7 +19,7 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
 
     while pos < len {
         let rest = &code[pos..];
-        let c = first_char(rest);
+        let c = first_char(code, pos);
         let clen = c.len_utf8();
 
         // 1. Whitespace run.
@@ -559,11 +559,7 @@ mod tests {
 
     #[test]
     fn at_escaped_identifiers_are_plain_not_keywords() {
-        let spans = kinds("@class @event");
-        let owned: Vec<(Tok, String)> = spans
-            .iter()
-            .map(|span| (span.kind, code[span.start..span.end].to_string()))
-            .collect();
+        let owned = kinds("@class @event");
         assert!(owned.contains(&(Tok::Plain, "@class".to_string())));
         assert!(owned.contains(&(Tok::Plain, "@event".to_string())));
         assert!(owned.iter().all(|(kind, _)| *kind == Tok::Plain));

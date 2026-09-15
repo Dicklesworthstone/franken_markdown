@@ -139,28 +139,35 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
             }
         }
 
-        // 6. Character literal: 'c', '\n', '\u0041'. Unterminated falls
-        //    through to the operator branch.
+        // 6. Character literal: 'c', '\n', '\u0041'. Unterminated at chunk
+        //    boundary/EOF extends to len as the provisional trailing span.
         if c == '\'' {
             let start = pos;
             let mut p = pos + 1;
             let mut closed = false;
-            if p < len && bytes[p] == b'\\' {
-                p += 1;
-                let next = code[p..].chars().next();
-                p += next.map_or(0, char::len_utf8);
-                // Unicode escape forms \u0041 / \U00010041.
-                while p < len && bytes[p].is_ascii_hexdigit() && p <= start + 7 {
+            while p < len {
+                let b = bytes[p];
+                if b == b'\\' {
                     p += 1;
+                    if p < len {
+                        p += first_char(code, p).len_utf8();
+                    }
+                    continue;
                 }
-            } else if p < len {
+                if b == b'\'' {
+                    p += 1;
+                    closed = true;
+                    break;
+                }
+                if b == b'\n' || b == b'\r' {
+                    break;
+                }
                 p += first_char(code, p).len_utf8();
+                if p > start + 8 {
+                    break;
+                }
             }
-            if p < len && bytes[p] == b'\'' {
-                p += 1;
-                closed = true;
-            }
-            if closed {
+            if closed || p == len {
                 spans.push(Span {
                     kind: Tok::Str,
                     start,
@@ -169,11 +176,18 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 pos = p;
                 continue;
             }
-            // Fall through: lone quote is operator punctuation.
+            // Lone quote unclosed before newline or exceeded max length.
+            spans.push(Span {
+                kind: Tok::Operator,
+                start,
+                end: start + 1,
+            });
+            pos = start + 1;
+            continue;
         }
 
         // 7. Numbers: hex, binary, decimals, underscores, suffixes.
-        if c.is_ascii_digit() {
+        if c.is_ascii_digit() || (c == '.' && rest.len() > 1 && bytes[pos + 1].is_ascii_digit()) {
             let start = pos;
             let mut p = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
@@ -190,7 +204,7 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 while p < len {
                     let b = bytes[p];
                     if b == b'.' {
-                        if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) {
+                        if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) || p + 1 == len {
                             p += 1;
                         } else {
                             break;
@@ -206,30 +220,30 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                         break;
                     }
                 }
-                while p < len
+            }
+            while p < len
+                && matches!(
+                    bytes[p],
+                    b'f' | b'F' | b'd' | b'D' | b'm' | b'M' | b'u' | b'U' | b'l' | b'L'
+                )
+            {
+                // Numeric suffix run; stop at anything word-like beyond
+                // a single suffix cluster (e.g. `1ul`).
+                let mut suffix_len = 0;
+                let mut q = p;
+                while q < len
                     && matches!(
-                        bytes[p],
+                        bytes[q],
                         b'f' | b'F' | b'd' | b'D' | b'm' | b'M' | b'u' | b'U' | b'l' | b'L'
                     )
                 {
-                    // Numeric suffix run; stop at anything word-like beyond
-                    // a single suffix cluster (e.g. `1ul`).
-                    let mut suffix_len = 0;
-                    let mut q = p;
-                    while q < len
-                        && matches!(
-                            bytes[q],
-                            b'f' | b'F' | b'd' | b'D' | b'm' | b'M' | b'u' | b'U' | b'l' | b'L'
-                        )
-                    {
-                        suffix_len += 1;
-                        q += 1;
-                    }
-                    if suffix_len > 2 {
-                        break;
-                    }
-                    p = q;
+                    suffix_len += 1;
+                    q += 1;
                 }
+                if suffix_len > 2 {
+                    break;
+                }
+                p = q;
             }
             spans.push(Span {
                 kind: Tok::Number,
@@ -300,10 +314,10 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 Tok::Keyword
             } else if CS_TY.contains(word) {
                 Tok::Type
-            } else if is_capitalized {
-                Tok::Type
             } else if next_non_whitespace_byte(code, p) == Some(b'(') {
                 Tok::Func
+            } else if is_capitalized {
+                Tok::Type
             } else {
                 Tok::Plain
             };
@@ -344,7 +358,6 @@ fn scan_prefixed_string_end(code: &str, start: usize) -> Option<usize> {
     let mut p = start;
     let mut verbatim = false;
     let mut interpolated = false;
-    let mut raw = false;
     while p < len && matches!(bytes[p], b'@' | b'$') {
         match bytes[p] {
             b'@' => verbatim = true,
@@ -362,7 +375,6 @@ fn scan_prefixed_string_end(code: &str, start: usize) -> Option<usize> {
         q += 1;
     }
     if quote_run >= 3 {
-        raw = true;
         let mut closing = 0;
         let mut scan = p + quote_run;
         while scan < len {
@@ -381,7 +393,7 @@ fn scan_prefixed_string_end(code: &str, start: usize) -> Option<usize> {
     if quote_run == 0 {
         return None; // prefix without opening quote: not a string
     }
-    let mut closing_quote = bytes[p];
+    let closing_quote = bytes[p];
     p += 1; // consume the opening quote
 
     let mut brace_depth = 0usize;
@@ -543,6 +555,27 @@ static CS_KW: KwTable = KwTable {
 };
 static CS_TY: KwTable = KwTable {
     words: CS_TY_SORTED,
+};
+
+/// The versioned C# capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CSharpCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for C#.
+    pub incremental: bool,
+    /// Verbatim, interpolated, raw strings, and nested braces supported.
+    pub string_variants_and_interpolation: bool,
+    /// Preprocessor directives and character literal escapes supported.
+    pub preprocessor_and_character_escapes: bool,
+}
+
+/// The C# capability row published by this module.
+pub const CSHARP_CAPABILITY_V1: CSharpCapabilityV1 = CSharpCapabilityV1 {
+    version: 1,
+    incremental: true,
+    string_variants_and_interpolation: true,
+    preprocessor_and_character_escapes: true,
 };
 
 #[cfg(test)]

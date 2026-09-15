@@ -10,6 +10,8 @@ use franken_markdown::lang_csharp::lex_csharp_into;
 use franken_markdown::resume::{coalesce_spans, ResumableLexer};
 use franken_markdown::highlight::Span;
 
+const CONSUMER_DOCUMENT: &str = include_str!("fixtures/csharp_route/consumer_document.cs");
+
 /// Representative C# fixtures exercising comments, preprocessor directives,
 /// verbatim/interpolated/raw strings, character literals, numeric suffixes,
 /// keywords, types, calls, and truncated constructs.
@@ -26,6 +28,7 @@ const FIXTURES: &[&str] = &[
     "#nullable enable\nvar z = default;\n",
     "namespace App { class Program { static void Main() { } } }\n",
     "var broken = \"trunc",
+    CONSUMER_DOCUMENT,
 ];
 
 fn coalesced(spans: &[Span]) -> Vec<(Tok, usize, usize)> {
@@ -106,4 +109,48 @@ fn truncated_interpolation_holds_until_closed() {
     lexer.finish().expect("finish");
     let whole = highlight("csharp", "var m = $\"x {args[\"inner\"]} y\";");
     assert_eq!(coalesced(lexer.spans()), coalesced(&whole));
+}
+
+#[test]
+fn csharp_capability_row_is_versioned() {
+    use franken_markdown::lang_csharp::CSHARP_CAPABILITY_V1;
+    assert_eq!(CSHARP_CAPABILITY_V1.version, 1);
+    assert!(CSHARP_CAPABILITY_V1.incremental);
+    assert!(CSHARP_CAPABILITY_V1.string_variants_and_interpolation);
+    assert!(CSHARP_CAPABILITY_V1.preprocessor_and_character_escapes);
+}
+
+#[test]
+fn malformed_bounds_and_error_handling() {
+    use franken_markdown::resume::{ResumableLexer, ResumeError};
+
+    let mut lexer = ResumableLexer::with_limits("csharp", 32).expect("valid route");
+    let ok_feed = lexer.feed(b"var x = 42;\n");
+    assert!(ok_feed.is_ok());
+
+    // Exceeding the pending cap triggers SuffixTooLong
+    let long_chunk = "/* ".to_string() + &"a".repeat(50);
+    let err = lexer.feed(long_chunk.as_bytes()).unwrap_err();
+    assert_eq!(err.code(), "SUFFIX_TOO_LONG");
+    match err {
+        ResumeError::SuffixTooLong { held, cap } => {
+            assert!(held > 32);
+            assert_eq!(cap, 32);
+        }
+        _ => panic!("expected SuffixTooLong"),
+    }
+
+    // Finishing seals the lexer
+    let mut normal_lexer = ResumableLexer::new("csharp").expect("valid route");
+    normal_lexer.feed(b"class Program { static void Main() {} }\n").unwrap();
+    normal_lexer.finish().unwrap();
+    assert!(normal_lexer.is_finished());
+
+    // Feed after finish is refused
+    let finish_err = normal_lexer.feed(b"extra").unwrap_err();
+    assert_eq!(finish_err, ResumeError::AlreadyFinished);
+    assert_eq!(finish_err.code(), "ALREADY_FINISHED");
+
+    // Double finish is also refused
+    assert_eq!(normal_lexer.finish().unwrap_err(), ResumeError::AlreadyFinished);
 }

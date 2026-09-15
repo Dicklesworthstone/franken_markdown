@@ -404,10 +404,16 @@ mod tests {
         assert_eq!(cursor, code.len(), "spans do not reach end of input");
     }
 
+    fn lex_shell(code: &str) -> Vec<Span> {
+        let mut spans = Vec::new();
+        lex_shell_into(code, &mut spans);
+        spans
+    }
+
     #[test]
     fn keywords_builtins_and_commands_classified() {
         let code = "if test -f x; then echo done; fi";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
         let keywords: Vec<&str> = spans
             .iter()
@@ -422,7 +428,7 @@ mod tests {
     #[test]
     fn single_quotes_are_verbatim_no_expansion() {
         let code = "echo '$HOME and `cmd`'";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
         let strs: Vec<&str> = spans
             .iter()
@@ -438,28 +444,28 @@ mod tests {
     #[test]
     fn double_quotes_allow_expansions() {
         let code = "echo \"home is $HOME\"";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
     }
 
     #[test]
     fn parameter_expansions_with_nested_quoting() {
         let code = "echo ${VAR:-\"default value\"} ${1}";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
     }
 
     #[test]
     fn command_substitution_balanced_parens() {
         let code = "echo $(echo \"inner (paren) done\")";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
     }
 
     #[test]
     fn heredoc_operators_classified() {
         let code = "cat <<EOF\ntext\nEOF\ncat <<-TAB\tmore\nTAB";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
         let ops: Vec<&str> = spans
             .iter()
@@ -473,14 +479,14 @@ mod tests {
     #[test]
     fn escaped_newline_continues_command() {
         let code = "echo one \\\n  two";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
     }
 
     #[test]
     fn unterminated_single_quote_spans_to_eof() {
         let code = "echo 'never closed";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
         let last = spans.last().unwrap();
         assert_eq!(last.kind, Tok::Str);
@@ -490,7 +496,7 @@ mod tests {
     #[test]
     fn comments_stop_at_hash_only_outside_quotes() {
         let code = "echo '# not a comment' # real comment";
-        let spans = lex_shell_into(code, &mut Vec::new());
+        let spans = lex_shell(code);
         assert_tiling(code, &spans);
         let comments: Vec<&str> = spans
             .iter()

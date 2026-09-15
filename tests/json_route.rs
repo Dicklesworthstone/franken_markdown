@@ -15,12 +15,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use franken_markdown::highlight::{self, highlight};
-use franken_markdown::highlight::Span;
+use franken_markdown::highlight;
+use franken_markdown::highlight::{highlight, Span};
 use franken_markdown::resume::{ResumableLexer, ResumeError};
+
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/json_route/consumer_document.json");
 
-/// A fixture: named JSON source bytes.
+const RUN_ID_ENV: &str = "FCB_012_RUN_ID";
+
 struct Fixture {
     name: &'static str,
     bytes: Vec<u8>,
@@ -129,21 +131,7 @@ fn assert_split_equivalence(name: &str, bytes: &[u8]) {
 
     for at in 0..=bytes.len() {
         let got = split_spans(bytes, at);
-        if got != expected {
-            for (index, pair) in got.iter().zip(expected.iter()).enumerate() {
-                if pair.0 != pair.1 {
-                    panic!(
-                        "{name}: split at {at}: first divergence at span {index}: got {:?} expected {:?} (got {} spans, expected {} spans)",
-                        pair.0, pair.1, got.len(), expected.len()
-                    );
-                }
-            }
-            panic!(
-                "{name}: split at {at}: prefix matches but lengths diverge (got {}, expected {})",
-                got.len(),
-                expected.len()
-            );
-        }
+        assert_eq!(got, expected, "{name}: split at {at} diverged");
     }
 
     let per_byte = byte_per_feed_spans(bytes);
@@ -151,9 +139,6 @@ fn assert_split_equivalence(name: &str, bytes: &[u8]) {
 }
 
 fn scenario_receipt(case: &str, outcome: &str, detail: &str) {
-    // Bounded, deterministic, self-contained evidence line retained under
-    // the run's receipts directory (see receipts_dir). No secrets: fixture
-    // names and outcomes only.
     let run_dir = receipts_dir();
     std::fs::create_dir_all(&run_dir).expect("receipts dir created");
     let line = format!(
@@ -170,7 +155,7 @@ fn scenario_receipt(case: &str, outcome: &str, detail: &str) {
 }
 
 fn receipts_dir() -> PathBuf {
-    let run_id = std::env::var("FCB_012_RUN_ID").unwrap_or_else(|_| "local".to_string());
+    let run_id = std::env::var(RUN_ID_ENV).unwrap_or_else(|_| "local".to_string());
     std::env::temp_dir().join(format!("fcb-9vx17-receipts-{run_id}"))
 }
 

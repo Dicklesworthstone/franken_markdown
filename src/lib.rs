@@ -52,6 +52,7 @@ pub mod lang_java;
 pub mod lang_shell;
 pub mod lang_python;
 pub mod lang_sql;
+pub mod lang_swift;
 pub mod layout;
 pub mod lex_c;
 pub mod lex_toml;

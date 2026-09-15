@@ -109,6 +109,7 @@ enum Lexer {
     Go,
     CSharp,
     Java,
+    Swift,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -167,6 +168,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::Java) => {
             crate::lang_java::lex_java_into(code, spans);
+        }
+        Some(Lexer::Swift) => {
+            crate::lang_swift::lex_swift_into(code, spans);
         }
         None => return false,
     }
@@ -1508,6 +1512,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "python" | "py" => Some(Lexer::Python),
         "csharp" | "cs" | "c#" => Some(Lexer::CSharp),
         "java" => Some(Lexer::Java),
+        "swift" => Some(Lexer::Swift),
         "go" | "golang" => Some(Lexer::Go),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
             Some(Lexer::JavaScript)

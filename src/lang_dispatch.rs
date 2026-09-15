@@ -286,8 +286,8 @@ impl LanguageRegistry {
     /// - Implemented: generic lexer languages with verified chunked coalesced equivalence.
     /// - Provisional: JSX/TSX (using JS/TS keyword baseline awaiting specialized state machine)
     ///   and HTML/CSS/Markdown (using tag/rule machines awaiting incremental adversarial splits).
-    /// - Implemented: C#, Java (incremental engines landed via fcb-9vx.12, 14).
-    /// - Missing: Swift (no lexer engine in FMD yet; owned by child bead fcb-9vx.15).
+    /// - Implemented: C#, Java, Swift (incremental engines landed via fcb-9vx.12, 14, 15).
+    /// - Missing: 0 (all 20 standard languages have qualified or provisional routes).
     #[must_use]
     pub fn standard_20_inventory() -> Self {
         let mut reg = Self::new();
@@ -372,10 +372,10 @@ impl LanguageRegistry {
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Swift,
-                status: QualificationStatus::Missing,
+                status: QualificationStatus::Implemented,
                 primary_alias: "swift",
                 aliases: LanguageId::Swift.standard_aliases(),
-                description: "Swift lexical route (missing qualification; owned by fcb-9vx.15)",
+                description: "Swift incremental lexical engine with nested comments, raw/multiline strings, attributes and adversarial split verification",
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Shell,

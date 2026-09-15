@@ -168,28 +168,24 @@ fn missing_language_qualification_truthfully_reported_and_refused_on_dispatch() 
     let registry = LanguageRegistry::standard_20_inventory();
     let missing = registry.missing_routes();
 
-    // Exactly Swift is missing
-    assert_eq!(missing.len(), 1);
-    assert!(missing.contains(&LanguageId::Swift));
+    // All 20 standard inventory languages now have qualified or provisional routes
+    assert_eq!(missing.len(), 0);
 
-    // Refusal on dispatch
-    for &id in &missing {
-        let req = DispatchRequest {
-            language_query: id.canonical_name(),
-            code: b"class Test {}",
-            work_budget_bytes: 1024,
-            source_revision: Some(1),
-        };
-        let err = registry.dispatch(req).unwrap_err();
-        assert_eq!(
-            err,
-            DispatchError::LanguageNotQualified {
-                language_id: id,
-                status: QualificationStatus::Missing,
-            }
-        );
-        assert_eq!(err.code(), "LANGUAGE_NOT_QUALIFIED");
-    }
+    // Refusal on unregistered language dispatch
+    let req = DispatchRequest {
+        language_query: "unknown_future_lang",
+        code: b"class Test {}",
+        work_budget_bytes: 1024,
+        source_revision: Some(1),
+    };
+    let err = registry.dispatch(req).unwrap_err();
+    assert_eq!(
+        err,
+        DispatchError::UnknownLanguage {
+            query: "unknown_future_lang".to_string(),
+        }
+    );
+    assert_eq!(err.code(), "UNKNOWN_LANGUAGE");
 }
 
 #[test]
@@ -217,9 +213,9 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
     let registry = LanguageRegistry::standard_20_inventory();
     let implemented = registry.implemented_routes();
 
-    // 14 languages are implemented with full coalesced equivalence (including C# and Java)
-    assert_eq!(implemented.len(), 14);
-    assert_eq!(registry.len(), 14 + 5 + 1); // 14 implemented + 5 provisional + 1 missing = 20!
+    // 15 languages are implemented with full coalesced equivalence (including C#, Java, Swift)
+    assert_eq!(implemented.len(), 15);
+    assert_eq!(registry.len(), 15 + 5 + 0); // 15 implemented + 5 provisional + 0 missing = 20!
 
     let fixtures: &[(&str, &[u8])] = &[
         ("rust", b"fn calculate(val: u32) -> u32 { val * 2 }"),
@@ -229,6 +225,7 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
         ("go", b"func Calculate(val int) int { return val * 2 }"),
         ("csharp", b"class C { int Double(int x) => x * 2; }"),
         ("java", b"public class MathUtils { public static int doubleVal(int x) { return x * 2; } }"),
+        ("swift", b"func calculate(val: Int) -> Int { return val * 2 }"),
         ("c", b"int calculate(int val) { return val * 2; }"),
         ("cpp", b"int calculate(int val) { return val * 2; }"),
         ("shell", b"#!/usr/bin/env bash\necho 'hello world'\n"),

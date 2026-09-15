@@ -142,3 +142,8 @@ codegen-units = 1
 debug = "line-tables-only"
 strip = false
 panic = "unwind"
+
+[dev-dependencies]
+# Hostile-input harness core (FCB-059.A): deterministic generators and the
+# failure-preserving minimizer, exercised against the real resumable engine.
+fcb-conformance = { path = "../franken_code_browser/crates/fcb-conformance" }

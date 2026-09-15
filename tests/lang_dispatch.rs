@@ -168,9 +168,8 @@ fn missing_language_qualification_truthfully_reported_and_refused_on_dispatch() 
     let registry = LanguageRegistry::standard_20_inventory();
     let missing = registry.missing_routes();
 
-    // Exactly C#, Java, Swift are missing in initial inventory
-    assert_eq!(missing.len(), 3);
-    assert!(missing.contains(&LanguageId::CSharp));
+    // Exactly Java and Swift are missing
+    assert_eq!(missing.len(), 2);
     assert!(missing.contains(&LanguageId::Java));
     assert!(missing.contains(&LanguageId::Swift));
 
@@ -219,9 +218,9 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
     let registry = LanguageRegistry::standard_20_inventory();
     let implemented = registry.implemented_routes();
 
-    // 12 languages are implemented with full coalesced equivalence
-    assert_eq!(implemented.len(), 12);
-    assert_eq!(registry.len(), 12 + 5 + 3); // 12 implemented + 5 provisional + 3 missing = 20!
+    // 13 languages are implemented with full coalesced equivalence (including C#)
+    assert_eq!(implemented.len(), 13);
+    assert_eq!(registry.len(), 13 + 5 + 2); // 13 implemented + 5 provisional + 2 missing = 20!
 
     let fixtures: &[(&str, &[u8])] = &[
         ("rust", b"fn calculate(val: u32) -> u32 { val * 2 }"),

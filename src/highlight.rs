@@ -98,6 +98,7 @@ struct Rules {
 #[derive(Clone, Copy)]
 enum Lexer {
     Generic(Rules),
+    Sql,
     Html,
     Css,
     Markdown,
@@ -155,6 +156,7 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         Some(Lexer::JavaScript) => {
             crate::lang_javascript::lex_javascript_into(code, spans);
         }
+        Some(Lexer::Sql) => crate::lang_sql::lex_sql_into(code, spans),
         Some(Lexer::Python) => {
             crate::lang_python::lex_python_into(code, spans);
         }
@@ -1493,12 +1495,14 @@ fn language_key(lang: &str) -> Cow<'_, str> {
 fn lexer(lang: &str) -> Option<Lexer> {
     let l = language_key(lang);
     match l.as_ref() {
+        "sql" => Some(Lexer::Sql),
         "html" | "htm" | "xhtml" | "xml" | "svg" => Some(Lexer::Html),
         "css" | "scss" | "sass" => Some(Lexer::Css),
         "markdown" | "md" | "mdown" | "mkd" => Some(Lexer::Markdown),
         "mermaid" | "mmd" => Some(Lexer::Mermaid),
         "rust" | "rs" => Some(Lexer::Rust),
         "python" | "py" => Some(Lexer::Python),
+        "csharp" | "cs" | "c#" => Some(Lexer::CSharp),
         "go" | "golang" => Some(Lexer::Go),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
             Some(Lexer::JavaScript)
@@ -1566,14 +1570,6 @@ fn lexer(lang: &str) -> Option<Lexer> {
             line_comments: &["#"],
             block_comment: None,
             strings: &['"', '\''],
-            hash_directives: false,
-        })),
-        "sql" => Some(Lexer::Generic(Rules {
-            keywords: SQL_KW,
-            types: SQL_TY,
-            line_comments: &["--"],
-            block_comment: Some(("/*", "*/")),
-            strings: &['\'', '"'],
             hash_directives: false,
         })),
         _ => None,

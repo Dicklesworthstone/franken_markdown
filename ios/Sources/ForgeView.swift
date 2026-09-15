@@ -25,6 +25,7 @@ struct ForgeView: View {
     @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
     @AppStorage(Lab.textScaleStorageKey) private var uiTextScale = Lab.defaultTextScale
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
+    @AppStorage("frankenmarkdown.documentAutosave.v1") private var documentAutosave = true
     @StateObject private var renderer = MarkdownRendererModel()
     @StateObject private var documentSession: MarkdownDocumentSession
     @State private var lane: ForgeLane = .write
@@ -50,6 +51,7 @@ struct ForgeView: View {
     @State private var confirmingRevert = false
     @State private var attemptedDocumentRestoration = false
     @State private var showingRestorationConflict = false
+    @State private var pendingDocumentAutosave: Task<Void, Never>?
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
@@ -109,9 +111,10 @@ struct ForgeView: View {
 
     private var forgeRenderObservers: some View {
         forgeLayout
-        .onChange(of: renderer.source) { _, _ in
+        .onChange(of: renderer.source) { _, source in
             renderer.scheduleRender()
             renderer.scheduleDraftSave()
+            scheduleDocumentAutosave(source)
         }
         .onChange(of: renderer.documentIdentity) { _, _ in
             renderer.scheduleDraftSave()
@@ -195,6 +198,18 @@ struct ForgeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .saveMarkdownDocumentCopy)) { _ in
             beginSourceExport(.saveCopy)
+        }
+        .onChange(of: documentAutosave) { _, enabled in
+            if enabled {
+                scheduleDocumentAutosave(renderer.source)
+            } else {
+                pendingDocumentAutosave?.cancel()
+                pendingDocumentAutosave = nil
+            }
+        }
+        .onDisappear {
+            pendingDocumentAutosave?.cancel()
+            pendingDocumentAutosave = nil
         }
         .onOpenURL { url in
             if url.isFileURL {
@@ -409,6 +424,10 @@ struct ForgeView: View {
                 } label: {
                     Label("Save a Copy…", systemImage: "doc.on.doc")
                 }
+                Toggle(isOn: $documentAutosave) {
+                    Label("Automatically Save Edits", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .accessibilityIdentifier("markdown-document-autosave")
                 if documentSession.hasCurrentDocument {
                     Button {
                         requestReopenCurrentDocument()
@@ -1020,6 +1039,8 @@ struct ForgeView: View {
 
     private func saveCurrentSource() {
         editorFocused = false
+        pendingDocumentAutosave?.cancel()
+        pendingDocumentAutosave = nil
         guard documentSession.hasCurrentDocument else {
             beginSourceExport(.saveNewDocument)
             return
@@ -1028,6 +1049,34 @@ struct ForgeView: View {
             do {
                 try await documentSession.save(source: renderer.source)
             } catch {
+                documentError = error.localizedDescription
+            }
+        }
+    }
+
+    private func scheduleDocumentAutosave(_ source: String) {
+        pendingDocumentAutosave?.cancel()
+        pendingDocumentAutosave = nil
+        guard documentAutosave,
+              documentSession.hasCurrentDocument,
+              documentSession.attention == nil,
+              documentSession.isDirty(source: source) else { return }
+
+        pendingDocumentAutosave = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+                try Task.checkCancellation()
+                guard documentAutosave,
+                      documentSession.hasCurrentDocument,
+                      documentSession.attention == nil,
+                      documentSession.isDirty(source: source),
+                      renderer.source == source else { return }
+                try await documentSession.save(source: source)
+                pendingDocumentAutosave = nil
+            } catch is CancellationError {
+                // A newer edit or an explicit save superseded this debounce.
+            } catch {
+                pendingDocumentAutosave = nil
                 documentError = error.localizedDescription
             }
         }

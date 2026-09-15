@@ -103,6 +103,10 @@ final class FrankenMarkdownAppearanceUITests: XCTestCase {
         documentMenu.tap()
         XCTAssertTrue(app.buttons["Save"].waitForExistence(timeout: 3), app.debugDescription)
         XCTAssertTrue(app.buttons["Save a Copy…"].exists, app.debugDescription)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["markdown-document-autosave"].exists,
+            app.debugDescription
+        )
         XCTAssertTrue(app.buttons["Open Markdown…"].exists, app.debugDescription)
         XCTAssertTrue(app.buttons["New Document"].exists, app.debugDescription)
     }

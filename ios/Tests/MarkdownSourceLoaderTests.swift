@@ -99,6 +99,23 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionSaveAdvancesBaselineForAutomaticAndManualSaves() async throws {
+        let defaults = try makeDefaults()
+        let original = "# Original\n"
+        let updated = "# Updated\n\nSaved without leaving the editor.\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let session = MarkdownDocumentSession(initialSource: original, defaults: defaults)
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+
+        XCTAssertTrue(session.isDirty(source: updated))
+        try await session.save(source: updated)
+
+        XCTAssertFalse(session.isDirty(source: updated))
+        XCTAssertEqual(try MarkdownSourceLoader.decode(Data(contentsOf: url)), updated)
+        XCTAssertNil(session.attention)
+    }
+
+    @MainActor
     func testSessionTracksDirtyStateAndPersistsBoundedRecents() async throws {
         let suiteName = "MarkdownSourceLoaderTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

@@ -168,9 +168,8 @@ fn missing_language_qualification_truthfully_reported_and_refused_on_dispatch() 
     let registry = LanguageRegistry::standard_20_inventory();
     let missing = registry.missing_routes();
 
-    // Exactly Java and Swift are missing
-    assert_eq!(missing.len(), 2);
-    assert!(missing.contains(&LanguageId::Java));
+    // Exactly Swift is missing
+    assert_eq!(missing.len(), 1);
     assert!(missing.contains(&LanguageId::Swift));
 
     // Refusal on dispatch
@@ -218,9 +217,9 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
     let registry = LanguageRegistry::standard_20_inventory();
     let implemented = registry.implemented_routes();
 
-    // 13 languages are implemented with full coalesced equivalence (including C#)
-    assert_eq!(implemented.len(), 13);
-    assert_eq!(registry.len(), 13 + 5 + 2); // 13 implemented + 5 provisional + 2 missing = 20!
+    // 14 languages are implemented with full coalesced equivalence (including C# and Java)
+    assert_eq!(implemented.len(), 14);
+    assert_eq!(registry.len(), 14 + 5 + 1); // 14 implemented + 5 provisional + 1 missing = 20!
 
     let fixtures: &[(&str, &[u8])] = &[
         ("rust", b"fn calculate(val: u32) -> u32 { val * 2 }"),
@@ -228,6 +227,8 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
         ("javascript", b"function calculate(val) { return val * 2; }"),
         ("typescript", b"function calculate(val: number): number { return val * 2; }"),
         ("go", b"func Calculate(val int) int { return val * 2 }"),
+        ("csharp", b"class C { int Double(int x) => x * 2; }"),
+        ("java", b"public class MathUtils { public static int doubleVal(int x) { return x * 2; } }"),
         ("c", b"int calculate(int val) { return val * 2; }"),
         ("cpp", b"int calculate(int val) { return val * 2; }"),
         ("shell", b"#!/usr/bin/env bash\necho 'hello world'\n"),

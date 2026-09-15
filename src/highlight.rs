@@ -108,6 +108,7 @@ enum Lexer {
     Python,
     Go,
     CSharp,
+    Java,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -163,6 +164,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         Some(Lexer::Go) => crate::lang_go::lex_go_into(code, spans),
         Some(Lexer::CSharp) => {
             crate::lang_csharp::lex_csharp_into(code, spans);
+        }
+        Some(Lexer::Java) => {
+            crate::lang_java::lex_java_into(code, spans);
         }
         None => return false,
     }
@@ -1503,6 +1507,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "rust" | "rs" => Some(Lexer::Rust),
         "python" | "py" => Some(Lexer::Python),
         "csharp" | "cs" | "c#" => Some(Lexer::CSharp),
+        "java" => Some(Lexer::Java),
         "go" | "golang" => Some(Lexer::Go),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
             Some(Lexer::JavaScript)
@@ -1531,14 +1536,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
             strings: &['"', '\''],
             hash_directives: false,
         })),
-        "go" | "golang" => Some(Lexer::Generic(Rules {
-            keywords: GO_KW,
-            types: GO_TY,
-            line_comments: &["//"],
-            block_comment: Some(("/*", "*/")),
-            strings: &['"', '`'],
-            hash_directives: false,
-        })),
+
         "c" | "h" | "cpp" | "c++" | "cc" | "hpp" => Some(Lexer::Generic(Rules {
             keywords: C_KW,
             types: C_TY,

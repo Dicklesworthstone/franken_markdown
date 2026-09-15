@@ -78,6 +78,7 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
         //    remainder of the line as plain. A `#` elsewhere is operator
         //    punctuation (`#nullable`-style directives are line-bound).
         if c == '#' {
+            let start = pos;
             let at_line_start = {
                 let mut p = pos;
                 while p > 0 && (bytes[p - 1] == b' ' || bytes[p - 1] == b'\t') {

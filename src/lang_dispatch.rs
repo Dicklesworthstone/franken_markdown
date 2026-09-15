@@ -286,7 +286,8 @@ impl LanguageRegistry {
     /// - Implemented: generic lexer languages with verified chunked coalesced equivalence.
     /// - Provisional: JSX/TSX (using JS/TS keyword baseline awaiting specialized state machine)
     ///   and HTML/CSS/Markdown (using tag/rule machines awaiting incremental adversarial splits).
-    /// - Missing: C#, Java, Swift (no lexer engine in FMD yet; owned by child beads fcb-9vx.12, 14, 15).
+    /// - Implemented: C#, Java (incremental engines landed via fcb-9vx.12, 14).
+    /// - Missing: Swift (no lexer engine in FMD yet; owned by child bead fcb-9vx.15).
     #[must_use]
     pub fn standard_20_inventory() -> Self {
         let mut reg = Self::new();
@@ -350,10 +351,10 @@ impl LanguageRegistry {
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::CSharp,
-                status: QualificationStatus::Missing,
+                status: QualificationStatus::Implemented,
                 primary_alias: "csharp",
                 aliases: LanguageId::CSharp.standard_aliases(),
-                description: "C# lexical route (missing qualification; owned by fcb-9vx.12)",
+                description: "C# incremental lexical engine with comments, preprocessor directives, verbatim/interpolated/raw strings and adversarial split verification",
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Go,
@@ -364,10 +365,10 @@ impl LanguageRegistry {
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Java,
-                status: QualificationStatus::Missing,
+                status: QualificationStatus::Implemented,
                 primary_alias: "java",
                 aliases: LanguageId::Java.standard_aliases(),
-                description: "Java lexical route (missing qualification; owned by fcb-9vx.14)",
+                description: "Java incremental lexical engine with comments, text blocks, annotations and adversarial split verification",
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Swift,

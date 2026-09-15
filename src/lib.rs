@@ -48,6 +48,7 @@ pub mod lang_go;
 pub mod lang_cplusplus;
 pub mod lang_csharp;
 pub mod lang_javascript;
+pub mod lang_java;
 pub mod lang_shell;
 pub mod lang_python;
 pub mod lang_sql;

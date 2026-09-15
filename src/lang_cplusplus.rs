@@ -96,6 +96,28 @@ fn is_type_name(word: &str) -> bool {
     TYPES.contains(&word)
 }
 
+fn push_tiling(
+    spans: &mut Vec<Span>,
+    last_end: &mut usize,
+    kind: Tok,
+    start: usize,
+    end: usize,
+) {
+    if *last_end < start {
+        spans.push(Span {
+            kind: Tok::Plain,
+            start: *last_end,
+            end: start,
+        });
+    }
+    spans.push(Span {
+        kind,
+        start,
+        end,
+    });
+    *last_end = end;
+}
+
 fn emit_directive(
     spans: &mut Vec<Span>,
     last_end: &mut usize,
@@ -157,28 +179,6 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             cursor -= 1;
         }
         true
-    }
-
-    fn push_tiling(
-        spans: &mut Vec<Span>,
-        last_end: &mut usize,
-        kind: Tok,
-        start: usize,
-        end: usize,
-    ) {
-        if *last_end < start {
-            spans.push(Span {
-                kind: Tok::Plain,
-                start: *last_end,
-                end: start,
-            });
-        }
-        spans.push(Span {
-            kind,
-            start,
-            end,
-        });
-        *last_end = end;
     }
 
     while pos < bytes_len {
@@ -412,7 +412,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let suffixes: &[&[u8]] = &[b"ull", b"llu", b"ull", b"llu", b"ul", b"lu", b"ll",
                 b"ll", b"ul", b"lu", b"u", b"U", b"l", b"L", b"f", b"F"];
             for suffix in suffixes {
-                if code[pos..].starts_with(*suffix) {
+                if code.as_bytes()[pos..].starts_with(suffix) {
                     pos += suffix.len();
                     break;
                 }

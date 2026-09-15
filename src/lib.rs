@@ -45,6 +45,7 @@ pub mod highlight;
 pub mod html;
 pub mod lang_dispatch;
 pub mod lang_go;
+pub mod lang_html;
 pub mod lang_cplusplus;
 pub mod lang_csharp;
 pub mod lang_javascript;

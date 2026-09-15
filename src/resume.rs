@@ -213,6 +213,13 @@ impl ResumableLexer {
             .map_err(|_| ResumeError::InvalidUtf8 { at: 0 })
     }
 
+    fn is_html_family(&self) -> bool {
+        matches!(
+            self.lang.to_ascii_lowercase().as_str(),
+            "html" | "htm" | "xhtml" | "xml" | "svg"
+        )
+    }
+
     /// Lex the held suffix and release every span except the final one, whose
     /// bytes may still be extended by future input.
     fn lex_pending_release(&mut self) {
@@ -223,15 +230,23 @@ impl ResumableLexer {
         let Some(last) = spans.last() else {
             return; // empty input so far
         };
-        let hold_from = last.start;
-        let mut released = Vec::with_capacity(spans.len().saturating_sub(1));
-        for span in &spans[..spans.len() - 1] {
-            released.push(Span {
+        let mut hold_from = last.start;
+        if self.is_html_family() {
+            if let Some(open_tag) = find_unclosed_html_tag(&text, &spans) {
+                hold_from = open_tag;
+            } else if is_html_closed_construct(&text, last) {
+                hold_from = last.end;
+            }
+        }
+        let released: Vec<Span> = spans
+            .iter()
+            .filter(|span| span.end <= hold_from)
+            .map(|span| Span {
                 kind: span.kind,
                 start: self.base + span.start,
                 end: self.base + span.end,
-            });
-        }
+            })
+            .collect();
         self.spans.extend(released);
         self.base += hold_from;
         self.pending.drain(..hold_from);
@@ -315,6 +330,8 @@ impl ResumableLexer {
                 return CommentState::Block {
                     depth: depth.max(1),
                 };
+            } else if tail.starts_with("<!--") {
+                return CommentState::Block { depth: 1 };
             } else {
                 return CommentState::Line;
             }
@@ -831,4 +848,79 @@ pub fn verify_whole_block_coalesced_equivalence(
     let whole_coalesced = coalesce_spans(&whole_spans);
     let chunked_coalesced = coalesce_spans(&chunked_spans);
     Ok(whole_coalesced == chunked_coalesced)
+}
+
+/// Find the byte start offset of the currently unclosed HTML tag or embedded block, if any.
+///
+/// If an HTML tag has opened (with `<` or `</` followed by a tag name) but has
+/// not yet encountered its closing `>` or `/>`, or if an opening `<script>` or `<style>`
+/// tag has not yet encountered its matching closing `</script>` or `</style>` tag,
+/// all spans inside the unclosed tag or embedded block must be held in `pending`
+/// across chunks so that inner content is not prematurely classified without its
+/// enclosing context.
+fn find_unclosed_html_tag(text: &str, spans: &[Span]) -> Option<usize> {
+    let mut unclosed_start = None;
+    let mut in_script_or_style: Option<(&str, usize)> = None;
+
+    for (i, span) in spans.iter().enumerate() {
+        let slice = &text[span.start..span.end];
+        if span.kind == Tok::Operator && (slice == "<" || slice == "</") {
+            if i + 1 < spans.len() && spans[i + 1].kind == Tok::Keyword {
+                let tag_name = &text[spans[i + 1].start..spans[i + 1].end];
+                if slice == "<" {
+                    if tag_name.eq_ignore_ascii_case("script") {
+                        in_script_or_style = Some(("script", span.start));
+                    } else if tag_name.eq_ignore_ascii_case("style") {
+                        in_script_or_style = Some(("style", span.start));
+                    }
+                } else if slice == "</" {
+                    if let Some((active_name, _)) = in_script_or_style {
+                        if tag_name.eq_ignore_ascii_case(active_name) {
+                            in_script_or_style = None;
+                        }
+                    }
+                }
+                unclosed_start = Some(span.start);
+            }
+        } else if span.kind == Tok::Operator && (slice == ">" || slice == "/>") {
+            if slice == "/>" {
+                in_script_or_style = None;
+            }
+            unclosed_start = None;
+        }
+    }
+
+    if unclosed_start.is_some() {
+        unclosed_start
+    } else if let Some((_, start)) = in_script_or_style {
+        Some(start)
+    } else {
+        None
+    }
+}
+
+/// Check whether the final span in an HTML input represents a fully closed,
+/// complete construct (such as a closed tag, closed comment, closed CDATA,
+/// closed DOCTYPE, closed XML declaration, or closed character entity).
+///
+/// When a construct is fully closed and no unclosed tags remain, all spans
+/// including this final span can be released safely because no future chunk
+/// can extend or alter the classification of this completed token.
+fn is_html_closed_construct(text: &str, last: &Span) -> bool {
+    let slice = &text[last.start..last.end];
+    match last.kind {
+        Tok::Operator => slice == ">" || slice == "/>",
+        Tok::Comment => {
+            text[last.start..].starts_with("<!--") && text[last.start..].ends_with("-->")
+        }
+        Tok::Str => {
+            text[last.start..].starts_with("<![CDATA[") && text[last.start..].ends_with("]]>")
+        }
+        Tok::Keyword => {
+            (text[last.start..].starts_with("<!") && text[last.start..].ends_with('>'))
+                || (text[last.start..].starts_with("<?") && text[last.start..].ends_with("?>"))
+                || (text[last.start..].starts_with('&') && text[last.start..].ends_with(';'))
+        }
+        _ => false,
+    }
 }

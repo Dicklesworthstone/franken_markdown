@@ -150,7 +150,7 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
     spans.clear();
     match lexer(lang) {
         Some(Lexer::Generic(r)) => lex_generic_into(code, &r, spans),
-        Some(Lexer::Html) => lex_html_into(code, spans),
+        Some(Lexer::Html) => crate::lang_html::lex_html_into(code, spans),
         Some(Lexer::Css) => lex_css_into(code, spans),
         Some(Lexer::Markdown) => lex_markdown_into(code, spans),
         Some(Lexer::Mermaid) => lex_mermaid_into(code, spans),
@@ -785,80 +785,6 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
 
 
 
-fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
-    let len = code.len();
-    let mut pos = 0usize;
-
-    while pos < len {
-        let rest = &code[pos..];
-
-        if rest.starts_with("<!--") {
-            let end = find_after(code, pos + 4, "-->").unwrap_or(len);
-            push_span(spans, Tok::Comment, pos, end);
-            pos = end;
-            continue;
-        }
-
-        if rest.starts_with('<') {
-            if !looks_like_html_tag(rest) {
-                push_span(spans, Tok::Operator, pos, pos + 1);
-                pos += 1;
-                continue;
-            }
-
-            push_span(spans, Tok::Operator, pos, pos + 1);
-            pos += 1;
-
-            if code[pos..].starts_with('/') {
-                push_span(spans, Tok::Operator, pos, pos + 1);
-                pos += 1;
-            }
-
-            while pos < len {
-                let ch = first_char_at(code, pos);
-                let clen = ch.len_utf8();
-
-                if ch.is_whitespace() {
-                    let start = pos;
-                    pos = consume_while(code, pos, char::is_whitespace);
-                    push_span(spans, Tok::Plain, start, pos);
-                } else if code[pos..].starts_with("/>") {
-                    push_span(spans, Tok::Operator, pos, pos + 2);
-                    pos += 2;
-                    break;
-                } else if ch == '>' {
-                    push_span(spans, Tok::Operator, pos, pos + clen);
-                    pos += clen;
-                    break;
-                } else if ch == '"' || ch == '\'' {
-                    let end = consume_quoted(code, pos, ch);
-                    push_span(spans, Tok::Str, pos, end);
-                    pos = end;
-                } else if ch == '=' {
-                    push_span(spans, Tok::Operator, pos, pos + clen);
-                    pos += clen;
-                } else if is_html_name_char(ch) {
-                    let start = pos;
-                    pos = consume_while(code, pos, is_html_name_char);
-                    let kind = if previous_non_space_is_tag_open(code, start) {
-                        Tok::Keyword
-                    } else {
-                        Tok::Type
-                    };
-                    push_span(spans, kind, start, pos);
-                } else {
-                    push_span(spans, Tok::Punct, pos, pos + clen);
-                    pos += clen;
-                }
-            }
-            continue;
-        }
-
-        let next_tag = rest.find('<').map_or(len, |off| pos + off);
-        push_span(spans, Tok::Plain, pos, next_tag);
-        pos = next_tag;
-    }
-}
 
 fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
@@ -1209,6 +1135,7 @@ fn line_prefix_is_blank(code: &str, pos: usize) -> bool {
     true // start of input: nothing but (optional) whitespace precedes pos
 }
 
+#[allow(dead_code)]
 fn previous_non_space_is_tag_open(code: &str, start: usize) -> bool {
     let mut prev = None;
     for ch in code[..start].chars().rev() {
@@ -1221,6 +1148,7 @@ fn previous_non_space_is_tag_open(code: &str, start: usize) -> bool {
     matches!(prev, Some('<' | '/'))
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn looks_like_html_tag(rest: &str) -> bool {
     let mut chars = rest.chars();
@@ -1241,6 +1169,7 @@ fn looks_like_html_tag(rest: &str) -> bool {
     ch.is_ascii_alphabetic() || matches!(ch, '!' | '?')
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn is_html_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.' | '!' | '?')

@@ -201,7 +201,28 @@ pub fn lex_python_into(code: &str, spans: &mut Vec<Span>) {
 /// Cooperative deadline/cancel surface for future driver integration.
 /// Preserved as the seam the izu8 scenario driver can poll.
 #[derive(Debug, Default)]
-pub struct CancelToken(Option<bool>);
+pub struct CancelToken(pub Option<bool>);
+
+/// The versioned Python capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PythonCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for Python.
+    pub incremental: bool,
+    /// Triple/raw/byte/f-strings and interpolation supported under declared capability.
+    pub string_variants_and_interpolation: bool,
+    /// Line continuations and indentation supported.
+    pub continuations_and_indentation: bool,
+}
+
+/// The Python capability row published by this module.
+pub const PYTHON_CAPABILITY_V1: PythonCapabilityV1 = PythonCapabilityV1 {
+    version: 1,
+    incremental: true,
+    string_variants_and_interpolation: true,
+    continuations_and_indentation: true,
+};
 
 /// Scan a Python string starting at its opening quote (`open`), honoring
 /// `raw` (no escape processing: `r"\"` is unterminated, never closed) and

@@ -9,6 +9,8 @@ use franken_markdown::resume::{coalesce_spans, ResumableLexer};
 use franken_markdown::lang_python::lex_python_into;
 use franken_markdown::highlight::Span;
 
+const CONSUMER_DOCUMENT: &str = include_str!("fixtures/python_route/consumer_document.py");
+
 /// Representative Python fixtures exercising the bead's feature list:
 /// triple/raw/byte/f strings, prefixes, escapes, line continuations,
 /// comments, indentation, numbers, keywords, calls, truncated quotes.
@@ -25,6 +27,7 @@ const FIXTURES: &[&str] = &[
     "q = \"trunc",
     "partial = f\"{'nest'} more",
     "width = \\\n    42\n# comment\n",
+    CONSUMER_DOCUMENT,
 ];
 
 fn coalesced(spans: &[Span]) -> Vec<(franken_markdown::highlight::Tok, usize, usize)> {
@@ -136,4 +139,48 @@ fn truncated_quote_is_held_not_wrongly_classified() {
     lexer.finish().expect("finish");
     let whole = highlight("python", "doc = \"\"\"text\n");
     assert_eq!(coalesced(lexer.spans()), coalesced(&whole));
+}
+
+#[test]
+fn python_capability_row_is_versioned() {
+    use franken_markdown::lang_python::PYTHON_CAPABILITY_V1;
+    assert_eq!(PYTHON_CAPABILITY_V1.version, 1);
+    assert!(PYTHON_CAPABILITY_V1.incremental);
+    assert!(PYTHON_CAPABILITY_V1.string_variants_and_interpolation);
+    assert!(PYTHON_CAPABILITY_V1.continuations_and_indentation);
+}
+
+#[test]
+fn malformed_bounds_and_error_handling() {
+    use franken_markdown::resume::{ResumableLexer, ResumeError};
+
+    let mut lexer = ResumableLexer::with_limits("python", 32).expect("valid route");
+    let ok_feed = lexer.feed(b"x = 42\n");
+    assert!(ok_feed.is_ok());
+
+    // Exceeding the pending cap triggers SuffixTooLong
+    let long_chunk = "'''".to_string() + &"a".repeat(50);
+    let err = lexer.feed(long_chunk.as_bytes()).unwrap_err();
+    assert_eq!(err.code(), "SUFFIX_TOO_LONG");
+    match err {
+        ResumeError::SuffixTooLong { held, cap } => {
+            assert!(held > 32);
+            assert_eq!(cap, 32);
+        }
+        _ => panic!("expected SuffixTooLong"),
+    }
+
+    // Finishing seals the lexer
+    let mut normal_lexer = ResumableLexer::new("python").expect("valid route");
+    normal_lexer.feed(b"def f():\n    return 1\n").unwrap();
+    normal_lexer.finish().unwrap();
+    assert!(normal_lexer.is_finished());
+
+    // Feed after finish is refused
+    let finish_err = normal_lexer.feed(b"extra").unwrap_err();
+    assert_eq!(finish_err, ResumeError::AlreadyFinished);
+    assert_eq!(finish_err.code(), "ALREADY_FINISHED");
+
+    // Double finish is also refused
+    assert_eq!(normal_lexer.finish().unwrap_err(), ResumeError::AlreadyFinished);
 }

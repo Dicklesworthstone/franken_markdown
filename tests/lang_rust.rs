@@ -16,11 +16,13 @@
 //! - Versioned checkpoint detection of nested comment depth and raw string hashes
 //! - Deterministic audit trail receipt with seed, FNV-1a digests, and replay command
 
-use franken_markdown::highlight::{highlight, Span, Tok};
-use franken_markdown::lang_dispatch::{digest_spans, fnv1a_64, DispatchAuditReceipt, ResourceCounters};
+use franken_markdown::highlight::{Span, Tok, highlight};
+use franken_markdown::lang_dispatch::{
+    DispatchAuditReceipt, ResourceCounters, digest_spans, fnv1a_64,
+};
 use franken_markdown::resume::{
-    coalesce_spans, verify_whole_block_coalesced_equivalence, CommentState, ResumableLexer,
-    StringState,
+    CommentState, ResumableLexer, StringState, coalesce_spans,
+    verify_whole_block_coalesced_equivalence,
 };
 
 fn assert_tiled(spans: &[Span], code_len: usize) {
@@ -28,7 +30,10 @@ fn assert_tiled(spans: &[Span], code_len: usize) {
         assert!(spans.is_empty() || (spans.len() == 1 && spans[0].start == 0 && spans[0].end == 0));
         return;
     }
-    assert!(!spans.is_empty(), "spans must not be empty for nonempty code");
+    assert!(
+        !spans.is_empty(),
+        "spans must not be empty for nonempty code"
+    );
     assert_eq!(spans[0].start, 0, "first span must start at 0");
     let mut offset = 0;
     for (i, span) in spans.iter().enumerate() {
@@ -74,7 +79,10 @@ fn nested_block_comments() {
     assert_tiled(&spans, code.len());
 
     let comment_span = spans.iter().find(|s| s.kind == Tok::Comment).unwrap();
-    assert_eq!(&code[comment_span.start..comment_span.end], "/* l1 /* l2 /* l3 */ l2 */ l1 */");
+    assert_eq!(
+        &code[comment_span.start..comment_span.end],
+        "/* l1 /* l2 /* l3 */ l2 */ l1 */"
+    );
 
     // Deep nesting (depth 6)
     let deep = "/* a /* b /* c /* d /* e /* f */ e */ d */ c */ b */ a */";
@@ -97,10 +105,19 @@ fn nested_block_comments() {
 fn raw_strings_varying_hashes() {
     let cases: &[(&str, &str)] = &[
         ("r\"simple\"", "r\"simple\""),
-        ("r#\"with \"quotes\" and #hash\"#", "r#\"with \"quotes\" and #hash\"#"),
+        (
+            "r#\"with \"quotes\" and #hash\"#",
+            "r#\"with \"quotes\" and #hash\"#",
+        ),
         ("r##\"two \"# hashes \"##", "r##\"two \"# hashes \"##"),
-        ("r###\"three \"## hashes \"###", "r###\"three \"## hashes \"###"),
-        ("r#####\"five \"#### hashes \"#####", "r#####\"five \"#### hashes \"#####"),
+        (
+            "r###\"three \"## hashes \"###",
+            "r###\"three \"## hashes \"###",
+        ),
+        (
+            "r#####\"five \"#### hashes \"#####",
+            "r#####\"five \"#### hashes \"#####",
+        ),
     ];
 
     for &(code, expected_str) in cases {
@@ -117,7 +134,10 @@ fn raw_strings_varying_hashes() {
     let spans_unterm = highlight("rust", unterm);
     assert_tiled(&spans_unterm, unterm.len());
     let str_span = spans_unterm.iter().find(|s| s.kind == Tok::Str).unwrap();
-    assert_eq!(&unterm[str_span.start..str_span.end], "r##\"unterminated with \"# quote");
+    assert_eq!(
+        &unterm[str_span.start..str_span.end],
+        "r##\"unterminated with \"# quote"
+    );
 }
 
 #[test]
@@ -132,7 +152,15 @@ fn raw_byte_strings_and_byte_literals() {
         .map(|s| &code[s.start..s.end])
         .collect();
 
-    assert_eq!(str_spans, vec!["br\"raw bytes\"", "br##\"raw \"# bytes\"##", "b'x'", "b'\\n'"]);
+    assert_eq!(
+        str_spans,
+        vec![
+            "br\"raw bytes\"",
+            "br##\"raw \"# bytes\"##",
+            "b'x'",
+            "b'\\n'"
+        ]
+    );
 }
 
 #[test]
@@ -151,7 +179,10 @@ fn lifetimes_versus_char_literals() {
     assert!(lifetimes.contains(&"'a"), "must contain 'a");
     assert!(lifetimes.contains(&"'static"), "must contain 'static");
     assert!(lifetimes.contains(&"'_"), "must contain '_");
-    assert!(lifetimes.contains(&"'named_loop"), "must contain 'named_loop");
+    assert!(
+        lifetimes.contains(&"'named_loop"),
+        "must contain 'named_loop"
+    );
 
     // Find all char literals (classified as Tok::Str)
     let char_literals: Vec<&str> = spans
@@ -163,7 +194,10 @@ fn lifetimes_versus_char_literals() {
     assert!(char_literals.contains(&"'x'"), "must contain 'x'");
     assert!(char_literals.contains(&"'\\n'"), "must contain '\\n'");
     assert!(char_literals.contains(&"'\\''"), "must contain '\\''");
-    assert!(char_literals.contains(&"'\\u{1f980}'"), "must contain '\\u{{1f980}}'");
+    assert!(
+        char_literals.contains(&"'\\u{1f980}'"),
+        "must contain '\\u{{1f980}}'"
+    );
 }
 
 #[test]
@@ -243,11 +277,7 @@ impl<'a, T: Clone> Container<'a, T> {
     let chunk_sizes = [1, 2, 3, 5, 7, 11, 16, 32, 64, 128];
 
     for &chunk_size in &chunk_sizes {
-        let res = verify_whole_block_coalesced_equivalence(
-            "rust",
-            rust_fixture,
-            chunk_size,
-        );
+        let res = verify_whole_block_coalesced_equivalence("rust", rust_fixture, chunk_size);
         assert!(
             res.is_ok(),
             "Whole/chunk coalesced equivalence failed for chunk_size {chunk_size}: {:?}",
@@ -265,10 +295,18 @@ fn adversarial_byte_splits_on_nested_comments_and_raw_strings() {
         let mut lexer = ResumableLexer::new("rust").expect("valid lexer");
 
         let r1 = lexer.feed(head);
-        assert!(r1.is_ok(), "feed head failed at split {split}: {:?}", r1.err());
+        assert!(
+            r1.is_ok(),
+            "feed head failed at split {split}: {:?}",
+            r1.err()
+        );
 
         let r2 = lexer.feed(tail);
-        assert!(r2.is_ok(), "feed tail failed at split {split}: {:?}", r2.err());
+        assert!(
+            r2.is_ok(),
+            "feed tail failed at split {split}: {:?}",
+            r2.err()
+        );
 
         let r3 = lexer.finish();
         assert!(r3.is_ok(), "finish failed at split {split}: {:?}", r3.err());
@@ -362,7 +400,8 @@ fn execute<'a>(ast: &AST<'a>) -> Result<(), &'static str> {
             spans_emitted: spans.len(),
             capacity_limit: 1 << 20,
         },
-        replay_command: "cargo test --test lang_rust -- deterministic_audit_receipt_rust".to_string(),
+        replay_command: "cargo test --test lang_rust -- deterministic_audit_receipt_rust"
+            .to_string(),
     };
 
     assert_eq!(receipt.seed, seed);

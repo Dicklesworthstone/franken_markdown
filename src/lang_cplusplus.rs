@@ -27,26 +27,136 @@ use crate::highlight::{Span, Tok};
 
 /// C++ reserved words.
 const KEYWORDS: &[&str] = &[
-    "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break",
-    "case", "catch", "char", "char8_t", "char16_t", "char32_t", "class", "compl", "concept",
-    "const", "consteval", "constexpr", "constinit", "const_cast", "continue", "co_await",
-    "co_return", "co_yield", "decltype", "default", "delete", "do", "double", "dynamic_cast",
-    "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend", "goto",
-    "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept", "not", "not_eq",
-    "nullptr", "operator", "or", "or_eq", "private", "protected", "public", "register",
-    "reinterpret_cast", "requires", "return", "short", "signed", "sizeof", "static",
-    "static_assert", "static_cast", "struct", "switch", "template", "this", "thread_local",
-    "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
-    "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq",
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "class",
+    "compl",
+    "concept",
+    "const",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "const_cast",
+    "continue",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
 ];
 
 /// Common standard-library type names.
 const TYPES: &[&str] = &[
-    "std", "string", "wstring", "u8string", "vector", "map", "unordered_map", "set",
-    "unordered_set", "pair", "tuple", "optional", "variant", "unique_ptr", "shared_ptr",
-    "weak_ptr", "function", "array", "deque", "list", "span", "string_view", "thread", "mutex",
-    "size_t", "ssize_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
-    "uint32_t", "uint64_t",
+    "std",
+    "string",
+    "wstring",
+    "u8string",
+    "vector",
+    "map",
+    "unordered_map",
+    "set",
+    "unordered_set",
+    "pair",
+    "tuple",
+    "optional",
+    "variant",
+    "unique_ptr",
+    "shared_ptr",
+    "weak_ptr",
+    "function",
+    "array",
+    "deque",
+    "list",
+    "span",
+    "string_view",
+    "thread",
+    "mutex",
+    "size_t",
+    "ssize_t",
+    "int8_t",
+    "int16_t",
+    "int32_t",
+    "int64_t",
+    "uint8_t",
+    "uint16_t",
+    "uint32_t",
+    "uint64_t",
 ];
 
 /// What the previous significant token was.
@@ -75,9 +185,9 @@ fn raw_string_end(code: &str, content_start: usize, delim: &str) -> usize {
 fn valid_raw_delim(delim: &str) -> bool {
     delim.len() <= 16
         && !delim.is_empty()
-        && delim.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || byte == b'_'
-        })
+        && delim
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -96,13 +206,7 @@ fn is_type_name(word: &str) -> bool {
     TYPES.contains(&word)
 }
 
-fn push_tiling(
-    spans: &mut Vec<Span>,
-    last_end: &mut usize,
-    kind: Tok,
-    start: usize,
-    end: usize,
-) {
+fn push_tiling(spans: &mut Vec<Span>, last_end: &mut usize, kind: Tok, start: usize, end: usize) {
     if *last_end < start {
         spans.push(Span {
             kind: Tok::Plain,
@@ -110,24 +214,25 @@ fn push_tiling(
             end: start,
         });
     }
-    spans.push(Span {
-        kind,
-        start,
-        end,
-    });
+    spans.push(Span { kind, start, end });
     *last_end = end;
 }
 
-fn emit_directive(
-    spans: &mut Vec<Span>,
-    last_end: &mut usize,
-    start: usize,
-    word: &str,
-) {
+fn emit_directive(spans: &mut Vec<Span>, last_end: &mut usize, start: usize, word: &str) {
     let known = matches!(
         word,
-        "include" | "define" | "undef" | "if" | "ifdef" | "ifndef" | "else" | "elif" | "endif"
-            | "error" | "warning" | "pragma"
+        "include"
+            | "define"
+            | "undef"
+            | "if"
+            | "ifdef"
+            | "ifndef"
+            | "else"
+            | "elif"
+            | "endif"
+            | "error"
+            | "warning"
+            | "pragma"
     );
     let kind = if known { Tok::Keyword } else { Tok::Plain };
     push_tiling(spans, last_end, kind, start, start + 1 + word.len());
@@ -135,7 +240,7 @@ fn emit_directive(
 
 fn next_non_space_is(code: &str, mut pos: usize, target: char) -> bool {
     while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
+        let c = code[pos..].chars().next().unwrap_or('\0');
         if c.is_whitespace() {
             pos += c.len_utf8();
         } else {
@@ -147,7 +252,7 @@ fn next_non_space_is(code: &str, mut pos: usize, target: char) -> bool {
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {
     while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
+        let c = code[pos..].chars().next().unwrap_or('\0');
         if pred(c) {
             pos += c.len_utf8();
         } else {
@@ -194,7 +299,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos += clen;
             while pos < bytes_len {
-                let c = code[pos..].chars().next().unwrap();
+                let c = code[pos..].chars().next().unwrap_or('\0');
                 if c.is_whitespace() {
                     pos += c.len_utf8();
                 } else {
@@ -252,25 +357,21 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             || rest.starts_with("u\"")
             || rest.starts_with("U\"")
             || rest.starts_with("L\""))
-            && (pos == 0
-                || !is_ident_continue(
-                    code[..pos].chars().next_back().unwrap_or(' '),
-                ))
+            && (pos == 0 || !is_ident_continue(code[..pos].chars().next_back().unwrap_or(' ')))
         {
             let start = pos;
-            let quote = pos
-                + if rest.starts_with("u8\"") { 3 } else { 2 };
+            let quote = pos + if rest.starts_with("u8\"") { 3 } else { 2 };
             let mut scan = quote + 1;
             let mut closed = false;
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == '\\' {
                     let next_scan = scan + 1;
                     if next_scan >= bytes_len {
                         scan = bytes_len;
                         break;
                     }
-                    scan = next_scan + code[next_scan..].chars().next().unwrap().len_utf8();
+                    scan = next_scan + code[next_scan..].chars().next().unwrap_or('\0').len_utf8();
                     continue;
                 }
                 if c == '"' {
@@ -296,14 +397,14 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let mut scan = pos + 1;
             let mut closed = false;
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == '\\' {
                     let next_scan = scan + 1;
                     if next_scan >= bytes_len {
                         scan = bytes_len;
                         break;
                     }
-                    scan = next_scan + code[next_scan..].chars().next().unwrap().len_utf8();
+                    scan = next_scan + code[next_scan..].chars().next().unwrap_or('\0').len_utf8();
                     continue;
                 }
                 if c == '"' {
@@ -331,14 +432,14 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let mut scan = pos + 1;
             let mut closed = false;
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == '\\' {
                     let next_scan = scan + 1;
                     if next_scan >= bytes_len {
                         scan = bytes_len;
                         break;
                     }
-                    scan = next_scan + code[next_scan..].chars().next().unwrap().len_utf8();
+                    scan = next_scan + code[next_scan..].chars().next().unwrap_or('\0').len_utf8();
                     continue;
                 }
                 if c == '\'' {
@@ -365,12 +466,9 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
                 pos += 2;
-                pos = consume_while(code, pos, |c| {
-                    c.is_ascii_hexdigit() || c == '_' || c == '.'
-                });
+                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_' || c == '.');
                 // Hex-float p exponent.
-                if pos < bytes_len
-                    && (code.as_bytes()[pos] == b'p' || code.as_bytes()[pos] == b'P')
+                if pos < bytes_len && (code.as_bytes()[pos] == b'p' || code.as_bytes()[pos] == b'P')
                 {
                     pos += 1;
                     if pos < bytes_len
@@ -382,21 +480,14 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                 }
             } else if rest.starts_with("0b") || rest.starts_with("0B") {
                 pos += 2;
-                pos = consume_while(code, pos, |c| {
-                    c == '0' || c == '1' || c == '\''
-                });
+                pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '\'');
             } else {
-                pos = consume_while(code, pos, |c| {
-                    c.is_ascii_digit() || c == '_' || c == '.'
-                });
-                if pos < bytes_len
-                    && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
+                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.');
+                if pos < bytes_len && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
                 {
                     let exp_start = pos;
                     let mut p = pos + 1;
-                    if p < bytes_len
-                        && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-')
-                    {
+                    if p < bytes_len && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-') {
                         p += 1;
                     }
                     let digits = consume_while(code, p, |c| c.is_ascii_digit());
@@ -409,8 +500,10 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                 }
             }
             // Suffixes: u/U, l/L, ll/LL, f/F, in any (valid) combination.
-            let suffixes: &[&[u8]] = &[b"ull", b"llu", b"ull", b"llu", b"ul", b"lu", b"ll",
-                b"ll", b"ul", b"lu", b"u", b"U", b"l", b"L", b"f", b"F"];
+            let suffixes: &[&[u8]] = &[
+                b"ull", b"llu", b"ull", b"llu", b"ul", b"lu", b"ll", b"ll", b"ul", b"lu", b"u",
+                b"U", b"l", b"L", b"f", b"F",
+            ];
             for suffix in suffixes {
                 if code.as_bytes()[pos..].starts_with(suffix) {
                     pos += suffix.len();
@@ -460,8 +553,8 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
 
         // Multi-char operators, longest first.
         const OPERATORS: &[&str] = &[
-            "<=>", "<<=", ">>=", "->*", "&&", "||", "==", "!=", "<=", ">=", "+=", "-=", "*=",
-            "/=", "%=", "^=", "&=", "|=", "++", "--", "->", "::", "<<", ">>",
+            "<=>", "<<=", ">>=", "->*", "&&", "||", "==", "!=", "<=", ">=", "+=", "-=", "*=", "/=",
+            "%=", "^=", "&=", "|=", "++", "--", "->", "::", "<<", ">>",
         ];
         let mut matched_op = false;
         for op in OPERATORS {
@@ -489,7 +582,10 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
         }
 
         // Punctuation (digraphs classify at their bracket chars).
-        if matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';' | ':' | '.') {
+        if matches!(
+            ch,
+            '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';' | ':' | '.'
+        ) {
             push_tiling(spans, &mut last_end, Tok::Punct, pos, pos + clen);
             pos += clen;
             prev = Prev::Operator;
@@ -511,7 +607,6 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // tests restored below by the caller
 }

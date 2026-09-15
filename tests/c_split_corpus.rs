@@ -8,8 +8,9 @@
 //! degrade to bounded plain/keyword classifications without refusing.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
+use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::lex_c::ResumableCLexer;
 
 /// Coalesce adjacent same-kind spans: chunked streams may split a token at a
@@ -179,9 +180,21 @@ fn a_realistic_c_program_is_split_safe_at_every_byte() {
 fn c_capability_row_is_versioned() {
     use franken_markdown::lex_c::C_CAPABILITY_V1;
     assert_eq!(C_CAPABILITY_V1.version, 1);
-    assert!(C_CAPABILITY_V1.incremental);
-    assert!(C_CAPABILITY_V1.preprocessor_continuation);
-    assert!(C_CAPABILITY_V1.escaped_newline_in_literals);
+    const {
+        const {
+            assert!(C_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(C_CAPABILITY_V1.preprocessor_continuation);
+        };
+    };
+    const {
+        const {
+            assert!(C_CAPABILITY_V1.escaped_newline_in_literals);
+        };
+    };
 }
 
 #[test]
@@ -216,5 +229,8 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), LexCError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        LexCError::AlreadyFinished
+    );
 }

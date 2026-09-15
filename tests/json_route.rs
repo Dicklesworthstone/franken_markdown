@@ -12,11 +12,11 @@
 //! Consumer fixture: `tests/fixtures/json_route/consumer_document.json` —
 //! a realistic config-shaped document exercised whole and split.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+#![allow(clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight;
-use franken_markdown::highlight::{highlight, Span};
+use std::path::PathBuf;
+
+use franken_markdown::highlight::{Span, highlight};
 use franken_markdown::resume::{ResumableLexer, ResumeError};
 
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/json_route/consumer_document.json");
@@ -44,19 +44,58 @@ fn fixtures() -> Vec<Fixture> {
     let huge_string = format!("{{ \"huge\": \"{}\" }}", "y".repeat(4096));
 
     vec![
-        Fixture { name: "escapes_and_unicode_escapes", bytes: escapes.as_bytes().to_vec() },
-        Fixture { name: "numbers", bytes: numbers.as_bytes().to_vec() },
-        Fixture { name: "literals_and_nesting", bytes: literals.as_bytes().to_vec() },
-        Fixture { name: "raw_unicode", bytes: unicode_raw.as_bytes().to_vec() },
-        Fixture { name: "whitespace_padded", bytes: whitespace_padded.as_bytes().to_vec() },
-        Fixture { name: "malformed_truncated_string", bytes: malformed_truncated_string.as_bytes().to_vec() },
-        Fixture { name: "malformed_lone_escape", bytes: malformed_lone_escape.as_bytes().to_vec() },
-        Fixture { name: "malformed_lone_surrogate", bytes: malformed_lone_surrogate.as_bytes().to_vec() },
-        Fixture { name: "malformed_control_char", bytes: malformed_control_char.as_bytes().to_vec() },
-        Fixture { name: "deep_nesting", bytes: deep_nesting.into_bytes() },
-        Fixture { name: "empty", bytes: empty_inputs.as_bytes().to_vec() },
-        Fixture { name: "whitespace_only", bytes: whitespace_only.as_bytes().to_vec() },
-        Fixture { name: "huge_string", bytes: huge_string.into_bytes() },
+        Fixture {
+            name: "escapes_and_unicode_escapes",
+            bytes: escapes.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "numbers",
+            bytes: numbers.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "literals_and_nesting",
+            bytes: literals.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "raw_unicode",
+            bytes: unicode_raw.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "whitespace_padded",
+            bytes: whitespace_padded.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "malformed_truncated_string",
+            bytes: malformed_truncated_string.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "malformed_lone_escape",
+            bytes: malformed_lone_escape.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "malformed_lone_surrogate",
+            bytes: malformed_lone_surrogate.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "malformed_control_char",
+            bytes: malformed_control_char.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "deep_nesting",
+            bytes: deep_nesting.into_bytes(),
+        },
+        Fixture {
+            name: "empty",
+            bytes: empty_inputs.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "whitespace_only",
+            bytes: whitespace_only.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "huge_string",
+            bytes: huge_string.into_bytes(),
+        },
         Fixture {
             name: "consumer_document",
             bytes: include_bytes!("fixtures/json_route/consumer_document.json").to_vec(),
@@ -105,7 +144,9 @@ fn split_spans(bytes: &[u8], at: usize) -> Vec<Span> {
 fn byte_per_feed_spans(bytes: &[u8]) -> Vec<Span> {
     let mut lexer = ResumableLexer::new("json").expect("json route supported");
     for byte in bytes {
-        lexer.feed(std::slice::from_ref(byte)).expect("byte feed valid");
+        lexer
+            .feed(std::slice::from_ref(byte))
+            .expect("byte feed valid");
     }
     lexer.finish().expect("finish flushes suffix");
     coalesce(lexer.spans())
@@ -165,7 +206,11 @@ fn every_fixture_is_split_equivalent_at_every_byte_boundary() {
     assert!(fixtures.len() >= 14, "representative corpus present");
     for fixture in &fixtures {
         assert_split_equivalence(fixture.name, &fixture.bytes);
-        scenario_receipt(fixture.name, "split-equivalent", "whole == every split == byte-per-feed");
+        scenario_receipt(
+            fixture.name,
+            "split-equivalent",
+            "whole == every split == byte-per-feed",
+        );
     }
 }
 
@@ -182,7 +227,11 @@ fn consumer_document_qualifies_whole_and_split() {
             "consumer fixture missing {marker:?} surface"
         );
     }
-    scenario_receipt("consumer_document", "qualified", "whole + split + surface coverage");
+    scenario_receipt(
+        "consumer_document",
+        "qualified",
+        "whole + split + surface coverage",
+    );
 }
 
 #[test]
@@ -252,6 +301,14 @@ fn registry_route_is_truthfully_implemented_and_dispatchable() {
 fn json_capability_row_is_versioned() {
     use franken_markdown::highlight::JSON_CAPABILITY_V1;
     assert_eq!(JSON_CAPABILITY_V1.version, 1);
-    assert!(JSON_CAPABILITY_V1.incremental);
-    assert!(JSON_CAPABILITY_V1.escapes_numbers_literals);
+    const {
+        const {
+            assert!(JSON_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(JSON_CAPABILITY_V1.escapes_numbers_literals);
+        };
+    };
 }

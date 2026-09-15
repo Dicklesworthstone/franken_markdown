@@ -7,7 +7,7 @@
 //! CSS safe-cut bytes are `; { } : " '` which settle declaration/block
 //! boundaries, property-value colons and string literals.
 
-use crate::highlight::{highlight, Span};
+use crate::highlight::{Span, highlight};
 
 /// Errors from the CSS resumable seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,3 +204,9 @@ pub const CSS_CAPABILITY_V1: CssCapabilityV1 = CssCapabilityV1 {
     incremental: true,
     comments_strings_nested: true,
 };
+
+impl Default for ResumableCssLexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

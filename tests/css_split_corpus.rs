@@ -3,9 +3,10 @@
 //! every character boundary with exact source tiling.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
-use franken_markdown::lex_css::{LexCssError, ResumableCssLexer, CSS_CAPABILITY_V1};
+use franken_markdown::highlight::{Span, Tok, highlight};
+use franken_markdown::lex_css::{CSS_CAPABILITY_V1, LexCssError, ResumableCssLexer};
 
 fn coalesce(spans: &[Span]) -> Vec<(Tok, usize, usize)> {
     let mut runs: Vec<(Tok, usize, usize)> = Vec::new();
@@ -199,12 +200,23 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), LexCssError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        LexCssError::AlreadyFinished
+    );
 }
 
 #[test]
 fn css_capability_row_is_versioned() {
     assert_eq!(CSS_CAPABILITY_V1.version, 1);
-    assert!(CSS_CAPABILITY_V1.incremental);
-    assert!(CSS_CAPABILITY_V1.comments_strings_nested);
+    const {
+        const {
+            assert!(CSS_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(CSS_CAPABILITY_V1.comments_strings_nested);
+        };
+    };
 }

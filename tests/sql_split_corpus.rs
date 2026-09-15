@@ -14,6 +14,7 @@
 //! divergence and stay marked until the engine fix lands; all non-number
 //! cases must pass.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::PathBuf;
 
 use franken_markdown::highlight;
@@ -28,15 +29,14 @@ struct Fixture {
 }
 
 fn fixtures() -> Vec<Fixture> {
-    let strings_doubling =
-        b"SELECT 'it''s' FROM \"my\"\"table\" WHERE name = 'plain'".to_vec();
+    let strings_doubling = b"SELECT 'it''s' FROM \"my\"\"table\" WHERE name = 'plain'".to_vec();
     let comments = b"-- line comment\nSELECT 1 /* block\ncomment */ FROM t -- trailing".to_vec();
     let unterminated_string = b"SELECT 'runs off".to_vec();
     let unterminated_block = b"SELECT 1 /* never closed".to_vec();
     let params = b"SELECT * FROM t WHERE a = ? AND b = $1 AND c = :name AND d = @flag".to_vec();
-    let quoted_identifiers = b"SELECT \"col one\", `col two` FROM \"my schema\".\"my table\"".to_vec();
-    let numbers_hex =
-        b"SELECT 0xFF, 42, 3.14, 1e10, -2.5E-3 FROM t WHERE id = 0x1A".to_vec();
+    let quoted_identifiers =
+        b"SELECT \"col one\", `col two` FROM \"my schema\".\"my table\"".to_vec();
+    let numbers_hex = b"SELECT 0xFF, 42, 3.14, 1e10, -2.5E-3 FROM t WHERE id = 0x1A".to_vec();
     let keywords_types =
         b"INSERT INTO users (id, name) VALUES (1, 'ada') RETURNING id, name".to_vec();
     let whitespace_only = b"   \n\t  ".to_vec();
@@ -44,17 +44,50 @@ fn fixtures() -> Vec<Fixture> {
     let consumer = CONSUMER_DOCUMENT.as_bytes().to_vec();
 
     vec![
-        Fixture { name: "strings_doubling", bytes: strings_doubling },
-        Fixture { name: "comments", bytes: comments },
-        Fixture { name: "unterminated_string", bytes: unterminated_string },
-        Fixture { name: "unterminated_block", bytes: unterminated_block },
-        Fixture { name: "params", bytes: params },
-        Fixture { name: "quoted_identifiers", bytes: quoted_identifiers },
-        Fixture { name: "numbers_hex", bytes: numbers_hex },
-        Fixture { name: "keywords_types", bytes: keywords_types },
-        Fixture { name: "whitespace_only", bytes: whitespace_only },
-        Fixture { name: "empty", bytes: empty },
-        Fixture { name: "consumer_document", bytes: consumer },
+        Fixture {
+            name: "strings_doubling",
+            bytes: strings_doubling,
+        },
+        Fixture {
+            name: "comments",
+            bytes: comments,
+        },
+        Fixture {
+            name: "unterminated_string",
+            bytes: unterminated_string,
+        },
+        Fixture {
+            name: "unterminated_block",
+            bytes: unterminated_block,
+        },
+        Fixture {
+            name: "params",
+            bytes: params,
+        },
+        Fixture {
+            name: "quoted_identifiers",
+            bytes: quoted_identifiers,
+        },
+        Fixture {
+            name: "numbers_hex",
+            bytes: numbers_hex,
+        },
+        Fixture {
+            name: "keywords_types",
+            bytes: keywords_types,
+        },
+        Fixture {
+            name: "whitespace_only",
+            bytes: whitespace_only,
+        },
+        Fixture {
+            name: "empty",
+            bytes: empty,
+        },
+        Fixture {
+            name: "consumer_document",
+            bytes: consumer,
+        },
     ]
 }
 
@@ -118,7 +151,10 @@ fn assert_split_equivalence(name: &str, bytes: &[u8]) {
                 if pair.0 != pair.1 {
                     panic!(
                         "{name}: first divergence at span {index}: got {:?} expected {:?} (got {} spans, expected {})",
-                        pair.0, pair.1, got.len(), expected.len()
+                        pair.0,
+                        pair.1,
+                        got.len(),
+                        expected.len()
                     );
                 }
             }
@@ -143,7 +179,10 @@ fn scenario_receipt(case: &str, outcome: &str, detail: &str) {
         "fcb-9vx.20 sql-route receipt\nscenario: {case}\noutcome: {outcome}\ndetail: {detail}\n"
     );
     std::fs::write(
-        run_dir.join(format!("{}.receipt", case.replace(['(', ')', ' ', ':'], "_"))),
+        run_dir.join(format!(
+            "{}.receipt",
+            case.replace(['(', ')', ' ', ':'], "_")
+        )),
         line,
     )
     .expect("receipt retained");
@@ -170,7 +209,11 @@ fn consumer_document_qualifies_whole_and_split() {
             "consumer fixture missing {marker:?} surface"
         );
     }
-    scenario_receipt("consumer_document", "qualified", "whole + split + surface coverage");
+    scenario_receipt(
+        "consumer_document",
+        "qualified",
+        "whole + split + surface coverage",
+    );
 }
 
 #[test]
@@ -190,7 +233,9 @@ fn feeds_after_finish_are_refused() {
     let mut lexer = ResumableLexer::new("sql").expect("sql route supported");
     lexer.feed(b"SELECT 1").expect("first feed");
     lexer.finish().expect("finish");
-    let error = lexer.feed(b"SELECT 2").expect_err("post-finish feed refused");
+    let error = lexer
+        .feed(b"SELECT 2")
+        .expect_err("post-finish feed refused");
     assert_eq!(error, ResumeError::AlreadyFinished);
 }
 
@@ -219,6 +264,10 @@ fn registry_route_is_truthfully_implemented_and_dispatchable() {
 fn sql_capability_row_is_versioned() {
     use franken_markdown::lang_sql::SQL_CAPABILITY_V1;
     assert_eq!(SQL_CAPABILITY_V1.version, 1);
-    assert!(SQL_CAPABILITY_V1.incremental);
-    assert!(SQL_CAPABILITY_V1.quotes_comments_params);
+    const {
+        assert!(SQL_CAPABILITY_V1.incremental);
+    };
+    const {
+        assert!(SQL_CAPABILITY_V1.quotes_comments_params);
+    };
 }

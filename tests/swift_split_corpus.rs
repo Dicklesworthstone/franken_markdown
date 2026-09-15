@@ -6,9 +6,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
-use franken_markdown::lang_swift::{lex_swift_into, SwiftCapabilityV1};
-use franken_markdown::resume::{coalesce_spans, ResumableLexer};
+use franken_markdown::highlight::{Span, Tok, highlight};
+use franken_markdown::lang_swift::{SwiftCapabilityV1, lex_swift_into};
+use franken_markdown::resume::{ResumableLexer, coalesce_spans};
 
 /// Representative Swift fixtures exercising comments, nested block comments,
 /// multiline strings, raw strings with varying hash counts, standard strings
@@ -124,8 +124,14 @@ fn nested_comments_properly_counted() {
     let source = "/* level 1 /* level 2 /* level 3 */ level 2 */ level 1 */ let final_val = 1;";
     let spans = highlight("swift", source);
     assert_tiling(&spans, source.len());
-    let comment_span = spans.iter().find(|s| s.kind == Tok::Comment).expect("comment span");
-    assert_eq!(&source[comment_span.start..comment_span.end], "/* level 1 /* level 2 /* level 3 */ level 2 */ level 1 */");
+    let comment_span = spans
+        .iter()
+        .find(|s| s.kind == Tok::Comment)
+        .expect("comment span");
+    assert_eq!(
+        &source[comment_span.start..comment_span.end],
+        "/* level 1 /* level 2 /* level 3 */ level 2 */ level 1 */"
+    );
 }
 
 #[test]
@@ -134,7 +140,11 @@ fn raw_and_multiline_strings_identified() {
     let spans = highlight("swift", source);
     assert_tiling(&spans, source.len());
     let str_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Str).collect();
-    assert_eq!(str_spans.len(), 2, "both raw and multiline strings must be Tok::Str");
+    assert_eq!(
+        str_spans.len(),
+        2,
+        "both raw and multiline strings must be Tok::Str"
+    );
 }
 
 #[test]
@@ -142,9 +152,13 @@ fn attributes_and_hash_directives_classified() {
     let source = "@MainActor #if DEBUG let x = 1 #endif";
     let spans = highlight("swift", source);
     assert_tiling(&spans, source.len());
-    let has_attr = spans.iter().any(|s| (s.kind == Tok::Type || s.kind == Tok::Keyword) && &source[s.start..s.end] == "@MainActor");
+    let has_attr = spans.iter().any(|s| {
+        (s.kind == Tok::Type || s.kind == Tok::Keyword) && &source[s.start..s.end] == "@MainActor"
+    });
     assert!(has_attr, "@MainActor attribute must be classified");
-    let has_hash_if = spans.iter().any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "#if");
+    let has_hash_if = spans
+        .iter()
+        .any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "#if");
     assert!(has_hash_if, "#if directive must be classified");
 }
 
@@ -153,8 +167,15 @@ fn backtick_escaped_identifiers() {
     let source = "func test(`default`: Int) { let `class` = 42 }";
     let spans = highlight("swift", source);
     assert_tiling(&spans, source.len());
-    let backtick_spans: Vec<_> = spans.iter().filter(|s| source[s.start..s.end].starts_with('`')).collect();
-    assert_eq!(backtick_spans.len(), 2, "both `default` and `class` must be recognized");
+    let backtick_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| source[s.start..s.end].starts_with('`'))
+        .collect();
+    assert_eq!(
+        backtick_spans.len(),
+        2,
+        "both `default` and `class` must be recognized"
+    );
 }
 
 #[test]
@@ -233,7 +254,7 @@ fn deterministic_audit_trail_receipt() {
         hash
     }
 
-    let seed = 0xFCB_022_15_u64;
+    let seed = 0xFCB0_2215_u64;
     let code = b"public actor DataService: Identifiable, Sendable { private let id: UUID }";
     let input_hash = fnv1a_hash(code);
 
@@ -256,12 +277,18 @@ fn deterministic_audit_trail_receipt() {
     }
     let repeat_hash = fnv1a_hash(&repeat_bytes);
 
-    assert_eq!(output_hash, repeat_hash, "Deterministic output hash across runs");
+    assert_eq!(
+        output_hash, repeat_hash,
+        "Deterministic output hash across runs"
+    );
     assert_ne!(input_hash, 0);
     assert_ne!(output_hash, 0);
 
     eprintln!(
         "SwiftAuditReceipt: seed=0x{:x}, in_hash=0x{:x}, out_hash=0x{:x}, spans={}, replay='cargo test -j 2 --test swift_split_corpus'",
-        seed, input_hash, output_hash, whole.len()
+        seed,
+        input_hash,
+        output_hash,
+        whole.len()
     );
 }

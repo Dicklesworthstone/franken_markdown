@@ -1,16 +1,20 @@
 //! Adversarial hostile-input campaign against the REAL FCB-021 resumable
 //! lexical engine (FCB-059.A production adapter, upstream side).
 //!
-//! The conformance core (`fcb_conformance`) supplies deterministic hostile
+//! The repository-local test support supplies deterministic hostile
 //! generators and the failure-preserving minimizer; this file wires them to
 //! `franken_markdown::resume::ResumableLexer` so a real lexical failure is
 //! reproduced, minimized with its classification pinned, and proven
 //! byte-reproducible from its seed.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use fcb_conformance::{minimize, HostileByteGenerator, TerminationBudget};
+#[path = "support/hostile.rs"]
+mod hostile;
+
 use franken_markdown::resume::{ResumableLexer, ResumeError};
+use hostile::{HostileByteGenerator, TerminationBudget, minimize};
 
 /// The stable classification this campaign tracks: the engine's malformed
 /// UTF-8 refusal, mapped from the typed error.
@@ -56,7 +60,7 @@ fn real_refusal_is_minimized_with_classification_pinned() {
     // Seed a stream that certainly fails, then pad it: minimization must
     // strip the padding while the INVALID_UTF8 classification survives.
     let mut failing = b"fn main() { let s = \"\xFF\xFE".to_vec();
-    failing.extend(std::iter::repeat(b'q').take(96));
+    failing.extend(std::iter::repeat_n(b'q', 96));
     assert!(classify(&failing) == Some("INVALID_UTF8"));
 
     let report = minimize(&failing, TerminationBudget::attempts(512), &mut classify);

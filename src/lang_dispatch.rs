@@ -6,7 +6,7 @@
 //! FCB-021 [`crate::resume::ResumableLexer`] engine.
 
 use crate::highlight::Span;
-use crate::resume::{ResumeError, ResumableLexer};
+use crate::resume::{ResumableLexer, ResumeError};
 
 /// Maximum number of language registrations supported by the bounded registry.
 pub const MAX_REGISTERED_LANGUAGES: usize = 64;
@@ -514,7 +514,10 @@ impl LanguageRegistry {
     pub fn lookup(&self, query: &str) -> Result<&LanguageRouteRegistration, DispatchError> {
         let trimmed = query.trim();
         for route in &self.routes {
-            if route.language_id.canonical_name().eq_ignore_ascii_case(trimmed)
+            if route
+                .language_id
+                .canonical_name()
+                .eq_ignore_ascii_case(trimmed)
                 || route.primary_alias.eq_ignore_ascii_case(trimmed)
             {
                 return Ok(route);

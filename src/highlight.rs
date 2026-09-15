@@ -191,7 +191,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             let bytes = code.as_bytes();
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
                     pos += first_char_at(code, pos).len_utf8();
@@ -404,7 +404,7 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
                     pos += first_char_at(code, pos).len_utf8();
@@ -514,7 +514,10 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
                 });
                 pos = p;
                 continue;
-            } else if !is_br && hash_count == 1 && (bytes[p] == b'_' || bytes[p].is_ascii_alphabetic()) {
+            } else if !is_br
+                && hash_count == 1
+                && (bytes[p] == b'_' || bytes[p].is_ascii_alphabetic())
+            {
                 // Raw identifier: r#ident
                 let start = pos;
                 while p < len && (bytes[p] == b'_' || bytes[p].is_ascii_alphanumeric()) {
@@ -551,7 +554,11 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
         // 5. Byte string b"..." or regular string "..."
         if rest.starts_with("b\"") || c == '"' {
             let start = pos;
-            let mut p = if rest.starts_with("b\"") { pos + 2 } else { pos + 1 };
+            let mut p = if rest.starts_with("b\"") {
+                pos + 2
+            } else {
+                pos + 1
+            };
             while p < len {
                 let ch = first_char_at(code, p);
                 let cl = ch.len_utf8();
@@ -782,9 +789,6 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
         pos += clen;
     }
 }
-
-
-
 
 fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
@@ -1823,6 +1827,7 @@ const RUST_TY: KwTable = {
     }
 };
 
+#[cfg(test)]
 const PY_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1840,6 +1845,7 @@ const PY_KW: KwTable = {
     }
 };
 
+#[cfg(test)]
 const PY_TY: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1854,6 +1860,7 @@ const PY_TY: KwTable = {
     }
 };
 
+#[cfg(test)]
 const JS_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1913,6 +1920,7 @@ const JS_KW: KwTable = {
 /// Eight entries — grouping barely matters at this size, but a `KwTable`
 /// keeps every lexer path uniform, and the bucket probe is still just one
 /// offset pair.
+#[cfg(test)]
 const JS_TY: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1943,6 +1951,7 @@ const SH_KW: KwTable = {
     }
 };
 
+#[cfg(test)]
 const GO_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1957,7 +1966,6 @@ const GO_KW: KwTable = {
             "fallthrough",
             "for",
             "func",
-            "go",
             "goto",
             "if",
             "import",
@@ -1984,6 +1992,7 @@ const GO_KW: KwTable = {
     }
 };
 
+#[cfg(test)]
 const GO_TY: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -2070,6 +2079,7 @@ const C_TY: KwTable = {
 /// change membership under the folded compare — every case variant of every
 /// entry still matches (`keyword_table_tests` pins the dedupe and arbitrary
 /// mixed-case probes).
+#[cfg(test)]
 const SQL_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -2122,6 +2132,7 @@ const SQL_KW: KwTable = {
     }
 };
 
+#[cfg(test)]
 const SQL_TY: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -2494,6 +2505,7 @@ mod keyword_table_tests {
         BOOL_KW, CSS_KW, JS_TY, JSON_KW, KwTable, MERMAID_KW, MERMAID_TY, RUST_KW, RUST_TY, Tok,
         YAML_KW, highlight, lexer,
     };
+    use super::{GO_KW, GO_TY, JS_KW, PY_KW, PY_TY, SQL_KW, SQL_TY};
 
     fn flip_ascii_case(word: &str) -> String {
         word.bytes()
@@ -2525,19 +2537,7 @@ mod keyword_table_tests {
     /// lexers call their tables directly, so they are listed too.
     fn all_tables() -> Vec<(&'static str, KwTable)> {
         let mut tables: Vec<(&'static str, KwTable)> = Vec::new();
-        for lang in [
-            "python",
-            "javascript",
-            "json",
-            "bash",
-            "powershell",
-            "go",
-            "c",
-            "toml",
-            "ini",
-            "yaml",
-            "sql",
-        ] {
+        for lang in ["json", "bash", "powershell", "c", "toml", "ini", "yaml"] {
             let Some(super::Lexer::Generic(rules)) = lexer(lang) else {
                 panic!("expected a generic lexer for {lang}");
             };
@@ -2553,7 +2553,14 @@ mod keyword_table_tests {
         tables.push(("json", JSON_KW));
         tables.push(("toml/ini", BOOL_KW));
         tables.push(("yaml", YAML_KW));
-        tables.push(("js-ty", JS_TY));
+        tables.push(("PY_KW", PY_KW));
+        tables.push(("PY_TY", PY_TY));
+        tables.push(("JS_KW", JS_KW));
+        tables.push(("JS_TY", JS_TY));
+        tables.push(("GO_KW", GO_KW));
+        tables.push(("GO_TY", GO_TY));
+        tables.push(("SQL_KW", SQL_KW));
+        tables.push(("SQL_TY", SQL_TY));
         tables
     }
 

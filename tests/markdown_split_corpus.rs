@@ -19,9 +19,11 @@
 //! - Post-finish feeds are refused (`AlreadyFinished`) — the resumable
 //!   seam does not silently accept late chunks.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
-use franken_markdown::highlight::{highlight, Span};
+use franken_markdown::highlight::{Span, highlight};
 use franken_markdown::resume::{ResumableLexer, ResumeError};
 
 const CONSUMER_EXCERPT: &str = "\
@@ -63,17 +65,50 @@ fn fixtures() -> Vec<Fixture> {
     let consumer = CONSUMER_EXCERPT.as_bytes().to_vec();
 
     vec![
-        Fixture { name: "headings", bytes: headings },
-        Fixture { name: "list_markers", bytes: list_markers },
-        Fixture { name: "blockquote", bytes: blockquote },
-        Fixture { name: "inline_code", bytes: inline_code },
-        Fixture { name: "emphasis", bytes: emphasis },
-        Fixture { name: "html_comment", bytes: html_comment },
-        Fixture { name: "fenced_info", bytes: fenced_info },
-        Fixture { name: "setext", bytes: setext },
-        Fixture { name: "escapes", bytes: escapes },
-        Fixture { name: "unicode_heading", bytes: unicode_heading },
-        Fixture { name: "consumer", bytes: consumer },
+        Fixture {
+            name: "headings",
+            bytes: headings,
+        },
+        Fixture {
+            name: "list_markers",
+            bytes: list_markers,
+        },
+        Fixture {
+            name: "blockquote",
+            bytes: blockquote,
+        },
+        Fixture {
+            name: "inline_code",
+            bytes: inline_code,
+        },
+        Fixture {
+            name: "emphasis",
+            bytes: emphasis,
+        },
+        Fixture {
+            name: "html_comment",
+            bytes: html_comment,
+        },
+        Fixture {
+            name: "fenced_info",
+            bytes: fenced_info,
+        },
+        Fixture {
+            name: "setext",
+            bytes: setext,
+        },
+        Fixture {
+            name: "escapes",
+            bytes: escapes,
+        },
+        Fixture {
+            name: "unicode_heading",
+            bytes: unicode_heading,
+        },
+        Fixture {
+            name: "consumer",
+            bytes: consumer,
+        },
     ]
 }
 
@@ -126,16 +161,6 @@ fn assert_tile(spans: &[Span], len: usize) {
     assert_eq!(cursor, len, "spans do not reach end of source");
 }
 
-fn assert_split_equivalence(name: &str, bytes: &[u8]) {
-    let expected = coalesce(&whole_spans(bytes));
-    assert_tile(&expected, bytes.len());
-
-    for at in 0..=bytes.len() {
-        let got = split_spans(bytes, at);
-        assert_eq!(got, expected, "{name}: split at {at} diverged");
-    }
-}
-
 fn receipts_dir() -> PathBuf {
     let run_id = std::env::var("FCB_012_RUN_ID").unwrap_or_else(|_| "local".to_string());
     std::env::temp_dir().join(format!("fcb-9vx23-receipts-{run_id}"))
@@ -161,6 +186,7 @@ fn scenario_receipt(case: &str, outcome: &str, detail: &str) {
 fn line_boundary_splits_are_split_equivalent_on_every_fixture() {
     for fixture in &fixtures() {
         let expected = coalesce(&whole_spans(&fixture.bytes));
+        assert_tile(&expected, fixture.bytes.len());
         for at in line_boundary_splits(&fixture.bytes) {
             let got = split_spans(&fixture.bytes, at);
             assert_eq!(
@@ -169,7 +195,11 @@ fn line_boundary_splits_are_split_equivalent_on_every_fixture() {
                 fixture.name
             );
         }
-        scenario_receipt(fixture.name, "line-boundary-safe", "all line-boundary splits equivalent");
+        scenario_receipt(
+            fixture.name,
+            "line-boundary-safe",
+            "all line-boundary splits equivalent",
+        );
     }
 }
 
@@ -195,10 +225,7 @@ fn every_midline_split_of_the_heading_fixture_is_equivalent() {
     let whole = coalesce(&whole_spans(&doc));
     for at in 1..doc.len() {
         let got = split_spans(&doc, at);
-        assert_eq!(
-            got, whole,
-            "mid-line split at {at} diverged from whole run"
-        );
+        assert_eq!(got, whole, "mid-line split at {at} diverged from whole run");
     }
     scenario_receipt(
         "heading_fixture_exhaustive_midline_probe",
@@ -210,7 +237,7 @@ fn every_midline_split_of_the_heading_fixture_is_equivalent() {
 fn line_boundary_splits(bytes: &[u8]) -> Vec<usize> {
     let mut splits = vec![0usize];
     for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' && index + 1 <= bytes.len() {
+        if *byte == b'\n' && index < bytes.len() {
             splits.push(index + 1);
         }
     }
@@ -245,6 +272,9 @@ fn registry_route_is_truthfully_provisional() {
         result.status
     );
     assert!(result.is_finished);
-    let direct = highlight("markdown", std::str::from_utf8(request.code).expect("utf-8"));
+    let direct = highlight(
+        "markdown",
+        std::str::from_utf8(request.code).expect("utf-8"),
+    );
     assert_eq!(coalesce(&result.spans), coalesce(&direct));
 }

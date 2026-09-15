@@ -25,17 +25,21 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
         let c = bytes[pos];
 
         // 1. Whitespace run.
-        if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+        if code[pos..].chars().next().is_some_and(char::is_whitespace) {
             let start = pos;
             while pos < len {
-                let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
-                    pos += 1;
+                let ch = code[pos..].chars().next().unwrap_or('\0');
+                if ch.is_whitespace() {
+                    pos += ch.len_utf8();
                 } else {
                     break;
                 }
             }
-            spans.push(Span { kind: Tok::Plain, start, end: pos });
+            spans.push(Span {
+                kind: Tok::Plain,
+                start,
+                end: pos,
+            });
             continue;
         }
 
@@ -46,7 +50,11 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
                 .iter()
                 .position(|&b| b == b'\n')
                 .map_or(len, |offset| pos + offset);
-            spans.push(Span { kind: Tok::Comment, start, end });
+            spans.push(Span {
+                kind: Tok::Comment,
+                start,
+                end,
+            });
             pos = end;
             continue;
         }
@@ -55,8 +63,14 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
         //    Unterminated extends to EOF as the provisional trailing span.
         if c == b'/' && pos + 1 < len && bytes[pos + 1] == b'*' {
             let start = pos;
-            let close = code[pos + 2..].find("*/").map_or(len, |offset| pos + 2 + offset + 2);
-            spans.push(Span { kind: Tok::Comment, start, end: close });
+            let close = code[pos + 2..]
+                .find("*/")
+                .map_or(len, |offset| pos + 2 + offset + 2);
+            spans.push(Span {
+                kind: Tok::Comment,
+                start,
+                end: close,
+            });
             pos = close;
             continue;
         }
@@ -77,7 +91,11 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 p += 1;
             }
-            spans.push(Span { kind: Tok::Str, start, end: p });
+            spans.push(Span {
+                kind: Tok::Str,
+                start,
+                end: p,
+            });
             pos = p;
             continue;
         }
@@ -103,7 +121,11 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 p += 1;
             }
-            spans.push(Span { kind: Tok::Str, start, end: p });
+            spans.push(Span {
+                kind: Tok::Str,
+                start,
+                end: p,
+            });
             pos = p;
             continue;
         }
@@ -115,7 +137,11 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
             while p < len && bytes[p].is_ascii_digit() {
                 p += 1;
             }
-            spans.push(Span { kind: Tok::Operator, start, end: p });
+            spans.push(Span {
+                kind: Tok::Operator,
+                start,
+                end: p,
+            });
             pos = p;
             continue;
         }
@@ -131,12 +157,20 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
                 }
             }
             if p > start + 1 {
-                spans.push(Span { kind: Tok::Operator, start, end: p });
+                spans.push(Span {
+                    kind: Tok::Operator,
+                    start,
+                    end: p,
+                });
                 pos = p;
                 continue;
             }
             // A lone `$`/`:`/`@` falls through to operator handling.
-            spans.push(Span { kind: Tok::Operator, start, end: start + 1 });
+            spans.push(Span {
+                kind: Tok::Operator,
+                start,
+                end: start + 1,
+            });
             pos = start + 1;
             continue;
         }
@@ -187,17 +221,21 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
                     }
                 }
             }
-            spans.push(Span { kind: Tok::Number, start, end: pos });
+            spans.push(Span {
+                kind: Tok::Number,
+                start,
+                end: pos,
+            });
             continue;
         }
 
         // 8. Word: identifier / keyword / type / call.
-        if c == b'_' || c.is_ascii_alphabetic() {
+        if c == b'_' || code[pos..].chars().next().is_some_and(char::is_alphabetic) {
             let start = pos;
             while pos < len {
-                let b = bytes[pos];
-                if b == b'_' || b.is_ascii_alphanumeric() || b >= 0x80 {
-                    pos += 1;
+                let ch = code[pos..].chars().next().unwrap_or('\0');
+                if ch == '_' || ch.is_alphanumeric() {
+                    pos += ch.len_utf8();
                 } else {
                     break;
                 }
@@ -214,39 +252,133 @@ pub fn lex_sql_into(code: &str, spans: &mut Vec<Span>) {
             } else {
                 Tok::Plain
             };
-            spans.push(Span { kind, start, end: pos });
+            spans.push(Span {
+                kind,
+                start,
+                end: pos,
+            });
             continue;
         }
 
         // 9. Punctuation.
         if c == b'(' || c == b')' || c == b'[' || c == b']' || c == b',' || c == b';' || c == b'.' {
-            spans.push(Span { kind: Tok::Punct, start: pos, end: pos + 1 });
+            spans.push(Span {
+                kind: Tok::Punct,
+                start: pos,
+                end: pos + 1,
+            });
             pos += 1;
             continue;
         }
 
-        // 10. Operators.
-        spans.push(Span { kind: Tok::Operator, start: pos, end: pos + 1 });
-        pos += 1;
+        // 10. Operators and otherwise unclassified Unicode scalars.
+        let width = code[pos..].chars().next().map_or(1, char::len_utf8);
+        spans.push(Span {
+            kind: Tok::Operator,
+            start: pos,
+            end: pos + width,
+        });
+        pos += width;
     }
 }
 
 /// Bounded cross-dialect keyword core (upper-cased at comparison time).
 static SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "INSERT", "INTO",
-    "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "VIEW", "INDEX", "DROP", "ALTER",
-    "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON", "GROUP", "BY", "ORDER",
-    "HAVING", "LIMIT", "OFFSET", "UNION", "ALL", "DISTINCT", "AS", "IN", "EXISTS", "BETWEEN",
-    "LIKE", "ILIKE", "IS", "CASE", "WHEN", "THEN", "ELSE", "END", "WITH", "RECURSIVE",
-    "RETURNING", "PRIMARY", "FOREIGN", "KEY", "REFERENCES", "DEFAULT", "UNIQUE", "CHECK",
-    "CONSTRAINT", "CASCADE", "ASC", "DESC", "USING", "NATURAL",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "AND",
+    "OR",
+    "NOT",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "TABLE",
+    "VIEW",
+    "INDEX",
+    "DROP",
+    "ALTER",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "OUTER",
+    "CROSS",
+    "ON",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "ALL",
+    "DISTINCT",
+    "AS",
+    "IN",
+    "EXISTS",
+    "BETWEEN",
+    "LIKE",
+    "ILIKE",
+    "IS",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "WITH",
+    "RECURSIVE",
+    "RETURNING",
+    "PRIMARY",
+    "FOREIGN",
+    "KEY",
+    "REFERENCES",
+    "DEFAULT",
+    "UNIQUE",
+    "CHECK",
+    "CONSTRAINT",
+    "CASCADE",
+    "ASC",
+    "DESC",
+    "USING",
+    "NATURAL",
 ];
 
 /// Bounded cross-dialect type core (upper-cased at comparison time).
 static SQL_TYPES: &[&str] = &[
-    "INT", "INTEGER", "BIGINT", "SMALLINT", "DECIMAL", "NUMERIC", "REAL", "FLOAT", "DOUBLE",
-    "CHAR", "VARCHAR", "TEXT", "BOOLEAN", "BOOL", "DATE", "TIME", "TIMESTAMP", "JSON", "JSONB",
-    "UUID", "SERIAL", "BIGSERIAL", "BLOB", "CLOB", "BYTEA",
+    "INT",
+    "INTEGER",
+    "BIGINT",
+    "SMALLINT",
+    "DECIMAL",
+    "NUMERIC",
+    "REAL",
+    "FLOAT",
+    "DOUBLE",
+    "CHAR",
+    "VARCHAR",
+    "TEXT",
+    "BOOLEAN",
+    "BOOL",
+    "DATE",
+    "TIME",
+    "TIMESTAMP",
+    "JSON",
+    "JSONB",
+    "UUID",
+    "SERIAL",
+    "BIGSERIAL",
+    "BLOB",
+    "CLOB",
+    "BYTEA",
 ];
 
 /// The versioned SQL capability row (FCB-022 capability publication).

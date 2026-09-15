@@ -6,9 +6,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
-use franken_markdown::lang_java::{lex_java_into, JavaCapabilityV1};
-use franken_markdown::resume::{coalesce_spans, ResumableLexer};
+use franken_markdown::highlight::{Span, Tok, highlight};
+use franken_markdown::lang_java::{JavaCapabilityV1, lex_java_into};
+use franken_markdown::resume::{ResumableLexer, coalesce_spans};
 
 /// Representative Java fixtures exercising comments, text blocks, annotations,
 /// standard strings with unicode/escape sequences, character literals,
@@ -123,7 +123,10 @@ fn text_block_delimiter_and_escape_preservation() {
     let source = "String tb = \"\"\"\n    hello \\\"world\\\"\n    line 2\n    \"\"\";";
     let spans = highlight("java", source);
     assert_tiling(&spans, source.len());
-    let has_string = spans.iter().any(|s| s.kind == Tok::Str && &source[s.start..s.end] == "\"\"\"\n    hello \\\"world\\\"\n    line 2\n    \"\"\"");
+    let has_string = spans.iter().any(|s| {
+        s.kind == Tok::Str
+            && &source[s.start..s.end] == "\"\"\"\n    hello \\\"world\\\"\n    line 2\n    \"\"\""
+    });
     assert!(has_string, "text block must be classified as string");
 }
 
@@ -139,7 +142,10 @@ fn annotations_classified_properly() {
                 && (source[s.start..s.end].starts_with('@'))
         })
         .count();
-    assert_eq!(annot_count, 2, "both @Override and @SuppressWarnings must be recognized");
+    assert_eq!(
+        annot_count, 2,
+        "both @Override and @SuppressWarnings must be recognized"
+    );
 }
 
 #[test]
@@ -225,7 +231,7 @@ fn deterministic_audit_trail_receipt() {
         hash
     }
 
-    let seed = 0xFCB_022_14_u64;
+    let seed = 0xFCB0_2214_u64;
     let code = b"public record User(String name, int age) implements Serializable {}";
     let input_hash = fnv1a_hash(code);
 
@@ -248,12 +254,18 @@ fn deterministic_audit_trail_receipt() {
     }
     let repeat_hash = fnv1a_hash(&repeat_bytes);
 
-    assert_eq!(output_hash, repeat_hash, "Deterministic output hash across runs");
+    assert_eq!(
+        output_hash, repeat_hash,
+        "Deterministic output hash across runs"
+    );
     assert_ne!(input_hash, 0);
     assert_ne!(output_hash, 0);
 
     eprintln!(
         "JavaAuditReceipt: seed=0x{:x}, in_hash=0x{:x}, out_hash=0x{:x}, spans={}, replay='cargo test -j 2 --test java_split_corpus'",
-        seed, input_hash, output_hash, whole.len()
+        seed,
+        input_hash,
+        output_hash,
+        whole.len()
     );
 }

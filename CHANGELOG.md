@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-15
+
+- Fix Go malformed hexadecimal escapes splitting UTF-8 characters (#9).
+- Fix Python and shared lexer whitespace loops on form-feed/vertical-tab (#8).
+- Make standalone tests self-contained, removing the sibling checkout requirement (#7).
+- Fix shell word offsets, SQL Unicode span boundaries, HTML partial-tag buffering,
+  JavaScript template boundaries, and TypeScript primitive highlighting.
+- Include the incremental language lexers and capability APIs added since 0.4.3.
+- Pin the WASM adapter to the documented wasm-bindgen CLI version.
+- Restore formatting and strict Clippy checks across the new lexer/test modules.
+
+
 ## [0.4.3] - 2026-08-31
 
 ### Fixed

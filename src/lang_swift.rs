@@ -22,40 +22,144 @@ use crate::highlight::{Span, Tok};
 /// Swift keywords, contextual keywords, and literal values.
 pub const SWIFT_KEYWORDS: &[&str] = &[
     // Declarations
-    "associatedtype", "class", "deinit", "enum", "extension", "fileprivate",
-    "func", "import", "init", "inout", "internal", "let", "open", "operator",
-    "private", "precedencegroup", "protocol", "public", "rethrows", "static",
-    "struct", "subscript", "typealias", "var",
+    "associatedtype",
+    "class",
+    "deinit",
+    "enum",
+    "extension",
+    "fileprivate",
+    "func",
+    "import",
+    "init",
+    "inout",
+    "internal",
+    "let",
+    "open",
+    "operator",
+    "private",
+    "precedencegroup",
+    "protocol",
+    "public",
+    "rethrows",
+    "static",
+    "struct",
+    "subscript",
+    "typealias",
+    "var",
     // Statements
-    "break", "case", "catch", "continue", "default", "defer", "do", "else",
-    "fallthrough", "for", "guard", "if", "in", "repeat", "return", "throw",
-    "switch", "where", "while",
+    "break",
+    "case",
+    "catch",
+    "continue",
+    "default",
+    "defer",
+    "do",
+    "else",
+    "fallthrough",
+    "for",
+    "guard",
+    "if",
+    "in",
+    "repeat",
+    "return",
+    "throw",
+    "switch",
+    "where",
+    "while",
     // Expressions & Types
-    "as", "Any", "await", "async", "false", "is", "nil", "self", "Self",
-    "super", "throws", "true", "try",
+    "as",
+    "Any",
+    "await",
+    "async",
+    "false",
+    "is",
+    "nil",
+    "self",
+    "Self",
+    "super",
+    "throws",
+    "true",
+    "try",
     // Contextual keywords & modifiers
-    "actor", "convenience", "dynamic", "final", "indirect", "lazy", "macro",
-    "mutating", "nonmutating", "nonisolated", "optional", "override", "prefix",
-    "postfix", "required", "some", "unowned", "weak", "willSet", "didSet",
-    "get", "set", "consuming", "borrowing",
+    "actor",
+    "convenience",
+    "dynamic",
+    "final",
+    "indirect",
+    "lazy",
+    "macro",
+    "mutating",
+    "nonmutating",
+    "nonisolated",
+    "optional",
+    "override",
+    "prefix",
+    "postfix",
+    "required",
+    "some",
+    "unowned",
+    "weak",
+    "willSet",
+    "didSet",
+    "get",
+    "set",
+    "consuming",
+    "borrowing",
 ];
 
 /// Common standard library types.
 pub const SWIFT_TYPES: &[&str] = &[
-    "Int", "Int8", "Int16", "Int32", "Int64",
-    "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
-    "Float", "Double", "Float80", "Bool", "String", "Character", "Substring",
-    "Array", "Dictionary", "Set", "Optional", "Result", "Error", "Void",
-    "AnyObject", "Task", "URL", "Data", "Date", "UUID", "View",
-    "Sequence", "Collection", "Equatable", "Hashable", "Comparable",
-    "Codable", "Encodable", "Decodable", "Identifiable", "Sendable",
-    "Actor", "MainActor", "GlobalActor", "CustomStringConvertible",
+    "Int",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "UInt",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "Float",
+    "Double",
+    "Float80",
+    "Bool",
+    "String",
+    "Character",
+    "Substring",
+    "Array",
+    "Dictionary",
+    "Set",
+    "Optional",
+    "Result",
+    "Error",
+    "Void",
+    "AnyObject",
+    "Task",
+    "URL",
+    "Data",
+    "Date",
+    "UUID",
+    "View",
+    "Sequence",
+    "Collection",
+    "Equatable",
+    "Hashable",
+    "Comparable",
+    "Codable",
+    "Encodable",
+    "Decodable",
+    "Identifiable",
+    "Sendable",
+    "Actor",
+    "MainActor",
+    "GlobalActor",
+    "CustomStringConvertible",
 ];
 
 /// Multi-character operators in Swift, longest first.
 const MULTI_CHAR_OPS: &[&str] = &[
-    "...", "..<", "->", "??", "==", "!=", "<=", ">=", "&&", "||", "++", "--",
-    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>",
+    "...", "..<", "->", "??", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=",
+    "/=", "%=", "&=", "|=", "^=", "<<", ">>",
 ];
 
 /// Declared capability for the Swift lexical route (FCB-022.15).
@@ -99,7 +203,7 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
                     pos += first_char_at(code, pos).len_utf8();
@@ -165,14 +269,17 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
             }
             if pos < len && bytes[pos] == b'"' {
                 // Raw string! Check if multiline (`"""`) or single (`"`)
-                let is_multiline = pos + 2 < len && bytes[pos + 1] == b'"' && bytes[pos + 2] == b'"';
+                let is_multiline =
+                    pos + 2 < len && bytes[pos + 1] == b'"' && bytes[pos + 2] == b'"';
                 if is_multiline {
                     pos += 3;
                     // Look for `"""` followed by `hash_count` `#`s
                     while pos < len {
                         if pos + 3 + hash_count <= len
                             && &bytes[pos..pos + 3] == b"\"\"\""
-                            && bytes[pos + 3..pos + 3 + hash_count].iter().all(|&b| b == b'#')
+                            && bytes[pos + 3..pos + 3 + hash_count]
+                                .iter()
+                                .all(|&b| b == b'#')
                         {
                             pos += 3 + hash_count;
                             break;
@@ -193,7 +300,9 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
                         }
                         if pos + 1 + hash_count <= len
                             && bytes[pos] == b'"'
-                            && bytes[pos + 1..pos + 1 + hash_count].iter().all(|&b| b == b'#')
+                            && bytes[pos + 1..pos + 1 + hash_count]
+                                .iter()
+                                .all(|&b| b == b'#')
                         {
                             pos += 1 + hash_count;
                             break;
@@ -361,9 +470,7 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
         }
 
         // 10. Numbers: hex (0x...), binary (0b...), octal (0o...), decimal/float.
-        if c.is_ascii_digit()
-            || (c == '.' && pos + 1 < len && bytes[pos + 1].is_ascii_digit())
-        {
+        if c.is_ascii_digit() || (c == '.' && pos + 1 < len && bytes[pos + 1].is_ascii_digit()) {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
                 pos += 2;
@@ -382,12 +489,15 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
                 }
             } else if rest.starts_with("0b") || rest.starts_with("0B") {
                 pos += 2;
-                while pos < len && (bytes[pos] == b'_' || bytes[pos] == b'0' || bytes[pos] == b'1') {
+                while pos < len && (bytes[pos] == b'_' || bytes[pos] == b'0' || bytes[pos] == b'1')
+                {
                     pos += 1;
                 }
             } else if rest.starts_with("0o") || rest.starts_with("0O") {
                 pos += 2;
-                while pos < len && (bytes[pos] == b'_' || (bytes[pos] >= b'0' && bytes[pos] <= b'7')) {
+                while pos < len
+                    && (bytes[pos] == b'_' || (bytes[pos] >= b'0' && bytes[pos] <= b'7'))
+                {
                     pos += 1;
                 }
             } else {
@@ -403,7 +513,11 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
                             // Start of range operator `..` or `...`
                             break;
                         }
-                        if pos + 1 < len && (bytes[pos + 1].is_ascii_digit() || bytes[pos + 1] == b'e' || bytes[pos + 1] == b'E') {
+                        if pos + 1 < len
+                            && (bytes[pos + 1].is_ascii_digit()
+                                || bytes[pos + 1] == b'e'
+                                || bytes[pos + 1] == b'E')
+                        {
                             seen_dot = true;
                             pos += 1;
                         } else if pos + 1 == len || !bytes[pos + 1].is_ascii_alphabetic() {
@@ -449,9 +563,7 @@ pub fn lex_swift_into(code: &str, spans: &mut Vec<Span>) {
 
             let kind = if SWIFT_KEYWORDS.contains(&word) {
                 Tok::Keyword
-            } else if SWIFT_TYPES.contains(&word) {
-                Tok::Type
-            } else if is_capitalized_type(word) {
+            } else if SWIFT_TYPES.contains(&word) || is_capitalized_type(word) {
                 Tok::Type
             } else if is_function_call(code, pos) {
                 Tok::Func
@@ -530,7 +642,10 @@ fn is_function_call(code: &str, mut pos: usize) -> bool {
 
 /// Swift punctuation characters.
 fn is_swift_punct(c: char) -> bool {
-    matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '.' | ':' | '?' | '!')
+    matches!(
+        c,
+        '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '.' | ':' | '?' | '!'
+    )
 }
 
 /// Swift operator characters.

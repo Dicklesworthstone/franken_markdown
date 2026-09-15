@@ -43,22 +43,22 @@ pub mod error;
 pub mod fonts;
 pub mod highlight;
 pub mod html;
+pub mod lang_cplusplus;
+pub mod lang_csharp;
 pub mod lang_dispatch;
 pub mod lang_go;
 pub mod lang_html;
-pub mod lang_cplusplus;
-pub mod lang_csharp;
-pub mod lang_javascript;
 pub mod lang_java;
-pub mod lang_shell;
+pub mod lang_javascript;
 pub mod lang_python;
+pub mod lang_shell;
 pub mod lang_sql;
 pub mod lang_swift;
 pub mod layout;
 pub mod lex_c;
+pub mod lex_css;
 pub mod lex_toml;
 pub mod lex_yaml;
-pub mod lex_css;
 pub mod md_gen;
 pub mod parse;
 pub mod pdf;
@@ -121,12 +121,23 @@ pub use doc_stats::{
 pub use epub::render_epub;
 pub use error::{RenderError, Result};
 pub use interactive::render_interactive_html;
+pub use lang_dispatch::{
+    DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult, LanguageId,
+    LanguageRegistry, LanguageRouteRegistration, MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
+    QualificationStatus, ResourceCounters, digest_spans, fnv1a_64,
+};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
     PdfEmitOptions, PdfPageEmission, PdfProfile, PdfStageSummary, RenderWarning, render_warnings,
 };
 pub use pdfa::{PdfAMode, PdfASettings};
+pub use resume::{
+    CHECKPOINT_MAGIC, CHECKPOINT_VERSION, CheckpointError, CoalescedSpan, CommentState, FeedReport,
+    LexerCheckpoint, MAX_CHECKPOINT_BYTES, MAX_COMMENT_DEPTH, MAX_INTERPOLATION_DEPTH,
+    MAX_LANG_LEN, MAX_SUFFIX_BYTES, ResumableLexer, ResumeError, StringState, coalesce_spans,
+    highlight_chunked, verify_whole_block_coalesced_equivalence,
+};
 pub use scanner::{
     ByteCandidateScan, ParserLineScan, TableFenceCandidateScan, WhitespaceScan,
     classify_ascii_whitespace, find_any_special_byte, find_html_escape, find_html_text_escape,
@@ -134,17 +145,6 @@ pub use scanner::{
     scan_table_or_fence_candidate,
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
-pub use lang_dispatch::{
-    digest_spans, fnv1a_64, DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult,
-    LanguageId, LanguageRegistry, LanguageRouteRegistration, QualificationStatus, ResourceCounters,
-    MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
-};
-pub use resume::{
-    coalesce_spans, highlight_chunked, verify_whole_block_coalesced_equivalence, CheckpointError,
-    CoalescedSpan, CommentState, FeedReport, LexerCheckpoint, ResumableLexer, ResumeError,
-    StringState, CHECKPOINT_MAGIC, CHECKPOINT_VERSION, MAX_CHECKPOINT_BYTES, MAX_COMMENT_DEPTH,
-    MAX_INTERPOLATION_DEPTH, MAX_LANG_LEN, MAX_SUFFIX_BYTES,
-};
 pub use span::{
     DiagnosticSeverity, ParseDiagnostic, ProvenanceError, ProvenanceKind, ProvenanceNode,
     SourceSpan, Spanned, SpannedBlock, SpannedDocument, SpannedInline, SpannedListItem,

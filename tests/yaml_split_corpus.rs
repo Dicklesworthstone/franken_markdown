@@ -3,8 +3,9 @@
 //! every character boundary with exact source tiling.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
+use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::lex_yaml::{LexYamlError, ResumableYamlLexer, YAML_CAPABILITY_V1};
 
 fn coalesce(spans: &[Span]) -> Vec<(Tok, usize, usize)> {
@@ -153,13 +154,28 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), LexYamlError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        LexYamlError::AlreadyFinished
+    );
 }
 
 #[test]
 fn yaml_capability_row_is_versioned() {
     assert_eq!(YAML_CAPABILITY_V1.version, 1);
-    assert!(YAML_CAPABILITY_V1.incremental);
-    assert!(YAML_CAPABILITY_V1.basic_and_literal_strings);
-    assert!(YAML_CAPABILITY_V1.colon_and_dash_cuts);
+    const {
+        const {
+            assert!(YAML_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(YAML_CAPABILITY_V1.basic_and_literal_strings);
+        };
+    };
+    const {
+        const {
+            assert!(YAML_CAPABILITY_V1.colon_and_dash_cuts);
+        };
+    };
 }

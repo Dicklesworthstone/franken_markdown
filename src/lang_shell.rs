@@ -11,15 +11,15 @@
 use crate::highlight::{Span, Tok};
 
 const KEYWORDS: &[&str] = &[
-    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case",
-    "esac", "in", "function", "select", "time", "coproc", "local", "export", "readonly",
-    "declare", "typeset", "unset", "shift", "return", "exit", "eval", "exec", "set",
-    "trap", "umask", "alias", "unalias", "source", "wait",
+    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac",
+    "in", "function", "select", "time", "coproc", "local", "export", "readonly", "declare",
+    "typeset", "unset", "shift", "return", "exit", "eval", "exec", "set", "trap", "umask", "alias",
+    "unalias", "source", "wait",
 ];
 
 const BUILTINS: &[&str] = &[
-    "echo", "printf", "read", "cd", "pwd", "test", "pushd", "popd", "dirs", "jobs",
-    "fg", "bg", "kill", "getopts", "type", "command", "builtin", "enable", "help",
+    "echo", "printf", "read", "cd", "pwd", "test", "pushd", "popd", "dirs", "jobs", "fg", "bg",
+    "kill", "getopts", "type", "command", "builtin", "enable", "help",
 ];
 
 /// What the previous significant token was.
@@ -35,8 +35,7 @@ fn classify_word(word: &str, prev: Prev) -> Tok {
     if KEYWORDS.contains(&word) {
         return Tok::Keyword;
     }
-    if BUILTINS.contains(&word) && matches!(prev, Prev::Start | Prev::Keyword | Prev::Operator)
-    {
+    if BUILTINS.contains(&word) && matches!(prev, Prev::Start | Prev::Keyword | Prev::Operator) {
         return Tok::Func;
     }
     Tok::Plain
@@ -48,7 +47,7 @@ fn is_word_char(c: char) -> bool {
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {
     while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
+        let c = code[pos..].chars().next().unwrap_or('\0');
         if pred(c) {
             pos += c.len_utf8();
         } else {
@@ -60,18 +59,6 @@ fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usi
 
 fn ic_len(code: &str, pos: usize) -> usize {
     code[pos..].chars().next().map_or(1, |c| c.len_utf8())
-}
-
-fn next_non_space_is(code: &str, mut pos: usize, target: char) -> bool {
-    while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
-        if c.is_whitespace() {
-            pos += c.len_utf8();
-        } else {
-            return c == target;
-        }
-    }
-    false
 }
 
 /// Lex POSIX shell source into exact tiling spans.
@@ -95,11 +82,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
                 end: start,
             });
         }
-        spans.push(Span {
-            kind,
-            start,
-            end,
-        });
+        spans.push(Span { kind, start, end });
         *last_end = end;
     }
 
@@ -116,7 +99,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos += clen;
             while pos < bytes_len {
-                let c = code[pos..].chars().next().unwrap();
+                let c = code[pos..].chars().next().unwrap_or('\0');
                 if c.is_whitespace() {
                     pos += c.len_utf8();
                 } else {
@@ -157,14 +140,17 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
             let mut scan = start + 2;
             let mut closed = false;
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == '\'' || c == '"' {
                     let quote = c;
                     let mut inner = scan + 1;
                     while inner < bytes_len {
-                        let ic = code[inner..].chars().next().unwrap();
+                        let ic = code[inner..].chars().next().unwrap_or('\0');
                         if ic == '\\' {
-                            inner += 2;
+                            inner += 1;
+                            if inner < bytes_len {
+                                inner += ic_len(code, inner);
+                            }
                             continue;
                         }
                         if ic == quote {
@@ -200,14 +186,14 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
             let mut scan = start + 1;
             let mut closed = false;
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == '\\' {
                     let next_scan = scan + 1;
                     if next_scan >= bytes_len {
                         scan = bytes_len;
                         break;
                     }
-                    let escaped = code[next_scan..].chars().next().unwrap();
+                    let escaped = code[next_scan..].chars().next().unwrap_or('\0');
                     scan = next_scan + escaped.len_utf8();
                     continue;
                 }
@@ -267,7 +253,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
                     let mut scan = start + 1;
                     let mut closed = false;
                     while scan < bytes_len {
-                        let c = code[scan..].chars().next().unwrap();
+                        let c = code[scan..].chars().next().unwrap_or('\0');
                         if c == '{' {
                             depth += 1;
                         } else if c == '}' {
@@ -296,7 +282,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
                 Some(c) if is_word_char(c) => {
                     let mut scan = start + 1;
                     while scan < bytes_len {
-                        let c = code[scan..].chars().next().unwrap();
+                        let c = code[scan..].chars().next().unwrap_or('\0');
                         if is_word_char(c) {
                             scan += c.len_utf8();
                         } else {
@@ -350,7 +336,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
         if is_word_char(ch) {
             let start = pos;
             pos += clen;
-            pos += consume_while(code, pos, is_word_char);
+            pos = consume_while(code, pos, is_word_char);
             let word = &code[start..pos];
             let kind = classify_word(word, prev);
             push_tiling(spans, &mut last_end, kind, start, pos);
@@ -367,7 +353,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             let next = pos + 1;
             let adv = if next < bytes_len {
-                code[next..].chars().next().unwrap().len_utf8()
+                code[next..].chars().next().unwrap_or('\0').len_utf8()
             } else {
                 0
             };
@@ -391,6 +377,7 @@ pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -436,7 +423,7 @@ mod tests {
             .map(|s| &code[s.start..s.end])
             .collect();
         assert!(
-            strs.iter().any(|s| *s == "'$HOME and `cmd`'"),
+            strs.contains(&"'$HOME and `cmd`'"),
             "single-quoted string is verbatim: {strs:?}"
         );
     }

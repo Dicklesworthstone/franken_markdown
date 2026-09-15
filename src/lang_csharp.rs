@@ -27,7 +27,7 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char(code, pos).is_whitespace() {
                     pos += first_char(code, pos).len_utf8();
@@ -204,7 +204,9 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 while p < len {
                     let b = bytes[p];
                     if b == b'.' {
-                        if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) || p + 1 == len {
+                        if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit())
+                            || p + 1 == len
+                        {
                             p += 1;
                         } else {
                             break;
@@ -517,7 +519,10 @@ fn is_operator_char(c: char) -> bool {
 }
 
 fn is_punct_char(c: char) -> bool {
-    matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.' | '@' | '#')
+    matches!(
+        c,
+        '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.' | '@' | '#'
+    )
 }
 
 /// C# keyword membership over a sorted static table (binary search;
@@ -533,21 +538,114 @@ impl KwTable {
 }
 
 const CS_KW_SORTED: &[&str] = &[
-    "abstract", "as", "async", "await", "base", "bool", "break", "byte", "case", "catch", "char",
-    "checked", "class", "const", "continue", "decimal", "default", "delegate", "do", "double",
-    "dynamic", "else", "enum", "event", "explicit", "extern", "false", "finally", "fixed",
-    "float", "for", "foreach", "get", "goto", "if", "implicit", "in", "init", "int", "interface",
-    "internal", "is", "lock", "long", "namespace", "new", "null", "object", "operator", "out",
-    "override", "params", "partial", "private", "protected", "public", "readonly", "ref",
-    "return", "sbyte", "sealed", "set", "short", "sizeof", "stackalloc", "static", "string",
-    "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked",
-    "unsafe", "ushort", "using", "var", "virtual", "void", "volatile", "when", "where", "while",
+    "abstract",
+    "as",
+    "async",
+    "await",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "dynamic",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "get",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "init",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "partial",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "set",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "var",
+    "virtual",
+    "void",
+    "volatile",
+    "when",
+    "where",
+    "while",
     "yield",
 ];
 
 const CS_TY_SORTED: &[&str] = &[
-    "ArgumentException", "Boolean", "Byte", "Char", "Console", "Decimal", "Dictionary", "Double",
-    "Exception", "Int16", "Int32", "Int64", "List", "Object", "Single", "String", "Task",
+    "ArgumentException",
+    "Boolean",
+    "Byte",
+    "Char",
+    "Console",
+    "Decimal",
+    "Dictionary",
+    "Double",
+    "Exception",
+    "Int16",
+    "Int32",
+    "Int64",
+    "List",
+    "Object",
+    "Single",
+    "String",
+    "Task",
 ];
 
 static CS_KW: KwTable = KwTable {
@@ -594,14 +692,32 @@ mod tests {
     #[test]
     fn keywords_types_and_calls_are_classified() {
         let spans = kinds("public class Widget {\n    var count = Read();\n}");
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "public"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "class"));
         assert!(
-            spans.iter().any(|(kind, text)| *kind == Tok::Type && text == "Widget"),
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "public")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "class")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Type && text == "Widget"),
             "spans: {spans:?}"
         );
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "var"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Func && text == "Read"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "var")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Func && text == "Read")
+        );
     }
 
     #[test]
@@ -610,16 +726,21 @@ mod tests {
         assert!(owned.contains(&(Tok::Plain, "@class".to_string())));
         assert!(owned.contains(&(Tok::Plain, "@event".to_string())));
         assert!(owned.iter().all(|(kind, _)| *kind == Tok::Plain));
-
     }
 
     #[test]
     fn line_and_block_comments_are_classified() {
         let spans = kinds("// line\n/* block\nspan */ x");
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Comment && text == "// line"));
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Comment && text.contains("block")));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Comment && text == "// line")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Comment && text.contains("block"))
+        );
     }
 
     #[test]
@@ -635,25 +756,31 @@ mod tests {
         let spans = kinds("var m = $\"x {args[\"inner\"]} y\";");
         // The inner "inner" quote lives inside braces; the string closes at
         // the final quote.
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text.contains("inner")));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text.contains("inner"))
+        );
     }
 
     #[test]
     fn raw_triple_quoted_strings_close_at_run() {
         let spans = kinds("var r = \"\"\"raw \"partial\" text\"\"\";");
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text.contains("raw \"partial\" text")));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text.contains("raw \"partial\" text"))
+        );
     }
 
     #[test]
     fn preprocessor_directives_are_line_bound_keywords() {
         let spans = kinds("    #nullable enable\nx = a # b;");
-        assert!(spans.iter().any(|(kind, text)| {
-            *kind == Tok::Keyword && text == "#nullable"
-        }));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| { *kind == Tok::Keyword && text == "#nullable" })
+        );
         // Mid-line hash is operator punctuation, not a directive.
         assert!(
             spans
@@ -680,27 +807,35 @@ mod tests {
     #[test]
     fn regular_strings_stop_at_newline() {
         let spans = kinds("var a = \"broken\nvar b = 2;");
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text == "\"broken"));
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Number && text == "2"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text == "\"broken")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Number && text == "2")
+        );
     }
 
     #[test]
     fn character_literals_and_lone_quotes() {
         let spans = kinds("var c = 'x';\nvar q = ';");
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text == "'x'"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text == "'x'")
+        );
     }
 
     #[test]
     fn error_codes_are_stable() {
         let spans = kinds("var s = \"unterminated");
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text.contains("unterminated")));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text.contains("unterminated"))
+        );
     }
 }

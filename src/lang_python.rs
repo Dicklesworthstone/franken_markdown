@@ -26,7 +26,7 @@ pub fn lex_python_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char(code, pos).is_whitespace() {
                     pos += first_char(code, pos).len_utf8();
@@ -117,8 +117,7 @@ pub fn lex_python_into(code: &str, spans: &mut Vec<Span>) {
         // 5. Numbers: hex/oct/bin, decimals, floats, exponents, underscores,
         //    and the imaginary suffix. Leading-dot floats (.5e-3) are
         //    literals too, so a dot followed by a digit enters here.
-        if c.is_ascii_digit() || (c == '.' && rest.len() > 1 && bytes[pos + 1].is_ascii_digit())
-        {
+        if c.is_ascii_digit() || (c == '.' && rest.len() > 1 && bytes[pos + 1].is_ascii_digit()) {
             let start = pos;
             let mut p = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
@@ -349,7 +348,10 @@ fn is_operator_char(c: char) -> bool {
 }
 
 fn is_punct_char(c: char) -> bool {
-    matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.' | '\\' | '$' | '?' | '`')
+    matches!(
+        c,
+        '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.' | '\\' | '$' | '?' | '`'
+    )
 }
 
 /// Python keyword membership over a sorted static table (binary search;
@@ -365,22 +367,48 @@ impl KwTable {
 }
 
 const PY_KW_SORTED: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
-    "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if",
-    "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-    "while", "with", "yield",
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
 ];
 
 const PY_TY_SORTED: &[&str] = &[
-    "BaseException", "bool", "bytearray", "bytes", "complex", "dict", "enumerate", "filter",
-    "float", "frozenset", "int", "list", "map", "memoryview", "object", "range", "set", "slice",
-    "staticmethod", "str", "super", "tuple", "type", "zip",
+    "BaseException",
+    "bool",
+    "bytearray",
+    "bytes",
+    "complex",
+    "dict",
+    "enumerate",
+    "filter",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "map",
+    "memoryview",
+    "object",
+    "range",
+    "set",
+    "slice",
+    "staticmethod",
+    "str",
+    "super",
+    "tuple",
+    "type",
+    "zip",
 ];
 
-static PY_KW: KwTable = KwTable { words: PY_KW_SORTED };
-static PY_TY: KwTable = KwTable { words: PY_TY_SORTED };
+static PY_KW: KwTable = KwTable {
+    words: PY_KW_SORTED,
+};
+static PY_TY: KwTable = KwTable {
+    words: PY_TY_SORTED,
+};
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -396,9 +424,11 @@ mod tests {
     #[test]
     fn triple_quoted_strings_span_newlines_and_comments() {
         let spans = kinds("x = \"\"\"a # not comment\nb\"\"\"");
-        assert!(spans.iter().any(|(kind, text)| {
-            *kind == Tok::Str && text.contains("# not comment")
-        }));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| { *kind == Tok::Str && text.contains("# not comment") })
+        );
     }
 
     #[test]
@@ -417,9 +447,11 @@ mod tests {
         let spans = kinds(r#"value = r\"unterminated"#);
         // r"..." where the backslash-quote pair does not close: unterminated
         // raw string runs to end of input as one provisional Str span.
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Str && text.contains("unterminated")));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Str && text.contains("unterminated"))
+        );
     }
 
     #[test]
@@ -433,21 +465,41 @@ mod tests {
     #[test]
     fn single_quoted_string_stops_at_newline() {
         let spans = kinds("s = \"broken\nnext = 1");
-        assert!(spans.iter().any(|(kind, text)| {
-            *kind == Tok::Str && text == "\"broken"
-        }));
-        assert!(spans.iter().any(|(kind, text)| {
-            *kind == Tok::Number && text == "1"
-        }));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| { *kind == Tok::Str && text == "\"broken" })
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| { *kind == Tok::Number && text == "1" })
+        );
     }
 
     #[test]
     fn keywords_types_and_calls_are_classified() {
         let spans = kinds("class Widget:\n    def render(self):\n        return None");
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "class"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "def"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Func && text == "render"));
-        assert!(spans.iter().any(|(kind, text)| *kind == Tok::Keyword && text == "None"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "class")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "def")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Func && text == "render")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Keyword && text == "None")
+        );
     }
 
     #[test]
@@ -464,11 +516,15 @@ mod tests {
     #[test]
     fn line_continuation_stays_plain_and_comments_still_classified() {
         let spans = kinds("x = 1 \\\n    # comment\ny = 2");
-        assert!(spans.iter().any(|(kind, text)| {
-            *kind == Tok::Plain && text.contains('\\')
-        }));
-        assert!(spans
-            .iter()
-            .any(|(kind, text)| *kind == Tok::Comment && text == "# comment"));
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| { *kind == Tok::Plain && text.contains('\\') })
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(kind, text)| *kind == Tok::Comment && text == "# comment")
+        );
     }
 }

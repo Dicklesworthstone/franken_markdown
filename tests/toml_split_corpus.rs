@@ -3,8 +3,9 @@
 //! identically, at every byte split, with exact source tiling.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
+use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::lex_toml::ResumableTomlLexer;
 
 fn coalesce(spans: &[Span]) -> Vec<(Tok, usize, usize)> {
@@ -148,9 +149,21 @@ fn numbers_and_dates_are_split_safe() {
 fn toml_capability_row_is_versioned() {
     use franken_markdown::lex_toml::TOML_CAPABILITY_V1;
     assert_eq!(TOML_CAPABILITY_V1.version, 1);
-    assert!(TOML_CAPABILITY_V1.incremental);
-    assert!(TOML_CAPABILITY_V1.basic_and_literal_strings);
-    assert!(TOML_CAPABILITY_V1.structured_keys);
+    const {
+        const {
+            assert!(TOML_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(TOML_CAPABILITY_V1.basic_and_literal_strings);
+        };
+    };
+    const {
+        const {
+            assert!(TOML_CAPABILITY_V1.structured_keys);
+        };
+    };
 }
 
 #[test]
@@ -185,5 +198,8 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), LexTomlError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        LexTomlError::AlreadyFinished
+    );
 }

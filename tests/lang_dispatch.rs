@@ -3,21 +3,33 @@
 //! Comprehensive test suite for language coverage inventory and capability dispatch (FCB-022.A).
 
 use franken_markdown::lang_dispatch::{
-    digest_spans, fnv1a_64, DispatchAuditReceipt, DispatchError, DispatchRequest, LanguageId,
-    LanguageRegistry, LanguageRouteRegistration, QualificationStatus, ResourceCounters,
-    MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
+    DispatchAuditReceipt, DispatchError, DispatchRequest, LanguageId, LanguageRegistry,
+    LanguageRouteRegistration, MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
+    QualificationStatus, ResourceCounters, digest_spans, fnv1a_64,
 };
 
 #[test]
 fn inventory_the_20_required_language_routes() {
     let registry = LanguageRegistry::standard_20_inventory();
-    assert_eq!(registry.len(), 20, "Must have exactly 20 required language routes");
+    assert_eq!(
+        registry.len(),
+        20,
+        "Must have exactly 20 required language routes"
+    );
 
     let expected_languages = [
         (LanguageId::Rust, "rust", &["rust", "rs"][..]),
         (LanguageId::Python, "python", &["python", "py"][..]),
-        (LanguageId::JavaScript, "javascript", &["javascript", "js", "mjs", "cjs"][..]),
-        (LanguageId::TypeScript, "typescript", &["typescript", "ts"][..]),
+        (
+            LanguageId::JavaScript,
+            "javascript",
+            &["javascript", "js", "mjs", "cjs"][..],
+        ),
+        (
+            LanguageId::TypeScript,
+            "typescript",
+            &["typescript", "ts"][..],
+        ),
         (LanguageId::Jsx, "jsx", &["jsx"][..]),
         (LanguageId::Tsx, "tsx", &["tsx"][..]),
         (LanguageId::C, "c", &["c", "h"][..]),
@@ -26,14 +38,26 @@ fn inventory_the_20_required_language_routes() {
         (LanguageId::Go, "go", &["go", "golang"][..]),
         (LanguageId::Java, "java", &["java"][..]),
         (LanguageId::Swift, "swift", &["swift"][..]),
-        (LanguageId::Shell, "bash", &["shell", "bash", "sh", "zsh"][..]),
+        (
+            LanguageId::Shell,
+            "bash",
+            &["shell", "bash", "sh", "zsh"][..],
+        ),
         (LanguageId::Json, "json", &["json", "jsonc"][..]),
         (LanguageId::Toml, "toml", &["toml"][..]),
         (LanguageId::Yaml, "yaml", &["yaml", "yml"][..]),
         (LanguageId::Sql, "sql", &["sql"][..]),
-        (LanguageId::Html, "html", &["html", "htm", "xhtml", "xml", "svg"][..]),
+        (
+            LanguageId::Html,
+            "html",
+            &["html", "htm", "xhtml", "xml", "svg"][..],
+        ),
         (LanguageId::Css, "css", &["css", "scss", "sass"][..]),
-        (LanguageId::Markdown, "markdown", &["markdown", "md", "mdown", "mkd"][..]),
+        (
+            LanguageId::Markdown,
+            "markdown",
+            &["markdown", "md", "mdown", "mkd"][..],
+        ),
     ];
 
     assert_eq!(expected_languages.len(), 20);
@@ -213,7 +237,7 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
 
     // 17 languages are implemented with full coalesced equivalence (including C#, Java, Swift, HTML, CSS)
     assert_eq!(implemented.len(), 17);
-    assert_eq!(registry.len(), 17 + 3 + 0); // 17 implemented + 3 provisional + 0 missing = 20!
+    assert_eq!(registry.len(), (17 + 3)); // 17 implemented + 3 provisional + 0 missing = 20!
 
     let fixtures: &[(&str, &[u8])] = &[
         ("rust", b"fn calculate(val: u32) -> u32 { val * 2 }"),
@@ -254,7 +278,10 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
         let mut offset = 0;
         for span in &res.spans {
             assert_eq!(span.start, offset, "spans must be contiguous for {lang}");
-            assert!(span.end >= span.start, "span end must be >= start for {lang}");
+            assert!(
+                span.end >= span.start,
+                "span end must be >= start for {lang}"
+            );
             offset = span.end;
         }
         assert_eq!(offset, code.len(), "spans must tile entire code for {lang}");
@@ -312,7 +339,8 @@ fn deterministic_audit_receipts_with_seed_digest_and_replay() {
             spans_emitted: res.spans.len(),
             capacity_limit: 4096,
         },
-        replay_command: "cargo test --test lang_dispatch -- deterministic_audit_receipts".to_string(),
+        replay_command: "cargo test --test lang_dispatch -- deterministic_audit_receipts"
+            .to_string(),
     };
 
     assert_eq!(receipt.seed, seed);
@@ -322,5 +350,8 @@ fn deterministic_audit_receipts_with_seed_digest_and_replay() {
     // Determinism check: repeat and assert identical digest
     let res2 = registry.dispatch(req).unwrap();
     let output_hash2 = digest_spans(&res2.spans);
-    assert_eq!(output_hash, output_hash2, "Digests must be bit-for-bit identical across runs");
+    assert_eq!(
+        output_hash, output_hash2,
+        "Digests must be bit-for-bit identical across runs"
+    );
 }

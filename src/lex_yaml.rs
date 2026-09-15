@@ -6,7 +6,7 @@
 //! at a safe-cut byte are released. YAML safe-cut bytes are `: - " '` which
 //! settle the function-call detection and value key boundaries.
 
-use crate::highlight::{highlight, Span};
+use crate::highlight::{Span, highlight};
 
 /// Errors from the YAML resumable seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,3 +192,9 @@ pub const YAML_CAPABILITY_V1: YamlCapabilityV1 = YamlCapabilityV1 {
     basic_and_literal_strings: true,
     colon_and_dash_cuts: true,
 };
+
+impl Default for ResumableYamlLexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

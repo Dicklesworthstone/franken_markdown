@@ -8,11 +8,11 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
+use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::resume::{
-    coalesce_spans, highlight_chunked, verify_whole_block_coalesced_equivalence, CheckpointError,
-    CommentState, FeedReport, LexerCheckpoint, ResumableLexer, ResumeError, StringState,
-    CHECKPOINT_MAGIC, CHECKPOINT_VERSION, MAX_CHECKPOINT_BYTES, MAX_COMMENT_DEPTH,
+    CHECKPOINT_MAGIC, CHECKPOINT_VERSION, CheckpointError, CommentState, FeedReport,
+    LexerCheckpoint, MAX_CHECKPOINT_BYTES, MAX_COMMENT_DEPTH, ResumableLexer, ResumeError,
+    StringState, coalesce_spans, highlight_chunked, verify_whole_block_coalesced_equivalence,
 };
 
 /// Coalesce adjacent same-kind spans: the chunked stream may split a token
@@ -123,7 +123,9 @@ fn truncated_utf8_head_is_held_not_refused() {
     let mut lexer = ResumableLexer::new("rust").expect("supported");
     // First byte of a two-byte character: truncated, not malformed.
     lexer.feed(b"// \xC3").expect("truncated head is held");
-    lexer.feed(b"\xA9 rest").expect("the completing byte arrives");
+    lexer
+        .feed(b"\xA9 rest")
+        .expect("the completing byte arrives");
     lexer.finish().expect("finish succeeds");
     let source_len = 10; // "// " + 2-byte char + " rest"
     assert_tiling(lexer.spans(), source_len);
@@ -287,8 +289,7 @@ fn checkpoint_source_correspondence_mismatch_refused() {
     };
 
     // Expected revision mismatch
-    let err = ResumableLexer::from_checkpoint(&cp, 11, 200)
-        .expect_err("revision mismatch refused");
+    let err = ResumableLexer::from_checkpoint(&cp, 11, 200).expect_err("revision mismatch refused");
     assert_eq!(
         err,
         CheckpointError::SourceCorrespondenceMismatch {
@@ -299,8 +300,7 @@ fn checkpoint_source_correspondence_mismatch_refused() {
     assert_eq!(err.code(), "SOURCE_CORRESPONDENCE_MISMATCH");
 
     // Expected offset mismatch
-    let err = ResumableLexer::from_checkpoint(&cp, 10, 250)
-        .expect_err("offset mismatch refused");
+    let err = ResumableLexer::from_checkpoint(&cp, 10, 250).expect_err("offset mismatch refused");
     assert_eq!(
         err,
         CheckpointError::OffsetMismatch {
@@ -361,8 +361,8 @@ fn calculate_metrics(count: usize) -> f64 {
     let stage1_spans = lexer1.spans().to_vec();
 
     // Stage 2: Resume from checkpoint with matching expected revision and offset
-    let mut lexer2 = ResumableLexer::from_checkpoint(&cp, 100, cp.byte_offset)
-        .expect("resumes from checkpoint");
+    let mut lexer2 =
+        ResumableLexer::from_checkpoint(&cp, 100, cp.byte_offset).expect("resumes from checkpoint");
     lexer2.feed(part2.as_bytes()).expect("feed part2");
     lexer2.finish().expect("finish stage 2");
 
@@ -411,7 +411,10 @@ fn resume_from_checkpoint_comment_and_string_states() {
 fn whole_block_compatibility_across_languages() {
     let test_cases = [
         ("rust", "fn solve(x: i32) -> bool { x > 0 && true }"),
-        ("python", "def compute(items):\n    return [x * 2 for x in items if x > 0]"),
+        (
+            "python",
+            "def compute(items):\n    return [x * 2 for x in items if x > 0]",
+        ),
         (
             "javascript",
             "function render(tree) {\n    const node = tree.root;\n    return node ? node.id : null;\n}",
@@ -444,17 +447,24 @@ fn whole_block_compatibility_across_languages() {
             "sql",
             "SELECT id, title, score FROM submissions WHERE score > 10 ORDER BY score DESC;",
         ),
-        ("yaml", "name: fcb\nsteps:\n  - name: test\n    run: cargo test"),
+        (
+            "yaml",
+            "name: fcb\nsteps:\n  - name: test\n    run: cargo test",
+        ),
         (
             "toml",
             "[package]\nname = \"franken_code_browser\"\nversion = \"0.1.0\"",
         ),
-        ("bash", "#!/bin/bash\nset -euo pipefail\necho \"running $1\""),
+        (
+            "bash",
+            "#!/bin/bash\nset -euo pipefail\necho \"running $1\"",
+        ),
     ];
 
     for (lang, code) in test_cases {
         for chunk_size in [1, 2, 3, 7, 16, 64] {
-            let chunked = highlight_chunked(lang, code, chunk_size).expect("highlight_chunked succeeds");
+            let chunked =
+                highlight_chunked(lang, code, chunk_size).expect("highlight_chunked succeeds");
             assert_tiling(&chunked, code.len());
             assert!(
                 verify_whole_block_coalesced_equivalence(lang, code, chunk_size)

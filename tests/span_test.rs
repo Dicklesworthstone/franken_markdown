@@ -100,11 +100,7 @@ fn provenance_validation_rejects_reversed_outside_and_overlapping_ranges() {
 
     let outside = ProvenanceNode::leaf(ProvenanceKind::Inline, SourceSpan::new(2, 12)).unwrap();
     assert_eq!(
-        ProvenanceNode::try_new(
-            ProvenanceKind::Block,
-            SourceSpan::new(0, 10),
-            vec![outside]
-        ),
+        ProvenanceNode::try_new(ProvenanceKind::Block, SourceSpan::new(0, 10), vec![outside]),
         Err(ProvenanceError::ChildOutsideParent {
             parent: SourceSpan::new(0, 10),
             child: SourceSpan::new(2, 12),
@@ -146,8 +142,7 @@ fn provenance_validation_rejects_disjoint_children_in_reverse_source_order() {
 
 #[test]
 fn generated_empty_nodes_do_not_capture_source_hits() {
-    let generated =
-        ProvenanceNode::leaf(ProvenanceKind::Generated, SourceSpan::new(3, 3)).unwrap();
+    let generated = ProvenanceNode::leaf(ProvenanceKind::Generated, SourceSpan::new(3, 3)).unwrap();
     let block = ProvenanceNode::try_new(
         ProvenanceKind::Block,
         SourceSpan::new(0, 8),

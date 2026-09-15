@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.2`** | `Cargo.toml` `version` field |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.4`** | `Cargo.toml` `version` field |
 > | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.2`** (2026-08-28) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2 |
 > | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.0, `fmd-math` 0.1.0) | **`0.4.2`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
@@ -338,6 +338,20 @@ small surface, fast builds, determinism, and a PDF path it controls top to
 bottom.
 
 ---
+
+## Development
+
+A standalone checkout contains everything needed for the default tests; no
+sibling repository is required. The hostile-input generator and bounded
+minimizer live in `tests/support/hostile.rs`.
+
+```bash
+cargo fmt --check
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --no-default-features
+```
 
 ## Installation
 

@@ -25,7 +25,7 @@ default-members = [".", "fmd-font", "fmd-math"]
 
 [package]
 name = "franken_markdown"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 rust-version = "1.85"
 default-run = "fmd"
@@ -96,15 +96,15 @@ mcp = ["cli"]
 # First-party: the factored font subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own). `crate::text` re-exports it, so
 # the engine surface is unchanged.
-fmd-font = { path = "fmd-font", version = "0.3.0", features = ["bundled-faces"] }
+fmd-font = { path = "fmd-font", version = "0.3.1", features = ["bundled-faces"] }
 # First-party: the factored math subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own).
-fmd-math = { path = "fmd-math", version = "0.1.0" }
+fmd-math = { path = "fmd-math", version = "0.1.1" }
 # The ONLY third-party crate in the default build, and only for the CLI argument
 # parser. The library target (the renderer itself) compiles with zero external
 # dependencies.
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
-wasm-bindgen = { version = "0.2.126", optional = true }
+wasm-bindgen = { version = "=0.2.126", optional = true }
 # Native-only, opt-in via the `batch` feature. Justification: the project's own
 # orchestration framework (the Franken suite), used solely for the native batch
 # renderer's structured concurrency / cancellation / budget semantics; it never
@@ -142,8 +142,3 @@ codegen-units = 1
 debug = "line-tables-only"
 strip = false
 panic = "unwind"
-
-[dev-dependencies]
-# Hostile-input harness core (FCB-059.A): deterministic generators and the
-# failure-preserving minimizer, exercised against the real resumable engine.
-fcb-conformance = { path = "../franken_code_browser/crates/fcb-conformance" }

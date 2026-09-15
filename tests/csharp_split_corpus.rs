@@ -4,11 +4,13 @@
 //! Malformed and truncated inputs must lex with bounded work and truthful
 //! provisional tails, never panic.
 
-use franken_markdown::highlight::highlight;
-use franken_markdown::highlight::Tok;
-use franken_markdown::lang_csharp::lex_csharp_into;
-use franken_markdown::resume::{coalesce_spans, ResumableLexer};
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use franken_markdown::highlight::Span;
+use franken_markdown::highlight::Tok;
+use franken_markdown::highlight::highlight;
+use franken_markdown::lang_csharp::lex_csharp_into;
+use franken_markdown::resume::{ResumableLexer, coalesce_spans};
 
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/csharp_route/consumer_document.cs");
 
@@ -46,8 +48,12 @@ fn every_split_matches_whole_run_on_all_fixtures() {
 
         for split in 0..=fixture.len() {
             let mut lexer = ResumableLexer::new("csharp").expect("csharp route exists");
-            lexer.feed(&fixture.as_bytes()[..split]).expect("first feed");
-            lexer.feed(&fixture.as_bytes()[split..]).expect("second feed");
+            lexer
+                .feed(&fixture.as_bytes()[..split])
+                .expect("first feed");
+            lexer
+                .feed(&fixture.as_bytes()[split..])
+                .expect("second feed");
             lexer.finish().expect("finish after full input");
             let split_coalesced = coalesced(lexer.spans());
             assert_eq!(
@@ -74,16 +80,7 @@ fn scanner_direct_matches_highlight_route() {
 
 #[test]
 fn malformed_inputs_lex_with_bounded_output() {
-    for hostile in [
-        "\"\"\"\"\"",
-        "$\"{a",
-        "@\"",
-        "/*",
-        "'",
-        "@",
-        "#",
-        "0x",
-    ] {
+    for hostile in ["\"\"\"\"\"", "$\"{a", "@\"", "/*", "'", "@", "#", "0x"] {
         let mut spans = Vec::new();
         lex_csharp_into(hostile, &mut spans);
         for span in &spans {
@@ -115,9 +112,21 @@ fn truncated_interpolation_holds_until_closed() {
 fn csharp_capability_row_is_versioned() {
     use franken_markdown::lang_csharp::CSHARP_CAPABILITY_V1;
     assert_eq!(CSHARP_CAPABILITY_V1.version, 1);
-    assert!(CSHARP_CAPABILITY_V1.incremental);
-    assert!(CSHARP_CAPABILITY_V1.string_variants_and_interpolation);
-    assert!(CSHARP_CAPABILITY_V1.preprocessor_and_character_escapes);
+    const {
+        const {
+            assert!(CSHARP_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(CSHARP_CAPABILITY_V1.string_variants_and_interpolation);
+        };
+    };
+    const {
+        const {
+            assert!(CSHARP_CAPABILITY_V1.preprocessor_and_character_escapes);
+        };
+    };
 }
 
 #[test]
@@ -142,7 +151,9 @@ fn malformed_bounds_and_error_handling() {
 
     // Finishing seals the lexer
     let mut normal_lexer = ResumableLexer::new("csharp").expect("valid route");
-    normal_lexer.feed(b"class Program { static void Main() {} }\n").unwrap();
+    normal_lexer
+        .feed(b"class Program { static void Main() {} }\n")
+        .unwrap();
     normal_lexer.finish().unwrap();
     assert!(normal_lexer.is_finished());
 
@@ -152,5 +163,8 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), ResumeError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        ResumeError::AlreadyFinished
+    );
 }

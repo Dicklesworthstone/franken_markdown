@@ -18,7 +18,7 @@
 //! the held suffix at EOF, so the sealed output tiles the source exactly and
 //! coalesces to the whole-input classification.
 
-use crate::highlight::{highlight, Span, Tok};
+use crate::highlight::{Span, Tok, highlight};
 
 /// Errors from the C resumable seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,7 +182,10 @@ impl ResumableCLexer {
     /// Release every span that ends at a safe-cut position.
     fn release_through_safe_cut(&mut self) {
         let spans = highlight("c", &self.pending);
-        let Some(cut_span) = spans.iter().rev().find(|s| is_safe_cut_span(&self.pending, s))
+        let Some(cut_span) = spans
+            .iter()
+            .rev()
+            .find(|s| is_safe_cut_span(&self.pending, s))
         else {
             return; // no safe cut yet: everything stays held
         };
@@ -235,3 +238,9 @@ pub const C_CAPABILITY_V1: CCapabilityV1 = CCapabilityV1 {
     preprocessor_continuation: true,
     escaped_newline_in_literals: true,
 };
+
+impl Default for ResumableCLexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

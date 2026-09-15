@@ -142,12 +142,18 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
 
             // Tag name
             let tag_name_start = pos;
-            while pos < len && (bytes[pos] == b'_' || bytes[pos] == b'-' || bytes[pos] == b':' || bytes[pos].is_ascii_alphanumeric()) {
+            while pos < len
+                && (bytes[pos] == b'_'
+                    || bytes[pos] == b'-'
+                    || bytes[pos] == b':'
+                    || bytes[pos].is_ascii_alphanumeric())
+            {
                 pos += 1;
             }
             let has_tag_name = pos > tag_name_start;
 
-            if !has_tag_name && !is_closing {
+            if !has_tag_name {
+                pos = start + 1;
                 // Lone `<` not followed by tag name or `/` is plain/operator
                 spans.push(Span {
                     kind: Tok::Operator,
@@ -166,7 +172,8 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
 
             if has_tag_name {
                 let tag_name = &code[tag_name_start..pos];
-                let is_script_or_style = tag_name.eq_ignore_ascii_case("script") || tag_name.eq_ignore_ascii_case("style");
+                let is_script_or_style = tag_name.eq_ignore_ascii_case("script")
+                    || tag_name.eq_ignore_ascii_case("style");
                 let is_open_script_or_style = is_script_or_style && !is_closing;
 
                 spans.push(Span {
@@ -216,7 +223,13 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
 
                     // Attribute name
                     let attr_name_start = pos;
-                    while pos < len && (bytes[pos] == b'_' || bytes[pos] == b'-' || bytes[pos] == b':' || bytes[pos] == b'.' || bytes[pos].is_ascii_alphanumeric()) {
+                    while pos < len
+                        && (bytes[pos] == b'_'
+                            || bytes[pos] == b'-'
+                            || bytes[pos] == b':'
+                            || bytes[pos] == b'.'
+                            || bytes[pos].is_ascii_alphanumeric())
+                    {
                         pos += 1;
                     }
                     if pos > attr_name_start {
@@ -277,10 +290,18 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
                                     start: val_start,
                                     end: pos,
                                 });
-                            } else if pos < len && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' && bytes[pos] != b'/' {
+                            } else if pos < len
+                                && !bytes[pos].is_ascii_whitespace()
+                                && bytes[pos] != b'>'
+                                && bytes[pos] != b'/'
+                            {
                                 // Unquoted attribute value
                                 let val_start = pos;
-                                while pos < len && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' && bytes[pos] != b'/' {
+                                while pos < len
+                                    && !bytes[pos].is_ascii_whitespace()
+                                    && bytes[pos] != b'>'
+                                    && bytes[pos] != b'/'
+                                {
                                     pos += 1;
                                 }
                                 spans.push(Span {
@@ -294,12 +315,13 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
                     }
 
                     // Any stray character inside tag
+                    let width = code[pos..].chars().next().map_or(1, char::len_utf8);
                     spans.push(Span {
-                        kind: Tok::Plain,
+                        kind: Tok::Punct,
                         start: pos,
-                        end: pos + 1,
+                        end: pos + width,
                     });
-                    pos += 1;
+                    pos += width;
                 }
 
                 // If this was an opening <script> or <style>, scan embedded block until closing </script> or </style>
@@ -312,7 +334,9 @@ pub fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
                     let content_start = pos;
                     let mut found_close = false;
                     while pos < len {
-                        if pos + close_tag.len() <= len && code[pos..pos + close_tag.len()].eq_ignore_ascii_case(close_tag) {
+                        if pos + close_tag.len() <= len
+                            && code[pos..pos + close_tag.len()].eq_ignore_ascii_case(close_tag)
+                        {
                             found_close = true;
                             break;
                         }
@@ -410,16 +434,24 @@ mod tests {
         lex_html_into(source, &mut spans);
         assert_tiling(&spans, source.len());
 
-        let tag_name = spans.iter().find(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "div");
+        let tag_name = spans
+            .iter()
+            .find(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "div");
         assert!(tag_name.is_some(), "tag name must be Keyword");
 
-        let attr_name = spans.iter().find(|s| s.kind == Tok::Type && &source[s.start..s.end] == "class");
+        let attr_name = spans
+            .iter()
+            .find(|s| s.kind == Tok::Type && &source[s.start..s.end] == "class");
         assert!(attr_name.is_some(), "attr name must be Type");
 
-        let attr_val = spans.iter().find(|s| s.kind == Tok::Str && &source[s.start..s.end] == "\"btn\"");
+        let attr_val = spans
+            .iter()
+            .find(|s| s.kind == Tok::Str && &source[s.start..s.end] == "\"btn\"");
         assert!(attr_val.is_some(), "quoted attr value must be Str");
 
-        let text_span = spans.iter().find(|s| s.kind == Tok::Plain && &source[s.start..s.end] == "Click");
+        let text_span = spans
+            .iter()
+            .find(|s| s.kind == Tok::Plain && &source[s.start..s.end] == "Click");
         assert!(text_span.is_some(), "content must be Plain");
     }
 
@@ -430,9 +462,17 @@ mod tests {
         lex_html_into(source, &mut spans);
         assert_tiling(&spans, source.len());
 
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<!DOCTYPE html>"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<!DOCTYPE html>")
+        );
         assert!(spans.iter().any(|s| s.kind == Tok::Comment && &source[s.start..s.end] == "<!-- my comment -->"));
-        assert!(spans.iter().any(|s| s.kind == Tok::Str && &source[s.start..s.end] == "<![CDATA[ raw text ]]>"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Str && &source[s.start..s.end] == "<![CDATA[ raw text ]]>")
+        );
     }
 
     #[test]
@@ -442,8 +482,13 @@ mod tests {
         lex_html_into(source, &mut spans);
         assert_tiling(&spans, source.len());
 
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<?xml version=\"1.0\"?>"));
-        let entity_count = spans.iter().filter(|s| s.kind == Tok::Keyword && source[s.start..s.end].starts_with('&')).count();
+        assert!(spans.iter().any(
+            |s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<?xml version=\"1.0\"?>"
+        ));
+        let entity_count = spans
+            .iter()
+            .filter(|s| s.kind == Tok::Keyword && source[s.start..s.end].starts_with('&'))
+            .count();
         assert_eq!(entity_count, 3);
     }
 }

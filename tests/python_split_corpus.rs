@@ -4,10 +4,12 @@
 //! agree. Malformed and truncated inputs must lex with bounded work and
 //! truthful provisional tails, never panic.
 
-use franken_markdown::highlight::highlight;
-use franken_markdown::resume::{coalesce_spans, ResumableLexer};
-use franken_markdown::lang_python::lex_python_into;
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use franken_markdown::highlight::Span;
+use franken_markdown::highlight::highlight;
+use franken_markdown::lang_python::lex_python_into;
+use franken_markdown::resume::{ResumableLexer, coalesce_spans};
 
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/python_route/consumer_document.py");
 
@@ -45,8 +47,12 @@ fn every_split_matches_whole_run_on_all_fixtures() {
 
         for split in 0..=fixture.len() {
             let mut lexer = ResumableLexer::new("python").expect("python route exists");
-            lexer.feed(&fixture.as_bytes()[..split]).expect("first feed");
-            lexer.feed(&fixture.as_bytes()[split..]).expect("second feed");
+            lexer
+                .feed(&fixture.as_bytes()[..split])
+                .expect("first feed");
+            lexer
+                .feed(&fixture.as_bytes()[split..])
+                .expect("second feed");
             lexer.finish().expect("finish after full input");
             let split_coalesced = coalesced(lexer.spans());
             assert_eq!(
@@ -145,9 +151,21 @@ fn truncated_quote_is_held_not_wrongly_classified() {
 fn python_capability_row_is_versioned() {
     use franken_markdown::lang_python::PYTHON_CAPABILITY_V1;
     assert_eq!(PYTHON_CAPABILITY_V1.version, 1);
-    assert!(PYTHON_CAPABILITY_V1.incremental);
-    assert!(PYTHON_CAPABILITY_V1.string_variants_and_interpolation);
-    assert!(PYTHON_CAPABILITY_V1.continuations_and_indentation);
+    const {
+        const {
+            assert!(PYTHON_CAPABILITY_V1.incremental);
+        };
+    };
+    const {
+        const {
+            assert!(PYTHON_CAPABILITY_V1.string_variants_and_interpolation);
+        };
+    };
+    const {
+        const {
+            assert!(PYTHON_CAPABILITY_V1.continuations_and_indentation);
+        };
+    };
 }
 
 #[test]
@@ -182,5 +200,8 @@ fn malformed_bounds_and_error_handling() {
     assert_eq!(finish_err.code(), "ALREADY_FINISHED");
 
     // Double finish is also refused
-    assert_eq!(normal_lexer.finish().unwrap_err(), ResumeError::AlreadyFinished);
+    assert_eq!(
+        normal_lexer.finish().unwrap_err(),
+        ResumeError::AlreadyFinished
+    );
 }

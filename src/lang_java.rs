@@ -19,35 +19,142 @@ use crate::highlight::{Span, Tok};
 
 /// Java keywords, contextual keywords, and literal values.
 pub const JAVA_KEYWORDS: &[&str] = &[
-    "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
-    "const", "continue", "default", "do", "double", "else", "enum", "extends", "final",
-    "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int",
-    "interface", "long", "native", "new", "package", "private", "protected", "public",
-    "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this",
-    "throw", "throws", "transient", "try", "void", "volatile", "while",
+    "abstract",
+    "assert",
+    "boolean",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extends",
+    "final",
+    "finally",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "implements",
+    "import",
+    "instanceof",
+    "int",
+    "interface",
+    "long",
+    "native",
+    "new",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "short",
+    "static",
+    "strictfp",
+    "super",
+    "switch",
+    "synchronized",
+    "this",
+    "throw",
+    "throws",
+    "transient",
+    "try",
+    "void",
+    "volatile",
+    "while",
     // Contextual keywords (Java 10+)
-    "record", "sealed", "non-sealed", "permits", "yield", "var",
+    "record",
+    "sealed",
+    "non-sealed",
+    "permits",
+    "yield",
+    "var",
     // Literals highlighted as keywords
-    "true", "false", "null",
+    "true",
+    "false",
+    "null",
 ];
 
 /// Common standard library types and primitive wrapper types.
 pub const JAVA_TYPES: &[&str] = &[
-    "boolean", "byte", "char", "short", "int", "long", "float", "double", "void",
-    "Boolean", "Byte", "Character", "Short", "Integer", "Long", "Float", "Double",
-    "String", "Object", "Class", "System", "Math", "Number", "CharSequence",
-    "List", "ArrayList", "LinkedList", "Map", "HashMap", "TreeMap", "Set", "HashSet", "TreeSet",
-    "Collection", "Collections", "Arrays", "Optional", "Stream", "Iterator", "Iterable",
-    "Comparable", "Comparator", "Runnable", "Callable", "Future", "CompletableFuture",
-    "Thread", "ThreadGroup", "Throwable", "Exception", "RuntimeException", "Error",
-    "StringBuilder", "StringBuffer", "Scanner", "File", "Path", "Paths", "Files",
-    "InputStream", "OutputStream", "Reader", "Writer", "PrintStream", "PrintWriter",
+    "boolean",
+    "byte",
+    "char",
+    "short",
+    "int",
+    "long",
+    "float",
+    "double",
+    "void",
+    "Boolean",
+    "Byte",
+    "Character",
+    "Short",
+    "Integer",
+    "Long",
+    "Float",
+    "Double",
+    "String",
+    "Object",
+    "Class",
+    "System",
+    "Math",
+    "Number",
+    "CharSequence",
+    "List",
+    "ArrayList",
+    "LinkedList",
+    "Map",
+    "HashMap",
+    "TreeMap",
+    "Set",
+    "HashSet",
+    "TreeSet",
+    "Collection",
+    "Collections",
+    "Arrays",
+    "Optional",
+    "Stream",
+    "Iterator",
+    "Iterable",
+    "Comparable",
+    "Comparator",
+    "Runnable",
+    "Callable",
+    "Future",
+    "CompletableFuture",
+    "Thread",
+    "ThreadGroup",
+    "Throwable",
+    "Exception",
+    "RuntimeException",
+    "Error",
+    "StringBuilder",
+    "StringBuffer",
+    "Scanner",
+    "File",
+    "Path",
+    "Paths",
+    "Files",
+    "InputStream",
+    "OutputStream",
+    "Reader",
+    "Writer",
+    "PrintStream",
+    "PrintWriter",
 ];
 
 /// Multi-character operators in Java, longest first.
 const MULTI_CHAR_OPS: &[&str] = &[
-    ">>>=", ">>>", ">>=", "<<=", "==", "!=", "<=", ">=", "&&", "||", "++", "--",
-    "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "->", "::", "...",
+    ">>>=", ">>>", ">>=", "<<=", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "<<", ">>", "+=",
+    "-=", "*=", "/=", "%=", "&=", "|=", "^=", "->", "::", "...",
 ];
 
 /// Declared capability for the Java lexical route (FCB-022.14).
@@ -91,7 +198,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             while pos < len {
                 let b = bytes[pos];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                if b.is_ascii_whitespace() || b == 0x0b {
                     pos += 1;
                 } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
                     pos += first_char_at(code, pos).len_utf8();
@@ -144,7 +251,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
         if rest.starts_with("\"\"\"") {
             let start = pos;
             let mut p = pos + 3;
-            let mut closed = false;
+
             while p < len {
                 if bytes[p] == b'\\' {
                     p += 1;
@@ -155,12 +262,12 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 if p + 2 < len && bytes[p] == b'"' && bytes[p + 1] == b'"' && bytes[p + 2] == b'"' {
                     p += 3;
-                    closed = true;
+
                     break;
                 }
                 p += 1;
             }
-            let end = if closed { p } else { len };
+            let end = p.min(len);
             spans.push(Span {
                 kind: Tok::Str,
                 start,
@@ -174,7 +281,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
         if c == '"' {
             let start = pos;
             let mut p = pos + 1;
-            let mut closed = false;
+
             while p < len {
                 let b = bytes[p];
                 if b == b'\\' {
@@ -186,7 +293,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 if b == b'"' {
                     p += 1;
-                    closed = true;
+
                     break;
                 }
                 if b == b'\n' || b == b'\r' {
@@ -195,7 +302,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 p += 1;
             }
-            let end = if closed { p } else { p };
+            let end = p;
             spans.push(Span {
                 kind: Tok::Str,
                 start,
@@ -209,7 +316,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
         if c == '\'' {
             let start = pos;
             let mut p = pos + 1;
-            let mut closed = false;
+
             while p < len {
                 let b = bytes[p];
                 if b == b'\\' {
@@ -221,7 +328,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 if b == b'\'' {
                     p += 1;
-                    closed = true;
+
                     break;
                 }
                 if b == b'\n' || b == b'\r' {
@@ -229,7 +336,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 p += 1;
             }
-            let end = if closed { p } else { p };
+            let end = p;
             spans.push(Span {
                 kind: Tok::Str,
                 start,
@@ -240,11 +347,7 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
         }
 
         // 7. Numbers: hex, binary, octal, float, decimal integers.
-        if c.is_ascii_digit()
-            || (c == '.'
-                && pos + 1 < len
-                && bytes[pos + 1].is_ascii_digit())
-        {
+        if c.is_ascii_digit() || (c == '.' && pos + 1 < len && bytes[pos + 1].is_ascii_digit()) {
             let start = pos;
             let mut p = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
@@ -275,7 +378,11 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
                 while p < len {
                     let b = bytes[p];
                     if b == b'.' && !seen_dot {
-                        if p + 1 < len && (bytes[p + 1].is_ascii_digit() || bytes[p + 1] == b'e' || bytes[p + 1] == b'E') {
+                        if p + 1 < len
+                            && (bytes[p + 1].is_ascii_digit()
+                                || bytes[p + 1] == b'e'
+                                || bytes[p + 1] == b'E')
+                        {
                             seen_dot = true;
                             p += 1;
                         } else if p + 1 == len || !bytes[p + 1].is_ascii_alphabetic() {
@@ -316,7 +423,9 @@ pub fn lex_java_into(code: &str, spans: &mut Vec<Span>) {
             pos += 1;
             // Scan subsequent whitespace or identifier
             let after_at = pos;
-            while pos < len && (bytes[pos] == b'_' || bytes[pos] == b'$' || bytes[pos].is_ascii_alphanumeric()) {
+            while pos < len
+                && (bytes[pos] == b'_' || bytes[pos] == b'$' || bytes[pos].is_ascii_alphanumeric())
+            {
                 pos += 1;
             }
             if pos > after_at {

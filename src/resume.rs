@@ -17,7 +17,7 @@
 //! mid-delimiter — the unresolved suffix absorbs all three. Only malformed
 //! UTF-8 (a decoding error, not a truncation) is a typed refusal.
 
-use crate::highlight::{highlight, is_supported, Span, Tok};
+use crate::highlight::{Span, Tok, highlight, is_supported};
 
 /// Errors from the resumable lexical seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,8 +209,7 @@ impl ResumableLexer {
     }
 
     fn pending_text(&self) -> Result<String, ResumeError> {
-        String::from_utf8(self.pending.clone())
-            .map_err(|_| ResumeError::InvalidUtf8 { at: 0 })
+        String::from_utf8(self.pending.clone()).map_err(|_| ResumeError::InvalidUtf8 { at: 0 })
     }
 
     fn is_html_family(&self) -> bool {
@@ -366,10 +365,7 @@ impl ResumableLexer {
                 } else {
                     tail.strip_prefix('r').unwrap_or("")
                 };
-                let hashes = stripped
-                    .chars()
-                    .take_while(|&ch| ch == '#')
-                    .count() as u8;
+                let hashes = stripped.chars().take_while(|&ch| ch == '#').count() as u8;
                 return StringState::RawString { hashes };
             }
         }
@@ -859,6 +855,10 @@ pub fn verify_whole_block_coalesced_equivalence(
 /// across chunks so that inner content is not prematurely classified without its
 /// enclosing context.
 fn find_unclosed_html_tag(text: &str, spans: &[Span]) -> Option<usize> {
+    let trailing_opener = spans.iter().find_map(|span| {
+        (span.kind == Tok::Operator && matches!(&text[span.start..], "<" | "</"))
+            .then_some(span.start)
+    });
     let mut unclosed_start = None;
     let mut in_script_or_style: Option<(&str, usize)> = None;
 
@@ -895,7 +895,7 @@ fn find_unclosed_html_tag(text: &str, spans: &[Span]) -> Option<usize> {
     } else if let Some((_, start)) = in_script_or_style {
         Some(start)
     } else {
-        None
+        trailing_opener
     }
 }
 

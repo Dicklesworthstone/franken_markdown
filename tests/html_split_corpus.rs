@@ -6,9 +6,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::highlight::{highlight, Span, Tok};
-use franken_markdown::lang_html::{lex_html_into, HtmlCapabilityV1};
-use franken_markdown::resume::{coalesce_spans, ResumableLexer};
+use franken_markdown::highlight::{Span, Tok, highlight};
+use franken_markdown::lang_html::{HtmlCapabilityV1, lex_html_into};
+use franken_markdown::resume::{ResumableLexer, coalesce_spans};
 
 /// Representative HTML fixtures exercising DOCTYPE declarations, comments,
 /// CDATA sections, XML declarations, tags, self-closing tags, attribute
@@ -129,9 +129,13 @@ fn doctype_and_comments_classified() {
     let source = "<!DOCTYPE html>\n<!-- comment block -->\n<p>Body</p>";
     let spans = highlight("html", source);
     assert_tiling(&spans, source.len());
-    let has_doctype = spans.iter().any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<!DOCTYPE html>");
+    let has_doctype = spans
+        .iter()
+        .any(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "<!DOCTYPE html>");
     assert!(has_doctype, "DOCTYPE must be classified as Keyword");
-    let has_comment = spans.iter().any(|s| s.kind == Tok::Comment && &source[s.start..s.end] == "<!-- comment block -->");
+    let has_comment = spans
+        .iter()
+        .any(|s| s.kind == Tok::Comment && &source[s.start..s.end] == "<!-- comment block -->");
     assert!(has_comment, "comment must be classified as Comment");
 }
 
@@ -140,10 +144,19 @@ fn entities_and_cdata_classified() {
     let source = "<![CDATA[raw content]]>&amp;&#38;&#x26;";
     let spans = highlight("html", source);
     assert_tiling(&spans, source.len());
-    let has_cdata = spans.iter().any(|s| s.kind == Tok::Str && &source[s.start..s.end] == "<![CDATA[raw content]]>");
+    let has_cdata = spans
+        .iter()
+        .any(|s| s.kind == Tok::Str && &source[s.start..s.end] == "<![CDATA[raw content]]>");
     assert!(has_cdata, "CDATA must be classified as Str");
-    let entity_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Keyword && source[s.start..s.end].starts_with('&')).collect();
-    assert_eq!(entity_spans.len(), 3, "entities &amp;, &#38;, &#x26; must be classified as Keyword");
+    let entity_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| s.kind == Tok::Keyword && source[s.start..s.end].starts_with('&'))
+        .collect();
+    assert_eq!(
+        entity_spans.len(),
+        3,
+        "entities &amp;, &#38;, &#x26; must be classified as Keyword"
+    );
 }
 
 #[test]
@@ -153,14 +166,22 @@ fn embedded_script_and_style_inert_boundaries() {
     assert_tiling(&spans, source.len());
 
     // Both script and style tag keywords must be recognized
-    let script_tags: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "script").collect();
+    let script_tags: Vec<_> = spans
+        .iter()
+        .filter(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "script")
+        .collect();
     assert_eq!(script_tags.len(), 2, "open and close script tags");
 
-    let style_tags: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "style").collect();
+    let style_tags: Vec<_> = spans
+        .iter()
+        .filter(|s| s.kind == Tok::Keyword && &source[s.start..s.end] == "style")
+        .collect();
     assert_eq!(style_tags.len(), 2, "open and close style tags");
 
     // Inert script body must be Tok::Plain
-    let has_script_body = spans.iter().any(|s| s.kind == Tok::Plain && source[s.start..s.end].contains("const a = 1 < 2;"));
+    let has_script_body = spans
+        .iter()
+        .any(|s| s.kind == Tok::Plain && source[s.start..s.end].contains("const a = 1 < 2;"));
     assert!(has_script_body, "inert script body must be Tok::Plain");
 }
 
@@ -249,7 +270,7 @@ fn deterministic_audit_trail_receipt() {
         hash
     }
 
-    let seed = 0xFCB_022_21_u64;
+    let seed = 0xFCB0_2221_u64;
     let code = b"<!DOCTYPE html><html lang=\"en\"><head><title>FCB</title></head><body>&copy; 2026</body></html>";
     let input_hash = fnv1a_hash(code);
 
@@ -272,12 +293,18 @@ fn deterministic_audit_trail_receipt() {
     }
     let repeat_hash = fnv1a_hash(&repeat_bytes);
 
-    assert_eq!(output_hash, repeat_hash, "Deterministic output hash across runs");
+    assert_eq!(
+        output_hash, repeat_hash,
+        "Deterministic output hash across runs"
+    );
     assert_ne!(input_hash, 0);
     assert_ne!(output_hash, 0);
 
     eprintln!(
         "HtmlAuditReceipt: seed=0x{:x}, in_hash=0x{:x}, out_hash=0x{:x}, spans={}, replay='cargo test -j 2 --test html_split_corpus'",
-        seed, input_hash, output_hash, whole.len()
+        seed,
+        input_hash,
+        output_hash,
+        whole.len()
     );
 }

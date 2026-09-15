@@ -30,22 +30,109 @@ use crate::highlight::{Span, Tok};
 /// JavaScript reserved words plus universally-highlighted contextual
 /// keywords.
 const KEYWORDS: &[&str] = &[
-    "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
-    "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if",
-    "import", "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw",
-    "true", "try", "typeof", "var", "void", "while", "with", "yield", "let", "const", "static",
-    "async", "await", "of", "get", "set",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "let",
+    "const",
+    "static",
+    "async",
+    "await",
+    "of",
+    "get",
+    "set",
 ];
 
 /// Built-in constructors and global namespaces highlighted as types.
 const TYPES: &[&str] = &[
-    "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Map", "Set",
-    "WeakMap", "WeakSet", "Promise", "Error", "TypeError", "RangeError", "SyntaxError",
-    "EvalError", "ReferenceError", "URIError", "RegExp", "Date", "JSON", "Math", "Reflect",
-    "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView", "Int8Array", "Uint8Array",
-    "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
-    "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array", "Function",
-    "Generator", "Intl", "console", "globalThis",
+    "any",
+    "unknown",
+    "never",
+    "void",
+    "number",
+    "string",
+    "boolean",
+    "bigint",
+    "symbol",
+    "object",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Symbol",
+    "BigInt",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Promise",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "EvalError",
+    "ReferenceError",
+    "URIError",
+    "RegExp",
+    "Date",
+    "JSON",
+    "Math",
+    "Reflect",
+    "Proxy",
+    "ArrayBuffer",
+    "SharedArrayBuffer",
+    "DataView",
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Function",
+    "Generator",
+    "Intl",
+    "console",
+    "globalThis",
 ];
 
 /// What the previous significant token was, for regex-vs-division.
@@ -91,7 +178,7 @@ fn is_type_name(word: &str) -> bool {
 /// Lex JavaScript source into exact tiling spans.
 pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();
-    let code_bytes = code.as_bytes();
+    let _code_bytes = code.as_bytes();
     let mut pos = 0usize;
     let mut last_end = 0usize;
     let mut prev = Prev::Start;
@@ -118,11 +205,7 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 end: start,
             });
         }
-        spans.push(Span {
-            kind,
-            start,
-            end,
-        });
+        spans.push(Span { kind, start, end });
         *last_end = end;
     }
 
@@ -232,7 +315,10 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 scan += c.len_utf8();
             }
             let end = if closed { scan } else { bytes_len.min(scan) };
-            assert!(end <= bytes_len, "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}");
+            assert!(
+                end <= bytes_len,
+                "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}"
+            );
             assert!(end <= bytes_len, "REGEX OOB: end={end} len={bytes_len}");
             push_tiling(spans, &mut last_end, Tok::Str, start, end);
             pos = end;
@@ -243,40 +329,10 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
         // Template literal chunk entry.
         if ch == '`' {
             let start = pos;
-            let mut scan = pos + 1;
-            let mut template_closed = false;
-            while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
-                if c == '\\' {
-                    let next_scan = scan + 1;
-                    if next_scan >= bytes_len {
-                        scan = bytes_len;
-                        break;
-                    }
-                    let esc = code[next_scan..].chars().next().unwrap();
-                    scan = next_scan + esc.len_utf8();
-                    continue;
-                }
-                if c == '`' {
-                    scan += c.len_utf8();
-                    template_closed = true;
-                    break;
-                }
-                if c == '$' && code[scan..].starts_with("${") {
-                    break;
-                }
-                scan += c.len_utf8();
-            }
-            let end = scan;
-            assert!(end <= bytes_len, "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}");
+            let end = template_end(code, pos);
             push_tiling(spans, &mut last_end, Tok::Str, start, end);
             pos = end;
-            if template_closed {
-                prev = Prev::Value;
-            } else {
-                // Truncated template: spans to EOF under declared capability.
-                prev = Prev::Value;
-            }
+            prev = Prev::Value;
             continue;
         }
 
@@ -347,7 +403,8 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
 
         // Numbers: hex/octal/binary, decimal with exponent, bigint suffix,
         // numeric separators, and leading-dot decimals.
-        if ch.is_ascii_digit() || (ch == '.' && pos + 1 < bytes_len && code.as_bytes()[pos + 1].is_ascii_digit())
+        if ch.is_ascii_digit()
+            || (ch == '.' && pos + 1 < bytes_len && code.as_bytes()[pos + 1].is_ascii_digit())
         {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
@@ -395,7 +452,10 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos += clen;
             pos = consume_while(code, pos, is_ident_continue);
-            assert!(pos <= bytes_len, "IDENT SLICE OOB: start={start} pos={pos} len={bytes_len}");
+            assert!(
+                pos <= bytes_len,
+                "IDENT SLICE OOB: start={start} pos={pos} len={bytes_len}"
+            );
             let word = &code[start..pos];
             let kind = if is_id_or_keyword(word) {
                 Tok::Keyword
@@ -555,10 +615,7 @@ mod tests {
         let mut spans = Vec::new();
         lex_javascript_into(code, &mut spans);
         assert_tiling(code, &spans);
-        let text: Vec<&str> = spans
-            .iter()
-            .map(|s| &code[s.start..s.end])
-            .collect();
+        let text: Vec<&str> = spans.iter().map(|s| &code[s.start..s.end]).collect();
         assert!(text.contains(&"const"));
         assert!(text.contains(&"new"));
         assert!(text.contains(&"RegExp"));
@@ -734,8 +791,16 @@ mod tests {
         // a hole and assert the invariant fails.
         let code = "abc";
         let gapped = vec![
-            Span { kind: Tok::Plain, start: 0, end: 1 },
-            Span { kind: Tok::Plain, start: 2, end: 3 },
+            Span {
+                kind: Tok::Plain,
+                start: 0,
+                end: 1,
+            },
+            Span {
+                kind: Tok::Plain,
+                start: 2,
+                end: 3,
+            },
         ];
         let detected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             assert_tiling(code, &gapped);
@@ -759,7 +824,62 @@ mod debug_tests {
         let mut spans = Vec::new();
         lex_javascript_into(code, &mut spans);
         for s in &spans {
-            eprintln!("DEBUG {} {:?} [{}..{}] {:?}", s.end, s.kind, s.start, s.end, &code[s.start..s.end.min(code.len())]);
+            eprintln!(
+                "DEBUG {} {:?} [{}..{}] {:?}",
+                s.end,
+                s.kind,
+                s.start,
+                s.end,
+                &code[s.start..s.end.min(code.len())]
+            );
         }
     }
+}
+
+// Keep a template, including nested interpolation templates, in one string span.
+// The explicit stack bounds call-stack use for malformed or deeply nested input.
+fn template_end(code: &str, start: usize) -> usize {
+    let mut stack = vec!['`'];
+    let mut pos = start + 1;
+    while pos < code.len() {
+        let ch = code[pos..].chars().next().unwrap_or('\0');
+        let mode = stack.last().copied().unwrap_or('`');
+        if ch == '\\' {
+            pos += 1;
+            if pos < code.len() {
+                pos += code[pos..].chars().next().map_or(0, char::len_utf8);
+            }
+            continue;
+        }
+        if mode == '`' && code[pos..].starts_with("${") {
+            stack.push('}');
+            pos += 2;
+            continue;
+        }
+        if ch == mode {
+            stack.pop();
+            pos += ch.len_utf8();
+            if stack.is_empty() {
+                return pos;
+            }
+            continue;
+        }
+        if mode == '}' {
+            if matches!(ch, '`' | '\'' | '"') {
+                stack.push(ch);
+            } else if ch == '{' {
+                stack.push('}');
+            } else if code[pos..].starts_with("//") {
+                pos += code[pos..].find('\n').unwrap_or(code.len() - pos);
+                continue;
+            } else if code[pos..].starts_with("/*") {
+                pos = code[pos + 2..]
+                    .find("*/")
+                    .map_or(code.len(), |n| pos + 2 + n + 2);
+                continue;
+            }
+        }
+        pos += ch.len_utf8();
+    }
+    pos
 }

@@ -7,7 +7,7 @@
 # frozen to), and consumed by fmd itself for native `$…$` mathematics.
 [package]
 name = "fmd-math"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 license-file = "LICENSE"
@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # First-party only, ever: the engine philosophy. fmd-font (this repo's own
 # zero-dependency font subsystem) supplies glyph metrics, kerning, and
 # outlines for layout.
-fmd-font = { path = "../fmd-font", version = "0.3.0" }
+fmd-font = { path = "../fmd-font", version = "0.3.1" }
 
 [features]
 # The bundled OFL faces (via fmd-font) as the default face set: a math

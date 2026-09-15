@@ -6,7 +6,7 @@
 //! byte are released. TOML safe-cut bytes include `] } = , " '` which settle
 //! the function-call detection and the `.` of a float.
 
-use crate::highlight::{highlight, Span};
+use crate::highlight::{Span, highlight};
 
 /// Errors from the TOML resumable seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,3 +193,9 @@ pub const TOML_CAPABILITY_V1: TomlCapabilityV1 = TomlCapabilityV1 {
     basic_and_literal_strings: true,
     structured_keys: true,
 };
+
+impl Default for ResumableTomlLexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -17,3 +17,7 @@ last-touched
 # Merge artifacts (temporary files from 3-way merge)
 beads.base.jsonl
 beads.base.meta.json
+
+# Local schema-migration recovery files; retain on disk, never publish.
+.br_recovery/
+.beads.db.schema-migration-*

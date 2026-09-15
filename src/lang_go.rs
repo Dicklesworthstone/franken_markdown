@@ -23,40 +23,66 @@ use crate::highlight::{Span, Tok};
 
 /// Go reserved words.
 const KEYWORDS: &[&str] = &[
-    "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
-    "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
-    "return", "select", "struct", "switch", "type", "var",
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
+    "var",
 ];
 
 /// Predeclared type and constant identifiers.
 const TYPES: &[&str] = &[
-    "bool", "byte", "complex64", "complex128", "error", "float32", "float64", "int", "int8",
-    "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32",
-    "uint64", "uintptr", "true", "false", "iota", "nil",
+    "bool",
+    "byte",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
+    "true",
+    "false",
+    "iota",
+    "nil",
 ];
-
-/// Predeclared functions; classified as calls when followed by `(`.
-const BUILTINS: &[&str] = &[
-    "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make",
-    "max", "min", "new", "panic", "print", "println", "real", "recover",
-];
-
-/// What the previous significant token was (Go has no regex literal
-/// ambiguity, but the tracker keeps parity with the JS lexer's interface).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Prev {
-    Start,
-    Value,
-    Keyword,
-    Operator,
-}
 
 /// Lex Go source into exact tiling spans.
 pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();
     let mut pos = 0usize;
     let mut last_end = 0usize;
-    let mut prev = Prev::Start;
 
     fn push_tiling(
         spans: &mut Vec<Span>,
@@ -72,11 +98,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                 end: start,
             });
         }
-        spans.push(Span {
-            kind,
-            start,
-            end,
-        });
+        spans.push(Span { kind, start, end });
         *last_end = end;
     }
 
@@ -93,7 +115,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             pos += clen;
             while pos < bytes_len {
-                let c = code[pos..].chars().next().unwrap();
+                let c = code[pos..].chars().next().unwrap_or('\0');
                 if c.is_whitespace() {
                     pos += c.len_utf8();
                 } else {
@@ -110,7 +132,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
             let end = code[start..].find('\n').map_or(bytes_len, |nl| start + nl);
             push_tiling(spans, &mut last_end, Tok::Comment, start, end);
             pos = end;
-            prev = Prev::Start;
+
             continue;
         }
 
@@ -122,7 +144,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                 .map_or(bytes_len, |at| start + 2 + at + 2);
             push_tiling(spans, &mut last_end, Tok::Comment, start, end);
             pos = end;
-            prev = Prev::Start;
+
             continue;
         }
 
@@ -135,7 +157,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                 .map_or(bytes_len, |at| start + 1 + at + 1);
             push_tiling(spans, &mut last_end, Tok::Str, start, end);
             pos = end;
-            prev = Prev::Value;
+
             continue;
         }
 
@@ -143,12 +165,12 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
         if ch == '"' || ch == '\'' {
             let start = pos;
             let mut scan = pos + 1;
-            let mut closed = false;
+
             while scan < bytes_len {
-                let c = code[scan..].chars().next().unwrap();
+                let c = code[scan..].chars().next().unwrap_or('\0');
                 if c == ch {
                     scan += c.len_utf8();
-                    closed = true;
+
                     break;
                 }
                 if c == '\n' && ch == '"' {
@@ -165,11 +187,26 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                     // hex widths consumed here as well.
                     let esc = code.as_bytes()[next_scan];
                     match esc {
-                        b'x' => scan = (next_scan + 3).min(bytes_len),
-                        b'u' => scan = (next_scan + 5).min(bytes_len),
-                        b'U' => scan = (next_scan + 9).min(bytes_len),
+                        b'x' | b'u' | b'U' => {
+                            let width = match esc {
+                                b'x' => 2,
+                                b'u' => 4,
+                                _ => 8,
+                            };
+                            scan = next_scan + 1;
+                            // Only ASCII hex digits belong to this escape.
+                            // Leave malformed text (including quotes and UTF-8)
+                            // for the normal character scanner.
+                            for _ in 0..width {
+                                if scan < bytes_len && code.as_bytes()[scan].is_ascii_hexdigit() {
+                                    scan += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
                         _ => {
-                            let e = code[next_scan..].chars().next().unwrap();
+                            let e = code[next_scan..].chars().next().unwrap_or('\0');
                             scan = next_scan + e.len_utf8();
                         }
                     }
@@ -179,7 +216,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
             }
             push_tiling(spans, &mut last_end, Tok::Str, start, scan);
             pos = scan;
-            prev = Prev::Value;
+
             continue;
         }
 
@@ -197,17 +234,11 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                 pos += 2;
                 pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '_');
             } else {
-                pos = consume_while(code, pos, |c| {
-                    c.is_ascii_digit() || c == '_' || c == '.'
-                });
-                if pos < bytes_len
-                    && matches!(code.as_bytes()[pos], b'e' | b'E')
-                {
+                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.');
+                if pos < bytes_len && matches!(code.as_bytes()[pos], b'e' | b'E') {
                     let exp_start = pos;
                     let mut p = pos + 1;
-                    if p < bytes_len
-                        && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-')
-                    {
+                    if p < bytes_len && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-') {
                         p += 1;
                     }
                     let digits = consume_while(code, p, |c| c.is_ascii_digit());
@@ -226,7 +257,7 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
                 pos += 1;
             }
             push_tiling(spans, &mut last_end, Tok::Number, start, pos);
-            prev = Prev::Value;
+
             continue;
         }
 
@@ -245,26 +276,21 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
             } else {
                 Tok::Plain
             };
-            prev = if kind == Tok::Keyword {
-                Prev::Keyword
-            } else {
-                Prev::Value
-            };
             push_tiling(spans, &mut last_end, kind, start, pos);
             continue;
         }
 
         // Multi-char operators, longest first.
         const OPERATORS: &[&str] = &[
-            "<<=", ">>=", "&^=", "...", ":=", "<-", "&&", "||", "==", "!=", "<=", ">=",
-            "+=", "-=", "*=", "/=", "%=", "&^",
+            "<<=", ">>=", "&^=", "...", ":=", "<-", "&&", "||", "==", "!=", "<=", ">=", "+=", "-=",
+            "*=", "/=", "%=", "&^",
         ];
         let mut matched_op = false;
         for op in OPERATORS {
             if rest.starts_with(op) {
                 push_tiling(spans, &mut last_end, Tok::Operator, pos, pos + op.len());
                 pos += op.len();
-                prev = Prev::Operator;
+
                 matched_op = true;
                 break;
             }
@@ -280,22 +306,24 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
         ) {
             push_tiling(spans, &mut last_end, Tok::Operator, pos, pos + clen);
             pos += clen;
-            prev = Prev::Operator;
+
             continue;
         }
 
         // Punctuation.
-        if matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';' | ':' | '.') {
+        if matches!(
+            ch,
+            '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';' | ':' | '.'
+        ) {
             push_tiling(spans, &mut last_end, Tok::Punct, pos, pos + clen);
             pos += clen;
-            prev = Prev::Operator;
+
             continue;
         }
 
         // Everything else: Plain, one char.
         push_tiling(spans, &mut last_end, Tok::Plain, pos, pos + clen);
         pos += clen;
-        prev = Prev::Start;
     }
 
     // Defensive final tile.
@@ -321,13 +349,9 @@ fn is_type_name(word: &str) -> bool {
     TYPES.contains(&word)
 }
 
-fn is_builtin_call(word: &str, code: &str, pos: usize) -> bool {
-    BUILTINS.contains(&word) && next_non_space_is(code, pos, '(')
-}
-
 fn next_non_space_is(code: &str, mut pos: usize, target: char) -> bool {
     while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
+        let c = code[pos..].chars().next().unwrap_or('\0');
         if c.is_whitespace() {
             pos += c.len_utf8();
         } else {
@@ -339,7 +363,7 @@ fn next_non_space_is(code: &str, mut pos: usize, target: char) -> bool {
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {
     while pos < code.len() {
-        let c = code[pos..].chars().next().unwrap();
+        let c = code[pos..].chars().next().unwrap_or('\0');
         if pred(c) {
             pos += c.len_utf8();
         } else {
@@ -350,6 +374,7 @@ fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usi
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -419,7 +444,7 @@ mod tests {
             .map(|s| &code[s.start..s.end])
             .collect();
         assert!(runes.iter().any(|s| s.contains("\\u1234")));
-        assert!(runes.iter().any(|s| *s == "'x'"));
+        assert!(runes.contains(&"'x'"));
     }
 
     #[test]

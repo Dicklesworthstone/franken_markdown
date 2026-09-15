@@ -120,8 +120,6 @@ deterministic tests for cancellation and cleanup.
 - Bare `fmd` prints help and exits; it must never open a blocking TUI.
 - Honor `NO_COLOR`, `CI`, `TERM=dumb`, and `--no-color` as the surface grows.
 
-## Testing And Verification
-
 ## Release Infrastructure: DSR Only (All Projects)
 
 Jeffrey's standing instruction: use `dsr` exclusively for release/build
@@ -132,7 +130,7 @@ credentials are missing. Use DSR and its configured hosts; if a publishing
 credential or capability is missing, report that exact blocker instead of
 switching to Actions. GitHub Releases remain a distribution destination.
 
-### Required Rust Checks
+## Testing And Verification
 
 After substantive Rust changes, run:
 

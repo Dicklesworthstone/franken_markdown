@@ -16,21 +16,21 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.4.2 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.4.4 franken_markdown
 ```
 
 </div>
 
-> **Current status.** As checked on **2026-08-28**:
+> **Current status.** As checked on **2026-09-15**:
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
 > | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.4`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (4 platforms, `.sha256` sidecars) | **`v0.4.2`** (2026-08-28) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.2 |
-> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.0, `fmd-math` 0.1.0) | **`0.4.2`** | https://crates.io/crates/franken_markdown |
-> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.2`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
+> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.4.4`** (2026-09-15) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.4 |
+> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.1, `fmd-math` 0.1.1) | **`0.4.4`** | https://crates.io/crates/franken_markdown |
+> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.4`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
-> The latest tagged release is **v0.4.2** (shipped to GitHub Releases and crates.io), carrying MathML Core HTML output, multi-language hyphenation (de, fr, es, nl), GFM-plus definition lists, caret diagnostics, HTML TOC + PDF contents page, PDF outline bookmarks, WOFF1 embedded font subsets, recursive watch mode, and PDF/A-2b. For the current `0.4.2` CLI use the GitHub release archives; for the in-tree source build with `cargo install --path .` or `cargo build --release --bin fmd`.
+> The latest tagged release is **v0.4.4**, available on GitHub Releases, crates.io, and npm. It fixes malformed-input lexer failures and removes the sibling-checkout requirement for tests. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`.
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
@@ -112,7 +112,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | Checksum-verified GitHub release archives for Linux and macOS (Intel + Apple Silicon), each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.2` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.2 with `fmd-font` 0.3.0 and `fmd-math` 0.1.0 |
+| Releases | Checksum-verified GitHub release archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64, each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.4` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.4 with `fmd-font` 0.3.1 and `fmd-math` 0.1.1 |
 
 ### Mainline Highlights
 
@@ -402,8 +402,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on August 28, 2026, this
-# installs 0.4.2 (fmd-font 0.3.0 and fmd-math 0.1.0 are on crates.io too).
+# Or install the published crates.io package. As checked on September 15, 2026, this
+# installs 0.4.4 (fmd-font 0.3.1 and fmd-math 0.1.1 are on crates.io too).
 cargo install franken_markdown
 ```
 
@@ -412,10 +412,9 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The v0.4.2 release includes a `fmd` archive for Linux
-(`x86_64-unknown-linux-gnu`), macOS Intel (`x86_64-apple-darwin`), and macOS
-Apple Silicon (`aarch64-apple-darwin`); Windows follows when the release
-workflow is re-enabled.
+The v0.4.4 release includes archives for Linux x86_64 and ARM64,
+macOS Intel and Apple Silicon, and Windows x86_64. Release builds and
+publication orchestration use DSR exclusively; GitHub Actions is prohibited.
 Native archives are built and smoke-tested per platform before they are
 attached to the GitHub release. Each archive includes a `.sha256`
 sidecar and the release also includes a combined `SHA256SUMS`. Download the
@@ -426,11 +425,12 @@ sha256sum -c fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
 tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-The browser/WASM build is assembled separately as
-`@franken-suite/franken-markdown` by `.github/workflows/release-wasm.yml` and is
-published on npm (`npm install @franken-suite/franken-markdown`). As checked on
-August 28, 2026, the registry latest is `0.4.2`, published by the tag workflow
-with Sigstore provenance attestation.
+The browser/WASM package is available on npm as
+`@franken-suite/franken-markdown`
+(`npm install @franken-suite/franken-markdown`). As verified on
+September 15, 2026, version `0.4.4` is published. The release passes the
+WASM size budgets, Node smoke tests, and native/WASM HTML and PDF parity checks.
+Future browser package publication must use DSR and its configured hosts.
 
 ---
 

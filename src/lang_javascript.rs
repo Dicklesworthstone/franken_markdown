@@ -91,6 +91,7 @@ fn is_type_name(word: &str) -> bool {
 /// Lex JavaScript source into exact tiling spans.
 pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();
+    let code_bytes = code.as_bytes();
     let mut pos = 0usize;
     let mut last_end = 0usize;
     let mut prev = Prev::Start;
@@ -231,6 +232,8 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 scan += c.len_utf8();
             }
             let end = if closed { scan } else { bytes_len.min(scan) };
+            assert!(end <= bytes_len, "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}");
+            assert!(end <= bytes_len, "REGEX OOB: end={end} len={bytes_len}");
             push_tiling(spans, &mut last_end, Tok::Str, start, end);
             pos = end;
             prev = Prev::Value;
@@ -265,6 +268,7 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 scan += c.len_utf8();
             }
             let end = scan;
+            assert!(end <= bytes_len, "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}");
             push_tiling(spans, &mut last_end, Tok::Str, start, end);
             pos = end;
             if template_closed {
@@ -348,18 +352,18 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
                 pos += 2;
-                pos += consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_');
+                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_');
             } else if rest.starts_with("0o") || rest.starts_with("0O") {
                 pos += 2;
-                pos += consume_while(code, pos, |c| ('0'..='7').contains(&c) || c == '_');
+                pos = consume_while(code, pos, |c| ('0'..='7').contains(&c) || c == '_');
             } else if rest.starts_with("0b") || rest.starts_with("0B") {
                 pos += 2;
-                pos += consume_while(code, pos, |c| c == '0' || c == '1' || c == '_');
+                pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '_');
             } else {
-                pos += consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
+                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
                 if pos < bytes_len && code.as_bytes()[pos] == b'.' {
                     pos += 1;
-                    pos += consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
+                    pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
                 }
                 if pos < bytes_len && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
                 {
@@ -370,17 +374,17 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                     {
                         pos += 1;
                     }
-                    let digits = consume_while(code, pos, |c| c.is_ascii_digit());
-                    if digits == 0 {
-                        pos = save; // not an exponent after all
-                    } else {
-                        pos += digits;
+                    pos = consume_while(code, pos, |c| c.is_ascii_digit());
+                    if pos == save {
+                        // not an exponent after all
+                        pos = save;
                     }
                 }
             }
             if pos < bytes_len && code.as_bytes()[pos] == b'n' {
                 pos += 1;
             }
+            assert!(pos <= bytes_len, "NUMBER OOB: pos={pos} len={bytes_len}");
             push_tiling(spans, &mut last_end, Tok::Number, start, pos);
             prev = Prev::Value;
             continue;
@@ -390,7 +394,8 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
         if is_ident_start(ch) {
             let start = pos;
             pos += clen;
-            pos += consume_while(code, pos, is_ident_continue);
+            pos = consume_while(code, pos, is_ident_continue);
+            assert!(pos <= bytes_len, "IDENT SLICE OOB: start={start} pos={pos} len={bytes_len}");
             let word = &code[start..pos];
             let kind = if is_id_or_keyword(word) {
                 Tok::Keyword
@@ -407,6 +412,7 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 _ if kind == Tok::Plain || kind == Tok::Func || kind == Tok::Type => Prev::Value,
                 _ => Prev::Keyword,
             };
+            assert!(pos <= bytes_len, "IDENT OOB: pos={pos} len={bytes_len}");
             push_tiling(spans, &mut last_end, kind, start, pos);
             continue;
         }
@@ -728,14 +734,32 @@ mod tests {
         // a hole and assert the invariant fails.
         let code = "abc";
         let gapped = vec![
-            Span { kind: Tok::Plain, start: 0, end: 2 },
-            Span { kind: Tok::Plain, start: 3, end: 3 },
+            Span { kind: Tok::Plain, start: 0, end: 1 },
+            Span { kind: Tok::Plain, start: 2, end: 3 },
         ];
-        let cursor = gapped.last().map(|s| s.start).unwrap_or(0);
-        assert_ne!(cursor, code.len(), "oracle sanity: gap not at end");
+        let detected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_tiling(code, &gapped);
+        }))
+        .is_err();
+        assert!(detected, "tiling oracle must catch a gap");
         // Sanity: the real lexer output has no gaps.
         let mut spans = Vec::new();
         lex_javascript_into(code, &mut spans);
         assert_tiling(code, &spans);
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_nested_template_spans() {
+        let code = "let s = `a${ {k: `inner${x}end`} }b`;";
+        let mut spans = Vec::new();
+        lex_javascript_into(code, &mut spans);
+        for s in &spans {
+            eprintln!("DEBUG {} {:?} [{}..{}] {:?}", s.end, s.kind, s.start, s.end, &code[s.start..s.end.min(code.len())]);
+        }
     }
 }

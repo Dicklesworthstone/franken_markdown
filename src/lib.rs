@@ -119,6 +119,12 @@ pub use scanner::{
     scan_table_or_fence_candidate,
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
+pub use resume::{
+    coalesce_spans, highlight_chunked, verify_whole_block_coalesced_equivalence, CheckpointError,
+    CoalescedSpan, CommentState, FeedReport, LexerCheckpoint, ResumableLexer, ResumeError,
+    StringState, CHECKPOINT_MAGIC, CHECKPOINT_VERSION, MAX_CHECKPOINT_BYTES, MAX_COMMENT_DEPTH,
+    MAX_INTERPOLATION_DEPTH, MAX_LANG_LEN, MAX_SUFFIX_BYTES,
+};
 pub use span::{
     DiagnosticSeverity, ParseDiagnostic, ProvenanceError, ProvenanceKind, ProvenanceNode,
     SourceSpan, Spanned, SpannedBlock, SpannedDocument, SpannedInline, SpannedListItem,

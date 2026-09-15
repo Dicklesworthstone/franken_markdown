@@ -285,8 +285,8 @@ impl LanguageRegistry {
     /// Truthfully reflects the initial baseline:
     /// - Implemented: generic lexer languages with verified chunked coalesced equivalence.
     /// - Provisional: JSX/TSX (using JS/TS keyword baseline awaiting specialized state machine)
-    ///   and CSS/Markdown (using rule/fence machines awaiting incremental adversarial splits).
-    /// - Implemented: C#, Java, Swift, HTML (incremental engines landed via fcb-9vx.12, 14, 15, 21).
+    ///   and Markdown (using fence machine awaiting incremental adversarial splits).
+    /// - Implemented: C#, Java, Swift, HTML, CSS (incremental engines landed via fcb-9vx.12, 14, 15, 21, 22).
     /// - Missing: 0 (all 20 standard languages have qualified or provisional routes).
     #[must_use]
     pub fn standard_20_inventory() -> Self {
@@ -421,10 +421,10 @@ impl LanguageRegistry {
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Css,
-                status: QualificationStatus::Provisional,
+                status: QualificationStatus::Implemented,
                 primary_alias: "css",
                 aliases: LanguageId::Css.standard_aliases(),
-                description: "CSS rule lexer (provisional; incremental splits in fcb-9vx.22)",
+                description: "CSS incremental lexical engine with selectors, declarations, at-rules, strings, urls and comments",
             },
             LanguageRouteRegistration {
                 language_id: LanguageId::Markdown,

@@ -35,7 +35,7 @@ impl LexCssError {
 
 /// Whether a byte terminates a lookahead-safe cut position.
 fn is_safe_cut_byte(byte: u8) -> bool {
-    matches!(byte, b';' | b'{' | b'}' | b':' | b'"' | b'\'')
+    matches!(byte, b';' | b'{' | b'}' | b':' | b',' | b'"' | b'\'')
 }
 
 /// A span end is a safe cut when its final byte is a terminal delimiter AND
@@ -45,6 +45,20 @@ fn is_safe_cut_span(pending: &str, span: &Span) -> bool {
         return false;
     }
     let bytes = pending.as_bytes();
+    if span.kind == crate::highlight::Tok::Comment {
+        return span.end.saturating_sub(span.start) >= 4
+            && bytes.get(span.end.wrapping_sub(2)) == Some(&b'*')
+            && bytes.get(span.end.wrapping_sub(1)) == Some(&b'/');
+    }
+    if span.kind == crate::highlight::Tok::Str {
+        if span.end.saturating_sub(span.start) < 2 {
+            return false;
+        }
+        let Some(last) = bytes.get(span.end.wrapping_sub(1)) else {
+            return false;
+        };
+        return (*last == b'"' || *last == b'\'') && bytes.get(span.start) == Some(last);
+    }
     bytes
         .get(span.end.wrapping_sub(1))
         .is_some_and(|b| is_safe_cut_byte(*b))

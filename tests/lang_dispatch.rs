@@ -193,10 +193,9 @@ fn provisional_languages_identified() {
     let registry = LanguageRegistry::standard_20_inventory();
     let provisional = registry.provisional_routes();
 
-    assert_eq!(provisional.len(), 4);
+    assert_eq!(provisional.len(), 3);
     assert!(provisional.contains(&LanguageId::Jsx));
     assert!(provisional.contains(&LanguageId::Tsx));
-    assert!(provisional.contains(&LanguageId::Css));
     assert!(provisional.contains(&LanguageId::Markdown));
 
     for &id in &provisional {
@@ -212,9 +211,9 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
     let registry = LanguageRegistry::standard_20_inventory();
     let implemented = registry.implemented_routes();
 
-    // 16 languages are implemented with full coalesced equivalence (including C#, Java, Swift, HTML)
-    assert_eq!(implemented.len(), 16);
-    assert_eq!(registry.len(), 16 + 4 + 0); // 16 implemented + 4 provisional + 0 missing = 20!
+    // 17 languages are implemented with full coalesced equivalence (including C#, Java, Swift, HTML, CSS)
+    assert_eq!(implemented.len(), 17);
+    assert_eq!(registry.len(), 17 + 3 + 0); // 17 implemented + 3 provisional + 0 missing = 20!
 
     let fixtures: &[(&str, &[u8])] = &[
         ("rust", b"fn calculate(val: u32) -> u32 { val * 2 }"),
@@ -233,6 +232,7 @@ fn implemented_languages_dispatch_through_real_fcb021_engine() {
         ("toml", b"key = \"value\"\ncount = 42\n"),
         ("sql", b"SELECT id, name FROM users WHERE active = 1;"),
         ("html", b"<!DOCTYPE html><html><head><title>Test</title></head><body><h1>Hello</h1></body></html>"),
+        ("css", b".container {\n  color: #333;\n  margin: 0 auto;\n}\n"),
     ];
 
     for &(lang, code) in fixtures {

@@ -214,3 +214,11 @@ fn registry_route_is_truthfully_implemented_and_dispatchable() {
     assert!(result.is_finished);
     assert_eq!(result.bytes_processed, request.code.len());
 }
+
+#[test]
+fn sql_capability_row_is_versioned() {
+    use franken_markdown::lang_sql::SQL_CAPABILITY_V1;
+    assert_eq!(SQL_CAPABILITY_V1.version, 1);
+    assert!(SQL_CAPABILITY_V1.incremental);
+    assert!(SQL_CAPABILITY_V1.quotes_comments_params);
+}

@@ -248,3 +248,21 @@ static SQL_TYPES: &[&str] = &[
     "CHAR", "VARCHAR", "TEXT", "BOOLEAN", "BOOL", "DATE", "TIME", "TIMESTAMP", "JSON", "JSONB",
     "UUID", "SERIAL", "BIGSERIAL", "BLOB", "CLOB", "BYTEA",
 ];
+
+/// The versioned SQL capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqlCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for SQL.
+    pub incremental: bool,
+    /// Quoted identifiers, doubling escapes, comments and parameters supported.
+    pub quotes_comments_params: bool,
+}
+
+/// The SQL capability row published by this module.
+pub const SQL_CAPABILITY_V1: SqlCapabilityV1 = SqlCapabilityV1 {
+    version: 1,
+    incremental: true,
+    quotes_comments_params: true,
+};

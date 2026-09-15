@@ -73,7 +73,7 @@ impl Tok {
 }
 
 /// A classified byte range `[start, end)` into the highlighted source.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     /// Token class.
     pub kind: Tok,

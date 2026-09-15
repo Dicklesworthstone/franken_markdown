@@ -43,6 +43,7 @@ pub mod error;
 pub mod fonts;
 pub mod highlight;
 pub mod html;
+pub mod lang_dispatch;
 pub mod layout;
 pub mod md_gen;
 pub mod parse;
@@ -119,6 +120,11 @@ pub use scanner::{
     scan_table_or_fence_candidate,
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
+pub use lang_dispatch::{
+    digest_spans, fnv1a_64, DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult,
+    LanguageId, LanguageRegistry, LanguageRouteRegistration, QualificationStatus, ResourceCounters,
+    MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
+};
 pub use resume::{
     coalesce_spans, highlight_chunked, verify_whole_block_coalesced_equivalence, CheckpointError,
     CoalescedSpan, CommentState, FeedReport, LexerCheckpoint, ResumableLexer, ResumeError,

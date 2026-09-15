@@ -381,10 +381,12 @@ mod tests {
     #[test]
     fn f_string_braces_protect_same_kind_quotes() {
         let spans = kinds("msg = f\"inner {'quote'} tail\"");
-        assert_eq!(
-            spans.iter().filter(|(kind, _)| *kind == Tok::Str).count(),
-            2, // prefix identifier is Plain; one Str span for the f-string
-        );
+        let f_string_spans: Vec<&str> = spans
+            .iter()
+            .filter(|(kind, _)| *kind == Tok::Str)
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(f_string_spans, vec!["f\"inner {'quote'} tail\""]);
     }
 
     #[test]
@@ -402,7 +404,7 @@ mod tests {
         let spans = kinds("doc = \"\"\"starts here");
         let (kind, text) = spans.last().expect("spans exist");
         assert_eq!(*kind, Tok::Str);
-        assert_eq!(text.len(), "doc = \"\"\"starts here".len());
+        assert_eq!(text, "\"\"\"starts here");
     }
 
     #[test]

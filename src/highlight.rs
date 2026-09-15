@@ -295,7 +295,7 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
             while p < len {
                 let b = bytes[p];
                 if b == b'.' {
-                    if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) {
+                    if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) || p + 1 == len {
                         p += 1;
                     } else {
                         break;
@@ -2147,6 +2147,24 @@ const SQL_TY: KwTable = {
         offsets: &kw_offsets_slice(GROUPED, true),
         fold: true,
     }
+};
+
+/// The versioned JSON capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JsonCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for JSON.
+    pub incremental: bool,
+    /// String escapes, unicode escapes, numbers across magnitudes, and literals supported.
+    pub escapes_numbers_literals: bool,
+}
+
+/// The JSON capability row published by this module.
+pub const JSON_CAPABILITY_V1: JsonCapabilityV1 = JsonCapabilityV1 {
+    version: 1,
+    incremental: true,
+    escapes_numbers_literals: true,
 };
 
 /// JSON keyword literals (shared by `json`/`jsonc`).

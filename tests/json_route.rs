@@ -247,3 +247,11 @@ fn registry_route_is_truthfully_implemented_and_dispatchable() {
     assert_eq!(result.bytes_processed, request.code.len());
     assert_eq!(result.pending_suffix_bytes, 0);
 }
+
+#[test]
+fn json_capability_row_is_versioned() {
+    use franken_markdown::highlight::JSON_CAPABILITY_V1;
+    assert_eq!(JSON_CAPABILITY_V1.version, 1);
+    assert!(JSON_CAPABILITY_V1.incremental);
+    assert!(JSON_CAPABILITY_V1.escapes_numbers_literals);
+}

@@ -1,0 +1,13 @@
+languagesystem latn dflt;
+languagesystem arab dflt;
+markClass acute <anchor 100 0> @TOP;
+markClass dot <anchor 100 0> @TOP;
+markClass fatha <anchor 100 0> @TOP;
+feature liga { script latn; sub f i by fi; } liga;
+feature init { script arab; sub beh by beh.init; sub lam by lam.init; } init;
+feature medi { script arab; sub beh by beh.medi; sub lam by lam.medi; } medi;
+feature fina { script arab; sub beh by beh.fina; sub lam by lam.fina; sub alef by alef.fina; } fina;
+feature rlig { script arab; lookupflag IgnoreMarks; sub lam.init alef.fina by lam_alef; sub lam.medi alef.fina by lam_alef.fina; } rlig;
+feature kern { script latn; pos a b -40; lookup ClassPairs { pos [b f] [a b] -20; } ClassPairs; script arab; pos beh.init beh.fina -40; } kern;
+feature mark { pos base [a b f i fi beh alef lam beh.init beh.medi beh.fina lam.init lam.medi lam.fina alef.fina lam_alef lam_alef.fina] <anchor 250 500> mark @TOP; } mark;
+feature mkmk { pos mark [acute dot fatha] <anchor 100 150> mark @TOP; } mkmk;

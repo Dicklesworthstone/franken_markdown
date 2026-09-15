@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-15
+
+- Add `fmd-font` 0.3.2 strict Result-based subsets with typed failures and
+  explicit embedding formats; preserve legacy TrueType bytes and APIs (#11).
+- Decode and deterministically subset name-keyed CFF1/Type 2 fonts, preserving
+  cubic outlines and sparse glyph remaps. Check every Bravura 1.392 glyph
+  against FontTools; unsupported charstrings receive typed refusals (#10).
+- Add explicitly configured Latin/basic-Arabic shaping with advances, offsets,
+  UTF-8 clusters, logical-text recovery, and bounded unsupported-feature errors.
+  Verify joining, RTL, ligatures, and combining marks against HarfBuzz (#12).
+- Keep all new font mechanics dependency-free and portable to WASM. Existing
+  Markdown/PDF layout continues using its established rendering path.
+
+
 ## [0.4.4] - 2026-09-15
 
 - Fix Go malformed hexadecimal escapes splitting UTF-8 characters (#9).

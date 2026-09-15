@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.4`** | `Cargo.toml` `version` field |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.4.5`** | `Cargo.toml` `version` field |
 > | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.4.4`** (2026-09-15) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.4.4 |
 > | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.1, `fmd-math` 0.1.1) | **`0.4.4`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.4`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
@@ -113,6 +113,15 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
 | Releases | Checksum-verified GitHub release archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64, each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.4` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.4 with `fmd-font` 0.3.1 and `fmd-math` 0.1.1 |
+
+### Reusable font mechanics
+
+The source adds `fmd-font` 0.3.2 strict typed subsets, name-keyed CFF1 cubic
+outlines/subsetting, and bounded Latin/basic-Arabic shaping with source
+clusters. See [the font API guide](fmd-font/README.md) for embedding formats,
+coverage, examples, and independent FontTools/HarfBuzz verification. These
+APIs are available to consumers without changing the existing Markdown/PDF
+layout path or adding runtime dependencies.
 
 ### Mainline Highlights
 

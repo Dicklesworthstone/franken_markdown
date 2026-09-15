@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# DSR quality gate: fresh, retained WASM package; no cleanup or Actions.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+export RCH_CARGO_WRAPPER_BYPASS=1
+export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+mkdir -p "$ROOT/tests/artifacts/wasm"
+ART="$(mktemp -d "$ROOT/tests/artifacts/wasm/dsr.XXXXXXXX")"
+PACKAGE="$ART/package"
+mkdir -p "$PACKAGE/pkg" "$PACKAGE/demo" "$ART/parity"
+cargo build --no-default-features --lib
+cargo build --no-default-features --target wasm32-unknown-unknown --lib
+cargo build --release --no-default-features --features wasm-bindgen --target wasm32-unknown-unknown --lib
+wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
+for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts package.json README.md; do
+  cp "wasm/$file" "$PACKAGE/$file"
+done
+cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
+cp examples/showcase.md "$ART/parity/showcase.md"
+node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/parity" 1700000000 "$ART/parity/showcase.md"
+cargo build --bin fmd
+for ext in html pdf; do
+  SOURCE_DATE_EPOCH=1700000000 "$TARGET_DIR/debug/fmd" "$ART/parity/showcase.md" --no-config --to "$ext" --out "$ART/parity/native.$ext"
+  cmp "$ART/parity/native.$ext" "$ART/parity/showcase.wasm.$ext"
+done
+python3 - "$PACKAGE" <<'PY'
+import gzip,json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);d=(p/'pkg/franken_markdown_bg.wasm').read_bytes()
+assert len(d)<=4_750_000, len(d)
+assert len(gzip.compress(d,mtime=0))<=2_100_000
+for name in json.loads((p/'package.json').read_text())['files']:
+    assert (p/name).is_file(), name
+print('WASM bytes:',len(d),'gzip:',len(gzip.compress(d,mtime=0)))
+PY
+printf 'Verified package: %s\n' "$PACKAGE"

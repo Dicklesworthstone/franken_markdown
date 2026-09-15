@@ -10,10 +10,10 @@
 //! zero-dependency, and free of `unsafe`/`unwrap`/`panic` — every read is
 //! bounds-checked.
 //!
-//! CFF/OpenType outline subsetting and broader script shaping are still future
-//! increments. The current module is enough for bundled TrueType fonts, real
-//! PDF metrics, deterministic subset embedding, kerning, ligatures, and
-//! selectable `ToUnicode` output.
+//! Additive strict subset APIs also support name-keyed CFF1 with explicit
+//! embedding metadata; see [`cff`]. [`shaping`] provides bounded Latin/Arabic
+//! shaping with UTF-8 source clusters and typed unsupported/malformed errors.
+//! Existing renderer shaping and TrueType subset output remain unchanged.
 //!
 //! Factored out of `franken_markdown`'s `src/text.rs` into this standalone
 //! `fmd-font` workspace crate so the wider Franken suite can consume the
@@ -25,8 +25,10 @@
 
 #[cfg(feature = "bundled-faces")]
 pub mod bundled;
+pub mod cff;
 mod gvar;
 pub mod outline;
+pub mod shaping;
 mod subset;
 pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
 
@@ -1057,7 +1059,9 @@ impl Font {
         // Web-embedding path: include `OS/2` (see `subset_core`) so browser
         // OpenType sanitizers (Chromium's OTS) accept the font instead of
         // silently falling back to system fonts.
-        self.subset_core(&seed, keep, true, false).ok().map(|(bytes, _)| bytes)
+        self.subset_core(&seed, keep, true, false)
+            .ok()
+            .map(|(bytes, _)| bytes)
     }
 
     /// Subset to an explicit glyph set (the closure still pulls in composite
@@ -1120,13 +1124,23 @@ impl Font {
         // --- 1. Glyph closure ------------------------------------------------
         // Require TrueType outlines; CFF/`OTTO` fonts cannot be subset here.
         if !self.has_glyf_outlines() {
-            return Err(SubsetError::new(SubsetErrorKind::UnsupportedFormat, *b"sfnt", None, None));
+            return Err(SubsetError::new(
+                SubsetErrorKind::UnsupportedFormat,
+                *b"sfnt",
+                None,
+                None,
+            ));
         }
         let mut set: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
         set.insert(0);
         for &gid in seed_glyphs {
             if strict && gid >= self.num_glyphs {
-                return Err(SubsetError::new(SubsetErrorKind::InvalidGlyph, *b"maxp", Some(gid), None));
+                return Err(SubsetError::new(
+                    SubsetErrorKind::InvalidGlyph,
+                    *b"maxp",
+                    Some(gid),
+                    None,
+                ));
             }
             if gid != 0 && gid < self.num_glyphs {
                 set.insert(gid);
@@ -1141,7 +1155,9 @@ impl Font {
         // hence the ascending `old_gids` and the whole subset — is identical.
         let mut worklist: Vec<u16> = set.iter().copied().collect();
         while let Some(gid) = worklist.pop() {
-            if strict { self.validate_subset_glyph(gid)?; }
+            if strict {
+                self.validate_subset_glyph(gid)?;
+            }
             if self.is_composite(gid) {
                 for c in self.glyph_components(gid) {
                     if c < self.num_glyphs && set.insert(c) {
@@ -1165,7 +1181,8 @@ impl Font {
 
         // --- 3. Rebuild glyf + loca (long offsets) --------------------------
         let mut glyf_bytes: Vec<u8> = Vec::with_capacity(n.saturating_mul(64));
-        let mut loca_bytes: Vec<u8> = Vec::with_capacity(n.checked_add(1).ok_or(error)?.checked_mul(4).ok_or(error)?);
+        let mut loca_bytes: Vec<u8> =
+            Vec::with_capacity(n.checked_add(1).ok_or(error)?.checked_mul(4).ok_or(error)?);
         for &old in &old_gids {
             error = SubsetError::new(SubsetErrorKind::Malformed, *b"glyf", Some(old), None);
             let offset = u32::try_from(glyf_bytes.len()).ok().ok_or(error)?;
@@ -1186,13 +1203,21 @@ impl Font {
         // maxp: original bytes with numGlyphs (u16 @ +4) set to n.
         error = SubsetError::new(SubsetErrorKind::Malformed, *b"maxp", None, None);
         let (maxp_off, maxp_len) = find_table_full(&self.data, b"maxp").ok_or(error)?;
-        let mut maxp = self.data.get(maxp_off..off(maxp_off, maxp_len).ok_or(error)?).ok_or(error)?.to_vec();
+        let mut maxp = self
+            .data
+            .get(maxp_off..off(maxp_off, maxp_len).ok_or(error)?)
+            .ok_or(error)?
+            .to_vec();
         write_u16(&mut maxp, 4, n_u16).ok_or(error)?;
 
         // hhea: original bytes with numberOfHMetrics (u16 @ +34) set to n.
         error = SubsetError::new(SubsetErrorKind::Malformed, *b"hhea", None, None);
         let (hhea_off, hhea_len) = find_table_full(&self.data, b"hhea").ok_or(error)?;
-        let mut hhea = self.data.get(hhea_off..off(hhea_off, hhea_len).ok_or(error)?).ok_or(error)?.to_vec();
+        let mut hhea = self
+            .data
+            .get(hhea_off..off(hhea_off, hhea_len).ok_or(error)?)
+            .ok_or(error)?
+            .to_vec();
         write_u16(&mut hhea, 34, n_u16).ok_or(error)?;
 
         // hmtx: n long metrics (advanceWidth + true lsb), no trailing run.
@@ -1206,7 +1231,11 @@ impl Font {
         // head: original bytes; zero checkSumAdjustment (@ +8), force long loca.
         error = SubsetError::new(SubsetErrorKind::Malformed, *b"head", None, None);
         let (head_off, head_len) = find_table_full(&self.data, b"head").ok_or(error)?;
-        let mut head = self.data.get(head_off..off(head_off, head_len).ok_or(error)?).ok_or(error)?.to_vec();
+        let mut head = self
+            .data
+            .get(head_off..off(head_off, head_len).ok_or(error)?)
+            .ok_or(error)?
+            .to_vec();
         write_u32(&mut head, 8, 0).ok_or(error)?;
         write_u16(&mut head, 50, 1).ok_or(error)?; // indexToLocFormat = 1 (long)
 

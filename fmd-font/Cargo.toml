@@ -5,13 +5,14 @@
 # external consumer; see the franken_manim UPSTREAM_LEDGER).
 [package]
 name = "fmd-font"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.85"
 license-file = "LICENSE"
-description = "Clean-room TrueType/OpenType font reader and glyf outline decoder (franken_markdown's font subsystem)"
+description = "Clean-room TrueType/OpenType font reader, TrueType/CFF subsetter and bounded text shaper (franken_markdown's font subsystem)"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"
-include = ["src/**", "examples/**", "fonts/**", "LICENSE"]
+readme = "README.md"
+include = ["README.md", "src/**", "examples/**", "fonts/**", "LICENSE"]
 
 [lib]
 name = "fmd_font"

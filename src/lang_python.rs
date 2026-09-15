@@ -18,7 +18,7 @@ pub fn lex_python_into(code: &str, spans: &mut Vec<Span>) {
 
     while pos < len {
         let rest = &code[pos..];
-        let c = first_char(rest);
+        let c = first_char(code, pos);
         let clen = c.len_utf8();
 
         // 1. Whitespace run (covers indentation).
@@ -329,30 +329,16 @@ fn is_punct_char(c: char) -> bool {
     matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.' | '\\' | '$' | '?' | '`')
 }
 
-/// Python keyword table, first-byte bucketed to match the shared
-/// `KwTable` membership contract used by the generic lexer.
+/// Python keyword membership over a sorted static table (binary search;
+/// const-buildable without heap allocation).
 struct KwTable {
-    buckets: [Vec<&'static str>; 256],
+    words: &'static [&'static str],
 }
 
 impl KwTable {
     fn contains(&self, word: &str) -> bool {
-        let first = *word.as_bytes().first().unwrap_or(&0) as usize;
-        self.buckets[first].binary_search(&word).is_ok()
+        self.words.binary_search(&word).is_ok()
     }
-}
-
-const fn build_kw_table(sorted: &'static [&'static str]) -> KwTable {
-    // Sorted input; partition by first byte at build time.
-    let mut buckets: [Vec<&'static str>; 256] = Default::default();
-    let mut index = 0;
-    while index < sorted.len() {
-        let word = sorted[index];
-        let first = word.as_bytes()[0] as usize;
-        buckets[first].push(word);
-        index += 1;
-    }
-    KwTable { buckets }
 }
 
 const PY_KW_SORTED: &[&str] = &[
@@ -368,8 +354,8 @@ const PY_TY_SORTED: &[&str] = &[
     "staticmethod", "str", "super", "tuple", "type", "zip",
 ];
 
-static PY_KW: KwTable = build_kw_table(PY_KW_SORTED);
-static PY_TY: KwTable = build_kw_table(PY_TY_SORTED);
+static PY_KW: KwTable = KwTable { words: PY_KW_SORTED };
+static PY_TY: KwTable = KwTable { words: PY_TY_SORTED };
 
 #[cfg(test)]
 mod tests {
@@ -414,9 +400,9 @@ mod tests {
     #[test]
     fn unterminated_triple_quote_holds_to_end_of_input() {
         let spans = kinds("doc = \"\"\"starts here");
-        let last = spans.last().expect("spans exist");
-        assert_eq!(last.kind, Tok::Str);
-        assert_eq!(last.end, "doc = \"\"\"starts here".len());
+        let (kind, text) = spans.last().expect("spans exist");
+        assert_eq!(*kind, Tok::Str);
+        assert_eq!(text.len(), "doc = \"\"\"starts here".len());
     }
 
     #[test]

@@ -547,6 +547,14 @@ mod tests {
             .collect()
     }
 
+
+    #[test]
+    fn probe_underscore_suffix() {
+        eprintln!("PROBE spans: {:?}", kinds("0xFF_ul"));
+        eprintln!("PROBE spans2: {:?}", kinds("0xFFuu"));
+        eprintln!("PROBE hex-only: {:?}", kinds("0xFF_"));
+    }
+
     #[test]
     fn keywords_types_and_calls_are_classified() {
         let spans = kinds("public class Widget {\n    var count = Read();\n}");

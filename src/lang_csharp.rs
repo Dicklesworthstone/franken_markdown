@@ -85,10 +85,9 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 }
                 p == 0 || bytes[p - 1] == b'\n'
             };
-            let start = pos;
             let end = rest.find('\n').map_or(len, |offset| pos + offset);
             if at_line_start {
-                // Directive word (e.g. if, else, endif, region, nullable).
+                // Directive line: keyword-classified `#word`, remainder plain.
                 let mut word_end = start + 1;
                 while word_end < end && word_end < len {
                     let b = bytes[word_end];
@@ -110,14 +109,17 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                         end,
                     });
                 }
-            } else {
-                spans.push(Span {
-                    kind: Tok::Operator,
-                    start,
-                    end,
-                });
+                pos = end;
+                continue;
             }
-            pos = end;
+            // Mid-line `#` is a single operator character; the rest of the
+            // line lexes normally.
+            spans.push(Span {
+                kind: Tok::Operator,
+                start: pos,
+                end: pos + 1,
+            });
+            pos += 1;
             continue;
         }
 
@@ -287,9 +289,17 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
                 }
             }
             let word = &code[start..p];
+            let is_capitalized = word
+                .chars()
+                .next()
+                .map(|first| first.is_uppercase())
+                .unwrap_or(false)
+                && !word.chars().skip(1).all(|ch| ch.is_uppercase());
             let kind = if CS_KW.contains(word) {
                 Tok::Keyword
             } else if CS_TY.contains(word) {
+                Tok::Type
+            } else if is_capitalized {
                 Tok::Type
             } else if next_non_whitespace_byte(code, p) == Some(b'(') {
                 Tok::Func
@@ -545,14 +555,6 @@ mod tests {
             .iter()
             .map(|span| (span.kind, code[span.start..span.end].to_string()))
             .collect()
-    }
-
-
-    #[test]
-    fn probe_underscore_suffix() {
-        eprintln!("PROBE spans: {:?}", kinds("0xFF_ul"));
-        eprintln!("PROBE spans2: {:?}", kinds("0xFFuu"));
-        eprintln!("PROBE hex-only: {:?}", kinds("0xFF_"));
     }
 
     #[test]

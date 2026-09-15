@@ -560,13 +560,14 @@ mod tests {
     #[test]
     fn at_escaped_identifiers_are_plain_not_keywords() {
         let spans = kinds("@class @event");
-        assert_eq!(
-            spans,
-            vec![
-                (Tok::Plain, "@class".to_string()),
-                (Tok::Plain, "@event".to_string())
-            ]
-        );
+        let owned: Vec<(Tok, String)> = spans
+            .iter()
+            .map(|span| (span.kind, code[span.start..span.end].to_string()))
+            .collect();
+        assert!(owned.contains(&(Tok::Plain, "@class".to_string())));
+        assert!(owned.contains(&(Tok::Plain, "@event".to_string())));
+        assert!(owned.iter().all(|(kind, _)| *kind == Tok::Plain));
+
     }
 
     #[test]

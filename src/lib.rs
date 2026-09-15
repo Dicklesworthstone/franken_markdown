@@ -44,6 +44,7 @@ pub mod fonts;
 pub mod highlight;
 pub mod html;
 pub mod lang_dispatch;
+pub mod lang_go;
 pub mod lang_javascript;
 pub mod lang_python;
 pub mod layout;

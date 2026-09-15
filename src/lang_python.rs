@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn raw_string_backslash_quote_does_not_close() {
-        let spans = kinds(r"value = r\"unterminated");
+        let spans = kinds(r#"value = r\"unterminated"#);
         // r"..." where the backslash-quote pair does not close: unterminated
         // raw string runs to end of input as one provisional Str span.
         assert!(spans

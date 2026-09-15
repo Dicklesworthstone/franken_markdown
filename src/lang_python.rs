@@ -115,8 +115,10 @@ pub fn lex_python_into(code: &str, spans: &mut Vec<Span>) {
         }
 
         // 5. Numbers: hex/oct/bin, decimals, floats, exponents, underscores,
-        //    and the imaginary suffix.
-        if c.is_ascii_digit() {
+        //    and the imaginary suffix. Leading-dot floats (.5e-3) are
+        //    literals too, so a dot followed by a digit enters here.
+        if c.is_ascii_digit() || (c == '.' && rest.len() > 1 && bytes[pos + 1].is_ascii_digit())
+        {
             let start = pos;
             let mut p = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {

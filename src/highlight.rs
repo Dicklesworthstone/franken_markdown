@@ -102,6 +102,11 @@ enum Lexer {
     Css,
     Markdown,
     Mermaid,
+    Rust,
+    JavaScript,
+    Python,
+    Go,
+    CSharp,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -146,6 +151,17 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         Some(Lexer::Css) => lex_css_into(code, spans),
         Some(Lexer::Markdown) => lex_markdown_into(code, spans),
         Some(Lexer::Mermaid) => lex_mermaid_into(code, spans),
+        Some(Lexer::Rust) => lex_rust_into(code, spans),
+        Some(Lexer::JavaScript) => {
+            crate::lang_javascript::lex_javascript_into(code, spans);
+        }
+        Some(Lexer::Python) => {
+            crate::lang_python::lex_python_into(code, spans);
+        }
+        Some(Lexer::Go) => crate::lang_go::lex_go_into(code, spans),
+        Some(Lexer::CSharp) => {
+            crate::lang_csharp::lex_csharp_into(code, spans);
+        }
         None => return false,
     }
     true
@@ -362,6 +378,402 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
         pos += clen;
     }
 }
+
+fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
+    let len = code.len();
+    let mut pos = 0;
+    let bytes = code.as_bytes();
+
+    while pos < len {
+        let rest = &code[pos..];
+        let c = first_char_in_nonempty(rest);
+        let clen = c.len_utf8();
+
+        // 1. Whitespace run.
+        if c.is_whitespace() {
+            let start = pos;
+            while pos < len {
+                let b = bytes[pos];
+                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                    pos += 1;
+                } else if b >= 0x80 && first_char_at(code, pos).is_whitespace() {
+                    pos += first_char_at(code, pos).len_utf8();
+                } else {
+                    break;
+                }
+            }
+            spans.push(Span {
+                kind: Tok::Plain,
+                start,
+                end: pos,
+            });
+            continue;
+        }
+
+        // 2. Line comment: //, ///, //!.
+        if rest.starts_with("//") {
+            let start = pos;
+            let end = rest.find('\n').map_or(len, |x| pos + x);
+            spans.push(Span {
+                kind: Tok::Comment,
+                start,
+                end,
+            });
+            pos = end;
+            continue;
+        }
+
+        // 3. Nested block comment: /* ... /* ... */ ... */.
+        if rest.starts_with("/*") {
+            let start = pos;
+            let mut depth: usize = 1;
+            let mut p = pos + 2;
+            while p < len && depth > 0 {
+                if p + 1 < len && bytes[p] == b'/' && bytes[p + 1] == b'*' {
+                    if depth < 64 {
+                        depth += 1;
+                    }
+                    p += 2;
+                } else if p + 1 < len && bytes[p] == b'*' && bytes[p + 1] == b'/' {
+                    depth -= 1;
+                    p += 2;
+                } else {
+                    p += 1;
+                }
+            }
+            spans.push(Span {
+                kind: Tok::Comment,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
+        }
+
+        // 4. Raw string or raw byte string: r"...", r#"..."#, br"...", br#"..."#
+        // or Raw identifier: r#ident
+        if rest.starts_with("r\"")
+            || rest.starts_with("r#")
+            || rest.starts_with("br\"")
+            || rest.starts_with("br#")
+        {
+            let is_br = rest.starts_with('b');
+            let prefix_len = if is_br { 2 } else { 1 };
+            let hash_start = pos + prefix_len;
+            let mut p = hash_start;
+            let mut hash_count = 0;
+            while p < len && bytes[p] == b'#' {
+                hash_count += 1;
+                p += 1;
+            }
+
+            if p == len {
+                spans.push(Span {
+                    kind: Tok::Plain,
+                    start: pos,
+                    end: len,
+                });
+                pos = len;
+                continue;
+            }
+
+            if bytes[p] == b'"' {
+                // Raw string with hash_count hashes
+                let start = pos;
+                p += 1; // skip opening quote
+                while p < len {
+                    if bytes[p] == b'"' {
+                        let mut match_hashes = true;
+                        for h in 0..hash_count {
+                            if p + 1 + h >= len || bytes[p + 1 + h] != b'#' {
+                                match_hashes = false;
+                                break;
+                            }
+                        }
+                        if match_hashes {
+                            p += 1 + hash_count;
+                            break;
+                        }
+                    }
+                    p += 1;
+                }
+                spans.push(Span {
+                    kind: Tok::Str,
+                    start,
+                    end: p,
+                });
+                pos = p;
+                continue;
+            } else if !is_br && hash_count == 1 && (bytes[p] == b'_' || bytes[p].is_ascii_alphabetic()) {
+                // Raw identifier: r#ident
+                let start = pos;
+                while p < len && (bytes[p] == b'_' || bytes[p].is_ascii_alphanumeric()) {
+                    p += 1;
+                }
+                spans.push(Span {
+                    kind: Tok::Keyword,
+                    start,
+                    end: p,
+                });
+                pos = p;
+                continue;
+            } else if hash_count == 0 && bytes[p] == b'"' {
+                // r"..." or br"..." with 0 hashes
+                let start = pos;
+                p += 1; // skip opening quote
+                while p < len {
+                    if bytes[p] == b'"' {
+                        p += 1;
+                        break;
+                    }
+                    p += 1;
+                }
+                spans.push(Span {
+                    kind: Tok::Str,
+                    start,
+                    end: p,
+                });
+                pos = p;
+                continue;
+            }
+        }
+
+        // 5. Byte string b"..." or regular string "..."
+        if rest.starts_with("b\"") || c == '"' {
+            let start = pos;
+            let mut p = if rest.starts_with("b\"") { pos + 2 } else { pos + 1 };
+            while p < len {
+                let ch = first_char_at(code, p);
+                let cl = ch.len_utf8();
+                if ch == '\\' {
+                    let nx = code[p + cl..].chars().next().map_or(0, char::len_utf8);
+                    p += cl + nx;
+                    continue;
+                }
+                p += cl;
+                if ch == '"' {
+                    break;
+                }
+            }
+            spans.push(Span {
+                kind: Tok::Str,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
+        }
+
+        // 6. Byte literal b'...'
+        if rest.starts_with("b'") {
+            let start = pos;
+            let mut p = pos + 2;
+            while p < len {
+                let ch = first_char_at(code, p);
+                let cl = ch.len_utf8();
+                if ch == '\\' {
+                    let nx = code[p + cl..].chars().next().map_or(0, char::len_utf8);
+                    p += cl + nx;
+                    continue;
+                }
+                p += cl;
+                if ch == '\'' {
+                    break;
+                }
+            }
+            spans.push(Span {
+                kind: Tok::Str,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
+        }
+
+        // 7. Single quote ': Character literal vs Lifetime/Label
+        if c == '\'' {
+            let start = pos;
+            let rest_after = &code[pos + 1..];
+            let next_c = rest_after.chars().next();
+            if let Some(nc) = next_c {
+                if nc == '\\' {
+                    // Escape char literal: '\n', '\'', '\\', '\x7f', '\u{...}'
+                    let mut p = pos + 1;
+                    while p < len {
+                        let ch = first_char_at(code, p);
+                        let cl = ch.len_utf8();
+                        if ch == '\\' {
+                            let nx = code[p + cl..].chars().next().map_or(0, char::len_utf8);
+                            p += cl + nx;
+                            continue;
+                        }
+                        p += cl;
+                        if ch == '\'' {
+                            break;
+                        }
+                    }
+                    spans.push(Span {
+                        kind: Tok::Str,
+                        start,
+                        end: p,
+                    });
+                    pos = p;
+                    continue;
+                } else if nc != '\'' {
+                    let nc_len = nc.len_utf8();
+                    let after_nc = pos + 1 + nc_len;
+                    if after_nc < len && bytes[after_nc] == b'\'' {
+                        // Single char literal: 'x'
+                        let end = after_nc + 1;
+                        spans.push(Span {
+                            kind: Tok::Str,
+                            start,
+                            end,
+                        });
+                        pos = end;
+                        continue;
+                    } else if nc == '_' || nc.is_alphabetic() {
+                        // Lifetime or loop label: 'a, 'static, '_
+                        let mut p = pos + 1;
+                        while p < len {
+                            let b = bytes[p];
+                            if b == b'_' || b.is_ascii_alphanumeric() {
+                                p += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        spans.push(Span {
+                            kind: Tok::Type,
+                            start,
+                            end: p,
+                        });
+                        pos = p;
+                        continue;
+                    }
+                }
+            }
+            // Unterminated single quote or isolated '
+            spans.push(Span {
+                kind: Tok::Str,
+                start,
+                end: pos + 1,
+            });
+            pos += 1;
+            continue;
+        }
+
+        // 8. Number literals
+        if c.is_ascii_digit() {
+            let start = pos;
+            let mut p = pos;
+            if rest.starts_with("0x") || rest.starts_with("0X") {
+                p += 2;
+                while p < len && (bytes[p].is_ascii_hexdigit() || bytes[p] == b'_') {
+                    p += 1;
+                }
+            } else if rest.starts_with("0o") || rest.starts_with("0O") {
+                p += 2;
+                while p < len && ((bytes[p] >= b'0' && bytes[p] <= b'7') || bytes[p] == b'_') {
+                    p += 1;
+                }
+            } else if rest.starts_with("0b") || rest.starts_with("0B") {
+                p += 2;
+                while p < len && (bytes[p] == b'0' || bytes[p] == b'1' || bytes[p] == b'_') {
+                    p += 1;
+                }
+            } else {
+                while p < len {
+                    let b = bytes[p];
+                    if b == b'.' {
+                        if bytes.get(p + 1).is_some_and(|next| next.is_ascii_digit()) {
+                            p += 1;
+                        } else {
+                            break;
+                        }
+                    } else if b == b'e' || b == b'E' {
+                        p += 1;
+                        if p < len && (bytes[p] == b'+' || bytes[p] == b'-') {
+                            p += 1;
+                        }
+                    } else if b.is_ascii_digit() || b == b'_' {
+                        p += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            while p < len && (bytes[p] == b'_' || bytes[p].is_ascii_alphanumeric()) {
+                p += 1;
+            }
+            spans.push(Span {
+                kind: Tok::Number,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
+        }
+
+        // 9. Identifier / Keyword / Type / Function
+        if c == '_' || c.is_alphabetic() {
+            let start = pos;
+            let mut p = pos;
+            while p < len {
+                let b = bytes[p];
+                if b == b'_' || b.is_ascii_alphanumeric() {
+                    p += 1;
+                } else if b >= 0x80 {
+                    let ch = first_char_at(code, p);
+                    if ch == '_' || ch.is_alphanumeric() {
+                        p += ch.len_utf8();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let word = &code[start..p];
+            let is_keyword = RUST_KW.contains(word);
+            let kind = if is_keyword {
+                Tok::Keyword
+            } else if RUST_TY.contains(word) {
+                Tok::Type
+            } else if next_byte_after_whitespace(code, p) == Some(b'(') {
+                Tok::Func
+            } else if is_capitalized_not_all_caps(word) {
+                Tok::Type
+            } else {
+                Tok::Plain
+            };
+            spans.push(Span {
+                kind,
+                start,
+                end: p,
+            });
+            pos = p;
+            continue;
+        }
+
+        // 10. Operators and Punctuation
+        let kind = if is_generic_operator_char(c) {
+            Tok::Operator
+        } else if is_generic_punct_char(c) {
+            Tok::Punct
+        } else {
+            Tok::Plain
+        };
+        spans.push(Span {
+            kind,
+            start: pos,
+            end: pos + clen,
+        });
+        pos += clen;
+    }
+}
+
+
 
 fn lex_html_into(code: &str, spans: &mut Vec<Span>) {
     let len = code.len();
@@ -1085,31 +1497,11 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "css" | "scss" | "sass" => Some(Lexer::Css),
         "markdown" | "md" | "mdown" | "mkd" => Some(Lexer::Markdown),
         "mermaid" | "mmd" => Some(Lexer::Mermaid),
-        "rust" | "rs" => Some(Lexer::Generic(Rules {
-            keywords: RUST_KW,
-            types: RUST_TY,
-            line_comments: &["//"],
-            block_comment: Some(("/*", "*/")),
-            strings: &['"'],
-            hash_directives: false,
-        })),
-        "python" | "py" => Some(Lexer::Generic(Rules {
-            keywords: PY_KW,
-            types: PY_TY,
-            line_comments: &["#"],
-            block_comment: None,
-            strings: &['"', '\''],
-            hash_directives: false,
-        })),
+        "rust" | "rs" => Some(Lexer::Rust),
+        "python" | "py" => Some(Lexer::Python),
+        "go" | "golang" => Some(Lexer::Go),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
-            Some(Lexer::Generic(Rules {
-                keywords: JS_KW,
-                types: JS_TY,
-                line_comments: &["//"],
-                block_comment: Some(("/*", "*/")),
-                strings: &['"', '\'', '`'],
-                hash_directives: false,
-            }))
+            Some(Lexer::JavaScript)
         }
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
             keywords: JSON_KW,
@@ -2153,8 +2545,8 @@ mod char_classifier_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod keyword_table_tests {
     use super::{
-        BOOL_KW, CSS_KW, JS_TY, JSON_KW, KwTable, MERMAID_KW, MERMAID_TY, Tok, YAML_KW, highlight,
-        lexer,
+        BOOL_KW, CSS_KW, JS_TY, JSON_KW, KwTable, MERMAID_KW, MERMAID_TY, RUST_KW, RUST_TY, Tok,
+        YAML_KW, highlight, lexer,
     };
 
     fn flip_ascii_case(word: &str) -> String {
@@ -2188,7 +2580,6 @@ mod keyword_table_tests {
     fn all_tables() -> Vec<(&'static str, KwTable)> {
         let mut tables: Vec<(&'static str, KwTable)> = Vec::new();
         for lang in [
-            "rust",
             "python",
             "javascript",
             "json",
@@ -2207,6 +2598,8 @@ mod keyword_table_tests {
             tables.push((lang, rules.keywords));
             tables.push((lang, rules.types));
         }
+        tables.push(("rust", RUST_KW));
+        tables.push(("rust", RUST_TY));
         tables.push(("css", CSS_KW));
         tables.push(("mermaid", MERMAID_KW));
         tables.push(("mermaid", MERMAID_TY));

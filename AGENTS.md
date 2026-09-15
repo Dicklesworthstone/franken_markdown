@@ -122,6 +122,18 @@ deterministic tests for cancellation and cleanup.
 
 ## Testing And Verification
 
+## Release Infrastructure: DSR Only (All Projects)
+
+Jeffrey's standing instruction: use `dsr` exclusively for release/build
+orchestration in ALL projects. Never use GitHub Actions for any reason.
+Do not create, restore, enable, dispatch, or rely on Actions workflows,
+including for npm publishing, provenance, tests, or as a fallback when local
+credentials are missing. Use DSR and its configured hosts; if a publishing
+credential or capability is missing, report that exact blocker instead of
+switching to Actions. GitHub Releases remain a distribution destination.
+
+### Required Rust Checks
+
 After substantive Rust changes, run:
 
 ```bash

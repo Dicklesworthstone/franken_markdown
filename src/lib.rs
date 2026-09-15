@@ -58,6 +58,7 @@ pub mod layout;
 pub mod lex_c;
 pub mod lex_toml;
 pub mod lex_yaml;
+pub mod lex_css;
 pub mod md_gen;
 pub mod parse;
 pub mod pdf;

@@ -298,7 +298,23 @@ impl ResumableLexer {
         {
             let tail = &text[last.start..];
             if tail.starts_with("/*") || tail.starts_with("<#") {
-                return CommentState::Block { depth: 1 };
+                let mut depth: u16 = 0;
+                let bytes = tail.as_bytes();
+                let mut i = 0;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        depth = depth.saturating_add(1);
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        depth = depth.saturating_sub(1);
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                return CommentState::Block {
+                    depth: depth.max(1),
+                };
             } else {
                 return CommentState::Line;
             }
@@ -317,16 +333,23 @@ impl ResumableLexer {
             && last.kind == Tok::Str
         {
             let tail = &text[last.start..];
-            if tail.starts_with('\'') {
+            if tail.starts_with('\'') || tail.starts_with("b'") {
                 return StringState::SingleQuote;
-            } else if tail.starts_with('"') {
+            } else if tail.starts_with('"') || tail.starts_with("b\"") {
                 return StringState::DoubleQuote;
             } else if tail.starts_with('`') {
                 return StringState::Backtick;
-            } else if tail.starts_with("r#") || tail.starts_with("r\"") {
-                let hashes = tail
-                    .strip_prefix('r')
-                    .unwrap_or("")
+            } else if tail.starts_with("r#")
+                || tail.starts_with("r\"")
+                || tail.starts_with("br#")
+                || tail.starts_with("br\"")
+            {
+                let stripped = if tail.starts_with("br") {
+                    tail.strip_prefix("br").unwrap_or("")
+                } else {
+                    tail.strip_prefix('r').unwrap_or("")
+                };
+                let hashes = stripped
                     .chars()
                     .take_while(|&ch| ch == '#')
                     .count() as u8;

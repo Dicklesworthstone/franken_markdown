@@ -152,3 +152,38 @@ fn toml_capability_row_is_versioned() {
     assert!(TOML_CAPABILITY_V1.basic_and_literal_strings);
     assert!(TOML_CAPABILITY_V1.structured_keys);
 }
+
+#[test]
+fn malformed_bounds_and_error_handling() {
+    use franken_markdown::lex_toml::LexTomlError;
+
+    let mut lexer = ResumableTomlLexer::with_limits(32);
+    let ok_feed = lexer.feed("name = \"test\"\n");
+    assert!(ok_feed.is_ok());
+
+    // Exceeding the pending cap triggers SuffixTooLong
+    let long_chunk = "# ".to_string() + &"a".repeat(50);
+    let err = lexer.feed(&long_chunk).unwrap_err();
+    assert_eq!(err.code(), "SUFFIX_TOO_LONG");
+    match err {
+        LexTomlError::SuffixTooLong { held, cap } => {
+            assert!(held > 32);
+            assert_eq!(cap, 32);
+        }
+        _ => panic!("expected SuffixTooLong"),
+    }
+
+    // Finishing seals the lexer
+    let mut normal_lexer = ResumableTomlLexer::new();
+    normal_lexer.feed("key = 1\n").unwrap();
+    normal_lexer.finish().unwrap();
+    assert!(normal_lexer.is_finished());
+
+    // Feed after finish is refused
+    let finish_err = normal_lexer.feed("extra = 2\n").unwrap_err();
+    assert_eq!(finish_err, LexTomlError::AlreadyFinished);
+    assert_eq!(finish_err.code(), "ALREADY_FINISHED");
+
+    // Double finish is also refused
+    assert_eq!(normal_lexer.finish().unwrap_err(), LexTomlError::AlreadyFinished);
+}

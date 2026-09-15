@@ -27,6 +27,8 @@
 pub mod bundled;
 mod gvar;
 pub mod outline;
+mod subset;
+pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
 
 /// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak
 /// +50 x on point 0). Host-font / CLI / WASM tests use this; it is not a
@@ -1055,7 +1057,7 @@ impl Font {
         // Web-embedding path: include `OS/2` (see `subset_core`) so browser
         // OpenType sanitizers (Chromium's OTS) accept the font instead of
         // silently falling back to system fonts.
-        self.subset_core(&seed, keep, true).map(|(bytes, _)| bytes)
+        self.subset_core(&seed, keep, true, false).ok().map(|(bytes, _)| bytes)
     }
 
     /// Subset to an explicit glyph set (the closure still pulls in composite
@@ -1104,7 +1106,7 @@ impl Font {
     ) -> Option<(Vec<u8>, Vec<u16>)> {
         // PDF font programs do not require `OS/2`; leaving it out keeps the
         // embedded font streams (and existing golden PDF bytes) unchanged.
-        self.subset_core(glyphs, cmap_chars, false)
+        self.subset_core(glyphs, cmap_chars, false, false).ok()
     }
 
     fn subset_core(
@@ -1112,15 +1114,20 @@ impl Font {
         seed_glyphs: &[u16],
         cmap_chars: &[char],
         include_os2: bool,
-    ) -> Option<(Vec<u8>, Vec<u16>)> {
+        strict: bool,
+    ) -> Result<(Vec<u8>, Vec<u16>), SubsetError> {
+        let mut error = SubsetError::new(SubsetErrorKind::Malformed, *b"sfnt", None, None);
         // --- 1. Glyph closure ------------------------------------------------
         // Require TrueType outlines; CFF/`OTTO` fonts cannot be subset here.
         if !self.has_glyf_outlines() {
-            return None;
+            return Err(SubsetError::new(SubsetErrorKind::UnsupportedFormat, *b"sfnt", None, None));
         }
         let mut set: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
         set.insert(0);
         for &gid in seed_glyphs {
+            if strict && gid >= self.num_glyphs {
+                return Err(SubsetError::new(SubsetErrorKind::InvalidGlyph, *b"maxp", Some(gid), None));
+            }
             if gid != 0 && gid < self.num_glyphs {
                 set.insert(gid);
             }
@@ -1134,6 +1141,7 @@ impl Font {
         // hence the ascending `old_gids` and the whole subset — is identical.
         let mut worklist: Vec<u16> = set.iter().copied().collect();
         while let Some(gid) = worklist.pop() {
+            if strict { self.validate_subset_glyph(gid)?; }
             if self.is_composite(gid) {
                 for c in self.glyph_components(gid) {
                     if c < self.num_glyphs && set.insert(c) {
@@ -1149,19 +1157,20 @@ impl Font {
         // ordered BTreeMap variant is reconstructed from it on demand.
         let mut new_of_lookup = vec![MISSING_GLYPH_REMAP; usize::from(self.num_glyphs).max(1)];
         for (i, &g) in old_gids.iter().enumerate() {
-            let new_gid = u16::try_from(i).ok()?;
-            *new_of_lookup.get_mut(usize::from(g))? = new_gid;
+            let new_gid = u16::try_from(i).ok().ok_or(error)?;
+            *new_of_lookup.get_mut(usize::from(g)).ok_or(error)? = new_gid;
         }
         let n = old_gids.len();
-        let n_u16 = u16::try_from(n).ok()?;
+        let n_u16 = u16::try_from(n).ok().ok_or(error)?;
 
         // --- 3. Rebuild glyf + loca (long offsets) --------------------------
         let mut glyf_bytes: Vec<u8> = Vec::with_capacity(n.saturating_mul(64));
-        let mut loca_bytes: Vec<u8> = Vec::with_capacity(n.checked_add(1)?.checked_mul(4)?);
+        let mut loca_bytes: Vec<u8> = Vec::with_capacity(n.checked_add(1).ok_or(error)?.checked_mul(4).ok_or(error)?);
         for &old in &old_gids {
-            let offset = u32::try_from(glyf_bytes.len()).ok()?;
+            error = SubsetError::new(SubsetErrorKind::Malformed, *b"glyf", Some(old), None);
+            let offset = u32::try_from(glyf_bytes.len()).ok().ok_or(error)?;
             loca_bytes.extend_from_slice(&offset.to_be_bytes());
-            let gb = self.subset_glyph_bytes(old, &new_of_lookup)?;
+            let gb = self.subset_glyph_bytes(old, &new_of_lookup).ok_or(error)?;
             glyf_bytes.extend_from_slice(&gb);
             // Pad each glyph to a 4-byte multiple so the next glyph (and every
             // long-loca offset) is word-aligned.
@@ -1170,22 +1179,24 @@ impl Font {
                 glyf_bytes.resize(glyf_bytes.len() + (4 - rem), 0);
             }
         }
-        let final_offset = u32::try_from(glyf_bytes.len()).ok()?;
+        let final_offset = u32::try_from(glyf_bytes.len()).ok().ok_or(error)?;
         loca_bytes.extend_from_slice(&final_offset.to_be_bytes());
 
         // --- 4. Metric/meta tables ------------------------------------------
         // maxp: original bytes with numGlyphs (u16 @ +4) set to n.
-        let (maxp_off, maxp_len) = find_table_full(&self.data, b"maxp")?;
-        let mut maxp = self.data.get(maxp_off..off(maxp_off, maxp_len)?)?.to_vec();
-        write_u16(&mut maxp, 4, n_u16)?;
+        error = SubsetError::new(SubsetErrorKind::Malformed, *b"maxp", None, None);
+        let (maxp_off, maxp_len) = find_table_full(&self.data, b"maxp").ok_or(error)?;
+        let mut maxp = self.data.get(maxp_off..off(maxp_off, maxp_len).ok_or(error)?).ok_or(error)?.to_vec();
+        write_u16(&mut maxp, 4, n_u16).ok_or(error)?;
 
         // hhea: original bytes with numberOfHMetrics (u16 @ +34) set to n.
-        let (hhea_off, hhea_len) = find_table_full(&self.data, b"hhea")?;
-        let mut hhea = self.data.get(hhea_off..off(hhea_off, hhea_len)?)?.to_vec();
-        write_u16(&mut hhea, 34, n_u16)?;
+        error = SubsetError::new(SubsetErrorKind::Malformed, *b"hhea", None, None);
+        let (hhea_off, hhea_len) = find_table_full(&self.data, b"hhea").ok_or(error)?;
+        let mut hhea = self.data.get(hhea_off..off(hhea_off, hhea_len).ok_or(error)?).ok_or(error)?.to_vec();
+        write_u16(&mut hhea, 34, n_u16).ok_or(error)?;
 
         // hmtx: n long metrics (advanceWidth + true lsb), no trailing run.
-        let mut hmtx: Vec<u8> = Vec::with_capacity(n.checked_mul(4)?);
+        let mut hmtx: Vec<u8> = Vec::with_capacity(n.checked_mul(4).ok_or(error)?);
         for &old in &old_gids {
             let [a0, a1] = self.advance_width(old).to_be_bytes();
             let [l0, l1] = self.left_side_bearing(old).to_be_bytes();
@@ -1193,20 +1204,22 @@ impl Font {
         }
 
         // head: original bytes; zero checkSumAdjustment (@ +8), force long loca.
-        let (head_off, head_len) = find_table_full(&self.data, b"head")?;
-        let mut head = self.data.get(head_off..off(head_off, head_len)?)?.to_vec();
-        write_u32(&mut head, 8, 0)?;
-        write_u16(&mut head, 50, 1)?; // indexToLocFormat = 1 (long)
+        error = SubsetError::new(SubsetErrorKind::Malformed, *b"head", None, None);
+        let (head_off, head_len) = find_table_full(&self.data, b"head").ok_or(error)?;
+        let mut head = self.data.get(head_off..off(head_off, head_len).ok_or(error)?).ok_or(error)?.to_vec();
+        write_u32(&mut head, 8, 0).ok_or(error)?;
+        write_u16(&mut head, 50, 1).ok_or(error)?; // indexToLocFormat = 1 (long)
 
         // cmap: fresh single-subtable table. Format 4 (`(3,1)`, BMP-only)
         // remains the default so every existing BMP-only subset stays
         // byte-identical; format 12 (`(3,10)`, full Unicode) is required as
         // soon as any kept supplementary-plane glyph survives, because
         // format 4's u16 segment arrays cannot address codepoints past 0xFFFF.
+        error = SubsetError::new(SubsetErrorKind::Capacity, *b"cmap", None, None);
         let cmap = if self.subset_reaches_supplementary_plane(cmap_chars, &new_of_lookup) {
-            self.build_cmap12(cmap_chars, &new_of_lookup)?
+            self.build_cmap12(cmap_chars, &new_of_lookup).ok_or(error)?
         } else {
-            self.build_cmap4(cmap_chars, &new_of_lookup)?
+            self.build_cmap4(cmap_chars, &new_of_lookup).ok_or(error)?
         };
 
         // name: minimal valid table (format 0, count 0, stringOffset 6).
@@ -1258,6 +1271,7 @@ impl Font {
         }
         tables.sort_by(|a, b| a.0.cmp(b.0)); // ascending by tag
 
+        error = SubsetError::new(SubsetErrorKind::Capacity, *b"sfnt", None, None);
         let num_tables = tables.len();
         // searchRange = (2^floor(log2(n)))*16, entrySelector = floor(log2(n)).
         let mut pw: usize = 1;
@@ -1290,8 +1304,8 @@ impl Font {
             records.push((
                 **tag,
                 checksum,
-                u32::try_from(table_offset).ok()?,
-                u32::try_from(bytes.len()).ok()?,
+                u32::try_from(table_offset).ok().ok_or(error)?,
+                u32::try_from(bytes.len()).ok().ok_or(error)?,
             ));
             body.extend_from_slice(bytes);
         }
@@ -1316,9 +1330,9 @@ impl Font {
         // checkSumAdjustment: 0xB1B0AFBA - checksum(whole file with field zeroed).
         let file_checksum = table_checksum(&out);
         let adj = 0xB1B0_AFBAu32.wrapping_sub(file_checksum);
-        write_u32(&mut out, off(head_offset, 8)?, adj)?;
+        write_u32(&mut out, off(head_offset, 8).ok_or(error)?, adj).ok_or(error)?;
 
-        Some((out, new_of_lookup))
+        Ok((out, new_of_lookup))
     }
 
     /// Glyph bytes for the subset: simple glyphs are copied without hinting

@@ -44,6 +44,7 @@ pub mod fonts;
 pub mod highlight;
 pub mod html;
 pub mod lang_dispatch;
+pub mod lang_javascript;
 pub mod layout;
 pub mod md_gen;
 pub mod parse;

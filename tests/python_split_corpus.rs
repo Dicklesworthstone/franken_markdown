@@ -35,6 +35,27 @@ fn coalesced(spans: &[Span]) -> Vec<(franken_markdown::highlight::Tok, usize, us
 }
 
 #[test]
+fn diagnostic_feed_sequence_for_number_fixture() {
+    let fixture = "value = 0xFF_00 + 1.5e-3 + 4j\n";
+    let mut lexer = ResumableLexer::new("python").expect("route");
+    for (index, chunk_end) in [20usize, 30].into_iter().enumerate() {
+        let chunk = &fixture.as_bytes()[if index == 0 { 0 } else { 20 }..chunk_end];
+        lexer.feed(chunk).expect("feed");
+        eprintln!(
+            "DIAG feed {index}: chunk={:?} base-spans={:?}",
+            String::from_utf8_lossy(chunk),
+            lexer.spans()
+        );
+    }
+    lexer.finish().expect("finish");
+    eprintln!("DIAG final: {:?}", lexer.spans());
+    eprintln!(
+        "DIAG whole: {:?}",
+        coalesced(&highlight("python", fixture))
+    );
+}
+
+#[test]
 fn every_split_matches_whole_run_on_all_fixtures() {
     for fixture in FIXTURES {
         let whole = highlight("python", fixture);

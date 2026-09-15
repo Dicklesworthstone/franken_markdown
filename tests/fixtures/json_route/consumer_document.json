@@ -1,0 +1,31 @@
+{
+  "service": "fcb-reader-excerpt-verification",
+  "version": "1.0.0",
+  "consumers": {
+    "reader": {
+      "route": "headless:rust",
+      "entry": "crates/fcb-source/tests/fcb_012_production.rs",
+      "expect": {
+        "strings": ["escaped \"quotes\"", "unicode \u00e9\u4e2d\u6587", "surrogate pair \ud83d\ude00"],
+        "numbers": [0, -17, 2.5, 1e-10],
+        "literals": [true, false, null]
+      }
+    },
+    "fence": {
+      "language": "json",
+      "capabilities": {
+        "string_escapes": "implemented",
+        "unicode_sequences": "implemented",
+        "numbers": "implemented",
+        "structural_punctuation": "implemented",
+        "malformed_input": "truthful-tile-no-grammar-claims",
+        "dialect_validation": "unsupported"
+      },
+      "capability_version": "json-lexer/v1"
+    }
+  },
+  "notes": [
+    "This fixture is a real consumer document: it exercises strings, escapes,\n    unicode (raw and \\u-escaped), numbers across magnitudes, literals,\n    nesting, and the boundary between lexer truth and parser semantics.",
+    "The lexer tiles and classifies; it never claims the document is valid\n    JSON grammar. That distinction is the capability row's whole point."
+  ]
+}

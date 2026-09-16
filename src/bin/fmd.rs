@@ -1,7 +1,7 @@
-//! `fmd` — the short alias agents and humans actually type. Identical entrypoint
-//! to the long-name binary; a one-line shim so no source is shared across build
-//! targets.
+//! `fmd` — short alias for the shared executable dispatcher. Book commands
+//! use the bounded native book pipeline; all other commands retain the original
+//! CLI dispatch. The long-name binary enters through the same function.
 
 fn main() -> std::process::ExitCode {
-    franken_markdown::cli::main()
+    franken_markdown::book::native::main()
 }

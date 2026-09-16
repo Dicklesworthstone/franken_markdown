@@ -12,6 +12,8 @@ use crate::{RenderError, Result};
 
 #[path = "book/merge.rs"]
 mod merge;
+#[path = "book/paths.rs"]
+mod paths;
 
 /// One input document: the book-relative path and its Markdown source.
 #[derive(Debug, Clone)]
@@ -24,17 +26,20 @@ pub struct BookInput {
 /// One chapter's public model.
 #[derive(Debug, Clone)]
 pub struct BookChapter {
-    /// Book-relative source path.
+    /// Normalized book-relative source path.
     pub path: String,
-    /// Output page name for the HTML site (`.md` → `.html`, flattened dirs
-    /// joined with `__`): `guide/install.md` → `guide__install.html`.
+    /// Portable output page name. Ordinary paths retain the historical
+    /// flattening (`guide/install.md` becomes `guide__install.html`). URL
+    /// punctuation is escaped and `index.html` is reserved for the landing page.
     pub out_name: String,
     /// Chapter title: frontmatter title, else first heading text, else the
     /// path stem.
     pub title: String,
     /// Parsed frontmatter (title/author/lang/toc) for the chapter.
     pub frontmatter: Option<Frontmatter>,
-    /// The chapter's parsed document (frontmatter stripped by the parser).
+    /// Parsed document, with frontmatter removed. Links to known chapters are
+    /// canonical book-root Markdown URLs, independent of the eventual format.
+    /// Image destinations, unknown files, and external links remain unchanged.
     pub doc: Document,
 }
 
@@ -57,51 +62,52 @@ pub struct BookHeading {
 /// Parse and assemble the book. Inputs MUST arrive pre-sorted by the caller
 /// (the CLI walks lexically); this function preserves arrival order.
 ///
+/// Source paths are normalized before parsing. Known chapter links are
+/// resolved relative to each source file, then represented as root-relative
+/// Markdown URLs. Existing HTML and EPUB consumers can therefore resolve
+/// nested links without guessing which directory a document came from.
+///
 /// # Errors
-/// Returns `RenderError::InvalidInput` when the book has no chapters.
+/// Returns `RenderError::InvalidInput` for an empty book, invalid or escaping
+/// paths, duplicate normalized paths, or colliding output filenames. Output
+/// collisions are checked case-insensitively so publication is portable.
 pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
     if inputs.is_empty() {
         return Err(RenderError::InvalidInput(
             "book: no Markdown inputs found".to_string(),
         ));
     }
+    let paths = paths::input_paths(inputs)?;
     let mut chapters = Vec::with_capacity(inputs.len());
-    for input in inputs {
+    for (input, path) in inputs.iter().zip(paths) {
         let (frontmatter, _) = parse::split_frontmatter(&input.source);
         let doc = parse::parse_document(&input.source);
         let title = frontmatter
             .as_ref()
             .and_then(|fm| fm.title.clone())
             .or_else(|| first_heading_text(&doc))
-            .unwrap_or_else(|| path_stem(&input.path));
+            .unwrap_or_else(|| path_stem(&path));
         chapters.push(BookChapter {
-            out_name: out_name(&input.path),
-            path: input.path.clone(),
+            out_name: out_name(&path),
+            path,
             title,
             frontmatter,
             doc,
         });
     }
+    paths::canonicalize(&mut chapters);
     Ok(Book { chapters })
 }
 
-/// Flatten a book-relative path into a page name: `guide/install.md` →
-/// `guide__install.html`.
+/// Flatten a book-relative path into a portable page name: `guide/install.md`
+/// becomes `guide__install.html`. Unsafe URL/filename bytes use literal `~hh`
+/// escapes. Reserved names such as `index.md` receive a `~chapter-` prefix,
+/// leaving `index.html` available for the host's generated landing page.
+///
+/// Flattening can still collide (`a/b.md` versus `a__b.md`, or `.md` versus
+/// `.markdown`). [`build_book`] rejects those collisions before publication.
 pub fn out_name(path: &str) -> String {
-    let clean = path
-        .strip_prefix("./")
-        .or_else(|| path.strip_prefix(".\\"))
-        .or_else(|| path.strip_prefix('/'))
-        .or_else(|| path.strip_prefix('\\'))
-        .unwrap_or(path);
-    let no_ext = if clean.to_ascii_lowercase().ends_with(".markdown") {
-        &clean[..clean.len() - ".markdown".len()]
-    } else if clean.to_ascii_lowercase().ends_with(".md") {
-        &clean[..clean.len() - ".md".len()]
-    } else {
-        clean
-    };
-    format!("{}.html", no_ext.replace(['/', '\\'], "__"))
+    paths::output_name(path)
 }
 
 #[inline(always)]
@@ -177,110 +183,33 @@ fn collect_headings(blocks: &[Block], out: &mut Vec<(u8, String)>) {
     }
 }
 
-/// Rewrite one document's cross-file Markdown links for the HTML site:
-/// `other.md#anchor` → `other.html#anchor` (flattened the same way as page
-/// names). In-book absolute/relative links to files NOT in the book stay
-/// untouched. Call before rendering each chapter page. Returns the number of
-/// rewritten links.
+/// Rewrite root-relative Markdown chapter links for the HTML site, preserving
+/// queries and fragments. Documents returned by [`build_book`] already carry
+/// the required root context. Unknown files and external links are untouched.
+/// Returns the number of changed links; repeated calls are idempotent.
+///
+/// For an independently parsed document in a subdirectory, use
+/// [`rewrite_links_for_site_from`] to supply its source path explicitly.
 pub fn rewrite_links_for_site(
     doc: &mut Document,
     known_pages: &std::collections::BTreeSet<String>,
 ) -> usize {
-    let mut count = 0;
-    rewrite_block_links(&mut doc.blocks, known_pages, &mut count);
-    count
+    paths::rewrite_for_site(doc, known_pages)
 }
 
-fn rewrite_block_links(
-    blocks: &mut [Block],
-    known: &std::collections::BTreeSet<String>,
-    count: &mut usize,
-) {
-    for block in blocks {
-        match block {
-            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-                rewrite_inline_links(inlines, known, count);
-            }
-            Block::BlockQuote(inner) => rewrite_block_links(inner, known, count),
-            Block::List(list) => {
-                for item in &mut list.items {
-                    rewrite_block_links(&mut item.blocks, known, count);
-                }
-            }
-            Block::Table(table) => {
-                for cell in &mut table.head {
-                    rewrite_inline_links(cell, known, count);
-                }
-                for row in &mut table.rows {
-                    for cell in row {
-                        rewrite_inline_links(cell, known, count);
-                    }
-                }
-            }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for term in &mut item.terms {
-                        rewrite_inline_links(term, known, count);
-                    }
-                    for def in &mut item.definitions {
-                        rewrite_inline_links(def, known, count);
-                    }
-                }
-            }
-            Block::FootnoteDefinition { blocks, .. } => {
-                rewrite_block_links(blocks, known, count);
-            }
-            Block::CodeBlock { .. }
-            | Block::ThematicBreak
-            | Block::HtmlBlock(_)
-            | Block::MathBlock(_)
-            | Block::PageBreak => {}
-        }
-    }
-}
-
-fn rewrite_inline_links(
-    inlines: &mut [Inline],
-    known: &std::collections::BTreeSet<String>,
-    count: &mut usize,
-) {
-    for inl in inlines {
-        match inl {
-            Inline::Link { dest, content, .. } => {
-                if !dest.starts_with("http://")
-                    && !dest.starts_with("https://")
-                    && !dest.starts_with("//")
-                    && !dest.starts_with("mailto:")
-                    && !dest.starts_with("data:")
-                {
-                    if let Some((page, anchor)) = dest.split_once('#') {
-                        let page_lower = page.to_ascii_lowercase();
-                        if page_lower.ends_with(".md") || page_lower.ends_with(".markdown") {
-                            let page_html = out_name(page);
-                            if known.contains(&page_html) {
-                                *dest = format!("{page_html}#{anchor}");
-                                *count += 1;
-                            }
-                        }
-                    } else {
-                        let dest_lower = dest.to_ascii_lowercase();
-                        if dest_lower.ends_with(".md") || dest_lower.ends_with(".markdown") {
-                            let page_html = out_name(dest);
-                            if known.contains(&page_html) {
-                                *dest = page_html;
-                                *count += 1;
-                            }
-                        }
-                    }
-                }
-                rewrite_inline_links(content, known, count);
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                rewrite_inline_links(c, known, count);
-            }
-            _ => {}
-        }
-    }
+/// Rewrite a separately parsed chapter using its book-relative source path.
+/// Resolves sibling, parent, and root-relative links against the actual book
+/// map; applies the same rules to tables, lists, definitions, and footnotes.
+///
+/// # Errors
+/// Returns `RenderError::InvalidInput` for invalid or duplicate chapter paths.
+/// Validation completes before the document is modified.
+pub fn rewrite_links_for_site_from(
+    doc: &mut Document,
+    source_path: &str,
+    book: &Book,
+) -> Result<usize> {
+    paths::rewrite_from(doc, source_path, book)
 }
 
 /// Merge the book into one document for the PDF: chapters concatenate in

@@ -71,6 +71,7 @@ pub mod pdf;
 pub mod pdfa;
 pub mod resume;
 pub mod flow;
+pub mod flow_display;
 pub mod scanner;
 pub mod source_map;
 pub mod span;

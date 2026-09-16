@@ -4,6 +4,16 @@ use franken_markdown::book::Book;
 use franken_markdown::{Block, Document, Inline};
 
 pub(super) fn assemble(book: &Book) -> Document {
+    assemble_with(book, |_, _| {})
+}
+
+/// Prepare each chapter while its cloned blocks still have a known source
+/// boundary. Hosts can resolve assets here without cloning the entire book a
+/// second time or inferring boundaries from user-authored page-break blocks.
+pub(super) fn assemble_with(
+    book: &Book,
+    mut prepare: impl FnMut(usize, &mut [Block]),
+) -> Document {
     let mut blocks = Vec::new();
     let isolate = book.chapters.len() > 1;
     for (index, chapter) in book.chapters.iter().enumerate() {
@@ -15,6 +25,7 @@ pub(super) fn assemble(book: &Book) -> Document {
         if isolate {
             namespace_blocks(&mut blocks[start..], index + 1);
         }
+        prepare(index, &mut blocks[start..]);
     }
     Document { blocks }
 }
@@ -116,7 +127,10 @@ mod tests {
     #[test]
     fn repeated_ids_keep_both_chapters_notes_and_do_not_mutate_inputs() {
         let book = Book {
-            chapters: vec![chapter("first", "First citation"), chapter("second", "Second citation")],
+            chapters: vec![
+                chapter("first", "First citation"),
+                chapter("second", "Second citation"),
+            ],
         };
         let original = book.chapters[0].doc.clone();
         let merged = assemble(&book);
@@ -136,8 +150,12 @@ mod tests {
         }
         let html = franken_markdown::render_html_document(
             &merged,
-            &HtmlOptions { custom_css: Some(String::new()), ..HtmlOptions::default() },
-        ).expect("render merged footnotes");
+            &HtmlOptions {
+                custom_css: Some(String::new()),
+                ..HtmlOptions::default()
+            },
+        )
+        .expect("render merged footnotes");
         assert!(html.contains("First citation"));
         assert!(html.contains("Second citation"));
         assert_eq!(merged, assemble(&book), "assembly is deterministic");
@@ -146,14 +164,19 @@ mod tests {
     #[test]
     fn empty_and_single_chapter_books_preserve_the_existing_document() {
         assert_eq!(assemble(&Book { chapters: vec![] }), Document::default());
-        let book = Book { chapters: vec![chapter("only", "Only citation")] };
+        let book = Book {
+            chapters: vec![chapter("only", "Only citation")],
+        };
         assert_eq!(assemble(&book), book.chapters[0].doc);
     }
 
     #[test]
     fn namespaces_every_inline_container_but_not_visible_text_or_urls() {
         let mut blocks = vec![
-            Block::Heading { level: 1, inlines: vec![note_ref("x")] },
+            Block::Heading {
+                level: 1,
+                inlines: vec![note_ref("x")],
+            },
             Block::BlockQuote(vec![Block::List(List {
                 ordered: false,
                 start: 1,
@@ -182,12 +205,21 @@ mod tests {
                     content: vec![Inline::Text("x".into()), note_ref("x")],
                 }])],
             },
-            Block::CodeBlock { lang: None, code: "[^x]".into() },
+            Block::CodeBlock {
+                lang: None,
+                code: "[^x]".into(),
+            },
         ];
         let original = blocks.clone();
         namespace_blocks(&mut blocks, 7);
         let expected_id = scoped_id(7, "x");
-        assert_eq!(blocks[0], Block::Heading { level: 1, inlines: vec![note_ref(&expected_id)] });
+        assert_eq!(
+            blocks[0],
+            Block::Heading {
+                level: 1,
+                inlines: vec![note_ref(&expected_id)]
+            }
+        );
         if let Block::Table(table) = &blocks[2] {
             assert_eq!(table.head[0], vec![note_ref(&expected_id)]);
             assert_eq!(table.rows[0][0], vec![note_ref(&expected_id)]);
@@ -200,14 +232,17 @@ mod tests {
         } else {
             panic!("definition list changed kind");
         }
-        assert_eq!(blocks[4], Block::FootnoteDefinition {
-            id: expected_id.clone(),
-            blocks: vec![Block::Paragraph(vec![Inline::Link {
-                dest: "#x".into(),
-                title: Some("x".into()),
-                content: vec![Inline::Text("x".into()), note_ref(&expected_id)],
-            }])],
-        });
+        assert_eq!(
+            blocks[4],
+            Block::FootnoteDefinition {
+                id: expected_id.clone(),
+                blocks: vec![Block::Paragraph(vec![Inline::Link {
+                    dest: "#x".into(),
+                    title: Some("x".into()),
+                    content: vec![Inline::Text("x".into()), note_ref(&expected_id)],
+                }])],
+            }
+        );
         assert_eq!(blocks[5], original[5], "code is not rewritten");
         let mut expected_nested = original[1].clone();
         if let Block::BlockQuote(inner) = &mut expected_nested {
@@ -225,5 +260,20 @@ mod tests {
         assert_ne!(scoped_id(1, "fmd-book-2-x"), scoped_id(2, "x"));
         assert_ne!(scoped_id(1, "2-x"), scoped_id(12, "x"));
         assert_ne!(scoped_id(1, ""), scoped_id(2, ""));
+    }
+
+    #[test]
+    fn preparation_uses_source_boundaries_not_page_break_markers() {
+        let mut first = chapter("first", "One");
+        first.doc.blocks.insert(0, Block::PageBreak);
+        let book = Book {
+            chapters: vec![first, chapter("second", "Two")],
+        };
+        let mut seen = Vec::new();
+        let document = assemble_with(&book, |index, blocks| {
+            seen.push((index, blocks.len()));
+        });
+        assert_eq!(seen, vec![(0, 3), (1, 2)]);
+        assert_eq!(document, assemble(&book));
     }
 }

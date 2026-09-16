@@ -219,10 +219,14 @@ impl ResumableLexer {
         )
     }
 
+    fn is_jsx_family(&self) -> bool {
+        matches!(self.lang.to_ascii_lowercase().as_str(), "jsx" | "tsx")
+    }
+
     fn is_javascript_family(&self) -> bool {
         matches!(
             self.lang.to_ascii_lowercase().as_str(),
-            "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx"
+            "javascript" | "js" | "mjs" | "cjs" | "typescript" | "ts"
         )
     }
 
@@ -243,6 +247,8 @@ impl ResumableLexer {
             } else if is_html_closed_construct(&text, last) {
                 hold_from = last.end;
             }
+        } else if self.is_jsx_family() {
+            hold_from = crate::lang_jsx::find_jsx_hold_from(&text, &spans);
         } else if self.is_javascript_family() {
             hold_from = find_javascript_hold_from(&text, &spans);
         }
@@ -943,7 +949,17 @@ fn is_html_closed_construct(text: &str, last: &Span) -> bool {
 /// causing division to be misclassified as a regex. Therefore, when text ends with
 /// whitespace, an unresolved slash, or an Annex B comment prefix, the hold offset is
 /// extended back to the start of the preceding non-whitespace code token.
-fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
+fn is_javascript_value_token(text: &str, span: &Span) -> bool {
+    let slice = &text[span.start..span.end];
+    match span.kind {
+        Tok::Plain | Tok::Type | Tok::Number | Tok::Str => true,
+        Tok::Punct => slice == ")" || slice == "]",
+        Tok::Keyword => matches!(slice, "this" | "true" | "false" | "null" | "super"),
+        _ => false,
+    }
+}
+
+pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
     let Some(last) = spans.last() else {
         return 0;
     };
@@ -953,6 +969,9 @@ fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
     if text.ends_with("<!-") {
         hold_from = hold_from.min(text.len() - 3);
     } else if text.ends_with("<!") {
+        hold_from = hold_from.min(text.len() - 2);
+    } else if text.ends_with("..") {
+        // Spread/rest operator prefix: hold from first dot awaiting third dot.
         hold_from = hold_from.min(text.len() - 2);
     }
 
@@ -990,6 +1009,30 @@ fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
             hold_from = hold_from.min(prev.start);
         } else {
             hold_from = 0;
+        }
+    }
+
+    // If the held slice starts with `<`, a bare `<` at the beginning of pending
+    // would be evaluated in Prev::Start context. If the preceding token was a
+    // value (identifier, type, literal, or `)`/`]`), `<` is a comparison or
+    // TypeScript type argument (e.g. `React.FC<Props>`), NOT a JSX opening tag.
+    // We must retain that preceding value token so JSX-vs-operator disambiguation
+    // remains exact. If the preceding token was an operator (e.g. `= <div`),
+    // `<` is already in expression start context and does not need the operator.
+    if text[hold_from..].trim_start().starts_with('<')
+        && !text[hold_from..].trim_start().starts_with("<!")
+    {
+        let lt_pos = hold_from + (text[hold_from..].len() - text[hold_from..].trim_start().len());
+        let prev_before_lt = spans.iter().rev().find(|span| {
+            span.end <= lt_pos
+                && !text[span.start..span.end]
+                    .chars()
+                    .all(char::is_whitespace)
+        });
+        if let Some(prev) = prev_before_lt {
+            if is_javascript_value_token(text, prev) {
+                hold_from = hold_from.min(prev.start);
+            }
         }
     }
 

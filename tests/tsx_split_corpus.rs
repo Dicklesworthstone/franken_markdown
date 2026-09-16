@@ -20,13 +20,10 @@
 //! lexer defect; all non-number splits must be exact.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use franken_markdown::highlight::{self, Span};
+use franken_markdown::highlight::Span;
 use franken_markdown::lang_tsx::{TSX_CAPABILITY_V1, lex_tsx_into};
 use franken_markdown::resume::ResumableLexer;
-use franken_markdown::{ByteLength, ByteOffset, ByteRange, CaptureRequest, ChunkSize, FileId,
-    SourceRevision};
 
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/tsx_route/consumer_document.tsx");
 
@@ -177,11 +174,7 @@ fn every_fixture_is_split_equivalent_where_numbers_are_not_split() {
 fn component_fixture_is_split_equivalent_at_every_byte() {
     // A number-free fixture: EVERY byte split must be exact.
     let fixture = fixtures().into_iter().find(|f| f.name == "component").unwrap();
-    let expected = coalesce(&whole_spans(&fixture.bytes));
-    for at in 0..=fixture.bytes.len() {
-        let got = split_spans(&fixture.bytes, at);
-        assert_eq!(got, expected, "component: split at {at} diverged");
-    }
+    assert_split_equivalence(fixture.name, &fixture.bytes);
     scenario_receipt("component_full_split_sweep", "exact", "every byte split equivalent");
 }
 
@@ -201,11 +194,7 @@ fn malformed_inputs_classify_truthfully() {
 #[test]
 fn consumer_document_split_equivalence_at_every_byte() {
     let fixture = fixtures().into_iter().find(|f| f.name == "consumer").unwrap();
-    let expected = coalesce(&whole_spans(&fixture.bytes));
-    for at in 0..=fixture.bytes.len() {
-        let got = split_spans(&fixture.bytes, at);
-        assert_eq!(got, expected, "consumer: split at {at} diverged");
-    }
+    assert_split_equivalence(fixture.name, &fixture.bytes);
     scenario_receipt("consumer_full_split_sweep", "exact", "every byte split equivalent");
 }
 

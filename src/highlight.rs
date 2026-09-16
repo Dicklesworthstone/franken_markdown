@@ -114,6 +114,7 @@ enum Lexer {
     Cpp,
     TypeScript,
     Jsx,
+    Tsx,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -187,6 +188,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::Jsx) => {
             crate::lang_jsx::lex_jsx_into(code, spans);
+        }
+        Some(Lexer::Tsx) => {
+            crate::lang_tsx::lex_tsx_into(code, spans);
         }
         None => return false,
     }
@@ -1465,7 +1469,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "go" | "golang" => Some(Lexer::Go),
         "typescript" | "ts" => Some(Lexer::TypeScript),
         "jsx" => Some(Lexer::Jsx),
-        "javascript" | "js" | "mjs" | "cjs" | "tsx" => Some(Lexer::JavaScript),
+        "tsx" => Some(Lexer::Tsx),
+        "javascript" | "js" | "mjs" | "cjs" => Some(Lexer::JavaScript),
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
             keywords: JSON_KW,
             types: KwTable::EMPTY,

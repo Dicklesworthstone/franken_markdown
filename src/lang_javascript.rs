@@ -137,7 +137,7 @@ const TYPES: &[&str] = &[
 
 /// What the previous significant token was, for regex-vs-division.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Prev {
+pub(crate) enum Prev {
     /// Nothing yet (start of input): regex allowed.
     Start,
     /// Identifier, number, string, template tail, regex, or `)`/`]`: a
@@ -245,368 +245,293 @@ pub fn lex_javascript_composed_into(
     }
 
     while pos < bytes_len {
-        // Inside a template interpolation: `}` at the recorded depth pops
-        // back into the template chunk.
-        if let Some(depth) = interp_stack.last().copied() {
-            let rest = &code[pos..];
-            if rest.starts_with('}') && brace_depth_in_interp == depth {
-                interp_stack.pop();
-                brace_depth_in_interp = 0;
-                push_tiling(spans, &mut last_end, Tok::Punct, pos, pos + 1);
-                pos += 1;
-                // After `}` we are in template-chunk scanning; handled by the
-                // template branch below on the next iteration via prev reset.
-                prev = Prev::Start;
-                continue;
+        let (end, kind, new_prev) = scan_javascript_token_at(
+            code,
+            pos,
+            prev,
+            &mut interp_stack,
+            &mut brace_depth_in_interp,
+            extra_keywords,
+            extra_types,
+        );
+        push_tiling(spans, &mut last_end, kind, pos, end);
+        pos = end;
+        prev = new_prev;
+    }
+
+    if last_end < bytes_len {
+        let start = last_end;
+        push_tiling(spans, &mut last_end, Tok::Plain, start, bytes_len);
+    }
+}
+
+/// Scans the single next JavaScript token at `pos`. Returns (token_end, Tok, new_prev).
+/// Reused across JavaScript, TypeScript, JSX, and TSX without duplicating scanning logic.
+pub(crate) fn scan_javascript_token_at(
+    code: &str,
+    pos: usize,
+    prev: Prev,
+    interp_stack: &mut Vec<usize>,
+    brace_depth_in_interp: &mut usize,
+    extra_keywords: &[&str],
+    extra_types: &[&str],
+) -> (usize, Tok, Prev) {
+    let bytes_len = code.len();
+    if pos >= bytes_len {
+        return (bytes_len, Tok::Plain, prev);
+    }
+
+    // Inside a template interpolation: `}` at the recorded depth pops
+    // back into the template chunk.
+    if let Some(&depth) = interp_stack.last() {
+        let rest = &code[pos..];
+        if rest.starts_with('}') && *brace_depth_in_interp == depth {
+            interp_stack.pop();
+            *brace_depth_in_interp = 0;
+            return (pos + 1, Tok::Punct, Prev::Start);
+        }
+    }
+
+    let rest = &code[pos..];
+    let ch = match rest.chars().next() {
+        Some(c) => c,
+        None => return (bytes_len, Tok::Plain, prev),
+    };
+    let clen = ch.len_utf8();
+
+    // Whitespace.
+    if ch.is_whitespace() {
+        let mut scan = pos + clen;
+        while scan < bytes_len {
+            let c = code[scan..].chars().next().unwrap();
+            if c.is_whitespace() {
+                scan += c.len_utf8();
+            } else {
+                break;
             }
         }
+        return (scan, Tok::Plain, prev);
+    }
 
-        let rest = &code[pos..];
-        let ch = match rest.chars().next() {
-            Some(c) => c,
-            None => break,
-        };
-        let clen = ch.len_utf8();
+    // Line comments: `//` and Annex B `<!--`.
+    if rest.starts_with("//") || rest.starts_with("<!--") {
+        let end = code[pos..].find('\n').map_or(bytes_len, |nl| pos + nl);
+        return (end, Tok::Comment, Prev::Start);
+    }
 
-        // Whitespace.
-        if ch.is_whitespace() {
-            let start = pos;
-            pos += clen;
-            while pos < bytes_len {
-                let c = code[pos..].chars().next().unwrap();
-                if c.is_whitespace() {
-                    pos += c.len_utf8();
-                } else {
+    // Block comments: `/* ... */`, unterminated spans to EOF.
+    if rest.starts_with("/*") {
+        let end = code[pos + 2..]
+            .find("*/")
+            .map_or(bytes_len, |at| pos + 2 + at + 2);
+        return (end, Tok::Comment, Prev::Start);
+    }
+
+    // Annex B single-line-close comment `-->`.
+    if rest.starts_with("-->") && matches!(prev, Prev::Start | Prev::Operator) {
+        let end = code[pos..].find('\n').map_or(bytes_len, |nl| pos + nl);
+        return (end, Tok::Comment, Prev::Start);
+    }
+
+    // Strings: ' or " with escapes and escaped-newline continuation.
+    if ch == '\'' || ch == '"' {
+        let mut scan = pos + 1;
+        let mut closed = false;
+        while scan < bytes_len {
+            let c = code[scan..].chars().next().unwrap();
+            if c == '\\' {
+                let next_scan = scan + 1;
+                if next_scan >= bytes_len {
+                    scan = bytes_len;
                     break;
                 }
+                let esc = code[next_scan..].chars().next().unwrap();
+                scan = next_scan + esc.len_utf8();
+                continue;
             }
-            push_tiling(spans, &mut last_end, Tok::Plain, start, pos);
-            continue;
+            if c == ch {
+                scan += c.len_utf8();
+                closed = true;
+                break;
+            }
+            if c == '\n' {
+                break;
+            }
+            scan += c.len_utf8();
         }
+        let end = if closed { scan } else { bytes_len.min(scan) };
+        return (end, Tok::Str, Prev::Value);
+    }
 
-        // Line comments: `//` and Annex B `<!--`.
-        if rest.starts_with("//") || rest.starts_with("<!--") {
-            let start = pos;
-            let end = code[start..].find('\n').map_or(bytes_len, |nl| start + nl);
-            push_tiling(spans, &mut last_end, Tok::Comment, start, end);
-            pos = end;
-            prev = Prev::Start;
-            continue;
-        }
+    // Template literal chunk entry.
+    if ch == '`' {
+        let end = template_end(code, pos);
+        return (end, Tok::Str, Prev::Value);
+    }
 
-        // Block comments: `/* ... */`, unterminated spans to EOF.
-        if rest.starts_with("/*") {
-            let start = pos;
-            let end = code[start + 2..]
-                .find("*/")
-                .map_or(bytes_len, |at| start + 2 + at + 2);
-            push_tiling(spans, &mut last_end, Tok::Comment, start, end);
-            pos = end;
-            prev = Prev::Start;
-            continue;
-        }
-
-        // Annex B single-line-close comment `-->` (only at line start is
-        // spec-true; conservatively accepted after `=` or `(` too — under
-        // declared capability this lexer treats a bare `-->` as a comment).
-        if rest.starts_with("-->") && matches!(prev, Prev::Start | Prev::Operator) {
-            let start = pos;
-            let end = code[start..].find('\n').map_or(bytes_len, |nl| start + nl);
-            push_tiling(spans, &mut last_end, Tok::Comment, start, end);
-            pos = end;
-            prev = Prev::Start;
-            continue;
-        }
-
-        // Strings: ' or " with escapes and escaped-newline continuation.
-        // Truncated quotes span to EOF under the declared capability.
-        if ch == '\'' || ch == '"' {
-            let start = pos;
+    // Regex or division.
+    if ch == '/' {
+        if regex_allowed(prev) {
             let mut scan = pos + 1;
-            let mut closed = false;
+            let mut in_class = false;
+            let mut terminated = false;
             while scan < bytes_len {
                 let c = code[scan..].chars().next().unwrap();
                 if c == '\\' {
-                    // Escape: consume the escaped character (handles \n
-                    // continuation, \u{...}, \xNN, quotes).
                     let next_scan = scan + 1;
                     if next_scan >= bytes_len {
                         scan = bytes_len;
                         break;
                     }
-                    let esc = code[next_scan..].chars().next().unwrap();
-                    scan = next_scan + esc.len_utf8();
+                    scan = next_scan + code[next_scan..].chars().next().unwrap().len_utf8();
                     continue;
                 }
-                if c == ch {
+                if c == '[' {
+                    in_class = true;
+                } else if c == ']' {
+                    in_class = false;
+                } else if c == '/' && !in_class {
                     scan += c.len_utf8();
-                    closed = true;
+                    terminated = true;
                     break;
-                }
-                if c == '\n' {
-                    // Unescaped newline: unterminated string ends before it.
+                } else if c == '\n' {
                     break;
                 }
                 scan += c.len_utf8();
             }
-            let end = if closed { scan } else { bytes_len.min(scan) };
-            assert!(
-                end <= bytes_len,
-                "TEMPLATE OOB: end={end} len={bytes_len} pos={pos}"
-            );
-            assert!(end <= bytes_len, "REGEX OOB: end={end} len={bytes_len}");
-            push_tiling(spans, &mut last_end, Tok::Str, start, end);
-            pos = end;
-            prev = Prev::Value;
-            continue;
-        }
-
-        // Template literal chunk entry.
-        if ch == '`' {
-            let start = pos;
-            let end = template_end(code, pos);
-            push_tiling(spans, &mut last_end, Tok::Str, start, end);
-            pos = end;
-            prev = Prev::Value;
-            continue;
-        }
-
-        // Interpolation close: handled at the top of the loop.
-        if ch == '}' && !interp_stack.is_empty() {
-            unreachable!("interp close handled above");
-        }
-
-        // Regex or division.
-        if ch == '/' {
-            if regex_allowed(prev) {
-                // Regex literal: scan body honoring escapes and [...]
-                // classes; unterminated spans to EOF.
-                let start = pos;
-                let mut scan = pos + 1;
-                let mut in_class = false;
-                let mut terminated = false;
+            if terminated {
                 while scan < bytes_len {
                     let c = code[scan..].chars().next().unwrap();
-                    if c == '\\' {
-                        let next_scan = scan + 1;
-                        if next_scan >= bytes_len {
-                            scan = bytes_len;
-                            break;
-                        }
-                        scan = next_scan + code[next_scan..].chars().next().unwrap().len_utf8();
-                        continue;
-                    }
-                    if c == '[' {
-                        in_class = true;
-                    } else if c == ']' {
-                        in_class = false;
-                    } else if c == '/' && !in_class {
+                    if c.is_alphabetic() {
                         scan += c.len_utf8();
-                        terminated = true;
-                        break;
-                    } else if c == '\n' {
-                        // A regex cannot span lines unescaped: not a regex.
+                    } else {
                         break;
                     }
-                    scan += c.len_utf8();
                 }
-                if terminated {
-                    // Flags.
-                    while scan < bytes_len {
-                        let c = code[scan..].chars().next().unwrap();
-                        if c.is_alphabetic() {
-                            scan += c.len_utf8();
-                        } else {
-                            break;
-                        }
-                    }
-                    let end = scan;
-                    push_tiling(spans, &mut last_end, Tok::Str, start, end);
-                    pos = end;
-                    prev = Prev::Value;
-                    continue;
-                }
-                if scan == bytes_len {
-                    // Unterminated regex literal spans to EOF.
-                    push_tiling(spans, &mut last_end, Tok::Str, start, bytes_len);
-                    pos = bytes_len;
-                    prev = Prev::Value;
-                    continue;
-                }
-                // Unterminated across line break: fall through to operator (conservative).
+                return (scan, Tok::Str, Prev::Value);
             }
-            // Division or `/=` operator.
-            let op_len = if code[pos..].starts_with("/=") { 2 } else { 1 };
-            push_tiling(spans, &mut last_end, Tok::Operator, pos, pos + op_len);
-            pos += op_len;
-            prev = Prev::Operator;
-            continue;
-        }
-
-        // Numbers: hex/octal/binary, decimal with exponent, bigint suffix,
-        // numeric separators, and leading-dot decimals.
-        if ch.is_ascii_digit()
-            || (ch == '.' && pos + 1 < bytes_len && code.as_bytes()[pos + 1].is_ascii_digit())
-        {
-            let start = pos;
-            if rest.starts_with("0x") || rest.starts_with("0X") {
-                pos += 2;
-                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_');
-            } else if rest.starts_with("0o") || rest.starts_with("0O") {
-                pos += 2;
-                pos = consume_while(code, pos, |c| ('0'..='7').contains(&c) || c == '_');
-            } else if rest.starts_with("0b") || rest.starts_with("0B") {
-                pos += 2;
-                pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '_');
-            } else {
-                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
-                if pos < bytes_len && code.as_bytes()[pos] == b'.' {
-                    pos += 1;
-                    pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_');
-                }
-                if pos < bytes_len && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
-                {
-                    let save = pos;
-                    pos += 1;
-                    if pos < bytes_len
-                        && (code.as_bytes()[pos] == b'+' || code.as_bytes()[pos] == b'-')
-                    {
-                        pos += 1;
-                    }
-                    pos = consume_while(code, pos, |c| c.is_ascii_digit());
-                    if pos == save {
-                        // not an exponent after all
-                        pos = save;
-                    }
-                }
-            }
-            if pos < bytes_len && code.as_bytes()[pos] == b'n' {
-                pos += 1;
-            }
-            assert!(pos <= bytes_len, "NUMBER OOB: pos={pos} len={bytes_len}");
-            push_tiling(spans, &mut last_end, Tok::Number, start, pos);
-            prev = Prev::Value;
-            continue;
-        }
-
-        // Identifiers, keywords, type names, function calls.
-        if is_ident_start(ch) {
-            let start = pos;
-            pos += clen;
-            pos = consume_while(code, pos, is_ident_continue);
-            assert!(
-                pos <= bytes_len,
-                "IDENT SLICE OOB: start={start} pos={pos} len={bytes_len}"
-            );
-            let word = &code[start..pos];
-            let is_kw = is_id_or_keyword(word) || extra_keywords.contains(&word);
-            let is_ty = is_type_name(word) || extra_types.contains(&word);
-            let kind = if is_kw {
-                Tok::Keyword
-            } else if is_ty {
-                Tok::Type
-            } else if next_non_space_is(code, pos, '(') {
-                Tok::Func
-            } else {
-                Tok::Plain
-            };
-            // Regex-vs-division context: value keywords behave like values.
-            prev = match word {
-                "this" | "true" | "false" | "null" | "super" => Prev::ValueKeyword,
-                _ if kind == Tok::Plain || kind == Tok::Func || kind == Tok::Type => Prev::Value,
-                _ => Prev::Keyword,
-            };
-            assert!(pos <= bytes_len, "IDENT OOB: pos={pos} len={bytes_len}");
-            push_tiling(spans, &mut last_end, kind, start, pos);
-            continue;
-        }
-
-        // Template interpolation entry: `${`.
-        if rest.starts_with("${") {
-            interp_stack.push(brace_depth_in_interp);
-            brace_depth_in_interp = 0;
-            push_tiling(spans, &mut last_end, Tok::Punct, pos, pos + 2);
-            pos += 2;
-            prev = Prev::Operator;
-            continue;
-        }
-
-        // Braces inside interpolations adjust the pop depth.
-        if !interp_stack.is_empty() && (ch == '{' || ch == '}') {
-            if ch == '{' {
-                brace_depth_in_interp += 1;
-            } else {
-                brace_depth_in_interp = brace_depth_in_interp.saturating_sub(1);
-            }
-            push_tiling(spans, &mut last_end, Tok::Punct, pos, pos + clen);
-            pos += clen;
-            continue;
-        }
-
-        // Punctuation.
-        if matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';') {
-            let kind = Tok::Punct;
-            if ch == ')' {
-                prev = Prev::Value;
-            } else if ch == ']' {
-                prev = Prev::Value;
-            } else if ch == '}' {
-                prev = Prev::CloseBrace;
-            } else {
-                prev = Prev::Operator;
-            }
-            push_tiling(spans, &mut last_end, kind, pos, pos + clen);
-            pos += clen;
-            continue;
-        }
-        if ch == '.' && !interp_stack.is_empty() {
-            // Bare `.` inside an interpolation is punctuation (member
-            // access); a numeric literal was already handled above.
-        }
-
-        // Multi-char operators, longest first.
-        const OPERATORS: &[&str] = &[
-            ">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=", "=>", "...", "**",
-            "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=",
-            "%=", "&=", "|=", "^=", "<<", ">>", ">>>",
-        ];
-        let mut matched_op = false;
-        for op in OPERATORS {
-            if rest.starts_with(op) {
-                push_tiling(spans, &mut last_end, Tok::Operator, pos, pos + op.len());
-                pos += op.len();
-                prev = Prev::Operator;
-                matched_op = true;
-                break;
+            if scan == bytes_len {
+                return (bytes_len, Tok::Str, Prev::Value);
             }
         }
-        if matched_op {
-            continue;
-        }
-
-        // Single-char operators.
-        if matches!(
-            ch,
-            '+' | '-' | '*' | '%' | '&' | '|' | '^' | '~' | '!' | '<' | '>' | '=' | '?' | ':'
-        ) {
-            push_tiling(spans, &mut last_end, Tok::Operator, pos, pos + clen);
-            pos += clen;
-            prev = Prev::Operator;
-            continue;
-        }
-
-        // Everything else (control chars, unusual bytes): Plain, one char.
-        push_tiling(spans, &mut last_end, Tok::Plain, pos, pos + clen);
-        pos += clen;
-        prev = Prev::Start;
+        let op_len = if code[pos..].starts_with("/=") { 2 } else { 1 };
+        return (pos + op_len, Tok::Operator, Prev::Operator);
     }
 
-    // Trailing gap (input ending in whitespace already handled inline; this
-    // is a defensive final tile).
-    if last_end < bytes_len {
-        let start = last_end;
-        push_tiling(spans, &mut last_end, Tok::Plain, start, bytes_len);
+    // Numbers: hex/octal/binary, decimal with exponent, bigint suffix, separators.
+    if ch.is_ascii_digit()
+        || (ch == '.' && pos + 1 < bytes_len && code.as_bytes()[pos + 1].is_ascii_digit())
+    {
+        let mut scan = pos;
+        if rest.starts_with("0x") || rest.starts_with("0X") {
+            scan += 2;
+            scan = consume_while(code, scan, |c| c.is_ascii_hexdigit() || c == '_');
+        } else if rest.starts_with("0o") || rest.starts_with("0O") {
+            scan += 2;
+            scan = consume_while(code, scan, |c| ('0'..='7').contains(&c) || c == '_');
+        } else if rest.starts_with("0b") || rest.starts_with("0B") {
+            scan += 2;
+            scan = consume_while(code, scan, |c| c == '0' || c == '1' || c == '_');
+        } else {
+            scan = consume_while(code, scan, |c| c.is_ascii_digit() || c == '_');
+            if scan < bytes_len && code.as_bytes()[scan] == b'.' {
+                scan += 1;
+                scan = consume_while(code, scan, |c| c.is_ascii_digit() || c == '_');
+            }
+            if scan < bytes_len && (code.as_bytes()[scan] == b'e' || code.as_bytes()[scan] == b'E') {
+                let save = scan;
+                scan += 1;
+                if scan < bytes_len && (code.as_bytes()[scan] == b'+' || code.as_bytes()[scan] == b'-') {
+                    scan += 1;
+                }
+                let exp_scan = consume_while(code, scan, |c| c.is_ascii_digit());
+                if exp_scan == scan {
+                    scan = save;
+                } else {
+                    scan = exp_scan;
+                }
+            }
+        }
+        if scan < bytes_len && code.as_bytes()[scan] == b'n' {
+            scan += 1;
+        }
+        return (scan, Tok::Number, Prev::Value);
     }
+
+    // Identifiers, keywords, type names, function calls.
+    if is_ident_start(ch) {
+        let scan = consume_while(code, pos + clen, is_ident_continue);
+        let word = &code[pos..scan];
+        let is_kw = is_id_or_keyword(word) || extra_keywords.contains(&word);
+        let is_ty = is_type_name(word) || extra_types.contains(&word);
+        let kind = if is_kw {
+            Tok::Keyword
+        } else if is_ty {
+            Tok::Type
+        } else if next_non_space_is(code, scan, '(') {
+            Tok::Func
+        } else {
+            Tok::Plain
+        };
+        let new_prev = match word {
+            "this" | "true" | "false" | "null" | "super" => Prev::ValueKeyword,
+            _ if kind == Tok::Plain || kind == Tok::Func || kind == Tok::Type => Prev::Value,
+            _ => Prev::Keyword,
+        };
+        return (scan, kind, new_prev);
+    }
+
+    // Template interpolation entry: `${`.
+    if rest.starts_with("${") {
+        interp_stack.push(*brace_depth_in_interp);
+        *brace_depth_in_interp = 0;
+        return (pos + 2, Tok::Punct, Prev::Operator);
+    }
+
+    // Braces inside interpolations adjust the pop depth.
+    if !interp_stack.is_empty() && (ch == '{' || ch == '}') {
+        if ch == '{' {
+            *brace_depth_in_interp += 1;
+        } else {
+            *brace_depth_in_interp = brace_depth_in_interp.saturating_sub(1);
+        }
+        return (pos + clen, Tok::Punct, if ch == '}' { Prev::CloseBrace } else { Prev::Operator });
+    }
+
+    // Punctuation.
+    if matches!(ch, '(' | '[' | '{' | ')' | ']' | '}' | ',' | ';') {
+        let new_prev = if ch == ')' || ch == ']' {
+            Prev::Value
+        } else if ch == '}' {
+            Prev::CloseBrace
+        } else {
+            Prev::Operator
+        };
+        return (pos + clen, Tok::Punct, new_prev);
+    }
+
+    // Multi-char operators, longest first.
+    const OPERATORS: &[&str] = &[
+        ">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=", "=>", "...", "**",
+        "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=",
+        "%=", "&=", "|=", "^=", "<<", ">>", ">>>",
+    ];
+    for op in OPERATORS {
+        if rest.starts_with(op) {
+            return (pos + op.len(), Tok::Operator, Prev::Operator);
+        }
+    }
+
+    // Single-char operators.
+    if matches!(
+        ch,
+        '+' | '-' | '*' | '%' | '&' | '|' | '^' | '~' | '!' | '<' | '>' | '=' | '?' | ':'
+    ) {
+        return (pos + clen, Tok::Operator, Prev::Operator);
+    }
+
+    // Everything else: Plain, one char.
+    (pos + clen, Tok::Plain, Prev::Start)
 }
 
 fn consume_while(code: &str, mut pos: usize, pred: impl Fn(char) -> bool) -> usize {

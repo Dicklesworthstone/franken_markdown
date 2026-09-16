@@ -175,6 +175,16 @@ pub fn render_book_pdf(book: &Book, options: &PdfOptions) -> Result<Vec<u8>> {
     pdf_links::render(book, document, options)
 }
 
+/// Render once and read the actual emitted page count for the CLI receipt.
+/// This includes generated contents/landing pages and all footnote pages.
+#[cfg(feature = "cli")]
+pub(super) fn render_book_pdf_counted(book: &Book, options: &PdfOptions) -> Result<(Vec<u8>, u64)> {
+    let bytes = render_book_pdf(book, options)?;
+    let pages = pdf_links::page_count(&bytes)
+        .ok_or_else(|| invalid("could not read the emitted PDF page count"))?;
+    Ok((bytes, pages))
+}
+
 /// Render a self-contained HTML page per chapter, shared navigation, a landing
 /// page, and a chapter-addressed search index into one deterministic ZIP.
 ///
@@ -307,7 +317,7 @@ fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
                 }
             }
             Block::Table(table) => {
-                for cell in &table.head {
+                for cell in &mut table.head {
                     resolve_inline_images(cell, source, keys);
                 }
                 for row in &mut table.rows {

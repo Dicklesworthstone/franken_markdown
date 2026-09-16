@@ -98,6 +98,21 @@ pub(super) fn bind(
     Ok(bytes)
 }
 
+/// Count the actual emitted pages, not a source-layout estimate or a profiling
+/// stage whose work count might mean lines rather than pages.
+#[cfg(feature = "cli")]
+pub(super) fn page_count(bytes: &[u8]) -> Option<u64> {
+    let pdf = Pdf::parse(bytes)?;
+    let catalog = pdf.dictionary(pdf.reference(pdf.field(&pdf.trailer, b"/Root")?.value)?)?;
+    let pages = pdf.dictionary(pdf.reference(pdf.field(&catalog, b"/Pages")?.value)?)?;
+    if !pdf.named(&pages, b"/Type", b"/Pages") { return None; }
+    let count = pdf.field(&pages, b"/Count")?;
+    let mut reader = Reader::new(bytes.get(count.value)?);
+    let count = reader.integer()?;
+    reader.skip();
+    (count > 0 && reader.pos == reader.bytes.len()).then_some(count as u64)
+}
+
 fn digest(mut state: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         state ^= u64::from(byte);
@@ -435,6 +450,13 @@ mod tests {
         let start = bytes.windows(4).position(|s| s == b"xref").unwrap();
         bytes[start] = b'!';
         assert!(bind(bytes, &targets, 1, false).is_err());
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn page_count_comes_from_the_catalogs_page_tree() {
+        assert_eq!(page_count(&fixture("https://example.org")), Some(1));
+        assert_eq!(page_count(b"not a PDF /Type /Pages /Count 999"), None);
     }
 
     #[test]

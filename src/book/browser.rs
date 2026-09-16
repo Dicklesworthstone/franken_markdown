@@ -72,21 +72,17 @@ impl FmdBook {
         self.renderer.options_mut().custom_css = css;
     }
 
-    /// Choose the shared sans/serif font family and dark-mode policy.
+    /// Choose the shared font family and HTML dark-mode policy. `auto` follows
+    /// the browser's preferred color scheme; `light` or `disabled` emits only
+    /// the default light palette. EPUB uses its own or caller-supplied CSS.
     ///
     /// # Errors
     /// Invalid names leave the previous theme unchanged.
     #[wasm_bindgen(js_name = setTheme)]
     pub fn set_theme(&mut self, font: &str, dark_mode: &str) -> Result<(), JsValue> {
-        let font = FontFamily::parse(font)
-            .ok_or_else(|| JsValue::from_str("unknown font family; use sans or serif"))?;
-        let dark = match dark_mode.trim().to_ascii_lowercase().as_str() {
-            "auto" | "system" => DarkModePolicy::Auto,
-            "light" => DarkModePolicy::Light,
-            "dark" => DarkModePolicy::Dark,
-            _ => return Err(JsValue::from_str("unknown dark mode; use auto, light, or dark")),
-        };
-        let theme = self.renderer.options().theme.clone().with_font(font).with_dark_mode(dark);
+        let (font, dark) = theme_settings(font, dark_mode).map_err(JsValue::from_str)?;
+        let theme = self.renderer.options().theme.clone()
+            .with_font(font).with_dark_mode(dark);
         self.renderer.options_mut().theme = theme;
         Ok(())
     }
@@ -125,7 +121,8 @@ impl FmdBook {
         self.renderer.set_image(destination, bytes).map_err(to_js)
     }
 
-    /// Supply a validated font for one shared renderer slot.
+    /// Supply a validated font for one shared PDF/HTML renderer slot. EPUB
+    /// font styling remains controlled by its stylesheet.
     ///
     /// # Errors
     /// Unknown slots or unsupported font bytes leave the existing slot intact.
@@ -194,6 +191,16 @@ fn nonblank(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
+fn theme_settings(font: &str, dark_mode: &str) -> Result<(FontFamily, DarkModePolicy), &'static str> {
+    let font = FontFamily::parse(font).ok_or("unknown font family; use sans or serif")?;
+    let dark = match dark_mode.trim().to_ascii_lowercase().as_str() {
+        "auto" | "system" => DarkModePolicy::Auto,
+        "light" | "disabled" => DarkModePolicy::Disabled,
+        _ => return Err("unknown dark mode; use auto, light, or disabled"),
+    };
+    Ok((font, dark))
+}
+
 fn font_slot(slot: &str) -> Result<FontAssetSlot, &'static str> {
     FontAssetSlot::parse(slot).ok_or(
         "unknown font slot; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular",
@@ -241,5 +248,13 @@ mod tests {
         assert_eq!(nonblank(Some("  A title  ".into())), Some("  A title  ".into()));
         assert!(font_slot("body-regular").is_ok());
         assert!(font_slot("missing").is_err());
+    }
+
+    #[test]
+    fn theme_names_map_only_to_supported_policies() {
+        assert_eq!(theme_settings("sans", "auto").unwrap().1, DarkModePolicy::Auto);
+        assert_eq!(theme_settings("serif", "light").unwrap().1, DarkModePolicy::Disabled);
+        assert!(theme_settings("missing", "auto").is_err());
+        assert!(theme_settings("sans", "missing").is_err());
     }
 }

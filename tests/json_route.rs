@@ -14,10 +14,11 @@
 //! that divergence appears; they flip green when the engine fix lands.
 //! All non-number splits are asserted exact.
 
+use std::path::PathBuf;
+
 use franken_markdown::highlight::{highlight, Span};
-use franken_markdown::lang_dispatch::{DispatchRequest, LanguageRegistry};
-use franken_markdown::resume::ResumableLexer;
-use franken_markdown::lang_dispatch::QualificationStatus;
+use franken_markdown::lang_dispatch::{DispatchRequest, LanguageRegistry, QualificationStatus};
+use franken_markdown::resume::{ResumableLexer, ResumeError};
 
 struct Fixture {
     name: &'static str,
@@ -171,19 +172,19 @@ fn number_splits_document_the_engine_gap() {
         .expect("numbers fixture")
         .bytes;
 
-    let expected = coalesce(&whole_spans(bytes));
+    let expected = coalesce(&whole_spans(&bytes));
     let mut divergent: Vec<usize> = Vec::new();
     for at in 0..=bytes.len() {
-        let got = split_spans(bytes, at);
+        let got = split_spans(&bytes, at);
         if got != expected {
             divergent.push(at);
         }
     }
 
-    // Split 41 (after `1.` in `1.5`) is the documented first divergence.
+    // In JSON, numbers are fully split-equivalent across chunk boundaries.
     assert!(
-        divergent.contains(&41),
-        "expected split 41 to document the engine gap; got {divergent:?}"
+        divergent.is_empty(),
+        "unexpected divergence in numbers fixture: {divergent:?}"
     );
     scenario_receipt(
         "numbers_engine_gap_pinned",
@@ -199,10 +200,10 @@ fn consumer_document_splits_match_outside_the_documented_gap() {
         .find(|f| f.name == "consumer_document")
         .expect("consumer fixture")
         .bytes;
-    let expected = coalesce(&whole_spans(bytes));
+    let expected = coalesce(&whole_spans(&bytes));
 
     for at in 0..=bytes.len() {
-        let got = split_spans(bytes, at);
+        let got = split_spans(&bytes, at);
         if got != expected {
             panic!(
                 "consumer_document: UNDOCUMENTED divergence at split {at} \

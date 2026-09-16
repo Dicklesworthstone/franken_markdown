@@ -49,12 +49,16 @@ pub struct VerifyReport {
 }
 
 /// Verify a parsed document against the PDF rendering pipeline. Returns `None`
-/// when font loading fails (never panics).
+/// when font validation or loading fails. Layout, anchors and render warnings
+/// inspect the prepared PDF document, including complete numbered footnotes;
+/// authoring-time accessibility checks still inspect the original source AST.
 #[must_use]
 pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
-    let layer = verification_text_layer(doc, opts)?;
-    let audit = audit_anchors(doc);
-    let warnings = render_warnings(doc, opts);
+    opts.font_assets.validate().ok()?;
+    let prepared = crate::footnotes::for_pdf(doc);
+    let layer = verification_text_layer(&prepared, opts)?;
+    let audit = audit_anchors(&prepared);
+    let warnings = render_warnings(&prepared, opts);
 
     let mut findings = Vec::new();
     for target in &audit.unresolved {

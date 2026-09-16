@@ -39,6 +39,7 @@ pub mod book;
 pub mod caret;
 pub mod compress;
 pub mod diagrams;
+pub mod dep_invalidation;
 pub mod diff;
 pub mod doc_stats;
 pub mod error;

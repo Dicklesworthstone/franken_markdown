@@ -61,6 +61,27 @@ fn ic_len(code: &str, pos: usize) -> usize {
     code[pos..].chars().next().map_or(1, |c| c.len_utf8())
 }
 
+/// The versioned Shell capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShellCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for Shell.
+    pub incremental: bool,
+    /// Heredoc operators, parameter expansions, and variables supported.
+    pub heredocs_and_expansions: bool,
+    /// Single quotes, double quotes, and command substitutions supported.
+    pub quotes_and_substitutions: bool,
+}
+
+/// The Shell capability row published by this module.
+pub const SHELL_CAPABILITY_V1: ShellCapabilityV1 = ShellCapabilityV1 {
+    version: 1,
+    incremental: true,
+    heredocs_and_expansions: true,
+    quotes_and_substitutions: true,
+};
+
 /// Lex POSIX shell source into exact tiling spans.
 pub fn lex_shell_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();

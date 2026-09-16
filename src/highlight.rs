@@ -110,6 +110,7 @@ enum Lexer {
     CSharp,
     Java,
     Swift,
+    Shell,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -171,6 +172,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::Swift) => {
             crate::lang_swift::lex_swift_into(code, spans);
+        }
+        Some(Lexer::Shell) => {
+            crate::lang_shell::lex_shell_into(code, spans);
         }
         None => return false,
     }
@@ -1458,14 +1462,7 @@ fn lexer(lang: &str) -> Option<Lexer> {
             strings: &['"'],
             hash_directives: false,
         })),
-        "bash" | "sh" | "shell" | "zsh" | "console" => Some(Lexer::Generic(Rules {
-            keywords: SH_KW,
-            types: KwTable::EMPTY,
-            line_comments: &["#"],
-            block_comment: None,
-            strings: &['"', '\''],
-            hash_directives: false,
-        })),
+        "bash" | "sh" | "shell" | "zsh" | "console" => Some(Lexer::Shell),
         "powershell" | "pwsh" | "ps1" => Some(Lexer::Generic(Rules {
             keywords: PS_KW,
             types: KwTable::EMPTY,
@@ -1935,6 +1932,7 @@ const JS_TY: KwTable = {
     }
 };
 
+#[cfg(test)]
 const SH_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [

@@ -69,6 +69,7 @@ pub mod lex_yaml;
 pub mod math_display;
 pub mod md_gen;
 pub mod parse;
+pub mod paged_height;
 pub mod pdf;
 pub mod pdfa;
 pub mod resume;
@@ -179,6 +180,10 @@ pub use block_flow::{
     BlockFlowEngine, BlockFlowError, BlockHeightIndex, FlowBlockItem, LineBreakCache,
     ListMarker, LogicalHeight, ScrollAnchor, FIXED_POINT_SCALE, MAX_NESTING_DEPTH,
     MAX_PARAGRAPH_LINES,
+};
+pub use paged_height::{
+    DEFAULT_PAGE_CAPACITY, HeightRefinementTransaction, Page, PagedHeightDirectory,
+    PagedHeightIndex,
 };
 pub use source_map::{
     DocumentSourceMap, HeadingSourceAnchor, RenderedElement, SourceMapError, TextSelectionRange,

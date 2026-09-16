@@ -19,6 +19,11 @@ fn invalid(message: &str) -> RenderError {
     RenderError::InvalidInput(format!("book_pdf_navigation: {message}"))
 }
 
+#[cfg(feature = "cli")]
+pub(super) fn page_count(bytes: &[u8]) -> Option<u64> {
+    wire::page_count(bytes)
+}
+
 pub(super) fn render(book: &Book, document: Document, options: &PdfOptions) -> Result<Vec<u8>> {
     let plan = prepare(book, document, options)?;
     if plan.targets.is_empty() {
@@ -202,7 +207,7 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
         // Reuse the renderer-aligned ID implementation; only heading content
         // is cloned. Generated chapter/Notes headings do not consume source IDs.
         let headings = source_order.iter().map(|&ordinal| {
-            source_headings.get(ordinal).map(|block| (*block).clone())
+            source_headings.get(ordinal).map(|block| (**block).clone())
                 .ok_or_else(|| invalid("source heading ordinal is invalid"))
         }).collect::<Result<Vec<_>>>()?;
         let index_entries = build_search_index(&Document { blocks: headings });

@@ -7,6 +7,11 @@ cd "$repo_root/ios"
 build_root="${FRANKEN_APPLE_BUILD_ROOT:-${DSR_QUALITY_RUN_DIR:-$repo_root/ios/build/dsr-apple-quality}}"
 mkdir -p "$build_root"
 sbh check --need 20G "$build_root"
+xcode_product_settings=()
+if [[ -n "${FRANKEN_APPLE_PRODUCT_ROOT:-}" ]]; then
+  mkdir -p "$FRANKEN_APPLE_PRODUCT_ROOT"
+  xcode_product_settings+=("SYMROOT=$FRANKEN_APPLE_PRODUCT_ROOT")
+fi
 command -v xcodegen >/dev/null
 command -v jq >/dev/null
 xcodegen generate --spec project.yml
@@ -29,10 +34,12 @@ plutil -lint FrankenMarkdown.entitlements
 xcodebuild -project FrankenMarkdown.xcodeproj -scheme FrankenMarkdown \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath "$build_root/derived-data" \
+  "${xcode_product_settings[@]}" \
   CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project FrankenMarkdown.xcodeproj -scheme FrankenMarkdown \
   -destination 'platform=macOS,variant=Mac Catalyst' \
   -derivedDataPath "$build_root/derived-data" \
+  "${xcode_product_settings[@]}" \
   CODE_SIGNING_ALLOWED=NO test -only-testing:FrankenMarkdownTests
 
 /Users/jemanuel/.local/bin/ensure-simulator-audio-safe prepare
@@ -57,6 +64,7 @@ fi
 xcodebuild -project FrankenMarkdown.xcodeproj -scheme FrankenMarkdown \
   -destination "platform=iOS Simulator,id=$iphone_id" \
   -derivedDataPath "$build_root/derived-data" \
+  "${xcode_product_settings[@]}" \
   -resultBundlePath "$build_root/frankenmarkdown-iphone-ui.xcresult" \
   -parallel-testing-enabled NO \
   CODE_SIGNING_ALLOWED=NO test \

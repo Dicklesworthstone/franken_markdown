@@ -43,6 +43,7 @@ pub use native_route::{
     NativeShapingRoute, PlatformRunGlyph, PlatformShapedOutput, ShapingRouteCapabilities,
     ShapingRouteKind, SimulatedFallbackRule, SimulatedNativeRoute,
 };
+pub use shaping::Direction;
 pub use macos::{
     MacBridgeDriver, MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError,
     RawCoreGraphicsRaster, RawCoreTextGlyph, RawCoreTextLine, SimulatedMacBridge,

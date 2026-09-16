@@ -1,4 +1,7 @@
-//! EPUB 3 (Open Container Format) rendering for a single parsed document.
+//! EPUB 3 (Open Container Format) rendering for documents and books.
+//!
+//! [`render_epub`] exports one parsed document; [`render_book_epub`] exports
+//! the existing book model with one XHTML spine item per chapter.
 //!
 //! Produces a byte-deterministic `.epub` — a ZIP archive with the mandated
 //! OCF layout:
@@ -9,12 +12,12 @@
 //! * `OEBPS/content.opf` — the EPUB 3 package: metadata (`dc:title`,
 //!   `dc:language`, a content-derived deterministic `dc:identifier`),
 //!   manifest, and spine.
-//! * `OEBPS/nav.xhtml` — the EPUB 3 navigation document listing every heading
-//!   in document order, linked to the anchors the chapter HTML carries.
-//! * `OEBPS/chapter-1.xhtml` — the rendered document body.
-//! * `OEBPS/style.css` — a minimal deterministic stylesheet.
+//! * `OEBPS/nav.xhtml` — hierarchical navigation, linked to the anchors the
+//!   chapter HTML carries.
+//! * `OEBPS/chapter-1.xhtml` — the rendered document body (books add chapters).
+//! * `OEBPS/style.css` — a deterministic stylesheet, optionally caller-supplied.
 //! * `OEBPS/assets/*` — supported embedded images, deduplicated in first-use
-//!   order and declared in the package manifest.
+//!   order within each chapter and declared in the package manifest.
 //!
 //! The chapter body comes from the crate's own HTML renderer: the document is
 //! rendered once with the stylesheet slot blanked (EPUB carries its own
@@ -40,7 +43,16 @@ use franken_markdown::{
 
 use crate::zip::ZipWriter;
 
+// Explicit paths also support the standalone #[path] integration harness.
+#[path = "epub/book.rs"]
+mod book;
+#[path = "epub/resources.rs"]
 mod resources;
+#[cfg(test)]
+#[path = "epub/archive_tests.rs"]
+mod archive_tests;
+
+pub use book::render_book_epub;
 
 /// OCF mimetype payload — byte-exact, no trailing newline.
 const MIMETYPE: &[u8] = b"application/epub+zip";
@@ -75,6 +87,10 @@ img{max-width:100%;}\n";
 /// GIF and SVG images become deduplicated archive resources. The core never
 /// fetches missing images from the network or filesystem.
 ///
+/// `opts.custom_css` replaces the default stylesheet. A `.fmd` wrapper is
+/// retained for custom styles, and the stylesheet contributes to the book's
+/// identifier. Default styling preserves the existing document body format.
+///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] if the HTML renderer's fixed
 /// `<main class="fmd">` wrapper cannot be located, or embedded images exceed
@@ -86,6 +102,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
         .or_else(|| first_heading_text(doc))
         .unwrap_or_else(|| "Document".to_string());
     let lang = opts.lang.clone().unwrap_or_else(|| "en".to_string());
+    let css = opts.custom_css.as_deref().unwrap_or(STYLE_CSS);
 
     // Render once through the crate HTML renderer with the stylesheet slot
     // blanked (EPUB carries its own style.css, and this skips the font
@@ -104,10 +121,18 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
 
     // Hash before replacing data URLs: different image bytes must produce
     // different identifiers even when both receive the same archive path.
-    // Keeping this input also preserves identifiers for text-only documents.
-    let identifier = content_identifier(&title, &lang, &chapter_body);
+    // Keeping this input preserves identifiers under the default stylesheet.
+    let mut identifier = content_identifier(&title, &lang, &chapter_body);
+    if opts.custom_css.is_some() {
+        identifier = content_identifier(&identifier, "epub-stylesheet-v1", css);
+    }
 
-    let chapter = chapter_xhtml(&title, &lang, &prepared.body);
+    let chapter = if opts.custom_css.is_some() {
+        let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", prepared.body);
+        chapter_xhtml(&title, &lang, &wrapped)
+    } else {
+        chapter_xhtml(&title, &lang, &prepared.body)
+    };
     let nav = nav_xhtml(&title, &lang, doc);
     let opf = content_opf(&title, &lang, &identifier, &prepared);
 
@@ -118,7 +143,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     zip.add_deflated("OEBPS/content.opf", opf.as_bytes());
     zip.add_deflated("OEBPS/nav.xhtml", nav.as_bytes());
     zip.add_deflated("OEBPS/chapter-1.xhtml", chapter.as_bytes());
-    zip.add_deflated("OEBPS/style.css", STYLE_CSS.as_bytes());
+    zip.add_deflated("OEBPS/style.css", css.as_bytes());
     for resource in &prepared.resources {
         let path = format!("OEBPS/{}", resource.href);
         if resource.media_type == "image/svg+xml" {
@@ -327,18 +352,41 @@ fn nav_xhtml(title: &str, lang: &str, doc: &Document) -> String {
         escape_xml_text(title, &mut s);
         s.push_str("</a></li>\n");
     } else {
-        for heading in &headings {
-            s.push_str("<li class=\"lv");
-            s.push(char::from(b'0' + heading.level.clamp(1, 6)));
-            s.push_str("\"><a href=\"chapter-1.xhtml#");
-            escape_xml_attr(&heading.id, &mut s);
-            s.push_str("\">");
-            escape_xml_text(&heading.text, &mut s);
-            s.push_str("</a></li>\n");
-        }
+        push_nav_headings(&headings, "chapter-1.xhtml", &mut s);
     }
     s.push_str("</ol>\n</nav>\n</body>\n</html>\n");
     s
+}
+
+/// Emit a heading outline without inventing empty list items for skipped
+/// levels. Recursion follows strictly increasing clamped heading levels, so
+/// depth is at most six and each heading is visited at most six times.
+fn push_nav_headings(headings: &[NavHeading], file: &str, out: &mut String) {
+    let mut index = 0;
+    while index < headings.len() {
+        let heading = &headings[index];
+        let level = heading.level.clamp(1, 6);
+        let mut end = index + 1;
+        while end < headings.len() && headings[end].level.clamp(1, 6) > level {
+            end += 1;
+        }
+        out.push_str("<li class=\"lv");
+        out.push(char::from(b'0' + level));
+        out.push_str("\"><a href=\"");
+        escape_xml_attr(file, out);
+        out.push('#');
+        escape_xml_attr(&heading.id, out);
+        out.push_str("\">");
+        escape_xml_text(&heading.text, out);
+        out.push_str("</a>");
+        if end > index + 1 {
+            out.push_str("\n<ol>\n");
+            push_nav_headings(&headings[index + 1..end], file, out);
+            out.push_str("</ol>\n");
+        }
+        out.push_str("</li>\n");
+        index = end;
+    }
 }
 
 fn content_opf(
@@ -649,6 +697,35 @@ mod tests {
         assert!(opf.contains("href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"/>"));
         assert!(!opf.contains("image-1"));
         Ok(())
+    }
+
+    #[test]
+    fn navigation_nests_skipped_levels_without_empty_items() {
+        let doc = franken_markdown::parse_markdown("# One\n\n#### Four\n\n### Three\n\n## Two\n\n# Next\n");
+        let nav = nav_xhtml("Outline", "en", &doc);
+        assert_eq!(nav.matches("<ol>").count(), 2);
+        assert_eq!(nav.matches("<li ").count(), 5);
+        assert!(nav.contains("#one\">One</a>\n<ol>\n"));
+        assert!(nav.contains("#four\">Four</a></li>\n<li class=\"lv3\""));
+        assert!(nav.contains("</ol>\n</li>\n<li class=\"lv1\"><a href=\"chapter-1.xhtml#next\""));
+    }
+
+    #[test]
+    fn navigation_clamps_host_supplied_heading_levels() {
+        let headings: Vec<NavHeading> = [0, 255, 254]
+            .into_iter()
+            .enumerate()
+            .map(|(index, level)| NavHeading {
+                level,
+                text: format!("Heading {index}"),
+                id: format!("h{index}"),
+            })
+            .collect();
+        let mut out = String::new();
+        push_nav_headings(&headings, "chapter.xhtml", &mut out);
+        assert_eq!(out.matches("<ol>").count(), 1);
+        assert_eq!(out.matches("class=\"lv6\"").count(), 2);
+        assert_eq!(out.matches("</li>").count(), 3);
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,6 @@
-//! Long-name binary (`franken_markdown`). A one-line shim over the shared CLI
-//! entrypoint so no source is duplicated across build targets.
+//! Long-name binary (`franken_markdown`). Uses the same native book-aware
+//! dispatcher as `fmd`; non-book commands delegate to the existing CLI.
 
 fn main() -> std::process::ExitCode {
-    franken_markdown::cli::main()
+    franken_markdown::book::native::main()
 }

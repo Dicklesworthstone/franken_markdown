@@ -334,7 +334,7 @@ mod tests {
                 terms: vec![vec![reference("a")]],
                 definitions: vec![vec![Inline::Link { dest: "https://example.com".into(),
                     title: Some("Link".into()), content: vec![reference("b")] }]],
-            }),
+            }]),
             definition("a", vec![paragraph("A")]), definition("b", vec![paragraph("B")]),
         ]);
         let result = for_pdf(&doc);

@@ -26,6 +26,17 @@ pub(super) struct Chapter {
 /// Package supported base64 image URLs in first-use order. Identical URLs
 /// share one resource. Other URLs retain their existing renderer semantics.
 pub(super) fn prepare(html: &str) -> Result<Chapter, &'static str> {
+    prepare_with_prefix(html, "")
+}
+
+/// Use a renderer-generated namespace for images belonging to one chapter.
+/// Prefixes are deliberately restricted to filename characters, not paths.
+pub(super) fn prepare_with_prefix(html: &str, prefix: &str) -> Result<Chapter, &'static str> {
+    if prefix.len() > 64
+        || !prefix.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("epub: invalid generated image prefix");
+    }
     let mut chapter = Chapter {
         body: String::with_capacity(html.len()),
         resources: Vec::new(),
@@ -71,7 +82,7 @@ pub(super) fn prepare(html: &str) -> Result<Chapter, &'static str> {
                             }
                             let index = chapter.resources.len();
                             chapter.resources.push(Resource {
-                                href: format!("assets/image-{}.{}", index + 1, extension),
+                                href: format!("assets/{prefix}image-{}.{}", index + 1, extension),
                                 media_type,
                                 bytes,
                             });
@@ -320,6 +331,18 @@ mod tests {
         assert_eq!(prepare(&html)?.resources.len(), MAX_IMAGES);
         html.push_str("<img src='data:image/png;base64,AAAB'/>");
         assert!(matches!(prepare(&html), Err(message) if message.contains("4096-resource")));
+        Ok(())
+    }
+
+    #[test]
+    fn chapter_prefixes_are_distinct_and_cannot_escape_assets() -> Result<(), &'static str> {
+        let html = "<img src='data:image/png;base64,AQID'/>";
+        let first = prepare_with_prefix(html, "chapter-1-")?;
+        let second = prepare_with_prefix(html, "chapter-2-")?;
+        assert_eq!(first.resources[0].href, "assets/chapter-1-image-1.png");
+        assert_eq!(second.resources[0].href, "assets/chapter-2-image-1.png");
+        assert!(prepare_with_prefix(html, "../").is_err());
+        assert!(prepare_with_prefix(html, "bad\"").is_err());
         Ok(())
     }
 }

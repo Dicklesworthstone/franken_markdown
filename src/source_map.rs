@@ -604,9 +604,9 @@ impl SourceMapBuilder {
                 self.build_list(block_idx, list, block_span, source, &mut block_children)?;
             }
             Block::BlockQuote(blocks) => {
-                for (sub_idx, inner) in blocks.iter().enumerate() {
-                    let sub_spanned = SpannedBlock::new(inner.clone(), block_span);
-                    self.build_block(block_idx + sub_idx, &sub_spanned, source)?;
+                let mut search_cursor = block_span.start;
+                for inner in blocks {
+                    self.append_inner_block(block_idx, inner, block_span, source, &mut block_children, &mut search_cursor)?;
                 }
             }
             Block::ThematicBreak => {
@@ -669,9 +669,9 @@ impl SourceMapBuilder {
                     block_index: block_idx,
                 });
 
-                for (sub_idx, inner) in blocks.iter().enumerate() {
-                    let sub_spanned = SpannedBlock::new(inner.clone(), block_span);
-                    self.build_block(block_idx + sub_idx, &sub_spanned, source)?;
+                let mut search_cursor = block_span.start;
+                for inner in blocks {
+                    self.append_inner_block(block_idx, inner, block_span, source, &mut block_children, &mut search_cursor)?;
                 }
             }
             Block::MathBlock(math) => {
@@ -693,14 +693,15 @@ impl SourceMapBuilder {
                 self.append_rendered_str("\n\n");
             }
             Block::DefinitionList(items) => {
+                let mut search_cursor = block_span.start;
                 for item in items {
                     for term in &item.terms {
-                        self.append_inlines(block_idx, term, block_span, source, &mut block_children)?;
+                        self.append_inlines_at(block_idx, term, block_span, source, &mut block_children, &mut search_cursor)?;
                         self.append_rendered_str("\n");
                     }
                     for def in &item.definitions {
                         self.append_rendered_str("  : ");
-                        self.append_inlines(block_idx, def, block_span, source, &mut block_children)?;
+                        self.append_inlines_at(block_idx, def, block_span, source, &mut block_children, &mut search_cursor)?;
                         self.append_rendered_str("\n");
                     }
                 }
@@ -724,6 +725,177 @@ impl SourceMapBuilder {
         Ok(())
     }
 
+    fn append_inner_block(
+        &mut self,
+        block_idx: usize,
+        inner: &Block,
+        block_span: SourceSpan,
+        source: &str,
+        block_children: &mut Vec<NestedProvenanceNode>,
+        search_cursor: &mut usize,
+    ) -> Result<(), SourceMapError> {
+        match inner {
+            Block::Paragraph(inlines) => {
+                self.append_inlines_at(block_idx, inlines, block_span, source, block_children, search_cursor)?;
+                self.append_rendered_str("\n\n");
+            }
+            Block::Heading { inlines, .. } => {
+                self.append_inlines_at(block_idx, inlines, block_span, source, block_children, search_cursor)?;
+                self.append_rendered_str("\n\n");
+            }
+            Block::CodeBlock { code, .. } => {
+                let code_span = Self::find_in_source(source, *search_cursor, block_span.end, code)
+                    .unwrap_or_else(|| {
+                        let start = *search_cursor;
+                        let end = start.saturating_add(code.len()).min(block_span.end).max(start);
+                        SourceSpan::new(start, end)
+                    });
+                *search_cursor = code_span.end;
+
+                let start_rendered = self.rendered_text.len();
+                self.append_rendered_str(code);
+                let end_rendered = self.rendered_text.len();
+
+                let elem_id = self.next_id();
+                let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, code_span)?;
+                let elem = RenderedElement {
+                    id: elem_id,
+                    rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
+                    source_ranges: ranges.clone(),
+                    relation: ProvenanceRelation::Literal,
+                    rendered_text: code.clone(),
+                    is_generated: false,
+                    block_index: block_idx,
+                };
+                self.elements.push(elem);
+
+                let node = NestedProvenanceNode::leaf(
+                    elem_id,
+                    ProvenanceKind::Inline,
+                    ProvenanceRelation::Literal,
+                    ranges,
+                )?;
+                block_children.push(node);
+                self.append_rendered_str("\n\n");
+            }
+            Block::List(list) => {
+                self.build_list_at(block_idx, list, block_span, source, block_children, search_cursor)?;
+            }
+            Block::BlockQuote(blocks) => {
+                for nested in blocks {
+                    self.append_inner_block(block_idx, nested, block_span, source, block_children, search_cursor)?;
+                }
+            }
+            Block::ThematicBreak => {
+                let start_rendered = self.rendered_text.len();
+                self.append_rendered_str("---\n\n");
+                let end_rendered = self.rendered_text.len().saturating_sub(2);
+                let tb_span = SourceSpan::new(*search_cursor, (*search_cursor).saturating_add(3).min(block_span.end));
+                *search_cursor = tb_span.end;
+
+                let elem_id = self.next_id();
+                let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, tb_span)?;
+                let elem = RenderedElement {
+                    id: elem_id,
+                    rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
+                    source_ranges: ranges.clone(),
+                    relation: ProvenanceRelation::Literal,
+                    rendered_text: "---".to_string(),
+                    is_generated: false,
+                    block_index: block_idx,
+                };
+                self.elements.push(elem);
+                let node = NestedProvenanceNode::leaf(
+                    elem_id,
+                    ProvenanceKind::Inline,
+                    ProvenanceRelation::Literal,
+                    ranges,
+                )?;
+                block_children.push(node);
+            }
+            Block::Table(table) => {
+                self.build_table_at(block_idx, table, block_span, source, block_children, search_cursor)?;
+            }
+            Block::HtmlBlock(html) => {
+                let start_rendered = self.rendered_text.len();
+                self.append_rendered_str(html);
+                let end_rendered = self.rendered_text.len();
+                let html_span = SourceSpan::new(*search_cursor, (*search_cursor).saturating_add(html.len()).min(block_span.end));
+                *search_cursor = html_span.end;
+
+                let elem_id = self.next_id();
+                let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, html_span)?;
+                self.elements.push(RenderedElement {
+                    id: elem_id,
+                    rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
+                    source_ranges: ranges.clone(),
+                    relation: ProvenanceRelation::Literal,
+                    rendered_text: html.clone(),
+                    is_generated: false,
+                    block_index: block_idx,
+                });
+                let node = NestedProvenanceNode::leaf(
+                    elem_id,
+                    ProvenanceKind::Inline,
+                    ProvenanceRelation::Literal,
+                    ranges,
+                )?;
+                block_children.push(node);
+                self.append_rendered_str("\n\n");
+            }
+            Block::FootnoteDefinition { blocks, .. } => {
+                for nested in blocks {
+                    self.append_inner_block(block_idx, nested, block_span, source, block_children, search_cursor)?;
+                }
+            }
+            Block::MathBlock(math) => {
+                let start_rendered = self.rendered_text.len();
+                self.append_rendered_str(math);
+                let end_rendered = self.rendered_text.len();
+                let math_span = SourceSpan::new(*search_cursor, (*search_cursor).saturating_add(math.len()).min(block_span.end));
+                *search_cursor = math_span.end;
+
+                let elem_id = self.next_id();
+                let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, math_span)?;
+                self.elements.push(RenderedElement {
+                    id: elem_id,
+                    rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
+                    source_ranges: ranges.clone(),
+                    relation: ProvenanceRelation::Literal,
+                    rendered_text: math.clone(),
+                    is_generated: false,
+                    block_index: block_idx,
+                });
+                let node = NestedProvenanceNode::leaf(
+                    elem_id,
+                    ProvenanceKind::Inline,
+                    ProvenanceRelation::Literal,
+                    ranges,
+                )?;
+                block_children.push(node);
+                self.append_rendered_str("\n\n");
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for term in &item.terms {
+                        self.append_inlines_at(block_idx, term, block_span, source, block_children, search_cursor)?;
+                        self.append_rendered_str("\n");
+                    }
+                    for def in &item.definitions {
+                        self.append_rendered_str("  : ");
+                        self.append_inlines_at(block_idx, def, block_span, source, block_children, search_cursor)?;
+                        self.append_rendered_str("\n");
+                    }
+                }
+                self.append_rendered_str("\n");
+            }
+            Block::PageBreak => {
+                self.append_rendered_str("\n--- PAGE BREAK ---\n\n");
+            }
+        }
+        Ok(())
+    }
+
     fn build_list(
         &mut self,
         block_idx: usize,
@@ -733,6 +905,18 @@ impl SourceMapBuilder {
         block_children: &mut Vec<NestedProvenanceNode>,
     ) -> Result<(), SourceMapError> {
         let mut search_cursor = block_span.start;
+        self.build_list_at(block_idx, list, block_span, source, block_children, &mut search_cursor)
+    }
+
+    fn build_list_at(
+        &mut self,
+        block_idx: usize,
+        list: &List,
+        block_span: SourceSpan,
+        source: &str,
+        block_children: &mut Vec<NestedProvenanceNode>,
+        search_cursor: &mut usize,
+    ) -> Result<(), SourceMapError> {
         for (i, item) in list.items.iter().enumerate() {
             let marker = if list.ordered {
                 format!("{}. ", list.start.saturating_add(i as u64))
@@ -751,23 +935,23 @@ impl SourceMapBuilder {
             let end_rendered = self.rendered_text.len();
 
             let marker_pat = marker.trim();
-            let marker_span = if search_cursor < block_span.end {
-                let slice = source.get(search_cursor..block_span.end).unwrap_or("");
+            let marker_span = if *search_cursor < block_span.end {
+                let slice = source.get(*search_cursor..block_span.end).unwrap_or("");
                 if let Some(pos) = slice.find(marker_pat) {
-                    let m_start = search_cursor + pos;
+                    let m_start = *search_cursor + pos;
                     let m_end = (m_start + marker.len()).min(block_span.end);
-                    search_cursor = m_end;
+                    *search_cursor = m_end;
                     SourceSpan::new(m_start, m_end)
                 } else {
-                    let m_start = search_cursor;
+                    let m_start = *search_cursor;
                     let m_end = (m_start + 1).min(block_span.end);
-                    search_cursor = m_end;
+                    *search_cursor = m_end;
                     SourceSpan::new(m_start, m_end)
                 }
             } else {
                 SourceSpan::new(
-                    search_cursor.min(block_span.end),
-                    search_cursor.min(block_span.end),
+                    (*search_cursor).min(block_span.end),
+                    (*search_cursor).min(block_span.end),
                 )
             };
 
@@ -805,11 +989,20 @@ impl SourceMapBuilder {
                             block_span,
                             source,
                             block_children,
-                            &mut search_cursor,
+                            search_cursor,
                         )?;
                         self.append_rendered_str("\n");
                     }
-                    _ => {}
+                    _ => {
+                        self.append_inner_block(
+                            block_idx,
+                            sub_block,
+                            block_span,
+                            source,
+                            block_children,
+                            search_cursor,
+                        )?;
+                    }
                 }
             }
         }
@@ -824,12 +1017,25 @@ impl SourceMapBuilder {
         source: &str,
         block_children: &mut Vec<NestedProvenanceNode>,
     ) -> Result<(), SourceMapError> {
+        let mut search_cursor = block_span.start;
+        self.build_table_at(block_idx, table, block_span, source, block_children, &mut search_cursor)
+    }
+
+    fn build_table_at(
+        &mut self,
+        block_idx: usize,
+        table: &Table,
+        block_span: SourceSpan,
+        source: &str,
+        block_children: &mut Vec<NestedProvenanceNode>,
+        search_cursor: &mut usize,
+    ) -> Result<(), SourceMapError> {
         // Header
         for (col_idx, cell) in table.head.iter().enumerate() {
             if col_idx > 0 {
                 self.append_rendered_str(" | ");
             }
-            self.append_inlines(block_idx, cell, block_span, source, block_children)?;
+            self.append_inlines_at(block_idx, cell, block_span, source, block_children, search_cursor)?;
         }
         self.append_rendered_str("\n");
 
@@ -848,7 +1054,7 @@ impl SourceMapBuilder {
                 if col_idx > 0 {
                     self.append_rendered_str(" | ");
                 }
-                self.append_inlines(block_idx, cell, block_span, source, block_children)?;
+                self.append_inlines_at(block_idx, cell, block_span, source, block_children, search_cursor)?;
             }
             self.append_rendered_str("\n");
         }
@@ -888,7 +1094,11 @@ impl SourceMapBuilder {
             match inline {
                 Inline::Text(text) => {
                     let text_span = Self::find_in_source(source, *search_cursor, block_span.end, text)
-                        .unwrap_or(block_span);
+                        .unwrap_or_else(|| {
+                            let start = *search_cursor;
+                            let end = start.saturating_add(text.len()).min(block_span.end).max(start);
+                            SourceSpan::new(start, end)
+                        });
                     *search_cursor = text_span.end;
 
                     let start_rendered = self.rendered_text.len();
@@ -926,7 +1136,11 @@ impl SourceMapBuilder {
                 }
                 Inline::Code(code) => {
                     let code_span = Self::find_in_source(source, *search_cursor, block_span.end, code)
-                        .unwrap_or(block_span);
+                        .unwrap_or_else(|| {
+                            let start = *search_cursor;
+                            let end = start.saturating_add(code.len()).min(block_span.end).max(start);
+                            SourceSpan::new(start, end)
+                        });
                     *search_cursor = code_span.end;
 
                     let start_rendered = self.rendered_text.len();
@@ -960,6 +1174,33 @@ impl SourceMapBuilder {
                 Inline::Link { content, dest, title } => {
                     self.append_inlines_at(block_idx, content, block_span, source, block_children, search_cursor)?;
                     let _ = (dest, title);
+                    if *search_cursor < block_span.end {
+                        if let Some(rest) = source.get(*search_cursor..block_span.end) {
+                            if let Some(bracket_pos) = rest.find(']') {
+                                let after_bracket = *search_cursor + bracket_pos + 1;
+                                if after_bracket < block_span.end {
+                                    let next_byte = source.as_bytes()[after_bracket];
+                                    if next_byte == b'(' {
+                                        if let Some(close_paren) = source[after_bracket..block_span.end].find(')') {
+                                            *search_cursor = after_bracket + close_paren + 1;
+                                        } else {
+                                            *search_cursor = after_bracket;
+                                        }
+                                    } else if next_byte == b'[' {
+                                        if let Some(close_bracket) = source[after_bracket..block_span.end].find(']') {
+                                            *search_cursor = after_bracket + close_bracket + 1;
+                                        } else {
+                                            *search_cursor = after_bracket;
+                                        }
+                                    } else {
+                                        *search_cursor = after_bracket;
+                                    }
+                                } else {
+                                    *search_cursor = after_bracket;
+                                }
+                            }
+                        }
+                    }
                 }
                 Inline::Image { alt, .. } => {
                     let start_rendered = self.rendered_text.len();
@@ -967,7 +1208,11 @@ impl SourceMapBuilder {
                     let end_rendered = self.rendered_text.len();
 
                     let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, block_span)?;
+                    let start = *search_cursor;
+                    let end = start.saturating_add(alt.len()).min(block_span.end).max(start);
+                    let img_span = SourceSpan::new(start, end);
+                    *search_cursor = end;
+                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, img_span)?;
                     self.elements.push(RenderedElement {
                         id: elem_id,
                         rendered_range: TextSelectionRange::new(start_rendered, end_rendered),

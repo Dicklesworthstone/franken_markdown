@@ -13,6 +13,8 @@
 //!   in document order, linked to the anchors the chapter HTML carries.
 //! * `OEBPS/chapter-1.xhtml` — the rendered document body.
 //! * `OEBPS/style.css` — a minimal deterministic stylesheet.
+//! * `OEBPS/assets/*` — supported embedded images, deduplicated in first-use
+//!   order and declared in the package manifest.
 //!
 //! The chapter body comes from the crate's own HTML renderer: the document is
 //! rendered once with the stylesheet slot blanked (EPUB carries its own
@@ -23,7 +25,7 @@
 //! pass-through is disabled for the EPUB render so user markup cannot break
 //! XHTML well-formedness. MathML emitted by the crate's math engine is already
 //! namespace-qualified and free of self-closing tags, so it passes through
-//! unchanged.
+//! unchanged. The manifest declares embedded MathML and SVG content.
 //!
 //! Determinism: no clocks, no environment reads, no hash-iteration leaks. The
 //! one timestamp-shaped field the EPUB 3 schema mandates
@@ -37,6 +39,8 @@ use franken_markdown::{
 };
 
 use crate::zip::ZipWriter;
+
+mod resources;
 
 /// OCF mimetype payload — byte-exact, no trailing newline.
 const MIMETYPE: &[u8] = b"application/epub+zip";
@@ -67,12 +71,14 @@ img{max-width:100%;}\n";
 ///
 /// The archive is byte-deterministic for a given `(doc, opts)` pair: ZIP
 /// entries are emitted in a fixed order with zeroed timestamps, and all
-/// metadata derives from the content itself.
+/// metadata derives from the content itself. Supported base64 PNG, JPEG,
+/// GIF and SVG images become deduplicated archive resources. The core never
+/// fetches missing images from the network or filesystem.
 ///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] if the HTML renderer's fixed
-/// `<main class="fmd">` wrapper cannot be located — a renderer-contract
-/// violation, never caused by user input.
+/// `<main class="fmd">` wrapper cannot be located, or embedded images exceed
+/// the 32 MiB per-image, 128 MiB aggregate, or 4096-resource limits.
 pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let title = opts
         .title
@@ -93,12 +99,17 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
         RenderError::InvalidInput("epub: HTML renderer <main> wrapper not found".to_string())
     })?;
     let chapter_body = html_fragment_to_xhtml(body);
+    let prepared = resources::prepare(&chapter_body)
+        .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
 
+    // Hash before replacing data URLs: different image bytes must produce
+    // different identifiers even when both receive the same archive path.
+    // Keeping this input also preserves identifiers for text-only documents.
     let identifier = content_identifier(&title, &lang, &chapter_body);
 
-    let chapter = chapter_xhtml(&title, &lang, &chapter_body);
+    let chapter = chapter_xhtml(&title, &lang, &prepared.body);
     let nav = nav_xhtml(&title, &lang, doc);
-    let opf = content_opf(&title, &lang, &identifier);
+    let opf = content_opf(&title, &lang, &identifier, &prepared);
 
     let mut zip = ZipWriter::new();
     // OCF invariant: the mimetype entry is first and stored, byte-exact.
@@ -108,6 +119,15 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     zip.add_deflated("OEBPS/nav.xhtml", nav.as_bytes());
     zip.add_deflated("OEBPS/chapter-1.xhtml", chapter.as_bytes());
     zip.add_deflated("OEBPS/style.css", STYLE_CSS.as_bytes());
+    for resource in &prepared.resources {
+        let path = format!("OEBPS/{}", resource.href);
+        if resource.media_type == "image/svg+xml" {
+            zip.add_deflated(&path, &resource.bytes);
+        } else {
+            // PNG, JPEG and GIF payloads are already compressed.
+            zip.add_stored(&path, &resource.bytes);
+        }
+    }
     Ok(zip.finish())
 }
 
@@ -321,7 +341,12 @@ fn nav_xhtml(title: &str, lang: &str, doc: &Document) -> String {
     s
 }
 
-fn content_opf(title: &str, lang: &str, identifier: &str) -> String {
+fn content_opf(
+    title: &str,
+    lang: &str,
+    identifier: &str,
+    chapter: &resources::Chapter,
+) -> String {
     let mut s = String::with_capacity(1024);
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n");
@@ -336,10 +361,31 @@ fn content_opf(title: &str, lang: &str, identifier: &str) -> String {
     s.push_str(DCTERMS_MODIFIED);
     s.push_str("</meta>\n</metadata>\n<manifest>\n");
     s.push_str("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
-    s.push_str(
-        "<item id=\"chapter-1\" href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"/>\n",
-    );
+    s.push_str("<item id=\"chapter-1\" href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"");
+    if chapter.mathml || chapter.svg {
+        s.push_str(" properties=\"");
+        if chapter.mathml {
+            s.push_str("mathml");
+        }
+        if chapter.svg {
+            if chapter.mathml {
+                s.push(' ');
+            }
+            s.push_str("svg");
+        }
+        s.push('"');
+    }
+    s.push_str("/>\n");
     s.push_str("<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n");
+    for (index, resource) in chapter.resources.iter().enumerate() {
+        s.push_str("<item id=\"image-");
+        s.push_str(&(index + 1).to_string());
+        s.push_str("\" href=\"");
+        escape_xml_attr(&resource.href, &mut s);
+        s.push_str("\" media-type=\"");
+        s.push_str(resource.media_type);
+        s.push_str("\"/>\n");
+    }
     s.push_str("</manifest>\n<spine>\n<itemref idref=\"chapter-1\"/>\n</spine>\n</package>\n");
     s
 }
@@ -586,6 +632,23 @@ mod tests {
         let full = "<html><head></head><body>\n<main class=\"fmd\">\n<p>Content</p>\n</main>\n</body></html>";
         assert_eq!(extract_main_body(full), Some("<p>Content</p>\n"));
         assert_eq!(extract_main_body("invalid"), None);
+    }
+
+    #[test]
+    fn manifest_declares_packaged_images_and_content_properties()
+    -> std::result::Result<(), &'static str> {
+        let chapter = resources::prepare(
+            "<math><mi>x</mi></math><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"/>",
+        )?;
+        let opf = content_opf("Images & math", "en", "urn:test", &chapter);
+        assert!(opf.contains("properties=\"mathml svg\""));
+        assert!(opf.contains("id=\"image-1\" href=\"assets/image-1.svg\" media-type=\"image/svg+xml\""));
+        assert!(opf.contains("Images &amp; math"));
+        let plain = resources::prepare("<p>Text</p>")?;
+        let opf = content_opf("Text", "en", "urn:test", &plain);
+        assert!(opf.contains("href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"/>"));
+        assert!(!opf.contains("image-1"));
+        Ok(())
     }
 
     // -----------------------------------------------------------------------

@@ -11,6 +11,16 @@ command -v xcodegen >/dev/null
 command -v jq >/dev/null
 xcodegen generate --spec project.yml
 git diff --exit-code -- FrankenMarkdown.xcodeproj Sources/Info.plist
+display_name="$(plutil -extract CFBundleDisplayName raw Sources/Info.plist)"
+if [[ "$display_name" != "FrankenMarkdown" ]]; then
+  echo "FrankenMarkdown identity drift: expected CFBundleDisplayName=FrankenMarkdown, got '$display_name'" >&2
+  exit 1
+fi
+bundle_version="$(plutil -extract CFBundleVersion raw Sources/Info.plist)"
+if [[ "$bundle_version" != '$(CURRENT_PROJECT_VERSION)' ]]; then
+  echo "FrankenMarkdown build-number drift: CFBundleVersion must derive from CURRENT_PROJECT_VERSION, got '$bundle_version'" >&2
+  exit 1
+fi
 git ls-files -z -- '*.swift' | xargs -0 xcrun swiftc -parse
 plutil -lint Sources/Info.plist
 plutil -lint Sources/PrivacyInfo.xcprivacy

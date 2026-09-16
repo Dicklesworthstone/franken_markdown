@@ -10,6 +10,9 @@ use crate::ast::{Block, Document, Inline};
 use crate::parse::{self, Frontmatter};
 use crate::{RenderError, Result};
 
+#[path = "book/merge.rs"]
+mod merge;
+
 /// One input document: the book-relative path and its Markdown source.
 #[derive(Debug, Clone)]
 pub struct BookInput {
@@ -284,16 +287,14 @@ fn rewrite_inline_links(
 /// order with a [`Block::PageBreak`] between them (the layout flag forces a
 /// page boundary; the landed outline/contents machinery yields the global
 /// TOC and continuous page numbers).
+///
+/// Multi-chapter books isolate footnote definitions and references in
+/// chapter-local namespaces. Reusing `[^1]` in another source file therefore
+/// cannot replace a citation from the first chapter. A one-chapter book keeps
+/// its original IDs, and the source documents are never mutated.
 #[must_use]
 pub fn book_pdf_document(book: &Book) -> Document {
-    let mut blocks = Vec::new();
-    for (idx, chapter) in book.chapters.iter().enumerate() {
-        if idx > 0 {
-            blocks.push(Block::PageBreak);
-        }
-        blocks.extend(chapter.doc.blocks.iter().cloned());
-    }
-    Document { blocks }
+    merge::assemble(book)
 }
 
 /// Inject the shared sidebar into a rendered chapter page. Deterministic

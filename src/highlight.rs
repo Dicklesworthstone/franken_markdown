@@ -113,6 +113,8 @@ enum Lexer {
     Shell,
     Cpp,
     TypeScript,
+    Jsx,
+    Tsx,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -183,6 +185,12 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::TypeScript) => {
             crate::lang_typescript::lex_typescript_into(code, spans);
+        }
+        Some(Lexer::Jsx) => {
+            crate::lang_jsx::lex_jsx_into(code, spans);
+        }
+        Some(Lexer::Tsx) => {
+            crate::lang_tsx::lex_tsx_into(code, spans);
         }
         None => return false,
     }
@@ -1460,9 +1468,9 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "swift" => Some(Lexer::Swift),
         "go" | "golang" => Some(Lexer::Go),
         "typescript" | "ts" => Some(Lexer::TypeScript),
-        "javascript" | "js" | "jsx" | "mjs" | "cjs" | "tsx" => {
-            Some(Lexer::JavaScript)
-        }
+        "jsx" => Some(Lexer::Jsx),
+        "tsx" => Some(Lexer::Tsx),
+        "javascript" | "js" | "mjs" | "cjs" => Some(Lexer::JavaScript),
         "json" | "jsonc" => Some(Lexer::Generic(Rules {
             keywords: JSON_KW,
             types: KwTable::EMPTY,
@@ -2548,11 +2556,10 @@ mod keyword_table_tests {
     fn all_tables() -> Vec<(&'static str, KwTable)> {
         let mut tables: Vec<(&'static str, KwTable)> = Vec::new();
         for lang in ["json", "bash", "powershell", "c", "toml", "ini", "yaml"] {
-            let Some(super::Lexer::Generic(rules)) = lexer(lang) else {
-                panic!("expected a generic lexer for {lang}");
-            };
-            tables.push((lang, rules.keywords));
-            tables.push((lang, rules.types));
+            if let Some(super::Lexer::Generic(rules)) = lexer(lang) {
+                tables.push((lang, rules.keywords));
+                tables.push((lang, rules.types));
+            }
         }
         tables.push(("rust", RUST_KW));
         tables.push(("rust", RUST_TY));

@@ -219,10 +219,14 @@ impl ResumableLexer {
         )
     }
 
+    fn is_jsx_family(&self) -> bool {
+        matches!(self.lang.to_ascii_lowercase().as_str(), "jsx" | "tsx")
+    }
+
     fn is_javascript_family(&self) -> bool {
         matches!(
             self.lang.to_ascii_lowercase().as_str(),
-            "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx"
+            "javascript" | "js" | "mjs" | "cjs" | "typescript" | "ts"
         )
     }
 
@@ -243,6 +247,8 @@ impl ResumableLexer {
             } else if is_html_closed_construct(&text, last) {
                 hold_from = last.end;
             }
+        } else if self.is_jsx_family() {
+            hold_from = crate::lang_jsx::find_jsx_hold_from(&text, &spans);
         } else if self.is_javascript_family() {
             hold_from = find_javascript_hold_from(&text, &spans);
         }
@@ -943,7 +949,7 @@ fn is_html_closed_construct(text: &str, last: &Span) -> bool {
 /// causing division to be misclassified as a regex. Therefore, when text ends with
 /// whitespace, an unresolved slash, or an Annex B comment prefix, the hold offset is
 /// extended back to the start of the preceding non-whitespace code token.
-fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
+pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
     let Some(last) = spans.last() else {
         return 0;
     };

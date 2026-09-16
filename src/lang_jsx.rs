@@ -1,530 +1,749 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::if_same_then_else)]
 
 //! JSX incremental lexer (FCB-022 · fcb-9vx.8).
 //!
-//! Classifies JSX source into byte-exact [`Span`]s that tile the input
-//! exactly. JSX extends JavaScript with XML-like markup: the lexer composes
-//! the JavaScript lexer (no duplicate engine) for expression regions and
-//! adds JSX-specific scanning for markup regions.
+//! Reuses the qualified upstream JavaScript lexical transitions per the
+//! language composition contract. Classifies JSX source into byte-exact
+//! [`Span`]s that tile the input exactly. Handles, under declared capability:
 //!
-//! Handles, under a declared capability:
-//!
-//! - **Mode transitions**: `<` followed by an identifier or `>` in
-//!   expression position switches to JSX markup; `{` in markup switches
-//!   back to JS expression; `}` returns to markup.
-//! - **JSX elements**: opening tags, closing tags, self-closing tags,
-//!   fragments (`<>...</>`).
-//! - **Attributes**: name/value pairs with string or expression values.
-//! - **Text content**: Plain spans; `{` starts an expression container.
-//! - **Truncated tags/text**: span to EOF under the declared capability.
-//! - **Malformed nesting**: the tiling invariant still holds; the lexer
-//!   does not enforce tree structure (that is the parser's job).
+//! - **Markup transitions**: `<tag>` and `<>` element openings from expression contexts.
+//! - **Tags & components**: HTML tags (`<div>`) and capitalized components (`<Component>`).
+//! - **Attributes & quotes**: `attr="value"`, `attr='value'`, with braces inside quotes kept literal.
+//! - **Expression containers**: `{ expr }` re-entering full JavaScript lexing.
+//! - **Fragments**: `<> ... </>` fragment shorthand.
+//! - **Entities**: character entities (`&amp;`, `&lt;`, `&copy;`, `&#169;`) inside children.
+//! - **Generics/comparisons vs tags**: `<` after values remains comparison operator.
+//! - **Malformed nesting**: unterminated tags/expressions safely tile to EOF with no panic.
 
-use crate::highlight::{Span, Tok};
-use crate::lang_javascript::lex_javascript_into;
+use crate::highlight::{Span, Tok, is_capitalized_not_all_caps};
+use crate::lang_javascript::{Prev, scan_javascript_token_at};
 
-/// JSX reserved element names that are always treated as HTML-like.
-const HTML_ELEMENTS: &[&str] = &[
-    "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo",
-    "blockquote", "body", "br", "button", "canvas", "caption", "code", "col", "colgroup",
-    "data", "datalist", "dd", "del", "details", "dfn", "dialog", "div", "dl", "dt", "em",
-    "embed", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
-    "h5", "h6", "head", "header", "hgroup", "hr", "html", "i", "iframe", "img", "input",
-    "ins", "kbd", "label", "legend", "li", "link", "main", "mark", "menu", "meta", "meter",
-    "nav", "noscript", "object", "ol", "optgroup", "option", "output", "p", "param",
-    "picture", "pre", "progress", "q", "rp", "rt", "ruby", "s", "samp", "section",
-    "select", "slot", "small", "source", "span", "strong", "style", "sub", "summary",
-    "sup", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time",
-    "title", "tr", "track", "u", "ul", "var", "video", "wbr",
-];
-
-fn is_jsx_name_start(c: char) -> bool {
-    c.is_alphabetic() || c == '_' || c == '$'
+/// The versioned JSX capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JsxCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for JSX.
+    pub incremental: bool,
+    /// Tag and attribute markup transitions supported.
+    pub tag_and_attribute_transitions: bool,
+    /// Embedded JavaScript expression containers (`{ ... }`) supported.
+    pub embedded_expressions: bool,
+    /// Fragment shorthand (`<> ... </>`) supported.
+    pub fragments: bool,
+    /// Character entities inside children supported.
+    pub entities: bool,
 }
 
-fn is_jsx_name_continue(c: char) -> bool {
-    is_jsx_name_start(c) || c.is_numeric() || c == '-' || c == '.'
+/// The JSX capability row published by this module.
+pub const JSX_CAPABILITY_V1: JsxCapabilityV1 = JsxCapabilityV1 {
+    version: 1,
+    incremental: true,
+    tag_and_attribute_transitions: true,
+    embedded_expressions: true,
+    fragments: true,
+    entities: true,
+};
+
+/// Contexts in the JSX hierarchical lexer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JsxContext {
+    /// Inside a tag: `<tag attr="val" ... >`
+    Tag { start: usize, has_tag_name: bool },
+    /// Inside JSX children content (between open and close tags)
+    Children { start: usize },
+    /// Inside an embedded JavaScript expression `{ expr }`
+    Expr { start: usize, braces: usize },
 }
 
-fn is_html_element(name: &str) -> bool {
-    HTML_ELEMENTS.contains(&name)
+impl JsxContext {
+    fn jsx_start(&self) -> Option<usize> {
+        match *self {
+            JsxContext::Tag { start, .. } | JsxContext::Children { start } => Some(start),
+            JsxContext::Expr { .. } => None,
+        }
+    }
+}
+
+fn push_tiling(
+    spans: &mut Vec<Span>,
+    last_end: &mut usize,
+    kind: Tok,
+    start: usize,
+    end: usize,
+) {
+    if *last_end < start {
+        spans.push(Span {
+            kind: Tok::Plain,
+            start: *last_end,
+            end: start,
+        });
+    }
+    spans.push(Span { kind, start, end });
+    *last_end = end;
+}
+
+/// Returns true if `<` at `pos` opens a JSX tag or fragment rather than a comparison.
+fn is_jsx_start(code: &str, pos: usize, prev: Prev) -> bool {
+    // Only in expression contexts: not after values
+    if matches!(prev, Prev::Value | Prev::ValueKeyword) {
+        return false;
+    }
+    let rest = &code[pos..];
+    if !rest.starts_with('<') {
+        return false;
+    }
+    let after_lt = &code[pos + 1..];
+    // Fragment opening: `<>`
+    if after_lt.starts_with('>') {
+        return true;
+    }
+    // Tag name start: ASCII alphabetic or '_'
+    let first = match after_lt.chars().next() {
+        Some(c) => c,
+        None => return false,
+    };
+    first.is_ascii_alphabetic() || first == '_'
 }
 
 /// Lex JSX source into exact tiling spans.
-///
-/// The lexer scans the input linearly, classifying each region as either
-/// JavaScript (delegated to [`lex_javascript_into`]) or JSX markup
-/// (handled by the JSX-specific scanner). The mode transitions are:
-///
-/// - `<` followed by an identifier or `>` in JS expression position →
-///   JSX markup (element open, close, or fragment).
-/// - `{` in JSX markup → JS expression container (recursive).
-/// - `}` at JSX expression depth zero → back to markup.
-/// - `/>` or `</name>` in markup → element boundary.
 pub fn lex_jsx_into(code: &str, spans: &mut Vec<Span>) {
+    lex_jsx_composed_into(code, spans, &[], &[]);
+}
+
+/// Lex JSX source with composed extra keywords and types (for TSX composition).
+/// Returns the byte offset of the outermost unclosed JSX construct, if any.
+pub fn lex_jsx_composed_into(
+    code: &str,
+    spans: &mut Vec<Span>,
+    extra_keywords: &[&str],
+    extra_types: &[&str],
+) -> Option<usize> {
     let bytes_len = code.len();
     let mut pos = 0usize;
     let mut last_end = 0usize;
+    let mut prev = Prev::Start;
 
-    fn push_tiling(
-        spans: &mut Vec<Span>,
-        last_end: &mut usize,
-        kind: Tok,
-        start: usize,
-        end: usize,
-    ) {
-        if *last_end < start {
-            spans.push(Span {
-                kind: Tok::Plain,
-                start: *last_end,
-                end: start,
-            });
-        }
-        spans.push(Span {
-            kind,
-            start,
-            end,
-        });
-        *last_end = end;
-    }
+    // Stack of JSX element contexts: Tag, Children, Expr
+    let mut mode_stack: Vec<JsxContext> = Vec::new();
 
-    // Scan a JSX tag: `<name`, `</name`, or `<>`. Returns the end position
-    // of the tag name portion (attributes/text are scanned by the caller).
-    fn scan_tag_name(code: &str, start: usize) -> (usize, bool) {
-        let bytes = code.as_bytes();
-        let mut scan = start + 1; // skip `<`
-        let closing = scan < bytes.len() && bytes[scan] == b'/';
-        if closing {
-            scan += 1;
-        }
-        while scan < bytes.len() {
-            let c = code[scan..].chars().next().unwrap();
-            if is_jsx_name_start(c) || is_jsx_name_continue(c) {
-                scan += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        (scan, closing)
-    }
+    // State for composed JavaScript template interpolations
+    let mut js_interp_stack: Vec<usize> = Vec::new();
+    let mut js_brace_depth: usize = 0;
 
     while pos < bytes_len {
-        let rest = &code[pos..];
-        let ch = match rest.chars().next() {
-            Some(c) => c,
-            None => break,
-        };
-        let clen = ch.len_utf8();
+        // 1. Inside embedded JS expression `{ expr }`
+        if let Some(JsxContext::Expr { braces, .. }) = mode_stack.last_mut() {
+            let rest = &code[pos..];
+            let ch = rest.chars().next().unwrap();
 
-        // Whitespace.
-        if ch.is_whitespace() {
-            let start = pos;
-            pos += clen;
-            while pos < bytes_len {
-                let c = code[pos..].chars().next().unwrap();
-                if c.is_whitespace() {
-                    pos += c.len_utf8();
+            if ch == '{' {
+                *braces += 1;
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Punct, start, pos);
+                prev = Prev::Operator;
+                continue;
+            }
+
+            if ch == '}' {
+                if *braces == 0 {
+                    mode_stack.pop();
+                    let start = pos;
+                    pos += 1;
+                    push_tiling(spans, &mut last_end, Tok::Punct, start, pos);
+                    prev = Prev::Value;
+                    continue;
+                }
+                *braces -= 1;
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Punct, start, pos);
+                prev = Prev::CloseBrace;
+                continue;
+            }
+
+            // Inside embedded expression, check if `<` starts a nested JSX element
+            if ch == '<' && is_jsx_start(code, pos, prev) {
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+                mode_stack.push(JsxContext::Tag {
+                    start,
+                    has_tag_name: false,
+                });
+                prev = Prev::Start;
+                continue;
+            }
+
+            // Single token in embedded expression via shared JS tokenizer
+            let (end, kind, new_prev) = scan_javascript_token_at(
+                code,
+                pos,
+                prev,
+                &mut js_interp_stack,
+                &mut js_brace_depth,
+                extra_keywords,
+                extra_types,
+            );
+            push_tiling(spans, &mut last_end, kind, pos, end);
+            pos = end;
+            prev = new_prev;
+            continue;
+        }
+
+        // 2. Inside JSX Children mode: text, entities, tags, fragments, or `{ expr }`
+        if let Some(JsxContext::Children { .. }) = mode_stack.last() {
+            let rest = &code[pos..];
+            let ch = rest.chars().next().unwrap();
+
+            // Closing fragment: `</>`
+            if rest.starts_with("</>") {
+                let start = pos;
+                pos += 3;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, start + 2);
+                push_tiling(spans, &mut last_end, Tok::Operator, start + 2, start + 3);
+                mode_stack.pop();
+                prev = Prev::Value;
+                continue;
+            }
+
+            // Closing tag: `</tag_name>`
+            if rest.starts_with("</") {
+                let start = pos;
+                pos += 2;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+
+                // Optional whitespace inside closing tag
+                let ws_start = pos;
+                while pos < bytes_len && code.as_bytes()[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                if pos > ws_start {
+                    push_tiling(spans, &mut last_end, Tok::Plain, ws_start, pos);
+                }
+
+                // Tag name
+                let name_start = pos;
+                while pos < bytes_len
+                    && (code.as_bytes()[pos].is_ascii_alphanumeric()
+                        || matches!(code.as_bytes()[pos], b'_' | b'-' | b'.' | b':'))
+                {
+                    pos += 1;
+                }
+                if pos > name_start {
+                    let name = &code[name_start..pos];
+                    let kind = if is_capitalized_not_all_caps(name) {
+                        Tok::Type
+                    } else {
+                        Tok::Keyword
+                    };
+                    push_tiling(spans, &mut last_end, kind, name_start, pos);
+                }
+
+                // Optional whitespace before `>`
+                let ws_end_start = pos;
+                while pos < bytes_len && code.as_bytes()[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                if pos > ws_end_start {
+                    push_tiling(spans, &mut last_end, Tok::Plain, ws_end_start, pos);
+                }
+
+                // Closing `>`
+                if pos < bytes_len && code.as_bytes()[pos] == b'>' {
+                    let gt_start = pos;
+                    pos += 1;
+                    push_tiling(spans, &mut last_end, Tok::Operator, gt_start, pos);
+                    mode_stack.pop();
+                    prev = Prev::Value;
                 } else {
-                    break;
+                    prev = Prev::Operator;
+                }
+                continue;
+            }
+
+            // Nested opening fragment: `<>`
+            if rest.starts_with("<>") {
+                let start = pos;
+                pos += 2;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, start + 1);
+                push_tiling(spans, &mut last_end, Tok::Operator, start + 1, start + 2);
+                mode_stack.push(JsxContext::Children { start });
+                prev = Prev::Start;
+                continue;
+            }
+
+            // Nested opening tag: `<tag`
+            if ch == '<' && is_jsx_start(code, pos, Prev::Start) {
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+                mode_stack.push(JsxContext::Tag {
+                    start,
+                    has_tag_name: false,
+                });
+                prev = Prev::Start;
+                continue;
+            }
+
+            // Embedded expression container: `{ expr }`
+            if ch == '{' {
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Punct, start, pos);
+                mode_stack.push(JsxContext::Expr { start, braces: 0 });
+                prev = Prev::Operator;
+                continue;
+            }
+
+            // Character entity: `&name;`, `&#123;`, `&#x1F;`
+            if ch == '&' {
+                let start = pos;
+                let mut p = pos + 1;
+                if p < bytes_len && code.as_bytes()[p] == b'#' {
+                    p += 1;
+                    if p < bytes_len && (code.as_bytes()[p] == b'x' || code.as_bytes()[p] == b'X') {
+                        p += 1;
+                        while p < bytes_len && code.as_bytes()[p].is_ascii_hexdigit() {
+                            p += 1;
+                        }
+                    } else {
+                        while p < bytes_len && code.as_bytes()[p].is_ascii_digit() {
+                            p += 1;
+                        }
+                    }
+                } else {
+                    while p < bytes_len
+                        && (code.as_bytes()[p].is_ascii_alphanumeric()
+                            || code.as_bytes()[p] == b'_')
+                    {
+                        p += 1;
+                    }
+                }
+                if p < bytes_len && code.as_bytes()[p] == b';' && p > start + 1 {
+                    p += 1;
+                    push_tiling(spans, &mut last_end, Tok::Keyword, start, p);
+                    pos = p;
+                    continue;
                 }
             }
+
+            // Plain children text until next `<`, `{`, or `&`
+            let start = pos;
+            while pos < bytes_len {
+                let c = code[pos..].chars().next().unwrap();
+                if matches!(c, '<' | '{' | '&') {
+                    break;
+                }
+                pos += c.len_utf8();
+            }
+            if pos > start {
+                push_tiling(spans, &mut last_end, Tok::Plain, start, pos);
+            } else {
+                let c = code[pos..].chars().next().unwrap();
+                pos += c.len_utf8();
+                push_tiling(spans, &mut last_end, Tok::Plain, start, pos);
+            }
+            continue;
+        }
+
+        // 2. Inside JSX Tag mode: `<tag_name attr="val" ... >`
+        if let Some(JsxContext::Tag {
+            has_tag_name, ..
+        }) = mode_stack.last_mut()
+        {
+            let rest = &code[pos..];
+            let ch = rest.chars().next().unwrap();
+
+            // Whitespace inside tag
+            if ch.is_whitespace() {
+                let start = pos;
+                pos += ch.len_utf8();
+                while pos < bytes_len && code[pos..].chars().next().unwrap().is_whitespace() {
+                    pos += code[pos..].chars().next().unwrap().len_utf8();
+                }
+                push_tiling(spans, &mut last_end, Tok::Plain, start, pos);
+                continue;
+            }
+
+            // Comments inside tag
+            if rest.starts_with("/*") {
+                let start = pos;
+                let end = code[start + 2..]
+                    .find("*/")
+                    .map_or(bytes_len, |at| start + 2 + at + 2);
+                push_tiling(spans, &mut last_end, Tok::Comment, start, end);
+                pos = end;
+                continue;
+            }
+            if rest.starts_with("//") {
+                let start = pos;
+                let end = code[start..].find('\n').map_or(bytes_len, |nl| start + nl);
+                push_tiling(spans, &mut last_end, Tok::Comment, start, end);
+                pos = end;
+                continue;
+            }
+
+            // First identifier is tag name
+            if !*has_tag_name && (ch.is_ascii_alphabetic() || ch == '_') {
+                let start = pos;
+                pos += ch.len_utf8();
+                while pos < bytes_len {
+                    let c = code[pos..].chars().next().unwrap();
+                    if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':') {
+                        pos += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                let word = &code[start..pos];
+                let kind = if is_capitalized_not_all_caps(word) {
+                    Tok::Type
+                } else {
+                    Tok::Keyword
+                };
+                *has_tag_name = true;
+                push_tiling(spans, &mut last_end, kind, start, pos);
+                continue;
+            }
+
+            // Self-closing tag end: `/>`
+            if rest.starts_with("/>") {
+                let start = pos;
+                pos += 2;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+                mode_stack.pop();
+                prev = Prev::Value;
+                continue;
+            }
+
+            // Tag opening end: `>`
+            if ch == '>' {
+                let gt_start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Operator, gt_start, pos);
+                let tag_start = match mode_stack.pop() {
+                    Some(JsxContext::Tag { start, .. }) => start,
+                    _ => gt_start,
+                };
+                mode_stack.push(JsxContext::Children { start: tag_start });
+                prev = Prev::Start;
+                continue;
+            }
+
+            // Embedded expression inside tag: `{ expr }`
+            if ch == '{' {
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Punct, start, pos);
+                mode_stack.push(JsxContext::Expr { start, braces: 0 });
+                prev = Prev::Operator;
+                continue;
+            }
+
+            // Quoted attribute value: "..." or '...'
+            // Braces inside quoted strings remain literal string content.
+            if ch == '"' || ch == '\'' {
+                let quote = ch;
+                let start = pos;
+                pos += 1;
+                while pos < bytes_len {
+                    let c = code[pos..].chars().next().unwrap();
+                    if c == '\\' {
+                        pos += 1;
+                        if pos < bytes_len {
+                            pos += code[pos..].chars().next().unwrap().len_utf8();
+                        }
+                        continue;
+                    }
+                    pos += c.len_utf8();
+                    if c == quote {
+                        break;
+                    }
+                }
+                push_tiling(spans, &mut last_end, Tok::Str, start, pos);
+                continue;
+            }
+
+            // Equals operator
+            if ch == '=' {
+                let start = pos;
+                pos += 1;
+                push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+                continue;
+            }
+
+            // Attribute name
+            if ch.is_ascii_alphabetic() || ch == '_' {
+                let start = pos;
+                pos += ch.len_utf8();
+                while pos < bytes_len {
+                    let c = code[pos..].chars().next().unwrap();
+                    if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':') {
+                        pos += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                push_tiling(spans, &mut last_end, Tok::Type, start, pos);
+                continue;
+            }
+
+            // Fallback inside tag
+            let start = pos;
+            pos += ch.len_utf8();
             push_tiling(spans, &mut last_end, Tok::Plain, start, pos);
             continue;
         }
 
-        // JSX markup entry: `<` followed by uppercase (component), lowercase
-        // (HTML element), or `/` (closing tag/fragment). In JS, `<` can also
-        // be less-than, but in JSX source files a `<` at expression position
-        // is markup.
-        if ch == '<' && pos + 1 < bytes_len {
-            let next_char = code[pos + 1..].chars().next().unwrap();
-            if is_jsx_name_start(next_char) || next_char == '>' || next_char == '/' {
-                // Scan the entire tag: name + attributes until `>` or `/>`.
-                let tag_start = pos;
-                let mut scan = pos + 1; // skip `<`
-                let mut in_expr_depth = 0usize;
-                let mut tag_closed = false;
-                while scan < bytes_len {
-                    let c = code[scan..].chars().next().unwrap();
-                    if c == '{' {
-                        in_expr_depth += 1;
-                    } else if c == '}' {
-                        if in_expr_depth > 0 {
-                            in_expr_depth -= 1;
-                        }
-                    } else if c == '"' || c == '\'' {
-                        // Skip string literals inside attribute values.
-                        let quote = c;
-                        scan += c.len_utf8();
-                        while scan < bytes_len {
-                            let sc = code[scan..].chars().next().unwrap();
-                            if sc == '\\' {
-                                scan += 2;
-                                continue;
-                            }
-                            if sc == quote {
-                                break;
-                            }
-                            scan += sc.len_utf8();
-                        }
-                    } else if c == '>' && in_expr_depth == 0 {
-                        scan += c.len_utf8();
-                        tag_closed = true;
-                        break;
-                    }
-                    scan += c.len_utf8();
-                }
-                let end = if tag_closed { scan } else { bytes_len.min(scan) };
-                // Classify the tag region: tag names, attribute names, values.
-                // For simplicity, the entire tag is a Type span (common JSX
-                // highlighting convention for component/element names).
-                push_tiling(spans, &mut last_end, Tok::Type, tag_start, end);
-                pos = end;
-                continue;
-            }
-        }
+        // 4. Top-level JavaScript mode: check if `<` starts a JSX element or fragment
+        let ch = code[pos..].chars().next().unwrap();
 
-        // JS expression: delegate to the JS lexer for the rest of the
-        // expression statement. The JS lexer handles the full expression
-        // grammar including strings, templates, regex, comments.
-        //
-        // We scan up to the next JSX markup boundary: `<` at expression
-        // position (not inside a string, template, or comment). This is a
-        // simplification: the JS lexer handles the full expression internally.
-        //
-        // Strategy: find the extent of this JS statement/region and delegate.
-        // For now, we delegate the REST of the input as one JS region, then
-        // let JSX markup resume on the next call. This works because JSX
-        // files alternate between JS statements and JSX return values, and
-        // the transition point is always a `return (` or `=` followed by
-        // `<` at statement position.
-
-        // Find where the JS expression ends: scan for `<` that starts a JSX
-        // tag at statement position, or the end of input.
-        let js_end = find_js_region_end(code, pos);
-        if js_end > pos {
-            let js_region = &code[pos..js_end];
-            let mut js_spans = Vec::new();
-            lex_javascript_into(js_region, &mut js_spans);
-            for span in js_spans {
-                push_tiling(
-                    spans,
-                    &mut last_end,
-                    span.kind,
-                    pos + span.start,
-                    pos + span.end,
-                );
-            }
-            pos = js_end;
+        // Fragment opening `<>`
+        if code[pos..].starts_with("<>") && is_jsx_start(code, pos, prev) {
+            let start = pos;
+            pos += 2;
+            push_tiling(spans, &mut last_end, Tok::Operator, start, start + 1);
+            push_tiling(spans, &mut last_end, Tok::Operator, start + 1, start + 2);
+            mode_stack.push(JsxContext::Children { start });
+            prev = Prev::Start;
             continue;
         }
 
-        // Fallback: Plain single char.
-        push_tiling(spans, &mut last_end, Tok::Plain, pos, pos + clen);
-        pos += clen;
+        // Tag opening `<tag`
+        if ch == '<' && is_jsx_start(code, pos, prev) {
+            let start = pos;
+            pos += 1;
+            push_tiling(spans, &mut last_end, Tok::Operator, start, pos);
+            mode_stack.push(JsxContext::Tag {
+                start,
+                has_tag_name: false,
+            });
+            prev = Prev::Start;
+            continue;
+        }
+
+        // 5. Standard JavaScript tokens via shared token scanner (O(1) per token)
+        let (end, kind, new_prev) = scan_javascript_token_at(
+            code,
+            pos,
+            prev,
+            &mut js_interp_stack,
+            &mut js_brace_depth,
+            extra_keywords,
+            extra_types,
+        );
+        push_tiling(spans, &mut last_end, kind, pos, end);
+        pos = end;
+        prev = new_prev;
     }
 
-    // Defensive final tile.
-    let tail_start = last_end;
-    if tail_start < bytes_len {
-        push_tiling(spans, &mut last_end, Tok::Plain, tail_start, bytes_len);
+    // Trailing gap closure
+    if last_end < bytes_len {
+        let start = last_end;
+        push_tiling(spans, &mut last_end, Tok::Plain, start, bytes_len);
     }
+
+    mode_stack.iter().find_map(|ctx| ctx.jsx_start())
 }
 
-/// Find where the current JS region ends and JSX markup begins.
+/// Find chunk hold point for streaming JSX input.
 ///
-/// Scans from `start` looking for a `<` that is followed by an uppercase
-/// letter, lowercase letter, or `>` — at a position where a JS expression
-/// value is expected (after `return`, `=`, `(`, `,`, etc.). Returns the
-/// byte offset of that `<`, or `code.len()` if no JSX markup is found.
-fn find_js_region_end(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut scan = start;
-    let mut in_string: Option<u8> = None;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut template_depth = 0usize;
-
-    while scan < bytes.len() {
-        let c = bytes[scan];
-
-        if in_line_comment {
-            if c == b'\n' {
-                in_line_comment = false;
+/// If inside an unclosed JSX element or tag, holds from the opening of that
+/// construct across chunk boundaries. When all JSX elements are closed, uses
+/// JavaScript hold rules.
+pub fn find_jsx_hold_from(text: &str, spans: &[Span]) -> usize {
+    let mut temp = Vec::new();
+    if let Some(unclosed) = lex_jsx_composed_into(text, &mut temp, &[], &[]) {
+        return unclosed;
+    }
+    if spans.is_empty() {
+        return text.len();
+    }
+    if let Some(last) = spans.last() {
+        let slice = &text[last.start..last.end];
+        if last.kind == Tok::Operator {
+            if slice == "/>" {
+                return last.end;
             }
-            scan += 1;
-            continue;
-        }
-        if in_block_comment {
-            if scan + 1 < bytes.len() && bytes[scan] == b'*' && bytes[scan + 1] == b'/' {
-                in_block_comment = false;
-                scan += 2;
-                continue;
-            }
-            scan += 1;
-            continue;
-        }
-        if let Some(quote) = in_string {
-            if c == b'\\' {
-                scan += 2;
-                continue;
-            }
-            if c == quote {
-                in_string = None;
-            }
-            scan += 1;
-            continue;
-        }
-
-        match c {
-            b'/' if scan + 1 < bytes.len() && bytes[scan + 1] == b'/' => {
-                in_line_comment = true;
-                scan += 2;
-            }
-            b'/' if scan + 1 < bytes.len() && bytes[scan + 1] == b'*' => {
-                in_block_comment = true;
-                scan += 2;
-            }
-            b'"' | b'\'' => {
-                in_string = Some(c);
-                scan += 1;
-            }
-            b'`' => {
-                template_depth += 1;
-                scan += 1;
-            }
-            _ if template_depth > 0 => {
-                if c == b'`' {
-                    template_depth -= 1;
-                }
-                scan += 1;
-            }
-            b'<' => {
-                // Check if this `<` starts JSX markup: followed by
-                // uppercase (component), lowercase (HTML element),
-                // `/` (closing), or `>` (fragment).
-                if scan + 1 < bytes.len() {
-                    let next = bytes[scan + 1];
-                    if next.is_ascii_uppercase()
-                        || next == b'>'
-                        || (next.is_ascii_lowercase() && scan + 2 < bytes.len())
-                    {
-                        return scan;
+            if slice == ">" {
+                let before = text[..last.start].trim_end();
+                if let Some(lt) = before.rfind('<') {
+                    if before[lt..].starts_with("</") {
+                        return last.end;
                     }
                 }
-                scan += 1;
-            }
-            _ => {
-                scan += 1;
             }
         }
     }
-
-    bytes.len()
-}
-
-/// Find the byte offset from which spans should be held pending more
-/// input in a JSX context.
-///
-/// The hold point is the start of the last `<` that opens a potential JSX
-/// tag or fragment in expression position. If no such `<` exists, returns
-/// `code.len()` (release everything).
-pub fn find_jsx_hold_from(code: &str, spans: &[Span]) -> usize {
-    let bytes = code.as_bytes();
-    let mut scan = code.len();
-
-    // Scan backwards for a `<` that starts a potential JSX tag.
-    while scan > 0 {
-        scan -= 1;
-        if bytes[scan] == b'<' {
-            // Check if this `<` could start JSX markup: the next character
-            // is an identifier start, `/`, or `>`.
-            if scan + 1 < bytes.len() {
-                let next = bytes[scan + 1];
-                if next.is_ascii_alphanumeric() || next == b'>' || next == b'/' {
-                    return scan;
-                }
-            }
-            if scan + 1 >= bytes.len() {
-                // `<` at EOF: hold from here.
-                return scan;
-            }
-        }
-    }
-
-    code.len()
-}
-
-/// Classification helper used by tests to verify word kinds.
-fn classify_token(code: &str, span: &Span) -> Tok {
-    span.kind
+    crate::resume::find_javascript_hold_from(text, spans)
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
+    use crate::highlight::Tok;
 
     fn assert_tiling(code: &str, spans: &[Span]) {
         let mut cursor = 0usize;
         for span in spans {
-            assert_eq!(span.start, cursor, "gap/overlap at {cursor}");
+            assert_eq!(
+                span.start, cursor,
+                "gap/overlap at {cursor}: span {:?} {}-{}",
+                span.kind, span.start, span.end
+            );
             assert!(span.end > span.start, "empty span at {cursor}");
+            assert!(span.end <= code.len(), "span exceeds source length");
+            assert!(code.is_char_boundary(span.start));
+            assert!(code.is_char_boundary(span.end));
             cursor = span.end;
         }
         assert_eq!(cursor, code.len(), "spans do not reach end of input");
     }
 
     #[test]
-    fn basic_jsx_element_with_text() {
-        let code = "const el = <div>Hello World</div>;";
+    fn simple_jsx_element() {
+        let code = "const el = <div className=\"test\">Hello World</div>;";
         let mut spans = Vec::new();
         lex_jsx_into(code, &mut spans);
         assert_tiling(code, &spans);
-        // The `<div>` and `</div>` tags should be classified as Type.
+
+        let texts: Vec<&str> = spans.iter().map(|s| &code[s.start..s.end]).collect();
+        assert!(texts.contains(&"div"));
+        assert!(texts.contains(&"\"test\""));
+        assert!(texts.contains(&"Hello World"));
+    }
+
+    #[test]
+    fn self_closing_and_fragment() {
+        let code = "const el = <><img src=\"icon.png\" /><Button disabled /></>;";
+        let mut spans = Vec::new();
+        lex_jsx_into(code, &mut spans);
+        assert_tiling(code, &spans);
+
         let types: Vec<&str> = spans
             .iter()
             .filter(|s| s.kind == Tok::Type)
             .map(|s| &code[s.start..s.end])
             .collect();
-        assert!(
-            types.iter().any(|s| s.contains("<div>")),
-            "opening tag classified: {types:?}"
-        );
-        assert!(
-            types.iter().any(|s| s.contains("</div>")),
-            "closing tag classified: {types:?}"
-        );
+        assert!(types.contains(&"Button"));
     }
 
     #[test]
-    fn component_with_attributes_and_expression() {
-        let code = "const el = <Button onClick={() => alert('hi')} label=\"Click\" size={42} />;";
+    fn embedded_expression_containers() {
+        let code = "const el = <div count={x + 1}>{items.map(i => <span>{i}</span>)}</div>;";
         let mut spans = Vec::new();
         lex_jsx_into(code, &mut spans);
         assert_tiling(code, &spans);
-        // The entire <Button ... /> tag is one Type span.
-        let types: Vec<&str> = spans
+    }
+
+    #[test]
+    fn braces_inside_quoted_attribute_are_string_content() {
+        let code = "const el = <div title=\"{literal braces}\" />;";
+        let mut spans = Vec::new();
+        lex_jsx_into(code, &mut spans);
+        assert_tiling(code, &spans);
+
+        let strs: Vec<&str> = spans
             .iter()
-            .filter(|s| s.kind == Tok::Type)
+            .filter(|s| s.kind == Tok::Str)
             .map(|s| &code[s.start..s.end])
             .collect();
-        assert!(
-            types.iter().any(|s| s.contains("Button")),
-            "component tag classified: {types:?}"
-        );
+        assert!(strs.contains(&"\"{literal braces}\""));
     }
 
     #[test]
-    fn expression_container_switches_to_js() {
-        let code = "const el = <span>{items.map(item => <li key={item}>{item}</li>)}</span>;";
+    fn entities_inside_children() {
+        let code = "const el = <div>&copy; 2026 &amp; &lt;FrankenCode&gt; &#169;</div>;";
         let mut spans = Vec::new();
         lex_jsx_into(code, &mut spans);
         assert_tiling(code, &spans);
-        // The JS expression `items.map(...)` should have JS classifications.
-        let keywords: Vec<&str> = spans
+
+        let kw_entities: Vec<&str> = spans
             .iter()
             .filter(|s| s.kind == Tok::Keyword)
             .map(|s| &code[s.start..s.end])
             .collect();
-        assert!(
-            keywords.contains(&"const"),
-            "JS keyword classified: {keywords:?}"
-        );
+        assert!(kw_entities.contains(&"&copy;"));
+        assert!(kw_entities.contains(&"&amp;"));
     }
 
     #[test]
-    fn fragment_syntax() {
-        let code = "const el = <>text</>;";
-        let mut spans = Vec::new();
-        lex_jsx_into(code, &mut spans);
-        assert_tiling(code, &spans);
-        // The fragment `<>` and `</>` are classified.
-        let types: Vec<&str> = spans
-            .iter()
-            .filter(|s| s.kind == Tok::Type)
-            .map(|s| &code[s.start..s.end])
-            .collect();
-        assert!(
-            types.iter().any(|s| s.contains("<>")),
-            "fragment open classified: {types:?}"
-        );
-        assert!(
-            types.iter().any(|s| s.contains("</>")),
-            "fragment close classified: {types:?}"
-        );
-    }
-
-    #[test]
-    fn nested_components_and_expressions() {
-        let code = "const app = <App><Header title={title} /><Content>{children}</Content></App>;";
-        let mut spans = Vec::new();
-        lex_jsx_into(code, &mut spans);
-        assert_tiling(code, &spans);
-        let types: Vec<&str> = spans
-            .iter()
-            .filter(|s| s.kind == Tok::Type)
-            .map(|s| &code[s.start..s.end])
-            .collect();
-        assert!(types.iter().any(|s| s.contains("App")), "{types:?}");
-        assert!(types.iter().any(|s| s.contains("Header")));
-        assert!(types.iter().any(|s| s.contains("Content")));
-    }
-
-    #[test]
-    fn malformed_nesting_still_tiles() {
-        let code = "const el = <div><span>unclosed";
+    fn comparison_not_confused_with_jsx_tag() {
+        let code = "const cmp = a < b && b > c;\nconst tag = <tag>content</tag>;";
         let mut spans = Vec::new();
         lex_jsx_into(code, &mut spans);
         assert_tiling(code, &spans);
     }
 
     #[test]
-    fn truncated_tag_spans_to_eof() {
-        let code = "const el = <div class";
-        let mut spans = Vec::new();
-        lex_jsx_into(code, &mut spans);
-        assert_tiling(code, &spans);
-        let last = spans.last().unwrap();
-        assert_eq!(last.end, code.len());
+    fn capability_row_is_versioned() {
+        assert_eq!(JSX_CAPABILITY_V1.version, 1);
+        assert!(JSX_CAPABILITY_V1.incremental);
+        assert!(JSX_CAPABILITY_V1.tag_and_attribute_transitions);
+        assert!(JSX_CAPABILITY_V1.embedded_expressions);
+        assert!(JSX_CAPABILITY_V1.fragments);
+        assert!(JSX_CAPABILITY_V1.entities);
     }
 
     #[test]
-    fn plain_javascript_without_jsx_still_works() {
-        let code = "const x = 1 < 2 && 3 > 2; if (x) { console.log(x); }";
-        let mut spans = Vec::new();
-        lex_jsx_into(code, &mut spans);
-        assert_tiling(code, &spans);
-        // `1 < 2` is a comparison, not JSX markup.
-        let keywords: Vec<&str> = spans
-            .iter()
-            .filter(|s| s.kind == Tok::Keyword)
-            .map(|s| &code[s.start..s.end])
-            .collect();
-        assert!(keywords.contains(&"if"), "{keywords:?}");
-    }
-
-    #[test]
-    fn negative_control_tiling_oracle_detects_gap() {
-        let code = "abc";
-        let gapped = vec![
+    fn negative_control_tiling_gap() {
+        let code = "<div>test</div>";
+        let broken = vec![
             Span {
-                kind: Tok::Plain,
+                kind: Tok::Operator,
                 start: 0,
                 end: 1,
             },
+            // gap from 1..4 omitted!
+            Span {
+                kind: Tok::Operator,
+                start: 4,
+                end: 5,
+            },
             Span {
                 kind: Tok::Plain,
-                start: 2,
-                end: 3,
+                start: 5,
+                end: 9,
+            },
+            Span {
+                kind: Tok::Keyword,
+                start: 9,
+                end: 15,
             },
         ];
-        let detected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_tiling(code, &gapped);
-        }))
-        .is_err();
-        assert!(detected, "tiling oracle must catch a gap");
-        let mut spans = Vec::new();
-        lex_jsx_into(code, &mut spans);
-        assert_tiling(code, &spans);
+        let result = std::panic::catch_unwind(|| {
+            assert_tiling(code, &broken);
+        });
+        assert!(result.is_err(), "oracle must catch gaps");
+    }
+
+    #[test]
+    fn nonempty_output_buffers_keep_existing_entries() {
+        let sentinel = Span { kind: Tok::Comment, start: 7, end: 11 };
+        let mut spans = vec![sentinel];
+        lex_jsx_into("<A/>", &mut spans);
+        assert_eq!(spans[0].kind, Tok::Comment);
+        assert_eq!((spans[0].start, spans[0].end), (7, 11));
+        assert_tiling("<A/>", &spans[1..]);
+    }
+
+    #[test]
+    fn chunk_prefixes_hold_the_outermost_unfinished_element() {
+        let code = "const x = <A><B>{value}</B></A>;";
+        let opening = code.find('<').unwrap();
+        let closing_end = code.rfind('>').unwrap() + 1;
+        for end in opening + 1..closing_end {
+            let prefix = &code[..end];
+            let mut spans = Vec::new();
+            lex_jsx_into(prefix, &mut spans);
+            assert_tiling(prefix, &spans);
+            assert_eq!(find_jsx_hold_from(prefix, &spans), opening, "{prefix}");
+        }
+        assert_eq!(find_jsx_hold_from(code, &[]), code.len());
     }
 }

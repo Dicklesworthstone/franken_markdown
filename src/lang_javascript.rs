@@ -175,6 +175,30 @@ fn is_type_name(word: &str) -> bool {
     TYPES.contains(&word)
 }
 
+/// The versioned JavaScript capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JavaScriptCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for JavaScript.
+    pub incremental: bool,
+    /// Regex literals vs division disambiguation supported under declared capability.
+    pub regex_vs_division: bool,
+    /// Template literals with nested interpolation stacks supported.
+    pub template_interpolations: bool,
+    /// Numeric forms (hex, octal, binary, bigint, separators) supported.
+    pub numeric_forms: bool,
+}
+
+/// The JavaScript capability row published by this module.
+pub const JAVASCRIPT_CAPABILITY_V1: JavaScriptCapabilityV1 = JavaScriptCapabilityV1 {
+    version: 1,
+    incremental: true,
+    regex_vs_division: true,
+    template_interpolations: true,
+    numeric_forms: true,
+};
+
 /// Lex JavaScript source into exact tiling spans.
 pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();
@@ -391,7 +415,14 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                     prev = Prev::Value;
                     continue;
                 }
-                // Unterminated: fall through to operator (conservative).
+                if scan == bytes_len {
+                    // Unterminated regex literal spans to EOF.
+                    push_tiling(spans, &mut last_end, Tok::Str, start, bytes_len);
+                    pos = bytes_len;
+                    prev = Prev::Value;
+                    continue;
+                }
+                // Unterminated across line break: fall through to operator (conservative).
             }
             // Division or `/=` operator.
             let op_len = if code[pos..].starts_with("/=") { 2 } else { 1 };

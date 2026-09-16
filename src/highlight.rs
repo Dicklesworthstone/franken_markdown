@@ -1933,6 +1933,7 @@ const JS_TY: KwTable = {
 };
 
 #[cfg(test)]
+#[allow(dead_code)]
 const SH_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [
@@ -1950,6 +1951,7 @@ const SH_KW: KwTable = {
 };
 
 #[cfg(test)]
+#[allow(dead_code)]
 const GO_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(
         [

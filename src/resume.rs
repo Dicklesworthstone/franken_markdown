@@ -219,6 +219,13 @@ impl ResumableLexer {
         )
     }
 
+    fn is_javascript_family(&self) -> bool {
+        matches!(
+            self.lang.to_ascii_lowercase().as_str(),
+            "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx"
+        )
+    }
+
     /// Lex the held suffix and release every span except the final one, whose
     /// bytes may still be extended by future input.
     fn lex_pending_release(&mut self) {
@@ -236,6 +243,8 @@ impl ResumableLexer {
             } else if is_html_closed_construct(&text, last) {
                 hold_from = last.end;
             }
+        } else if self.is_javascript_family() {
+            hold_from = find_javascript_hold_from(&text, &spans);
         }
         let released: Vec<Span> = spans
             .iter()
@@ -924,3 +933,66 @@ fn is_html_closed_construct(text: &str, last: &Span) -> bool {
         _ => false,
     }
 }
+
+/// Find the byte start offset for safe span release in JavaScript family languages.
+///
+/// In JavaScript, whether `/` is a regular expression literal or a division operator
+/// depends strictly on whether the preceding non-whitespace token is an expression value
+/// (e.g. identifier, literal, `)`) or an operator/keyword. Holding trailing whitespace
+/// or trailing slashes alone leaves the subsequent chunk without preceding context,
+/// causing division to be misclassified as a regex. Therefore, when text ends with
+/// whitespace, an unresolved slash, or an Annex B comment prefix, the hold offset is
+/// extended back to the start of the preceding non-whitespace code token.
+fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
+    let Some(last) = spans.last() else {
+        return 0;
+    };
+    let mut hold_from = last.start;
+
+    // Annex B comment prefixes: hold from opening `<`.
+    if text.ends_with("<!-") {
+        hold_from = hold_from.min(text.len() - 3);
+    } else if text.ends_with("<!") {
+        hold_from = hold_from.min(text.len() - 2);
+    }
+
+    let is_trailing_whitespace = text[last.start..last.end]
+        .chars()
+        .all(char::is_whitespace);
+
+    if is_trailing_whitespace {
+        let prev_non_ws = spans.iter().rev().find(|span| {
+            span.end <= last.start
+                && !text[span.start..span.end]
+                    .chars()
+                    .all(char::is_whitespace)
+        });
+        if let Some(prev) = prev_non_ws {
+            hold_from = hold_from.min(prev.start);
+        } else {
+            hold_from = 0;
+        }
+    }
+
+    // If the held slice starts with a slash `/` (division operator or regex),
+    // a bare slash at the beginning of pending would be evaluated in Prev::Start
+    // context, turning division into a regex literal. We must retain the token
+    // preceding the slash so regex-vs-division disambiguation remains exact.
+    if text[hold_from..].trim_start().starts_with('/') {
+        let slash_pos = hold_from + (text[hold_from..].len() - text[hold_from..].trim_start().len());
+        let prev_before_slash = spans.iter().rev().find(|span| {
+            span.end <= slash_pos
+                && !text[span.start..span.end]
+                    .chars()
+                    .all(char::is_whitespace)
+        });
+        if let Some(prev) = prev_before_slash {
+            hold_from = hold_from.min(prev.start);
+        } else {
+            hold_from = 0;
+        }
+    }
+
+    hold_from
+}
+

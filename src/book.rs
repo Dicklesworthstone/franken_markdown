@@ -2,9 +2,13 @@
 //! files into one HTML site (page per file + shared sidebar) and/or a single
 //! PDF book (global outline, continuous page numbers, chapter page breaks).
 //!
-//! Pure core: inputs arrive as (path, source) pairs from the CLI shell, which
-//! owns all filesystem policy (walk order, include sandboxing, size caps).
-//! Everything here is deterministic for fixed input.
+//! [`BookRenderer`] additionally provides reusable PDF, EPUB, and HTML-site
+//! ZIP exports with chapter-aware host assets. The optional browser adapter
+//! exposes the same cached parsed book through the `FmdBook` class.
+//!
+//! Pure core: inputs arrive as (path, source) pairs from the host, which owns
+//! filesystem policy and include expansion. Everything here is deterministic
+//! for fixed input. No renderer function fetches URLs or reads files.
 
 use crate::ast::{Block, Document, Inline};
 use crate::parse::{self, Frontmatter};
@@ -14,6 +18,16 @@ use crate::{RenderError, Result};
 mod merge;
 #[path = "book/paths.rs"]
 mod paths;
+#[path = "book/render.rs"]
+mod render;
+
+pub use render::{
+    BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site,
+};
+
+#[cfg(feature = "wasm-bindgen")]
+#[path = "book/browser.rs"]
+pub mod browser;
 
 /// One input document: the book-relative path and its Markdown source.
 #[derive(Debug, Clone)]

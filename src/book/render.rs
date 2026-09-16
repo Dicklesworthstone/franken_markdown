@@ -6,8 +6,11 @@ use super::{Book, BookInput, build_book, inject_book_nav, merge, out_name, paths
 use crate::wasm::WasmRenderOptions;
 use crate::{
     Block, Document, HtmlOptions, Inline, PdfImageAsset, PdfOptions, RenderError, Result,
-    ZipWriter, build_search_index, render_html_document, render_pdf_document, search_index_json,
+    ZipWriter, build_search_index, render_html_document, search_index_json,
 };
+
+#[path = "pdf_links.rs"]
+mod pdf_links;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -158,14 +161,18 @@ pub fn book_pdf_document_with_assets(book: &Book, assets: &[PdfImageAsset]) -> R
     }))
 }
 
-/// Render a PDF book with chapter-local citations and image resolution.
-/// All caller-provided PDF typography and metadata options are preserved.
+/// Render a PDF book with chapter-local citations, images, and navigation.
+/// Known chapter links and fragment-only links bind to actual PDF outline
+/// destinations, including duplicate/wrapped headings and moved note bodies.
+/// A bare link to a chapter without a leading heading adds its chapter title
+/// as the landing heading. Missing local anchors remain inert; external URLs
+/// and all caller-provided typography/metadata options are preserved.
 ///
 /// # Errors
-/// Returns book validation or PDF renderer errors.
+/// Returns book validation, PDF renderer, or destination-binding errors.
 pub fn render_book_pdf(book: &Book, options: &PdfOptions) -> Result<Vec<u8>> {
     let document = book_pdf_document_with_assets(book, &options.image_assets)?;
-    render_pdf_document(&document, options)
+    pdf_links::render(book, document, options)
 }
 
 /// Render a self-contained HTML page per chapter, shared navigation, a landing
@@ -300,7 +307,7 @@ fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
                 }
             }
             Block::Table(table) => {
-                for cell in &mut table.head {
+                for cell in &table.head {
                     resolve_inline_images(cell, source, keys);
                 }
                 for row in &mut table.rows {

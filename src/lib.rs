@@ -33,6 +33,7 @@
 extern crate self as franken_markdown;
 
 pub mod ast;
+pub mod block_flow;
 pub mod book;
 pub mod caret;
 pub mod compress;
@@ -173,6 +174,11 @@ pub use flow::{
 pub use flow_display::{
     AssetRequest, AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError,
     ResumableFlowDisplay, StepResult, UnresolvedAsset,
+};
+pub use block_flow::{
+    BlockFlowEngine, BlockFlowError, BlockHeightIndex, FlowBlockItem, LineBreakCache,
+    ListMarker, LogicalHeight, ScrollAnchor, FIXED_POINT_SCALE, MAX_NESTING_DEPTH,
+    MAX_PARAGRAPH_LINES,
 };
 pub use source_map::{
     DocumentSourceMap, HeadingSourceAnchor, RenderedElement, SourceMapError, TextSelectionRange,

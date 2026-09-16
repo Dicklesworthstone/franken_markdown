@@ -41,6 +41,7 @@ pub mod diff;
 pub mod doc_stats;
 pub mod error;
 pub mod fonts;
+pub mod font_context;
 mod footnotes;
 pub mod highlight;
 pub mod html;

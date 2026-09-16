@@ -34,6 +34,7 @@ extern crate self as franken_markdown;
 
 pub mod ast;
 pub mod block_flow;
+pub mod code_table_flow;
 pub mod book;
 pub mod caret;
 pub mod compress;
@@ -184,6 +185,10 @@ pub use block_flow::{
 pub use paged_height::{
     DEFAULT_PAGE_CAPACITY, HeightRefinementTransaction, Page, PagedHeightDirectory,
     PagedHeightIndex,
+};
+pub use code_table_flow::{
+    CodeFenceFlow, CodeTableError, ConstrainedTableFlow, TableCell, TableConstraints,
+    MAX_COLUMNS_BUDGET, MAX_COLUMN_WIDTH, MAX_MEASURE_ROWS, MIN_COLUMN_WIDTH,
 };
 pub use source_map::{
     DocumentSourceMap, HeadingSourceAnchor, RenderedElement, SourceMapError, TextSelectionRange,

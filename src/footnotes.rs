@@ -26,18 +26,7 @@ pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
         return Cow::Borrowed(doc);
     }
 
-    let mut numbering = Numbering {
-        numbers: vec![0; notes.definitions.len()],
-        order: Vec::with_capacity(notes.definitions.len()),
-    };
-    references_in_blocks(&doc.blocks, &mut |id| numbering.reference(&notes, id));
-    let mut visited = 0;
-    numbering.follow_references(&notes, &mut visited);
-    for index in 0..notes.definitions.len() {
-        numbering.assign(index);
-        numbering.follow_references(&notes, &mut visited);
-    }
-
+    let numbering = number_notes(doc, &notes);
     let mut blocks = rewrite_blocks(&doc.blocks, &notes, &numbering);
     if !notes.definitions.is_empty() {
         blocks.push(Block::Heading {
@@ -62,6 +51,73 @@ pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
         }
     }
     Cow::Owned(Document { blocks })
+}
+
+fn number_notes(doc: &Document, notes: &Notes<'_>) -> Numbering {
+    let mut numbering = Numbering {
+        numbers: vec![0; notes.definitions.len()],
+        order: Vec::with_capacity(notes.definitions.len()),
+    };
+    references_in_blocks(&doc.blocks, &mut |id| numbering.reference(notes, id));
+    let mut visited = 0;
+    numbering.follow_references(notes, &mut visited);
+    for index in 0..notes.definitions.len() {
+        numbering.assign(index);
+        numbering.follow_references(notes, &mut visited);
+    }
+    numbering
+}
+
+/// Source-heading ordinal for each heading in `for_pdf(doc)`, in output
+/// order. `None` denotes the generated Notes heading. Source ordinals include
+/// headings inside definitions, including duplicates that are later omitted.
+///
+/// Book navigation uses this sidecar instead of matching titles: two chapters
+/// may contain identical headings, and referenced note bodies can move into a
+/// different order. The same definition collection and numbering code drives
+/// both preparation and provenance. Nothing is embedded in the visible AST.
+pub(crate) fn heading_origins_for_pdf(doc: &Document) -> Vec<Option<usize>> {
+    let mut original = BTreeMap::new();
+    visit_headings(&doc.blocks, true, &mut |block| {
+        let ordinal = original.len();
+        // Pointer identity is used only for lookup against this immutable AST.
+        // Addresses and map iteration order never enter the returned sidecar.
+        original.insert(std::ptr::from_ref(block), ordinal);
+    });
+    let mut notes = Notes::default();
+    notes.collect(&doc.blocks);
+    let numbering = number_notes(doc, &notes);
+    let mut origins = Vec::with_capacity(original.len().saturating_add(1));
+    visit_headings(&doc.blocks, false, &mut |block| {
+        origins.push(original.get(&std::ptr::from_ref(block)).copied());
+    });
+    if !notes.definitions.is_empty() {
+        origins.push(None);
+        for index in numbering.order {
+            visit_headings(notes.definitions[index], false, &mut |block| {
+                origins.push(original.get(&std::ptr::from_ref(block)).copied());
+            });
+        }
+    }
+    origins
+}
+
+fn visit_headings(blocks: &[Block], definitions: bool, visit: &mut impl FnMut(&Block)) {
+    for block in blocks {
+        match block {
+            Block::Heading { .. } => visit(block),
+            Block::BlockQuote(inner) => visit_headings(inner, definitions, visit),
+            Block::List(list) => {
+                for item in &list.items {
+                    visit_headings(&item.blocks, definitions, visit);
+                }
+            }
+            Block::FootnoteDefinition { blocks, .. } if definitions => {
+                visit_headings(blocks, definitions, visit);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -394,5 +450,41 @@ mod tests {
         assert_eq!(result.blocks[4], Block::Paragraph(vec![text("[2]")]));
         assert_eq!(result.blocks[5], Block::Paragraph(vec![text("[2] "), text("Nested definition")]));
         assert!(matches!(for_pdf(result.as_ref()), Cow::Borrowed(_)), "preparation is idempotent");
+    }
+
+    fn heading(value: &str) -> Block {
+        Block::Heading { level: 2, inlines: vec![text(value)] }
+    }
+
+    #[test]
+    fn heading_provenance_follows_note_queue_not_equal_title_matching() {
+        let doc = document(vec![
+            definition("a", vec![heading("Same")]),
+            heading("Same"),
+            definition("b", vec![heading("Same")]),
+            Block::Paragraph(vec![reference("b"), reference("a")]),
+        ]);
+        assert_eq!(heading_origins_for_pdf(&doc), vec![Some(1), None, Some(2), Some(0)]);
+        let prepared = for_pdf(&doc);
+        let mut count = 0;
+        visit_headings(&prepared.blocks, true, &mut |_| count += 1);
+        assert_eq!(count, heading_origins_for_pdf(&doc).len());
+    }
+
+    #[test]
+    fn heading_provenance_omits_duplicate_definition_bodies() {
+        let doc = document(vec![
+            definition("a", vec![heading("First")]),
+            definition("a", vec![heading("Discarded")]),
+            Block::BlockQuote(vec![heading("Body")]),
+        ]);
+        assert_eq!(heading_origins_for_pdf(&doc), vec![Some(2), None, Some(0)]);
+    }
+
+    #[test]
+    fn heading_provenance_preserves_nested_note_free_source_order() {
+        let doc = document(vec![heading("A"), Block::BlockQuote(vec![heading("B")])]);
+        assert_eq!(heading_origins_for_pdf(&doc), vec![Some(0), Some(1)]);
+        assert!(matches!(for_pdf(&doc), Cow::Borrowed(_)));
     }
 }

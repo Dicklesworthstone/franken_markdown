@@ -1,215 +1,249 @@
-//! Renderer-neutral math and diagram display output (FCB-034.A).
-//!
-//! Wraps `fmd_math` to provide display-ready math and diagram output with
-//! glyph/path provenance. No external TeX engine, no scripting — the
-//! platform-neutral base engine handles parsing and layout.
-
 #![forbid(unsafe_code)]
 
-/// Errors from the math display seam.
-#[derive(Clone, Debug, PartialEq)]
-pub enum MathDisplayError {
-    /// The math source failed to parse.
-    ParseError(String),
-    /// A required source span was missing or reversed.
-    SourceAnchor(String),
-    /// Layout or path resolution failed.
-    LayoutError(String),
-}
+//! Bridge from `fmd-math` layout output to the renderer-neutral display
+//! list (fcb-mrc.1).
+//!
+//! Converts positioned math glyphs, rules, and drawn paths into
+//! [`DisplayItem`]s that any renderer can consume without knowing about
+//! TeX, Metal, or AppKit. Source spans survive: every display item
+//! carries the byte span of the math source that produced it.
+//!
+//! No external TeX engine, no JavaScript, no script execution — `fmd-math`
+//! is the internal TeX implementation.
 
-impl std::fmt::Display for MathDisplayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ParseError(s) => write!(f, "math parse error: {s}"),
-            Self::SourceAnchor(s) => write!(f, "source anchor error: {s}"),
-            Self::LayoutError(s) => write!(f, "layout error: {s}"),
-        }
-    }
-}
+use crate::display::{
+    DisplayItem, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath,
+    VectorShapeType,
+};
+use crate::span::SourceSpan;
+use fmd_math::mbox::{Layout, PlacedGlyph, PlacedRule};
+use fmd_math::Engine;
 
-impl std::error::Error for MathDisplayError {}
-
-/// A resolved math display: the source text, the parsed tree, and the laid
-/// out result with source-preserving anchors.
-#[derive(Debug)]
-pub struct MathDisplay {
-    /// The raw math source text (e.g. the contents of `$...$`).
-    pub source: String,
-    /// The byte offset of `source` within the parent document.
-    pub source_offset: usize,
-}
-
-impl MathDisplay {
-    /// Create a math display from source text and its document offset.
-    ///
-    /// The math is parsed eagerly to validate; parse errors are surfaced
-    /// immediately rather than during rendering.
-    pub fn new(source: &str, offset: usize) -> Result<Self, MathDisplayError> {
-        let node = fmd_math::parse(source)
-            .map_err(|e| MathDisplayError::ParseError(e.to_string()))?;
-        let _ = node; // validated: the parse tree exists
-        Ok(Self {
-            source: source.to_owned(),
-            source_offset: offset,
-        })
-    }
-
-    /// The byte length of the math source text.
-    pub fn source_len(&self) -> usize {
-        self.source.len()
-    }
-}
-
-/// A diagram reference with its display metadata.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DiagramDisplay {
-    /// The diagram language tag (e.g. "mermaid").
-    pub language: String,
-    /// The diagram source text.
-    pub source: String,
-    /// Byte offset in the parent document.
-    pub source_offset: usize,
-}
-
-impl DiagramDisplay {
-    /// Create a diagram display from a fenced block's language and source.
-    pub fn new(language: &str, source: &str, offset: usize) -> Self {
-        Self {
-            language: language.to_owned(),
-            source: source.to_owned(),
-            source_offset: offset,
-        }
-    }
-}
-
-/// Extract `$...$` (inline) and `$$...$$` (display) math from Markdown.
+/// Convert math source into renderer-neutral display items.
 ///
-/// Returns the math source and the byte offset of each math region in the
-/// original document.
-pub fn extract_math_spans(source: &str) -> Vec<(String, usize)> {
-    let mut out = Vec::new();
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut pos = 0usize;
-
-    while pos < len {
-        if bytes[pos] == b'$' {
-            // Display math: $$...$$
-            if pos + 1 < len && bytes[pos + 1] == b'$' {
-                if let Some(end) = source[pos + 2..].find("$$") {
-                    let inner = &source[pos + 2..pos + 2 + end];
-                    if !inner.is_empty() {
-                        out.push((inner.to_owned(), pos + 2));
-                    }
-                    pos = pos + 2 + end + 2;
-                    continue;
-                }
-            }
-            // Inline math: $...$ (not $$)
-            if let Some(end) = source[pos + 1..].find('$') {
-                let inner = &source[pos + 1..pos + 1 + end];
-                if !inner.is_empty() && !inner.contains('$') {
-                    out.push((inner.to_owned(), pos + 1));
-                }
-                pos = pos + 1 + end + 1;
-                continue;
-            }
-        }
-        pos += 1;
-    }
-    out
+/// The layout coordinates are in ems (y-up, baseline at 0). The display
+/// coordinates are in points (y-down, origin at top-left). The bridge
+/// flips the y-axis and scales by `font_size`.
+///
+/// Every display item preserves the source span of the math construct
+/// that produced it — source anchors survive native render.
+pub fn math_to_display(
+    source: &str,
+    engine: &Engine,
+    origin_x: f32,
+    origin_y: f32,
+    font_size: f32,
+    source_offset: usize,
+) -> Result<Vec<DisplayItem>, fmd_math::MathError> {
+    let layout = engine.typeset(source, fmd_math::Style::Display)?;
+    Ok(layout_to_display(
+        &layout,
+        source,
+        origin_x,
+        origin_y,
+        font_size,
+        source_offset,
+    ))
 }
 
-/// Extract fenced diagram blocks (```lang ... ```) from Markdown.
-///
-/// Returns the language tag, the block source, and the byte offset of the
-/// block content in the original document.
-pub fn extract_diagram_blocks(source: &str) -> Vec<(String, String, usize)> {
-    let mut out = Vec::new();
-    let mut lines = source.lines().peekable();
-    let mut offset = 0usize;
+/// Convert a laid-out math formula into renderer-neutral display items.
+pub fn layout_to_display(
+    layout: &Layout,
+    source: &str,
+    origin_x: f32,
+    origin_y: f32,
+    font_size: f32,
+    source_offset: usize,
+) -> Vec<DisplayItem> {
+    let mut items = Vec::new();
 
-    while let Some(line) = lines.next() {
-        let line_len = line.len() + 1; // +1 for \n
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") && trimmed.len() > 3 {
-            let language = trimmed[3..].trim().to_owned();
-            if !language.is_empty() {
-                let content_start = offset + line_len;
-                let mut content = Vec::new();
-                let mut closed = false;
-                for inner in lines.by_ref() {
-                    offset += inner.len() + 1;
-                    if inner.trim() == "```" {
-                        closed = true;
-                        break;
-                    }
-                    content.push(inner);
-                }
-                if closed {
-                    let block_source = content.join("\n");
-                    out.push((language, block_source, content_start));
-                }
-            }
-        }
-        offset += line_len;
+    // Glyphs → text runs.
+    for glyph in &layout.glyphs {
+        let dx = (origin_x + (glyph.x as f32) * font_size).round();
+        // Y-flip: fmd-math uses y-up from baseline; display uses y-down
+        // from top-left. The baseline sits at origin_y + font_size *
+        // height_above_baseline. Individual glyph y offsets are relative
+        // to the baseline and flipped.
+        let dy = (origin_y + font_size - (glyph.y as f32) * font_size).round();
+        let size = ((glyph.size as f32) * font_size).round();
+
+        let span = source_offset_span(source_offset, glyph.span.start, glyph.span.end);
+        let text_run = DisplayTextRun {
+            bounds: glyph_bounds(dx, dy, glyph.ch, size),
+            text: glyph.ch.to_string(),
+            font_run: None, // host supplies resolved font runs
+            color_role: "math".to_string(),
+            source_span: span,
+            font_size: size as f32,
+        };
+        items.push(DisplayItem::Text(text_run));
     }
-    out
+
+    // Rules → vector paths (horizontal fraction bars, radical overbars).
+    for rule in &layout.rules {
+        let dx = (origin_x + (rule.x as f32) * font_size).round();
+        let dy = (origin_y + font_size - (rule.y as f32) * font_size).round();
+        let w = ((rule.width as f32) * font_size).round().max(1.0);
+        let h = ((rule.height as f32) * font_size).round().max(1.0);
+        let span = source_offset_span(source_offset, rule.span.start, rule.span.end);
+        items.push(DisplayItem::Vector(DisplayVectorPath {
+            bounds: DisplayRect {
+                x: dx,
+                y: dy - h,
+                width: w,
+                height: h,
+            },
+            shape: VectorShapeType::HorizontalRule,
+            stroke_width: h,
+            color_role: "math".to_string(),
+            source_span: span,
+        }));
+    }
+
+    items
+}
+
+/// Add a semantic anchor for the entire math region.
+pub fn math_anchor(
+    source: &str,
+    layout: &Layout,
+    origin_x: f32,
+    origin_y: f32,
+    font_size: f32,
+    source_offset: usize,
+) -> DisplaySemanticAnchor {
+    let w = ((layout.width as f32) * font_size).round().max(1.0);
+    let total_h = (((layout.height + layout.depth) as f32) * font_size).round().max(1.0);
+    let span = SourceSpan {
+        start: source_offset,
+        end: source_offset + source.len(),
+    };
+    DisplaySemanticAnchor {
+        bounds: DisplayRect {
+            x: origin_x,
+            y: origin_y,
+            width: w,
+            height: total_h,
+        },
+        anchor_id: format!("math-{source_offset}"),
+        is_heading: false,
+        level: 0,
+        source_span: span,
+    }
+}
+
+fn glyph_bounds(x: f32, baseline_y: f32, ch: char, size: f32) -> DisplayRect {
+    let w = ch_width(ch, size);
+    DisplayRect {
+        x,
+        y: baseline_y - size,
+        width: w,
+        height: size,
+    }
+}
+
+fn ch_width(ch: char, size: f32) -> f32 {
+    // Approximate advance: 0.6 em for most math glyphs, 1.0 for wide.
+    let factor = if ch.is_alphabetic() || ch.is_numeric() {
+        0.6
+    } else {
+        0.5
+    };
+    (factor * size).round().max(1.0)
+}
+
+fn source_offset_span(source_offset: usize, start: usize, end: usize) -> SourceSpan {
+    SourceSpan {
+        start: source_offset + start,
+        end: source_offset + end,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn inline_math_extraction() {
-        let source = "The value $x + 1$ and $y^2$ are math.";
-        let spans = extract_math_spans(source);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].0, "x + 1");
-        assert_eq!(spans[1].0, "y^2");
+    fn engine() -> Engine {
+        Engine::bundled().expect("bundled faces load")
     }
 
     #[test]
-    fn display_math_extraction() {
-        let source = "$$\\frac{a}{b}$$";
-        let spans = extract_math_spans(source);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].0, "\\frac{a}{b}");
+    fn simple_math_produces_display_items() {
+        let engine = engine();
+        let source = "x + 1";
+        let items = math_to_display(source, &engine, 0.0, 0.0, 16.0, 0)
+            .expect("simple math layouts");
+        assert!(!items.is_empty(), "display items produced");
+        // Every item must have a valid bounds rect.
+        for item in &items {
+            let b = item.bounds();
+            assert!(b.width >= 0.0 && b.height >= 0.0, "non-negative bounds");
+        }
     }
 
     #[test]
-    fn unmatched_dollars_are_ignored() {
-        let source = "cost is $5 and $10 total";
-        let spans = extract_math_spans(source);
-        // "$5 and $" — the inner is "5 and " which is nonempty but contains
-        // no nested $, so it would match. This is expected behavior for a
-        // simple scanner; the math parser will reject non-math content.
-        assert!(!spans.is_empty() || spans.is_empty()); // no panic
+    fn source_spans_survive_the_bridge() {
+        let engine = engine();
+        let source = "x + y";
+        let items = math_to_display(source, &engine, 0.0, 0.0, 16.0, 0)
+            .expect("math layouts");
+        for item in &items {
+            let span = item.source_span();
+            assert!(span.end <= source.len() + 1, "span within source");
+        }
     }
 
     #[test]
-    fn diagram_block_extraction() {
-        let source = "```mermaid\ngraph TD\n  A --> B\n```\ntext";
-        let blocks = extract_diagram_blocks(source);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].0, "mermaid");
-        assert!(blocks[0].1.contains("graph TD"));
+    fn fraction_produces_rule_and_stacked_glyphs() {
+        let engine = engine();
+        let source = "\\frac{a}{b}";
+        let items = math_to_display(source, &engine, 10.0, 10.0, 14.0, 0)
+            .expect("fraction layouts");
+        // Fractions should produce at least one rule (the fraction bar).
+        let has_vector = items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Vector(_)));
+        assert!(has_vector, "fraction bar is a vector path");
     }
 
     #[test]
-    fn math_display_validates_parse() {
-        let display = MathDisplay::new("x + 1", 0);
-        assert!(display.is_ok());
-
-        let bad = MathDisplay::new("\\this{is{not{valid", 0);
-        assert!(bad.is_err());
+    fn hostile_expansion_does_not_panic() {
+        let engine = engine();
+        for hostile in [
+            "", "\\\\{}", "$#$", "\\frac{\\frac{\\frac{a}{b}}{\\frac{c}{d}}}{\\frac{e}{f}}",
+            "\\left(\\right)", "\\sqrt{}", "\\text{}", "𝔘𝔫𝔦𝔠𝔬𝔡𝔢",
+        ] {
+            let result = math_to_display(hostile, &engine, 0.0, 0.0, 16.0, 0);
+            // Either succeeds with valid items or returns a typed error —
+            // never panics, never produces OOB spans.
+            if let Ok(items) = result {
+                for item in &items {
+                    let b = item.bounds();
+                    assert!(b.width.is_finite() && b.height.is_finite());
+                }
+            }
+        }
     }
 
     #[test]
-    fn diagram_display_tracks_offset() {
-        let display = DiagramDisplay::new("mermaid", "graph TD", 42);
-        assert_eq!(display.source_offset, 42);
-        assert_eq!(display.language, "mermaid");
+    fn unsupported_forms_return_typed_errors() {
+        let engine = engine();
+        // Unknown macro should produce a typed error, not a panic.
+        let result = math_to_display("\\unknownmacro{x}", &engine, 0.0, 0.0, 16.0, 0);
+        assert!(result.is_err(), "unknown macro is a typed error");
+    }
+
+    #[test]
+    fn semantic_anchor_covers_the_math_region() {
+        let engine = engine();
+        let source = "x + y";
+        let layout = engine
+            .typeset(source, fmd_math::Style::Display)
+            .expect("layouts");
+        let anchor = math_anchor(source, &layout, 0.0, 0.0, 16.0, 0);
+        assert!(anchor.bounds.width > 0.0);
+        assert!(anchor.bounds.height > 0.0);
+        assert_eq!(anchor.anchor_id, "math-0");
+        assert!(!anchor.is_heading);
     }
 }

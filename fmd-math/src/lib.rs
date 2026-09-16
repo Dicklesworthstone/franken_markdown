@@ -87,7 +87,7 @@ pub mod faces;
 mod layout;
 pub mod macros;
 pub mod mathml;
-mod mbox;
+pub mod mbox;
 pub mod metrics;
 pub mod node;
 mod parse;

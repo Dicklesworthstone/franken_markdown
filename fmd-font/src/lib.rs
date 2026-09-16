@@ -30,7 +30,12 @@ mod gvar;
 pub mod outline;
 pub mod shaping;
 mod subset;
+pub mod text_run;
 pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
+pub use text_run::{
+    CaretAffinity, CaretPosition, FontId, FontOrigin, HitTestResult, OwnedTextRun, RunGlyph,
+    SelectionRect, TextCluster, TextRunContext, byte_to_utf16, utf16_to_byte,
+};
 
 /// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak
 /// +50 x on point 0). Host-font / CLI / WASM tests use this; it is not a

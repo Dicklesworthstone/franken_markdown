@@ -51,6 +51,7 @@ pub mod lang_go;
 pub mod lang_html;
 pub mod lang_java;
 pub mod lang_javascript;
+pub mod lang_jsx;
 pub mod lang_python;
 pub mod lang_shell;
 pub mod lang_sql;

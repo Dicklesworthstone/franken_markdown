@@ -236,6 +236,14 @@ pub enum AccessibleReadingRole {
     ListItem,
     /// Table grid.
     Table,
+    /// Table header row.
+    TableHeaderRow,
+    /// Table body row.
+    TableRow,
+    /// Table header cell.
+    TableHeaderCell,
+    /// Table body cell.
+    TableCell,
     /// Blockquote or callout.
     BlockQuote,
     /// Thematic horizontal rule.

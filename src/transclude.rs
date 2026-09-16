@@ -4,6 +4,8 @@
 //! The pure render core never touches the filesystem. A host resolver owns
 //! path sandboxing and bounded file reads. Expansion uses one output buffer,
 //! checks its budget before every append, and bounds depth and resolver calls.
+//! Top-level fenced and indented code remains literal: documentation examples
+//! cannot trigger include resolution merely by containing a directive.
 
 use crate::{RenderError, Result};
 
@@ -98,7 +100,30 @@ impl Expansion<'_> {
         if !has_includes(src) {
             return self.append(src);
         }
+        let mut fence: Option<(u8, usize)> = None;
         for line in src.split_inclusive('\n') {
+            let candidate = fence_candidate(line);
+            if let Some((marker, length)) = fence {
+                if candidate.is_some_and(|(next, count, tail)| {
+                    next == marker && count >= length
+                        && tail.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+                }) {
+                    fence = None;
+                }
+                self.append(line)?;
+                continue;
+            }
+            if let Some((marker, length, tail)) = candidate {
+                if marker == b'~' || !tail.contains('`') {
+                    fence = Some((marker, length));
+                    self.append(line)?;
+                    continue;
+                }
+            }
+            if indented_code(line) {
+                self.append(line)?;
+                continue;
+            }
             let trimmed = line.trim();
             let Some(rest) = trimmed.strip_prefix(INCLUDE_PREFIX) else {
                 self.append(line)?;
@@ -143,6 +168,32 @@ impl Expansion<'_> {
         }
         Ok(())
     }
+}
+
+
+/// Only up to three leading ASCII spaces are allowed before a fence.
+fn fence_candidate(line: &str) -> Option<(u8, usize, &str)> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let indent = line.bytes().take_while(|&byte| byte == b' ').count();
+    if indent > 3 { return None; }
+    let text = &line[indent..];
+    let marker = *text.as_bytes().first()?;
+    if !matches!(marker, b'`' | b'~') { return None; }
+    let count = text.bytes().take_while(|&byte| byte == marker).count();
+    (count >= 3).then(|| (marker, count, &text[count..]))
+}
+
+fn indented_code(line: &str) -> bool {
+    let mut column = 0;
+    for byte in line.bytes() {
+        match byte {
+            b' ' => column += 1,
+            b'\t' => column += 4 - column % 4,
+            _ => break,
+        }
+        if column >= 4 { return true; }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -287,5 +338,43 @@ mod tests {
             }
         };
         assert_eq!(expand_includes("{{#include part}}", &resolve).unwrap(), "nested\n");
+    }
+
+
+    #[test]
+    fn literal_code_examples_never_invoke_the_resolver() {
+        let calls = Cell::new(0usize);
+        let resolve = |_: &str, _: &str| -> ResolveResult {
+            calls.set(calls.get() + 1);
+            Err("must not resolve literal code".into())
+        };
+        for source in [
+            "```markdown\n{{#include missing.md}}\n```\n",
+            "~~~ example\n{{#include missing.md}}\n~~~\n",
+            "    {{#include missing.md}}\n",
+            "\t{{#include missing.md}}\n",
+            "  \t{{#include missing.md}}\n",
+            "````markdown\n```\n{{#include missing.md}}\n````\n",
+            "```\n~~~\n{{#include missing.md}}\n```\n",
+            "```\n{{#include missing.md}}\n",
+        ] {
+            assert_eq!(expand_includes(source, &resolve).unwrap(), source);
+        }
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn real_directives_resume_after_a_matching_fence() {
+        let resolve = resolver(&[("real.md", "included")]);
+        let source = "   ```md\r\n{{#include missing.md}}\r\n   `````\t\r\n{{#include real.md}}\n";
+        let expected = "   ```md\r\n{{#include missing.md}}\r\n   `````\t\r\nincluded\n";
+        assert_eq!(expand_includes(source, &resolve).unwrap(), expected);
+    }
+
+    #[test]
+    fn malformed_closing_fences_do_not_reenable_includes() {
+        let resolve = resolver(&[]);
+        let source = "```\n``` not a close\n{{#include missing.md}}\n    ```\n{{#include missing.md}}\n```\n";
+        assert_eq!(expand_includes(source, &resolve).unwrap(), source);
     }
 }

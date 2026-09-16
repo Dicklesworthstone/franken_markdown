@@ -111,6 +111,11 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     let mut image_bytes = 0usize;
     let mut resource_count = 0usize;
     let mut chapters = Vec::with_capacity(book.chapters.len());
+    // Host image/font bytes can be large: clone the options once per book,
+    // not once per chapter. Only the title and language change in the loop.
+    let mut html_opts = opts.clone();
+    html_opts.custom_css = Some(String::new());
+    html_opts.allow_raw_html = false;
     for (index, source) in book.chapters.iter().enumerate() {
         let mut doc = source.doc.clone();
         rewrite_blocks(&mut doc.blocks, &paths[index], &known, &opts.image_assets);
@@ -119,17 +124,14 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
             .as_ref()
             .and_then(|fm| fm.lang.as_deref())
             .unwrap_or(lang);
-        let mut html_opts = opts.clone();
         html_opts.title = Some(source.title.clone());
         html_opts.lang = Some(chapter_lang.to_string());
-        html_opts.custom_css = Some(String::new());
-        html_opts.allow_raw_html = false;
         let page = franken_markdown::html::render(&doc, &html_opts);
         add_bytes(&mut byte_count, page.len())?;
         let body = extract_main_body(&page)
             .ok_or_else(|| invalid("HTML renderer <main> wrapper not found"))?;
         let body = html_fragment_to_xhtml(body);
-        for text in [&paths[index], &source.title, chapter_lang, &body] {
+        for text in [paths[index].as_str(), source.title.as_str(), chapter_lang, body.as_str()] {
             identity.part(text);
         }
         let content = resources::prepare_with_prefix(&body, &format!("chapter-{}-", index + 1))
@@ -165,8 +167,13 @@ fn chapter_file(index: usize) -> String {
     format!("chapter-{}.xhtml", index + 1)
 }
 
-fn has_scheme(path: &str) -> bool {
-    path.split('/').next().is_some_and(|part| part.contains(':'))
+fn has_scheme(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let mut bytes = scheme.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 /// Normalize logical book paths, never native filesystem paths.
@@ -431,6 +438,7 @@ mod tests {
     fn resolves_encoded_paths_without_rewriting_external_or_escaping_links() {
         assert_eq!(destination("guide/first.md", "../caf%C3%A9%20notes.md?q=1#part"), Some(("café notes.md".into(), "?q=1#part".into())));
         assert_eq!(destination("guide/first.md", "/intro.md#top"), Some(("intro.md".into(), "#top".into())));
+        assert_eq!(destination("guide/first.md", "../second.md?time=12:00#part:two"), Some(("second.md".into(), "?time=12:00#part:two".into())));
         for dest in ["#local", "?query", "https://example.com/x.md", "//host/x.md", "mailto:a@b", "../../outside.md", "%ff.md", "%zz.md", "bad%", ""] {
             assert!(destination("guide/first.md", dest).is_none(), "rewrote {dest}");
         }
@@ -488,5 +496,16 @@ mod tests {
         reversed.chapters.reverse();
         assert_ne!(plain.opf, prepare_book(&reversed, &HtmlOptions::default())?.opf);
         Ok(())
+    }
+
+    #[test]
+    fn identity_components_are_unambiguous() {
+        let mut first = Identity::new();
+        first.part("ab");
+        first.part("c");
+        let mut second = Identity::new();
+        second.part("a");
+        second.part("bc");
+        assert_ne!(first.finish(), second.finish());
     }
 }

@@ -2196,6 +2196,54 @@ pub const JSON_CAPABILITY_V1: JsonCapabilityV1 = JsonCapabilityV1 {
     escapes_numbers_literals: true,
 };
 
+/// The versioned Rust capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for Rust.
+    pub incremental: bool,
+    /// Raw strings and nested block comments supported.
+    pub raw_strings_and_nested_comments: bool,
+    /// Lifetimes and inner/outer attributes supported.
+    pub lifetimes_and_attributes: bool,
+    /// Various numeric forms (hex, octal, binary, floats) supported.
+    pub numeric_forms: bool,
+}
+
+/// The Rust capability row published by this module.
+pub const RUST_CAPABILITY_V1: RustCapabilityV1 = RustCapabilityV1 {
+    version: 1,
+    incremental: true,
+    raw_strings_and_nested_comments: true,
+    lifetimes_and_attributes: true,
+    numeric_forms: true,
+};
+
+/// The versioned Markdown capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MarkdownCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for Markdown.
+    pub incremental: bool,
+    /// Code fences and info strings supported.
+    pub fences_and_info_strings: bool,
+    /// Headings, blockquotes, and lists supported.
+    pub headings_and_blockquotes: bool,
+    /// Inline code, HTML comments, and link syntax supported.
+    pub inline_code_and_html_comments: bool,
+}
+
+/// The Markdown capability row published by this module.
+pub const MARKDOWN_CAPABILITY_V1: MarkdownCapabilityV1 = MarkdownCapabilityV1 {
+    version: 1,
+    incremental: true,
+    fences_and_info_strings: true,
+    headings_and_blockquotes: true,
+    inline_code_and_html_comments: true,
+};
+
 /// JSON keyword literals (shared by `json`/`jsonc`).
 const JSON_KW: KwTable = {
     const GROUPED: &[&str] = &group_by_first_byte(["true", "false", "null"], false);

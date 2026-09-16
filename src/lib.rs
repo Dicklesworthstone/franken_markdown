@@ -44,6 +44,7 @@ pub mod fonts;
 mod footnotes;
 pub mod highlight;
 pub mod html;
+pub mod lang_capabilities;
 pub mod lang_cplusplus;
 pub mod lang_csharp;
 pub mod lang_dispatch;

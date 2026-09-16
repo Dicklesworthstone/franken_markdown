@@ -442,6 +442,165 @@ impl LanguageRegistry {
         reg
     }
 
+    /// Construct the fully qualified release inventory of all 20 required language routes (Plan §11.4).
+    ///
+    /// Following the completion of the FCB-022 implementation campaign:
+    /// - All 20 required language routes are fully qualified and `Implemented`.
+    /// - Zero languages are `Provisional` or `Missing`.
+    #[must_use]
+    pub fn release_20_inventory() -> Self {
+        let mut reg = Self::new();
+
+        let entries: [LanguageRouteRegistration; 20] = [
+            LanguageRouteRegistration {
+                language_id: LanguageId::Rust,
+                status: QualificationStatus::Implemented,
+                primary_alias: "rust",
+                aliases: LanguageId::Rust.standard_aliases(),
+                description: "Rust incremental lexical engine with raw strings and block comments",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Python,
+                status: QualificationStatus::Implemented,
+                primary_alias: "python",
+                aliases: LanguageId::Python.standard_aliases(),
+                description: "Python incremental lexical engine with comments and quotes",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::JavaScript,
+                status: QualificationStatus::Implemented,
+                primary_alias: "javascript",
+                aliases: LanguageId::JavaScript.standard_aliases(),
+                description: "JavaScript incremental lexical engine with template literals",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::TypeScript,
+                status: QualificationStatus::Implemented,
+                primary_alias: "typescript",
+                aliases: LanguageId::TypeScript.standard_aliases(),
+                description: "TypeScript incremental lexical engine with type keywords",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Jsx,
+                status: QualificationStatus::Implemented,
+                primary_alias: "jsx",
+                aliases: LanguageId::Jsx.standard_aliases(),
+                description: "JSX incremental lexical engine with tag/text mode transitions and expressions (fcb-9vx.8)",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Tsx,
+                status: QualificationStatus::Implemented,
+                primary_alias: "tsx",
+                aliases: LanguageId::Tsx.standard_aliases(),
+                description: "TSX incremental lexical engine with JSX+TypeScript composition (fcb-9vx.9)",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::C,
+                status: QualificationStatus::Implemented,
+                primary_alias: "c",
+                aliases: LanguageId::C.standard_aliases(),
+                description: "C incremental lexical engine with preprocessor directives",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Cpp,
+                status: QualificationStatus::Implemented,
+                primary_alias: "cpp",
+                aliases: LanguageId::Cpp.standard_aliases(),
+                description: "C++ incremental lexical engine with preprocessor directives and raw strings",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::CSharp,
+                status: QualificationStatus::Implemented,
+                primary_alias: "csharp",
+                aliases: LanguageId::CSharp.standard_aliases(),
+                description: "C# incremental lexical engine with comments, preprocessor directives, verbatim/interpolated/raw strings",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Go,
+                status: QualificationStatus::Implemented,
+                primary_alias: "go",
+                aliases: LanguageId::Go.standard_aliases(),
+                description: "Go incremental lexical engine with raw backtick literals",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Java,
+                status: QualificationStatus::Implemented,
+                primary_alias: "java",
+                aliases: LanguageId::Java.standard_aliases(),
+                description: "Java incremental lexical engine with comments, text blocks, annotations",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Swift,
+                status: QualificationStatus::Implemented,
+                primary_alias: "swift",
+                aliases: LanguageId::Swift.standard_aliases(),
+                description: "Swift incremental lexical engine with nested comments, raw/multiline strings, attributes",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Shell,
+                status: QualificationStatus::Implemented,
+                primary_alias: "bash",
+                aliases: LanguageId::Shell.standard_aliases(),
+                description: "Shell incremental lexical engine (Bash, sh, zsh) with heredoc tracking (fcb-9vx.16)",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Json,
+                status: QualificationStatus::Implemented,
+                primary_alias: "json",
+                aliases: LanguageId::Json.standard_aliases(),
+                description: "JSON incremental lexical engine with string boundaries",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Toml,
+                status: QualificationStatus::Implemented,
+                primary_alias: "toml",
+                aliases: LanguageId::Toml.standard_aliases(),
+                description: "TOML incremental lexical engine with comments and strings",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Yaml,
+                status: QualificationStatus::Implemented,
+                primary_alias: "yaml",
+                aliases: LanguageId::Yaml.standard_aliases(),
+                description: "YAML incremental lexical engine with comments and scalars",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Sql,
+                status: QualificationStatus::Implemented,
+                primary_alias: "sql",
+                aliases: LanguageId::Sql.standard_aliases(),
+                description: "SQL incremental lexical engine with dash-dash comments",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Html,
+                status: QualificationStatus::Implemented,
+                primary_alias: "html",
+                aliases: LanguageId::Html.standard_aliases(),
+                description: "HTML incremental lexer with doctype, comments, CDATA, tags, and inert script/style",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Css,
+                status: QualificationStatus::Implemented,
+                primary_alias: "css",
+                aliases: LanguageId::Css.standard_aliases(),
+                description: "CSS incremental lexical engine with selectors, declarations, at-rules, strings, urls and comments",
+            },
+            LanguageRouteRegistration {
+                language_id: LanguageId::Markdown,
+                status: QualificationStatus::Implemented,
+                primary_alias: "markdown",
+                aliases: LanguageId::Markdown.standard_aliases(),
+                description: "Markdown incremental lexer with code fence info strings and block constructs (fcb-9vx.23)",
+            },
+        ];
+
+        for entry in entries {
+            let _ = reg.register(entry);
+        }
+
+        reg
+    }
+
     /// Number of registered language routes.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -602,6 +761,21 @@ impl LanguageRegistry {
             is_finished: true,
             source_revision: req.source_revision,
         })
+    }
+
+    /// Return the authoritative capability matrix for this registry (Plan §11.4).
+    #[must_use]
+    pub fn capability_matrix(&self) -> crate::lang_capabilities::CapabilityMatrix {
+        crate::lang_capabilities::CapabilityMatrix::release_20()
+    }
+
+    /// Dispatch code over the registry, degrading to a source-exact plain text
+    /// representation if the language is unknown or uncolored (Plan §11.4).
+    ///
+    /// "Unknown languages remain readable as plain source. The application must
+    /// not refuse to open a file because it cannot color it."
+    pub fn dispatch_with_fallback(&self, req: DispatchRequest<'_>) -> DispatchResult {
+        crate::lang_capabilities::dispatch_or_plain_fallback(self, req)
     }
 }
 

@@ -127,6 +127,8 @@ pub struct TextRunContext {
 pub struct RunGlyph {
     /// OpenType glyph identifier.
     pub glyph_id: u16,
+    /// Producing font identity (Plan §13.7: glyph ID has meaning only with actual font).
+    pub font_id: FontId,
     /// Index of the parent cluster in the run's cluster array.
     pub cluster_index: usize,
     /// Horizontal advance in user units.
@@ -154,6 +156,8 @@ pub struct TextCluster {
     pub x_start: f32,
     /// Visual horizontal end coordinate (inclusive).
     pub x_end: f32,
+    /// Producing font identity for this cluster.
+    pub font_id: FontId,
 }
 
 impl TextCluster {
@@ -218,6 +222,7 @@ impl OwnedTextRun {
 
                 run_glyphs.push(RunGlyph {
                     glyph_id: g.glyph_id,
+                    font_id: context.font_id,
                     cluster_index: clusters.len(),
                     x_advance: x_adv,
                     y_advance: y_adv,
@@ -258,6 +263,7 @@ impl OwnedTextRun {
                 glyph_range: cluster_start_glyph..glyph_idx,
                 x_start: cluster_x_start,
                 x_end: cluster_x_end,
+                font_id: context.font_id,
             });
         }
 
@@ -303,42 +309,62 @@ impl OwnedTextRun {
 
         let is_rtl = self.context.direction == Direction::RightToLeft;
 
-        // Before start
+        // Before left boundary (x <= 0.0)
         if visual_x <= 0.0 {
-            let first = if is_rtl {
-                &self.clusters[self.clusters.len() - 1]
+            if is_rtl {
+                let last = &self.clusters[self.clusters.len() - 1];
+                return HitTestResult {
+                    cluster_index: last.cluster_index,
+                    caret: CaretPosition {
+                        byte_offset: last.byte_range.end,
+                        utf16_offset: last.utf16_range.end,
+                        visual_x: 0.0,
+                        affinity: CaretAffinity::Trailing,
+                    },
+                    is_exact: false,
+                };
             } else {
-                &self.clusters[0]
-            };
-            return HitTestResult {
-                cluster_index: first.cluster_index,
-                caret: CaretPosition {
-                    byte_offset: first.byte_range.start,
-                    utf16_offset: first.utf16_range.start,
-                    visual_x: 0.0,
-                    affinity: CaretAffinity::Leading,
-                },
-                is_exact: false,
-            };
+                let first = &self.clusters[0];
+                return HitTestResult {
+                    cluster_index: first.cluster_index,
+                    caret: CaretPosition {
+                        byte_offset: first.byte_range.start,
+                        utf16_offset: first.utf16_range.start,
+                        visual_x: 0.0,
+                        affinity: CaretAffinity::Leading,
+                    },
+                    is_exact: false,
+                };
+            }
         }
 
-        // Beyond end
+        // Beyond right boundary (x >= total_advance)
         if visual_x >= self.total_advance {
-            let last = if is_rtl {
-                &self.clusters[0]
+            if is_rtl {
+                let first = &self.clusters[0];
+                return HitTestResult {
+                    cluster_index: first.cluster_index,
+                    caret: CaretPosition {
+                        byte_offset: first.byte_range.start,
+                        utf16_offset: first.utf16_range.start,
+                        visual_x: self.total_advance,
+                        affinity: CaretAffinity::Leading,
+                    },
+                    is_exact: false,
+                };
             } else {
-                &self.clusters[self.clusters.len() - 1]
-            };
-            return HitTestResult {
-                cluster_index: last.cluster_index,
-                caret: CaretPosition {
-                    byte_offset: last.byte_range.end,
-                    utf16_offset: last.utf16_range.end,
-                    visual_x: self.total_advance,
-                    affinity: CaretAffinity::Trailing,
-                },
-                is_exact: false,
-            };
+                let last = &self.clusters[self.clusters.len() - 1];
+                return HitTestResult {
+                    cluster_index: last.cluster_index,
+                    caret: CaretPosition {
+                        byte_offset: last.byte_range.end,
+                        utf16_offset: last.utf16_range.end,
+                        visual_x: self.total_advance,
+                        affinity: CaretAffinity::Trailing,
+                    },
+                    is_exact: false,
+                };
+            }
         }
 
         // Search through clusters

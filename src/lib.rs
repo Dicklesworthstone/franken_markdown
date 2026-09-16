@@ -70,7 +70,9 @@ pub mod parse;
 pub mod pdf;
 pub mod pdfa;
 pub mod resume;
+pub mod flow;
 pub mod scanner;
+pub mod source_map;
 pub mod span;
 /// The font subsystem, factored into the `fmd-font` workspace crate
 /// (sfnt reader + glyf outline decoder). Re-exported under its historical
@@ -151,6 +153,12 @@ pub use scanner::{
     scan_table_or_fence_candidate,
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
+pub use flow::{
+    FlowBudgets, FlowConstraints, FlowError, FlowLine, FlowOutput, HeadlessFlowConsumer,
+};
+pub use source_map::{
+    DocumentSourceMap, HeadingSourceAnchor, RenderedElement, SourceMapError, TextSelectionRange,
+};
 pub use span::{
     CaptureId, DiagnosticSeverity, DisjointSourceRanges, NestedProvenanceGraph,
     NestedProvenanceNode, ParseDiagnostic, ProvenanceAuditReport, ProvenanceError,

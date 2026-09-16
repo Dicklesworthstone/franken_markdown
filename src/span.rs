@@ -421,6 +421,81 @@ impl SpannedDocument {
         )?;
         NestedProvenanceGraph::try_new(CaptureId::PRIMARY, root)
     }
+
+    /// Borrow the slice of top-level spanned blocks without cloning.
+    #[inline]
+    #[must_use]
+    pub fn blocks(&self) -> &[SpannedBlock] {
+        &self.blocks
+    }
+
+    /// Iterator over top-level spanned blocks without cloning the underlying AST.
+    #[inline]
+    pub fn iter_blocks(&self) -> std::slice::Iter<'_, SpannedBlock> {
+        self.blocks.iter()
+    }
+
+    /// Total number of top-level blocks in the document.
+    #[inline]
+    #[must_use]
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// True when the document has zero blocks.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    /// Borrow the spanned block at `index`, if within bounds.
+    #[inline]
+    #[must_use]
+    pub fn block_at(&self, index: usize) -> Option<&SpannedBlock> {
+        self.blocks.get(index)
+    }
+
+    /// Return the source span for the block at `index`.
+    #[inline]
+    #[must_use]
+    pub fn source_span_for_block(&self, index: usize) -> Option<SourceSpan> {
+        self.blocks.get(index).map(|b| b.span)
+    }
+
+    /// Find the block containing the given source byte offset.
+    #[must_use]
+    pub fn block_at_offset(&self, offset: usize) -> Option<(usize, &SpannedBlock)> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .find(|(_, block)| block.span.contains(offset))
+    }
+
+    /// Minimal enclosing source span covering the entire document: `[0, source_len)`.
+    #[inline]
+    #[must_use]
+    pub const fn source_span(&self) -> SourceSpan {
+        SourceSpan::new(0, self.source_len)
+    }
+
+    /// Construct an authoritative document source map from this spanned document.
+    pub fn source_map(
+        &self,
+        source: &str,
+    ) -> Result<crate::source_map::DocumentSourceMap, crate::source_map::SourceMapError> {
+        crate::source_map::DocumentSourceMap::from_spanned_document(self, source)
+    }
+}
+
+impl<'a> IntoIterator for &'a SpannedDocument {
+    type Item = &'a SpannedBlock;
+    type IntoIter = std::slice::Iter<'a, SpannedBlock>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.iter()
+    }
 }
 
 // ---------------------------------------------------------------------------

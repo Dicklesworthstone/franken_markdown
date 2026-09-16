@@ -1102,13 +1102,13 @@ fn decimal_len_usize(mut value: usize) -> usize {
     len
 }
 
-fn inlines_to_plain(inlines: &[Inline]) -> String {
+pub(crate) fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut s = String::new();
     push_inlines_to_plain(inlines, &mut s);
     s
 }
 
-fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
+pub(crate) fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
             Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
@@ -1141,7 +1141,7 @@ fn slug(text: &str) -> String {
     s
 }
 
-fn slug_inlines(inlines: &[Inline]) -> String {
+pub(crate) fn slug_inlines(inlines: &[Inline]) -> String {
     let mut s = String::new();
     let mut pending_dash = false;
     push_slug_inlines(inlines, &mut s, &mut pending_dash);

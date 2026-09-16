@@ -364,3 +364,25 @@ fn provenance_oracle_truthfulness_integration() {
     assert!(report.zero_invented_contiguous_slices);
     println!("Provenance report: {:?}", report);
 }
+
+#[test]
+fn multi_item_list_provenance_and_flow() {
+    let source = "# Features List\n\n\
+                  - Item alpha with text\n\
+                  - Item beta with **bold** text\n\
+                  - Item gamma with `code` block\n\n\
+                  End paragraph.\n";
+    let consumer = HeadlessFlowConsumer::default();
+    let output = consumer.consume_source(source).expect("flow consumer multi-item list succeeded");
+
+    assert!(output.lines.len() >= 4);
+    let report = ProvenanceOracle::verify_truthfulness(
+        output.source_map.provenance_graph(),
+        source,
+        &|_| None,
+    )
+    .expect("provenance graph for lists must be truthful");
+
+    assert!(report.zero_invented_contiguous_slices);
+    assert!(report.total_nodes >= 6);
+}

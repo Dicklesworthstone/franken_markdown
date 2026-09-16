@@ -32,6 +32,7 @@ pub mod shaping;
 mod subset;
 pub mod text_run;
 pub mod native_route;
+pub mod macos;
 pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
 pub use text_run::{
     CaretAffinity, CaretPosition, FontId, FontOrigin, HitTestResult, OwnedTextRun, RunGlyph,
@@ -41,6 +42,11 @@ pub use native_route::{
     assemble_platform_run, FallbackFace, NativeShapingError, NativeShapingRequest,
     NativeShapingRoute, PlatformRunGlyph, PlatformShapedOutput, ShapingRouteCapabilities,
     ShapingRouteKind, SimulatedFallbackRule, SimulatedNativeRoute,
+};
+pub use macos::{
+    MacBridgeDriver, MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError,
+    RawCoreGraphicsRaster, RawCoreTextGlyph, RawCoreTextLine, SimulatedMacBridge,
+    DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_BYTES, MAX_MAC_RASTER_DIMENSION,
 };
 
 /// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak

@@ -161,6 +161,12 @@ pub use display::{
     DisplayList, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath,
     VectorShapeType,
 };
+pub use math_display::{
+    contains_hostile_markup, diagram_anchor, diagram_fallback, diagram_to_display,
+    diagram_to_display_with_fallback, extract_diagram_blocks, extract_math_spans,
+    is_diagram_language, layout_to_display, math_anchor, math_to_display, DiagramDisplay,
+    DiagramError, MathDisplay, MathDisplayError,
+};
 pub use flow::{
     FlowBudgets, FlowConstraints, FlowError, FlowLine, FlowOutput, HeadlessFlowConsumer,
 };

@@ -112,6 +112,12 @@ pub enum VectorShapeType {
     CheckboxOutline,
     /// Task list checkmark inside checkbox.
     CheckboxCheck,
+    /// Diagram node shape or box boundary.
+    DiagramBox,
+    /// Diagram directed arrow.
+    DiagramArrow,
+    /// Diagram connecting line.
+    DiagramConnector,
 }
 
 /// A 2D vector path primitive in the renderer-neutral display list.

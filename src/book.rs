@@ -29,6 +29,12 @@ pub use render::{
 #[path = "book/browser.rs"]
 pub mod browser;
 
+/// Native filesystem shell and executable dispatcher. Never compiled into
+/// the no-default-features core or browser-only builds.
+#[cfg(feature = "cli")]
+#[path = "book/native.rs"]
+pub mod native;
+
 /// One input document: the book-relative path and its Markdown source.
 #[derive(Debug, Clone)]
 pub struct BookInput {
@@ -316,4 +322,17 @@ fn escape_text(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Resolve a chapter-relative resource URL to a book-relative logical path
+/// plus its unchanged query/fragment suffix. Percent decoding happens exactly
+/// once. External URLs, fragment-only links, malformed encodings, invalid
+/// source paths, and attempts to escape the book root return `None`.
+///
+/// This function does not read files or grant filesystem access. Native hosts
+/// must separately validate symlinks, regular-file status and byte budgets.
+#[must_use]
+pub fn resolve_book_destination(source_path: &str, destination: &str) -> Option<(String, String)> {
+    let source = paths::source_path(source_path)?;
+    paths::destination(&source, destination)
 }

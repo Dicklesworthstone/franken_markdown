@@ -38,6 +38,10 @@
       "types": "./franken_markdown.d.ts",
       "import": "./franken_markdown.js"
     },
+    "./book": {
+      "types": "./book.d.ts",
+      "import": "./book.js"
+    },
     "./web-component": {
       "types": "./fmd-view.d.ts",
       "import": "./fmd-view.js"
@@ -46,6 +50,9 @@
   "files": [
     "franken_markdown.js",
     "franken_markdown.d.ts",
+    "book.js",
+    "book.d.ts",
+    "book_session.mjs",
     "demo/index.html",
     "demo/demo.js",
     "pkg/franken_markdown.js",

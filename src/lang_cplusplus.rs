@@ -607,7 +607,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let word = &code[start..pos];
             let kind = if is_keyword(word) {
                 Tok::Keyword
-            } else if is_type_name(word) {
+            } else if is_type_name(word) || crate::highlight::is_capitalized_not_all_caps(word) {
                 Tok::Type
             } else if next_non_space_is(code, pos, '(') {
                 Tok::Func

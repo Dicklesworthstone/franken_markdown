@@ -201,6 +201,17 @@ pub const JAVASCRIPT_CAPABILITY_V1: JavaScriptCapabilityV1 = JavaScriptCapabilit
 
 /// Lex JavaScript source into exact tiling spans.
 pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
+    lex_javascript_composed_into(code, spans, &[], &[]);
+}
+
+/// Lex JavaScript or layered extensions (e.g. TypeScript) into exact tiling spans,
+/// reusing the full JavaScript lexical state machine per the language composition contract.
+pub fn lex_javascript_composed_into(
+    code: &str,
+    spans: &mut Vec<Span>,
+    extra_keywords: &[&str],
+    extra_types: &[&str],
+) {
     let bytes_len = code.len();
     let _code_bytes = code.as_bytes();
     let mut pos = 0usize;
@@ -488,9 +499,11 @@ pub fn lex_javascript_into(code: &str, spans: &mut Vec<Span>) {
                 "IDENT SLICE OOB: start={start} pos={pos} len={bytes_len}"
             );
             let word = &code[start..pos];
-            let kind = if is_id_or_keyword(word) {
+            let is_kw = is_id_or_keyword(word) || extra_keywords.contains(&word);
+            let is_ty = is_type_name(word) || extra_types.contains(&word);
+            let kind = if is_kw {
                 Tok::Keyword
-            } else if is_type_name(word) {
+            } else if is_ty {
                 Tok::Type
             } else if next_non_space_is(code, pos, '(') {
                 Tok::Func

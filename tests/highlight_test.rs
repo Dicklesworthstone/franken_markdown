@@ -645,17 +645,17 @@ fn generic_type_detection_known_and_uppercase_heuristic() {
 
 #[test]
 fn generic_empty_type_table_skips_uppercase_heuristic() {
-    // Bash has no type table: an uppercase word must stay Plain, not become Type.
+    // Powershell has no type table: an uppercase word must stay Plain, not become Type.
     let code = "echo $HOME";
-    assert_spans_tile("bash", code);
-    let kinds: Vec<Tok> = highlight("bash", code).iter().map(|s| s.kind).collect();
+    assert_spans_tile("powershell", code);
+    let kinds: Vec<Tok> = highlight("powershell", code).iter().map(|s| s.kind).collect();
     assert!(
         !kinds.contains(&Tok::Type),
         "an empty type table must not classify uppercase words as types"
     );
-    assert!(has_span("bash", code, Tok::Plain, "HOME"));
+    assert!(has_span("powershell", code, Tok::Plain, "HOME"));
     // '$' is neither operator nor punctuation in the generic table -> Plain.
-    assert!(has_span("bash", code, Tok::Plain, "$"));
+    assert!(has_span("powershell", code, Tok::Plain, "$"));
 }
 
 #[test]

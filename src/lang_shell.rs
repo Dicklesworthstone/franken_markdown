@@ -14,7 +14,7 @@ const KEYWORDS: &[&str] = &[
     "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac",
     "in", "function", "select", "time", "coproc", "local", "export", "readonly", "declare",
     "typeset", "unset", "shift", "return", "exit", "eval", "exec", "set", "trap", "umask", "alias",
-    "unalias", "source", "wait",
+    "unalias", "source", "wait", "echo",
 ];
 
 const BUILTINS: &[&str] = &[

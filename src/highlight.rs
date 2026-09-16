@@ -112,6 +112,7 @@ enum Lexer {
     Swift,
     Shell,
     Cpp,
+    TypeScript,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -179,6 +180,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::Cpp) => {
             crate::lang_cplusplus::lex_cplusplus_into(code, spans);
+        }
+        Some(Lexer::TypeScript) => {
+            crate::lang_typescript::lex_typescript_into(code, spans);
         }
         None => return false,
     }
@@ -1055,7 +1059,7 @@ fn next_byte_after_whitespace(code: &str, mut pos: usize) -> Option<u8> {
 }
 
 #[inline(always)]
-fn is_capitalized_not_all_caps(word: &str) -> bool {
+pub(crate) fn is_capitalized_not_all_caps(word: &str) -> bool {
     let bytes = word.as_bytes();
     if bytes.is_empty() {
         return false;
@@ -1455,7 +1459,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
         "java" => Some(Lexer::Java),
         "swift" => Some(Lexer::Swift),
         "go" | "golang" => Some(Lexer::Go),
-        "javascript" | "js" | "jsx" | "mjs" | "cjs" | "typescript" | "ts" | "tsx" => {
+        "typescript" | "ts" => Some(Lexer::TypeScript),
+        "javascript" | "js" | "jsx" | "mjs" | "cjs" | "tsx" => {
             Some(Lexer::JavaScript)
         }
         "json" | "jsonc" => Some(Lexer::Generic(Rules {

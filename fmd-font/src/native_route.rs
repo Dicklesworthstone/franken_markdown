@@ -14,8 +14,7 @@
 
 use crate::shaping::Direction;
 use crate::text_run::{
-    byte_to_utf16, CaretPosition, FontId, FontOrigin, HitTestResult, OwnedTextRun, RunGlyph,
-    SelectionRect, TextCluster, TextRunContext,
+    byte_to_utf16, FontId, FontOrigin, OwnedTextRun, RunGlyph, TextCluster, TextRunContext,
 };
 use std::fmt;
 use std::ops::Range;

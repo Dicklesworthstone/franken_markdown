@@ -158,8 +158,9 @@ pub use span::{
 };
 pub use svg::{SvgOptions, SvgReport, render_svg, render_svg_with_report};
 pub use theme::{
-    CodeTheme, DarkModePolicy, FontFamily, FontScale, MonoFontFamily, PageMargins, PageSize,
-    PageStyle, Theme, ThemeColors, ThemeSpacing, TypeScale, TypeScalePreset,
+    CodeLigatures, CodeTheme, DarkModePolicy, FontFamily, FontScale, MonoFontFamily, PageMargins,
+    PageSize, PageStyle, SystemAppearance, Theme, ThemeColors, ThemeSpacing, TypeScale,
+    TypeScalePreset,
 };
 pub use transclude::expand_includes;
 pub use zip::{ZipWriter, crc32};

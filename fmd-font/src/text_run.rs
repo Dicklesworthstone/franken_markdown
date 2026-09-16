@@ -8,7 +8,7 @@
 //! - Discontiguous visual selection rectangles for logical source ranges.
 //! - Capability distinction between bundled deterministic faces and system fallback faces.
 
-use crate::shaping::{Direction, ShapedGlyph, ShapedRun};
+use crate::shaping::{Direction, ShapedRun};
 use std::ops::Range;
 
 /// Unique identifier for an immutable font face.

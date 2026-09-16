@@ -100,7 +100,91 @@ impl CodeTheme {
     }
 }
 
+/// Host and user appearance preferences for rendering (Plan §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SystemAppearance {
+    /// Follow host system appearance (light, dark, or high-contrast).
+    #[default]
+    Auto,
+    /// Light appearance with light background and crisp dark text.
+    Light,
+    /// Standard dark appearance with dark background.
+    Dark,
+    /// Reference-inspired charcoal dark appearance (§5.7).
+    Charcoal,
+    /// High-contrast light appearance with pure white background and maximum contrast.
+    HighContrastLight,
+    /// High-contrast dark appearance with pure black background and maximum contrast.
+    HighContrastDark,
+}
+
+impl SystemAppearance {
+    /// Stable config/JSON spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Charcoal => "charcoal",
+            Self::HighContrastLight => "high-contrast-light",
+            Self::HighContrastDark => "high-contrast-dark",
+        }
+    }
+
+    /// Whether this appearance is high-contrast.
+    #[must_use]
+    pub const fn is_high_contrast(self) -> bool {
+        matches!(self, Self::HighContrastLight | Self::HighContrastDark)
+    }
+
+    /// Whether this appearance is a dark variant.
+    #[must_use]
+    pub const fn is_dark(self) -> bool {
+        matches!(self, Self::Dark | Self::Charcoal | Self::HighContrastDark)
+    }
+}
+
+/// Code ligature policy for source code views and code fences (Plan §13.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodeLigatures {
+    /// Conservative ligatures (arrows ->, =>, !=, <=, >=; never obscure distinct source characters).
+    #[default]
+    Conservative,
+    /// All code ligatures disabled.
+    Off,
+    /// All available OpenType code ligatures enabled.
+    All,
+}
+
+impl CodeLigatures {
+    /// Stable config/JSON spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Conservative => "conservative",
+            Self::Off => "off",
+            Self::All => "all",
+        }
+    }
+
+    /// Whether arrows and standard operator ligatures are enabled.
+    #[must_use]
+    pub const fn allows_arrows(self) -> bool {
+        matches!(self, Self::Conservative | Self::All)
+    }
+
+    /// Whether character-obscuring ligatures (e.g. triple equals, underscores) are forbidden.
+    #[must_use]
+    pub const fn preserves_character_boundaries(self) -> bool {
+        matches!(self, Self::Conservative | Self::Off)
+    }
+}
+
 /// Colour tokens shared by HTML and the PDF style layer.
+///
+/// Plan §5.7: "Directory borders, language color accents, selection, search matches,
+/// and diagnostics must have distinct visual roles. Never rely solely on hue."
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
     pub fg: String,
@@ -114,6 +198,22 @@ pub struct ThemeColors {
     pub quote_fg: String,
     pub quote_bar: String,
     pub accent: String,
+    /// Visual selection highlight background (Plan §5.7).
+    pub selection_bg: String,
+    /// Visual selection highlight text colour.
+    pub selection_fg: String,
+    /// Search match highlight background.
+    pub search_match_bg: String,
+    /// Search match highlight text colour.
+    pub search_match_fg: String,
+    /// Directory borders with distinct visual role (not relying solely on hue).
+    pub directory_border: String,
+    /// Diagnostic error colour.
+    pub diagnostic_error: String,
+    /// Diagnostic warning colour.
+    pub diagnostic_warning: String,
+    /// Diagnostic info colour.
+    pub diagnostic_info: String,
 }
 
 impl ThemeColors {
@@ -132,6 +232,14 @@ impl ThemeColors {
             quote_fg: "#59636e".to_string(),
             quote_bar: "#d1d9e0".to_string(),
             accent: "#0969da".to_string(),
+            selection_bg: "#b6d7ff".to_string(),
+            selection_fg: "#000000".to_string(),
+            search_match_bg: "#fff59d".to_string(),
+            search_match_fg: "#24292f".to_string(),
+            directory_border: "#54a0ff".to_string(),
+            diagnostic_error: "#cf222e".to_string(),
+            diagnostic_warning: "#9a6700".to_string(),
+            diagnostic_info: "#0969da".to_string(),
         }
     }
 
@@ -150,6 +258,92 @@ impl ThemeColors {
             quote_fg: "#9198a1".to_string(),
             quote_bar: "#2f3742".to_string(),
             accent: "#4493f8".to_string(),
+            selection_bg: "#264f78".to_string(),
+            selection_fg: "#ffffff".to_string(),
+            search_match_bg: "#5a4b15".to_string(),
+            search_match_fg: "#ffffff".to_string(),
+            directory_border: "#388bfd".to_string(),
+            diagnostic_error: "#f85149".to_string(),
+            diagnostic_warning: "#d29922".to_string(),
+            diagnostic_info: "#58a6ff".to_string(),
+        }
+    }
+
+    /// Reference-inspired charcoal theme (Plan §5.7).
+    #[must_use]
+    pub fn charcoal() -> Self {
+        Self {
+            fg: "#e6edf3".to_string(),
+            fg_muted: "#9da7b3".to_string(),
+            bg: "#1a1d21".to_string(),
+            bg_subtle: "#22262b".to_string(),
+            border: "#323842".to_string(),
+            border_muted: "#282c34".to_string(),
+            code_bg: "#22262b".to_string(),
+            stripe: "#1e2227".to_string(),
+            quote_fg: "#9da7b3".to_string(),
+            quote_bar: "#3e4451".to_string(),
+            accent: "#61afef".to_string(),
+            selection_bg: "#3e4451".to_string(),
+            selection_fg: "#ffffff".to_string(),
+            search_match_bg: "#e5c07b".to_string(),
+            search_match_fg: "#1e2227".to_string(),
+            directory_border: "#4b5263".to_string(),
+            diagnostic_error: "#e06c75".to_string(),
+            diagnostic_warning: "#e5c07b".to_string(),
+            diagnostic_info: "#61afef".to_string(),
+        }
+    }
+
+    /// High-contrast light theme with maximum readability (Plan §5.7).
+    #[must_use]
+    pub fn high_contrast_light() -> Self {
+        Self {
+            fg: "#000000".to_string(),
+            fg_muted: "#111111".to_string(),
+            bg: "#ffffff".to_string(),
+            bg_subtle: "#f0f0f0".to_string(),
+            border: "#000000".to_string(),
+            border_muted: "#333333".to_string(),
+            code_bg: "#f0f0f0".to_string(),
+            stripe: "#e8e8e8".to_string(),
+            quote_fg: "#111111".to_string(),
+            quote_bar: "#000000".to_string(),
+            accent: "#0000ee".to_string(),
+            selection_bg: "#000080".to_string(),
+            selection_fg: "#ffffff".to_string(),
+            search_match_bg: "#ffff00".to_string(),
+            search_match_fg: "#000000".to_string(),
+            directory_border: "#000000".to_string(),
+            diagnostic_error: "#cc0000".to_string(),
+            diagnostic_warning: "#885500".to_string(),
+            diagnostic_info: "#0000ee".to_string(),
+        }
+    }
+
+    /// High-contrast dark theme with maximum readability (Plan §5.7).
+    #[must_use]
+    pub fn high_contrast_dark() -> Self {
+        Self {
+            fg: "#ffffff".to_string(),
+            fg_muted: "#eeeeee".to_string(),
+            bg: "#000000".to_string(),
+            bg_subtle: "#121212".to_string(),
+            border: "#ffffff".to_string(),
+            border_muted: "#cccccc".to_string(),
+            code_bg: "#121212".to_string(),
+            stripe: "#1c1c1c".to_string(),
+            quote_fg: "#eeeeee".to_string(),
+            quote_bar: "#ffffff".to_string(),
+            accent: "#66b2ff".to_string(),
+            selection_bg: "#ffffff".to_string(),
+            selection_fg: "#000000".to_string(),
+            search_match_bg: "#ffff00".to_string(),
+            search_match_fg: "#000000".to_string(),
+            directory_border: "#ffffff".to_string(),
+            diagnostic_error: "#ff6666".to_string(),
+            diagnostic_warning: "#ffcc00".to_string(),
+            diagnostic_info: "#66b2ff".to_string(),
         }
     }
 }
@@ -271,6 +465,10 @@ pub struct Theme {
     pub code_theme: CodeTheme,
     /// Dark-mode CSS policy.
     pub dark_mode: DarkModePolicy,
+    /// Host/user appearance preference (Plan §5.7).
+    pub appearance: SystemAppearance,
+    /// Code ligature policy for source code views and code fences (Plan §13.8).
+    pub code_ligatures: CodeLigatures,
 }
 
 impl Default for Theme {
@@ -284,6 +482,8 @@ impl Default for Theme {
             page: PageStyle::default(),
             code_theme: CodeTheme::GitHub,
             dark_mode: DarkModePolicy::Auto,
+            appearance: SystemAppearance::Auto,
+            code_ligatures: CodeLigatures::Conservative,
         }
     }
 }
@@ -301,6 +501,39 @@ impl Theme {
         Self::default().with_font(FontFamily::Serif)
     }
 
+    /// Reference-inspired charcoal dark theme (Plan §5.7).
+    #[must_use]
+    pub fn charcoal() -> Self {
+        Self {
+            colors: ThemeColors::charcoal(),
+            dark_colors: ThemeColors::charcoal(),
+            appearance: SystemAppearance::Charcoal,
+            ..Self::default()
+        }
+    }
+
+    /// High-contrast light theme with maximum readability (Plan §5.7).
+    #[must_use]
+    pub fn high_contrast_light() -> Self {
+        Self {
+            colors: ThemeColors::high_contrast_light(),
+            dark_colors: ThemeColors::high_contrast_dark(),
+            appearance: SystemAppearance::HighContrastLight,
+            ..Self::default()
+        }
+    }
+
+    /// High-contrast dark theme with maximum readability (Plan §5.7).
+    #[must_use]
+    pub fn high_contrast_dark() -> Self {
+        Self {
+            colors: ThemeColors::high_contrast_dark(),
+            dark_colors: ThemeColors::high_contrast_dark(),
+            appearance: SystemAppearance::HighContrastDark,
+            ..Self::default()
+        }
+    }
+
     /// Return a copy with a different body font family.
     #[must_use]
     pub fn with_font(mut self, font: FontFamily) -> Self {
@@ -315,6 +548,20 @@ impl Theme {
         self
     }
 
+    /// Return a copy with a different appearance preference (Plan §5.7).
+    #[must_use]
+    pub fn with_appearance(mut self, appearance: SystemAppearance) -> Self {
+        self.appearance = appearance;
+        self
+    }
+
+    /// Return a copy with a different code ligature policy (Plan §13.8).
+    #[must_use]
+    pub fn with_code_ligatures(mut self, code_ligatures: CodeLigatures) -> Self {
+        self.code_ligatures = code_ligatures;
+        self
+    }
+
     /// Return a copy with a uniform typographic font scale applied to spacing tokens.
     #[must_use]
     pub fn with_font_scale(mut self, scale: FontScale) -> Self {
@@ -322,16 +569,50 @@ impl Theme {
         self
     }
 
+    /// Return a copy with larger text (18px / 12.375pt, 1.125x scale) for comfortable reading.
+    #[must_use]
+    pub fn with_larger_text(self) -> Self {
+        self.with_font_scale(FontScale::Preset(TypeScalePreset::Large))
+    }
+
+    /// Resolve the effective active colour palette based on appearance policy and host state.
+    #[must_use]
+    pub fn effective_colors(&self, host_prefers_dark: bool, host_high_contrast: bool) -> &ThemeColors {
+        match self.appearance {
+            SystemAppearance::Light => &self.colors,
+            SystemAppearance::Dark => &self.dark_colors,
+            SystemAppearance::Charcoal => &self.colors,
+            SystemAppearance::HighContrastLight => &self.colors,
+            SystemAppearance::HighContrastDark => &self.dark_colors,
+            SystemAppearance::Auto => {
+                if host_high_contrast {
+                    if host_prefers_dark {
+                        &self.dark_colors
+                    } else {
+                        &self.colors
+                    }
+                } else if host_prefers_dark {
+                    &self.dark_colors
+                } else {
+                    &self.colors
+                }
+            }
+        }
+    }
+
     /// Stable dependency-free JSON representation for CLI/config/WASM surfaces.
     #[must_use]
     pub fn to_config_json(&self) -> String {
         format!(
             "{{\"font\":\"{}\",\"mono_font\":\"{}\",\"code_theme\":\"{}\",\
-             \"dark_mode\":\"{}\",\"colors\":{},\"dark_colors\":{},\"spacing\":{},\"page\":{}}}",
+             \"dark_mode\":\"{}\",\"appearance\":\"{}\",\"code_ligatures\":\"{}\",\
+             \"colors\":{},\"dark_colors\":{},\"spacing\":{},\"page\":{}}}",
             self.font.as_str(),
             self.mono_font.as_str(),
             self.code_theme.as_str(),
             self.dark_mode.as_str(),
+            self.appearance.as_str(),
+            self.code_ligatures.as_str(),
             colors_json(&self.colors),
             colors_json(&self.dark_colors),
             spacing_json(&self.spacing),
@@ -377,7 +658,11 @@ fn colors_json(colors: &ThemeColors) -> String {
     format!(
         "{{\"fg\":\"{}\",\"fg_muted\":\"{}\",\"bg\":\"{}\",\"bg_subtle\":\"{}\",\
          \"border\":\"{}\",\"border_muted\":\"{}\",\"code_bg\":\"{}\",\"stripe\":\"{}\",\
-         \"quote_fg\":\"{}\",\"quote_bar\":\"{}\",\"accent\":\"{}\"}}",
+         \"quote_fg\":\"{}\",\"quote_bar\":\"{}\",\"accent\":\"{}\",\
+         \"selection_bg\":\"{}\",\"selection_fg\":\"{}\",\
+         \"search_match_bg\":\"{}\",\"search_match_fg\":\"{}\",\
+         \"directory_border\":\"{}\",\
+         \"diagnostic_error\":\"{}\",\"diagnostic_warning\":\"{}\",\"diagnostic_info\":\"{}\"}}",
         json_escape(&colors.fg),
         json_escape(&colors.fg_muted),
         json_escape(&colors.bg),
@@ -389,6 +674,14 @@ fn colors_json(colors: &ThemeColors) -> String {
         json_escape(&colors.quote_fg),
         json_escape(&colors.quote_bar),
         json_escape(&colors.accent),
+        json_escape(&colors.selection_bg),
+        json_escape(&colors.selection_fg),
+        json_escape(&colors.search_match_bg),
+        json_escape(&colors.search_match_fg),
+        json_escape(&colors.directory_border),
+        json_escape(&colors.diagnostic_error),
+        json_escape(&colors.diagnostic_warning),
+        json_escape(&colors.diagnostic_info),
     )
 }
 

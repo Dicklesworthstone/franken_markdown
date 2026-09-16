@@ -1763,7 +1763,7 @@ fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
 }
 
 fn color_vars_capacity(colors: &ThemeColors) -> usize {
-    256 + css_token_capacity(&colors.fg)
+    512 + css_token_capacity(&colors.fg)
         + css_token_capacity(&colors.fg_muted)
         + css_token_capacity(&colors.bg)
         + css_token_capacity(&colors.bg_subtle)
@@ -1774,6 +1774,14 @@ fn color_vars_capacity(colors: &ThemeColors) -> usize {
         + css_token_capacity(&colors.quote_fg)
         + css_token_capacity(&colors.quote_bar)
         + css_token_capacity(&colors.accent)
+        + css_token_capacity(&colors.selection_bg)
+        + css_token_capacity(&colors.selection_fg)
+        + css_token_capacity(&colors.search_match_bg)
+        + css_token_capacity(&colors.search_match_fg)
+        + css_token_capacity(&colors.directory_border)
+        + css_token_capacity(&colors.diagnostic_error)
+        + css_token_capacity(&colors.diagnostic_warning)
+        + css_token_capacity(&colors.diagnostic_info)
 }
 
 fn dark_mode_css_capacity(colors: &ThemeColors) -> usize {
@@ -1797,6 +1805,14 @@ fn push_color_vars(css: &mut String, colors: &ThemeColors) {
     push_color_var(css, "--fmd-quote-fg", &colors.quote_fg);
     push_color_var(css, "--fmd-quote-bar", &colors.quote_bar);
     push_color_var(css, "--fmd-accent", &colors.accent);
+    push_color_var(css, "--fmd-selection-bg", &colors.selection_bg);
+    push_color_var(css, "--fmd-selection-fg", &colors.selection_fg);
+    push_color_var(css, "--fmd-search-match-bg", &colors.search_match_bg);
+    push_color_var(css, "--fmd-search-match-fg", &colors.search_match_fg);
+    push_color_var(css, "--fmd-directory-border", &colors.directory_border);
+    push_color_var(css, "--fmd-diagnostic-error", &colors.diagnostic_error);
+    push_color_var(css, "--fmd-diagnostic-warning", &colors.diagnostic_warning);
+    push_color_var(css, "--fmd-diagnostic-info", &colors.diagnostic_info);
     css.push('}');
 }
 

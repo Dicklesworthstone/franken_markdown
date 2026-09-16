@@ -111,6 +111,7 @@ enum Lexer {
     Java,
     Swift,
     Shell,
+    Cpp,
 }
 
 /// True when a focused lexer exists for `lang`.
@@ -175,6 +176,9 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
         }
         Some(Lexer::Shell) => {
             crate::lang_shell::lex_shell_into(code, spans);
+        }
+        Some(Lexer::Cpp) => {
+            crate::lang_cplusplus::lex_cplusplus_into(code, spans);
         }
         None => return false,
     }
@@ -1472,7 +1476,8 @@ fn lexer(lang: &str) -> Option<Lexer> {
             hash_directives: false,
         })),
 
-        "c" | "h" | "cpp" | "c++" | "cc" | "hpp" => Some(Lexer::Generic(Rules {
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" => Some(Lexer::Cpp),
+        "c" | "h" => Some(Lexer::Generic(Rules {
             keywords: C_KW,
             types: C_TY,
             line_comments: &["//"],

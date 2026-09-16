@@ -25,6 +25,33 @@
 
 use crate::highlight::{Span, Tok};
 
+/// The versioned C++ capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CppCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for C++.
+    pub incremental: bool,
+    /// Raw string literals with custom delimiters supported.
+    pub raw_strings: bool,
+    /// Encoding literal prefixes (u8, u, U, L) supported.
+    pub encoding_prefixes: bool,
+    /// Digit separators and hex-float exponents supported.
+    pub numeric_forms: bool,
+    /// Angle brackets conservatively classified as operators.
+    pub conservative_templates: bool,
+}
+
+/// The C++ capability row published by this module.
+pub const CPP_CAPABILITY_V1: CppCapabilityV1 = CppCapabilityV1 {
+    version: 1,
+    incremental: true,
+    raw_strings: true,
+    encoding_prefixes: true,
+    numeric_forms: true,
+    conservative_templates: true,
+};
+
 /// C++ reserved words.
 const KEYWORDS: &[&str] = &[
     "alignas",
@@ -332,24 +359,43 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             continue;
         }
 
-        // Raw strings: `R"delim( content )delim"`.
-        if rest.starts_with("R\"") {
+        // Raw strings: `R"delim( content )delim"`, optionally with encoding prefix u8R", uR", UR", LR".
+        let raw_prefix_len = if rest.starts_with("u8R\"") {
+            4
+        } else if rest.starts_with("uR\"") || rest.starts_with("UR\"") || rest.starts_with("LR\"") {
+            3
+        } else if rest.starts_with("R\"") {
+            2
+        } else {
+            0
+        };
+
+        if raw_prefix_len > 0
+            && (pos == 0 || !is_ident_continue(code[..pos].chars().next_back().unwrap_or(' ')))
+        {
             let start = pos;
-            let prefix_end = pos + 2;
-            let delim_start = prefix_end;
-            let open_paren = code[delim_start..]
-                .find('(')
-                .map_or(prefix_end, |off| delim_start + off);
-            let delim = &code[delim_start..open_paren];
-            if delim.is_empty() || valid_raw_delim(delim) {
-                let content_start = open_paren + 1;
-                let end = raw_string_end(code, content_start, delim);
-                push_tiling(spans, &mut last_end, Tok::Str, start, end);
-                pos = end;
-                prev = Prev::Value;
-                continue;
+            let delim_start = pos + raw_prefix_len;
+            if let Some(off) = code[delim_start..].find('(') {
+                let open_paren = delim_start + off;
+                let delim = &code[delim_start..open_paren];
+                if delim.is_empty() || valid_raw_delim(delim) {
+                    let content_start = open_paren + 1;
+                    let end = raw_string_end(code, content_start, delim);
+                    push_tiling(spans, &mut last_end, Tok::Str, start, end);
+                    pos = end;
+                    prev = Prev::Value;
+                    continue;
+                }
+            } else {
+                let candidate_delim = &code[delim_start..];
+                if candidate_delim.is_empty() || valid_raw_delim(candidate_delim) {
+                    push_tiling(spans, &mut last_end, Tok::Str, start, bytes_len);
+                    pos = bytes_len;
+                    prev = Prev::Value;
+                    continue;
+                }
             }
-            // Invalid delimiter: treat the `R` as an identifier.
+            // Invalid delimiter: treat the prefix as an identifier.
         }
 
         // Encoding-prefixed strings: u8"...", u"...", U"...", L"...".
@@ -360,8 +406,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             && (pos == 0 || !is_ident_continue(code[..pos].chars().next_back().unwrap_or(' ')))
         {
             let start = pos;
-            let quote = pos + if rest.starts_with("u8\"") { 3 } else { 2 };
-            let mut scan = quote + 1;
+            let mut scan = pos + if rest.starts_with("u8\"") { 3 } else { 2 };
             let mut closed = false;
             while scan < bytes_len {
                 let c = code[scan..].chars().next().unwrap_or('\0');
@@ -424,9 +469,47 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             continue;
         }
 
-        // Character literals (with optional encoding prefixes) and the
-        // escaped-quote disambiguation: `'` after a value token is the
-        // digit-separator, not a literal open.
+        // Encoding-prefixed character literals: u8'...', u'...', U'...', L'...'.
+        if (rest.starts_with("u8'")
+            || rest.starts_with("u'")
+            || rest.starts_with("U'")
+            || rest.starts_with("L'"))
+            && (pos == 0 || !is_ident_continue(code[..pos].chars().next_back().unwrap_or(' ')))
+            && !matches!(prev, Prev::Value)
+        {
+            let start = pos;
+            let mut scan = pos + if rest.starts_with("u8'") { 3 } else { 2 };
+            let mut closed = false;
+            while scan < bytes_len {
+                let c = code[scan..].chars().next().unwrap_or('\0');
+                if c == '\\' {
+                    let next_scan = scan + 1;
+                    if next_scan >= bytes_len {
+                        scan = bytes_len;
+                        break;
+                    }
+                    scan = next_scan + code[next_scan..].chars().next().unwrap_or('\0').len_utf8();
+                    continue;
+                }
+                if c == '\'' {
+                    scan += c.len_utf8();
+                    closed = true;
+                    break;
+                }
+                if c == '\n' {
+                    break;
+                }
+                scan += c.len_utf8();
+            }
+            let end = if closed { scan } else { bytes_len.min(scan) };
+            push_tiling(spans, &mut last_end, Tok::Str, start, end);
+            pos = end;
+            prev = Prev::Value;
+            continue;
+        }
+
+        // Character literals and the escaped-quote disambiguation:
+        // `'` after a value token is the digit-separator, not a literal open.
         if ch == '\'' && !matches!(prev, Prev::Value) {
             let start = pos;
             let mut scan = pos + 1;
@@ -466,7 +549,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
                 pos += 2;
-                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_' || c == '.');
+                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_' || c == '.' || c == '\'');
                 // Hex-float p exponent.
                 if pos < bytes_len && (code.as_bytes()[pos] == b'p' || code.as_bytes()[pos] == b'P')
                 {
@@ -476,13 +559,13 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                     {
                         pos += 1;
                     }
-                    pos = consume_while(code, pos, |c| c.is_ascii_digit());
+                    pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '\'');
                 }
             } else if rest.starts_with("0b") || rest.starts_with("0B") {
                 pos += 2;
                 pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '\'');
             } else {
-                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.');
+                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.' || c == '\'');
                 if pos < bytes_len && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
                 {
                     let exp_start = pos;
@@ -490,22 +573,23 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                     if p < bytes_len && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-') {
                         p += 1;
                     }
-                    let digits = consume_while(code, p, |c| c.is_ascii_digit());
+                    let digits = consume_while(code, p, |c| c.is_ascii_digit() || c == '\'');
                     if digits > p {
-                        pos = p;
-                        pos = consume_while(code, pos, |c| c.is_ascii_digit());
+                        pos = digits;
                     } else {
                         pos = exp_start;
                     }
                 }
             }
-            // Suffixes: u/U, l/L, ll/LL, f/F, in any (valid) combination.
-            let suffixes: &[&[u8]] = &[
-                b"ull", b"llu", b"ull", b"llu", b"ul", b"lu", b"ll", b"ll", b"ul", b"lu", b"u",
-                b"U", b"l", b"L", b"f", b"F",
+            // Suffixes: ull, llu, ul, lu, ll, u, l, f (case-insensitive, longest first).
+            const SUFFIXES: &[&[u8]] = &[
+                b"ull", b"llu", b"ul", b"lu", b"ll", b"u", b"l", b"f",
             ];
-            for suffix in suffixes {
-                if code.as_bytes()[pos..].starts_with(suffix) {
+            let rest_bytes = &code.as_bytes()[pos..];
+            for suffix in SUFFIXES {
+                if rest_bytes.len() >= suffix.len()
+                    && rest_bytes[..suffix.len()].eq_ignore_ascii_case(suffix)
+                {
                     pos += suffix.len();
                     break;
                 }
@@ -607,6 +691,169 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
-    // tests restored below by the caller
+    fn assert_tiling(code: &str, spans: &[Span]) {
+        let mut cursor = 0usize;
+        for span in spans {
+            assert_eq!(
+                span.start, cursor,
+                "gap/overlap at {cursor}: span {:?} {}-{}",
+                span.kind, span.start, span.end
+            );
+            assert!(span.end > span.start, "empty span at {cursor}");
+            cursor = span.end;
+        }
+        assert_eq!(cursor, code.len(), "spans do not reach end of input");
+    }
+
+    #[test]
+    fn raw_strings_with_custom_delimiters() {
+        let code = r#"const char* s = R"foo(hello "world")foo"; const char* r = R"delim(content with )" inside)delim";"#;
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let str_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Str).collect();
+        assert_eq!(str_spans.len(), 2);
+        assert_eq!(&code[str_spans[0].start..str_spans[0].end], r#"R"foo(hello "world")foo""#);
+        assert_eq!(&code[str_spans[1].start..str_spans[1].end], r#"R"delim(content with )" inside)delim""#);
+    }
+
+    #[test]
+    fn encoding_prefixes_on_strings_and_chars() {
+        let code = r#"auto u8s = u8"utf8"; auto ws = L"wide"; auto u8c = u8'a'; auto wc = L'w';"#;
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let str_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Str).collect();
+        assert_eq!(str_spans.len(), 4);
+        assert_eq!(&code[str_spans[0].start..str_spans[0].end], r#"u8"utf8""#);
+        assert_eq!(&code[str_spans[1].start..str_spans[1].end], r#"L"wide""#);
+        assert_eq!(&code[str_spans[2].start..str_spans[2].end], "u8'a'");
+        assert_eq!(&code[str_spans[3].start..str_spans[3].end], "L'w'");
+    }
+
+    #[test]
+    fn digit_separator_vs_char_literal() {
+        let code = "int x = 1'000'000; char c = 'z';";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let num_span = spans.iter().find(|s| s.kind == Tok::Number).expect("number found");
+        assert_eq!(&code[num_span.start..num_span.end], "1'000'000");
+        let str_span = spans.iter().find(|s| s.kind == Tok::Str).expect("char literal found");
+        assert_eq!(&code[str_span.start..str_span.end], "'z'");
+    }
+
+    #[test]
+    fn hex_float_p_exponents_and_number_suffixes() {
+        let code = "double d = 0x1.fp3; unsigned long long ull = 42ULL; float f = 3.14f; int b = 0b1010'0101;";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let numbers: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Number).map(|s| &code[s.start..s.end]).collect();
+        assert_eq!(numbers, vec!["0x1.fp3", "42ULL", "3.14f", "0b1010'0101"]);
+    }
+
+    #[test]
+    fn conservative_angle_brackets_as_operators() {
+        let code = "std::vector<int> v; bool less = a < b;";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let op_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Operator && (&code[s.start..s.end] == "<" || &code[s.start..s.end] == ">")).collect();
+        assert_eq!(op_spans.len(), 3);
+    }
+
+    #[test]
+    fn preprocessor_directives() {
+        let code = "#include <vector>\n#define MAX 100\n#ifdef FOO\n#endif\n";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let kw_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Keyword && code[s.start..s.end].starts_with('#')).map(|s| &code[s.start..s.end]).collect();
+        assert_eq!(kw_spans, vec!["#include", "#define", "#ifdef", "#endif"]);
+    }
+
+    #[test]
+    fn line_and_block_comments() {
+        let code = "// line comment\n/* block\ncomment */ int a = 1;";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let comments: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Comment).collect();
+        assert_eq!(comments.len(), 2);
+    }
+
+    #[test]
+    fn unterminated_block_comment_spans_to_eof() {
+        let code = "int a = 1; /* unclosed comment";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let last = spans.last().expect("span");
+        assert_eq!(last.kind, Tok::Comment);
+        assert_eq!(last.end, code.len());
+    }
+
+    #[test]
+    fn unterminated_raw_string_spans_to_eof() {
+        let code = r#"const char* s = R"delim(unclosed raw string"#;
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let last = spans.last().expect("span");
+        assert_eq!(last.kind, Tok::Str);
+        assert_eq!(last.end, code.len());
+    }
+
+    #[test]
+    fn unterminated_plain_string_spans_to_eof() {
+        let code = r#"const char* s = "unclosed string"#;
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        let last = spans.last().expect("span");
+        assert_eq!(last.kind, Tok::Str);
+        assert_eq!(last.end, code.len());
+    }
+
+    #[test]
+    fn keywords_types_and_calls_classified() {
+        let code = "class Widget : public Base { virtual void run() override; };";
+        let mut spans = Vec::new();
+        lex_cplusplus_into(code, &mut spans);
+        assert_tiling(code, &spans);
+        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "class"));
+        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "public"));
+        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "virtual"));
+        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "void"));
+    }
+
+    #[test]
+    fn negative_control_tiling_oracle_detects_gap() {
+        let code = "int a = 1;";
+        let spans = vec![
+            Span { kind: Tok::Keyword, start: 0, end: 3 },
+            Span { kind: Tok::Plain, start: 4, end: 5 },
+            Span { kind: Tok::Operator, start: 5, end: 6 },
+            Span { kind: Tok::Plain, start: 6, end: 7 },
+            Span { kind: Tok::Number, start: 7, end: 8 },
+            Span { kind: Tok::Punct, start: 8, end: 9 },
+        ];
+        let result = std::panic::catch_unwind(|| {
+            assert_tiling(code, &spans);
+        });
+        assert!(result.is_err(), "tiling oracle must detect gap");
+    }
+
+    #[test]
+    fn cpp_capability_row_is_versioned() {
+        assert_eq!(CPP_CAPABILITY_V1.version, 1);
+        assert!(CPP_CAPABILITY_V1.incremental);
+        assert!(CPP_CAPABILITY_V1.raw_strings);
+        assert!(CPP_CAPABILITY_V1.encoding_prefixes);
+        assert!(CPP_CAPABILITY_V1.numeric_forms);
+        assert!(CPP_CAPABILITY_V1.conservative_templates);
+    }
 }

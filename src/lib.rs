@@ -51,7 +51,7 @@ pub mod lang_go;
 pub mod lang_html;
 pub mod lang_java;
 pub mod lang_javascript;
-pub mod lang_jython;
+pub mod lang_python;
 pub mod lang_shell;
 pub mod lang_sql;
 pub mod lang_swift;
@@ -940,11 +940,12 @@ mod tests {
     #[test]
     fn version_constant_matches_package_metadata() {
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(!VERSION.trim().is_empty());
     }
 
     #[test]
     fn oversized_font_bytes_are_rejected() {
-        // A host-supplied font over the cap is refused before it is
+        // A host-supplied font over the per-slot cap is refused before it is
         // cloned and subset (bounds an unmetered memory/CPU cost).
         let mut assets = FontAssets::default();
         let too_big = vec![0u8; MAX_FONT_ASSET_BYTES + 1];

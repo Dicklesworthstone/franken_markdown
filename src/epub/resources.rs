@@ -231,9 +231,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packages_and_deduplicates_images_in_first_use_order() {
+    fn packages_and_deduplicates_images_in_first_use_order() -> Result<(), &'static str> {
         let html = "<img src=\"data:image/png;base64,AQID\" alt=\"one\"/><img src=\"data:image/jpeg;base64,BAU=\"/><img src=\"data:image/png;base64,AQID\"/>";
-        let chapter = prepare(html).expect("valid resources");
+        let chapter = prepare(html)?;
         assert_eq!(chapter.resources.len(), 2);
         assert_eq!(chapter.resources[0].bytes, [1, 2, 3]);
         assert_eq!(chapter.resources[1].bytes, [4, 5]);
@@ -241,33 +241,35 @@ mod tests {
         assert_eq!(chapter.body.matches("assets/image-1.png").count(), 2);
         assert!(chapter.body.contains("assets/image-2.jpg"));
         assert!(!chapter.body.contains("data:"));
+        Ok(())
     }
 
     #[test]
-    fn scans_real_tags_not_quoted_or_escaped_markup() {
+    fn scans_real_tags_not_quoted_or_escaped_markup() -> Result<(), &'static str> {
         let html = "<p title='<math><svg> src=\"data:image/png;base64,AQID\"'>text</p>&lt;svg&gt;<img alt='a > b' src='data:image/png;base64,AQID'/>";
-        let chapter = prepare(html).expect("valid markup");
+        let chapter = prepare(html)?;
         assert!(!chapter.mathml);
         assert!(!chapter.svg);
         assert_eq!(chapter.resources.len(), 1);
         assert!(chapter.body.contains("alt='a > b' src='assets/image-1.png'"));
+        Ok(())
     }
 
     #[test]
-    fn detects_mathml_and_svg_including_referenced_svg() {
+    fn detects_mathml_and_svg_including_referenced_svg() -> Result<(), &'static str> {
         let chapter = prepare(
             "<math><mi>x</mi></math><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"/>",
-        )
-        .expect("valid markup");
+        )?;
         assert!(chapter.mathml);
         assert!(chapter.svg);
         assert_eq!(chapter.resources[0].bytes, b"<svg/>");
-        assert!(prepare("<svg></svg>").expect("valid SVG").svg);
-        assert!(!prepare("<mathematics/><svgish/>").expect("plain tags").svg);
+        assert!(prepare("<svg></svg>")?.svg);
+        assert!(!prepare("<mathematics/><svgish/>")?.svg);
+        Ok(())
     }
 
     #[test]
-    fn leaves_external_unsupported_and_malformed_images_unchanged() {
+    fn leaves_external_unsupported_and_malformed_images_unchanged() -> Result<(), &'static str> {
         for html in [
             "<img src=\"https://example.com/a.png\"/>",
             "<img src=\"local.png\"/>",
@@ -275,10 +277,11 @@ mod tests {
             "<img src=\"data:image/png;base64,!!!!\"/>",
             "<img src=\"unterminated",
         ] {
-            let chapter = prepare(html).expect("pass-through");
+            let chapter = prepare(html)?;
             assert_eq!(chapter.body, html);
             assert!(chapter.resources.is_empty());
         }
+        Ok(())
     }
 
     #[test]
@@ -289,5 +292,34 @@ mod tests {
         for invalid in ["", "Zg=", "Zh==", "Zm9=", "Zg==AAAA", "=AAA", "A===", "!!!!"] {
             assert!(decode_base64(invalid).is_none(), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn exact_src_attribute_with_boolean_and_unicode_neighbors() -> Result<(), &'static str> {
+        let html = "<img hidden data-src='ignore' alt='中文 🚀'\n src = \"data:image/gif;base64,AQID\"/>";
+        let chapter = prepare(html)?;
+        assert_eq!(chapter.resources.len(), 1);
+        assert_eq!(chapter.resources[0].media_type, "image/gif");
+        assert!(chapter.body.contains("data-src='ignore' alt='中文 🚀'"));
+        assert!(chapter.body.contains("src = \"assets/image-1.gif\""));
+        assert!(prepare("<img data-src='data:image/png;base64,AQID'/>")?.resources.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn resource_limit_counts_unique_images_not_references() -> Result<(), &'static str> {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut html = String::new();
+        for index in 0..MAX_IMAGES {
+            let a = char::from(ALPHABET[index >> 6]);
+            let b = char::from(ALPHABET[index & 63]);
+            html.push_str(&format!("<img src='data:image/png;base64,{a}{b}AA'/>"));
+        }
+        assert_eq!(prepare(&html)?.resources.len(), MAX_IMAGES);
+        html.push_str("<img src='data:image/png;base64,AAAA'/>");
+        assert_eq!(prepare(&html)?.resources.len(), MAX_IMAGES);
+        html.push_str("<img src='data:image/png;base64,AAAB'/>");
+        assert!(matches!(prepare(&html), Err(message) if message.contains("4096-resource")));
+        Ok(())
     }
 }

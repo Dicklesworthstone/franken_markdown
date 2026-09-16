@@ -78,6 +78,27 @@ const TYPES: &[&str] = &[
     "nil",
 ];
 
+/// The versioned Go capability row (FCB-022 capability publication).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GoCapabilityV1 {
+    /// Capability row format version.
+    pub version: u32,
+    /// Incremental (chunk-safe) classification is supported for Go.
+    pub incremental: bool,
+    /// Raw backticks, interpreted strings, and rune literals supported.
+    pub strings_and_runes: bool,
+    /// Numeric separators and imaginary numbers supported.
+    pub numbers_and_operators: bool,
+}
+
+/// The Go capability row published by this module.
+pub const GO_CAPABILITY_V1: GoCapabilityV1 = GoCapabilityV1 {
+    version: 1,
+    incremental: true,
+    strings_and_runes: true,
+    numbers_and_operators: true,
+};
+
 /// Lex Go source into exact tiling spans.
 pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
     let bytes_len = code.len();
@@ -236,16 +257,13 @@ pub fn lex_go_into(code: &str, spans: &mut Vec<Span>) {
             } else {
                 pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.');
                 if pos < bytes_len && matches!(code.as_bytes()[pos], b'e' | b'E') {
-                    let exp_start = pos;
                     let mut p = pos + 1;
                     if p < bytes_len && (code.as_bytes()[p] == b'+' || code.as_bytes()[p] == b'-') {
                         p += 1;
                     }
                     let digits = consume_while(code, p, |c| c.is_ascii_digit());
-                    if digits > p {
+                    if digits > p || p >= bytes_len {
                         pos = digits;
-                    } else {
-                        pos = exp_start;
                     }
                 }
                 if pos < bytes_len && code.as_bytes()[pos] == b'i' {

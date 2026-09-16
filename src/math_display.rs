@@ -16,7 +16,7 @@ use crate::display::{
     VectorShapeType,
 };
 use crate::span::SourceSpan;
-use fmd_math::mbox::{Layout, PlacedGlyph, PlacedRule};
+use fmd_math::Layout;
 use fmd_math::Engine;
 
 /// Convert math source into renderer-neutral display items.

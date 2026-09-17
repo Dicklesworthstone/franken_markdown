@@ -5,7 +5,9 @@
 //! width when shaping fails. Wrapping is greedy at spaces, with cluster-boundary
 //! emergency breaks; it is not the PDF Knuth-Plass paragraph engine.
 
-use super::{BlockMeta, DisplayBlock, FlowDisplayError, ResumableFlowDisplay};
+use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
+
+mod styled;
 use crate::display::{
     AccessibleReadingNode, AccessibleReadingRole, DisplayImage, DisplayItem, DisplayList,
     DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath, VectorShapeType,
@@ -28,7 +30,8 @@ pub enum FlowTextRole {
 
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
-/// reshaping at line boundaries. Hosts must bound their shaper's own execution.
+/// reshaping at line boundaries. The same ceiling separately bounds retained
+/// link-target bytes in styled output. Hosts must bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowLayoutOptions {
     pub viewport_width: f32,
@@ -110,10 +113,49 @@ impl ResumableFlowDisplay {
     where
         F: FnMut(&str, f32, FlowTextRole) -> Result<OwnedTextRun, String>,
     {
+        let mut adapter = |text: &str, size: f32, role: FlowTextRole, _style: FlowInlineStyle| {
+            shape(text, size, role)
+        };
+        self.layout_with_styles(options, &mut adapter, false)
+    }
+
+    /// Render inline formatting and active link geometry using actual font faces.
+    ///
+    /// The callback receives the block role AND composable inline style. Select
+    /// bold/italic/monospace faces before shaping; decoration flags do not imply
+    /// a different font. Returned text items own fragment-local glyph/UTF-16
+    /// offsets, not Markdown offsets. Reading order retains the unsplit text.
+    ///
+    /// Style transitions do not introduce word breaks. Every final fragment is
+    /// reshaped and the combined line width is rechecked. Same-direction RTL
+    /// fragments are placed right-to-left; mixed-direction styled lines require
+    /// paragraph-level bidi resolution and return a shaping error explicitly.
+    /// Links use the conservative active_link_target policy; navigation remains
+    /// host-authorized. The estimate-only and three-argument APIs stay unchanged.
+    pub fn to_styled_display_list<F>(
+        &self,
+        options: FlowLayoutOptions,
+        mut shape: F,
+    ) -> Result<DisplayList, FlowLayoutError>
+    where
+        F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
+    {
+        self.layout_with_styles(options, &mut shape, true)
+    }
+
+    fn layout_with_styles<F>(
+        &self,
+        options: FlowLayoutOptions,
+        shape: &mut F,
+        styled: bool,
+    ) -> Result<DisplayList, FlowLayoutError>
+    where
+        F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
+    {
         if let Some(error) = &self.initial_error {
             return Err(FlowLayoutError::Input(error.clone()));
         }
-        let mut layout = Reflow::new(options, &mut shape)?;
+        let mut layout = Reflow::new(options, shape)?;
         let resolved: HashMap<_, _> = self.resolved_assets.iter()
             .filter(|result| result.generation == self.generation)
             .map(|result| (result.request_id, result)).collect();
@@ -127,7 +169,8 @@ impl ResumableFlowDisplay {
                 DisplayBlock::Heading { level, text } => {
                     let factor = match level { 1 => 2.0, 2 => 22.0 / 14.0, 3 => 18.0 / 14.0, _ => 16.0 / 14.0 };
                     let size = options.body_size * factor;
-                    let height = layout.text(text, x, y, width, size, size * 1.5,
+                    let height = layout.inline_text(text, if styled { &meta.inline_runs } else { &[] },
+                        x, y, width, size, size * 1.5,
                         FlowTextRole::Heading(*level), "heading", span)?;
                     let bounds = DisplayRect::new(x, y, width, height);
                     if let Some(id) = &meta.heading_id {
@@ -141,7 +184,8 @@ impl ResumableFlowDisplay {
                 DisplayBlock::Paragraph { text } | DisplayBlock::ListItem { text, .. }
                 | DisplayBlock::Quote { text } => {
                     layout.marker(meta, x, y)?;
-                    let height = layout.text(text, x, y, width, options.body_size, options.line_height,
+                    let height = layout.inline_text(text, if styled { &meta.inline_runs } else { &[] },
+                        x, y, width, options.body_size, options.line_height,
                         FlowTextRole::Body, "text", span)?;
                     let bounds = DisplayRect::new(x, y, width, height);
                     if meta.quote_depth > 0 {
@@ -181,7 +225,8 @@ impl ResumableFlowDisplay {
                     let mut children = Vec::new();
                     for (column, text) in cells.iter().enumerate() {
                         let cx = x + column as f32 * cell_width;
-                        let used = layout.text(text, cx + 4.0, y + 4.0, cell_width - 8.0,
+                        let runs = if styled { meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]) } else { &[] };
+                        let used = layout.inline_text(text, runs, cx + 4.0, y + 4.0, cell_width - 8.0,
                             options.body_size, options.line_height,
                             if header { FlowTextRole::TableHeader } else { FlowTextRole::TableCell },
                             if header { "heading" } else { "text" }, span)?;
@@ -214,6 +259,11 @@ impl ResumableFlowDisplay {
                         bounds, request_id: asset.id.0, destination: asset.reference.clone(),
                         alt_text: asset.alt_text.clone(), is_resolved: result.is_some(), source_span: span,
                     }))?;
+                    if styled {
+                        if let Some(target) = meta.image_link.as_deref().and_then(super::active_link_target) {
+                            layout.link_anchor(target, bounds, span)?;
+                        }
+                    }
                     layout.reading(AccessibleReadingRole::Image, &asset.alt_text, bounds, span);
                     y += bounds.height + 10.0;
                 }
@@ -230,11 +280,12 @@ struct Reflow<'a, F> {
     shape: &'a mut F,
     lines: usize,
     shape_bytes: usize,
+    link_bytes: usize,
 }
 
 impl<'a, F> Reflow<'a, F>
 where
-    F: FnMut(&str, f32, FlowTextRole) -> Result<OwnedTextRun, String>,
+    F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
 {
     fn new(options: FlowLayoutOptions, shape: &'a mut F) -> Result<Self, FlowLayoutError> {
         if [options.viewport_width, options.body_size, options.code_size, options.line_height]
@@ -243,17 +294,24 @@ where
         {
             return Err(FlowLayoutError::InvalidOptions);
         }
-        Ok(Self { list: DisplayList::new(), options, shape, lines: 0, shape_bytes: 0 })
+        Ok(Self { list: DisplayList::new(), options, shape, lines: 0, shape_bytes: 0, link_bytes: 0 })
     }
 
     fn shaped(&mut self, text: &str, size: f32, role: FlowTextRole) -> Result<OwnedTextRun, FlowLayoutError> {
+        self.shaped_with_style(text, size, role, FlowInlineStyle::default())
+    }
+
+    fn shaped_with_style(&mut self, text: &str, size: f32, role: FlowTextRole, style: FlowInlineStyle)
+        -> Result<OwnedTextRun, FlowLayoutError>
+    {
+        if !size.is_finite() || size <= 0.0 { return Err(FlowLayoutError::InvalidOptions); }
         if text.len() > self.options.max_shape_bytes {
             return Err(FlowLayoutError::BudgetExceeded("bytes per shaping call"));
         }
         self.shape_bytes = self.shape_bytes.checked_add(text.len())
             .filter(|bytes| *bytes <= self.options.max_total_shape_bytes)
             .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
-        let run = (self.shape)(text, size, role).map_err(FlowLayoutError::Shaping)?;
+        let run = (self.shape)(text, size, role, style).map_err(FlowLayoutError::Shaping)?;
         validate_run(&run, text, size)?;
         Ok(run)
     }
@@ -455,7 +513,7 @@ mod tests {
 
     // Deterministic measurement oracle, not a substitute for a real font. `fi`
     // and combining marks share a cluster so forbidden splits are observable.
-    fn measured(text: &str, size: f32, _role: FlowTextRole) -> Result<OwnedTextRun, String> {
+    pub(super) fn measured(text: &str, size: f32, _role: FlowTextRole) -> Result<OwnedTextRun, String> {
         let context = TextRunContext {
             font_id: FontId::new(1), font_size: size, script: *b"latn", language: *b"dflt",
             direction: Direction::LeftToRight, font_origin: FontOrigin::BundledFace,

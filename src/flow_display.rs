@@ -21,10 +21,13 @@ use crate::display::{
     AccessibleReadingNode, AccessibleReadingRole, DisplayImage, DisplayItem, DisplayList,
     DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath, VectorShapeType,
 };
-use crate::html::{inlines_to_plain, slug_inlines};
+use crate::html::slug_inlines;
 use crate::span::SourceSpan;
 
+mod inline;
 mod limits;
+pub use inline::{FlowInlineRun, FlowInlineStyle, active_link_target};
+use inline::emit_inlines;
 mod reflow;
 pub use limits::FlowDisplayLimits;
 pub use reflow::{FlowLayoutError, FlowLayoutOptions, FlowTextRole};
@@ -177,6 +180,9 @@ struct BlockMeta {
     marker: Option<String>,
     ordered: bool,
     task: Option<bool>,
+    inline_runs: Vec<FlowInlineRun>,
+    cell_runs: Vec<Vec<FlowInlineRun>>,
+    image_link: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Debug)]
@@ -557,8 +563,10 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                     slugs.insert(id.clone(), 1);
                     slugs.insert(base, suffix);
                     meta.heading_id = Some(id);
+                    let (text, runs) = inline::collect(inlines, output.remaining_bytes())?;
+                    meta.inline_runs = runs;
                     output.push_back(PreparedBlock {
-                        block: DisplayBlock::Heading { level: *level, text: inlines_to_plain(inlines) }, meta,
+                        block: DisplayBlock::Heading { level: *level, text }, meta,
                     })?;
                 }
                 Block::Paragraph(inlines) => {
@@ -577,15 +585,22 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                     }
                 }
                 Block::Table(table) => {
-                    output.push_back(PreparedBlock {
-                        block: DisplayBlock::TableHeader { cells: table.head.iter().map(|cell| inlines_to_plain(cell)).collect() },
-                        meta: meta.clone(),
-                    })?;
-                    for row in &table.rows {
-                        output.push_back(PreparedBlock {
-                            block: DisplayBlock::TableRow { cells: row.iter().map(|cell| inlines_to_plain(cell)).collect() },
-                            meta: meta.clone(),
-                        })?;
+                    for (index, row) in std::iter::once(&table.head).chain(table.rows.iter()).enumerate() {
+                        let mut cells = Vec::new();
+                        let mut row_meta = meta.clone();
+                        let mut remaining = output.remaining_bytes();
+                        for cell in row {
+                            let (text, runs) = inline::collect(cell, remaining)?;
+                            remaining = remaining.saturating_sub(text.len());
+                            for run in &runs {
+                                remaining = remaining.saturating_sub(run.link.as_ref().map_or(0, |link| link.len()));
+                            }
+                            cells.push(text);
+                            row_meta.cell_runs.push(runs);
+                        }
+                        let block = if index == 0 { DisplayBlock::TableHeader { cells } }
+                            else { DisplayBlock::TableRow { cells } };
+                        output.push_back(PreparedBlock { block, meta: row_meta })?;
                     }
                 }
                 Block::ThematicBreak | Block::PageBreak => output.push_back(PreparedBlock { block: DisplayBlock::Rule, meta })?,
@@ -613,7 +628,10 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
 }
 
 fn emit_text(text: String, meta: &mut BlockMeta, output: &mut Projection<'_>) -> Result<(), FlowDisplayError> {
-    if text.trim().is_empty() && meta.marker.is_none() { return Ok(()); }
+    if text.trim().is_empty() && meta.marker.is_none() {
+        meta.inline_runs.clear();
+        return Ok(());
+    }
     let block = if meta.marker.is_some() {
         DisplayBlock::ListItem { ordered: meta.ordered, text }
     } else if meta.quote_depth > 0 {
@@ -624,34 +642,8 @@ fn emit_text(text: String, meta: &mut BlockMeta, output: &mut Projection<'_>) ->
     output.push_back(PreparedBlock { block, meta: meta.clone() })?;
     meta.marker = None;
     meta.task = None;
+    meta.inline_runs.clear();
     Ok(())
-}
-
-fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mut Projection<'_>, next_id: &mut u64) -> Result<(), FlowDisplayError> {
-    let mut stack: Vec<_> = inlines.iter().rev().collect();
-    let mut text = String::new();
-    while let Some(inline) = stack.pop() {
-        match inline {
-            Inline::Text(value) | Inline::Code(value) | Inline::Math(value)
-            | Inline::DisplayMath(value) | Inline::Html(value) => text.push_str(value),
-            Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children)
-            | Inline::Link { content: children, .. } => stack.extend(children.iter().rev()),
-            Inline::SoftBreak => text.push(' '),
-            Inline::HardBreak => text.push('\n'),
-            Inline::FootnoteRef { id } => { text.push_str(&format!("[^{id}]")); }
-            Inline::Image { alt, dest, .. } => {
-                emit_text(std::mem::take(&mut text), meta, output)?;
-                let asset = UnresolvedAsset {
-                    id: AssetRequestId(*next_id), kind: "image", reference: dest.clone(),
-                    source_offset: meta.span.start, generation: 0,
-                    estimated_width: 320, estimated_height: 240, alt_text: alt.clone(),
-                };
-                *next_id += 1;
-                output.push_back(PreparedBlock { block: DisplayBlock::UnresolvedAsset(asset), meta: meta.clone() })?;
-            }
-        }
-    }
-    emit_text(text, meta, output)
 }
 
 #[cfg(test)]

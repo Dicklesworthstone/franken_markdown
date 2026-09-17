@@ -232,6 +232,10 @@ impl<'a> Projection<'a> {
         Self { items: VecDeque::new(), bytes: 0, assets: 0, limits }
     }
 
+    pub(super) fn remaining_bytes(&self) -> usize {
+        self.limits.max_output_bytes.saturating_sub(self.bytes)
+    }
+
     pub(super) fn push_back(&mut self, item: PreparedBlock) -> Result<(), FlowDisplayError> {
         let mut count = self.items.len();
         charge(&mut count, 1, self.limits.max_output_blocks, "output blocks")?;
@@ -258,6 +262,12 @@ impl<'a> Projection<'a> {
         let BlockMeta { heading_id, marker, .. } = &item.meta;
         add(heading_id.as_ref().map_or(0, String::len))?;
         add(marker.as_ref().map_or(0, String::len))?;
+        // Count targets per retained run conservatively, even where Arc shares
+        // the backing string. Formatting metadata must not bypass admission.
+        for run in item.meta.inline_runs.iter().chain(item.meta.cell_runs.iter().flatten()) {
+            add(run.link.as_ref().map_or(0, |link| link.len()))?;
+        }
+        add(item.meta.image_link.as_ref().map_or(0, |link| link.len()))?;
         self.bytes = bytes;
         self.assets = assets;
         self.items.push_back(item);

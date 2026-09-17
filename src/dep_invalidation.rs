@@ -11,6 +11,9 @@
 use crate::ast::{Block, Inline};
 use crate::span::{SourceSpan, SpannedDocument};
 
+pub mod browser;
+pub use browser::{BrowserFlowError, BrowserFlowSession};
+
 pub mod cache;
 pub use cache::{FlowShapeCache, FlowShapeCacheLimits, FlowShapeCacheStats};
 

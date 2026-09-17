@@ -25,7 +25,9 @@ use crate::html::{inlines_to_plain, slug_inlines};
 use crate::span::SourceSpan;
 
 mod limits;
+mod reflow;
 pub use limits::FlowDisplayLimits;
+pub use reflow::{FlowLayoutError, FlowLayoutOptions, FlowTextRole};
 use limits::Projection;
 
 /// Strongly-typed identifier for an external asset request.
@@ -507,8 +509,8 @@ fn push_reading(list: &mut DisplayList, role: AccessibleReadingRole, text: &str,
     });
 }
 
-// Iterative traversal: containers and inline formatting never add Rust call
-// frames. All syntax decisions, including reference resolution and table cell
+// The worklist traverses containers and paragraph inlines iteratively.
+// Shared heading/table text helpers are protected by the AST depth audit. All syntax decisions, including reference resolution and table cell
 // boundaries, belong to parse_markdown_spanned, not this projection.
 enum Work<'a> {
     Block(&'a Block, BlockMeta),

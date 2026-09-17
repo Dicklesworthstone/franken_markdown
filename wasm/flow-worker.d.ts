@@ -1,12 +1,15 @@
 import type {
   FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput
+  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput,
+  FlowExportFormat, FlowExportOptionsByFormat, FlowExportResult
 } from "./flow.js";
 export type {
   FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput
+  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput,
+  FlowExportFormat, FlowExportOptions, FlowHtmlExportOptions, FlowPdfExportOptions,
+  FlowExportOptionsByFormat, FlowExportDiagnostic, FlowExportResult
 } from "./flow.js";
 
 export interface FlowWorkerControl {
@@ -70,6 +73,11 @@ export interface WorkerFlowSession {
   /** Immutable glyph paths; input IDs are copied at enqueue, never transferred from the caller. */
   glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array, control?: FlowWorkerControl): Promise<FlowGlyphOutlines>;
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<Uint8Array | null>;
+  /** Runs the shared document renderer inside this worker. Input is a captured
+   * source/layout revision; queued cancellation is safe, in-flight cancellation
+   * terminates this session, like every other synchronous WASM operation. */
+  exportDocument<F extends FlowExportFormat>(format: F, options: FlowExportOptionsByFormat[F] | undefined,
+    token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowExportResult>;
   /** Immediate, idempotent termination. Rejects all outstanding operations. */
   dispose(): void;
 }

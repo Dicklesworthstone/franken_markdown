@@ -109,6 +109,7 @@ cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 # Copy every hand-written subpath entry and its runtime dependencies.
 for file in book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  flow_export.mjs EXPORT.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md; do
@@ -233,6 +234,9 @@ node wasm/flow_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: actual glyph-outline batches against generated WASM"
 node wasm/flow_outlines_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
+
+log "headless node: revision-fenced HTML/PDF exports against generated WASM"
+node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.
 log "native<->WASM byte parity:"

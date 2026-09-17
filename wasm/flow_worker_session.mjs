@@ -1,6 +1,7 @@
 import { sourceText } from "./flow_session.mjs";
 import { OwnedWorkerRpc, FlowWorkerError, workerLimits, serveOwnedWorker } from "./worker_transport.mjs";
 import { fields, flowToken, normalizeFlowRequest, requestWeight, snapshotArguments, acknowledgedState } from "./flow_worker_protocol.mjs";
+import { validateFlowExportResult } from "./flow_export.mjs";
 
 const convert = error => error instanceof FlowWorkerError ? error
   : new FlowWorkerError(typeof error?.code === "string" ? error.code : "WORKER_OPERATION_FAILED",
@@ -61,6 +62,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           }
         }
       }
+      if (method === "exportDocument") validateFlowExportResult(result, next.token);
       if (method === "getSource") sourceText(result);
       state = next;
     });
@@ -71,7 +73,18 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       try {
         alive();
         const normalized = normalizeFlowRequest(method, args);
-        return rpc.request(method, requestWeight(normalized), () => snapshotArguments(method, normalized), controls);
+        const pending = rpc.request(method, requestWeight(normalized), () => snapshotArguments(method, normalized), controls);
+        if (method !== "exportDocument") return pending;
+        return pending.then(result => {
+          try {
+            validateFlowExportResult(result, normalized[2], normalized[1].maxOutputBytes);
+            if (result.format !== normalized[0]) throw new Error("unexpected export format");
+            return result;
+          } catch {
+            rpc.dispose();
+            throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "export acknowledgment does not match the requested document");
+          }
+        });
       } catch (error) { return Promise.reject(convert(error)); }
     };
     const api = {
@@ -85,6 +98,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       get pendingOperations() { return rpc.pendingOperations; },
       get pendingBytes() { return rpc.pendingBytes; },
       getSource(control) { return call("getSource", [], control); },
+      exportDocument(format, options, token, control) { return call("exportDocument", [format, options, token], control); },
       edit(start, end, replacement, options, control) { return call("edit", [start, end, replacement, options], control); },
       editBytes(start, end, replacement, options, control) { return call("editBytes", [start, end, replacement, options], control); },
       replaceSource(source, options, control) { return call("replaceSource", [source, options], control); },
@@ -125,7 +139,8 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
   }
 }
 
-/** Fixed worker-side allowlist over the existing synchronous flow facade. */
+/** Fixed worker-side allowlist over the existing flow facade. Exports are awaited
+ * before acknowledging state or admitting another operation. */
 export function installFlowWorker(endpoint, createSession) {
   let session = null;
   const stop = serveOwnedWorker(endpoint, async (method, args) => {
@@ -140,11 +155,18 @@ export function installFlowWorker(endpoint, createSession) {
         if (!session) throw new FlowWorkerError("SESSION_NOT_READY", "create the flow session first");
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,
         // arbitrary property paths, eval, imports nor dispose are remotely callable.
-        value = method === "getSource" ? session.source : session[method](...normalized);
+        value = method === "getSource" ? session.source : await session[method](...normalized);
       }
       const state = { token: session.token, layout: session.layoutOptions };
       let transfer = [];
-      if (value instanceof Uint8Array) {
+      if (method === "exportDocument") {
+        validateFlowExportResult(value, state.token, normalized[1].maxOutputBytes);
+        if (value.format !== normalized[0] || value.revision !== normalized[2].revision
+            || value.layoutRevision !== normalized[2].layoutRevision) throw new FlowWorkerError("INVALID_WASM_RESPONSE", "export result mismatched the request");
+        // Copy a nested result buffer too: never detach alternative backend storage.
+        value = { ...value, bytes: new Uint8Array(value.bytes) };
+        transfer = [value.bytes.buffer];
+      } else if (value instanceof Uint8Array) {
         // The facade returns owned bytes. Copy again at this ownership boundary
         // so an alternative backend cannot accidentally detach its own storage.
         value = new Uint8Array(value);

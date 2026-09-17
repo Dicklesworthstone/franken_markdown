@@ -163,8 +163,9 @@ export interface FlowSelection extends FlowToken {
   readonly enclosingSourceSpan: FlowSourceSpan;
   readonly rectangles: readonly FlowRect[];
 }
-/** Synchronous after creation. Run in a Worker for off-main-thread editing.
- * Edits still reparse complete bounded snapshots; this is not incremental parsing.
+/** Editing is synchronous after creation; document export returns a Promise.
+ * Run in a Worker for off-main-thread editing and export. Edits still reparse
+ * complete bounded snapshots; this is not incremental parsing.
  */
 export interface FlowSession {
   readonly disposed: boolean;
@@ -193,6 +194,10 @@ export interface FlowSession {
   /** Exact immutable-font paths. At most 256 glyph IDs; empty requests return metrics only. */
   glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array): FlowGlyphOutlines;
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity): Uint8Array | null;
+  /** Shared document renderer, not Canvas capture. Requires encoded bytes for
+   * every image. Rejects if source/assets change while the export is awaited. */
+  exportDocument<F extends FlowExportFormat>(format: F, options: FlowExportOptionsByFormat[F] | undefined,
+    token: FlowTokenInput): Promise<FlowExportResult>;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
 }
@@ -219,4 +224,47 @@ export interface FlowGlyphOutlines {
   readonly descent: number;
   readonly lineGap: number;
   readonly glyphs: readonly FlowGlyphOutline[];
+}
+
+export type FlowExportFormat = "html" | "pdf";
+export interface FlowExportOptions {
+  title?: string;
+  lang?: string;
+  toc?: boolean;
+  tocDepth?: number;
+  /** Published bytes only, not a WASM-heap ceiling. Default/max 64 MiB. */
+  maxOutputBytes?: number;
+}
+export interface FlowHtmlExportOptions extends FlowExportOptions { darkMode?: "auto" | "disabled"; }
+export interface FlowPdfExportOptions extends FlowExportOptions {
+  author?: string;
+  /** Deterministic default 0; nonnegative safe integer seconds. */
+  metadataEpochSeconds?: number;
+  pageNumbers?: boolean;
+  codeLineNumbers?: boolean;
+  baseFontSize?: number;
+  headingScale?: number;
+  tableFontSize?: number;
+  fitToPages?: number;
+  microtype?: "disabled" | "protrusion";
+}
+export interface FlowExportOptionsByFormat { html: FlowHtmlExportOptions; pdf: FlowPdfExportOptions; }
+export interface FlowExportDiagnostic {
+  readonly severity: "warning" | "error";
+  /** Original source UTF-8 byte offsets, not Canvas fragment coordinates. */
+  readonly start: number;
+  readonly end: number;
+  readonly message: string;
+}
+export interface FlowExportResult extends FlowToken {
+  readonly schemaVersion: 1;
+  readonly format: FlowExportFormat;
+  readonly mimeType: "text/html; charset=utf-8" | "application/pdf";
+  readonly font: "sans" | "serif";
+  readonly sourceLengthBytes: number;
+  readonly assetCount: number;
+  readonly assetBytes: number;
+  /** Owned output. No host, WASM, or worker buffer is detached from its owner. */
+  readonly bytes: Uint8Array;
+  readonly diagnostics: readonly FlowExportDiagnostic[];
 }

@@ -86,6 +86,8 @@
     "flow.js",
     "flow.d.ts",
     "flow_session.mjs",
+    "flow_export.mjs",
+    "EXPORT.md",
     "FLOW.md",
     "flow-worker.js",
     "flow-worker.d.ts",

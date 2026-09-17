@@ -16,6 +16,7 @@ cargo build --release --no-default-features --features wasm-bindgen --target was
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
 for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
   book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  flow_export.mjs EXPORT.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
@@ -29,6 +30,7 @@ node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/par
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_outlines_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
+node wasm/flow_export_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 cargo build --bin fmd
 for ext in html pdf; do
   SOURCE_DATE_EPOCH=1700000000 "$TARGET_DIR/debug/fmd" "$ART/parity/showcase.md" --no-config --to "$ext" --out "$ART/parity/native.$ext"

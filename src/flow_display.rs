@@ -10,7 +10,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
 use crate::display::{
@@ -131,7 +131,7 @@ impl DisplayBlock {
 /// The result of one bounded processing step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepResult {
-    /// Blocks produced by this step.
+    /// Blocks produced by this step. May be empty while a fenced block is buffered.
     pub blocks: Vec<DisplayBlock>,
     /// Unresolved asset requests produced by this step.
     pub unresolved_assets: Vec<AssetRequest>,
@@ -179,6 +179,92 @@ struct SourceLine {
     start_offset: usize,
 }
 
+// State survives a step boundary: code is emitted once, only on its closing
+// fence or EOF. Its body must never enter the ordinary Markdown classifier or
+// create host asset requests. See CommonMark 0.31.2, section 4.5.
+#[derive(Debug)]
+struct FencedCode {
+    marker: u8,
+    fence_len: usize,
+    indent: usize,
+    language: Option<String>,
+    source: String,
+}
+
+impl FencedCode {
+    fn candidate(line: &str) -> Option<(u8, usize, usize, &str)> {
+        let indent = line.bytes().take_while(|&b| b == b' ').count();
+        if indent > 3 {
+            return None;
+        }
+        let rest = &line[indent..];
+        let marker = *rest.as_bytes().first()?;
+        if !matches!(marker, b'`' | b'~') {
+            return None;
+        }
+        let fence_len = rest.bytes().take_while(|&b| b == marker).count();
+        if fence_len < 3 {
+            return None;
+        }
+        Some((marker, fence_len, indent, &rest[fence_len..]))
+    }
+
+    fn open(line: &str) -> Option<Self> {
+        let (marker, fence_len, indent, info) = Self::candidate(line)?;
+        if marker == b'`' && info.contains('`') {
+            return None;
+        }
+        Some(Self {
+            marker,
+            fence_len,
+            indent,
+            language: info.split_whitespace().next().map(str::to_owned),
+            source: String::new(),
+        })
+    }
+
+    fn is_closing(&self, line: &str) -> bool {
+        Self::candidate(line).is_some_and(|(marker, fence_len, _, rest)| {
+            marker == self.marker
+                && fence_len >= self.fence_len
+                && rest.trim_matches([' ', '\t']).is_empty()
+        })
+    }
+
+    fn append_line(&mut self, line: &str) {
+        let mut cursor = 0;
+        let mut removed = 0;
+        while removed < self.indent {
+            match line.as_bytes().get(cursor) {
+                Some(b' ') => {
+                    cursor += 1;
+                    removed += 1;
+                }
+                Some(b'\t') => {
+                    // The opening indentation is at most three columns, so
+                    // this leading tab reaches column four. Retain the part
+                    // beyond the indentation instead of dropping the whole tab.
+                    cursor += 1;
+                    for _ in self.indent..4 {
+                        self.source.push(' ');
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        self.source.push_str(&line[cursor..]);
+        self.source.push('\n');
+    }
+
+    fn into_block(self) -> DisplayBlock {
+        DisplayBlock::CodeBlock {
+            language: self.language,
+            source: self.source,
+        }
+    }
+}
+
 /// A synchronous-resumable flow display engine.
 ///
 /// Processes a Markdown source document in bounded steps. Each step
@@ -194,6 +280,7 @@ pub struct ResumableFlowDisplay {
     blocks: Vec<DisplayBlock>,
     pending_assets: Vec<AssetRequest>,
     resolved_assets: Vec<AssetResult>,
+    open_fence: Option<FencedCode>,
     finished: bool,
     batch_size: usize,
     generation: u64,
@@ -212,16 +299,17 @@ impl ResumableFlowDisplay {
     pub fn with_generation(source: &str, batch_size: usize, generation: u64) -> Self {
         let mut lines = VecDeque::new();
         let mut offset = 0usize;
-        for line in source.lines() {
-            let line_start = source
-                .get(offset..)
-                .and_then(|rem| rem.find(line))
-                .map_or(offset, |i| offset + i);
-            lines.push_back(SourceLine {
-                text: line.to_owned(),
-                start_offset: line_start,
+        for segment in source.split_inclusive('\n') {
+            let text = segment.strip_suffix('\n').map_or(segment, |line| {
+                line.strip_suffix('\r').unwrap_or(line)
             });
-            offset = line_start + line.len();
+            lines.push_back(SourceLine {
+                text: text.to_owned(),
+                start_offset: offset,
+            });
+            // Count the actual delimiter bytes, including CRLF and empty lines.
+            // Searching for repeated line contents loses these offsets.
+            offset += segment.len();
         }
 
         Self {
@@ -231,6 +319,7 @@ impl ResumableFlowDisplay {
             blocks: Vec::new(),
             pending_assets: Vec::new(),
             resolved_assets: Vec::new(),
+            open_fence: None,
             finished: false,
             batch_size: batch_size.max(1),
             generation,
@@ -252,9 +341,34 @@ impl ResumableFlowDisplay {
         self.generation
     }
 
-    /// Update the document generation (e.g. upon source edits/reflow).
+    /// Update the layout generation without replacing the source document.
+    ///
+    /// A changed generation invalidates all resolved payloads and reissues
+    /// requests for produced asset blocks. Request IDs stay stable; hosts can
+    /// enumerate the refreshed requests through [`Self::unresolved_assets`].
+    /// Reapplying the same generation is a no-op.
     pub fn set_generation(&mut self, generation: u64) {
+        if generation == self.generation {
+            return;
+        }
         self.generation = generation;
+        self.resolved_assets.clear();
+        self.pending_assets.clear();
+        for block in &mut self.blocks {
+            if let DisplayBlock::UnresolvedAsset(asset) = block {
+                asset.generation = generation;
+                self.pending_assets.push(AssetRequest {
+                    id: asset.id,
+                    kind: asset.kind,
+                    url: asset.reference.clone(),
+                    source_offset: asset.source_offset,
+                    generation,
+                    estimated_width: asset.estimated_width,
+                    estimated_height: asset.estimated_height,
+                    alt_text: asset.alt_text.clone(),
+                });
+            }
+        }
     }
 
     /// Configured batch size for step iterations.
@@ -281,7 +395,9 @@ impl ResumableFlowDisplay {
     /// Check if a specific asset request has been resolved.
     #[must_use]
     pub fn is_asset_resolved(&self, id: AssetRequestId) -> bool {
-        self.resolved_assets.iter().any(|r| r.request_id == id)
+        self.resolved_assets
+            .iter()
+            .any(|r| r.request_id == id && r.generation == self.generation)
     }
 
     /// Supply a host asset result.
@@ -311,7 +427,8 @@ impl ResumableFlowDisplay {
 
     /// Process one bounded step, processing up to `batch_size` lines.
     ///
-    /// Returns `Ok(None)` when the document is fully processed.
+    /// Returns `Ok(None)` when the document is fully processed. An unfinished
+    /// fence can yield an empty step with `has_more` set; callers must resume.
     pub fn step(&mut self) -> Result<Option<StepResult>, FlowDisplayError> {
         if self.finished {
             return Ok(None);
@@ -322,7 +439,6 @@ impl ResumableFlowDisplay {
 
         while lines_consumed < self.batch_size {
             let Some(line) = self.lines.pop_front() else {
-                self.finished = true;
                 break;
             };
             self.current_line += 1;
@@ -338,8 +454,15 @@ impl ResumableFlowDisplay {
             }
         }
 
-        if step_blocks.is_empty() && self.lines.is_empty() {
+        if self.lines.is_empty() {
+            // An unterminated fenced block extends to EOF. Flush it even when
+            // EOF coincides exactly with the current step's line budget.
+            if let Some(fence) = self.open_fence.take() {
+                step_blocks.push(fence.into_block());
+            }
             self.finished = true;
+        }
+        if step_blocks.is_empty() && self.finished {
             return Ok(None);
         }
 
@@ -347,7 +470,7 @@ impl ResumableFlowDisplay {
         Ok(Some(StepResult {
             blocks: step_blocks,
             unresolved_assets: step_assets,
-            has_more: !self.lines.is_empty(),
+            has_more: !self.finished,
             total_blocks: self.blocks.len(),
         }))
     }
@@ -383,6 +506,14 @@ impl ResumableFlowDisplay {
         let mut dl = DisplayList::new();
         let mut y = 0.0f32;
         let line_height = 20.0f32;
+        // Lookup only: output is always traversed in source order, never hash
+        // iteration order. Multiple images do not rescan all resolved results.
+        let resolved: HashMap<_, _> = self
+            .resolved_assets
+            .iter()
+            .filter(|result| result.generation == self.generation)
+            .map(|result| (result.request_id, result))
+            .collect();
 
         for block in &self.blocks {
             match block {
@@ -553,10 +684,11 @@ impl ResumableFlowDisplay {
                     y += line_height + 4.0;
                 }
                 DisplayBlock::UnresolvedAsset(asset) => {
-                    let width = asset.estimated_width as f32;
-                    let height = asset.estimated_height as f32;
+                    let result = resolved.get(&asset.id);
+                    let width = result.map_or(asset.estimated_width, |r| r.width) as f32;
+                    let height = result.map_or(asset.estimated_height, |r| r.height) as f32;
                     let bounds = DisplayRect::new(0.0, y, width, height);
-                    let is_resolved = self.is_asset_resolved(asset.id);
+                    let is_resolved = result.is_some();
                     dl.push_item(DisplayItem::Image(DisplayImage {
                         bounds,
                         request_id: asset.id.0,
@@ -587,6 +719,19 @@ impl ResumableFlowDisplay {
         &mut self,
         line: &SourceLine,
     ) -> (Option<DisplayBlock>, Option<AssetRequest>) {
+        if let Some(mut fence) = self.open_fence.take() {
+            if fence.is_closing(&line.text) {
+                return (Some(fence.into_block()), None);
+            }
+            fence.append_line(&line.text);
+            self.open_fence = Some(fence);
+            return (None, None);
+        }
+        if let Some(fence) = FencedCode::open(&line.text) {
+            self.open_fence = Some(fence);
+            return (None, None);
+        }
+
         let trimmed = line.text.trim();
         if trimmed.is_empty() {
             return (None, None);
@@ -692,8 +837,9 @@ impl ResumableFlowDisplay {
             }
         }
 
-        // Table row: | cell | cell |.
-        if trimmed.starts_with('|') && trimmed.ends_with('|') {
+        // Table row: | cell | cell |. A single pipe is ordinary text, not
+        // an empty row with a reversed [1..0] slice.
+        if trimmed.len() >= 2 && trimmed.starts_with('|') && trimmed.ends_with('|') {
             let cells: Vec<String> = trimmed[1..trimmed.len() - 1]
                 .split('|')
                 .map(|c| c.trim().to_owned())
@@ -718,22 +864,6 @@ impl ResumableFlowDisplay {
             }
         }
 
-        // Fenced code block markers.
-        if trimmed.starts_with("```") {
-            let language = trimmed[3..].trim().to_owned();
-            return (
-                Some(DisplayBlock::CodeBlock {
-                    language: if language.is_empty() {
-                        None
-                    } else {
-                        Some(language)
-                    },
-                    source: String::new(),
-                }),
-                None,
-            );
-        }
-
         // Default: paragraph.
         (
             Some(DisplayBlock::Paragraph {
@@ -754,5 +884,155 @@ impl ResumableFlowDisplay {
             return Some((alt, url));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn fences_preserve_literal_content_across_every_step_boundary() {
+        let cases = [
+            ("```rust\nfn main() {}\n```", Some("rust"), "fn main() {}\n"),
+            (
+                "~~~text\n# literal\n![literal](private.png)\n~~~",
+                Some("text"),
+                "# literal\n![literal](private.png)\n",
+            ),
+            ("````text\n```\n~~~\n`````", Some("text"), "```\n~~~\n"),
+            ("  ```text\n\talpha\n b\n  ```", Some("text"), "  alpha\nb\n"),
+            ("```text\nunterminated", Some("text"), "unterminated\n"),
+            ("~~~\n\n\n~~~", None, "\n\n"),
+            ("```\n  ``` trailing\nend\n```", None, "  ``` trailing\nend\n"),
+            ("```", None, ""),
+            ("~~~lang extra words\nbody\n~~~~", Some("lang"), "body\n"),
+        ];
+        for (source, language, code) in cases {
+            for batch in [1, 2, 3, 4, 7, usize::MAX] {
+                let mut engine = ResumableFlowDisplay::new(source, batch);
+                let blocks = engine.process_all().unwrap();
+                assert_eq!(
+                    blocks,
+                    vec![DisplayBlock::CodeBlock {
+                        language: language.map(str::to_owned),
+                        source: code.to_owned(),
+                    }],
+                    "source={source:?}, batch={batch}"
+                );
+                assert!(engine.unresolved_assets().is_empty());
+                assert!(engine.is_finished());
+                assert!(engine.step().unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn fence_buffering_yields_without_exceeding_line_budget() {
+        let mut engine = ResumableFlowDisplay::new("```text\nfirst\nsecond\n```", 1);
+        for expected_line in 1..=3 {
+            let step = engine.step().unwrap().unwrap();
+            assert!(step.blocks.is_empty());
+            assert!(step.has_more);
+            assert_eq!(engine.current_line, expected_line);
+        }
+        let last = engine.step().unwrap().unwrap();
+        assert_eq!(last.blocks.len(), 1);
+        assert!(!last.has_more);
+        assert!(engine.is_finished());
+    }
+
+    #[test]
+    fn invalid_fences_and_single_pipe_remain_ordinary_text() {
+        for source in ["|", "    ```rust", "```info`", "~~", "\t~~~"] {
+            let mut engine = ResumableFlowDisplay::new(source, 1);
+            assert_eq!(
+                engine.process_all().unwrap(),
+                vec![DisplayBlock::Paragraph {
+                    text: source.trim().to_owned(),
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn source_line_offsets_count_empty_lines_unicode_and_crlf() {
+        let source = "é\r\n\r\né\r\n![image](x.png)\r\n";
+        let engine = ResumableFlowDisplay::new(source, 1);
+        let starts: Vec<usize> = engine.lines.iter().map(|line| line.start_offset).collect();
+        assert_eq!(starts, vec![0, 4, 6, 10]);
+        for line in &engine.lines {
+            assert!(source[line.start_offset..].starts_with(&line.text));
+        }
+        let mut engine = engine;
+        engine.process_all().unwrap();
+        assert_eq!(engine.unresolved_assets()[0].source_offset, 10);
+    }
+
+    #[test]
+    fn resolved_image_dimensions_reflow_following_content() {
+        let mut engine = ResumableFlowDisplay::new("![image](x.png)\nafter", 8);
+        engine.process_all().unwrap();
+        let id = engine.unresolved_assets()[0].id;
+        let before = engine.to_display_list();
+        assert_eq!(before.reading_order()[1].bounds.y, 250.0);
+        engine
+            .provide_asset(AssetResult {
+                request_id: id,
+                generation: 1,
+                width: 640,
+                height: 480,
+                bytes: Some(vec![1]),
+            })
+            .unwrap();
+        let after = engine.to_display_list();
+        let DisplayItem::Image(image) = &after.items()[0] else {
+            panic!("first item must be the image");
+        };
+        assert!(image.is_resolved);
+        assert_eq!(image.bounds, DisplayRect::new(0.0, 0.0, 640.0, 480.0));
+        assert_eq!(after.reading_order()[1].bounds.y, 490.0);
+        assert_eq!(before.reading_order()[1].bounds.y, 250.0);
+    }
+
+    #[test]
+    fn generation_change_invalidates_and_reissues_resolved_assets() {
+        let mut engine = ResumableFlowDisplay::new("![one](a.png)\n![two](b.png)", 8);
+        engine.process_all().unwrap();
+        let id = engine.unresolved_assets()[0].id;
+        let result = AssetResult {
+            request_id: id,
+            generation: 1,
+            width: 640,
+            height: 480,
+            bytes: Some(vec![1]),
+        };
+        engine.provide_asset(result.clone()).unwrap();
+        engine.set_generation(1);
+        assert!(engine.is_asset_resolved(id));
+        assert_eq!(engine.unresolved_assets().len(), 1);
+
+        engine.set_generation(2);
+        assert!(!engine.is_asset_resolved(id));
+        assert!(engine.resolved_assets().is_empty());
+        assert_eq!(engine.unresolved_assets().len(), 2);
+        assert!(engine.unresolved_assets().iter().all(|req| req.generation == 2));
+        assert_eq!(
+            engine.provide_asset(result.clone()),
+            Err(FlowDisplayError::StaleAssetGeneration {
+                expected: 2,
+                actual: 1,
+            })
+        );
+        assert_eq!(engine.unresolved_assets().len(), 2);
+        let refreshed = AssetResult {
+            generation: 2,
+            ..result
+        };
+        engine.provide_asset(refreshed).unwrap();
+        assert!(engine.is_asset_resolved(id));
+        assert_eq!(engine.unresolved_assets().len(), 1);
     }
 }

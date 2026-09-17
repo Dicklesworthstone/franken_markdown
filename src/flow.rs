@@ -297,6 +297,7 @@ impl HeadlessFlowConsumer {
         let mut lines = Vec::new();
         let mut max_line_width_chars = 0usize;
         let mut current_offset = 0usize;
+        let mut first_element = 0usize;
 
         // Advance the absolute offset for EVERY physical line, not just each
         // paragraph. Fenced code, hard breaks, lists, and tables can all contain
@@ -339,7 +340,7 @@ impl HeadlessFlowConsumer {
                 let line_rendered_end = line_rendered_start + chunk_len;
                 let line_range = TextSelectionRange::new(line_rendered_start, line_rendered_end);
                 let (source_span, element_indices) =
-                    Self::compute_line_source_span(&source_map, line_range);
+                    Self::compute_line_source_span(&source_map, line_range, &mut first_element);
 
                 let baseline_y = u32::try_from(line_idx)
                     .unwrap_or(u32::MAX)
@@ -449,15 +450,33 @@ impl HeadlessFlowConsumer {
         Ok(())
     }
 
+    // SourceMapBuilder appends disjoint rendered runs in reading order. Flow
+    // queries are also monotonically increasing, so retain the first run that
+    // may overlap instead of scanning the full document for every line. A run
+    // spanning multiple wrapped lines stays at the cursor until its end passes.
+    // Cost is O(elements + lines + actual overlaps), with no auxiliary index.
     fn compute_line_source_span(
         source_map: &DocumentSourceMap,
         line_range: TextSelectionRange,
+        first_element: &mut usize,
     ) -> (SourceSpan, Vec<usize>) {
+        let elements = source_map.elements();
+        while let Some(elem) = elements.get(*first_element) {
+            if elem.rendered_range.is_empty() || elem.rendered_range.end <= line_range.start {
+                *first_element += 1;
+            } else {
+                break;
+            }
+        }
+
         let mut min_start = usize::MAX;
         let mut max_end = 0;
         let mut element_indices = Vec::new();
 
-        for (idx, elem) in source_map.elements().iter().enumerate() {
+        for (idx, elem) in elements.iter().enumerate().skip(*first_element) {
+            if elem.rendered_range.start >= line_range.end {
+                break;
+            }
             if !elem.rendered_range.is_empty() && elem.rendered_range.overlaps(line_range) {
                 element_indices.push(idx);
                 for span in elem.source_ranges.spans() {
@@ -570,7 +589,80 @@ mod tests {
         assert_eq!(output.total_width, 1);
         for (index, line) in output.lines.iter().enumerate() {
             assert_eq!(line.rendered_text, "é");
-            assert_eq!(line.rendered_range, TextSelectionRange::new(index * 2, index * 2 + 2));
+            assert_eq!(
+                line.rendered_range,
+                TextSelectionRange::new(index * 2, index * 2 + 2)
+            );
         }
+    }
+
+    #[test]
+    fn provenance_sweep_matches_exhaustive_scan_across_block_kinds() {
+        let source = concat!(
+            "# Title\n\nPlain **bold** and *emphasized* text.\n\n",
+            "```text\nfirst\nsecond longer line\nthird\n```\n\n",
+            "- first item\n- another `code` item\n\n",
+            "| Left | Right |\n| --- | --- |\n| é | 東京 |\n\n",
+            "[link](https://example.com) and ![alt](image.png)\n"
+        );
+        for width in [1, 7, 80] {
+            let output = HeadlessFlowConsumer::with_constraints(FlowConstraints {
+                viewport_width: width,
+                ..FlowConstraints::default()
+            })
+            .consume_source(source)
+            .unwrap();
+            let elements = output.elements();
+            assert!(elements.windows(2).all(|pair| {
+                pair[0].rendered_range.end <= pair[1].rendered_range.start
+            }));
+            for line in &output.lines {
+                let expected: Vec<usize> = elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, elem)| {
+                        !elem.rendered_range.is_empty()
+                            && elem.rendered_range.overlaps(line.rendered_range)
+                    })
+                    .map(|(idx, _)| idx)
+                    .collect();
+                assert_eq!(line.element_indices, expected);
+                let mut min_start = usize::MAX;
+                let mut max_end = 0;
+                for idx in expected {
+                    for span in elements[idx].source_ranges.spans() {
+                        min_start = min_start.min(span.start);
+                        max_end = max_end.max(span.end);
+                    }
+                }
+                let expected_span = if min_start <= max_end && max_end > 0 {
+                    SourceSpan::new(min_start, max_end)
+                } else {
+                    SourceSpan::default()
+                };
+                assert_eq!(line.source_span, expected_span);
+            }
+        }
+    }
+
+    #[test]
+    fn provenance_cursor_advances_past_completed_runs() {
+        let source = "**alpha** *beta* `gamma`\n\nlast paragraph\n";
+        let doc = parse_markdown_spanned(source);
+        let map = DocumentSourceMap::from_spanned_document(&doc, source).unwrap();
+        let mut cursor = 0;
+        for offset in 0..map.rendered_len() {
+            let previous = cursor;
+            let _ = HeadlessFlowConsumer::compute_line_source_span(
+                &map,
+                TextSelectionRange::new(offset, offset + 1),
+                &mut cursor,
+            );
+            assert!(cursor >= previous);
+            assert!(map.elements()[..cursor].iter().all(|elem| {
+                elem.rendered_range.is_empty() || elem.rendered_range.end <= offset
+            }));
+        }
+        assert_eq!(cursor, map.elements().len());
     }
 }

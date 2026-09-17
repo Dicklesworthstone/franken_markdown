@@ -17,6 +17,9 @@ use crate::text::{Font, FontError, Kerning, Ligatures};
 use crate::theme::FontFamily;
 use std::sync::OnceLock;
 
+pub mod flow;
+pub use flow::BundledFlowFonts;
+
 /// Weight + slant of a bundled face.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontStyle {

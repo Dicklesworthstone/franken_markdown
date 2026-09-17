@@ -1,5 +1,4 @@
-//! Focused tests for incremental document dependency invalidation
-//! (FCB-037.A).
+//! Public-contract tests for dependency-aware document change analysis.
 
 #![forbid(unsafe_code)]
 
@@ -9,36 +8,25 @@ use franken_markdown::dep_invalidation::{DependencyGraph, DependencyKind};
 fn scan_identifies_reference_links() {
     let source = "See [the docs][docs-ref] and [inline](url).";
     let graph = DependencyGraph::scan(source);
-    let refs: Vec<_> = graph
-        .dependencies()
-        .iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Reference { .. }))
-        .collect();
-    assert_eq!(refs.len(), 1, "only the reference link is tracked");
+    let refs: Vec<_> = graph.dependencies().iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Reference { .. })).collect();
+    assert_eq!(refs.len(), 1, "only the reference candidate is tracked");
     assert_eq!(refs[0].start, 4);
 }
 
 #[test]
 fn scan_identifies_footnotes() {
-    let source = "Text[^1] with a note.\n\n[^1]: The note body.";
-    let graph = DependencyGraph::scan(source);
-    let footnotes: Vec<_> = graph
-        .dependencies()
-        .iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Footnote { .. }))
-        .collect();
-    assert!(footnotes.len() >= 2, "reference and definition both tracked");
+    let graph = DependencyGraph::scan("Text[^1] with a note.\n\n[^1]: The note body.");
+    let footnotes: Vec<_> = graph.dependencies().iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Footnote { .. })).collect();
+    assert_eq!(footnotes.len(), 2);
 }
 
 #[test]
 fn scan_identifies_headings() {
-    let source = "# Title\n## Section\n### Sub";
-    let graph = DependencyGraph::scan(source);
-    let headings: Vec<_> = graph
-        .dependencies()
-        .iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Heading { level: 1..=3, .. }))
-        .collect();
+    let graph = DependencyGraph::scan("# Title\n## Section\n### Sub");
+    let headings: Vec<_> = graph.dependencies().iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Heading { level: 1..=3, .. })).collect();
     assert_eq!(headings.len(), 3);
 }
 
@@ -47,34 +35,28 @@ fn distant_edit_marks_distant_dirty() {
     let source = "Para one.\n\n[ref]: some-url\n\nPara two.\n\n[other-ref]: other";
     let graph = DependencyGraph::scan(source);
     let result = graph.invalidate(5, 10);
-    // The edit range (5, 10) doesn't overlap any dependency, so no
-    // dependency is dirty. All are unchanged.
-    assert!(result.dirty.is_empty(), "non-overlapping edit must not dirty deps");
-    assert!(!result.unchanged.is_empty(), "deps are unchanged");
+    // Without the replacement text an edit can open a fence or a new reference
+    // definition. Range non-overlap is NOT proof of unchanged semantics.
+    assert_eq!(result.dirty, vec![(0, source.len())]);
+    assert!(result.unchanged.is_empty());
+    assert!(result.distant_dirty);
 }
 
 #[test]
-fn non_overlapping_deps_are_unchanged() {
-    let source = "First [dep-a].\n\nSecond [dep-b].\n\nThird [dep-c].";
-    let graph = DependencyGraph::scan(source);
-    // Edit only the first line.
-    let result = graph.invalidate(0, 5);
-    // Dependencies beyond the edit range are unchanged.
-    let unchanged_beyond = result
-        .unchanged
-        .iter()
-        .any(|(start, _)| *start >= 10);
-    assert!(unchanged_beyond || result.unchanged.is_empty());
+fn non_overlapping_deps_are_unchanged_only_after_snapshot_comparison() {
+    let a = DependencyGraph::scan("First [dep-a].\n\nSecond [dep-b].\n\nThird [dep-c].");
+    let b = DependencyGraph::scan("Edited [dep-a].\n\nSecond [dep-b].\n\nThird [dep-c].");
+    let change = a.compare(&b);
+    assert_eq!(change.dirty_blocks, vec![0]);
+    assert_eq!(change.reusable.len(), 2);
+    assert_eq!(change.reusable[0].new_index, 1);
+    assert_eq!(change.reusable[1].new_index, 2);
 }
 
 #[test]
 fn overlapping_deps_are_dirty() {
     let source = "Start [ref-a] middle [ref-b] end.";
-    let graph = DependencyGraph::scan(source);
-    // Edit range that overlaps the first dependency.
-    let result = graph.invalidate(5, 10);
-    assert!(
-        !result.dirty.is_empty() || !result.unchanged.is_empty(),
-        "invalidation returns a meaningful result"
-    );
+    let result = DependencyGraph::scan(source).invalidate(5, 10);
+    assert_eq!(result.dirty, vec![(0, source.len())]);
+    assert!(result.unchanged.is_empty());
 }

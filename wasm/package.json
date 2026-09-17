@@ -59,6 +59,10 @@
     "./flow-canvas": {
       "types": "./flow-canvas.d.ts",
       "import": "./flow-canvas.js"
+    },
+    "./flow-assets": {
+      "types": "./flow-assets.d.ts",
+      "import": "./flow-assets.js"
     }
   },
   "files": [
@@ -92,6 +96,11 @@
     "CANVAS.md",
     "demo/flow-canvas.html",
     "demo/flow-canvas.js",
-    "demo/flow_preview_controller.mjs"
+    "demo/flow_preview_controller.mjs",
+    "flow-assets.js",
+    "flow-assets.d.ts",
+    "flow_raster.mjs",
+    "ASSETS.md",
+    "demo/local_image_sources.mjs"
   ]
 }

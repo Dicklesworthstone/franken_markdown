@@ -1,21 +1,31 @@
 import { createWorkerFlowSession } from "../flow-worker.js";
 import { FlowCanvasRenderer } from "../flow-canvas.js";
+import { FlowImageAssets } from "../flow-assets.js";
 import { createPreviewController } from "./flow_preview_controller.mjs";
+import { createLocalImageSources } from "./local_image_sources.mjs";
 
 const source = document.querySelector("#source"), viewport = document.querySelector("#viewport");
 const canvas = document.querySelector("#preview"), extent = document.querySelector("#extent");
 const status = document.querySelector("#status"), reading = document.querySelector("#reading");
 const link = document.querySelector("#hit"), restart = document.querySelector("#restart");
-let controller = null, painter = null, scheduled = 0;
+const files = document.querySelector("#images"), imageStatus = document.querySelector("#image-status");
+const insertImages = document.querySelector("#insert-images"), clearImages = document.querySelector("#clear-images");
+let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]);
 
 function start() {
   painter = new FlowCanvasRenderer(canvas);
-  controller = createPreviewController({ createSession: createWorkerFlowSession, painter, onState(state) {
+  controller = createPreviewController({ createSession: createWorkerFlowSession, painter,
+    createAssets: session => localSources.count ? new FlowImageAssets(session, { load: localSources.load }) : null,
+    onState(state) {
     reading.textContent = state.reading;
     if (state.status === "ready") {
-      const frame = state.frame;
+      const frame = state.frame, images = state.images;
       extent.style.height = `${Math.max(viewport.clientHeight, frame.totalBounds.y + frame.totalBounds.height)}px`;
-      status.textContent = `Source ${frame.revision} · layout ${frame.layoutRevision} · ${frame.glyphs} viewport glyphs. Images remain placeholders until a host authorizes loading.`;
+      const detail = images?.status === "loading" ? "Loading explicitly selected images; text remains usable."
+        : images?.status === "ready" ? `Images: ${images.loaded} loaded, ${images.failed} failed, ${images.skipped} unchanged or unauthorized.${images.errors.length ? ` First failure: ${images.errors[0].code}.` : ""}`
+        : images?.status === "error" ? `Image loading: ${images.code}. Text remains available.`
+        : "Only explicitly selected local images can be loaded. No image URLs are fetched.";
+      status.textContent = `Source ${frame.revision} · layout ${frame.layoutRevision} · ${frame.glyphs} viewport glyphs. ${detail}`;
     } else if (state.status === "error") {
       status.textContent = `${state.error.code}: ${state.error.message} Last successful pixels are unchanged; your source is still in the editor. Restart explicitly after worker loss.`;
     } else if (state.status === "busy") status.textContent = "Updating preview in the worker; source edits remain available.";
@@ -34,6 +44,25 @@ function update() {
     catch (error) { status.textContent = `${error.code ?? "PREVIEW_ERROR"}: ${error.message} Source retained.`; }
   });
 }
+function changeImages(next) {
+  // Change the grant only after admission succeeds. Restart clears published
+  // pixels before disposing bitmaps, and invalidates old worker generations.
+  localSources = next;
+  insertImages.disabled = next.count === 0; clearImages.disabled = next.count === 0;
+  imageStatus.textContent = next.count ? `${next.count} local image files authorized. Insert references or use their exact filenames. Nothing is uploaded.`
+    : "No local images authorized. Network image loading is disabled.";
+  if (controller?.disposed) start(); else controller.restart();
+  update();
+}
+files.addEventListener("change", () => {
+  try { changeImages(createLocalImageSources(files.files)); }
+  catch (error) { imageStatus.textContent = `${error.code ?? "IMAGE_ERROR"}: ${error.message}. The previous grant is unchanged.`; }
+});
+clearImages.addEventListener("click", () => { files.value = ""; changeImages(createLocalImageSources([])); });
+insertImages.addEventListener("click", () => {
+  source.setRangeText(`\n\n${localSources.references.join("\n\n")}\n`, source.selectionStart, source.selectionEnd, "end");
+  source.focus(); update();
+});
 source.addEventListener("input", update);
 viewport.addEventListener("scroll", update, { passive: true });
 const observer = new ResizeObserver(update); observer.observe(viewport);

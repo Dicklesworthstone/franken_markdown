@@ -3,11 +3,12 @@
 // remains authoritative in the host, never reconstructed from a stale preview.
 import { sourceText, FlowError } from "../flow_session.mjs";
 
-export function createPreviewController({ createSession, painter, onState = () => {} }) {
+export function createPreviewController({ createSession, painter, createAssets = null, onState = () => {} }) {
   let desired = null, version = 0, epoch = 0, running = false, queued = false;
   let session = null, appliedSource = null, disposed = false, reading = "";
   let readingRevision = null, startup = null, paint = null, waiters = [];
-  let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null });
+  let assets = null, assetJob = null, imagesRevision = null;
+  let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null, images: null });
   const publish = update => { state = Object.freeze({ ...state, ...update }); onState(state); };
   const settle = () => { const all = waiters; waiters = []; for (const resolve of all) resolve(state); };
   const alive = () => { if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed"); };
@@ -28,6 +29,46 @@ export function createPreviewController({ createSession, painter, onState = () =
     queued = true;
     queueMicrotask(() => { queued = false; if (!disposed) void run(); else settle(); });
   };
+  const refresh = () => {
+    if (disposed) return;
+    version++; paint?.abort(); paint = null; schedule();
+  };
+  // Images never block the first text/placeholder frame or subsequent edits.
+  // One physical image batch is allowed across ALL worker restarts, including
+  // old callbacks ignoring cancellation. New sessions can still render text.
+  function beginImages(current) {
+    if (!assets || assetJob || imagesRevision === current.revision || current.disposed) return;
+    const job = { owner: assets, session: current, revision: current.revision, token: current.token, epoch };
+    assetJob = job; imagesRevision = job.revision;
+    publish({ images: Object.freeze({ status: "loading", revision: job.revision }) });
+    void (async () => {
+      let report = null, error = null;
+      try { report = await job.owner.loadPending(); }
+      catch (failure) { error = failure; }
+      // A public timeout may precede physical completion. Retain this slot and
+      // observe late deliveries/cleanup before scheduling any replacement batch.
+      await job.owner.whenIdle();
+      if (assetJob === job) assetJob = null;
+      if (disposed) return;
+      if (assets !== job.owner || session !== current || epoch !== job.epoch) { refresh(); return; }
+      if (current.disposed) {
+        publish({ status: "error", error: Object.freeze({ code: "SESSION_LOST", message: "Image delivery lost the worker; restart explicitly." }) });
+        return;
+      }
+      if (current.revision !== job.revision) { refresh(); return; }
+      if (error?.code === "STALE_LAYOUT" && current.token.layoutRevision !== job.token.layoutRevision) {
+        imagesRevision = null; refresh(); return; // Inventory read raced a resize, before any delivery.
+      }
+      publish({ images: Object.freeze(report ? { status: "ready", ...report }
+        : { status: "error", revision: job.revision, code: typeof error?.code === "string" ? error.code : "ASSET_LOAD_FAILED" }) });
+      if (current.token.layoutRevision !== state.frame?.layoutRevision) refresh();
+    })().catch(error => {
+      // Host factory/observer errors must not become unhandled rejections or
+      // an automatic replay loop. The authoritative source is still retained.
+      if (assetJob === job) assetJob = null;
+      if (!disposed && assets === job.owner) publish({ images: Object.freeze({ status: "error", code: "ASSET_LOAD_FAILED" }) });
+    });
+  }
   async function transcript(current) {
     if (readingRevision === current.revision) return;
     const expected = current.token;
@@ -64,6 +105,7 @@ export function createPreviewController({ createSession, painter, onState = () =
             if (startup === controller) startup = null;
             if (disposed || epoch !== generation) { created.dispose(); if (disposed) break; continue; }
             session = created; appliedSource = intent.source;
+            assets = createAssets ? createAssets(created) : null; imagesRevision = null;
           }
           const current = session;
           if (!currentIntent()) continue;
@@ -71,6 +113,7 @@ export function createPreviewController({ createSession, painter, onState = () =
             await current.replaceSource(intent.source, { expectedRevision: current.revision });
             if (epoch !== generation || disposed) continue;
             appliedSource = intent.source;
+            assets?.synchronize(); publish({ images: null });
           }
           if (!currentIntent()) continue;
           if (current.layoutOptions.viewportWidth !== intent.width) {
@@ -80,15 +123,21 @@ export function createPreviewController({ createSession, painter, onState = () =
           const nextReading = await transcript(current);
           if (!currentIntent()) continue;
           const controller = new AbortController(); paint = controller;
+          const owner = assets;
           const frame = await painter.render(current, { width: intent.width, height: intent.height,
-            scrollY: intent.scrollY, pixelRatio: intent.pixelRatio, token: current.token, signal: controller.signal });
+            scrollY: intent.scrollY, pixelRatio: intent.pixelRatio, token: current.token, signal: controller.signal,
+            ...(owner ? { resolveImage: (image, token) => owner.resolveImage(image, token) } : {}) });
           if (paint === controller) paint = null;
           if (!currentIntent()) continue;
           if (nextReading) { reading = nextReading.text; readingRevision = nextReading.revision; }
           publish({ status: "ready", frame, reading, error: null });
+          beginImages(current);
           if (currentIntent()) break;
         } catch (error) {
           if (!currentIntent()) { if (disposed) break; continue; }
+          // Image deliveries may change layout during reflow/read/paint. Wait
+          // for that one batch, then repaint once, rather than spin or reparse.
+          if (assetJob?.owner === assets && error?.code === "STALE_LAYOUT") break;
           // Do not automatically recreate/replay after a lost worker. The host
           // retains desired.source and can explicitly request restart().
           publish({ status: "error", error: Object.freeze({
@@ -112,20 +161,23 @@ export function createPreviewController({ createSession, painter, onState = () =
     restart() {
       alive(); epoch++; version++;
       startup?.abort(); startup = null; paint?.abort(); paint = null;
-      const previous = session; session = null; appliedSource = null; reading = ""; readingRevision = null;
-      previous?.dispose(); painter.clear();
-      publish({ status: "idle", frame: null, reading: "", error: null }); schedule();
+      const previous = session, previousAssets = assets;
+      session = null; assets = null; imagesRevision = null; appliedSource = null; reading = ""; readingRevision = null;
+      painter.clear(); previousAssets?.dispose(); previous?.dispose();
+      publish({ status: "idle", frame: null, reading: "", error: null, images: null }); schedule();
     },
     whenIdle() {
+      // Preview idle does not mean that optional background image I/O settled.
       if (!running && !queued) return Promise.resolve(state);
       return new Promise(resolve => waiters.push(resolve));
     },
     dispose() {
       if (disposed) return;
       disposed = true; epoch++;
-      startup?.abort(); paint?.abort(); session?.dispose(); session = null;
-      desired = null; appliedSource = null; reading = ""; painter.dispose();
-      publish({ status: "disposed", frame: null, reading: "", error: null }); settle();
+      startup?.abort(); paint?.abort(); painter.dispose(); assets?.dispose(); assets = null;
+      session?.dispose(); session = null;
+      desired = null; appliedSource = null; reading = "";
+      publish({ status: "disposed", frame: null, reading: "", error: null, images: null }); settle();
     }
   });
 }

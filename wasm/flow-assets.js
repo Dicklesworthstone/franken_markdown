@@ -214,12 +214,17 @@ export class FlowImageAssets {
         this.#check(run);
         // Send dimension-only: Canvas owns the decoded bitmap. Do not duplicate
         // compressed payloads in the WASM heap, worker ingress, and this cache.
+        const before = token(this.#session.token);
         const ack = await this.#session.provideAsset({ requestId: item.id, generation: item.generation,
           width: image.width, height: image.height });
         // Cancellation is not rollback. A dispatched native mutation may still
         // succeed; retain its bitmap ONLY while its authorization stays valid.
         this.#check(run, true);
-        if (!same(token(ack), token(this.#session.token))) fail("ASSET_PROTOCOL_ERROR", "image acknowledgment does not match session state");
+        const accepted = token(ack), current = token(this.#session.token);
+        if (accepted.revision !== current.revision || BigInt(accepted.layoutRevision) <= BigInt(before.layoutRevision)
+            || BigInt(accepted.layoutRevision) > BigInt(current.layoutRevision)) {
+          fail("ASSET_PROTOCOL_ERROR", "image acknowledgment does not match session state");
+        }
         this.#images.set(item.id, { image, pixels, url: item.url }); image = null; pixels = 0;
       };
       const delivery = this.#publication.then(publish);

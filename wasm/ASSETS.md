@@ -132,3 +132,46 @@ claim real Rust/WASM or browser decoding.
 PNG/JPEG decoding, oriented dimensions, drawing and pixel assertions in Chromium,
 without network or a server. Its session is explicitly synthetic; Rust layout
 and generated-WASM integration still require the package gates on a build host.
+
+## Local-image live preview
+
+The assembled `demo/flow-canvas.html` now includes an explicit local PNG/JPEG
+picker, an **Insert image references at cursor** action, and **Revoke all images**.
+Files are authorized by exact name (or their explicitly constructed percent-encoded
+alias); no directory traversal, arbitrary URL resolution or network fallback is
+allowed. Filename collisions and ambiguous encoded aliases refuse the entire
+new selection without changing the previous grant. The picker holds at most
+128 files, 8 MiB per file and 32 MiB total; pixel/codec limits still apply later.
+
+Text and image placeholders paint first. Image work runs independently, then the
+controller coalesces an updated measured frame after the batch settles. It does
+not wait for image I/O before accepting source edits. Ordinary viewport changes
+reuse authorized bitmaps; successful source changes revoke old-generation images
+and load the new requests. A resize may advance the current layout after an image
+acknowledgment: the accepted delivery remains valid when its source generation is
+unchanged and its layout revision lies within the acknowledged monotonic history.
+
+Changing the selected files or clicking **Revoke all images** clears pixels before
+closing old bitmaps and explicitly recreates the session. Repeated restarts cannot
+multiply outstanding image work: the controller keeps one physical batch slot
+across sessions until old callbacks really settle. A loader that never honors
+cancellation cannot block text rendering in a new session, but new image loading
+waits for its old physical slot rather than escaping the configured limits.
+
+The controller's `whenIdle()` means preview-loop idle, not completion of optional
+image I/O. `state.images` separately reports loading, results or an image error.
+Individual image failures leave text usable and unresolved images as placeholders.
+The local picker never uploads bytes. It is a demonstration of explicit host grants,
+not a generic network loader or an image resolver for other export formats.
+
+Additional checks:
+
+```sh
+node --test wasm/tests/flow_preview_images.test.mjs wasm/tests/local_image_sources.test.mjs
+node --test wasm/flow_assets_package.test.mjs
+```
+
+The controller tests use the production controller and asset manager with explicit
+session/bitmap doubles. Package tests prove exported imports and shipping inventory,
+not that a generated WASM package has been built. Serve the matching built package
+to exercise the complete live preview; no renderer fallback hides a missing build.

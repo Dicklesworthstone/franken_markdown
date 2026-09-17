@@ -105,6 +105,11 @@ resources or call `close()` on caller-owned ImageBitmaps. A cross-origin image c
 taint the canvas under normal browser rules; resource/CORS policy stays with the
 host. Make any cache key include the document/resource authorization context.
 
+For a ready-to-use bounded PNG/JPEG ownership pipeline, use `./flow-assets`
+with an explicit host loading callback; see `ASSETS.md`. It feeds actual image
+dimensions back into layout and lends authorized bitmaps through `resolveImage`.
+The Canvas renderer itself still never fetches or decodes an image implicitly.
+
 A `selection: { revision, layoutRevision, rectangles }` overlay must match the
 painted layout. Rectangles are painted behind text, not converted into guessed
 source ranges. Text copying remains a separate session selection operation.
@@ -158,8 +163,11 @@ coalesced, resizing changes measured wrapping, and scrolling repaints only a
 viewport-sized surface. The drawing inventory is still scanned as described
 above. A selectable reading-text panel provides a logical-text counterpart,
 not a claimed full accessibility widget. Link clicks report targets rather than
-navigating; images remain placeholders because this example grants no loading
-authority. Your textarea remains authoritative after a refused edit or worker
+navigating. Images remain placeholders until the user explicitly selects local
+files. The picker, reference insertion and revocation controls use `./flow-assets`;
+no image URLs are fetched and no files are uploaded. Text paints before image I/O,
+and completed images trigger a coalesced refresh. See `ASSETS.md` for limits and
+ownership. Your textarea remains authoritative after a refused edit or worker
 loss. Restart is explicit, with no automatic replay of uncertain mutations.
 
 `node --test wasm/tests/flow_preview_controller.test.mjs` executes eight

@@ -109,6 +109,7 @@ cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 # Copy every hand-written subpath entry and its runtime dependencies.
 for file in book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md; do
   cp "wasm/$file" "$package_dir/$file"
 done
@@ -119,7 +120,7 @@ cp wasm/demo/index.html "$package_dir/demo/index.html"
 cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
 cp wasm/demo/sample.md "$package_dir/demo/sample.md"
-cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs "$package_dir/demo/"
+cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs "$package_dir/demo/"
 
 for artifact in \
   "$package_dir/franken_markdown.js" "$package_dir/franken_markdown.d.ts" \

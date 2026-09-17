@@ -11,6 +11,9 @@
 use crate::ast::{Block, Inline};
 use crate::span::{SourceSpan, SpannedDocument};
 
+pub mod session;
+pub use session::{FlowAssetRemap, FlowAssetReuse, FlowSession, FlowSessionError, FlowUpdate};
+
 /// A conservative lexical dependency candidate, not a second Markdown parser.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DependencyKind {
@@ -48,8 +51,9 @@ pub struct ReusableBlock {
     pub new_span: SourceSpan,
 }
 
-/// Content/layout reuse analysis. This is NOT permission to splice independently
-/// serialized PDF/HTML bytes: font subsets, object IDs and styles can be global.
+/// Matching block content/intrinsic inputs, not reusable absolute coordinates.
+/// Options, fonts, resource bytes, adjacent spacing and pagination still belong
+/// to the host cache key. This does not permit splicing serialized PDF/HTML.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentChangeSet {
     pub reusable: Vec<ReusableBlock>,
@@ -61,6 +65,7 @@ pub struct DocumentChangeSet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RenderContext {
+    Frontmatter(String),
     Heading(u8, Vec<Inline>),
     FootnoteDefinition(String, Vec<Block>),
     FootnoteReference(String),
@@ -88,6 +93,11 @@ impl DependencyGraph {
     pub(crate) fn from_document(source: &str, document: SpannedDocument) -> Self {
         let mut deps = candidates(source);
         let mut context = Vec::new();
+        let normalized = source.strip_prefix('\u{feff}').unwrap_or(source);
+        let (metadata, body) = crate::parse::split_frontmatter(normalized);
+        if metadata.is_some() {
+            context.push(RenderContext::Frontmatter(normalized[..normalized.len() - body.len()].to_owned()));
+        }
         enum Node<'a> { Block(&'a Block, SourceSpan), Inline(&'a Inline) }
         let mut stack = Vec::new();
         for block in document.blocks().iter().rev() {
@@ -329,6 +339,7 @@ mod tests {
     fn heading_and_footnote_context_changes_refuse_global_reuse() {
         for (old, new) in [
             ("# Same\n\nbody\n", "# Other\n\nbody\n"),
+            ("---\nlang=en\n---\nbody\n", "---\nlang=de\n---\nbody\n"),
             ("text[^a]\n\n[^a]: old\n", "text[^a]\n\n[^a]: new\n"),
             ("{{include: a.md}}\n\nbody", "{{include: b.md}}\n\nbody"),
         ] {

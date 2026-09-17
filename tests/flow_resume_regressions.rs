@@ -42,7 +42,10 @@ fn eager_and_out_of_order_assets_produce_identical_resumed_display_lists() {
         let mut step_count = 0;
         while let Some(step) = stepped.step().unwrap() {
             step_count += 1;
-            assert!(step_count <= SOURCE.lines().count());
+            // Source scanning and completed-block emission have independent
+            // quotas. A container can continue emitting after source EOF.
+            assert!(step_count <= SOURCE.lines().count() + whole.blocks().len());
+            assert!(step.blocks.len() <= batch);
             for request in step.unresolved_assets {
                 assert_ne!(request.url, "never-load.png");
                 stepped.provide_asset(resolved(&request)).unwrap();

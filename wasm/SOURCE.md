@@ -48,3 +48,59 @@ The source tests use File/Blob and explicit element doubles. Draft-session tests
 use a store double; store tests drive the actual adapter with explicit IndexedDB
 event-contract doubles. They do not assert native browser storage or Rust/WASM
 renderer acceptance. No source persistence requires a linked service or network.
+
+## Live editor controls
+
+`demo/flow-canvas.html` includes Open Markdown, an editable filename, Prepare
+Markdown and a separate source-download link. Local recovery has an explicit
+Autosave checkbox, Save draft now, Refresh recovery, Restore stored draft and
+Forget stored draft. Both replacing source from a file and restoring a draft ask
+for confirmation. Refresh reads only; autosave starts unchecked on each page
+lifecycle. No existing draft is silently taken over by a new editor tab.
+
+`demo/flow-source.js` is a separate module entrypoint with no renderer or generated
+WASM imports. Source open/download remains usable when storage is unavailable,
+and source plus recovery remain independent of preview startup or shaping errors.
+Opening/restoring emits `fmd-document-replaced` before the ordinary input event;
+the preview revokes local image grants, invalidates exports and recreates its
+native session before those new document references can resolve. Programmatic
+image-reference insertion emits input too, reaching autosave and source-download
+invalidation instead of updating only the Canvas preview.
+
+Page hiding disposes draft connections and revokes source download URLs without
+claiming a last-second save succeeded. Back/forward-cache reentry reconnects
+storage with autosave off and preserves untouched imported source bytes in memory.
+Only already acknowledged draft transactions are reported as saved; closing a tab
+before the next acknowledgment may lose changes. After a storage error or conflict,
+Refresh recovery reconnects and offers the currently stored version. The local
+editor is never replaced by a save acknowledgment.
+
+Run all source/recovery checks (including DOM-control and package inventories):
+
+```sh
+node --test wasm/tests/flow_document.test.mjs wasm/tests/flow_draft_*.test.mjs wasm/tests/flow_source_*.test.mjs
+```
+
+The source-entry tests load the actual separate entrypoint with no WASM artifact,
+unavailable IndexedDB, explicit EventTarget element/window doubles, and native
+Node File/Blob/object URLs. Inventory tests check that both package assemblers
+ship the new entrypoint and its dependencies. These are not browser screenshots
+or native IndexedDB proof.
+
+A separate native-browser gate is provided:
+
+```sh
+CHROMIUM_PATH=chromium node scripts/check-flow-documents.mjs
+```
+
+It uses a temporary browser profile, an owned debugging pipe and a loopback test
+server, without third-party testing dependencies. The browser checks exercise
+native IndexedDB transaction conflicts, aborted writes, tombstones, corrupt
+records, disposal/version changes, source round trips and an actual page reload.
+They create and remove only uniquely named test databases, never the editor's
+real draft database. The temporary profile is retained for inspection. In an
+isolated test container without sandbox support, the explicit
+`FMD_BROWSER_NO_SANDBOX=1` option is available; it is not the default. Browser
+policy, launch or navigation failures fail the gate, never count as passing or
+fall back to test doubles. The source/storage gate is independent of the existing
+Rust/generated-WASM render-parity gates.

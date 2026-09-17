@@ -5,7 +5,8 @@
   "type": "module",
   "sideEffects": [
     "./fmd-view.js",
-    "./flow_worker.js"
+    "./flow_worker.js",
+    "./demo/flow-source.js"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -114,6 +115,12 @@
     "READER.md",
     "demo/flow_reading_controls.mjs",
     "demo/flow_preview_export.mjs",
-    "demo/flow_export_controls.mjs"
+    "demo/flow_export_controls.mjs",
+    "SOURCE.md",
+    "demo/flow-source.js",
+    "demo/flow_document.mjs",
+    "demo/flow_draft_store.mjs",
+    "demo/flow_draft_session.mjs",
+    "demo/flow_draft_controls.mjs"
   ]
 }

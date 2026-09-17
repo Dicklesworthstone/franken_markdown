@@ -17,7 +17,9 @@ canvas { display: block; }
 #extent { pointer-events: none; }
 button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
-#image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#source-controls, #image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#source-filename { box-sizing: border-box; max-width: 100%; padding: 8px; }
+#source-status, #draft-status { overflow-wrap: anywhere; }
 #status, #hit { min-height: 24px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
 details { margin-top: 18px; }
@@ -70,6 +72,21 @@ The selectable reading text below comes from the same session, not a second Mark
 <div id="viewport" tabindex="0" aria-labelledby="preview-label" aria-describedby="preview-help"><div id="surface"><canvas id="preview" aria-hidden="true"></canvas></div><div id="extent"></div></div>
 <p id="preview-help">Scroll to inspect the document. Clicks report link targets but never open them. The canvas has no native text selection; use the reading text below.</p>
 </section></div>
+<section id="source-controls" aria-label="Original Markdown and draft recovery">
+<h2>Open, save, and recover Markdown</h2>
+<p>These source tools work independently of the preview. Open a local UTF-8 file up to 4 MiB, or prepare the original Markdown and click Download. Opening or restoring a document revokes previous image access. Files are never uploaded or overwritten.</p>
+<label for="open-markdown">Open a local Markdown file</label>
+<input id="open-markdown" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" aria-describedby="source-status">
+<label for="source-filename">Source filename</label>
+<input id="source-filename" type="text" value="document.md" maxlength="240" autocomplete="off" spellcheck="false">
+<p><button id="prepare-markdown" type="button">Prepare Markdown</button> <a id="source-download" hidden>Download Markdown</a></p>
+<p id="source-status" role="status">Source downloads do not require a successful render. Preparing a download does not save it automatically.</p>
+<h3>Local draft recovery</h3>
+<p id="draft-help">Opt in to save source and filename in this browser after edits. One draft is shared by tabs on this origin; conflicting changes pause autosave rather than overwrite another tab. Images and access grants are never stored. Drafts are unencrypted, may be evicted, and are not a backup. Changes are saved only after a transaction acknowledgment.</p>
+<label><input id="remember-draft" type="checkbox" disabled aria-describedby="draft-help draft-status"> Autosave the current source locally</label>
+<p><button id="save-draft" type="button" disabled>Save draft now</button> <button id="refresh-draft" type="button" disabled>Refresh recovery</button> <button id="restore-draft" type="button" disabled>Restore stored draft</button> <button id="forget-draft" type="button" disabled>Forget stored draft</button></p>
+<p id="draft-status" role="status">Inspecting local draft storage. Autosave is off until explicitly enabled.</p>
+</section>
 <section id="image-controls" aria-label="Local image authorization">
 <label for="images">Authorize local PNG/JPEG image files</label>
 <input id="images" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple aria-describedby="image-help image-status">
@@ -96,5 +113,6 @@ The selectable reading text below comes from the same session, not a second Mark
 <p id="reading-status" role="status">Waiting for a semantic reading snapshot.</p>
 <article id="reading" aria-label="Selectable semantic Markdown reading"></article>
 </details>
+<script type="module" src="./flow-source.js"></script>
 <script type="module" src="./flow-canvas.js"></script>
 </body></html>

@@ -100,3 +100,13 @@ test("untouched imports preserve original mixed line endings despite textarea AP
   f.sourceEditor.value += "edited"; f.sourceEditor.dispatchEvent(new Event("input"));
   assert.equal(f.api.snapshot().source, f.sourceEditor.value);
 });
+
+test("source byte preservation can survive controller recreation without replacing the editor", () => {
+  const sourceEditor = new Element(), filename = new Element(), open = new Element(), prepare = new Element(), download = new Element(), status = new Element();
+  sourceEditor.value = "a\nb\n"; filename.value = "a.md";
+  const options = { sourceEditor, filename, open, prepare, download, status, onReplace() { assert.fail("not a replacement"); },
+    initialDocument: { source: "a\r\nb\r", filename: "a.md" } };
+  const api = createSourceControls(options);
+  assert.equal(api.snapshot().source, "a\r\nb\r"); api.dispose();
+  assert.throws(() => createSourceControls({ ...options, initialDocument: { source: "stale", filename: "a.md" } }), code("STALE_SOURCE"));
+});

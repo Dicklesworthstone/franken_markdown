@@ -67,7 +67,7 @@ function changeImages(next) {
   insertImages.disabled = next.count === 0; clearImages.disabled = next.count === 0;
   imageStatus.textContent = next.count ? `${next.count} local image files authorized. Insert references or use their exact filenames. Nothing is uploaded.`
     : "No local images authorized. Network image loading is disabled.";
-  if (controller?.disposed) start(); else controller.restart();
+  if (!controller || controller.disposed) start(); else controller.restart();
   update();
 }
 files.addEventListener("change", () => {
@@ -77,7 +77,18 @@ files.addEventListener("change", () => {
 clearImages.addEventListener("click", () => { files.value = ""; changeImages(createLocalImageSources([])); });
 insertImages.addEventListener("click", () => {
   source.setRangeText(`\n\n${localSources.references.join("\n\n")}\n`, source.selectionStart, source.selectionEnd, "end");
-  exportControls?.invalidate(); source.focus(); update();
+  // Programmatic textarea edits must reach source downloads and autosave too.
+  source.dispatchEvent(new Event("input", { bubbles: true })); source.focus();
+});
+source.addEventListener("fmd-document-replaced", () => {
+  // A new file or recovered draft does not inherit the previous document's
+  // image authorization or retained native payloads, even for matching names.
+  files.value = ""; exportControls?.invalidate();
+  try { changeImages(createLocalImageSources([])); }
+  catch (error) {
+    controller?.dispose();
+    status.textContent = `Preview restart failed after source replacement: ${error.message}. Original Markdown remains available in the source controls.`;
+  }
 });
 source.addEventListener("input", update);
 viewport.addEventListener("scroll", update, { passive: true });

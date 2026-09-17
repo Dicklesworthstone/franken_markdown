@@ -55,12 +55,19 @@ export function markdownDownload(document) {
  * Confirmation may be async; both file-read and confirmation races are fenced.
  */
 export function createSourceControls({ sourceEditor, filename, open, prepare, download, status,
-  onReplace, confirmReplace = () => true, urls = URL }) {
+  onReplace, confirmReplace = () => true, urls = URL, initialDocument }) {
   let disposed = false, busy = false, epoch = 0, url = null, published = null;
   // textarea.value normalizes CR/CRLF to LF. Preserve the imported bytes while
   // its displayed value is unchanged; edited text follows the textarea's LF
   // convention. Returning to the exact imported view also restores its bytes.
   let originalSource = sourceEditor.value, originalView = sourceEditor.value;
+  if (initialDocument !== undefined) {
+    const initial = documentSnapshot(initialDocument);
+    if (initial.filename !== filename.value || initial.source.replace(/\r\n?/g, "\n") !== originalView) {
+      fail("STALE_SOURCE", "The preserved source no longer matches the editor.");
+    }
+    originalSource = initial.source;
+  }
   const current = () => ({ source: sourceEditor.value, filename: filename.value });
   const snapshot = () => documentSnapshot({ filename: filename.value,
     source: sourceEditor.value === originalView ? originalSource : sourceEditor.value });

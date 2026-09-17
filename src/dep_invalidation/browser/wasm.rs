@@ -82,6 +82,12 @@ impl FmdFlowSession {
         self.inner.font_bytes(id(font_id)?).map(<[u8]>::to_vec).map_err(js_error)
     }
 
+    /// Batch paths from the same immutable font identities as the display list.
+    #[wasm_bindgen(js_name = glyphOutlinesJson)]
+    pub fn glyph_outlines_json(&self, font_id: &str, glyph_ids: &[u16]) -> Result<String, JsValue> {
+        self.inner.glyph_outlines_json(id(font_id)?, glyph_ids).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = assetBytes)]
     pub fn asset_bytes(&self, request_id: &str, revision: &str) -> Result<Option<Vec<u8>>, JsValue> {
         self.inner.asset_bytes(id(request_id)?, id(revision)?)

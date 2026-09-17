@@ -13,6 +13,7 @@ use crate::{FontFamily, SourceSpan};
 use std::fmt;
 
 mod wire;
+mod outlines;
 #[cfg(feature = "wasm-bindgen")]
 mod wasm;
 

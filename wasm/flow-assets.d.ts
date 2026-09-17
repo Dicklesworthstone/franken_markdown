@@ -57,6 +57,11 @@ export interface FlowImageOptions {
   /** Once per physically settled batch that attempted work or was aborted,
    * and on clear/dispose. Never once per image. Observer exceptions are ignored. */
   onChange?: (stats: FlowImageStats) => void;
+  /** Opt-in encoded payload retention in the native session for HTML/PDF
+   * export. Default false (dimension-only). Native payload budgets still apply.
+   * clear/dispose only own bitmaps: revoke native bytes via reloadAssets or
+   * session recreation before exporting after an authorization change. */
+  retainSourceBytes?: boolean;
   limits?: FlowImageLimits;
   /** Whole-batch deadline; default 30,000 ms. 0 disables the deadline. */
   timeoutMs?: number;

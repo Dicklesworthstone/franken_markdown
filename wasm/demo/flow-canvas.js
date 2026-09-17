@@ -5,6 +5,7 @@ import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createLocalImageSources } from "./local_image_sources.mjs";
 import { readFlowDocument } from "../flow-reader.js";
 import { createReadingControls } from "./flow_reading_controls.mjs";
+import { createExportControls } from "./flow_export_controls.mjs";
 
 const source = document.querySelector("#source"), viewport = document.querySelector("#viewport");
 const canvas = document.querySelector("#preview"), extent = document.querySelector("#extent");
@@ -12,10 +13,14 @@ const status = document.querySelector("#status"), reading = document.querySelect
 const link = document.querySelector("#hit"), restart = document.querySelector("#restart");
 const files = document.querySelector("#images"), imageStatus = document.querySelector("#image-status");
 const insertImages = document.querySelector("#insert-images"), clearImages = document.querySelector("#clear-images");
-let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]), readingControls = null;
+let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]), readingControls = null, exportControls = null;
 
 function start() {
-  readingControls?.dispose();
+  readingControls?.dispose(); exportControls?.dispose();
+  exportControls = createExportControls({ html: document.querySelector("#export-html"), pdf: document.querySelector("#export-pdf"),
+    download: document.querySelector("#export-download"), status: document.querySelector("#export-status"), sourceEditor: source,
+    exportDocument: (format, options, currentSource) => controller.exportDocument(format, options, currentSource)
+  });
   readingControls = createReadingControls({ root: reading, panel: document.querySelector("#reader-panel"),
     query: document.querySelector("#find-text"), insensitive: document.querySelector("#find-insensitive"),
     previous: document.querySelector("#find-previous"), next: document.querySelector("#find-next"),
@@ -26,9 +31,9 @@ function start() {
   });
   painter = new FlowCanvasRenderer(canvas);
   controller = createPreviewController({ createSession: createWorkerFlowSession, painter, readDocument: readFlowDocument,
-    createAssets: session => localSources.count ? new FlowImageAssets(session, { load: localSources.load }) : null,
+    createAssets: session => localSources.count ? new FlowImageAssets(session, { load: localSources.load, retainSourceBytes: true }) : null,
     onState(state) {
-    readingControls.update(state);
+    readingControls.update(state); exportControls.update(state);
     if (state.status === "ready") {
       const frame = state.frame, images = state.images;
       extent.style.height = `${Math.max(viewport.clientHeight, frame.totalBounds.y + frame.totalBounds.height)}px`;
@@ -72,7 +77,7 @@ files.addEventListener("change", () => {
 clearImages.addEventListener("click", () => { files.value = ""; changeImages(createLocalImageSources([])); });
 insertImages.addEventListener("click", () => {
   source.setRangeText(`\n\n${localSources.references.join("\n\n")}\n`, source.selectionStart, source.selectionEnd, "end");
-  source.focus(); update();
+  exportControls?.invalidate(); source.focus(); update();
 });
 source.addEventListener("input", update);
 viewport.addEventListener("scroll", update, { passive: true });
@@ -94,6 +99,6 @@ canvas.addEventListener("click", async event => {
       : hit.hit ? `Item ${hit.hit.itemIndex}; selection offsets are fragment-local, not original Markdown.` : "No text or link at this point.";
   } catch (error) { link.textContent = `${error.code ?? "HIT_ERROR"}: ${error.message}`; }
 });
-window.addEventListener("pagehide", () => { controller?.dispose(); readingControls?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
+window.addEventListener("pagehide", () => { controller?.dispose(); readingControls?.dispose(); exportControls?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
 window.addEventListener("pageshow", event => { if (event.persisted) { observer.observe(viewport); start(); } });
 start();

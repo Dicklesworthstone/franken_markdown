@@ -38,7 +38,7 @@ function request(value, revision) {
 /** Session-scoped ownership of authorized raster images. There is no fetch,
  * URL resolution, global cache, worker termination or automatic retry here. */
 export class FlowImageAssets {
-  #session; #load; #decode; #onChange; #limits; #timeout;
+  #session; #load; #decode; #onChange; #limits; #timeout; #retainSourceBytes;
   #revision = null; #epoch = 0; #disposed = false; #run = null;
   #images = new Map(); #attempts = new Set(); #pixels = 0; #bytes = 0;
   #publication = Promise.resolve();
@@ -48,10 +48,12 @@ export class FlowImageAssets {
     }
     if (!options || typeof options.load !== "function") fail("INVALID_OPTIONS", "an explicit authorized image loader is required");
     for (const key of Object.keys(options)) {
-      if (!["load", "decode", "onChange", "limits", "timeoutMs"].includes(key)) fail("INVALID_OPTIONS", "unknown image-loader option");
+      if (!["load", "decode", "onChange", "limits", "timeoutMs", "retainSourceBytes"].includes(key)) fail("INVALID_OPTIONS", "unknown image-loader option");
     }
     if (options.decode !== undefined && typeof options.decode !== "function") fail("INVALID_OPTIONS", "decode must be a function");
     if (options.onChange !== undefined && typeof options.onChange !== "function") fail("INVALID_OPTIONS", "onChange must be a function");
+    this.#retainSourceBytes = options.retainSourceBytes === undefined ? false : options.retainSourceBytes;
+    if (typeof this.#retainSourceBytes !== "boolean") fail("INVALID_OPTIONS", "retainSourceBytes must be boolean");
     this.#timeout = options.timeoutMs ?? 30000;
     if (!Number.isSafeInteger(this.#timeout) || this.#timeout < 0 || this.#timeout > 2147483647) fail("INVALID_OPTIONS", "invalid image-load timeout");
     this.#limits = configured(options.limits); this.#session = session; this.#load = options.load;
@@ -212,11 +214,14 @@ export class FlowImageAssets {
       }
       const publish = async () => {
         this.#check(run);
-        // Send dimension-only: Canvas owns the decoded bitmap. Do not duplicate
-        // compressed payloads in the WASM heap, worker ingress, and this cache.
+        // Default stays dimension-only. Export hosts can explicitly retain the
+        // SAME immutable encoded snapshot in the native session. Copy one image
+        // at a time inside the serialized publication lane, not every decoder.
+        const payload = this.#retainSourceBytes ? new Uint8Array(await blob.arrayBuffer()) : undefined;
+        this.#check(run); // Authorization can change while copying the Blob.
         const before = token(this.#session.token);
         const ack = await this.#session.provideAsset({ requestId: item.id, generation: item.generation,
-          width: image.width, height: image.height });
+          width: image.width, height: image.height, ...(payload ? { bytes: payload } : {}) });
         // Cancellation is not rollback. A dispatched native mutation may still
         // succeed; retain its bitmap ONLY while its authorization stays valid.
         this.#check(run, true);

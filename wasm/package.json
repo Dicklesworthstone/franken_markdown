@@ -112,6 +112,8 @@
     "flow-reader.d.ts",
     "flow_reading.mjs",
     "READER.md",
-    "demo/flow_reading_controls.mjs"
+    "demo/flow_reading_controls.mjs",
+    "demo/flow_preview_export.mjs",
+    "demo/flow_export_controls.mjs"
   ]
 }

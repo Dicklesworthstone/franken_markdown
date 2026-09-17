@@ -98,3 +98,38 @@ The package gate separately runs `flow_export_smoke.mjs` against generated WASM:
 it compares synchronous and worker HTML/PDF bytes with the general render API,
 including real PNG embedding, source edits, stale tokens and diagnostics. A test
 of doubles is not a substitute for that generated-artifact gate.
+
+## Live editor and image payload retention
+
+`demo/flow-canvas.html` now has **Prepare HTML**, **Prepare PDF**, and a separate
+**Download** link. Preparing a document does not save or open it automatically.
+The controller requires the actual textarea source to match the successfully
+applied source and displayed revision, and refuses an active image batch. Source
+edits, session restart, changed image authorization, new geometry or disposal
+invalidate old output. Typing also revokes the download before the animation-frame
+preview update; programmatic source changes are checked again on link activation.
+Scrolling alone preserves an already prepared download. At most one physical
+export and one Blob URL are retained; replaced/disposed URLs are revoked.
+
+The demo opts into `FlowImageAssets({ ..., retainSourceBytes: true })` (passed as
+the second constructor argument). This keeps the exact admitted immutable PNG/JPEG
+bytes in the native session as well as the Canvas bitmap. The default remains
+`false`, so existing Canvas-only applications keep dimension-only delivery.
+Copies are serialized with native publication, and authorization is checked again
+after the Blob copy. Native per-payload/aggregate budgets and export budgets remain
+independent; a native payload rejection leaves that image unpublished. Image
+statistics count admitted input payloads/bitmap pixels, not extra native or worker
+copies and not total browser memory. The host bitmap cache retains no encoded copy.
+
+`clear()` and `dispose()` on the image manager do not own or dispose the session.
+After revoking authorization, also call the session's `reloadAssets` or recreate
+it before any export; discarding Canvas bitmaps alone cannot revoke native bytes.
+The demo always recreates the session when the local-file grant changes.
+
+```sh
+node --test wasm/tests/flow_assets_export.test.mjs wasm/tests/flow_preview_export.test.mjs wasm/tests/flow_export_controls.test.mjs
+```
+
+These tests exercise production image admission, export gating and download
+controls with native/decoder/element doubles and real EventTarget/Blob objects.
+They do not constitute browser-download, image-codec or generated-WASM acceptance.

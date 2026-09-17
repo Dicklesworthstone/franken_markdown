@@ -24,7 +24,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   cp "wasm/$file" "$PACKAGE/$file"
 done
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
-cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs "$PACKAGE/demo/"
+cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
 cp examples/showcase.md "$ART/parity/showcase.md"
 node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/parity" 1700000000 "$ART/parity/showcase.md"
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"

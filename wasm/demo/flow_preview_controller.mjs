@@ -3,6 +3,7 @@
 // remains authoritative in the host, never reconstructed from a stale preview.
 import { sourceText, FlowError } from "../flow_session.mjs";
 import { requireReadingDocument, sourceSpanToUtf16 } from "../flow_reading.mjs";
+import { createPreviewExport } from "./flow_preview_export.mjs";
 
 export function createPreviewController({ createSession, painter, createAssets = null, readDocument = null, onState = () => {} }) {
   let desired = null, version = 0, epoch = 0, running = false, queued = false;
@@ -11,6 +12,8 @@ export function createPreviewController({ createSession, painter, createAssets =
   let readingRevision = null, startup = null, paint = null, waiters = [];
   let assets = null, assetJob = null, imagesRevision = null;
   let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null });
+  const exportDocument = createPreviewExport(() => ({ session, source: appliedSource, desiredSource: desired?.source,
+    status: state.status, frame: state.frame, imagesBusy: Boolean(assetJob?.owner === assets && assetJob), epoch, disposed }));
   const publish = update => { state = Object.freeze({ ...state, ...update }); onState(state); };
   const settle = () => { const all = waiters; waiters = []; for (const resolve of all) resolve(state); };
   const alive = () => { if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed"); };
@@ -176,6 +179,7 @@ export function createPreviewController({ createSession, painter, createAssets =
   return Object.freeze({
     get state() { return state; },
     get disposed() { return disposed; },
+    exportDocument,
     locateReading(index, document, source) {
       alive();
       if (!readingDocument || document !== readingDocument || state.status !== "ready"

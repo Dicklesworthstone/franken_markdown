@@ -17,7 +17,7 @@ canvas { display: block; }
 #extent { pointer-events: none; }
 button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
-#image-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
 #status, #hit { min-height: 24px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
 details { margin-top: 18px; }
@@ -60,7 +60,7 @@ fn main() {
 }
 ```
 
-![Image placeholder](never-auto-fetch.png)
+Authorize local images below, then insert their references to include them in preview and export.
 
 ## Last section
 
@@ -73,9 +73,15 @@ The selectable reading text below comes from the same session, not a second Mark
 <section id="image-controls" aria-label="Local image authorization">
 <label for="images">Authorize local PNG/JPEG image files</label>
 <input id="images" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple aria-describedby="image-help image-status">
-<p id="image-help">Files stay in this browser. At most 128 files, 8 MiB each and 32 MiB total. Static PNG and baseline/progressive JPEG are supported; see ASSETS.md for the bounded decoder profile. Changing or clearing the grant restarts the preview and immediately clears old pixels.</p>
+<p id="image-help">Files stay in this browser. At most 128 files, 8 MiB each and 32 MiB total. Static PNG and baseline/progressive JPEG are supported; see ASSETS.md for the bounded decoder profile. Changing or clearing the grant restarts the preview and immediately clears old pixels and prepared downloads. Encoded bytes are retained in the native session for export until source changes or restart.</p>
 <p><button id="insert-images" type="button" disabled>Insert image references at cursor</button> <button id="clear-images" type="button" disabled>Revoke all image access</button></p>
 <p id="image-status" role="status">No local images authorized. Network image loading is disabled.</p>
+</section>
+<section id="export-controls" aria-label="Document export">
+<h2>Export the current document</h2>
+<p>Prepare a complete HTML or PDF document in the worker, then click Download. Exports use the document renderer, not a Canvas screenshot. Every image needs an authorized encoded payload; unresolved images stop export. Source edits and authorization changes invalidate prepared downloads.</p>
+<p><button id="export-html" type="button" disabled>Prepare HTML</button> <button id="export-pdf" type="button" disabled>Prepare PDF</button> <a id="export-download" hidden>Download</a></p>
+<p id="export-status" role="status">Waiting for the current preview. Files are not uploaded or saved automatically.</p>
 </section>
 <p><button id="restart" type="button">Restart preview from current source</button></p>
 <p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>

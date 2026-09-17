@@ -291,110 +291,82 @@ impl HeadlessFlowConsumer {
             });
         }
 
-        let max_cols = if self.constraints.char_width > 0 {
-            (self.constraints.viewport_width / self.constraints.char_width).max(1) as usize
-        } else {
-            80
-        };
-
+        let max_cols =
+            (self.constraints.viewport_width / self.constraints.char_width).max(1) as usize;
         let rendered = source_map.rendered_text();
         let mut lines = Vec::new();
         let mut max_line_width_chars = 0usize;
-
-        let paragraphs = rendered.split("\n\n");
         let mut current_offset = 0usize;
 
-        for para in paragraphs {
-            if para.is_empty() {
-                current_offset = current_offset.saturating_add(2).min(rendered.len());
-                continue;
+        // Advance the absolute offset for EVERY physical line, not just each
+        // paragraph. Fenced code, hard breaks, lists, and tables can all contain
+        // several physical lines within a single paragraph-sized text segment.
+        'flow: for segment in rendered.split_inclusive('\n') {
+            // A viewport is a successful prefix render, not a budget failure.
+            // Stop the entire traversal before scanning or mapping more text.
+            if self
+                .constraints
+                .max_viewport_lines
+                .is_some_and(|limit| lines.len() >= limit)
+            {
+                break;
             }
+            let raw_line = segment.strip_suffix('\n').unwrap_or(segment);
+            let mut line_cursor = 0usize;
 
-            let para_start = current_offset;
-            let para_lines = para.split('\n');
-
-            for raw_line in para_lines {
-                let mut line_cursor = 0usize;
-                let raw_bytes = raw_line.as_bytes();
-
-                while line_cursor < raw_bytes.len() {
-                    let Some(remaining) = raw_line.get(line_cursor..) else {
-                        break;
-                    };
-                    let chunk_len = if remaining.chars().count() <= max_cols {
-                        remaining.len()
-                    } else {
-                        // Find wrap point near max_cols characters
-                        let mut byte_limit = 0usize;
-                        let mut char_count = 0usize;
-                        for (idx, ch) in remaining.char_indices() {
-                            if char_count >= max_cols {
-                                break;
-                            }
-                            byte_limit = idx.saturating_add(ch.len_utf8());
-                            char_count += 1;
-                        }
-
-                        // Try to break on whitespace
-                        let search_slice = remaining.get(..byte_limit).unwrap_or(remaining);
-                        if let Some(last_space) = search_slice.rfind(' ') {
-                            if last_space > 0 {
-                                last_space.saturating_add(1)
-                            } else {
-                                byte_limit
-                            }
-                        } else {
-                            byte_limit
-                        }
-                    };
-
-                    let chunk = remaining.get(..chunk_len).unwrap_or(remaining);
-                    let line_rendered_start = para_start.saturating_add(line_cursor);
-                    let line_rendered_end = line_rendered_start.saturating_add(chunk_len);
-                    let line_range = TextSelectionRange::new(line_rendered_start, line_rendered_end);
-
-                    let (source_span, element_indices) =
-                        Self::compute_line_source_span(&source_map, line_range);
-
-                    let line_idx = lines.len();
-                    if line_idx >= self.budgets.max_lines {
-                        return Err(FlowError::BudgetExceeded {
-                            reason: format!(
-                                "line count reached budget limit of {}",
-                                self.budgets.max_lines
-                            ),
-                        });
-                    }
-
-                    if let Some(max_view) = self.constraints.max_viewport_lines {
-                        if line_idx >= max_view {
-                            break;
-                        }
-                    }
-
-                    let baseline_y = (line_idx as u32).saturating_mul(self.constraints.line_height);
-                    let line_chars = chunk.trim_end().chars().count();
-                    max_line_width_chars = max_line_width_chars.max(line_chars);
-
-                    lines.push(FlowLine {
-                        line_index: line_idx,
-                        baseline_y,
-                        rendered_text: chunk.trim_end().to_string(),
-                        rendered_range: line_range,
-                        source_span,
-                        element_indices,
-                    });
-
-                    line_cursor += chunk_len;
+            while line_cursor < raw_line.len() {
+                if self
+                    .constraints
+                    .max_viewport_lines
+                    .is_some_and(|limit| lines.len() >= limit)
+                {
+                    break 'flow;
                 }
+                let line_idx = lines.len();
+                if line_idx >= self.budgets.max_lines {
+                    return Err(FlowError::BudgetExceeded {
+                        reason: format!(
+                            "line count reached budget limit of {}",
+                            self.budgets.max_lines
+                        ),
+                    });
+                }
+
+                let remaining = &raw_line[line_cursor..];
+                let chunk_len = Self::wrapped_chunk_len(remaining, max_cols);
+                let chunk = &remaining[..chunk_len];
+                let line_rendered_start = current_offset + line_cursor;
+                let line_rendered_end = line_rendered_start + chunk_len;
+                let line_range = TextSelectionRange::new(line_rendered_start, line_rendered_end);
+                let (source_span, element_indices) =
+                    Self::compute_line_source_span(&source_map, line_range);
+
+                let baseline_y = u32::try_from(line_idx)
+                    .unwrap_or(u32::MAX)
+                    .saturating_mul(self.constraints.line_height);
+                let line_chars = chunk.trim_end().chars().count();
+                max_line_width_chars = max_line_width_chars.max(line_chars);
+                lines.push(FlowLine {
+                    line_index: line_idx,
+                    baseline_y,
+                    rendered_text: chunk.trim_end().to_string(),
+                    rendered_range: line_range,
+                    source_span,
+                    element_indices,
+                });
+                line_cursor += chunk_len;
             }
 
-            current_offset = para_start + para.len() + 2;
+            current_offset += segment.len();
         }
 
         let total_lines = lines.len();
-        let total_height = (total_lines as u32).saturating_mul(self.constraints.line_height);
-        let total_width = (max_line_width_chars as u32).saturating_mul(self.constraints.char_width);
+        let total_height = u32::try_from(total_lines)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(self.constraints.line_height);
+        let total_width = u32::try_from(max_line_width_chars)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(self.constraints.char_width);
 
         Ok(FlowOutput {
             lines,
@@ -409,6 +381,7 @@ impl HeadlessFlowConsumer {
 
     /// Parse Markdown source and flow into lines and source mapping.
     pub fn consume_source(&self, source: &str) -> Result<FlowOutput, FlowError> {
+        self.validate_constraints()?;
         if source.len() > self.budgets.max_bytes {
             return Err(FlowError::BudgetExceeded {
                 reason: format!(
@@ -420,6 +393,19 @@ impl HeadlessFlowConsumer {
         }
         let doc = parse_markdown_spanned(source);
         self.consume_document(&doc, source)
+    }
+
+    // Inspect at most max_cols + 1 scalars, rather than counting the entire
+    // remaining suffix on every wrapped line. All returned offsets are UTF-8
+    // boundaries. max_cols is nonzero after constraint validation.
+    fn wrapped_chunk_len(remaining: &str, max_cols: usize) -> usize {
+        let Some((byte_limit, _)) = remaining.char_indices().nth(max_cols) else {
+            return remaining.len();
+        };
+        match remaining[..byte_limit].rfind(' ') {
+            Some(last_space) if last_space > 0 => last_space + 1,
+            _ => byte_limit,
+        }
     }
 
     fn validate_constraints(&self) -> Result<(), FlowError> {
@@ -485,6 +471,106 @@ impl HeadlessFlowConsumer {
             (SourceSpan::new(min_start, max_end), element_indices)
         } else {
             (SourceSpan::default(), element_indices)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn multiline_unicode_ranges_match_the_text_actually_rendered() {
+        let source = "# Heading\n\n```text\nalpha β\nsecond line\n東京\n```\n\nlast paragraph\n";
+        for width in [1, 4, 80] {
+            let output = HeadlessFlowConsumer::with_constraints(FlowConstraints {
+                viewport_width: width,
+                ..FlowConstraints::default()
+            })
+            .consume_source(source)
+            .unwrap();
+            let mut previous_end = 0;
+            for line in &output.lines {
+                assert!(line.rendered_range.start >= previous_end);
+                let copied = output
+                    .source_map
+                    .copy_rendered_text(line.rendered_range)
+                    .unwrap();
+                assert_eq!(copied.trim_end(), line.rendered_text);
+                assert!(line.source_span.end <= source.len());
+                previous_end = line.rendered_range.end;
+            }
+            assert!(output.lines.len() > 3);
+        }
+    }
+
+    #[test]
+    fn viewport_prefix_takes_precedence_over_line_budget() {
+        let source = "first line\n\nsecond paragraph\n\nthird paragraph\n";
+        for limit in [0, 1, 2] {
+            let output = HeadlessFlowConsumer::new(
+                FlowConstraints {
+                    max_viewport_lines: Some(limit),
+                    ..FlowConstraints::default()
+                },
+                FlowBudgets {
+                    max_lines: limit,
+                    ..FlowBudgets::default()
+                },
+            )
+            .consume_source(source)
+            .unwrap();
+            assert_eq!(output.lines.len(), limit);
+            assert_eq!(output.consumed_lines, limit);
+        }
+    }
+
+    #[test]
+    fn full_render_still_refuses_excess_lines() {
+        let consumer = HeadlessFlowConsumer::new(
+            FlowConstraints::default(),
+            FlowBudgets {
+                max_lines: 1,
+                ..FlowBudgets::default()
+            },
+        );
+        assert!(consumer.consume_source("one\n").is_ok());
+        assert!(matches!(
+            consumer.consume_source("one\n\ntwo\n"),
+            Err(FlowError::BudgetExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn wrapping_preserves_word_boundaries_and_utf8() {
+        for (text, width, expected) in [
+            ("hello world", 8, "hello "),
+            ("hello", 5, "hello"),
+            ("東京大阪", 2, "東京"),
+            ("é β xyz", 4, "é β "),
+            (" abc", 2, " a"),
+        ] {
+            let len = HeadlessFlowConsumer::wrapped_chunk_len(text, width);
+            assert_eq!(&text[..len], expected);
+        }
+    }
+
+    #[test]
+    fn narrow_viewport_wraps_a_long_unbroken_line_without_losing_bytes() {
+        let source = "é".repeat(8192);
+        let output = HeadlessFlowConsumer::with_constraints(FlowConstraints {
+            viewport_width: 1,
+            ..FlowConstraints::default()
+        })
+        .consume_source(&source)
+        .unwrap();
+        assert_eq!(output.lines.len(), 8192);
+        assert_eq!(output.total_width, 1);
+        for (index, line) in output.lines.iter().enumerate() {
+            assert_eq!(line.rendered_text, "é");
+            assert_eq!(line.rendered_range, TextSelectionRange::new(index * 2, index * 2 + 2));
         }
     }
 }

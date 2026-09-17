@@ -11,6 +11,9 @@
 use crate::ast::{Block, Inline};
 use crate::span::{SourceSpan, SpannedDocument};
 
+pub mod cache;
+pub use cache::{FlowShapeCache, FlowShapeCacheLimits, FlowShapeCacheStats};
+
 pub mod session;
 pub use session::{FlowAssetRemap, FlowAssetReuse, FlowSession, FlowSessionError, FlowUpdate};
 

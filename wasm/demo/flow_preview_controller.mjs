@@ -2,13 +2,15 @@
 // paint is awaited; user input replaces the one latest desired state. Markdown
 // remains authoritative in the host, never reconstructed from a stale preview.
 import { sourceText, FlowError } from "../flow_session.mjs";
+import { requireReadingDocument, sourceSpanToUtf16 } from "../flow_reading.mjs";
 
-export function createPreviewController({ createSession, painter, createAssets = null, onState = () => {} }) {
+export function createPreviewController({ createSession, painter, createAssets = null, readDocument = null, onState = () => {} }) {
   let desired = null, version = 0, epoch = 0, running = false, queued = false;
   let session = null, appliedSource = null, disposed = false, reading = "";
+  let readingDocument = null, readingToken = null, readingError = null;
   let readingRevision = null, startup = null, paint = null, waiters = [];
   let assets = null, assetJob = null, imagesRevision = null;
-  let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null, images: null });
+  let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null });
   const publish = update => { state = Object.freeze({ ...state, ...update }); onState(state); };
   const settle = () => { const all = waiters; waiters = []; for (const resolve of all) resolve(state); };
   const alive = () => { if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed"); };
@@ -70,6 +72,23 @@ export function createPreviewController({ createSession, painter, createAssets =
     });
   }
   async function transcript(current) {
+    if (readDocument) {
+      const expected = current.token;
+      if (readingToken?.revision === expected.revision && readingToken.layoutRevision === expected.layoutRevision) return;
+      try {
+        const document = requireReadingDocument(await readDocument(current, { token: expected }), current);
+        if (document.token.revision !== expected.revision || document.token.layoutRevision !== expected.layoutRevision) {
+          throw new FlowError("STALE_LAYOUT", "reading snapshot differs from prepared layout");
+        }
+        return { revision: expected.revision, token: expected, text: document.text, document, error: null };
+      } catch (error) {
+        // An optional reading limit/format failure must not disable valid Canvas
+        // ink. Token races and worker loss still follow the normal recovery path.
+        if (current.disposed || ["STALE_LAYOUT", "STALE_REVISION", "ABORTED", "SESSION_LOST", "SESSION_DISPOSED"].includes(error?.code)) throw error;
+        return { revision: expected.revision, token: expected, text: "", document: null,
+          error: Object.freeze({ code: typeof error?.code === "string" ? error.code : "READING_ERROR" }) };
+      }
+    }
     if (readingRevision === current.revision) return;
     const expected = current.token;
     const parts = [];
@@ -120,17 +139,22 @@ export function createPreviewController({ createSession, painter, createAssets =
             await current.reflow({ viewportWidth: intent.width }, current.token);
           }
           if (!currentIntent()) continue;
+          const expected = current.token;
           const nextReading = await transcript(current);
           if (!currentIntent()) continue;
           const controller = new AbortController(); paint = controller;
           const owner = assets;
           const frame = await painter.render(current, { width: intent.width, height: intent.height,
-            scrollY: intent.scrollY, pixelRatio: intent.pixelRatio, token: current.token, signal: controller.signal,
+            scrollY: intent.scrollY, pixelRatio: intent.pixelRatio, token: expected, signal: controller.signal,
             ...(owner ? { resolveImage: (image, token) => owner.resolveImage(image, token) } : {}) });
           if (paint === controller) paint = null;
           if (!currentIntent()) continue;
-          if (nextReading) { reading = nextReading.text; readingRevision = nextReading.revision; }
-          publish({ status: "ready", frame, reading, error: null });
+          if (nextReading) {
+            reading = nextReading.text; readingRevision = nextReading.revision;
+            readingDocument = nextReading.document ?? null; readingToken = nextReading.token ?? null;
+            readingError = nextReading.error ?? null;
+          }
+          publish({ status: "ready", frame, reading, document: readingDocument, readingError, error: null });
           beginImages(current);
           if (currentIntent()) break;
         } catch (error) {
@@ -152,6 +176,18 @@ export function createPreviewController({ createSession, painter, createAssets =
   return Object.freeze({
     get state() { return state; },
     get disposed() { return disposed; },
+    locateReading(index, document, source) {
+      alive();
+      if (!readingDocument || document !== readingDocument || state.status !== "ready"
+          || appliedSource !== desired?.source || source !== appliedSource) {
+        throw new FlowError("STALE_REVISION", "reading navigation does not match the current editor and preview");
+      }
+      const location = readingDocument.locate(index);
+      if (location.revision !== state.frame?.revision || location.layoutRevision !== state.frame?.layoutRevision) {
+        throw new FlowError("STALE_LAYOUT", "reading location does not match displayed pixels");
+      }
+      return Object.freeze({ ...location, sourceRange: sourceSpanToUtf16(appliedSource, location.enclosingSourceSpan) });
+    },
     update(input) {
       alive(); const next = valid(input);
       if (desired && Object.keys(next).every(key => next[key] === desired[key])) return;
@@ -163,8 +199,9 @@ export function createPreviewController({ createSession, painter, createAssets =
       startup?.abort(); startup = null; paint?.abort(); paint = null;
       const previous = session, previousAssets = assets;
       session = null; assets = null; imagesRevision = null; appliedSource = null; reading = ""; readingRevision = null;
+      readingDocument = null; readingToken = null; readingError = null;
       painter.clear(); previousAssets?.dispose(); previous?.dispose();
-      publish({ status: "idle", frame: null, reading: "", error: null, images: null }); schedule();
+      publish({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null }); schedule();
     },
     whenIdle() {
       // Preview idle does not mean that optional background image I/O settled.
@@ -177,7 +214,8 @@ export function createPreviewController({ createSession, painter, createAssets =
       startup?.abort(); paint?.abort(); painter.dispose(); assets?.dispose(); assets = null;
       session?.dispose(); session = null;
       desired = null; appliedSource = null; reading = "";
-      publish({ status: "disposed", frame: null, reading: "", error: null, images: null }); settle();
+      readingDocument = null; readingToken = null; readingError = null;
+      publish({ status: "disposed", frame: null, reading: "", error: null, images: null, document: null, readingError: null }); settle();
     }
   });
 }

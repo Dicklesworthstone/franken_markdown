@@ -102,3 +102,43 @@ inert hostile-looking text, native Range selection, revision fences and disposal
 in Chromium without network requests. They do not prove generated Rust/WASM
 integration or replace assistive-technology testing. Use the matching built flow
 package to verify the complete native engine and worker path.
+
+## Live preview controls
+
+The assembled `demo/flow-canvas.html` includes a semantic reader, literal Find,
+previous/next matches, a heading selector, and **Show enclosing source**. Search
+matches use native browser selection for ordinary Copy. Heading/match navigation
+also scrolls the measured Canvas to the corresponding block. The source button
+selects the actual enclosing Markdown block after lossless UTF-8/UTF-16 conversion;
+it does not replace source or claim exact inline reverse mapping.
+
+The controller collects reading geometry and paints under the same captured
+layout token. Scrolling/height-only changes reuse that snapshot, preserving the
+DOM and browser selection. Reflow, source changes and image-dimension changes
+require a fresh reading snapshot; late image/read races cannot mix old semantic
+bounds with newer pixels. The optional `readDocument` callback is checked against
+the actual session, not merely a coincident revision token.
+
+Navigation also compares the current textarea value with the successfully applied
+source. Even an edit that has not yet reached the animation-frame update makes
+old source navigation fail closed. Rejected source edits retain the old readable
+surface but pause navigation. Restart/disposal revoke prior documents and remove
+control listeners. No page-wide keyboard shortcuts or clipboard permissions are
+installed; Enter/Shift+Enter is handled only in the search field.
+
+A reading limit/format failure disables the semantic controls for that layout,
+not otherwise valid Canvas rendering. It is reported separately as `readingError`
+and not retried on every scroll; a new source/layout can recover. The host remains
+responsible for limiting worker I/O and for assistive-technology acceptance tests.
+
+Additional checks:
+
+```sh
+node --test wasm/tests/flow_preview_reading.test.mjs wasm/flow_reader_package.test.mjs
+tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext wasm/flow_reader_types_test.mts
+```
+
+The Chromium runner also exercises the actual demo HTML controls and controller,
+using explicit native-session and Canvas doubles. It checks native selection,
+heading navigation, unsubmitted-source fences, scroll reuse, reader-limit recovery,
+and teardown. This remains separate from the complete generated-WASM demo gate.

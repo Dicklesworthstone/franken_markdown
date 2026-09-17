@@ -63,6 +63,10 @@
     "./flow-assets": {
       "types": "./flow-assets.d.ts",
       "import": "./flow-assets.js"
+    },
+    "./flow-reader": {
+      "types": "./flow-reader.d.ts",
+      "import": "./flow-reader.js"
     }
   },
   "files": [
@@ -101,6 +105,11 @@
     "flow-assets.d.ts",
     "flow_raster.mjs",
     "ASSETS.md",
-    "demo/local_image_sources.mjs"
+    "demo/local_image_sources.mjs",
+    "flow-reader.js",
+    "flow-reader.d.ts",
+    "flow_reading.mjs",
+    "READER.md",
+    "demo/flow_reading_controls.mjs"
   ]
 }

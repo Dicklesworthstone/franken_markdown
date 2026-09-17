@@ -3,6 +3,8 @@ import { FlowCanvasRenderer } from "../flow-canvas.js";
 import { FlowImageAssets } from "../flow-assets.js";
 import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createLocalImageSources } from "./local_image_sources.mjs";
+import { readFlowDocument } from "../flow-reader.js";
+import { createReadingControls } from "./flow_reading_controls.mjs";
 
 const source = document.querySelector("#source"), viewport = document.querySelector("#viewport");
 const canvas = document.querySelector("#preview"), extent = document.querySelector("#extent");
@@ -10,14 +12,23 @@ const status = document.querySelector("#status"), reading = document.querySelect
 const link = document.querySelector("#hit"), restart = document.querySelector("#restart");
 const files = document.querySelector("#images"), imageStatus = document.querySelector("#image-status");
 const insertImages = document.querySelector("#insert-images"), clearImages = document.querySelector("#clear-images");
-let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]);
+let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]), readingControls = null;
 
 function start() {
+  readingControls?.dispose();
+  readingControls = createReadingControls({ root: reading, panel: document.querySelector("#reader-panel"),
+    query: document.querySelector("#find-text"), insensitive: document.querySelector("#find-insensitive"),
+    previous: document.querySelector("#find-previous"), next: document.querySelector("#find-next"),
+    outline: document.querySelector("#outline"), sourceButton: document.querySelector("#reading-source"),
+    status: document.querySelector("#reading-status"), sourceEditor: source,
+    getLocation: (index, snapshot) => controller.locateReading(index, snapshot, source.value),
+    onNavigate: location => { viewport.scrollTop = Math.max(0, location.bounds.y - 16); update(); }
+  });
   painter = new FlowCanvasRenderer(canvas);
-  controller = createPreviewController({ createSession: createWorkerFlowSession, painter,
+  controller = createPreviewController({ createSession: createWorkerFlowSession, painter, readDocument: readFlowDocument,
     createAssets: session => localSources.count ? new FlowImageAssets(session, { load: localSources.load }) : null,
     onState(state) {
-    reading.textContent = state.reading;
+    readingControls.update(state);
     if (state.status === "ready") {
       const frame = state.frame, images = state.images;
       extent.style.height = `${Math.max(viewport.clientHeight, frame.totalBounds.y + frame.totalBounds.height)}px`;
@@ -83,6 +94,6 @@ canvas.addEventListener("click", async event => {
       : hit.hit ? `Item ${hit.hit.itemIndex}; selection offsets are fragment-local, not original Markdown.` : "No text or link at this point.";
   } catch (error) { link.textContent = `${error.code ?? "HIT_ERROR"}: ${error.message}`; }
 });
-window.addEventListener("pagehide", () => { controller?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
+window.addEventListener("pagehide", () => { controller?.dispose(); readingControls?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
 window.addEventListener("pageshow", event => { if (event.persisted) { observer.observe(viewport); start(); } });
 start();

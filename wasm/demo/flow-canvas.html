@@ -21,6 +21,14 @@ button:disabled { opacity: .5; cursor: default; }
 #status, #hit { min-height: 24px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
 details { margin-top: 18px; }
+#reader-panel { padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#reader-panel input[type=search], #outline { box-sizing: border-box; max-width: 100%; padding: 8px; }
+#reading { max-height: 480px; overflow: auto; padding: 20px; background: white; line-height: 1.6; overflow-wrap: anywhere; }
+#reading table { border-collapse: collapse; margin: 12px 0; }
+#reading th, #reading td { padding: 8px 12px; border: 1px solid #b8c0cc; }
+#reading [role=list] { padding-left: 24px; }
+#reading [role=listitem] { display: list-item; }
+#reading :focus { outline: 2px solid #0969da; outline-offset: 3px; }
 @media (max-width: 700px) { .panels { grid-template-columns: 1fr; } textarea { height: 280px; } body { padding: 14px; } }
 </style>
 </head>
@@ -72,6 +80,15 @@ The selectable reading text below comes from the same session, not a second Mark
 <p><button id="restart" type="button">Restart preview from current source</button></p>
 <p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>
 <p id="hit" aria-live="polite"></p>
-<details><summary>Selectable reading text from the preview</summary><pre id="reading" aria-label="Preview reading text"></pre></details>
+<details id="reader-panel" open><summary>Search, outline, and selectable reading</summary>
+<p>The same engine supplies this semantic reading surface. Text can be selected and copied normally; its browser typography is independent of Canvas. Navigation selects enclosing Markdown blocks, not guessed inline offsets.</p>
+<label for="find-text">Find logical reading text</label>
+<input id="find-text" type="search" maxlength="1024" autocomplete="off" aria-describedby="reading-status">
+<label><input id="find-insensitive" type="checkbox"> Ignore A–Z case (ASCII only)</label>
+<p><button id="find-previous" type="button" disabled>Previous match</button> <button id="find-next" type="button" disabled>Next match</button> <button id="reading-source" type="button" disabled>Show enclosing source</button></p>
+<label for="outline">Document headings</label><select id="outline" disabled></select>
+<p id="reading-status" role="status">Waiting for a semantic reading snapshot.</p>
+<article id="reading" aria-label="Selectable semantic Markdown reading"></article>
+</details>
 <script type="module" src="./flow-canvas.js"></script>
 </body></html>

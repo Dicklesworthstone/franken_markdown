@@ -10,7 +10,7 @@ const ROLES = new Set(["document", "heading", "paragraph", "code-block", "list",
 const ROWS = new Set(["table-header-row", "table-row"]);
 const CELLS = new Set(["table-header-cell", "table-cell"]);
 const LEAVES = new Set(["heading", "paragraph", "code-block", "thematic-break", "image"]);
-const owned = new WeakSet();
+const owned = new WeakSet(), sessions = new WeakMap();
 function record(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k))) {
     fail("INVALID_OPTIONS", "unsupported reading options");
@@ -92,7 +92,7 @@ export class FlowReadingDocument {
     // both a table row's aggregate "A | B" and its individually typed cells.
     this.text = nodes.filter(node => !node.children.length && node.text).map(node => node.text).join("\n\n");
     this.textUnits = textUnits;
-    owned.add(this); Object.freeze(this);
+    owned.add(this); sessions.set(this, session); Object.freeze(this);
   }
   assertCurrent() { check(this.#session, this.token); }
   locate(index) {
@@ -130,8 +130,9 @@ export class FlowReadingDocument {
     return this.nodes[match.nodeIndex].text.slice(match.startUtf16, match.endUtf16);
   }
 }
-export function requireReadingDocument(value) {
+export function requireReadingDocument(value, session) {
   if (!owned.has(value)) fail("INVALID_ARGUMENT", "an admitted reading document is required");
+  if (session !== undefined && sessions.get(value) !== session) fail("INVALID_ARGUMENT", "reading document belongs to another session");
   value.assertCurrent(); return value;
 }
 

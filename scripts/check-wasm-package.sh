@@ -108,7 +108,8 @@ cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
 cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 # Copy every hand-written subpath entry and its runtime dependencies.
-for file in book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs FLOW.md; do
+for file in book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs FLOW.md \
+  flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md; do
   cp "wasm/$file" "$package_dir/$file"
 done
 cp wasm/package.json "$package_dir/package.json"
@@ -223,6 +224,9 @@ node wasm/smoke.mjs "$package_dir" "$bg" "$WORK" "$EPOCH" "${corpus[@]}" 2>&1 | 
 
 log "headless node: persistent editor sessions against generated WASM"
 node wasm/flow_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
+
+log "headless node: production worker entry against generated WASM"
+node wasm/flow_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.
 log "native<->WASM byte parity:"

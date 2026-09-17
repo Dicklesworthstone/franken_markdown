@@ -14,12 +14,15 @@ cargo build --no-default-features --lib
 cargo build --no-default-features --target wasm32-unknown-unknown --lib
 cargo build --release --no-default-features --features wasm-bindgen --target wasm32-unknown-unknown --lib
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
-for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts package.json README.md; do
+for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
+  book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs FLOW.md \
+  package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
 done
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp examples/showcase.md "$ART/parity/showcase.md"
 node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/parity" 1700000000 "$ART/parity/showcase.md"
+node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 cargo build --bin fmd
 for ext in html pdf; do
   SOURCE_DATE_EPOCH=1700000000 "$TARGET_DIR/debug/fmd" "$ART/parity/showcase.md" --no-config --to "$ext" --out "$ART/parity/native.$ext"

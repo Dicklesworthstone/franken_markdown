@@ -107,6 +107,10 @@ cp wasm/franken_markdown.js "$package_dir/franken_markdown.js"
 cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
 cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
+# Copy every hand-written subpath entry and its runtime dependencies.
+for file in book.js book.d.ts book_session.mjs flow.js flow.d.ts flow_session.mjs FLOW.md; do
+  cp "wasm/$file" "$package_dir/$file"
+done
 cp wasm/package.json "$package_dir/package.json"
 cp wasm/README.md "$package_dir/README.md"
 mkdir -p "$package_dir/demo"
@@ -216,6 +220,9 @@ corpus+=("$WORK/probe.md")
 # WASM side: load the generated module and render the corpus.
 log "headless node: load generated module + render corpus"
 node wasm/smoke.mjs "$package_dir" "$bg" "$WORK" "$EPOCH" "${corpus[@]}" 2>&1 | tee -a "$LEDGER"
+
+log "headless node: persistent editor sessions against generated WASM"
+node wasm/flow_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.
 log "native<->WASM byte parity:"

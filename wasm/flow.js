@@ -1,6 +1,8 @@
 import { init } from "./franken_markdown.js";
 import { createFlowAdapter, FlowError, normalizeFlowError, validateCreation } from "./flow_session.mjs";
 
+import { withGlyphOutlines } from "./flow_outlines.mjs";
+
 export { init, FlowError };
 
 /** Create a persistent, synchronous-after-init, revision-fenced editor session.
@@ -18,7 +20,12 @@ export async function createFlowSession(markdown, options = {}) {
     }
     const p = prepared.layout;
     raw = new bindings.FmdFlowSession(prepared.source, prepared.font, p.viewportWidth, p.bodySize, p.codeSize, p.lineHeight);
-    return createFlowAdapter(raw, p);
+    return withGlyphOutlines(createFlowAdapter(raw, p), (id, glyphIds) => {
+      if (typeof raw.glyphOutlinesJson !== "function") {
+        throw new FlowError("UNSUPPORTED_WASM_PACKAGE", "This WASM artifact lacks glyph outlines; rebuild from matching source.");
+      }
+      return raw.glyphOutlinesJson(id, glyphIds);
+    });
   } catch (error) {
     if (raw) { try { raw.free(); } catch { /* Preserve the original creation failure. */ } }
     throw normalizeFlowError(error);

@@ -3,11 +3,12 @@
 // shared with the synchronous facade rather than delegated to UTF-8 coercion.
 import { FLOW_ASSET_LIMIT, identity, sourceText, validateCreation, layoutOptions } from "./flow_session.mjs";
 import { FlowWorkerError } from "./worker_transport.mjs";
+import { outlineGlyphIds } from "./flow_outlines.mjs";
 const fail = (code, message) => { throw new FlowWorkerError(code, message); };
 const LAYOUT_KEYS = ["viewportWidth", "bodySize", "codeSize", "lineHeight"];
 const ARITIES = Object.freeze({ create: 2, getSource: 0, edit: 4, editBytes: 4, replaceSource: 2,
   reflow: 2, provideAsset: 1, reloadAssets: 1, snapshot: 1, readingOrder: 1, pendingAssets: 1,
-  hitTest: 3, selectText: 4, copySource: 3, fontBytes: 1, assetBytes: 2 });
+  hitTest: 3, selectText: 4, copySource: 3, fontBytes: 1, assetBytes: 2, glyphOutlines: 2 });
 
 export function fields(value, allowed, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("INVALID_OPTIONS", `${name} must be an object`);
@@ -95,6 +96,7 @@ export function normalizeFlowRequest(method, args) {
     }
     case "provideAsset": return [asset(args[0])];
     case "reloadAssets": case "fontBytes": return [identity(args[0])];
+    case "glyphOutlines": return [identity(args[0]), outlineGlyphIds(args[1])];
     case "assetBytes": return args.map(value => identity(value));
     case "snapshot": return [pageOptions(args[0], true)];
     case "readingOrder": case "pendingAssets": return [pageOptions(args[0])];

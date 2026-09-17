@@ -1,10 +1,10 @@
 import type {
-  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowHit,
+  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
   FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput
 } from "./flow.js";
 export type {
-  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowHit,
+  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
   FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput
 } from "./flow.js";
@@ -67,6 +67,8 @@ export interface WorkerFlowSession {
   selectText(itemIndex: number, startUtf16: number, endUtf16: number, token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowSelection>;
   copySource(startByte: number, endByte: number, expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<string>;
   fontBytes(fontId: FlowIdentity, control?: FlowWorkerControl): Promise<Uint8Array>;
+  /** Immutable glyph paths; input IDs are copied at enqueue, never transferred from the caller. */
+  glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array, control?: FlowWorkerControl): Promise<FlowGlyphOutlines>;
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<Uint8Array | null>;
   /** Immediate, idempotent termination. Rejects all outstanding operations. */
   dispose(): void;

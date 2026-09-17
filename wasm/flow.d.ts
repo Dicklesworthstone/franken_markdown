@@ -190,6 +190,8 @@ export interface FlowSession {
   selectText(itemIndex: number, startUtf16: number, endUtf16: number, token: FlowTokenInput): FlowSelection;
   copySource(startByte: number, endByte: number, expectedRevision: FlowIdentity): string;
   fontBytes(fontId: FlowIdentity): Uint8Array;
+  /** Exact immutable-font paths. At most 256 glyph IDs; empty requests return metrics only. */
+  glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array): FlowGlyphOutlines;
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity): Uint8Array | null;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
@@ -204,3 +206,17 @@ export function init(input?: string | URL | Request | Response | BufferSource | 
  * silently replacing source text. No network/image loading is performed.
  */
 export function createFlowSession(markdown: string, options?: FlowCreateOptions): Promise<FlowSession>;
+
+/** Baseline-relative y-up font design units, filled with nonzero winding. */
+export type FlowPathCommand = readonly ["M", number, number] | readonly ["L", number, number]
+  | readonly ["Q", number, number, number, number] | readonly ["Z"];
+export interface FlowGlyphOutline { readonly glyphId: number; readonly commands: readonly FlowPathCommand[]; }
+export interface FlowGlyphOutlines {
+  readonly schemaVersion: 1;
+  readonly fontId: string;
+  readonly unitsPerEm: number;
+  readonly ascent: number;
+  readonly descent: number;
+  readonly lineGap: number;
+  readonly glyphs: readonly FlowGlyphOutline[];
+}

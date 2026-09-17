@@ -55,7 +55,11 @@
       "types": "./flow-worker.d.ts",
       "import": "./flow-worker.js"
     },
-    "./flow-worker/worker": "./flow_worker.js"
+    "./flow-worker/worker": "./flow_worker.js",
+    "./flow-canvas": {
+      "types": "./flow-canvas.d.ts",
+      "import": "./flow-canvas.js"
+    }
   },
   "files": [
     "franken_markdown.js",
@@ -81,6 +85,10 @@
     "flow_worker_session.mjs",
     "flow_worker_protocol.mjs",
     "worker_transport.mjs",
-    "WORKER.md"
+    "WORKER.md",
+    "flow_outlines.mjs",
+    "flow-canvas.js",
+    "flow-canvas.d.ts",
+    "CANVAS.md"
   ]
 }

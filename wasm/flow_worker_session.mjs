@@ -98,6 +98,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       selectText(index, start, end, token, control) { return call("selectText", [index, start, end, token], control); },
       copySource(start, end, revision, control) { return call("copySource", [start, end, revision], control); },
       fontBytes(id, control) { return call("fontBytes", [id], control); },
+      glyphOutlines(id, glyphIds, control) { return call("glyphOutlines", [id, glyphIds], control); },
       assetBytes(id, revision, control) { return call("assetBytes", [id, revision], control); },
       pages(options = {}, control) {
         alive(); fields(options, ["limit", "glyphs", "token"], "iterator options");

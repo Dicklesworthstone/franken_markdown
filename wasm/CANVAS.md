@@ -149,3 +149,21 @@ claiming end-to-end generated-WASM proof; source checks are not a substitute.
 
 Types: `tsc --noEmit --strict --target ES2022 --module NodeNext
 --moduleResolution NodeNext wasm/flow_canvas_types_test.mts`.
+
+## Live editing example
+
+Serve the assembled package and open `demo/flow-canvas.html`. It connects the
+production worker session, outline API and Canvas backend: source edits are
+coalesced, resizing changes measured wrapping, and scrolling repaints only a
+viewport-sized surface. The drawing inventory is still scanned as described
+above. A selectable reading-text panel provides a logical-text counterpart,
+not a claimed full accessibility widget. Link clicks report targets rather than
+navigating; images remain placeholders because this example grants no loading
+authority. Your textarea remains authoritative after a refused edit or worker
+loss. Restart is explicit, with no automatic replay of uncertain mutations.
+
+`node --test wasm/tests/flow_preview_controller.test.mjs` executes eight
+controller tests using explicit session/painter doubles, separate from the
+Chromium pixel and generated-WASM tests. The demo itself needs the matching
+built `pkg/` and a server allowing module workers; it does not install a fallback
+renderer when that artifact is missing.

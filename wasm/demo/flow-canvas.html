@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Franken Markdown — live measured Canvas preview</title>
+<style>
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #1f2328; background: #f6f8fa; }
+body { margin: 0 auto; max-width: 1400px; padding: 24px; }
+h1 { margin: 0 0 10px; font-size: 24px; }
+p { line-height: 1.5; }
+.panels { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr); gap: 20px; }
+label, .label { display: block; font-weight: 600; margin-bottom: 8px; }
+textarea { box-sizing: border-box; width: 100%; height: 520px; padding: 14px; resize: vertical; font: 14px/1.5 ui-monospace, monospace; border: 1px solid #b8c0cc; border-radius: 6px; }
+#viewport { height: 520px; overflow: auto; position: relative; background: white; border: 1px solid #b8c0cc; border-radius: 6px; }
+#surface { position: sticky; top: 0; height: 0; }
+canvas { display: block; }
+#extent { pointer-events: none; }
+button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+#status, #hit { min-height: 24px; overflow-wrap: anywhere; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
+details { margin-top: 18px; }
+@media (max-width: 700px) { .panels { grid-template-columns: 1fr; } textarea { height: 280px; } body { padding: 14px; } }
+</style>
+</head>
+<body>
+<h1>Live measured Markdown preview</h1>
+<p>The worker runs the Rust parser and shaper. Canvas draws the returned glyph outlines, not browser-shaped text. This example uses the bundled simple left-to-right profile; unsupported scripts produce an explicit error.</p>
+<div class="panels">
+<section><label for="source">Authoritative Markdown source</label>
+<textarea id="source" spellcheck="false"># A measured preview
+
+Edit this document. **Bold**, *italic*, `inline code`, and [links](#a-measured-preview) keep their real font metrics.
+
+## A table
+
+| Feature | Behavior |
+| --- | --- |
+| Fonts | Real glyph outlines |
+| Layout | Measured wrapping |
+| Work | Dedicated worker |
+
+> Scroll and resize the preview without changing its source.
+
+- [x] Keep source after errors
+- [ ] Let the host authorize images
+
+```rust
+fn main() {
+    println!("Hello, measured world!");
+}
+```
+
+![Image placeholder](never-auto-fetch.png)
+
+## Last section
+
+The selectable reading text below comes from the same session, not a second Markdown renderer.</textarea>
+</section>
+<section><div class="label" id="preview-label">Canvas preview</div>
+<div id="viewport" tabindex="0" aria-labelledby="preview-label" aria-describedby="preview-help"><div id="surface"><canvas id="preview" aria-hidden="true"></canvas></div><div id="extent"></div></div>
+<p id="preview-help">Scroll to inspect the document. Clicks report link targets but never open them. The canvas has no native text selection; use the reading text below.</p>
+</section></div>
+<p><button id="restart" type="button">Restart preview from current source</button></p>
+<p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>
+<p id="hit" aria-live="polite"></p>
+<details><summary>Selectable reading text from the preview</summary><pre id="reading" aria-label="Preview reading text"></pre></details>
+<script type="module" src="./flow-canvas.js"></script>
+</body></html>

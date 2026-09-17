@@ -119,6 +119,7 @@ cp wasm/demo/index.html "$package_dir/demo/index.html"
 cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
 cp wasm/demo/sample.md "$package_dir/demo/sample.md"
+cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs "$package_dir/demo/"
 
 for artifact in \
   "$package_dir/franken_markdown.js" "$package_dir/franken_markdown.d.ts" \

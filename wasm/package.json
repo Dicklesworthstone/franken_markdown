@@ -89,6 +89,9 @@
     "flow_outlines.mjs",
     "flow-canvas.js",
     "flow-canvas.d.ts",
-    "CANVAS.md"
+    "CANVAS.md",
+    "demo/flow-canvas.html",
+    "demo/flow-canvas.js",
+    "demo/flow_preview_controller.mjs"
   ]
 }

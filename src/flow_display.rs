@@ -8,7 +8,8 @@
 //!
 //! The engine performs no ambient I/O. Asset requests are data for a host to
 //! authorize and resolve. Source spans are truthful enclosing top-level AST spans,
-//! not invented exact inline locations.
+//! not invented exact inline locations. Default resource limits are enforced;
+//! `try_with_limits` lets hosts choose stricter ingress and asset budgets.
 
 #![forbid(unsafe_code)]
 
@@ -22,6 +23,10 @@ use crate::display::{
 };
 use crate::html::{inlines_to_plain, slug_inlines};
 use crate::span::SourceSpan;
+
+mod limits;
+pub use limits::FlowDisplayLimits;
+use limits::Projection;
 
 /// Strongly-typed identifier for an external asset request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -133,6 +138,8 @@ pub enum FlowDisplayError {
     CorruptCheckpoint,
     StaleAssetGeneration { expected: u64, actual: u64 },
     UnknownAssetRequest(AssetRequestId),
+    InvalidSourceSpan(SourceSpan),
+    InvalidAssetDimensions { width: u32, height: u32 },
 }
 
 impl fmt::Display for FlowDisplayError {
@@ -145,6 +152,8 @@ impl fmt::Display for FlowDisplayError {
                 write!(f, "stale asset generation: expected {expected}, actual {actual}")
             }
             Self::UnknownAssetRequest(id) => write!(f, "unknown asset request ID: {id}"),
+            Self::InvalidSourceSpan(span) => write!(f, "invalid AST source span [{}, {})", span.start, span.end),
+            Self::InvalidAssetDimensions { width, height } => write!(f, "invalid or over-limit asset dimensions: {width}x{height}"),
         }
     }
 }
@@ -194,6 +203,9 @@ pub struct ResumableFlowDisplay {
     finished: bool,
     batch_size: usize,
     generation: u64,
+    limits: FlowDisplayLimits,
+    initial_error: Option<FlowDisplayError>,
+    retained_asset_bytes: usize,
 }
 
 impl ResumableFlowDisplay {
@@ -202,18 +214,26 @@ impl ResumableFlowDisplay {
         Self::with_generation(source, batch_size, 1)
     }
 
+    /// Use default admission limits. An oversized document is not retained;
+    /// `step` returns its admission error. Use `try_with_limits` to receive
+    /// ingress errors immediately, before constructing an engine.
     #[must_use]
     pub fn with_generation(source: &str, batch_size: usize, generation: u64) -> Self {
-        let mut lines = VecDeque::new();
-        let mut offset = 0;
-        for segment in source.split_inclusive('\n') {
-            let end_offset = offset + segment.len();
-            lines.push_back(SourceLine { start_offset: offset, end_offset });
-            offset = end_offset;
+        let limits = FlowDisplayLimits::default();
+        match Self::try_with_limits(source, batch_size, generation, limits) {
+            Ok(engine) => engine,
+            Err(error) => {
+                let mut engine = Self::empty(batch_size, generation, limits);
+                engine.initial_error = Some(error);
+                engine
+            }
         }
+    }
+
+    fn empty(batch_size: usize, generation: u64, limits: FlowDisplayLimits) -> Self {
         Self {
-            source: source.to_owned(),
-            lines,
+            source: String::new(),
+            lines: VecDeque::new(),
             current_line: 0,
             source_frontier: 0,
             prepared: None,
@@ -224,9 +244,13 @@ impl ResumableFlowDisplay {
             finished: false,
             batch_size: batch_size.max(1),
             generation,
+            limits,
+            initial_error: None,
+            retained_asset_bytes: 0,
         }
     }
 
+    /// Retained source, or an empty string when default ingress was rejected.
     #[must_use]
     pub fn source(&self) -> &str { &self.source }
 
@@ -261,6 +285,7 @@ impl ResumableFlowDisplay {
         if generation == self.generation { return; }
         self.generation = generation;
         self.resolved_assets.clear();
+        self.retained_asset_bytes = 0;
         self.pending_assets.clear();
         for block in &mut self.blocks {
             if let DisplayBlock::UnresolvedAsset(asset) = block {
@@ -286,17 +311,28 @@ impl ResumableFlowDisplay {
         let index = self.pending_assets.iter()
             .position(|request| request.id == result.request_id)
             .ok_or(FlowDisplayError::UnknownAssetRequest(result.request_id))?;
+        let retained = self.limits.check_asset(&result, self.retained_asset_bytes)?;
         self.pending_assets.remove(index);
         self.resolved_assets.push(result);
+        self.retained_asset_bytes = retained;
         Ok(())
     }
 
     /// Advance the source frontier and emit completed blocks. The first call
     /// runs the shared whole-document parser; no per-line Markdown parser exists.
     pub fn step(&mut self) -> Result<Option<StepResult>, FlowDisplayError> {
+        if let Some(error) = &self.initial_error { return Err(error.clone()); }
         if self.finished { return Ok(None); }
         if self.prepared.is_none() {
-            self.prepared = Some(prepare_document(&self.source));
+            match prepare_document(&self.source, &self.limits) {
+                Ok(prepared) => self.prepared = Some(prepared),
+                Err(error) => {
+                    // Publish nothing and do not repeat an expensive failed
+                    // preparation on the next step.
+                    self.initial_error = Some(error.clone());
+                    return Err(error);
+                }
+            }
         }
         for _ in 0..self.batch_size {
             let Some(line) = self.lines.pop_front() else { break; };
@@ -479,13 +515,14 @@ enum Work<'a> {
     Item(&'a ListItem, bool, u64, BlockMeta),
 }
 
-fn prepare_document(source: &str) -> VecDeque<PreparedBlock> {
+fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque<PreparedBlock>, FlowDisplayError> {
     let document = crate::parse_markdown_spanned(source);
+    limits::audit_document(&document, source, limits)?;
     let mut work = Vec::new();
     for block in document.blocks().iter().rev() {
         work.push(Work::Block(&block.node, BlockMeta { span: block.span, ..BlockMeta::default() }));
     }
-    let mut output = VecDeque::new();
+    let mut output = Projection::new(limits);
     let mut slugs = HashMap::<String, usize>::new();
     let mut next_request_id = 1;
     while let Some(item) = work.pop() {
@@ -497,7 +534,7 @@ fn prepare_document(source: &str) -> VecDeque<PreparedBlock> {
                 meta.task = item.task;
                 let first_is_paragraph = matches!(item.blocks.first(), Some(Block::Paragraph(_)));
                 if !first_is_paragraph {
-                    emit_text(String::new(), &mut meta, &mut output);
+                    emit_text(String::new(), &mut meta, &mut output)?;
                 }
                 for (index, block) in item.blocks.iter().enumerate().rev() {
                     let mut child = meta.clone();
@@ -520,14 +557,14 @@ fn prepare_document(source: &str) -> VecDeque<PreparedBlock> {
                     meta.heading_id = Some(id);
                     output.push_back(PreparedBlock {
                         block: DisplayBlock::Heading { level: *level, text: inlines_to_plain(inlines) }, meta,
-                    });
+                    })?;
                 }
                 Block::Paragraph(inlines) => {
-                    emit_inlines(inlines, &mut meta, &mut output, &mut next_request_id);
+                    emit_inlines(inlines, &mut meta, &mut output, &mut next_request_id)?;
                 }
                 Block::CodeBlock { lang, code } => output.push_back(PreparedBlock {
                     block: DisplayBlock::CodeBlock { language: lang.clone(), source: code.clone() }, meta,
-                }),
+                })?,
                 Block::BlockQuote(children) => {
                     meta.quote_depth = meta.quote_depth.saturating_add(1);
                     for child in children.iter().rev() { work.push(Work::Block(child, meta.clone())); }
@@ -541,40 +578,40 @@ fn prepare_document(source: &str) -> VecDeque<PreparedBlock> {
                     output.push_back(PreparedBlock {
                         block: DisplayBlock::TableHeader { cells: table.head.iter().map(|cell| inlines_to_plain(cell)).collect() },
                         meta: meta.clone(),
-                    });
+                    })?;
                     for row in &table.rows {
                         output.push_back(PreparedBlock {
                             block: DisplayBlock::TableRow { cells: row.iter().map(|cell| inlines_to_plain(cell)).collect() },
                             meta: meta.clone(),
-                        });
+                        })?;
                     }
                 }
-                Block::ThematicBreak | Block::PageBreak => output.push_back(PreparedBlock { block: DisplayBlock::Rule, meta }),
+                Block::ThematicBreak | Block::PageBreak => output.push_back(PreparedBlock { block: DisplayBlock::Rule, meta })?,
                 Block::HtmlBlock(text) | Block::MathBlock(text) => {
-                    emit_text(text.clone(), &mut meta, &mut output);
+                    emit_text(text.clone(), &mut meta, &mut output)?;
                 }
                 Block::FootnoteDefinition { id, blocks } => {
-                    emit_text(format!("[^{id}]:"), &mut meta, &mut output);
+                    emit_text(format!("[^{id}]:"), &mut meta, &mut output)?;
                     for child in blocks.iter().rev() { work.push(Work::Block(child, meta.clone())); }
                 }
                 Block::DefinitionList(items) => {
                     for item in items {
-                        for term in &item.terms { emit_inlines(term, &mut meta, &mut output, &mut next_request_id); }
+                        for term in &item.terms { emit_inlines(term, &mut meta, &mut output, &mut next_request_id)?; }
                         for definition in &item.definitions {
                             let mut child = meta.clone();
                             child.list_depth = child.list_depth.saturating_add(1);
-                            emit_inlines(definition, &mut child, &mut output, &mut next_request_id);
+                            emit_inlines(definition, &mut child, &mut output, &mut next_request_id)?;
                         }
                     }
                 }
             },
         }
     }
-    output
+    Ok(output.into_items())
 }
 
-fn emit_text(text: String, meta: &mut BlockMeta, output: &mut VecDeque<PreparedBlock>) {
-    if text.trim().is_empty() && meta.marker.is_none() { return; }
+fn emit_text(text: String, meta: &mut BlockMeta, output: &mut Projection<'_>) -> Result<(), FlowDisplayError> {
+    if text.trim().is_empty() && meta.marker.is_none() { return Ok(()); }
     let block = if meta.marker.is_some() {
         DisplayBlock::ListItem { ordered: meta.ordered, text }
     } else if meta.quote_depth > 0 {
@@ -582,12 +619,13 @@ fn emit_text(text: String, meta: &mut BlockMeta, output: &mut VecDeque<PreparedB
     } else {
         DisplayBlock::Paragraph { text }
     };
-    output.push_back(PreparedBlock { block, meta: meta.clone() });
+    output.push_back(PreparedBlock { block, meta: meta.clone() })?;
     meta.marker = None;
     meta.task = None;
+    Ok(())
 }
 
-fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mut VecDeque<PreparedBlock>, next_id: &mut u64) {
+fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mut Projection<'_>, next_id: &mut u64) -> Result<(), FlowDisplayError> {
     let mut stack: Vec<_> = inlines.iter().rev().collect();
     let mut text = String::new();
     while let Some(inline) = stack.pop() {
@@ -600,18 +638,18 @@ fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mut VecDeque<
             Inline::HardBreak => text.push('\n'),
             Inline::FootnoteRef { id } => { text.push_str(&format!("[^{id}]")); }
             Inline::Image { alt, dest, .. } => {
-                emit_text(std::mem::take(&mut text), meta, output);
+                emit_text(std::mem::take(&mut text), meta, output)?;
                 let asset = UnresolvedAsset {
                     id: AssetRequestId(*next_id), kind: "image", reference: dest.clone(),
                     source_offset: meta.span.start, generation: 0,
                     estimated_width: 320, estimated_height: 240, alt_text: alt.clone(),
                 };
                 *next_id += 1;
-                output.push_back(PreparedBlock { block: DisplayBlock::UnresolvedAsset(asset), meta: meta.clone() });
+                output.push_back(PreparedBlock { block: DisplayBlock::UnresolvedAsset(asset), meta: meta.clone() })?;
             }
         }
     }
-    emit_text(text, meta, output);
+    emit_text(text, meta, output)
 }
 
 #[cfg(test)]

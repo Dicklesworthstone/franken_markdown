@@ -15,9 +15,29 @@ function record(value, name) {
   return value;
 }
 
+// Count without a lossy TextEncoder allocation: unpaired surrogates must never
+// turn into U+FFFD at the WASM boundary. Kept independent of the 4 MiB flow API.
+export function bookTextBytes(value, maximum = MAX_SOURCE_BYTES) {
+  if (typeof value !== "string") throw new TypeError("book text must be a string");
+  if (value.length > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new TypeError("book text contains malformed Unicode");
+      bytes += 4;
+    } else if (c >= 0xdc00 && c <= 0xdfff) throw new TypeError("book text contains malformed Unicode");
+    else bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+    if (bytes > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
+  }
+  return bytes;
+}
+
 function optionalString(value, name) {
   if (value == null) return undefined;
   if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  bookTextBytes(value, 4 * 1024 * 1024);
   return value;
 }
 
@@ -39,6 +59,9 @@ function assetBytes(value) {
   if (view.byteLength === 0 || view.byteLength > MAX_ASSET_BYTES) {
     throw new RangeError("asset bytes must contain 1 through 32 MiB");
   }
+  if (Object.prototype.toString.call(view.buffer) === "[object SharedArrayBuffer]") {
+    throw new TypeError("copy shared asset bytes into an owned buffer first");
+  }
   return view;
 }
 
@@ -47,6 +70,7 @@ function imageAsset(value) {
   if (typeof image.destination !== "string" || !image.destination.trim()) {
     throw new TypeError("image destination must be a nonempty book-relative key");
   }
+  bookTextBytes(image.destination, 4096);
   return { destination: image.destination.trim(), bytes: assetBytes(image.bytes) };
 }
 
@@ -103,7 +127,6 @@ function normalizeFiles(files) {
   if (!Array.isArray(files) || files.length === 0 || files.length > MAX_CHAPTERS) {
     throw new RangeError("files must contain 1 through 4096 book chapters");
   }
-  const encoder = new TextEncoder();
   const paths = [];
   const sources = [];
   let total = 0;
@@ -117,13 +140,24 @@ function normalizeFiles(files) {
       if (text.length > MAX_SOURCE_BYTES - total) {
         throw new RangeError("book source text and paths exceed 64 MiB");
       }
-      total += encoder.encode(text).byteLength;
+      total += bookTextBytes(text, MAX_SOURCE_BYTES - total);
       if (total > MAX_SOURCE_BYTES) throw new RangeError("book source text and paths exceed 64 MiB");
     }
     paths.push(file.path);
     sources.push(file.source);
   }
   return { paths, sources };
+}
+
+/** Capture host inputs before any asynchronous initialization or transfer.
+ * Clone admitted assets only after validating the complete aggregate budget.
+ * Internal transport helper; never detaches or retains caller-owned buffers.
+ */
+export function prepareBookInput(files, options = {}) {
+  const normalized = normalizeFiles(files), settings = normalizeOptions(options);
+  settings.images = settings.images.map(image => ({ ...image, bytes: image.bytes.slice() }));
+  settings.fontAssets = settings.fontAssets.map(font => ({ ...font, bytes: font.bytes.slice() }));
+  return { files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })), options: settings };
 }
 
 function output(bytes, kind, sourceLength) {
@@ -183,8 +217,9 @@ export function createBookBindings(loadBookClass) {
   }
 
   async function createBook(files, options = {}) {
-    const normalized = normalizeFiles(files);
-    const settings = normalizeOptions(options);
+    const prepared = prepareBookInput(files, options);
+    const normalized = { paths: prepared.files.map(file => file.path), sources: prepared.files.map(file => file.source) };
+    const settings = prepared.options;
     const BookClass = await loadBookClass();
     if (typeof BookClass !== "function") {
       throw new Error("this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source");

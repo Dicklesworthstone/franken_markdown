@@ -150,3 +150,134 @@ export function createSourceControls({ sourceEditor, filename, open, prepare, do
     }
   });
 }
+
+const HISTORY_PAYLOAD_LIMIT = 20 * 1024 * 1024;
+const SOURCE_MATCH_LIMIT = 10000;
+function editingOptions(value, allowed) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).some(key => !allowed.includes(key))) {
+    fail("INVALID_ARGUMENT", "Unsupported source editing options.");
+  }
+}
+function editInteger(value, min, max, name) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    fail("INVALID_ARGUMENT", `${name} must be an integer from ${min} to ${max}.`);
+  }
+  return value;
+}
+function editSelection(value, length) {
+  const { start = 0, end = start, direction = "none" } = value ?? {};
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || end > length
+      || !["none", "forward", "backward"].includes(direction)) {
+    fail("INVALID_SELECTION", "Selection must be a valid UTF-16 range in the source.");
+  }
+  return Object.freeze({ start, end, direction });
+}
+const lowSurrogate = code => code >= 0xdc00 && code <= 0xdfff;
+
+/** Bounded, document-local undo/redo. Store reversible changes, not one full
+ * document per keystroke. Payload accounting includes both directions and a
+ * fixed per-entry allowance; it is not a measurement of the JS engine's heap.
+ * No filename, image authority, worker state or persistent storage lives here.
+ */
+export function createSourceHistory(initialSource, options = {}) {
+  editingOptions(options, ["maxEntries", "maxBytes"]);
+  const maxEntries = editInteger(options.maxEntries ?? 100, 1, 1000, "maxEntries");
+  const maxBytes = editInteger(options.maxBytes ?? HISTORY_PAYLOAD_LIMIT, 128, HISTORY_PAYLOAD_LIMIT, "maxBytes");
+  let current = sourceText(initialSource), past = [], future = [], payloadBytes = 0, disposed = false;
+  const alive = () => { if (disposed) fail("SESSION_DISPOSED", "Source history is disposed."); };
+  // Force small patches to own their bytes instead of retaining a sliced parent
+  // document. ignoreBOM preserves a BOM that happens to be inside a patch.
+  const encoder = new TextEncoder(), decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const own = value => decoder.decode(encoder.encode(value));
+  function record(next, selections = {}) {
+    alive(); sourceText(next); editingOptions(selections, ["before", "after"]);
+    const before = editSelection(selections.before, current.length), after = editSelection(selections.after, next.length);
+    if (next === current) return false;
+    let start = 0, oldEnd = current.length, newEnd = next.length;
+    while (start < oldEnd && start < newEnd && current.charCodeAt(start) === next.charCodeAt(start)) start++;
+    if (lowSurrogate(current.charCodeAt(start)) || lowSurrogate(next.charCodeAt(start))) start--;
+    while (oldEnd > start && newEnd > start && current.charCodeAt(oldEnd - 1) === next.charCodeAt(newEnd - 1)) { oldEnd--; newEnd--; }
+    if (lowSurrogate(current.charCodeAt(oldEnd)) || lowSurrogate(next.charCodeAt(newEnd))) { oldEnd++; newEnd++; }
+    const cost = 128 + 2 * (oldEnd - start + newEnd - start);
+    if (cost > maxBytes) fail("BUDGET_EXCEEDED", "This edit exceeds the undo-history payload limit; nothing was recorded.");
+    const entry = { start, removed: own(current.slice(start, oldEnd)), inserted: own(next.slice(start, newEnd)), before, after, cost };
+    // Only mutate after validating and allocating the complete new entry.
+    for (const item of future) payloadBytes -= item.cost;
+    future = []; past.push(entry); payloadBytes += cost; current = next;
+    while (past.length > maxEntries || payloadBytes > maxBytes) payloadBytes -= past.shift().cost;
+    return true;
+  }
+  function travel(backward) {
+    alive();
+    const from = backward ? past : future, to = backward ? future : past;
+    const entry = from.at(-1);
+    if (!entry) return null;
+    const remove = backward ? entry.inserted : entry.removed, insert = backward ? entry.removed : entry.inserted;
+    const source = current.slice(0, entry.start) + insert + current.slice(entry.start + remove.length);
+    from.pop(); to.push(entry); current = source;
+    return Object.freeze({ source, selection: backward ? entry.before : entry.after });
+  }
+  return Object.freeze({
+    get source() { alive(); return current; },
+    get state() { alive(); return Object.freeze({ canUndo: past.length > 0, canRedo: future.length > 0,
+      entries: past.length + future.length, payloadBytes }); },
+    record, undo: () => travel(true), redo: () => travel(false),
+    dispose() { disposed = true; current = ""; past = []; future = []; payloadBytes = 0; }
+  });
+}
+
+/** Non-overlapping literal matches in original UTF-16 coordinates. The optional
+ * case fold is ASCII-only: Unicode lowercasing can expand text and corrupt source
+ * offsets. KMP bounds repetitive-input work without interpreting a user regex.
+ */
+export function findSourceMatches(source, query, options = {}) {
+  editingOptions(options, ["ignoreCase"]);
+  const { ignoreCase = false } = options;
+  if (typeof ignoreCase !== "boolean") fail("INVALID_ARGUMENT", "ignoreCase must be a boolean.");
+  if (typeof query !== "string") fail("INVALID_ARGUMENT", "Find text must be a string.");
+  if (query.length === 0) fail("EMPTY_QUERY", "Enter nonempty literal text to find.");
+  if (query.length > 1024) fail("QUERY_TOO_LONG", "Find text exceeds 1024 UTF-16 code units.");
+  sourceText(source); sourceText(query, "query");
+  const fold = code => ignoreCase && code >= 65 && code <= 90 ? code + 32 : code;
+  const needle = new Uint16Array(query.length), prefix = new Uint16Array(query.length);
+  for (let i = 0; i < query.length; i++) needle[i] = fold(query.charCodeAt(i));
+  for (let i = 1, matched = 0; i < needle.length; i++) {
+    while (matched > 0 && needle[i] !== needle[matched]) matched = prefix[matched - 1];
+    if (needle[i] === needle[matched]) matched++;
+    prefix[i] = matched;
+  }
+  const matches = [];
+  for (let i = 0, matched = 0; i < source.length; i++) {
+    const code = fold(source.charCodeAt(i));
+    while (matched > 0 && code !== needle[matched]) matched = prefix[matched - 1];
+    if (code === needle[matched]) matched++;
+    if (matched === needle.length) {
+      if (matches.length === SOURCE_MATCH_LIMIT) return Object.freeze({ matches: Object.freeze(matches), truncated: true });
+      matches.push(Object.freeze({ start: i + 1 - needle.length, end: i + 1 }));
+      matched = 0; // Replace-all consumes non-overlapping occurrences exactly once.
+    }
+  }
+  return Object.freeze({ matches: Object.freeze(matches), truncated: false });
+}
+
+/** Plan a complete literal replacement before modifying any editor. Reject a
+ * truncated inventory rather than presenting a partial replacement as "all".
+ * ASCII folding preserves each match's UTF-8 length, so admission precedes join.
+ */
+export function replaceSourceMatches(source, query, replacement, options = {}) {
+  const found = findSourceMatches(source, query, options);
+  sourceText(replacement, "replacement");
+  if (found.truncated) fail("TOO_MANY_MATCHES", "More than 10000 matches; narrow the search before replacing all. The source is unchanged.");
+  const count = found.matches.length;
+  if (!count) return Object.freeze({ source, count: 0 });
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(source).length + count * (encoder.encode(replacement).length - encoder.encode(query).length);
+  if (bytes > FLOW_SOURCE_LIMIT) fail("BUDGET_EXCEEDED", "Replacement would exceed the 4 MiB source limit; the source is unchanged.");
+  const chunks = []; let offset = 0;
+  for (const match of found.matches) {
+    chunks.push(source.slice(offset, match.start), replacement); offset = match.end;
+  }
+  chunks.push(source.slice(offset));
+  return Object.freeze({ source: chunks.join(""), count });
+}

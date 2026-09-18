@@ -16,7 +16,7 @@ export function bookPath(value) {
 function chapters(value) {
   if (!Array.isArray(value) || value.length > L.chapters) throw bookError("BOOK_LIMIT", "Use at most 128 chapters.");
   const paths = new Set(); let total = 0;
-  return value.map(file => {
+  return Array.from(value, file => {
     const path = bookPath(file?.path);
     if (!/\.(md|markdown)$/i.test(path)) throw bookError("INVALID_PATH", "Chapter paths must end in .md or .markdown.");
     if (paths.has(path)) throw bookError("DUPLICATE_PATH", "Two chapters have the same book path; rename one first.");
@@ -36,6 +36,29 @@ function settings(value = {}) {
   prepareBookInput([{ path: "validation.md", source: "" }], next);
   return next;
 }
+/** Validated, source-only snapshot. Copies all mutable containers and never
+ * includes image bytes, file handles, fonts, or ambient access grants. */
+export function normalizeBookProject(project) {
+  if (!project || typeof project !== "object" || Array.isArray(project) || project.schemaVersion !== 1
+      || Object.keys(project).some(key => !["schemaVersion", "files", "options"].includes(key))) {
+    throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
+  }
+  return { schemaVersion: 1, files: chapters(project.files), options: settings(project.options) };
+}
+
+/** Admit escaped JSON one chapter at a time before allocating the full string. */
+export function serializeBookProject(project) {
+  const value = normalizeBookProject(project);
+  const parts = ['{"schemaVersion":1,"files":[']; let total = parts[0].length;
+  for (const [i, file] of value.files.entries()) {
+    const part = (i ? "," : "") + JSON.stringify(file);
+    total += bookTextBytes(part, L.projectBytes - total); parts.push(part);
+  }
+  const tail = '],"options":' + JSON.stringify(value.options) + '}\n';
+  bookTextBytes(tail, L.projectBytes - total); parts.push(tail);
+  return parts.join("");
+}
+
 function imageList(value) {
   if (!Array.isArray(value) || value.length > L.images) throw bookError("BOOK_LIMIT", "Use at most 128 image files.");
   const paths = new Set(); let total = 0;
@@ -109,26 +132,14 @@ export function createBookCollection() {
       catch { /* A half-edited path must not prevent downloading valid source. */ }
       return { filename, blob: new Blob([file.source], { type: "text/markdown; charset=utf-8" }) };
     },
+    project() { alive(); return normalizeBookProject({ schemaVersion: 1, files: sources(), options }); },
     projectDownload() {
-      alive(); const ordered = chapters(sources()), metadata = settings(options);
-      // Serialize bounded pieces and admit their UTF-8 bytes before joining the
-      // full archive. This source-only project never serializes access grants.
-      const parts = ['{"schemaVersion":1,"files":[']; let total = parts[0].length;
-      for (const [i, file] of ordered.entries()) {
-        const part = (i ? "," : "") + JSON.stringify(file);
-        total += bookTextBytes(part, L.projectBytes - total); parts.push(part);
-      }
-      const tail = '],"options":' + JSON.stringify(metadata) + '}\n';
-      bookTextBytes(tail, L.projectBytes - total); parts.push(tail);
-      return { filename: "book.fmdbook.json", blob: new Blob(parts, { type: "application/json" }) };
+      alive(); const json = serializeBookProject({ schemaVersion: 1, files: sources(), options });
+      return { filename: "book.fmdbook.json", blob: new Blob([json], { type: "application/json" }) };
     },
     replaceProject(project) {
-      alive();
-      if (!project || project.schemaVersion !== 1 || Object.keys(project).some(key => !["schemaVersion", "files", "options"].includes(key))) {
-        throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
-      }
-      const ordered = chapters(project.files), metadata = settings(project.options);
-      files = ordered.map(remember); options = metadata; images = []; changed();
+      alive(); const value = normalizeBookProject(project);
+      files = value.files.map(remember); options = value.options; images = []; changed();
     },
     dispose() { if (disposed) return; disposed = true; files = []; images = []; listeners.clear(); }
   });

@@ -104,3 +104,44 @@ isolated test container without sandbox support, the explicit
 policy, launch or navigation failures fail the gate, never count as passing or
 fall back to test doubles. The source/storage gate is independent of the existing
 Rust/generated-WASM render-parity gates.
+
+## Undo, redo, and source find/replace
+
+The independent source entrypoint also installs `createSourceEditingControls`.
+Undo/Redo buttons and source-scoped Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z and Ctrl+Y use
+`createSourceHistory`: reversible patches with selection restoration, at most
+100 retained transactions and a 20 MiB payload budget. Payload accounting is not
+a measurement of the JavaScript engine's heap. IME composition is one transaction;
+ordinary input events and programmatic image insertion are recorded too. Opening
+or restoring a document resets history, even when the new text is identical.
+Page hiding disposes history; it is not a persistent draft or cross-document undo.
+
+Ctrl/Cmd+F inside the source editor expands the source Find panel. Enter/Shift+Enter
+move forward/backward with wraparound and select original UTF-16 source ranges.
+This is separate from the semantic reading-text search. Queries and replacements
+are literal: Markdown syntax, HTML-looking text and dollar signs are never regex
+or replacement expressions. Optional case folding is explicitly ASCII-only.
+The match inventory is limited to 10000 entries; a truncated inventory permits
+navigation but refuses Replace All instead of silently changing only a prefix.
+
+Replace Selected rechecks the current query, source and selection. Replace All
+preflights the complete UTF-8 output budget and records one undoable transaction.
+Every actual replacement, undo and redo emits the same input event used by
+preview invalidation, source-download revocation and opt-in draft saving. Undoing
+an edit back to the untouched imported view restores its original BOM and line
+endings for Markdown download. Invalid typed Unicode or over-budget source stays
+in the editor; history commands pause until the user repairs it. A refused
+replacement leaves both the text and the redo branch intact.
+
+Focused editing checks:
+
+```sh
+node --test wasm/tests/flow_source_editing.test.mjs wasm/tests/flow_source_controls.test.mjs wasm/tests/flow_source_entry.test.mjs
+```
+
+These run the real history/search/controller and entrypoint with explicit DOM
+and input-event doubles, plus the real draft coordinator with an injected store.
+They cover IME grouping, file boundaries, stale selections, exact UTF-8 limits,
+source-download invalidation, undo during an in-flight save, and editing after a
+draft conflict. They do not prove native browser IME behavior or generated-WASM
+rendering; those remain separate acceptance surfaces.

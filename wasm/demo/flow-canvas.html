@@ -18,8 +18,10 @@ canvas { display: block; }
 button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 #source-controls, #image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#source-find, #source-replacement { box-sizing: border-box; width: 100%; padding: 10px; margin-bottom: 10px; }
+#source-editing button { min-height: 44px; margin-bottom: 6px; }
 #source-filename { box-sizing: border-box; max-width: 100%; padding: 8px; }
-#source-status, #draft-status { overflow-wrap: anywhere; }
+#source-status, #draft-status, #source-edit-status { overflow-wrap: anywhere; }
 #status, #hit { min-height: 24px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
 details { margin-top: 18px; }
@@ -67,6 +69,16 @@ Authorize local images below, then insert their references to include them in pr
 ## Last section
 
 The selectable reading text below comes from the same session, not a second Markdown renderer.</textarea>
+<p><button id="source-undo" type="button" disabled aria-controls="source">Undo</button> <button id="source-redo" type="button" disabled aria-controls="source">Redo</button></p>
+<details id="source-editing"><summary>Find and replace Markdown source</summary>
+<p id="source-edit-help">Literal source text, including Markdown syntax; not rendered reading text. Ctrl/Cmd+F in the editor focuses Find. Enter finds the next match; Shift+Enter finds the previous one. Ctrl/Cmd+Z undoes; Shift+Ctrl/Cmd+Z redoes. History keeps up to 100 edits within a 20 MiB payload budget, only for this document. Opening, restoring, or leaving the page clears history.</p>
+<label for="source-find">Find source text</label><input id="source-find" type="search" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="source-edit-help source-edit-status">
+<label><input id="source-find-insensitive" type="checkbox"> Ignore A–Z case (ASCII only)</label>
+<p><button id="source-find-previous" type="button" disabled>Previous source match</button> <button id="source-find-next" type="button" disabled>Next source match</button></p>
+<label for="source-replacement">Literal replacement text (empty deletes matches)</label><input id="source-replacement" type="text" autocomplete="off" spellcheck="false">
+<p><button id="source-replace" type="button" disabled>Replace selected match</button> <button id="source-replace-all" type="button" disabled>Replace all</button></p>
+</details>
+<p id="source-edit-status" role="status">Source editing does not require the renderer or draft storage.</p>
 </section>
 <section><div class="label" id="preview-label">Canvas preview</div>
 <div id="viewport" tabindex="0" aria-labelledby="preview-label" aria-describedby="preview-help"><div id="surface"><canvas id="preview" aria-hidden="true"></canvas></div><div id="extent"></div></div>

@@ -281,3 +281,175 @@ export function replaceSourceMatches(source, query, replacement, options = {}) {
   chunks.push(source.slice(offset));
   return Object.freeze({ source: chunks.join(""), count });
 }
+
+/** Source editing is independent of the renderer and storage. Every accepted
+ * mutation emits input, including undo/redo, so preview, draft scheduling and
+ * prepared-download invalidation observe the same authoritative textarea.
+ */
+export function createSourceEditingControls({ sourceEditor, undo, redo, query, ignoreCase,
+  previous, next, replacement, replace, replaceAll, status }) {
+  let history = null, disposed = false, composing = false, before = null, last = null, cache = null;
+  const listeners = [];
+  const selection = () => editSelection({ start: sourceEditor.selectionStart ?? 0,
+    end: sourceEditor.selectionEnd ?? 0, direction: sourceEditor.selectionDirection ?? "none" }, sourceEditor.value.length);
+  const bounded = (value, length) => ({ start: Math.min(value?.start ?? 0, length),
+    end: Math.min(value?.end ?? 0, length), direction: value?.direction ?? "none" });
+  const report = error => { status.textContent = `${error?.code ?? "EDIT_ERROR"}: ${error instanceof Error ? error.message : "Source operation failed."}`; };
+  const writable = () => !disposed && !composing && !sourceEditor.disabled && !sourceEditor.readOnly;
+  const ready = () => {
+    if (disposed) fail("SESSION_DISPOSED", "Source editing controls are disposed.");
+    if (!writable()) fail("EDITOR_BUSY", "Finish composing text or unlock the editor before using source editing commands.");
+  };
+  function inventory() {
+    const source = sourceEditor.value, text = query.value, fold = ignoreCase.checked;
+    if (!cache || cache.source !== source || cache.query !== text || cache.fold !== fold) {
+      cache = { source, query: text, fold, found: text === "" ? { matches: [], truncated: false }
+        : findSourceMatches(source, text, { ignoreCase: fold }) };
+    }
+    return cache.found;
+  }
+  const selectedIndex = found => found.matches.findIndex(match => match.start === sourceEditor.selectionStart && match.end === sourceEditor.selectionEnd);
+  function refresh(announce = false) {
+    const active = writable() && history !== null && history.source === sourceEditor.value;
+    undo.disabled = !active || !history.state.canUndo;
+    redo.disabled = !active || !history.state.canRedo;
+    previous.disabled = next.disabled = replace.disabled = replaceAll.disabled = true;
+    if (!active) return;
+    try {
+      const found = inventory(), count = found.matches.length;
+      previous.disabled = next.disabled = count === 0;
+      replace.disabled = selectedIndex(found) < 0;
+      replaceAll.disabled = count === 0 || found.truncated;
+      if (announce) status.textContent = query.value === "" ? "Source editing ready. Undo history is local to this document."
+        : found.truncated ? "More than 10000 matches. Navigation shows the first 10000; narrow the query before replacing all."
+          : `${count} source ${count === 1 ? "match" : "matches"}.`;
+    } catch (error) { report(error); }
+  }
+  // A programmatic input without beforeinput (including image insertion) is one
+  // transaction too. Invalid or over-budget input is left visible, never erased;
+  // history commands pause until the user repairs it to an admitted source.
+  function synchronize() {
+    const after = selection();
+    if (history === null) history = createSourceHistory(sourceEditor.value);
+    else history.record(sourceEditor.value, { before: bounded(before ?? last, history.source.length), after });
+    last = after; before = null; cache = null;
+  }
+  function input(event) {
+    if (disposed || composing || event?.isComposing) return;
+    try { synchronize(); refresh(true); }
+    catch (error) { before = null; cache = null; refresh(); report(error); }
+  }
+  function reset() {
+    history?.dispose(); history = null; composing = false; before = last = cache = null;
+    input();
+  }
+  function publish(value) {
+    sourceEditor.value = value.source;
+    sourceEditor.setSelectionRange(value.selection.start, value.selection.end, value.selection.direction);
+    last = value.selection; before = null; cache = null;
+    sourceEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    sourceEditor.focus(); refresh();
+  }
+  function travel(backward) {
+    ready(); synchronize();
+    const value = backward ? history.undo() : history.redo();
+    if (value) publish(value);
+    status.textContent = value ? `${backward ? "Undid" : "Redid"} one source edit.` : `No source edit to ${backward ? "undo" : "redo"}.`;
+    refresh(); return value !== null;
+  }
+  function navigate(backward) {
+    ready(); synchronize();
+    const found = inventory(), count = found.matches.length;
+    if (!count) { refresh(true); return false; }
+    const range = selection();
+    let index = backward ? found.matches.findLastIndex(match => match.end <= range.start)
+      : found.matches.findIndex(match => match.start >= range.end);
+    const wrapped = index < 0;
+    if (wrapped) index = backward ? count - 1 : 0;
+    const match = found.matches[index];
+    sourceEditor.setSelectionRange(match.start, match.end); sourceEditor.focus(); last = selection();
+    refresh();
+    status.textContent = `Source match ${index + 1} of ${count}${found.truncated ? "+ (first 10000 only)" : ""}${wrapped ? "; wrapped" : ""}.`;
+    return true;
+  }
+  function commit(source, after) {
+    // Textareas normalize newlines. Record exactly the value the editor will
+    // expose, not a CRLF spelling that would make history and source diverge.
+    source = sourceText(source.replace(/\r\n?/g, "\n"));
+    after = editSelection(after, source.length);
+    if (!history.record(source, { before: selection(), after })) return false;
+    publish({ source, selection: after }); return true;
+  }
+  function replaceSelected() {
+    ready(); synchronize();
+    const found = inventory(), index = selectedIndex(found);
+    if (index < 0) fail("NO_SELECTED_MATCH", "Select a current source match with Previous or Next before replacing it.");
+    const match = found.matches[index], text = sourceText(replacement.value, "replacement").replace(/\r\n?/g, "\n");
+    const source = sourceEditor.value;
+    const changed = commit(source.slice(0, match.start) + text + source.slice(match.end), { start: match.start, end: match.start + text.length });
+    status.textContent = changed ? "Replaced the selected source match. Undo restores it." : "The selected match already equals the replacement.";
+    return changed;
+  }
+  function replaceEvery() {
+    ready(); synchronize();
+    const result = replaceSourceMatches(sourceEditor.value, query.value, replacement.value.replace(/\r\n?/g, "\n"), { ignoreCase: ignoreCase.checked });
+    const changed = commit(result.source, bounded(selection(), result.source.length));
+    status.textContent = changed ? `Replaced ${result.count} source matches in one undoable edit.` : "No source text changed.";
+    return changed;
+  }
+  const run = action => event => {
+    if (event?.defaultPrevented || disposed) return;
+    try { action(); } catch (error) { refresh(); report(error); }
+  };
+  const listen = (element, type, handler) => { element.addEventListener(type, handler); listeners.push([element, type, handler]); };
+  const selectionChanged = () => {
+    if (!disposed && !composing && before === null && history?.source === sourceEditor.value) last = selection();
+    refresh();
+  };
+  listen(sourceEditor, "input", input);
+  listen(sourceEditor, "fmd-document-replaced", reset);
+  listen(sourceEditor, "beforeinput", event => {
+    if (event.defaultPrevented || composing || event.isComposing || !writable()) return;
+    if (event.cancelable && ["historyUndo", "historyRedo"].includes(event.inputType)) {
+      event.preventDefault(); run(() => travel(event.inputType === "historyUndo"))();
+    } else before = selection();
+  });
+  listen(sourceEditor, "compositionstart", () => { before = selection(); composing = true; refresh(); });
+  listen(sourceEditor, "compositionend", () => { composing = false; input(); });
+  for (const type of ["select", "keyup", "click"]) listen(sourceEditor, type, selectionChanged);
+  listen(sourceEditor, "keydown", event => {
+    if (event.defaultPrevented || !writable() || event.isComposing || event.keyCode === 229 || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+    const key = event.key?.toLowerCase();
+    if (key === "z" || (key === "y" && !event.shiftKey)) {
+      event.preventDefault(); run(() => travel(key === "z" && !event.shiftKey))();
+    } else if (key === "f") {
+      event.preventDefault();
+      const range = selection(), selected = sourceEditor.value.slice(range.start, range.end);
+      if (selected.length > 0 && selected.length <= 1024 && !/[\r\n]/.test(selected)) query.value = selected;
+      const panel = query.closest?.("details");
+      if (panel) panel.open = true;
+      query.focus(); query.select(); refresh(true);
+    }
+  });
+  listen(query, "keydown", event => {
+    if (!event.defaultPrevented && !event.isComposing && event.key === "Enter") {
+      event.preventDefault(); run(() => navigate(event.shiftKey))();
+    }
+  });
+  listen(query, "input", () => { cache = null; refresh(true); });
+  listen(ignoreCase, "change", () => { cache = null; refresh(true); });
+  listen(undo, "click", run(() => travel(true))); listen(redo, "click", run(() => travel(false)));
+  listen(previous, "click", run(() => navigate(true))); listen(next, "click", run(() => navigate(false)));
+  listen(replace, "click", run(replaceSelected)); listen(replaceAll, "click", run(replaceEvery));
+  reset();
+  return Object.freeze({
+    undo: () => travel(true), redo: () => travel(false), findNext: () => navigate(false), findPrevious: () => navigate(true),
+    replaceSelected, replaceAll: replaceEvery,
+    dispose() {
+      if (disposed) return;
+      disposed = true; history?.dispose(); history = null; before = last = cache = null;
+      for (const [element, type, handler] of listeners) element.removeEventListener(type, handler);
+      listeners.length = 0; refresh();
+    }
+  });
+}

@@ -1,13 +1,13 @@
 // Separate entrypoint from the preview: source recovery remains available even
 // when its WASM artifact, worker startup or Canvas renderer cannot load.
-import { createSourceControls } from "./flow_document.mjs";
+import { createSourceControls, createSourceEditingControls } from "./flow_document.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
 
 const source = document.querySelector("#source"), filename = document.querySelector("#source-filename");
 const status = document.querySelector("#source-status");
-let controls = null, drafts = null, retained = null;
+let controls = null, drafts = null, editing = null, retained = null;
 function start() {
-  controls?.dispose(); drafts?.dispose();
+  controls?.dispose(); drafts?.dispose(); editing?.dispose();
   const initial = retained && retained.view === source.value && retained.document.filename === filename.value
     ? retained.document : undefined;
   retained = null;
@@ -18,6 +18,13 @@ function start() {
     // The preview revokes its old document's image grant synchronously on this
     // event, BEFORE source controls emit the ordinary input notification.
     onReplace: () => source.dispatchEvent(new Event("fmd-document-replaced"))
+  });
+  editing = createSourceEditingControls({ sourceEditor: source,
+    undo: document.querySelector("#source-undo"), redo: document.querySelector("#source-redo"),
+    query: document.querySelector("#source-find"), ignoreCase: document.querySelector("#source-find-insensitive"),
+    previous: document.querySelector("#source-find-previous"), next: document.querySelector("#source-find-next"),
+    replacement: document.querySelector("#source-replacement"), replace: document.querySelector("#source-replace"),
+    replaceAll: document.querySelector("#source-replace-all"), status: document.querySelector("#source-edit-status")
   });
   drafts = createDraftControls({ sourceEditor: source, filename,
     remember: document.querySelector("#remember-draft"), refresh: document.querySelector("#refresh-draft"),
@@ -35,7 +42,7 @@ window.addEventListener("pagehide", event => {
   if (event.persisted) {
     try { retained = { document: controls.snapshot(), view: source.value }; } catch { retained = null; }
   }
-  controls?.dispose(); drafts?.dispose(); controls = null; drafts = null;
+  controls?.dispose(); drafts?.dispose(); editing?.dispose(); controls = null; drafts = null; editing = null;
 });
 window.addEventListener("pageshow", event => { if (event.persisted) start(); });
 start();

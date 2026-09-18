@@ -6,7 +6,9 @@
   "sideEffects": [
     "./fmd-view.js",
     "./flow_worker.js",
-    "./demo/flow-source.js"
+    "./demo/flow-source.js",
+    "./book_worker_entry.js",
+    "./demo/book.js"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -68,7 +70,12 @@
     "./flow-reader": {
       "types": "./flow-reader.d.ts",
       "import": "./flow-reader.js"
-    }
+    },
+    "./book-worker": {
+      "types": "./book-worker.d.ts",
+      "import": "./book-worker.js"
+    },
+    "./book-worker/worker": "./book_worker_entry.js"
   },
   "files": [
     "franken_markdown.js",
@@ -121,6 +128,15 @@
     "demo/flow_document.mjs",
     "demo/flow_draft_store.mjs",
     "demo/flow_draft_session.mjs",
-    "demo/flow_draft_controls.mjs"
+    "demo/flow_draft_controls.mjs",
+    "book-worker.js",
+    "book-worker.d.ts",
+    "book_worker.mjs",
+    "book_worker_entry.js",
+    "BOOK.md",
+    "demo/book.html",
+    "demo/book.js",
+    "demo/book_collection.mjs",
+    "demo/book_controls.mjs"
   ]
 }

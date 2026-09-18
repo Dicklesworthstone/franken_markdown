@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>Book library: native IndexedDB checks</title>
+<pre id="result">Running native browser storage tests…</pre>
+<script type="module">
+import { runBookLibraryStoreTests } from "./book_library_store.browser.mjs";
+window.bookLibraryTests = runBookLibraryStoreTests().then(result => {
+  document.querySelector("#result").textContent = JSON.stringify(result, null, 2);
+  return result;
+});
+</script>

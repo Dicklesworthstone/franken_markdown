@@ -137,6 +137,10 @@
     "demo/book.html",
     "demo/book.js",
     "demo/book_collection.mjs",
-    "demo/book_controls.mjs"
+    "demo/book_controls.mjs",
+    "demo/book_library_store.mjs",
+    "demo/book_library_session.mjs",
+    "demo/book_library_controls.mjs",
+    "LIBRARY.md"
   ]
 }

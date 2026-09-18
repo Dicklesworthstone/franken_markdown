@@ -1,11 +1,11 @@
-import { createBookCollection, readBookFiles, readBookProject } from "./book_collection.mjs";
+import { createBookCollection, readBookFiles, readBookProject, normalizeBookProject } from "./book_collection.mjs";
 import { bookError } from "../book_worker.mjs";
 
 /** UI orchestration is separately testable; the host supplies the real worker.
  * Nothing in this controller parses Markdown or inserts rendered HTML.
  */
 export function createBookControls({ root, worker, confirm = () => true, urls = URL,
-  collection = createBookCollection() }) {
+  collection = createBookCollection(), onProjectReplaced = () => {} }) {
   const ids = ["chapters", "chapter-path", "chapter-source", "add-chapter", "move-up", "move-down", "remove-chapter",
     "import-files", "import-folder", "open-project", "save-project", "save-chapter", "revoke-images", "image-list",
     "title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers", "export-pdf", "export-epub", "export-site", "cancel-export", "download", "status"];
@@ -16,7 +16,7 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   const alive = () => { if (disposed) throw bookError("SESSION_DISPOSED", "Book controls are disposed."); };
   const options = () => ({ title: el.title.value, author: el.author.value, lang: el.lang.value,
     font: el.font.value, darkMode: el["dark-mode"].value, fontScale: Number(el["font-scale"].value), toc: el.toc.checked, pageNumbers: el["page-numbers"].checked });
-  const signature = () => JSON.stringify([active, el["chapter-path"].value, el["chapter-source"].value, options()]);
+  const signature = () => JSON.stringify([active, el["chapter-path"].value, el["chapter-source"].value, options(), el["font-scale"].value]);
   function buttons() {
     const count = collection.files.length;
     el["move-up"].disabled = active <= 0; el["move-down"].disabled = active >= count - 1;
@@ -106,6 +106,7 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
         const approved = await confirm("Replace this collection with the source project? Save the current project first. All current image access will be revoked.");
         fence(); if (approved !== true) return false;
         collection.replaceProject(project); active = 0; showOptions(); showChapter();
+        onProjectReplaced();
         el.status.textContent = "Source project reopened. Chapter order and source are restored; reauthorize its image files before exporting.";
       } else {
         const batch = await readBookFiles(files, { folder: mode === "folder" }); fence();
@@ -151,6 +152,17 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   });
   showOptions(); showChapter(); revoke();
   return Object.freeze({ prepare, prepareSource, importFiles,
+    checkpoint() { alive(); return JSON.stringify([collection.revision, signature()]); },
+    captureProject() { capture(); return collection.project(); },
+    replaceProject(project, checkpoint) {
+      alive();
+      if (reading) throw bookError("BOOK_BUSY", "A local import is in progress; recovery did not replace it.");
+      if (checkpoint !== JSON.stringify([collection.revision, signature()])) throw bookError("STALE_SOURCE", "The editor changed during recovery; nothing was installed.");
+      // Validate before retiring downloads or changing the current document.
+      const validated = normalizeBookProject(project);
+      invalidate(); collection.replaceProject(validated); active = 0; showOptions(); showChapter();
+      el.status.textContent = "Saved source reopened. Images and prepared downloads were revoked; authorize image files again before publishing.";
+    },
     suspend() { if (!disposed) { collection.revokeImages(); el.status.textContent = "Source retained in memory; reauthorize images after returning to this page."; } },
     dispose() {
       if (disposed) return; disposed = true; invalidate(); unsubscribe();

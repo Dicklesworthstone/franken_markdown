@@ -33,8 +33,10 @@ snapshot are checked again before publication and download activation.
 
 ## Keep the source
 
-The collection is in-memory, **not autosaved**. Prepare a source project and click
-Download before leaving. `book.fmdbook.json` records schema version 1, ordered
+The collection starts in memory with **autosave off**. The optional local book
+library adds named saves, recent revision recovery, and opt-in autosave; see
+[LIBRARY.md](LIBRARY.md) for its conflict and retention rules. Keep a downloaded
+source project as a separate backup before leaving. `book.fmdbook.json` records schema version 1, ordered
 chapter paths/source, and settings. It is plain unencrypted JSON. Images, fonts,
 worker state, handles, and access grants are deliberately excluded. Keep original
 image files separately. Reopening a project requires confirmation, clears all

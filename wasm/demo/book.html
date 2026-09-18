@@ -15,7 +15,7 @@ input:not([type=checkbox]), select, textarea { width: 100%; padding: 9px; border
 textarea { height: 420px; resize: vertical; font: 14px/1.5 ui-monospace, monospace; }
 button { min-height: 44px; padding: 8px 12px; margin: 4px 2px; border: 1px solid #0969da; border-radius: 6px; background: #0969da; color: white; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
-#chapters { min-height: 200px; } #status { min-height: 48px; overflow-wrap: anywhere; }
+#chapters { min-height: 200px; } #library-status, #library-current { overflow-wrap: anywhere; } #status { min-height: 48px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offset: 2px; }
 @media(max-width: 700px) { .grid { grid-template-columns: 1fr; } body { padding: 12px; } }
@@ -25,7 +25,20 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <nav><a href="./flow-canvas.html">Single-document editor</a> · <a href="./index.html">HTML/PDF demo</a></nav>
 <h1>Publish a Markdown book</h1>
 <p>Arrange chapters and export one merged PDF, EPUB, or linked HTML-site ZIP using the Rust book engine. Rendering runs in a cancellable worker. Your source and images are never uploaded.</p>
-<p><strong>This collection lives only in memory.</strong> Prepare a source project and click Download before leaving. Projects retain chapter source, order, paths, and settings, but deliberately exclude images and permissions. Reopening requires authorizing images again.</p>
+<p><strong>Save your work before leaving.</strong> Use the optional local library below, or prepare a source project and click Download. Both retain chapter source, order, paths, and settings, but deliberately exclude images and permissions. Reopening requires authorizing images again.</p>
+<section aria-labelledby="library-title"><h2 id="library-title">Local book library and recovery</h2>
+<p id="library-help">Save a named copy in this browser, then optionally enable autosave. Nothing is saved automatically before you opt in. Local data is unencrypted, shared by tabs on this origin, and may be evicted or cleared; download source projects as backups. Images and file permissions are never stored.</p>
+<label for="library-name">Name for the current local book</label><input id="library-name" type="text" value="My book" maxlength="160" autocomplete="off" aria-describedby="library-help library-current">
+<p id="library-current"></p>
+<p><button id="library-save" type="button">Save current book locally</button><button id="library-copy" type="button">Save separate copy</button><button id="library-new" type="button">Start a new book</button></p>
+<label><input id="library-autosave" type="checkbox" disabled aria-describedby="library-help library-status"> Autosave this named book after edits</label>
+<p>Autosave waits for text composition to finish. Invalid paths or settings, storage failures, and conflicting edits pause it without replacing the last saved revision. Reopening, importing a source project, or suspending the page turns it off. Only an acknowledged transaction counts as saved.</p>
+<div class="grid"><div><label for="library-books">Saved books in this browser</label><select id="library-books" aria-describedby="library-current"></select></div>
+<div><label for="library-versions">Recovery revision</label><select id="library-versions" disabled></select></div></div>
+<p><button id="library-refresh" type="button">Refresh saved books</button><button id="library-open" type="button" disabled>Open selected revision</button><button id="library-delete" type="button" disabled>Delete selected saved book</button></p>
+<p>Up to 32 books and five recent revisions per book, within a 128 MiB source-JSON budget. Saving may prune that book’s oldest revisions to fit; other books are never silently evicted. Opening an old revision does not overwrite the latest saved one. Save creates a new revision.</p>
+<p id="library-status" role="status">Inspecting local recovery. No source has been saved automatically.</p>
+</section>
 <section aria-labelledby="import-title"><h2 id="import-title">1. Add chapters and images</h2>
 <p>Use .md or .markdown chapters and PNG/JPEG/SVG images. Folder import retains paths beneath the selected root; other extensions are ignored and counted. Import appends atomically and refuses duplicate paths. File-picker order is not guaranteed to match reading order: arrange the list below.</p>
 <div class="grid"><div><label for="import-files">Add local Markdown or image files</label><input id="import-files" type="file" multiple accept=".md,.markdown,.png,.jpg,.jpeg,.svg"></div>

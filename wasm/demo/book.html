@@ -29,7 +29,7 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <nav><a href="./flow-canvas.html">Single-document editor</a> · <a href="./index.html">HTML/PDF demo</a></nav>
 <h1>Publish a Markdown book</h1>
 <p>Arrange chapters and export one merged PDF, EPUB, or linked HTML-site ZIP using the Rust book engine. Rendering runs in a cancellable worker. Your source and images are never uploaded.</p>
-<p><strong>Save your work before leaving.</strong> Use the optional local library below, or prepare a source project and click Download. Both retain chapter source, order, paths, and settings, but deliberately exclude images and permissions. Reopening requires authorizing images again.</p>
+<p><strong>Save your work before leaving.</strong> Use the optional local library below, or prepare a source project and click Download. Both retain chapter and include-only source, roles, order, paths, and settings, but deliberately exclude images and permissions. Reopening requires authorizing images again.</p>
 <section aria-labelledby="library-title"><h2 id="library-title">Local book library and recovery</h2>
 <p id="library-help">Save a named copy in this browser, then optionally enable autosave. Nothing is saved automatically before you opt in. Local data is unencrypted, shared by tabs on this origin, and may be evicted or cleared; download source projects as backups. Images and file permissions are never stored.</p>
 <label for="library-name">Name for the current local book</label><input id="library-name" type="text" value="My book" maxlength="160" autocomplete="off" aria-describedby="library-help library-current">
@@ -43,30 +43,35 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <p>Up to 32 books and five recent revisions per book, within a 128 MiB source-JSON budget. Saving may prune that book’s oldest revisions to fit; other books are never silently evicted. Opening an old revision does not overwrite the latest saved one. Save creates a new revision.</p>
 <p id="library-status" role="status">Inspecting local recovery. No source has been saved automatically.</p>
 </section>
-<section aria-labelledby="import-title"><h2 id="import-title">1. Add chapters and images</h2>
+<section aria-labelledby="import-title"><h2 id="import-title">1. Add chapters, shared sources and images</h2>
 <p>Use .md or .markdown chapters and PNG/JPEG/SVG images. Folder import retains paths beneath the selected root; other extensions are ignored and counted. Import appends atomically and refuses duplicate paths. File-picker order is not guaranteed to match reading order: arrange the list below.</p>
 <div class="grid"><div><label for="import-files">Add local Markdown or image files</label><input id="import-files" type="file" multiple accept=".md,.markdown,.png,.jpg,.jpeg,.svg"></div>
 <div><label for="import-folder">Add a folder (supported browsers)</label><input id="import-folder" type="file" webkitdirectory multiple></div></div>
-<p>Limits: 128 chapters, 4 MiB each and 16 MiB total source plus paths; 128 images, 8 MiB each and 32 MiB total. Export has a 128 MiB output ceiling and a two-minute worker deadline.</p>
+<div class="grid"><div><label for="import-includes">Add include-only UTF-8 files</label><input id="import-includes" type="file" multiple aria-describedby="include-help"></div>
+<div><label for="import-include-folder">Add an include-only source folder</label><input id="import-include-folder" type="file" webkitdirectory multiple aria-describedby="include-help"></div></div>
+<p id="include-help">Include-only files are editable and saved with your book, but never become standalone chapters. Choose text snippets or code files here, not binary assets. All selected files must be UTF-8. Use the source-role control below to turn an imported Markdown chapter into a shared snippet. Nothing is fetched implicitly.</p>
+<p>Limits: 128 chapters and 128 include-only files, 4 MiB per source and 16 MiB combined source plus paths; 128 images, 8 MiB each and 32 MiB total. Export has a 128 MiB output ceiling and a two-minute worker deadline.</p>
 <label for="open-project">Reopen a source project</label><input id="open-project" type="file" accept=".json,application/json">
 </section>
 <section aria-labelledby="arrange-title"><h2 id="arrange-title">2. Arrange and edit</h2><div class="grid"><div>
-<label for="chapters">Chapters in reading order</label><select id="chapters" size="8"></select>
-<p><button id="add-chapter" type="button">New chapter</button><button id="move-up" type="button">Move up</button><button id="move-down" type="button">Move down</button><button id="remove-chapter" type="button">Remove chapter</button></p>
-</div><div><label for="chapter-path">Book-relative chapter path</label><input id="chapter-path" type="text" spellcheck="false" autocomplete="off" aria-describedby="path-help">
+<label for="chapters">Sources (numbered chapters are in reading order)</label><select id="chapters" size="8"></select>
+<p><button id="add-chapter" type="button">New chapter</button><button id="add-include" type="button">New include-only source</button><button id="move-up" type="button">Move up</button><button id="move-down" type="button">Move down</button><button id="remove-chapter" type="button">Remove source</button></p>
+</div><div><label for="chapter-path">Book-relative source path</label><input id="chapter-path" type="text" spellcheck="false" autocomplete="off" aria-describedby="path-help">
 <p id="path-help">For example, guide/start.md. Links such as ../end.md and relative image references resolve from this path. Renaming does not rewrite links; update references yourself.</p>
-<label for="chapter-source">Original Markdown</label><textarea id="chapter-source" spellcheck="false"></textarea>
-<button id="save-chapter" type="button">Prepare chapter Markdown</button></div></div>
+<label for="source-role">Source role</label><select id="source-role" aria-describedby="source-role-help"><option value="chapter">Published chapter (.md / .markdown)</option><option value="include">Include-only source (UTF-8 text)</option></select>
+<p id="source-role-help">Only numbered chapters get pages or EPUB spine entries. Include a shared source with <code>{{#include ../parts/shared.md}}</code>, optionally with a named region or line selector. Includes resolve relative to the file containing each directive; links and images in inserted text resolve from the publishing chapter. Renames and removals do not rewrite references.</p>
+<label for="chapter-source">Original source text</label><textarea id="chapter-source" spellcheck="false"></textarea>
+<button id="save-chapter" type="button">Prepare selected source file</button></div></div>
 <details><summary>Authorized image paths</summary><pre id="image-list"></pre><button id="revoke-images" type="button">Revoke all images</button></details>
 </section>
-<section aria-labelledby="search-title"><h2 id="search-title">Find and replace across chapters</h2>
-<p id="search-help">Search literal Markdown source, including frontmatter, code and link destinations. Nothing is rendered or uploaded. Review replacements before applying them. Newlines match LF, CRLF and CR; unmatched source bytes remain unchanged.</p>
+<section aria-labelledby="search-title"><h2 id="search-title">Find and replace across all source files</h2>
+<p id="search-help">Search literal chapter and include-only source, including frontmatter, code and link destinations. Nothing is rendered or uploaded. Review replacements before applying them. Newlines match LF, CRLF and CR; unmatched source bytes remain unchanged.</p>
 <div class="grid"><div><label for="search-query">Text to find (multiline supported)</label><textarea id="search-query" maxlength="4096" spellcheck="false" aria-describedby="search-help"></textarea>
-<label><input id="search-case" type="checkbox" checked> Match case</label><label for="search-scope">Search scope</label><select id="search-scope"><option value="all">Whole book</option><option value="current">Current chapter</option></select></div>
+<label><input id="search-case" type="checkbox" checked> Match case</label><label for="search-scope">Search scope</label><select id="search-scope"><option value="all">Whole book</option><option value="current">Current source file</option></select></div>
 <div><label for="search-replacement">Literal replacement (empty means delete)</label><textarea id="search-replacement" maxlength="65536" spellcheck="false" aria-describedby="search-help"></textarea>
 <p>Regular expressions, capture substitutions and backslash escapes are not interpreted. A search above 10,000 matches stops explicitly; narrow the text or scope rather than replacing an incomplete result set.</p></div></div>
 <p><button id="search-run" type="button">Find in source</button></p>
-<label for="search-results">Source matches: chapter, line and column</label><select id="search-results" size="8" disabled aria-describedby="search-status"></select>
+<label for="search-results">Source matches: file, line and column</label><select id="search-results" size="8" disabled aria-describedby="search-status"></select>
 <p><button id="search-open" type="button" disabled>Open selected match</button><button id="search-previous" type="button" disabled>Previous match</button><button id="search-next" type="button" disabled>Next match</button><button id="search-page-previous" type="button" disabled>Previous 50 results</button><button id="search-page-next" type="button" disabled>Next 50 results</button></p>
 <p id="search-status" role="status">Find source text, then review one replacement or all matches in the chosen scope.</p>
 <p><button id="search-review-one" type="button" disabled>Review selected replacement</button><button id="search-review-all" type="button" disabled>Review replacing all matches</button></p>
@@ -74,7 +79,7 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <p><button id="search-apply" type="button" disabled>Apply reviewed changes</button><button id="search-discard" type="button" disabled>Discard review</button></p>
 <p><button id="search-undo" type="button" disabled>Undo replacement</button><button id="search-redo" type="button" disabled>Redo replacement</button></p>
 <p id="search-history">Replacement history is private to this page session.</p>
-<p>Each reviewed batch applies or reverses atomically across chapters. Images and presentation settings are preserved; previous previews and downloads are invalidated. Undo/redo holds at most ten batches and 64 MiB of before/after source. Other edits, imports, recovery, asset changes or page suspension clear this history so it cannot overwrite newer work. <a href="../BOOK_EDITING.md">Source-editing details</a>.</p>
+<p>Each reviewed batch applies or reverses atomically across chapters and include-only files. Source roles, images and presentation settings are preserved; previous previews and downloads are invalidated. Undo/redo holds at most ten batches and 64 MiB of before/after source. Other edits, imports, recovery, asset changes or page suspension clear this history so it cannot overwrite newer work. <a href="../BOOK_EDITING.md">Source-editing details</a>.</p>
 </section>
 <section aria-labelledby="preview-title"><h2 id="preview-title">3. Review the rendered book</h2>
 <p id="preview-help">Review chapter pages generated by the same Rust book-site renderer used for export, including book navigation and transclusions. This is an HTML-site preview, not a PDF page-layout proof. Rendering and archive decoding run in a separate cancellable worker.</p>
@@ -91,9 +96,9 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <div><label for="font">Font family</label><select id="font"><option value="sans">Sans</option><option value="serif">Serif</option></select><label for="dark-mode">HTML/EPUB theme</label><select id="dark-mode"><option value="disabled">Light</option><option value="auto">Follow system</option><option value="light">Light (alias)</option><option value="system">System (alias)</option></select><label for="font-scale">Font scale</label><input id="font-scale" type="number" min="0.5" max="3" step="0.05"><label><input id="toc" type="checkbox"> Table of contents</label><label><input id="page-numbers" type="checkbox"> PDF page numbers</label></div></div>
 <p><button id="export-pdf" type="button">Prepare book PDF</button><button id="export-epub" type="button">Prepare EPUB</button><button id="export-site" type="button">Prepare site ZIP</button><button id="cancel-export" type="button">Cancel export</button></p>
 <p><button id="save-project" type="button">Prepare source project</button></p>
-<p id="status" role="status">Add chapters or create a new one. Saving source projects and Markdown does not require WASM.</p>
+<p id="status" role="status">Add chapters or create a new one. Saving source projects and individual source files does not require WASM.</p>
 <p><a id="download" hidden>Download</a></p>
-<p>Preparation does not save a file automatically. Edits, chapter order changes, and image revocation invalidate the download. An export failure never replaces your source. Unresolved links, assets, or unsupported content are subject to the engine's book-format validation.</p>
+<p>Preparation does not save a file automatically. Edits, source-role changes, chapter order changes, and image revocation invalidate the download. An export failure never replaces your source. Unresolved links, assets, or unsupported content are subject to the engine's book-format validation.</p>
 </section>
 <script type="module" src="./book.js"></script>
 </body></html>

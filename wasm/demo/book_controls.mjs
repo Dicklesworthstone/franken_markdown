@@ -7,7 +7,7 @@ import { bookEditorOffset } from "./book_source_search.mjs";
  */
 export function createBookControls({ root, worker, confirm = () => true, urls = URL,
   collection = createBookCollection(), onProjectReplaced = () => {} }) {
-  const ids = ["chapters", "chapter-path", "chapter-source", "add-chapter", "move-up", "move-down", "remove-chapter",
+  const ids = ["source-role", "add-include", "import-includes", "import-include-folder", "chapters", "chapter-path", "chapter-source", "add-chapter", "move-up", "move-down", "remove-chapter",
     "import-files", "import-folder", "open-project", "save-project", "save-chapter", "revoke-images", "image-list",
     "title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers", "export-pdf", "export-epub", "export-site", "cancel-export", "download", "status"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${id}`)]));
@@ -19,15 +19,17 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   const alive = () => { if (disposed) throw bookError("SESSION_DISPOSED", "Book controls are disposed."); };
   const options = () => ({ title: el.title.value, author: el.author.value, lang: el.lang.value,
     font: el.font.value, darkMode: el["dark-mode"].value, fontScale: Number(el["font-scale"].value), toc: el.toc.checked, pageNumbers: el["page-numbers"].checked });
-  const signature = () => JSON.stringify([active, el["chapter-path"].value, el["chapter-source"].value, options(), el["font-scale"].value]);
+  const signature = () => JSON.stringify([active, el["chapter-path"].value, el["chapter-source"].value, options(), el["font-scale"].value, el["source-role"].value]);
   function buttons() {
-    const count = collection.files.length;
+    const files = collection.files, count = files.length;
+    const hasChapters = files.some(file => file.role !== "include");
     el["move-up"].disabled = active <= 0; el["move-down"].disabled = active >= count - 1;
     el["remove-chapter"].disabled = el["save-chapter"].disabled = count === 0;
     el["chapter-path"].disabled = el["chapter-source"].disabled = count === 0;
+    el["source-role"].disabled = count === 0 || composing || reading;
     el["revoke-images"].disabled = collection.images.length === 0;
-    for (const kind of ["pdf", "epub", "site"]) el[`export-${kind}`].disabled = !count || preparing || reading;
-    for (const kind of ["import-files", "import-folder", "open-project"]) el[kind].disabled = reading;
+    for (const kind of ["pdf", "epub", "site"]) el[`export-${kind}`].disabled = !hasChapters || preparing || reading;
+    for (const kind of ["import-files", "import-folder", "import-includes", "import-include-folder", "open-project"]) el[kind].disabled = reading;
     el["cancel-export"].disabled = !preparing;
     const nextBusy = reading || composing;
     if (lastSourceBusy !== nextBusy) {
@@ -48,9 +50,9 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
     if (!disposed) el.status.textContent = `${error.code ?? "BOOK_ERROR"}: ${error.message ?? "Operation failed."} Source remains in this workbench.`;
   }
   function list() {
-    const selected = active;
+    const selected = active; let chapterNumber = 0;
     el.chapters.replaceChildren(...collection.files.map((file, index) => {
-      const item = root.createElement("option"); item.value = String(index); item.textContent = `${index + 1}. ${file.path}`; return item;
+      const item = root.createElement("option"); item.value = String(index); item.textContent = file.role === "include" ? `[include] ${file.path}` : `${++chapterNumber}. ${file.path}`; return item;
     }));
     el.chapters.value = String(selected);
     el["image-list"].textContent = collection.images.map(image => `${image.destination} (${image.size} bytes)`).join("\n") || "No images authorized.";
@@ -58,6 +60,7 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   }
   function showChapter() {
     const file = collection.files[active];
+    el["source-role"].value = file?.role ?? "chapter";
     el["chapter-path"].value = file?.path ?? ""; el["chapter-source"].value = file?.source ?? ""; list();
   }
   function showOptions() {
@@ -67,7 +70,10 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   }
   function capture(configure = true) {
     alive();
-    if (collection.files.length) collection.edit(active, el["chapter-path"].value, el["chapter-source"].value);
+    if (collection.files.length) {
+      collection.edit(active, el["chapter-path"].value, el["chapter-source"].value);
+      collection.setRole(active, el["source-role"].value);
+    }
     const next = options();
     if (configure && JSON.stringify(next) !== JSON.stringify(collection.options)) collection.configure(next);
   }
@@ -115,11 +121,12 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
         fence(); if (approved !== true) return false;
         collection.replaceProject(project); active = 0; showOptions(); showChapter();
         onProjectReplaced();
-        el.status.textContent = "Source project reopened. Chapter order and source are restored; reauthorize its image files before exporting.";
+        el.status.textContent = "Source project reopened. Source roles, chapter order and text are restored; reauthorize its image files before exporting.";
       } else {
-        const batch = await readBookFiles(files, { folder: mode === "folder" }); fence();
-        if (batch.chapters.length || batch.images.length) collection.append(batch);
-        showChapter(); el.status.textContent = `Imported ${batch.chapters.length} chapters and ${batch.images.length} images; ignored ${batch.ignored} other files. Check chapter order and relative paths before publishing.`;
+        const batch = await readBookFiles(files, { folder: mode === "folder" || mode === "include-folder",
+          role: mode === "includes" || mode === "include-folder" ? "include" : "chapter" }); fence();
+        if (batch.chapters.length || batch.includeSources?.length || batch.images.length) collection.append(batch);
+        showChapter(); el.status.textContent = `Imported ${batch.chapters.length} chapters, ${batch.includeSources?.length ?? 0} include-only sources and ${batch.images.length} images; ignored ${batch.ignored} other files. Check chapter order and relative paths before publishing.`;
       }
       return true;
     } finally { reading = false; if (!disposed) buttons(); }
@@ -130,6 +137,11 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   on("chapter-source", "compositionstart", () => { composing = true; buttons(); });
   on("chapter-source", "compositionend", () => { composing = false; buttons(); });
   on("chapter-source", "input", () => invoke(capture)); on("chapter-path", "input", () => invoke(capture));
+  on("source-role", "change", () => invoke(() => {
+    invalidate();
+    try { capture(); }
+    finally { el["source-role"].value = collection.files[active]?.role ?? "chapter"; }
+  }));
   for (const key of ["title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers"]) {
     on(key, key === "toc" || key === "page-numbers" || key === "font" || key === "dark-mode" ? "change" : "input", () => { invalidate(); invoke(capture); });
   }
@@ -140,15 +152,21 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
     collection.append({ chapters: [{ path: `chapter-${n}.md`, source: `# Chapter ${n}\n\n` }], images: [] });
     active = collection.files.length - 1; showChapter();
   }));
+  on("add-include", "click", () => invoke(() => {
+    capture(); const used = new Set(collection.files.map(file => file.path)); let n = 1;
+    while (used.has(`include-${n}.md`)) n++;
+    collection.append({ chapters: [], images: [], includeSources: [{ path: `include-${n}.md`, source: "" }] });
+    active = collection.files.length - 1; showChapter();
+  }));
   for (const [id, delta] of [["move-up", -1], ["move-down", 1]]) on(id, "click", () => invoke(() => { capture(); active = collection.move(active, delta); showChapter(); }));
   on("remove-chapter", "click", () => invoke(async () => {
     capture(); const revision = collection.revision, view = signature(), index = active;
-    if (await confirm("Remove this chapter from the collection? Save its Markdown first to keep edits.") !== true) return;
-    if (disposed || revision !== collection.revision || view !== signature()) throw bookError("STALE_SOURCE", "The chapter changed during confirmation; it was not removed.");
+    if (await confirm("Remove this source from the collection? Download it first to keep edits. Includes that refer to it may stop resolving.") !== true) return;
+    if (disposed || revision !== collection.revision || view !== signature()) throw bookError("STALE_SOURCE", "The source changed during confirmation; it was not removed.");
     collection.remove(index); active = Math.max(0, Math.min(index, collection.files.length - 1)); showChapter();
   }));
   on("revoke-images", "click", () => invoke(() => { collection.revokeImages(); el.status.textContent = "All image access revoked and prepared exports invalidated."; }));
-  for (const [id, mode] of [["import-files", "files"], ["import-folder", "folder"], ["open-project", "project"]]) on(id, "change", () => {
+  for (const [id, mode] of [["import-files", "files"], ["import-folder", "folder"], ["import-includes", "includes"], ["import-include-folder", "include-folder"], ["open-project", "project"]]) on(id, "change", () => {
     const files = Array.from(el[id].files ?? []); if (!files.length) return;
     invoke(async () => { try { await importFiles(files, mode); } finally { el[id].value = ""; } });
   });

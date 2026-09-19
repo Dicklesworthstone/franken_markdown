@@ -17,7 +17,7 @@ export function createBookInspectionControls({ root, controls, collection, worke
   function alive() { if (disposed || suspended) throw fail('INSPECTION_CLOSED', 'Inspection is not active.'); }
   function buttons() {
     const blocked = disposed || suspended || controls.sourceBusy;
-    el['inspection-run'].disabled = blocked || busy || !collection.files.length;
+    el['inspection-run'].disabled = blocked || busy || !collection.files.some(file => file.role !== "include");
     el['inspection-cancel'].disabled = disposed || suspended || (!busy && !report);
     for (const key of ['inspection-chapters', 'inspection-source', 'inspection-filter', 'inspection-save']) el[key].disabled = blocked || !report;
     el['inspection-previous'].disabled = blocked || !report || page === 0;
@@ -56,7 +56,13 @@ export function createBookInspectionControls({ root, controls, collection, worke
   }
   function paragraph(parent, text) { const p = root.createElement('p'); p.textContent = text; parent.append(p); }
   function openSource() {
-    current(); controls.selectSourceRange(selected, 0, 0, stamp);
+    current();
+    // Inspection indices count published chapters; editor indices also include
+    // resources. Bind navigation by the validated chapter identity instead.
+    const path = report.chapters[selected].path;
+    const index = collection.files.findIndex(file => file.role !== "include" && file.path === path);
+    if (index < 0) throw fail('STALE_INSPECTION', 'The inspected chapter is no longer in this book.');
+    controls.selectSourceRange(index, 0, 0, stamp);
     // Navigating the active chapter changes the host checkpoint, not source.
     stamp = controls.checkpoint();
     el['inspection-status'].textContent = `Opened ${report.chapters[selected].path}. Findings have chapter scope; the engine does not provide exact source spans for these checks.`;
@@ -103,16 +109,18 @@ export function createBookInspectionControls({ root, controls, collection, worke
     try {
       alive(); if (controls.sourceBusy) throw fail('BOOK_BUSY', 'Finish importing or composing text before inspection.');
       retire(); const project = controls.captureProject(), captured = controls.checkpoint();
+      const files = project.files.filter(file => file.role !== "include");
+      if (!files.length) throw fail('EMPTY_BOOK', 'Add a published chapter before running chapter inspection.');
       ticket = ++generation; busy = true; buttons();
       el['inspection-status'].textContent = 'Running Rust source-structure and accessibility checks in a separate worker. Cancel remains available; no export is being created.';
       // No image bytes, font grants, or publication settings cross this route:
       // the current engine audit is source-only with default PDF options.
-      const result = await worker.render(project.files, 'inspection');
+      const result = await worker.render(files, 'inspection');
       const fence = () => {
         if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint()) throw fail('STALE_INSPECTION', 'The book changed while inspection was running.');
       };
       fence(); if (result.format !== 'book-inspection') throw fail('INVALID_INSPECTION', 'The worker returned a different result type.');
-      const checked = await readBookInspection(result.bytes, project.files); fence();
+      const checked = await readBookInspection(result.bytes, files); fence();
       report = checked; stamp = captured; busy = false; page = 0; overview();
       el['inspection-status'].textContent = 'Inspection finished. Review each chapter and any failed checks. Source findings do not validate transclusion-expanded book links, authorized images, or final PDF/EPUB conformance.';
       return structuredClone(report);
@@ -129,7 +137,7 @@ export function createBookInspectionControls({ root, controls, collection, worke
   function on(element, type, listener) { element.addEventListener(type, listener); listeners.push(() => element.removeEventListener(type, listener)); }
   const unsubscribe = collection.subscribe(changed);
   const unsubscribeState = controls.subscribeSourceState(() => { if (controls.sourceBusy) changed(); else buttons(); });
-  for (const id of ['chapter-source', 'chapter-path', 'chapters', 'title', 'author', 'lang', 'font', 'dark-mode', 'font-scale', 'toc', 'page-numbers']) {
+  for (const id of ['source-role', 'chapter-source', 'chapter-path', 'chapters', 'title', 'author', 'lang', 'font', 'dark-mode', 'font-scale', 'toc', 'page-numbers']) {
     const input = root.querySelector(`#${id}`); on(input, 'input', changed); on(input, 'change', changed);
   }
   on(el['inspection-run'], 'click', () => { void run().catch(() => {}); });
@@ -174,7 +182,7 @@ export function createBookInspectionPanel(root) {
   ].map(([value, label]) => node('option', { value }, label)));
   const panel = node('section', { id: 'inspection-panel', 'aria-labelledby': 'inspection-title' },
     node('h2', { id: 'inspection-title' }, 'Inspect source quality and accessibility'),
-    node('p', { id: 'inspection-help' }, 'Run the Rust engine’s structural analysis and authoring-time accessibility checks on every original chapter. This does not validate transclusion-expanded book links, image grants, or final publication conformance. Checks are manual and do not block exporting.'),
+    node('p', { id: 'inspection-help' }, 'Run the Rust engine’s structural analysis and authoring-time accessibility checks on every original published chapter. Include-only sources are excluded from these chapter-scoped checks. This does not validate transclusion-expanded book links, image grants, or final publication conformance. Checks are manual and do not block exporting.'),
     node('p', {}, button('inspection-run', 'Inspect all source chapters', false), button('inspection-cancel', 'Cancel and clear inspection')),
     node('p', { id: 'inspection-status', role: 'status' }, 'Add chapters, then run inspection before publishing. Source is never uploaded.'),
     node('p', { id: 'inspection-summary', 'aria-live': 'polite' }),

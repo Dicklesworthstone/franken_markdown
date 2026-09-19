@@ -88,7 +88,7 @@ export function planBookReplacement(search, replacement, matchIndex = null) {
     for (const match of edits) { parts.push(file.source.slice(at, match.start), insert); at = match.end; }
     parts.push(file.source.slice(at));
     chapters.push(Object.freeze({ index, path: file.path, count: edits.length, beforeBytes: oldBytes, afterBytes: newBytes }));
-    return { path: file.path, source: parts.join("") };
+    return { ...file, source: parts.join("") };
   });
   return Object.freeze({ count, beforeBytes, afterBytes, chapters: Object.freeze(chapters),
     before: search.files, after: freezeFiles(files) });

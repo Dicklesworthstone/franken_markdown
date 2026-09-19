@@ -47,7 +47,7 @@ test("temporarily invalid typed source is retained, with all publication paths r
 });
 test("invalid or authority-bearing projects leave the existing collection untouched", () => {
   const book = createBookCollection(); append(book); const revision = book.revision;
-  for (const project of [{}, { schemaVersion: 2, files: [] }, { schemaVersion: 1, files: [chapter()], options: { images: [] } },
+  for (const project of [{}, { schemaVersion: 3, files: [] }, { schemaVersion: 1, files: [chapter()], options: { images: [] } },
     { schemaVersion: 1, files: [chapter(), chapter()] }, { schemaVersion: 1, files: [chapter("../a.md")] }]) assert.throws(() => book.replaceProject(project));
   assert.equal(book.revision, revision); assert.deepEqual(book.files, [chapter()]);
 });

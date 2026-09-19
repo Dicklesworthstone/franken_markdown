@@ -6,6 +6,7 @@ import { createLocalImageSources } from "./local_image_sources.mjs";
 import { readFlowDocument } from "../flow-reader.js";
 import { createReadingControls } from "./flow_reading_controls.mjs";
 import { createExportControls } from "./flow_export_controls.mjs";
+import { createRenderSettingsControls } from "./flow_render_settings.mjs";
 
 const source = document.querySelector("#source"), viewport = document.querySelector("#viewport");
 const canvas = document.querySelector("#preview"), extent = document.querySelector("#extent");
@@ -15,11 +16,26 @@ const files = document.querySelector("#images"), imageStatus = document.querySel
 const insertImages = document.querySelector("#insert-images"), clearImages = document.querySelector("#clear-images");
 let controller = null, painter = null, scheduled = 0, localSources = createLocalImageSources([]), readingControls = null, exportControls = null;
 
+let settingsControls = null, retainedSettings = undefined;
+
 function start() {
+  if (settingsControls) retainedSettings = settingsControls.settings.values;
+  settingsControls?.dispose();
   readingControls?.dispose(); exportControls?.dispose();
+  settingsControls = createRenderSettingsControls({ root: document, sourceEditor: source, initial: retainedSettings,
+    onInvalidate: () => exportControls?.invalidate("Settings fields changed; apply or discard them before exporting."),
+    onApply(next) {
+      exportControls?.invalidate("Typography or publishing settings changed; prepare a fresh export.");
+      // Admit immediately, not at the next animation frame: an export click
+      // between Apply and reflow must not use the previous font or metrics.
+      updateNow(next.preview);
+    }
+  });
+  retainedSettings = undefined;
   exportControls = createExportControls({ html: document.querySelector("#export-html"), pdf: document.querySelector("#export-pdf"),
     download: document.querySelector("#export-download"), status: document.querySelector("#export-status"), sourceEditor: source,
-    exportDocument: (format, options, currentSource) => controller.exportDocument(format, options, currentSource)
+    exportDocument: (format, options, currentSource) => controller.exportDocument(format, options, currentSource),
+    readOptions: format => settingsControls.exportOptions(format)
   });
   readingControls = createReadingControls({ root: reading, panel: document.querySelector("#reader-panel"),
     query: document.querySelector("#find-text"), insensitive: document.querySelector("#find-insensitive"),
@@ -49,16 +65,17 @@ function start() {
   } });
   update();
 }
+function updateNow(preview = settingsControls.settings.preview) {
+  if (!controller || controller.disposed) return;
+  const width = Math.max(40, viewport.clientWidth), height = Math.max(40, viewport.clientHeight);
+  canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
+  try { controller.update({ source: source.value, width, height, scrollY: viewport.scrollTop, ...preview,
+    pixelRatio: Math.min(8, Math.max(1, window.devicePixelRatio || 1)) }); }
+  catch (error) { status.textContent = `${error.code ?? "PREVIEW_ERROR"}: ${error.message} Source retained.`; }
+}
 function update() {
   if (!controller || controller.disposed || scheduled) return;
-  scheduled = requestAnimationFrame(() => {
-    scheduled = 0;
-    const width = Math.max(40, viewport.clientWidth), height = Math.max(40, viewport.clientHeight);
-    canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
-    try { controller.update({ source: source.value, width, height, scrollY: viewport.scrollTop,
-      pixelRatio: Math.min(8, Math.max(1, window.devicePixelRatio || 1)) }); }
-    catch (error) { status.textContent = `${error.code ?? "PREVIEW_ERROR"}: ${error.message} Source retained.`; }
-  });
+  scheduled = requestAnimationFrame(() => { scheduled = 0; updateNow(); });
 }
 function changeImages(next) {
   // Change the grant only after admission succeeds. Restart clears published
@@ -110,6 +127,9 @@ canvas.addEventListener("click", async event => {
       : hit.hit ? `Item ${hit.hit.itemIndex}; selection offsets are fragment-local, not original Markdown.` : "No text or link at this point.";
   } catch (error) { link.textContent = `${error.code ?? "HIT_ERROR"}: ${error.message}`; }
 });
-window.addEventListener("pagehide", () => { controller?.dispose(); readingControls?.dispose(); exportControls?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
+window.addEventListener("pagehide", event => {
+  retainedSettings = event.persisted ? settingsControls?.settings.values : undefined;
+  settingsControls?.dispose(); settingsControls = null;
+  controller?.dispose(); readingControls?.dispose(); exportControls?.dispose(); if (scheduled) cancelAnimationFrame(scheduled); scheduled = 0; observer.disconnect(); });
 window.addEventListener("pageshow", event => { if (event.persisted) { observer.observe(viewport); start(); } });
 start();

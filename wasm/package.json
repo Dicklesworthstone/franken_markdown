@@ -154,6 +154,8 @@
     "INSPECTION.md",
     "demo/flow_file_session.mjs",
     "demo/flow_file_controls.mjs",
-    "FILES.md"
+    "FILES.md",
+    "demo/flow_render_settings.mjs",
+    "SETTINGS.md"
   ]
 }

@@ -2,6 +2,7 @@
 // URL; no synthetic click, auto-save, remote navigation, or innerHTML is used.
 import { FlowError } from "../flow_session.mjs";
 import { normalizeFlowExport, validateFlowExportResult } from "../flow_export.mjs";
+const sameOptions = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(key => a[key] === b[key]);
 const same = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.layoutRevision;
 export function createExportControls({ html, pdf, download, status, sourceEditor, exportDocument, urls = URL,
   readOptions = format => format === "pdf" ? { pageNumbers: true, metadataEpochSeconds: 0 } : {} }) {
@@ -31,11 +32,13 @@ export function createExportControls({ html, pdf, download, status, sourceEditor
       if (disposed || epoch !== ticket || sourceEditor.value !== source || !same(expected, state?.frame)) {
         throw new FlowError("STALE_REVISION", "document changed before download publication");
       }
-      validateFlowExportResult(result, expected);
+      const [, currentOptions] = normalizeFlowExport(format, readOptions(format), expected);
+      if (!sameOptions(options, currentOptions)) throw new FlowError("STALE_OPTIONS", "publishing settings changed during export");
+      validateFlowExportResult(result, expected, options.maxOutputBytes);
       if (result.format !== format) throw new FlowError("INVALID_WASM_RESPONSE", "unexpected export format");
       const blob = new Blob([result.bytes], { type: result.mimeType });
       url = urls.createObjectURL(blob);
-      published = { source, token: expected, epoch: ticket };
+      published = { source, token: expected, epoch: ticket, format, options };
       download.href = url; download.download = `document.${format}`;
       download.textContent = `Download ${format.toUpperCase()} (${result.bytes.length.toLocaleString()} bytes)`;
       download.hidden = false;
@@ -54,6 +57,13 @@ export function createExportControls({ html, pdf, download, status, sourceEditor
     if (disposed || !published || published.epoch !== epoch || sourceEditor.value !== published.source
         || !same(published.token, state?.frame) || ["idle", "disposed", "error"].includes(state?.status)) {
       event.preventDefault(); invalidate("The prepared download is stale; prepare it again.");
+      return;
+    }
+    try {
+      const [, options] = normalizeFlowExport(published.format, readOptions(published.format), published.token);
+      if (!sameOptions(options, published.options)) throw new FlowError("STALE_OPTIONS", "publishing settings changed");
+    } catch {
+      event.preventDefault(); invalidate("Publishing settings changed or are unapplied; prepare a fresh export.");
     }
   };
   html.addEventListener("click", onHtml); pdf.addEventListener("click", onPdf);

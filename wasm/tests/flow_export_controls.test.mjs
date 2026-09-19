@@ -87,7 +87,7 @@ test("applied publishing options are captured and frozen before renderer work", 
   assert.equal(f.calls[0].options.title, "Current title"); assert.equal(f.calls[0].options.baseFontSize, 13);
   assert.equal(f.calls[0].options.pageNumbers, false); assert.equal(Object.isFrozen(f.calls[0].options), true);
   assert.equal(f.calls[0].options.metadataEpochSeconds, 0);
-  hold.resolve(); await tick(); assert.equal(f.created.length, 1);
+  hold.resolve(); await tick(); assert.equal(f.created.length, 0); assert.match(f.status.textContent, /STALE_OPTIONS/);
 });
 test("HTML receives its own options, not PDF-only typography", async t => {
   const f = fixture(format => format === "html" ? { darkMode: "disabled", title: "HTML title" } : { author: "PDF author", baseFontSize: 12 });
@@ -108,4 +108,14 @@ test("applying new settings revokes prepared downloads and rejects older pending
   assert.equal(f.download.hidden, true); assert.equal(f.revoked.length, 1);
   const hold = gate(); f.hold(hold); f.pdf.click(); f.controls.invalidate("New settings applied."); hold.resolve(); await tick();
   assert.equal(f.created.length, 1); assert.equal(f.status.textContent, "New settings applied.");
+});
+test("download click catches publishing settings changes even without explicit invalidation", async t => {
+  let title = "First"; const f = fixture(() => ({ title })); t.after(() => f.controls.dispose());
+  f.pdf.click(); await tick(); assert.equal(f.download.hidden, false); title = "Second";
+  assert.equal(f.download.click().defaultPrevented, true); assert.equal(f.download.hidden, true); assert.equal(f.revoked.length, 1);
+});
+test("unapplied settings appearing during preparation suppress download publication", async t => {
+  let pending = false; const f = fixture(() => { if (pending) throw new Error("unapplied"); return {}; }); t.after(() => f.controls.dispose());
+  const hold = gate(); f.hold(hold); f.pdf.click(); pending = true; hold.resolve(); await tick();
+  assert.equal(f.created.length, 0); assert.equal(f.download.hidden, true);
 });

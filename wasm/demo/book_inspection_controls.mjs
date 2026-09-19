@@ -1,3 +1,4 @@
+import { parseBookLinkReport } from '../book_session.mjs';
 import { readBookInspection, inspectionDownload } from '../book_inspection.mjs';
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const PAGE_SIZE = 50;
@@ -198,6 +199,172 @@ export function createBookInspectionPanel(root) {
     node('p', {}, node('a', { id: 'inspection-download', hidden: '' }, 'Download inspection report')),
     node('p', {}, 'Reports contain filenames, fingerprints, headings and finding text. Review them before sharing. Edits retire reports and downloads. Exact finding spans are unavailable; navigation opens the source chapter. ',
       node('a', { href: '../INSPECTION.md' }, 'Inspection scope and limits')));
+  const publish = root.querySelector('[aria-labelledby="publish-title"]');
+  if (publish) publish.before(panel); else root.body.append(panel);
+  return panel;
+}
+
+/** Expanded navigation preflight. Independent from source lint and publication:
+ * one dedicated worker, explicit runs, no asset grants, no automatic repairs. */
+export function createBookLinkControls({ root, controls, collection, worker, urls = URL }) {
+  const ids = ['links-run', 'links-cancel', 'links-summary', 'links-status', 'links-findings',
+    'links-count', 'links-previous', 'links-next', 'links-save', 'links-download'];
+  const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${id}`)]));
+  if (Object.values(el).some(value => !value)) throw new Error('Missing book link controls.');
+  let disposed = false, suspended = false, busy = false, generation = 0;
+  let report = null, stamp = null, rows = [], page = 0, url = null;
+  const listeners = [];
+  function alive() { if (disposed || suspended) throw fail('LINK_CHECK_CLOSED', 'Book link checking is not active.'); }
+  function buttons() {
+    const blocked = disposed || suspended || controls.sourceBusy;
+    el['links-run'].disabled = blocked || busy || !collection.files.some(file => file.role !== 'include');
+    el['links-cancel'].disabled = disposed || suspended || (!busy && !report);
+    el['links-save'].disabled = blocked || !report;
+    el['links-previous'].disabled = blocked || !report || page === 0;
+    el['links-next'].disabled = blocked || !report || (page + 1) * PAGE_SIZE >= rows.length;
+  }
+  function revoke() {
+    el['links-download'].hidden = true;
+    el['links-download'].removeAttribute('href'); el['links-download'].removeAttribute('download');
+    if (url !== null) { const previous = url; url = null; urls.revokeObjectURL(previous); }
+  }
+  function retire() {
+    generation++; worker.cancel(); busy = false; report = null; stamp = null; rows = []; page = 0;
+    revoke(); el['links-findings'].replaceChildren(); el['links-summary'].textContent = ''; el['links-count'].textContent = '';
+  }
+  function error(value) {
+    if (!disposed) el['links-status'].textContent = `${value?.code ?? 'LINK_CHECK_FAILED'}: ${value?.message ?? 'Link checking failed.'} No clean result was issued. Source and publication exports are unchanged.`;
+  }
+  function current() {
+    alive();
+    if (!report || stamp !== controls.checkpoint()) {
+      retire(); buttons(); throw fail('STALE_LINK_CHECK', 'Source or editor state changed. Check the current book again.');
+    }
+    if (controls.sourceBusy) throw fail('BOOK_BUSY', 'Finish importing or composing text before using link results.');
+  }
+  function open(path) {
+    current();
+    if (!report.chapters.some(chapter => chapter.path === path)) throw fail('INVALID_SELECTION', 'Choose a reported chapter.');
+    const index = collection.files.findIndex(file => file.role !== 'include' && file.path === path);
+    if (index < 0) throw fail('STALE_LINK_CHECK', 'The publishing chapter is no longer in this book.');
+    controls.selectSourceRange(index, 0, 0, stamp); stamp = controls.checkpoint();
+    el['links-status'].textContent = `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
+  }
+  function invoke(fn) { try { fn(); } catch (value) { error(value); } }
+  function show() {
+    el['links-findings'].replaceChildren();
+    if (!report) { buttons(); return; }
+    for (const { path, finding } of rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
+      const row = root.createElement('li'), label = root.createElement('p');
+      label.textContent = `${path} — ${finding.code}: ${finding.message}`;
+      const destination = root.createElement('pre'); destination.textContent = finding.destination;
+      // Never turn a reported destination into a clickable URL or parsed HTML.
+      const button = root.createElement('button'); button.type = 'button'; button.textContent = 'Open publishing chapter';
+      const snapshot = report;
+      button.addEventListener('click', () => invoke(() => {
+        if (report !== snapshot) throw fail('STALE_LINK_CHECK', 'This result belongs to an older check.');
+        open(path);
+      }));
+      row.append(label, destination, button); el['links-findings'].append(row);
+    }
+    el['links-count'].textContent = rows.length
+      ? `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, rows.length)} of ${rows.length} navigation findings.`
+      : 'No broken local chapter or anchor references were reported by this check.';
+    const s = report.summary;
+    el['links-summary'].textContent = `${s.findings} findings in ${s.chapters} expanded chapters; ${s.checked} local link and footnote-reference checks. ${s.external} external URLs and ${s.unchecked} other local resources were NOT verified. Images, raw HTML IDs, and PDF/EPUB conformance are outside this check.`;
+    buttons();
+  }
+  async function run() {
+    let ticket = null;
+    try {
+      alive(); if (controls.sourceBusy) throw fail('BOOK_BUSY', 'Finish importing or composing text before checking links.');
+      retire();
+      const project = controls.captureProject(), captured = controls.checkpoint();
+      const files = [], includeSources = [];
+      for (const file of project.files) {
+        (file.role === 'include' ? includeSources : files).push({ path: file.path, source: file.source });
+      }
+      if (!files.length) throw fail('EMPTY_BOOK', 'Add a published chapter before checking book links.');
+      ticket = ++generation; busy = true; buttons();
+      el['links-status'].textContent = 'Expanding selected sources and checking local chapter navigation in a separate worker. No images, fonts or URLs are loaded.';
+      const result = await worker.render(files, 'links', { includeSources });
+      if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint()) {
+        throw fail('STALE_LINK_CHECK', 'The book changed while its links were being checked.');
+      }
+      if (result.format !== 'book-links') throw fail('INVALID_LINK_REPORT', 'The worker returned a different result type.');
+      report = parseBookLinkReport(result.bytes, files.map(file => file.path)); stamp = captured; busy = false;
+      rows = report.chapters.flatMap(chapter => chapter.findings.map(finding => ({ path: chapter.path, finding })));
+      page = 0; show();
+      el['links-status'].textContent = 'Link checking finished. Review the findings and unchecked categories before publishing. This is not a final-format conformance verdict.';
+      return report;
+    } catch (value) {
+      if (!disposed && (ticket === null || ticket === generation)) { retire(); error(value); buttons(); }
+      throw value;
+    } finally { if (!disposed && ticket === generation) { busy = false; buttons(); } }
+  }
+  function changed() {
+    if (disposed) return;
+    retire(); buttons(); el['links-status'].textContent = 'Book or editor state changed. The previous link check and its download were retired.';
+  }
+  function save() {
+    current(); revoke();
+    const blob = new Blob([JSON.stringify(report) + '\n'], { type: 'application/json' });
+    url = urls.createObjectURL(blob); el['links-download'].href = url;
+    el['links-download'].download = 'book-links.json'; el['links-download'].hidden = false;
+    el['links-status'].textContent = 'Report prepared. Click Download link report to save it. It contains chapter names and destinations, which may be sensitive; review it before sharing.';
+  }
+  function on(element, type, handler) {
+    element.addEventListener(type, handler); listeners.push(() => element.removeEventListener(type, handler));
+  }
+  const unsubscribe = collection.subscribe(changed);
+  const unsubscribeState = controls.subscribeSourceState(() => { if (controls.sourceBusy) changed(); else buttons(); });
+  for (const id of ['source-role', 'chapter-source', 'chapter-path', 'chapters', 'title', 'author', 'lang', 'font', 'dark-mode', 'font-scale', 'toc', 'page-numbers']) {
+    const element = root.querySelector(`#${id}`);
+    if (element) { on(element, 'input', changed); on(element, 'change', changed); }
+  }
+  on(el['links-run'], 'click', () => { void run().catch(() => {}); });
+  on(el['links-cancel'], 'click', () => { retire(); buttons(); el['links-status'].textContent = 'Link check cancelled and cleared. Source and publication exports are unchanged.'; });
+  for (const [id, delta] of [['links-previous', -1], ['links-next', 1]]) on(el[id], 'click', () => invoke(() => {
+    current(); const next = page + delta;
+    if (next >= 0 && next * PAGE_SIZE < rows.length) { page = next; show(); }
+  }));
+  on(el['links-save'], 'click', () => invoke(save));
+  on(el['links-download'], 'click', event => {
+    try { current(); if (!url) throw fail('STALE_LINK_CHECK', 'Prepare the report again.'); }
+    catch (value) { event.preventDefault(); error(value); }
+  });
+  retire(); buttons();
+  return Object.freeze({ run, open, save,
+    suspend() { if (disposed) return; suspended = true; retire(); buttons(); },
+    resume() { if (disposed) return; suspended = false; buttons(); },
+    dispose() {
+      if (disposed) return; disposed = true; retire(); unsubscribe(); unsubscribeState();
+      for (const remove of listeners) remove(); worker.dispose();
+    }
+  });
+}
+
+/** A separate preflight surface; does not replace or gate publication or lint. */
+export function createBookLinkPanel(root) {
+  if (root.querySelector('#links-panel')) throw new Error('Book link panel already exists.');
+  function node(tag, attributes, ...children) {
+    const element = root.createElement(tag);
+    for (const [key, value] of Object.entries(attributes ?? {})) element.setAttribute(key, value);
+    for (const child of children) element.append(typeof child === 'string' ? root.createTextNode(child) : child);
+    return element;
+  }
+  const button = (id, label, disabled = true) => node('button', { id, type: 'button', ...(disabled ? { disabled: '' } : {}) }, label);
+  const panel = node('section', { id: 'links-panel', 'aria-labelledby': 'links-title' },
+    node('h2', { id: 'links-title' }, 'Check expanded book links'),
+    node('p', {}, 'Check local chapter links and heading/footnote anchors after Rust expands the selected include sources. Missing includes, cycles, and budget failures stop the check rather than producing a partial clean report. No network requests or asset loading occur.'),
+    node('p', {}, button('links-run', 'Check expanded book links', false), button('links-cancel', 'Cancel and clear link check')),
+    node('p', { id: 'links-status', role: 'status' }, 'Run this check before publishing. It does not change your source or create an export.'),
+    node('p', { id: 'links-summary', 'aria-live': 'polite' }),
+    node('p', { id: 'links-count' }), node('ol', { id: 'links-findings' }),
+    node('p', {}, button('links-previous', 'Previous 50 findings'), button('links-next', 'Next 50 findings')),
+    node('p', {}, button('links-save', 'Prepare link report')),
+    node('p', {}, node('a', { id: 'links-download', hidden: '' }, 'Download link report')),
+    node('p', {}, 'Scope: safe HTML navigation from the expanded AST. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Findings identify publishing chapters, not exact original-source locations. Report destinations may contain sensitive information.'));
   const publish = root.querySelector('[aria-labelledby="publish-title"]');
   if (publish) publish.before(panel); else root.body.append(panel);
   return panel;

@@ -98,6 +98,9 @@ function normalizeOptions(value) {
       Math.fround(fontScale) <= 0)) {
     throw new RangeError("fontScale must be a finite, positive f32-representable number");
   }
+  const expandIncludes = options.expandIncludes;
+  const expansion = expandIncludes === undefined ? true : boolean(expandIncludes, "expandIncludes");
+  const includeSources = options.includeSources ?? [];
   const images = options.images ?? [];
   const fonts = options.fontAssets ?? [];
   if (!Array.isArray(images) || images.length > MAX_CHAPTERS) {
@@ -117,36 +120,34 @@ function normalizeOptions(value) {
     customCss: optionalString(options.customCss, "customCss"),
     toc: boolean(options.toc, "toc"),
     pageNumbers: boolean(options.pageNumbers, "pageNumbers"),
-    font, darkMode, fontScale,
+    font, darkMode, fontScale, expandIncludes: expansion, includeSources,
     images: normalizedImages,
     fontAssets: fonts.map(fontAsset)
   };
 }
 
-function normalizeFiles(files) {
-  if (!Array.isArray(files) || files.length === 0 || files.length > MAX_CHAPTERS) {
-    throw new RangeError("files must contain 1 through 4096 book chapters");
+function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = MAX_SOURCE_BYTES) {
+  if (!Array.isArray(files) || files.length < minimum || files.length > maxCount) {
+    throw new RangeError("book needs at least one chapter and at most 4096 chapter/include sources combined");
   }
-  const paths = [];
-  const sources = [];
+  const paths = [], sources = [];
   let total = 0;
   for (const file of files) {
-    record(file, "chapter");
-    if (typeof file.path !== "string" || typeof file.source !== "string") {
-      throw new TypeError("each chapter needs string path and source fields");
+    record(file, "book source");
+    // Capture getters once: the validated strings are the strings sent to Rust.
+    const path = file.path, source = file.source;
+    if (typeof path !== "string" || typeof source !== "string") {
+      throw new TypeError("each book source needs string path and source fields");
     }
-    for (const text of [file.path, file.source]) {
-      // Reject obvious over-budget input before allocating UTF-8 copies.
-      if (text.length > MAX_SOURCE_BYTES - total) {
-        throw new RangeError("book source text and paths exceed 64 MiB");
+    for (const text of [path, source]) {
+      if (text.length > maxBytes - total) {
+        throw new RangeError("book source text and paths exceed 64 MiB combined");
       }
-      total += bookTextBytes(text, MAX_SOURCE_BYTES - total);
-      if (total > MAX_SOURCE_BYTES) throw new RangeError("book source text and paths exceed 64 MiB");
+      total += bookTextBytes(text, maxBytes - total);
     }
-    paths.push(file.path);
-    sources.push(file.source);
+    paths.push(path); sources.push(source);
   }
-  return { paths, sources };
+  return { paths, sources, total };
 }
 
 /** Capture host inputs before any asynchronous initialization or transfer.
@@ -155,6 +156,12 @@ function normalizeFiles(files) {
  */
 export function prepareBookInput(files, options = {}) {
   const normalized = normalizeFiles(files), settings = normalizeOptions(options);
+  const resources = normalizeFiles(settings.includeSources, 0,
+    MAX_CHAPTERS - normalized.paths.length, MAX_SOURCE_BYTES - normalized.total);
+  if (!settings.expandIncludes && resources.paths.length) {
+    throw new TypeError("includeSources requires expandIncludes; remove resources or enable expansion");
+  }
+  settings.includeSources = resources.paths.map((path, i) => ({ path, source: resources.sources[i] }));
   settings.images = settings.images.map(image => ({ ...image, bytes: image.bytes.slice() }));
   settings.fontAssets = settings.fontAssets.map(font => ({ ...font, bytes: font.bytes.slice() }));
   return { files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })), options: settings };
@@ -224,7 +231,28 @@ export function createBookBindings(loadBookClass) {
     if (typeof BookClass !== "function") {
       throw new Error("this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source");
     }
-    const raw = new BookClass(normalized.paths, normalized.sources);
+    // This is a capability gate, not an include parser. Rust alone decides
+    // whether a marker is an active directive, a selector, or a code example.
+    const expand = settings.expandIncludes && (settings.includeSources.length > 0
+      || normalized.sources.some(source => source.includes("{{#include")));
+    let raw;
+    try {
+      if (expand) {
+        if (typeof BookClass.fromSources !== "function") {
+          throw new Error("this WASM build lacks FmdBook.fromSources; rebuild the matching package for book includes");
+        }
+        raw = BookClass.fromSources(normalized.paths, normalized.sources,
+          settings.includeSources.map(file => file.path), settings.includeSources.map(file => file.source));
+      } else {
+        raw = new BookClass(normalized.paths, normalized.sources);
+      }
+    } catch (error) {
+      // wasm-bindgen may throw plain Rust strings. Preserve a bounded reason
+      // across worker diagnostics instead of reducing missing/cyclic includes
+      // to an unhelpful generic rendering failure.
+      if (typeof error === "string") throw new Error(error.slice(0, 2048));
+      throw error;
+    }
     try {
       raw.setMetadata(settings.title, settings.author, settings.lang);
       raw.setCustomCss(settings.customCss);

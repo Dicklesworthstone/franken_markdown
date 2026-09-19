@@ -94,12 +94,77 @@ is capped at 128 MiB; `maxOutputBytes` may lower that ceiling. This is an output
 admission limit, **not a bound on the Rust renderer's temporary heap**. Native
 book ingress limits remain separate from the smaller workbench limits.
 
+## Shared snippets and include-only sources
+
+The book facade expands `{{#include relative/path.md}}` directives through the
+existing Rust transclusion engine before parsing. This applies to `createBook`,
+the one-shot PDF/EPUB/site helpers, and worker exports and previews. Chapters can
+include other selected chapters. Missing files are errors, never network or
+filesystem requests. Rebuild the matching Rust/WASM package to use this feature;
+an older `FmdBook` without `fromSources` refuses expansion rather than silently
+publishing literal directives. Books without directives or extra sources retain
+the original constructor path.
+
+For reusable fragments that must **not** become chapters, supply `includeSources`
+in `BookOptions`. The source strings may contain arbitrary UTF-8 text, including
+code snippets in `.txt` or `.rs` files. They are not image/font authorizations.
+
+```js
+import { createBookWorker } from "@franken-suite/franken-markdown/book-worker";
+const publisher = createBookWorker();
+try {
+  const output = await publisher.render([
+    { path: "guide/start.md", source: "# Manual\n\n{{#include ../parts/shared.md:example}}\n" }
+  ], "epub", {
+    title: "Manual",
+    includeSources: [{
+      path: "parts/shared.md",
+      source: "<!-- ANCHOR: example -->\nA shared explanation.\n<!-- ANCHOR_END: example -->\n"
+    }]
+  });
+  // One chapter, not two. Offer output.blob() for explicit download.
+} finally {
+  publisher.dispose();
+}
+```
+
+The same options work with the retained `createBook` session. Set
+`expandIncludes: false` to preserve literal directives or supply already expanded
+source. Nonempty `includeSources` with expansion disabled is an error. The raw
+`FmdBook` constructor and Rust `BookRenderer::new` remain parse-only; their
+explicit expansion APIs are `FmdBook.fromSources` and
+`BookRenderer::from_sources`.
+
+Nested include paths resolve relative to the file containing each directive.
+Paths are case-sensitive, literal book-relative names: `%` and `#` are filename
+characters, not URL escapes or fragments. Absolute paths, schemes, controls and
+root escapes are rejected. Named snippets and line selectors such as `:3:8` or
+`:3:` reuse the existing Rust rules. Fenced and indented examples remain literal.
+No JavaScript Markdown/include parser is used.
+
+Transclusion is textual, as in the native book command: links and image URLs
+inside the inserted Markdown resolve from the **containing chapter**, not the
+snippet's directory. Use explicit book-root URLs where necessary. Include-only
+sources are an API capability; the workbench's current import/project/library
+model still treats each imported Markdown file as a chapter. Source inspection
+continues to inspect the chapter collection, not an expanded resource bundle.
+
+Chapter and resource strings are validated and snapshotted before asynchronous
+initialization or worker dispatch. They share the API's 4096-source and 64 MiB
+UTF-8 text/path limits. Rust separately bounds expanded chapter text/paths to
+64 MiB, the sum of original text and resolver copies to 64 MiB, and the whole
+book to 4096 include resolutions; the expansion engine retains its depth-16
+limit. Selecting one line still charges a full resolver copy. These are logical
+content/work budgets, not a guarantee about physical heap usage. `sourceLength`
+counts each originally supplied chapter/resource string once, excluding paths.
+
 ## Verification
 
 ```sh
 node --test wasm/tests/book_session.test.mjs wasm/tests/book_worker.test.mjs \
   wasm/tests/book_collection.test.mjs wasm/tests/book_controls.test.mjs \
-  wasm/tests/book_package.test.mjs
+  wasm/tests/book_package.test.mjs wasm/tests/book_includes.test.mjs \
+  wasm/tests/book_site_preview.test.mjs
 ```
 
 The tests use real adapters/controller, native Node File/Blob/object URLs and

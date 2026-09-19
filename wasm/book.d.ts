@@ -19,6 +19,15 @@ export interface BookFont {
 }
 
 export interface BookOptions {
+  /** Expand includes in Rust (default true). False preserves literal source. */
+  expandIncludes?: boolean;
+  /** Explicit include-only UTF-8 files; never chapters or EPUB spine items.
+   * Paths are literal, case-sensitive, relative to the logical book root.
+   * Chapters and resources share the 4096-source and 64 MiB text/path limits.
+   * Resources are snapshotted before initialization or worker transfer.
+   * Requires expandIncludes; no filesystem or network lookup is performed.
+   */
+  includeSources?: readonly BookFile[];
   title?: string;
   /** PDF author metadata. */
   author?: string;
@@ -40,6 +49,7 @@ export interface BookOutput {
   readonly format: "book-pdf" | "book-epub" | "book-site";
   readonly mimeType: "application/pdf" | "application/epub+zip" | "application/zip";
   readonly extension: "pdf" | "epub" | "zip";
+  /** Original chapter plus include-source UTF-8 bytes, counted once each. */
   readonly sourceLength: number;
   /** An owned binary output, valid after session disposal. */
   readonly bytes: Uint8Array;
@@ -50,6 +60,7 @@ export interface BookOutput {
 /** Parsed WASM book. Dispose in a finally block when repeated exports finish. */
 export interface BookSession {
   readonly chapterCount: number;
+  /** Original chapter plus include-source UTF-8 bytes, counted once each. */
   readonly sourceLength: number;
   setImage(destination: string, bytes: BookAssetBytes): BookSession;
   setFont(slot: BookFontSlot, bytes: BookAssetBytes, weight?: number): BookSession;
@@ -61,7 +72,7 @@ export interface BookSession {
   dispose(): void;
 }
 
-/** Parse once for multiple exports. Uses the main renderer's shared init. */
+/** Expand selected sources and parse once. Uses the main renderer's shared init. */
 export function createBook(files: readonly BookFile[], options?: BookOptions): Promise<BookSession>;
 /** One-shot exports always dispose their WASM book, including on failure. */
 export function renderBookPdf(files: readonly BookFile[], options?: BookOptions): Promise<BookOutput>;

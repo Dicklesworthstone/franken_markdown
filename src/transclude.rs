@@ -591,7 +591,7 @@ mod tests {
     use std::cell::Cell;
     use std::collections::BTreeMap;
 
-    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> ResolveResult {
+    fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> ResolveResult + use<> {
         let map: BTreeMap<String, String> = files.iter()
             .map(|(key, value)| (key.to_string(), value.to_string())).collect();
         move |path, _origin| Ok(map.get(path).map(|text| (text.clone(), path.to_string())))
@@ -1049,5 +1049,15 @@ mod tests {
         let error = mapping.record(2..3, 1, 0..1, false).unwrap_err().to_string();
         assert!(error.contains("include_map_budget"));
         assert_eq!(mapping.spans.last().unwrap().expanded, 0..2);
+    }
+
+    #[test]
+    fn resolver_fixtures_own_snapshots_after_input_storage_is_dropped() {
+        let resolve = {
+            let content = String::from("owned fixture");
+            let files = [("part", content.as_str())];
+            resolver(&files)
+        };
+        assert_eq!(expand_includes("{{#include part}}", &resolve).unwrap(), "owned fixture\n");
     }
 }

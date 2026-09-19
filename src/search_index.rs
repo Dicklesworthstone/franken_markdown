@@ -6,6 +6,10 @@
 //! heading (empty string when no heading precedes them), so every entry can
 //! be deep-linked into the rendered HTML.
 //!
+//! [`build_full_search_index`] additionally includes code, tables, definitions,
+//! mathematics, and referenced footnotes in HTML emission order. The original
+//! [`build_search_index`] retains its heading/body-paragraph-only contract.
+//!
 //! # Anchor parity with `src/html.rs`
 //!
 //! The heading-id algorithm below is a deliberate, line-cited mirror of the
@@ -25,7 +29,7 @@
 //! change this file in lockstep; the test suite cross-checks anchors against
 //! real rendered HTML, including duplicate-heading collisions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 
 use franken_markdown::ast::{Block, Document, Inline};
@@ -38,7 +42,8 @@ pub const SEARCH_INDEX_SCHEMA: &str = "fmd-search-index-v1";
 pub enum EntryKind {
     /// An ATX heading (`#` .. `######`).
     Heading,
-    /// A paragraph of inline content.
+    /// Non-heading content. The full index also uses this v1 wire kind for
+    /// code, table rows, definitions, mathematics, and footnote content.
     Paragraph,
 }
 
@@ -84,10 +89,45 @@ pub struct SearchIndex {
 /// `franken_markdown::html::render` output.
 #[must_use]
 pub fn build_search_index(doc: &Document) -> SearchIndex {
+    build_index(doc, false)
+}
+
+/// Build a full-content index for reader-facing document and book search.
+///
+/// Includes body headings/paragraphs, code and diagram source, table rows,
+/// definition terms/bodies, TeX math, and every referenced footnote. Raw HTML
+/// blocks and layout-only breaks are omitted. Non-heading entries retain the
+/// v1 `paragraph` kind, so existing JSON consumers need no new enum variants.
+///
+/// Notes follow the HTML renderer's first-reference queue (including references
+/// inside tables, definitions, and other notes). Unreferenced notes are omitted,
+/// duplicate definitions use the first, and cycles emit each note only once.
+/// Note headings consume IDs after all body headings, preserving collision
+/// parity. Note text before its first heading targets the actual `fn-ID` anchor.
+///
+/// This function does not retain source text or clone the document AST.
+#[must_use]
+pub fn build_full_search_index(doc: &Document) -> SearchIndex {
+    build_index(doc, true)
+}
+
+fn build_index(doc: &Document, full: bool) -> SearchIndex {
     let mut state = AnchorState::default();
     let mut entries = Vec::new();
     let mut current_anchor = String::new();
-    walk_blocks(&doc.blocks, &mut state, &mut current_anchor, &mut entries);
+    let mut notes = Notes {
+        root: &doc.blocks, definitions: None, order: Vec::new(), seen: HashSet::new(),
+    };
+    walk_blocks(&doc.blocks, &mut state, &mut current_anchor, &mut entries, full, &mut notes);
+    let mut cursor = 0;
+    while let Some(id) = notes.order.get(cursor).copied() {
+        cursor += 1;
+        let blocks = notes.definitions.as_ref().and_then(|defs| defs.get(id)).copied();
+        if let Some(blocks) = blocks {
+            current_anchor = format!("fn-{id}");
+            walk_blocks(blocks, &mut state, &mut current_anchor, &mut entries, full, &mut notes);
+        }
+    }
     SearchIndex { entries }
 }
 
@@ -140,10 +180,13 @@ fn walk_blocks(
     state: &mut AnchorState,
     current_anchor: &mut String,
     entries: &mut Vec<IndexEntry>,
+    full: bool,
+    notes: &mut Notes<'_>,
 ) {
     for block in blocks {
         match block {
             Block::Heading { level, inlines } => {
+                if full { notes.references(inlines); }
                 let anchor = heading_id(state, inlines);
                 entries.push(IndexEntry {
                     kind: EntryKind::Heading,
@@ -154,6 +197,7 @@ fn walk_blocks(
                 *current_anchor = anchor;
             }
             Block::Paragraph(inlines) => {
+                if full { notes.references(inlines); }
                 entries.push(IndexEntry {
                     kind: EntryKind::Paragraph,
                     level: None,
@@ -161,16 +205,97 @@ fn walk_blocks(
                     text: plain_normalized(inlines),
                 });
             }
-            Block::BlockQuote(inner) => walk_blocks(inner, state, current_anchor, entries),
+            Block::BlockQuote(inner) => walk_blocks(inner, state, current_anchor, entries, full, notes),
             Block::List(list) => {
                 for item in &list.items {
-                    walk_blocks(&item.blocks, state, current_anchor, entries);
+                    walk_blocks(&item.blocks, state, current_anchor, entries, full, notes);
                 }
             }
-            // Footnote definitions are skipped in the body walk and rendered
-            // later by the HTML emitter (src/html.rs:1088-1092); walking them
-            // here would consume heading ids the body headings never receive.
+            Block::CodeBlock { code, .. } | Block::MathBlock(code) if full => {
+                push_content(code, current_anchor, entries);
+            }
+            Block::Table(table) if full => {
+                for row in std::iter::once(&table.head).chain(table.rows.iter()) {
+                    let mut text = String::new();
+                    for cell in row {
+                        notes.references(cell);
+                        if !text.is_empty() { text.push(' '); }
+                        push_inlines_to_plain(cell, &mut text);
+                    }
+                    push_content(&text, current_anchor, entries);
+                }
+            }
+            Block::DefinitionList(items) if full => {
+                for item in items {
+                    let mut text = String::new();
+                    for inlines in item.terms.iter().chain(&item.definitions) {
+                        notes.references(inlines);
+                        if !text.is_empty() { text.push(' '); }
+                        push_inlines_to_plain(inlines, &mut text);
+                    }
+                    push_content(&text, current_anchor, entries);
+                }
+            }
+            // Definition bodies are emitted only when dequeued after the body.
             Block::FootnoteDefinition { .. } => {}
+            _ => {}
+        }
+    }
+}
+
+fn push_content(text: &str, anchor: &str, entries: &mut Vec<IndexEntry>) {
+    let text = normalized_text(text);
+    if !text.is_empty() {
+        entries.push(IndexEntry {
+            kind: EntryKind::Paragraph, level: None, anchor: anchor.to_string(), text,
+        });
+    }
+}
+
+// Lazy collection preserves the ordinary no-footnote fast path. Maps and sets
+// are lookup-only; only first-reference insertion order affects emitted data.
+struct Notes<'a> {
+    root: &'a [Block],
+    definitions: Option<HashMap<&'a str, &'a [Block]>>,
+    order: Vec<&'a str>,
+    seen: HashSet<&'a str>,
+}
+
+impl Notes<'_> {
+    fn references(&mut self, inlines: &[Inline]) {
+        for inline in inlines {
+            match inline {
+                Inline::FootnoteRef { id } => {
+                    let root = self.root;
+                    let definitions = self.definitions.get_or_insert_with(|| {
+                        let mut definitions = HashMap::new();
+                        collect_definitions(root, &mut definitions);
+                        definitions
+                    });
+                    if let Some((&id, _)) = definitions.get_key_value(id.as_str()) {
+                        if self.seen.insert(id) { self.order.push(id); }
+                    }
+                }
+                Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner)
+                | Inline::Link { content: inner, .. } => self.references(inner),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn collect_definitions<'a>(blocks: &'a [Block], definitions: &mut HashMap<&'a str, &'a [Block]>) {
+    for block in blocks {
+        match block {
+            Block::FootnoteDefinition { id, blocks } => {
+                definitions.entry(id.as_str()).or_insert(blocks.as_slice());
+                // HTML collects nested definitions even beneath a duplicate.
+                collect_definitions(blocks, definitions);
+            }
+            Block::BlockQuote(inner) => collect_definitions(inner, definitions),
+            Block::List(list) => {
+                for item in &list.items { collect_definitions(&item.blocks, definitions); }
+            }
             _ => {}
         }
     }
@@ -292,6 +417,10 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
 fn plain_normalized(inlines: &[Inline]) -> String {
     let mut plain = String::new();
     push_inlines_to_plain(inlines, &mut plain);
+    normalized_text(&plain)
+}
+
+fn normalized_text(plain: &str) -> String {
     let mut out = String::with_capacity(plain.len());
     let mut words = plain.split_whitespace();
     if let Some(first) = words.next() {
@@ -374,5 +503,129 @@ fn push_json_escaped(out: &mut String, s: &str) {
     }
     if clean_start < s.len() {
         out.push_str(&s[clean_start..]);
+    }
+}
+
+#[cfg(test)]
+mod full_index_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use franken_markdown::{Align, DefinitionItem, HtmlOptions, Table};
+
+    fn paragraph(text: &str) -> Block { Block::Paragraph(vec![Inline::Text(text.into())]) }
+    fn heading(text: &str) -> Block { Block::Heading { level: 1, inlines: vec![Inline::Text(text.into())] } }
+    fn reference(id: &str) -> Inline { Inline::FootnoteRef { id: id.into() } }
+    fn note(id: &str, blocks: Vec<Block>) -> Block {
+        Block::FootnoteDefinition { id: id.into(), blocks }
+    }
+
+    #[test]
+    fn full_index_adds_code_tables_definitions_math_without_changing_legacy_index() {
+        let doc = Document { blocks: vec![
+            heading("Guide"),
+            Block::CodeBlock { lang: Some("rust".into()), code: "fn  run() {\n  launch();\n}".into() },
+            Block::Table(Table {
+                head: vec![vec![Inline::Text("Name".into())], vec![Inline::Text("Value".into())]],
+                rows: vec![vec![vec![Inline::Code("timeout".into())], vec![Inline::Text("30 seconds".into())]]],
+                align: vec![Align::Left, Align::Right],
+            }),
+            Block::DefinitionList(vec![DefinitionItem {
+                terms: vec![vec![Inline::Text("Cache".into())]],
+                definitions: vec![vec![Inline::Text("Stores reusable results".into())]],
+            }]),
+            Block::MathBlock("x^2  +  y^2".into()),
+            Block::ThematicBreak, Block::PageBreak,
+            Block::HtmlBlock("<script>not indexed</script>".into()),
+        ]};
+        let legacy = build_search_index(&doc);
+        assert_eq!(legacy.entries.len(), 1);
+        let full = build_full_search_index(&doc);
+        let texts: Vec<_> = full.entries.iter().map(|entry| entry.text.as_str()).collect();
+        assert_eq!(texts, ["Guide", "fn run() { launch(); }", "Name Value",
+            "timeout 30 seconds", "Cache Stores reusable results", "x^2 + y^2"]);
+        assert!(full.entries.iter().all(|entry| entry.anchor == "guide"));
+        assert!(full.entries[1..].iter().all(|entry| entry.kind == EntryKind::Paragraph));
+        assert_eq!(full, build_full_search_index(&doc));
+        assert_eq!(legacy, build_search_index(&doc));
+        assert!(search_index_json(&full).starts_with("{\"schema\":\"fmd-search-index-v1\""));
+    }
+
+    #[test]
+    fn note_order_matches_html_and_preserves_body_and_note_heading_collisions() {
+        let doc = Document { blocks: vec![
+            heading("Dup"),
+            note("a", vec![paragraph("First definition"), heading("Dup")]),
+            Block::Paragraph(vec![reference("b"), reference("a")]),
+            heading("Dup"),
+            note("b", vec![Block::Paragraph(vec![Inline::Text("Second definition".into()), reference("c")]), heading("Dup")]),
+            note("c", vec![paragraph("Transitive note")]),
+            note("unused", vec![heading("Invisible"), paragraph("Must not be indexed")]),
+        ]};
+        let full = build_full_search_index(&doc);
+        let anchors: Vec<_> = full.entries.iter().filter(|entry| entry.kind == EntryKind::Heading)
+            .map(|entry| entry.anchor.as_str()).collect();
+        assert_eq!(anchors, ["dup", "dup-2", "dup-3", "dup-4"]);
+        let note_text: Vec<_> = full.entries.iter().filter(|entry| entry.anchor.starts_with("fn-"))
+            .map(|entry| (entry.anchor.as_str(), entry.text.as_str())).collect();
+        assert_eq!(note_text, [("fn-b", "Second definition[^c]"),
+            ("fn-a", "First definition"), ("fn-c", "Transitive note")]);
+        let html = franken_markdown::html::render_fragment(&doc.blocks, &HtmlOptions::default());
+        for entry in &full.entries {
+            assert!(html.contains(&format!("id=\"{}\"", entry.anchor)), "missing {}", entry.anchor);
+        }
+        assert!(!full.entries.iter().any(|entry| entry.text.contains("Invisible")));
+        let first_note = html.find("id=\"fn-b\"").unwrap();
+        assert!(html.find("id=\"dup-2\"").unwrap() < first_note);
+        assert!(first_note < html.find("id=\"fn-a\"").unwrap());
+    }
+
+    #[test]
+    fn references_inside_tables_definitions_and_inline_containers_are_followed() {
+        let doc = Document { blocks: vec![
+            Block::Table(Table {
+                head: vec![vec![Inline::Strong(vec![reference("table")])]],
+                rows: vec![], align: vec![Align::Left],
+            }),
+            Block::DefinitionList(vec![DefinitionItem {
+                terms: vec![vec![Inline::Link { dest: "https://example.test".into(), title: None,
+                    content: vec![reference("term")] }]],
+                definitions: vec![vec![Inline::Emphasis(vec![reference("body")])]],
+            }]),
+            note("body", vec![paragraph("Definition body note")]),
+            note("term", vec![paragraph("Definition term note")]),
+            note("table", vec![paragraph("Table note")]),
+        ]};
+        let full = build_full_search_index(&doc);
+        let anchors: Vec<_> = full.entries.iter().filter(|entry| entry.anchor.starts_with("fn-"))
+            .map(|entry| entry.anchor.as_str()).collect();
+        assert_eq!(anchors, ["fn-table", "fn-term", "fn-body"]);
+    }
+
+    #[test]
+    fn cycles_duplicate_definitions_and_undefined_notes_do_not_duplicate_results() {
+        let doc = Document { blocks: vec![
+            Block::Paragraph(vec![reference("a"), reference("missing"), reference("a")]),
+            note("a", vec![Block::Paragraph(vec![Inline::Text("A".into()), reference("b")])]),
+            note("b", vec![Block::Paragraph(vec![Inline::Text("B".into()), reference("a")])]),
+            note("a", vec![paragraph("Duplicate definition must not replace A")]),
+        ]};
+        let full = build_full_search_index(&doc);
+        assert_eq!(full.entries.len(), 3);
+        assert_eq!(full.entries[1].text, "A[^b]");
+        assert_eq!(full.entries[2].text, "B[^a]");
+        assert_eq!(full.entries[1].anchor, "fn-a");
+        assert_eq!(full.entries[2].anchor, "fn-b");
+    }
+
+    #[test]
+    fn code_containing_note_syntax_does_not_reference_a_definition() {
+        let doc = Document { blocks: vec![
+            Block::CodeBlock { lang: None, code: "[^hidden]".into() },
+            note("hidden", vec![paragraph("Not rendered")]),
+        ]};
+        let index = build_full_search_index(&doc);
+        assert_eq!(index.entries.len(), 1);
+        assert_eq!(index.entries[0].text, "[^hidden]");
+        assert_eq!(index.entries[0].anchor, "");
     }
 }

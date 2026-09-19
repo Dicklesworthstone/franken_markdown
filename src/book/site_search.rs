@@ -2,7 +2,8 @@
 //! A single generated page owns the index; chapter pages contain only a link.
 
 use crate::book::Book;
-use crate::{RenderError, Result, build_search_index, search_index_json};
+use crate::{RenderError, Result, search_index_json};
+use crate::search_index::build_full_search_index;
 
 // Source-path encoding always escapes literal '~' bytes. This host filename
 // cannot collide with a chapter produced by out_name, including search.md.
@@ -31,7 +32,7 @@ pub(crate) fn index_json(book: &Book) -> Result<String> {
         {
             return Err(invalid("invalid or colliding chapter output name"));
         }
-        let index = build_search_index(&chapter.doc);
+        let index = build_full_search_index(&chapter.doc);
         count = count.checked_add(index.entries.len()).and_then(|n| n.checked_add(1))
             .ok_or_else(|| invalid("entry count overflow"))?;
         if count > MAX_ENTRIES {
@@ -182,5 +183,18 @@ mod tests {
         assert!(index_json(&book).is_err());
         assert!(index_json(&Book { chapters: vec![] }).is_err());
         assert!(page(&"x".repeat(MAX_INDEX_BYTES + 1), "Book", None).is_err());
+    }
+
+    #[test]
+    fn exported_index_contains_code_tables_and_referenced_notes() {
+        let book = build_book(&[BookInput {
+            path: "guide.md".into(),
+            source: "# Guide\n\n```rust\nlaunch_unique();\n```\n\n| option | value |\n| --- | --- |\n| timeout | 30 |\n\nRead[^n].\n\n[^n]: unique citation body\n".into(),
+        }]).unwrap();
+        let json = index_json(&book).unwrap();
+        assert!(json.contains("launch_unique();"));
+        assert!(json.contains("timeout 30"));
+        assert!(json.contains("unique citation body"));
+        assert!(json.contains("\"anchor\":\"fn-n\""));
     }
 }

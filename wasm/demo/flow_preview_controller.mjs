@@ -1,26 +1,42 @@
 // Live-preview orchestration, not a renderer. At most one worker mutation or
 // paint is awaited; user input replaces the one latest desired state. Markdown
 // remains authoritative in the host, never reconstructed from a stale preview.
-import { sourceText, FlowError } from "../flow_session.mjs";
+import { validateCreation, FlowError } from "../flow_session.mjs";
 import { requireReadingDocument, sourceSpanToUtf16 } from "../flow_reading.mjs";
 import { createPreviewExport } from "./flow_preview_export.mjs";
 
 export function createPreviewController({ createSession, painter, createAssets = null, readDocument = null, onState = () => {} }) {
   let desired = null, version = 0, epoch = 0, running = false, queued = false;
-  let session = null, appliedSource = null, disposed = false, reading = "";
+  let session = null, appliedSource = null, appliedFont = null, disposed = false, reading = "";
+  let layoutVersion = 0;
   let readingDocument = null, readingToken = null, readingError = null;
   let readingRevision = null, startup = null, paint = null, waiters = [];
   let assets = null, assetJob = null, imagesRevision = null;
   let state = Object.freeze({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null });
+  const layoutKeys = ["viewportWidth", "bodySize", "codeSize", "lineHeight"];
+  const targetLayout = value => ({ viewportWidth: value.width, bodySize: value.bodySize,
+    codeSize: value.codeSize, lineHeight: value.lineHeight });
+  const layoutCurrent = () => {
+    if (!session || session.disposed || !desired || appliedFont !== desired.font) return false;
+    const actual = session.layoutOptions, expected = targetLayout(desired);
+    return layoutKeys.every(key => actual[key] === expected[key]);
+  };
   const exportDocument = createPreviewExport(() => ({ session, source: appliedSource, desiredSource: desired?.source,
-    status: state.status, frame: state.frame, imagesBusy: Boolean(assetJob?.owner === assets && assetJob), epoch, disposed }));
+    status: state.status, frame: state.frame, imagesBusy: Boolean(assetJob?.owner === assets && assetJob),
+    layoutPending: !layoutCurrent(), layoutVersion, epoch, disposed }));
   const publish = update => { state = Object.freeze({ ...state, ...update }); onState(state); };
   const settle = () => { const all = waiters; waiters = []; for (const resolve of all) resolve(state); };
   const alive = () => { if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed"); };
   const valid = input => {
-    if (!input || typeof input !== "object") throw new FlowError("INVALID_OPTIONS", "preview input must be an object");
-    const value = { source: sourceText(input.source), width: input.width, height: input.height,
-      scrollY: input.scrollY ?? 0, pixelRatio: input.pixelRatio ?? 1 };
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new FlowError("INVALID_OPTIONS", "preview input must be an object");
+    if (typeof input.width !== "number") throw new FlowError("INVALID_OPTIONS", "viewport width is required");
+    // Use the same defaults and f32 admission as the worker, not browser CSS
+    // or a second set of layout rules. Snapshot primitives before any await.
+    const creation = validateCreation(input.source, { font: input.font, viewportWidth: input.width,
+      bodySize: input.bodySize, codeSize: input.codeSize, lineHeight: input.lineHeight });
+    const value = { source: creation.source, font: creation.font, width: creation.layout.viewportWidth,
+      bodySize: creation.layout.bodySize, codeSize: creation.layout.codeSize, lineHeight: creation.layout.lineHeight,
+      height: input.height, scrollY: input.scrollY ?? 0, pixelRatio: input.pixelRatio ?? 1 };
     for (const name of ["width", "height", "scrollY", "pixelRatio"]) {
       if (typeof value[name] !== "number" || !Number.isFinite(value[name]) || value[name] < 0) {
         throw new FlowError("INVALID_OPTIONS", `${name} must be finite and nonnegative`);
@@ -123,10 +139,10 @@ export function createPreviewController({ createSession, painter, createAssets =
         try {
           if (!session) {
             const controller = new AbortController(); startup = controller;
-            const created = await createSession(intent.source, { viewportWidth: intent.width }, { signal: controller.signal });
+            const created = await createSession(intent.source, { font: intent.font, ...targetLayout(intent) }, { signal: controller.signal });
             if (startup === controller) startup = null;
             if (disposed || epoch !== generation) { created.dispose(); if (disposed) break; continue; }
-            session = created; appliedSource = intent.source;
+            session = created; appliedSource = intent.source; appliedFont = intent.font;
             assets = createAssets ? createAssets(created) : null; imagesRevision = null;
           }
           const current = session;
@@ -138,8 +154,9 @@ export function createPreviewController({ createSession, painter, createAssets =
             assets?.synchronize(); publish({ images: null });
           }
           if (!currentIntent()) continue;
-          if (current.layoutOptions.viewportWidth !== intent.width) {
-            await current.reflow({ viewportWidth: intent.width }, current.token);
+          const layout = targetLayout(intent), actualLayout = current.layoutOptions;
+          if (layoutKeys.some(key => actualLayout[key] !== layout[key])) {
+            await current.reflow(layout, current.token);
           }
           if (!currentIntent()) continue;
           const expected = current.token;
@@ -176,6 +193,15 @@ export function createPreviewController({ createSession, painter, createAssets =
       }
     } finally { running = false; settle(); }
   }
+  function restart() {
+    alive(); epoch++; version++;
+    startup?.abort(); startup = null; paint?.abort(); paint = null;
+    const previous = session, previousAssets = assets;
+    session = null; appliedFont = null; assets = null; imagesRevision = null; appliedSource = null; reading = ""; readingRevision = null;
+    readingDocument = null; readingToken = null; readingError = null;
+    painter.clear(); previousAssets?.dispose(); previous?.dispose();
+    publish({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null }); schedule();
+  }
   return Object.freeze({
     get state() { return state; },
     get disposed() { return disposed; },
@@ -186,6 +212,7 @@ export function createPreviewController({ createSession, painter, createAssets =
           || appliedSource !== desired?.source || source !== appliedSource) {
         throw new FlowError("STALE_REVISION", "reading navigation does not match the current editor and preview");
       }
+      if (!layoutCurrent()) throw new FlowError("STALE_LAYOUT", "reading navigation is awaiting the requested typography");
       const location = readingDocument.locate(index);
       if (location.revision !== state.frame?.revision || location.layoutRevision !== state.frame?.layoutRevision) {
         throw new FlowError("STALE_LAYOUT", "reading location does not match displayed pixels");
@@ -195,18 +222,15 @@ export function createPreviewController({ createSession, painter, createAssets =
     update(input) {
       alive(); const next = valid(input);
       if (desired && Object.keys(next).every(key => next[key] === desired[key])) return;
+      const fontChanged = desired && desired.font !== next.font;
+      if (!desired || ["font", "width", "bodySize", "codeSize", "lineHeight"].some(key => desired[key] !== next[key])) layoutVersion++;
       desired = next; version++;
+      // Bundled faces are chosen at native session creation. Rebuild explicitly
+      // rather than relabeling old glyphs, while retaining the host image grant.
+      if (fontChanged) { restart(); return; }
       paint?.abort(); paint = null; schedule();
     },
-    restart() {
-      alive(); epoch++; version++;
-      startup?.abort(); startup = null; paint?.abort(); paint = null;
-      const previous = session, previousAssets = assets;
-      session = null; assets = null; imagesRevision = null; appliedSource = null; reading = ""; readingRevision = null;
-      readingDocument = null; readingToken = null; readingError = null;
-      painter.clear(); previousAssets?.dispose(); previous?.dispose();
-      publish({ status: "idle", frame: null, reading: "", error: null, images: null, document: null, readingError: null }); schedule();
-    },
+    restart,
     whenIdle() {
       // Preview idle does not mean that optional background image I/O settled.
       if (!running && !queued) return Promise.resolve(state);
@@ -217,7 +241,7 @@ export function createPreviewController({ createSession, painter, createAssets =
       disposed = true; epoch++;
       startup?.abort(); paint?.abort(); painter.dispose(); assets?.dispose(); assets = null;
       session?.dispose(); session = null;
-      desired = null; appliedSource = null; reading = "";
+      desired = null; appliedSource = null; appliedFont = null; reading = "";
       readingDocument = null; readingToken = null; readingError = null;
       publish({ status: "disposed", frame: null, reading: "", error: null, images: null, document: null, readingError: null }); settle();
     }

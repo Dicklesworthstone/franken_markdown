@@ -15,6 +15,7 @@ export function createPreviewExport(readState) {
         || source !== before.source || source !== before.desiredSource) {
       fail("STALE_REVISION", "export requires the current editor source to be applied successfully");
     }
+    if (before.layoutPending) fail("STALE_LAYOUT", "export is awaiting the requested preview typography");
     if (before.imagesBusy) fail("ASSET_BUSY", "finish the current authorized image batch before exporting");
     const expected = Object.freeze({ ...current.token });
     if (!same(expected, before.frame)) fail("STALE_LAYOUT", "export does not match the displayed document");
@@ -29,7 +30,8 @@ export function createPreviewExport(readState) {
           || after.source !== source || after.desiredSource !== source) {
         fail("STALE_REVISION", "preview source or session changed during export");
       }
-      if (!same(current.token, expected) || !same(after.frame, expected)) {
+      if (after.layoutPending || after.layoutVersion !== before.layoutVersion
+          || !same(current.token, expected) || !same(after.frame, expected)) {
         fail("STALE_LAYOUT", "preview assets or layout changed during export");
       }
       if (output?.format !== format) fail("INVALID_WASM_RESPONSE", "export format does not match the request");

@@ -10,13 +10,13 @@ class Element extends EventTarget {
   removeAttribute(key) { delete this[key]; }
   click() { const event = new Event("click", { cancelable: true }); this.dispatchEvent(event); return event; }
 }
-function fixture() {
+function fixture(readOptions) {
   const html = new Element(), pdf = new Element(), download = new Element(), status = new Element(), sourceEditor = new Element();
   const calls = [], created = [], revoked = [], token = { revision: "1", layoutRevision: "2" }; let hold = null, error = null;
   const state = { status: "ready", frame: { ...token }, images: null };
   const result = { schemaVersion: 1, ...token, format: "pdf", mimeType: "application/pdf", bytes: new Uint8Array([1, 2]),
     diagnostics: [], font: "sans", sourceLengthBytes: 3, assetCount: 0, assetBytes: 0 };
-  const controls = createExportControls({ html, pdf, download, status, sourceEditor,
+  const controls = createExportControls({ html, pdf, download, status, sourceEditor, readOptions,
     urls: { createObjectURL(blob) { created.push(blob); return `blob:test-${created.length}`; }, revokeObjectURL(url) { revoked.push(url); } },
     async exportDocument(format, options, source) {
       calls.push({ format, options, source }); if (hold) await hold.promise; if (error) throw error;
@@ -32,7 +32,7 @@ test("prepares an owned Blob, never auto-clicks, and makes a separate download a
   f.download.addEventListener("click", () => clicks++); f.pdf.click(); await tick();
   assert.equal(clicks, 0); assert.equal(f.download.hidden, false); assert.equal(f.download.download, "document.pdf");
   assert.equal(f.created[0].type, "application/pdf"); assert.deepEqual(new Uint8Array(await f.created[0].arrayBuffer()), f.result.bytes);
-  assert.deepEqual(f.calls[0], { format: "pdf", options: { pageNumbers: true, metadataEpochSeconds: 0 }, source: "old" });
+  assert.deepEqual(f.calls[0], { format: "pdf", options: { pageNumbers: true, metadataEpochSeconds: 0, maxOutputBytes: 64 * 1024 * 1024 }, source: "old" });
   assert.equal(f.download.click().defaultPrevented, false);
 });
 test("new exports revoke the previous object URL and keep only one downloadable document", async t => {
@@ -78,4 +78,34 @@ test("errors/diagnostics become inert text and disposal removes listeners and UR
   f.pdf.click(); await tick(); assert(f.status.textContent.includes("Review image"));
   f.controls.dispose(); assert.equal(f.revoked.length, 1); const count = f.calls.length;
   f.pdf.click(); await tick(); assert.equal(f.calls.length, count); assert.equal(f.download.hidden, true);
+});
+
+test("applied publishing options are captured and frozen before renderer work", async t => {
+  const settings = { title: "Current title", lang: "de-DE", toc: true, tocDepth: 3, baseFontSize: 13, pageNumbers: false };
+  const f = fixture(() => settings), hold = gate(); t.after(() => f.controls.dispose()); f.hold(hold);
+  f.pdf.click(); settings.title = "Later title"; settings.baseFontSize = 18;
+  assert.equal(f.calls[0].options.title, "Current title"); assert.equal(f.calls[0].options.baseFontSize, 13);
+  assert.equal(f.calls[0].options.pageNumbers, false); assert.equal(Object.isFrozen(f.calls[0].options), true);
+  assert.equal(f.calls[0].options.metadataEpochSeconds, 0);
+  hold.resolve(); await tick(); assert.equal(f.created.length, 1);
+});
+test("HTML receives its own options, not PDF-only typography", async t => {
+  const f = fixture(format => format === "html" ? { darkMode: "disabled", title: "HTML title" } : { author: "PDF author", baseFontSize: 12 });
+  t.after(() => f.controls.dispose()); f.html.click(); await tick(); f.pdf.click(); await tick();
+  assert.equal(f.calls[0].options.darkMode, "disabled"); assert.equal(f.calls[0].options.author, undefined);
+  assert.equal(f.calls[1].options.author, "PDF author"); assert.equal(f.calls[1].options.darkMode, undefined);
+});
+test("unknown and unsafe publishing options fail before invoking the renderer", async () => {
+  for (const options of [{ allowRawHtml: true }, { font: "serif" }, { pdfImages: [] }, { lang: "bad tag" }, { fitToPages: 0 }, { baseFontSize: NaN }]) {
+    const f = fixture(() => options); f.pdf.click(); await tick();
+    assert.equal(f.calls.length, 0); assert.equal(f.created.length, 0); assert.match(f.status.textContent, /INVALID_OPTIONS/);
+    assert.equal(f.sourceEditor.value, "old"); f.controls.dispose();
+  }
+});
+test("applying new settings revokes prepared downloads and rejects older pending exports", async t => {
+  const f = fixture(() => ({ title: "Applied title" })); t.after(() => f.controls.dispose());
+  f.pdf.click(); await tick(); f.controls.invalidate("Publishing settings changed.");
+  assert.equal(f.download.hidden, true); assert.equal(f.revoked.length, 1);
+  const hold = gate(); f.hold(hold); f.pdf.click(); f.controls.invalidate("New settings applied."); hold.resolve(); await tick();
+  assert.equal(f.created.length, 1); assert.equal(f.status.textContent, "New settings applied.");
 });

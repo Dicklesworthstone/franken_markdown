@@ -1,9 +1,10 @@
 // User-initiated export and download. At most one physical export and one Blob
 // URL; no synthetic click, auto-save, remote navigation, or innerHTML is used.
 import { FlowError } from "../flow_session.mjs";
-import { validateFlowExportResult } from "../flow_export.mjs";
+import { normalizeFlowExport, validateFlowExportResult } from "../flow_export.mjs";
 const same = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.layoutRevision;
-export function createExportControls({ html, pdf, download, status, sourceEditor, exportDocument, urls = URL }) {
+export function createExportControls({ html, pdf, download, status, sourceEditor, exportDocument, urls = URL,
+  readOptions = format => format === "pdf" ? { pageNumbers: true, metadataEpochSeconds: 0 } : {} }) {
   let state = null, pending = false, disposed = false, epoch = 0, published = null, url = null;
   const available = () => !disposed && !pending && state?.status === "ready" && state.images?.status !== "loading";
   const buttons = () => { html.disabled = pdf.disabled = !available(); };
@@ -23,7 +24,10 @@ export function createExportControls({ html, pdf, download, status, sourceEditor
     revoke(); pending = true; buttons();
     status.textContent = `Preparing ${format.toUpperCase()} in the worker. Editing remains available.`;
     try {
-      const result = await exportDocument(format, format === "pdf" ? { pageNumbers: true, metadataEpochSeconds: 0 } : {}, source);
+      // Capture and validate the complete applied settings in the click task.
+      // Caller mutations and unapplied form text cannot change an in-flight job.
+      const [, options] = normalizeFlowExport(format, readOptions(format), expected);
+      const result = await exportDocument(format, options, source);
       if (disposed || epoch !== ticket || sourceEditor.value !== source || !same(expected, state?.frame)) {
         throw new FlowError("STALE_REVISION", "document changed before download publication");
       }

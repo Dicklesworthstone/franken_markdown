@@ -137,6 +137,25 @@ export function createBookCollection() {
       alive(); const json = serializeBookProject({ schemaVersion: 1, files: sources(), options });
       return { filename: "book.fmdbook.json", blob: new Blob([json], { type: "application/json" }) };
     },
+    /** One source-only transaction: paths/order/settings/image grants cannot
+     * change. Validation and optimistic revision checks precede all mutation.
+     * Unchanged chapters keep their imported-byte/editor-view relationship. */
+    replaceSources(value, expectedRevision) {
+      alive();
+      const fence = () => {
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision) {
+          throw bookError("STALE_SOURCE", "The book changed; no source transaction was installed.");
+        }
+      };
+      fence(); const next = chapters(value); fence();
+      if (next.length !== files.length || next.some((file, i) => file.path !== files[i].path)) {
+        throw bookError("INVALID_TRANSACTION", "Source transactions cannot add, remove, rename or reorder chapters.");
+      }
+      if (next.every((file, i) => file.source === files[i].source)) return revision;
+      const installed = revision + 1;
+      files = next.map((file, i) => file.source === files[i].source ? files[i] : remember(file));
+      changed(); return installed;
+    },
     replaceProject(project) {
       alive(); const value = normalizeBookProject(project);
       files = value.files.map(remember); options = value.options; images = []; changed();

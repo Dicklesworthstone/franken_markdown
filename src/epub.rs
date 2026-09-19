@@ -18,6 +18,8 @@
 //! * `OEBPS/style.css` — a deterministic stylesheet, optionally caller-supplied.
 //! * `OEBPS/assets/*` — supported embedded images, deduplicated in first-use
 //!   order within each chapter and declared in the package manifest.
+//! * `OEBPS/fonts/*` and `OEBPS/embedded-fonts.css` — shared TrueType subsets
+//!   when caller-supplied fonts opt the publication into font embedding.
 //!
 //! The chapter body comes from the crate's own HTML renderer: the document is
 //! rendered once with the stylesheet slot blanked (EPUB carries its own
@@ -48,6 +50,8 @@ use crate::zip::ZipWriter;
 mod book;
 #[path = "epub/resources.rs"]
 mod resources;
+#[path = "epub/fonts.rs"]
+mod embedded_fonts;
 #[cfg(test)]
 #[path = "epub/archive_tests.rs"]
 mod archive_tests;
@@ -91,11 +95,21 @@ img{max-width:100%;}\n";
 /// retained for custom styles, and the stylesheet contributes to the book's
 /// identifier. Default styling preserves the existing document body format.
 ///
+/// Supplying any `opts.font_assets` face embeds publication-wide TrueType
+/// subsets. Missing faces use the shared bundled font registry. Custom CSS
+/// remains verbatim and can override the generated font-family rules. Font
+/// bytes and their CSS mapping contribute to the deterministic identifier;
+/// no supplied faces preserves the historical font-free archive.
+///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] if the HTML renderer's fixed
 /// `<main class="fmd">` wrapper cannot be located, or embedded images exceed
-/// the 32 MiB per-image, 128 MiB aggregate, or 4096-resource limits.
+/// the 32 MiB per-image, 128 MiB aggregate, or 4096-resource limits. Fonts must
+/// validate, instance and subset successfully within 32 MiB per face, 128 MiB
+/// aggregate, 64 MiB repertoire text and 65536 characters. Font-enabled
+/// publications additionally enforce a 256 MiB uncompressed-content limit.
 pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
+    let mut repertoire = embedded_fonts::Repertoire::new(embedded_fonts::enabled(opts)?);
     let title = opts
         .title
         .clone()
@@ -119,6 +133,11 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let prepared = resources::prepare(&chapter_body)
         .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
 
+    repertoire.add(&title)?;
+    repertoire.add(css)?;
+    repertoire.add(&prepared.body)?;
+    let fonts = repertoire.finish(opts)?;
+
     // Hash before replacing data URLs: different image bytes must produce
     // different identifiers even when both receive the same archive path.
     // Keeping this input preserves identifiers under the default stylesheet.
@@ -127,14 +146,25 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
         identifier = content_identifier(&identifier, "epub-stylesheet-v1", css);
     }
 
-    let chapter = if opts.custom_css.is_some() {
+    if let Some(fingerprint) = fonts.fingerprint() {
+        identifier = content_identifier(&identifier, "epub-fonts-v1", &fingerprint);
+    }
+
+    let mut chapter = if opts.custom_css.is_some() {
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", prepared.body);
         chapter_xhtml(&title, &lang, &wrapped)
     } else {
         chapter_xhtml(&title, &lang, &prepared.body)
     };
-    let nav = nav_xhtml(&title, &lang, doc);
-    let opf = content_opf(&title, &lang, &identifier, &prepared);
+    let mut nav = nav_xhtml(&title, &lang, doc);
+    let mut opf = content_opf(&title, &lang, &identifier, &prepared);
+    fonts.link(&mut chapter, opts.custom_css.is_some())?;
+    fonts.link(&mut nav, opts.custom_css.is_some())?;
+    fonts.manifest(&mut opf)?;
+    fonts.check_output(
+        [chapter.len(), nav.len(), opf.len(), css.len(), CONTAINER_XML.len(), MIMETYPE.len()]
+            .into_iter().chain(prepared.resources.iter().map(|resource| resource.bytes.len())),
+    )?;
 
     let mut zip = ZipWriter::new();
     // OCF invariant: the mimetype entry is first and stored, byte-exact.
@@ -144,6 +174,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     zip.add_deflated("OEBPS/nav.xhtml", nav.as_bytes());
     zip.add_deflated("OEBPS/chapter-1.xhtml", chapter.as_bytes());
     zip.add_deflated("OEBPS/style.css", css.as_bytes());
+    fonts.write(&mut zip);
     for resource in &prepared.resources {
         let path = format!("OEBPS/{}", resource.href);
         if resource.media_type == "image/svg+xml" {

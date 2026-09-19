@@ -35,6 +35,31 @@ impl FmdBook {
         Ok(Self { renderer })
     }
 
+    /// Expand includes from the selected chapters and optional include-only
+    /// resources, then retain one parsed book for every export format.
+    /// Resources never become chapters. The original constructor remains
+    /// parse-only so hosts can deliberately supply already expanded source.
+    ///
+    /// # Errors
+    /// Rejects mismatched arrays, invalid or duplicate paths, missing sources,
+    /// cycles, selectors, and whole-book source/expansion budgets.
+    #[wasm_bindgen(js_name = fromSources)]
+    pub fn from_sources(
+        paths: Vec<String>,
+        sources: Vec<String>,
+        include_paths: Vec<String>,
+        include_sources: Vec<String>,
+    ) -> Result<FmdBook, JsValue> {
+        let chapters = book_inputs(paths, sources).map_err(JsValue::from_str)?;
+        let resources = if include_paths.is_empty() && include_sources.is_empty() {
+            Vec::new()
+        } else {
+            book_inputs(include_paths, include_sources).map_err(JsValue::from_str)?
+        };
+        let renderer = BookRenderer::from_sources(&chapters, &resources).map_err(to_js)?;
+        Ok(Self { renderer })
+    }
+
     /// Number of chapters, in reading order.
     #[wasm_bindgen(getter, js_name = chapterCount)]
     #[must_use]
@@ -43,6 +68,7 @@ impl FmdBook {
     }
 
     /// Original Markdown size in UTF-8 bytes, excluding logical filenames.
+    /// Includes include-only resource bytes when constructed by `fromSources`.
     #[wasm_bindgen(getter, js_name = sourceLength)]
     #[must_use]
     pub fn source_length(&self) -> usize {

@@ -13,6 +13,8 @@ use crate::{
 mod pdf_links;
 #[path = "site_search.rs"]
 pub(crate) mod site_search;
+#[path = "source_bundle.rs"]
+mod source_bundle;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -71,6 +73,7 @@ impl BookRenderer {
     }
 
     /// Original Markdown byte count, excluding logical filenames.
+    /// Includes separately supplied resources when built with `from_sources`.
     #[must_use]
     pub fn source_length(&self) -> usize {
         self.source_length

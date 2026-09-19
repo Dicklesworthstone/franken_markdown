@@ -41,7 +41,12 @@ export interface BookOptions {
   toc?: boolean;
   pageNumbers?: boolean;
   images?: readonly BookImage[];
-  /** Host fonts apply to PDF/HTML. EPUB font styling uses its stylesheet. */
+  /** Explicit host faces apply to PDF/HTML and opt EPUB into shared TrueType
+   * subsets across all chapters. Missing slots then use bundled faces.
+   * EPUB custom CSS stays verbatim and can override generated font families.
+   * With no supplied faces, EPUB retains its historical font-free output.
+   * Requires a matching rebuilt Rust/WASM renderer; no external font fetches.
+   */
   fontAssets?: readonly BookFont[];
 }
 

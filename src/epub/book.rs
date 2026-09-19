@@ -7,7 +7,7 @@ use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 use super::{
     Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading, STYLE_CSS,
     ZipWriter, chapter_xhtml, collect_headings, escape_xml_attr, escape_xml_text,
-    extract_main_body, fnv1a64, html_fragment_to_xhtml, push_nav_headings, resources,
+    extract_main_body, fnv1a64, html_fragment_to_xhtml, push_nav_headings, resources, embedded_fonts,
 };
 
 const MAX_CHAPTERS: usize = 4096;
@@ -27,6 +27,7 @@ struct PreparedBook {
     chapters: Vec<Chapter>,
     opf: String,
     nav: String,
+    fonts: embedded_fonts::Package,
 }
 
 /// Render a parsed [`Book`] as one EPUB with a separate XHTML spine item per
@@ -49,7 +50,11 @@ struct PreparedBook {
 /// Rejects empty books, duplicate or invalid source paths, more than 4096
 /// chapters or image resources, more than 128 MiB of image payloads, and more
 /// than 256 MiB of rendered chapter markup, stylesheet and book metadata.
-/// The single-document image limits also apply to each chapter.
+/// The single-document image limits also apply to each chapter. Supplied
+/// fonts opt into publication-wide TrueType subsets, with the same font and
+/// repertoire limits as single-document EPUB export. Fonts are validated and
+/// instanced once per book, declared once, and linked from every chapter and
+/// the navigation document. Custom CSS stays verbatim and last in the cascade.
 pub fn render_book_epub(book: &Book, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let prepared = prepare_book(book, opts)?;
     let mut zip = ZipWriter::new();
@@ -61,6 +66,7 @@ pub fn render_book_epub(book: &Book, opts: &HtmlOptions) -> Result<Vec<u8>> {
         "OEBPS/style.css",
         opts.custom_css.as_deref().unwrap_or(STYLE_CSS).as_bytes(),
     );
+    prepared.fonts.write(&mut zip);
     for chapter in &prepared.chapters {
         zip.add_deflated(&format!("OEBPS/{}", chapter.file), chapter.xhtml.as_bytes());
         for resource in &chapter.content.resources {
@@ -83,6 +89,7 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     if book.chapters.is_empty() || book.chapters.len() > MAX_CHAPTERS {
         return Err(invalid("expected between 1 and 4096 chapters"));
     }
+    let mut repertoire = embedded_fonts::Repertoire::new(embedded_fonts::enabled(opts)?);
     let mut known = BTreeMap::new();
     let mut paths = Vec::with_capacity(book.chapters.len());
     for (index, chapter) in book.chapters.iter().enumerate() {
@@ -100,6 +107,8 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     let title = opts.title.as_deref().unwrap_or("Book");
     let lang = opts.lang.as_deref().unwrap_or("en");
     let css = opts.custom_css.as_deref().unwrap_or(STYLE_CSS);
+    repertoire.add(title)?;
+    repertoire.add(css)?;
     let mut byte_count = 0;
     for text in [title, lang, css] {
         add_bytes(&mut byte_count, text.len())?;
@@ -136,6 +145,8 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         }
         let content = resources::prepare_with_prefix(&body, &format!("chapter-{}-", index + 1))
             .map_err(invalid)?;
+        repertoire.add(&source.title)?;
+        repertoire.add(&content.body)?;
         resource_count += content.resources.len();
         image_bytes += content.resources.iter().map(|r| r.bytes.len()).sum::<usize>();
         if resource_count > MAX_RESOURCES || image_bytes > MAX_IMAGE_BYTES {
@@ -150,9 +161,30 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
             content,
         });
     }
-    let opf = package(title, lang, &identity.finish(), &chapters);
-    let nav = navigation(title, lang, &chapters);
-    Ok(PreparedBook { chapters, opf, nav })
+    // Collect every chapter before subsetting: later chapters and titles may
+    // introduce glyphs not present in the first. Fonts are never duplicated per
+    // spine item, even when many chapters reference the same face.
+    let fonts = repertoire.finish(opts)?;
+    if let Some(fingerprint) = fonts.fingerprint() {
+        identity.part("epub-fonts-v1");
+        identity.part(&fingerprint);
+    }
+    for chapter in &mut chapters {
+        fonts.link(&mut chapter.xhtml, opts.custom_css.is_some())?;
+    }
+    let mut opf = package(title, lang, &identity.finish(), &chapters);
+    let mut nav = navigation(title, lang, &chapters);
+    fonts.manifest(&mut opf)?;
+    fonts.link(&mut nav, opts.custom_css.is_some())?;
+    add_bytes(&mut byte_count, fonts.byte_len())?;
+    fonts.check_output(
+        [opf.len(), nav.len(), css.len(), CONTAINER_XML.len(), MIMETYPE.len()]
+            .into_iter()
+            .chain(chapters.iter().map(|chapter| chapter.xhtml.len()))
+            .chain(chapters.iter().flat_map(|chapter| chapter.content.resources.iter()
+                .map(|resource| resource.bytes.len()))),
+    )?;
+    Ok(PreparedBook { chapters, opf, nav, fonts })
 }
 
 fn add_bytes(total: &mut usize, count: usize) -> Result<()> {
@@ -509,3 +541,7 @@ mod tests {
         assert_ne!(first.finish(), second.finish());
     }
 }
+
+#[cfg(test)]
+#[path = "book_font_tests.rs"]
+mod font_tests;

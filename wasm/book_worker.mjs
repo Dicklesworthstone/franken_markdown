@@ -4,11 +4,12 @@ const LIMIT = 128 * 1024 * 1024;
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
   epub: ["renderBookEpub", "application/epub+zip", "epub"],
-  site: ["renderBookSite", "application/zip", "zip"]
+  site: ["renderBookSite", "application/zip", "zip"],
+  preview: ["renderBookPreview", "application/json", "json"]
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
-  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub or site.");
+  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub, site or preview.");
   return formats[format];
 }
 function checkedOutput(bytes, sourceLength, maximum) {

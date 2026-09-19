@@ -141,6 +141,10 @@
     "demo/book_library_store.mjs",
     "demo/book_library_session.mjs",
     "demo/book_library_controls.mjs",
-    "LIBRARY.md"
+    "LIBRARY.md",
+    "book_site_preview.mjs",
+    "book_preview_frame.mjs",
+    "demo/book_preview_controls.mjs",
+    "PREVIEW.md"
   ]
 }

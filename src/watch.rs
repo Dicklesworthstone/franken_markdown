@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+#[path = "watch/dependencies.rs"]
+mod dependencies;
+
 /// Default poll/debounce window in milliseconds (`--interval`).
 pub const DEFAULT_INTERVAL_MS: u64 = 300;
 
@@ -240,33 +243,15 @@ pub fn expand_md_directory(dir: &Path) -> Vec<PathBuf> {
     acc
 }
 
-/// Local `](dest)` / image destinations that exist as files under `base_dir`.
+/// Local image and existing link dependencies in parsed Markdown, in source
+/// order. Reference-style images, nested containers and escaped destinations
+/// use the shared parser; code examples and raw HTML are not rescanned.
+/// Missing image files are retained so their later creation triggers a rebuild.
+/// URL query/fragment suffixes are removed and percent escapes decoded once.
+/// Remote/scheme/UNC destinations and non-regular files are never watched.
 #[must_use]
 pub fn referenced_local_paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let bytes = markdown.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b'(' {
-            i += 2;
-            let start = i;
-            while i < bytes.len() && !matches!(bytes[i], b')' | b'\n' | b' ' | b'"') {
-                i += 1;
-            }
-            if let Ok(dest) = std::str::from_utf8(&bytes[start..i]) {
-                let dest = dest.trim();
-                if is_local_dest(dest) {
-                    let path = base_dir.join(dest);
-                    if path.is_file() {
-                        push_unique(&mut out, path);
-                    }
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-    out
+    dependencies::paths(markdown, base_dir)
 }
 
 fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
@@ -275,15 +260,10 @@ fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn is_local_dest(dest: &str) -> bool {
-    if dest.is_empty() || dest.starts_with('#') {
-        return false;
-    }
-    let lower = dest.to_ascii_lowercase();
-    !lower.contains("://") && !lower.starts_with("mailto:") && !lower.starts_with("data:")
-}
-
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut file = std::fs::File::open(path).ok()?;
     let mut buf = [0u8; 8192];
     let mut hash = FNV_OFFSET;

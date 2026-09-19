@@ -24,7 +24,7 @@ export function findBookSource(project, query, { matchCase = true, chapter = nul
   if (chapter !== null && (chapter < 0 || chapter >= value.files.length)) {
     throw bookError("INVALID_SELECTION", "Choose an existing chapter to search.");
   }
-  const pattern = new RegExp(lines(query).split("\n").map(literal).join("(?:\\r\\n?|\\n)"), matchCase ? "gu" : "giu");
+  const pattern = new RegExp(lines(query).split("\n").map(literal).join("(?:\\r\\n|\\r(?!\\n)|\\n)"), matchCase ? "gu" : "giu");
   const matches = [];
   for (const [index, file] of value.files.entries()) {
     if (chapter !== null && chapter !== index) continue;

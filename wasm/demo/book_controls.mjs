@@ -1,5 +1,6 @@
 import { createBookCollection, readBookFiles, readBookProject, normalizeBookProject } from "./book_collection.mjs";
 import { bookError } from "../book_worker.mjs";
+import { bookEditorOffset } from "./book_source_search.mjs";
 
 /** UI orchestration is separately testable; the host supplies the real worker.
  * Nothing in this controller parses Markdown or inserts rendered HTML.
@@ -11,7 +12,9 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
     "title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers", "export-pdf", "export-epub", "export-site", "cancel-export", "download", "status"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${id}`)]));
   if (Object.values(el).some(value => !value)) throw new Error("Book controls are missing required elements.");
-  const unlisten = [];
+  const unlisten = [], sourceListeners = new Set();
+  let lastSourceBusy = false;
+  let composing = false;
   let disposed = false, active = 0, generation = 0, reading = false, preparing = false, url = null, published = null;
   const alive = () => { if (disposed) throw bookError("SESSION_DISPOSED", "Book controls are disposed."); };
   const options = () => ({ title: el.title.value, author: el.author.value, lang: el.lang.value,
@@ -26,6 +29,11 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
     for (const kind of ["pdf", "epub", "site"]) el[`export-${kind}`].disabled = !count || preparing || reading;
     for (const kind of ["import-files", "import-folder", "open-project"]) el[kind].disabled = reading;
     el["cancel-export"].disabled = !preparing;
+    const nextBusy = reading || composing;
+    if (lastSourceBusy !== nextBusy) {
+      lastSourceBusy = nextBusy;
+      for (const listener of sourceListeners) { try { listener(); } catch { /* Observers cannot block editing. */ } }
+    }
   }
   function revoke() {
     published = null; el.download.hidden = true;
@@ -119,6 +127,8 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   function invoke(work) { try { Promise.resolve(work()).catch(report); } catch (error) { report(error); } }
   function on(id, type, handler) { el[id].addEventListener(type, handler); unlisten.push(() => el[id].removeEventListener(type, handler)); }
   const unsubscribe = collection.subscribe(() => { invalidate(); list(); });
+  on("chapter-source", "compositionstart", () => { composing = true; buttons(); });
+  on("chapter-source", "compositionend", () => { composing = false; buttons(); });
   on("chapter-source", "input", () => invoke(capture)); on("chapter-path", "input", () => invoke(capture));
   for (const key of ["title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers"]) {
     on(key, key === "toc" || key === "page-numbers" || key === "font" || key === "dark-mode" ? "change" : "input", () => { invalidate(); invoke(capture); });
@@ -154,6 +164,35 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
   return Object.freeze({ prepare, prepareSource, importFiles,
     checkpoint() { alive(); return JSON.stringify([collection.revision, signature()]); },
     captureProject() { capture(); return collection.project(); },
+    get currentChapter() { alive(); return active; },
+    get sourceBusy() { alive(); return reading || composing; },
+    subscribeSourceState(listener) { alive(); sourceListeners.add(listener); return () => sourceListeners.delete(listener); },
+    /** Publish a validated source-only transaction without restoring a project
+     * or changing image authority. Every observer sees one complete revision. */
+    applySources(files, checkpoint) {
+      alive();
+      if (reading || composing) throw bookError("BOOK_BUSY", "Finish importing or composing text before changing book source.");
+      if (checkpoint !== JSON.stringify([collection.revision, signature()])) throw bookError("STALE_SOURCE", "The editor changed; no source transaction was installed.");
+      const editor = el["chapter-source"], start = editor.selectionStart, end = editor.selectionEnd, scroll = editor.scrollTop;
+      const revision = collection.replaceSources(files, collection.revision);
+      showChapter();
+      if (Number.isInteger(start) && Number.isInteger(end)) editor.setSelectionRange(Math.min(start, editor.value.length), Math.min(end, editor.value.length));
+      if (Number.isFinite(scroll)) editor.scrollTop = scroll;
+      return revision;
+    },
+    /** Search offsets address original source, not the textarea's normalized
+     * view. Validate everything before changing the active chapter or focus. */
+    selectSourceRange(index, start, end, checkpoint) {
+      alive();
+      if (reading || composing) throw bookError("BOOK_BUSY", "Finish importing or composing text before navigating source.");
+      if (checkpoint !== JSON.stringify([collection.revision, signature()])) throw bookError("STALE_SOURCE", "The editor changed; run the search again.");
+      const file = collection.files[index];
+      if (!Number.isInteger(index) || !file || start > end) throw bookError("INVALID_SELECTION", "Choose a valid source match.");
+      const from = bookEditorOffset(file.source, start), to = bookEditorOffset(file.source, end);
+      active = index; showChapter();
+      el["chapter-source"].focus(); el["chapter-source"].setSelectionRange(from, to);
+      el.status.textContent = `Selected source in ${file.path}. Search navigation did not change the book.`;
+    },
     replaceProject(project, checkpoint) {
       alive();
       if (reading) throw bookError("BOOK_BUSY", "A local import is in progress; recovery did not replace it.");
@@ -166,7 +205,7 @@ export function createBookControls({ root, worker, confirm = () => true, urls = 
     suspend() { if (!disposed) { collection.revokeImages(); el.status.textContent = "Source retained in memory; reauthorize images after returning to this page."; } },
     dispose() {
       if (disposed) return; disposed = true; invalidate(); unsubscribe();
-      for (const remove of unlisten) remove(); worker.dispose(); collection.dispose();
+      for (const remove of unlisten) remove(); sourceListeners.clear(); worker.dispose(); collection.dispose();
     }
   });
 }

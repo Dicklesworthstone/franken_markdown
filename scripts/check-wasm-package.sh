@@ -108,7 +108,7 @@ cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
 cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 # Copy every hand-written subpath entry and its runtime dependencies.
-for file in book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+for file in book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
@@ -123,7 +123,7 @@ cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
 cp wasm/demo/sample.md "$package_dir/demo/sample.md"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$package_dir/demo/"
-for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs flow-source.js flow_document.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
+for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs flow-source.js flow_document.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$package_dir/demo/$file"
 done
 

@@ -145,6 +145,9 @@
     "book_site_preview.mjs",
     "book_preview_frame.mjs",
     "demo/book_preview_controls.mjs",
-    "PREVIEW.md"
+    "PREVIEW.md",
+    "demo/book_source_search.mjs",
+    "demo/book_search_controls.mjs",
+    "BOOK_EDITING.md"
   ]
 }

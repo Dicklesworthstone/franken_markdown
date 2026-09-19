@@ -144,3 +144,8 @@ test("disposed collections reject source transactions", t => {
   const model = collection(t), revision = model.revision, files = model.files; model.dispose();
   assert.throws(() => model.replaceSources(files, revision), { code: "SESSION_DISPOSED" });
 });
+test("multiline literal matching never backtracks CRLF into two newline tokens", () => {
+  const source = "\r\n".repeat(200) + "tail";
+  assert.equal(findBookSource(project([source]), "\n".repeat(80) + "missing").matches.length, 0);
+  const result = findBookSource(project(["\r\nx"]), "\n\nx"); assert.equal(result.matches.length, 0);
+});

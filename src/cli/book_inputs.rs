@@ -22,6 +22,7 @@ const MAX_TOTAL_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 pub(super) struct LoadedBook {
+    root: PathBuf,
     pub book: Book,
     pub manifest: Manifest,
     pub source_bytes: Vec<usize>,
@@ -31,6 +32,14 @@ pub(super) struct LoadedBook {
 }
 
 pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> Result<LoadedBook, String> {
+    let mut loaded = load_sources(input, max_input_bytes)?;
+    load_images(&mut loaded, max_image_bytes)?;
+    Ok(loaded)
+}
+
+/// Discovery, role selection and expansion only. The check command never
+/// calls the image phase or inspects presentation configuration.
+pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedBook, String> {
     let root = input.canonicalize().map_err(|error| format!("opening {}: {error}", input.display()))?;
     if !root.is_dir() {
         return Err(format!("book input is not a directory: {}", input.display()));
@@ -99,11 +108,21 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
         inputs.push(BookInput { path: relative, source });
     }
     protected_paths.extend(include_paths.into_inner());
-    let mut book = build_book(&inputs).map_err(|error| error.to_string())?;
-    drop(inputs);
+    let book = build_book(&inputs).map_err(|error| error.to_string())?;
+    warnings.sort();
+    warnings.dedup();
+    Ok(LoadedBook { root, book, manifest, source_bytes, images: Vec::new(), warnings, protected_paths })
+}
+
+/// Load assets only after an optional source-navigation guard has passed.
+/// Rendering uses the already checked book; chapter files are not reread.
+pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Result<(), String> {
+    let root = &loaded.root;
+    let warnings = &mut loaded.warnings;
+    let protected_paths = &mut loaded.protected_paths;
     let mut requests = ImageRequests::default();
-    for chapter in &mut book.chapters {
-        discover_images(&mut chapter.doc.blocks, &chapter.path, &mut requests, &mut warnings)?;
+    for chapter in &mut loaded.book.chapters {
+        discover_images(&mut chapter.doc.blocks, &chapter.path, &mut requests, warnings)?;
     }
     let mut images = Vec::new();
     let mut total_images = 0usize;
@@ -113,7 +132,7 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
         if request_count > 4096 {
             return Err("book exceeds 4096 distinct image references".to_string());
         }
-        match read_regular(&root, &relative, max_image_bytes.min(32 * 1024 * 1024)) {
+        match read_regular(root, &relative, max_image_bytes.min(32 * 1024 * 1024)) {
             Ok((path, bytes)) => {
                 protected_paths.insert(path);
                 if !supported_image(&bytes) {
@@ -143,7 +162,8 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
     }
     warnings.sort();
     warnings.dedup();
-    Ok(LoadedBook { book, manifest, source_bytes, images, warnings, protected_paths })
+    loaded.images = images;
+    Ok(())
 }
 
 fn charge_read(total: &Cell<u64>, bytes: usize) -> Result<(), String> {

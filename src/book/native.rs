@@ -21,6 +21,8 @@ use crate::{Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions};
 mod manifest;
 #[path = "../cli/book_inputs.rs"]
 mod inputs;
+#[path = "native_check.rs"]
+mod preflight;
 
 const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -48,7 +50,7 @@ enum BookCommand {
 
 #[derive(Args)]
 struct BookArgs {
-    /// Input directory. book.toml can set metadata and chapter order.
+    /// Input directory. book.toml sets metadata, chapter order and include_only sources.
     #[arg(value_name = "DIR")]
     input: PathBuf,
     /// Output directory; PDF/EPUB also accept a path ending in .pdf/.epub.
@@ -60,6 +62,12 @@ struct BookArgs {
     /// HTML site, PDF, both, or one multi-chapter EPUB with packaged images.
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
+    /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage"])]
+    check_links: bool,
+    /// Refuse publication on expanded-navigation findings before rendering or writes.
+    #[arg(long, conflicts_with = "robot_triage")]
+    deny_broken_links: bool,
     /// Override the book title from book.toml or the first chapter.
     #[arg(long)]
     title: Option<String>,
@@ -126,6 +134,9 @@ pub fn main() -> ExitCode {
     }
     let _ = cli.no_color;
     let BookCommand::Book(args) = cli.command;
+    if args.check_links {
+        return preflight::run(&args, cli.json);
+    }
     match run(args, cli.no_config) {
         Ok(receipt) => {
             if cli.json {
@@ -186,8 +197,17 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         theme = theme.with_font(FontFamily::parse(font)
             .ok_or_else(|| error(64, "usage_error", "font must be sans or serif"))?);
     }
-    let mut loaded = inputs::load(&args.input, args.max_input_bytes, args.max_pdf_image_bytes)
-        .map_err(|e| error(66, "book_error", e))?;
+    let (mut loaded, link_check) = if args.deny_broken_links {
+        let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes)
+            .map_err(|e| error(66, "book_error", e))?;
+        let report = preflight::require_clean(&loaded.book)?;
+        inputs::load_images(&mut loaded, args.max_pdf_image_bytes)
+            .map_err(|e| error(66, "book_error", e))?;
+        (loaded, format!(",\"link_check\":{report}"))
+    } else {
+        (inputs::load(&args.input, args.max_input_bytes, args.max_pdf_image_bytes)
+            .map_err(|e| error(66, "book_error", e))?, String::new())
+    };
     let first = loaded.book.chapters.first().ok_or_else(|| error(66, "book_error", "empty book"))?;
     let frontmatter = first.frontmatter.as_ref();
     let title = args.title.clone().or_else(|| loaded.manifest.title.clone())
@@ -303,7 +323,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     }).collect();
     let output_json: Vec<_> = outputs.iter().map(|path| json_string(&path.display().to_string())).collect();
     let warnings: Vec<_> = loaded.warnings.iter().map(|warning| json_string(warning)).collect();
-    let json = format!("{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]}}",
+    let json = format!("{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]{link_check}}}",
         json_string(args.to.as_str()), json_string(&args.input.display().to_string()), loaded.book.chapters.len(),
         files.join(","), output_json.join(","), warnings.join(","));
     Ok(Receipt { json, chapters: loaded.book.chapters.len(), outputs, warnings: loaded.warnings })
@@ -527,5 +547,25 @@ mod tests {
         assert!(page_count >= 2);
         assert!(receipt.json.contains(&format!("\"pages\":{page_count},")));
         assert_eq!(receipt.outputs.len(), 1);
+    }
+
+    #[test]
+    fn check_parser_accepts_defaults_but_refuses_explicit_publication_options() {
+        let cli = BookCli::try_parse_from([
+            "fmd", "--json", "book", "missing", "--check-links", "--max-input-bytes", "128",
+        ]).unwrap();
+        let BookCommand::Book(args) = cli.command;
+        assert!(args.check_links && !args.deny_broken_links);
+        assert_eq!(args.max_input_bytes, 128);
+        for extra in [
+            vec!["--out", "x.epub"], vec!["--out-dir", "site"], vec!["--to", "both"],
+            vec!["--css", "missing.css"], vec!["--font", "serif"], vec!["--title", "Title"],
+            vec!["--author", "Ada"], vec!["--lang", "fr"], vec!["--max-pdf-image-bytes", "1"],
+            vec!["--deny-broken-links"], vec!["--robot-triage"],
+        ] {
+            let mut args = vec!["fmd", "book", "missing", "--check-links"];
+            args.extend(extra);
+            assert!(BookCli::try_parse_from(args.clone()).is_err(), "accepted {args:?}");
+        }
     }
 }

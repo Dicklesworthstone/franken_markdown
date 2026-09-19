@@ -95,3 +95,6 @@ cargo test
 The authoring environment for this change has no local Rust toolchain or DSR
 executable. These Rust tests are committed but were not executed there; no
 native or generated-WASM pass is inferred from source inspection.
+
+For read-only expanded-navigation reports and the opt-in fail-before-write
+publication guard, see `NATIVE_BOOK_CHECKS.md`.

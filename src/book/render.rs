@@ -6,11 +6,13 @@ use super::{Book, BookInput, build_book, inject_book_nav, merge, out_name, paths
 use crate::wasm::WasmRenderOptions;
 use crate::{
     Block, Document, HtmlOptions, Inline, PdfImageAsset, PdfOptions, RenderError, Result,
-    ZipWriter, build_search_index, render_html_document, search_index_json,
+    ZipWriter, render_html_document,
 };
 
 #[path = "pdf_links.rs"]
 mod pdf_links;
+#[path = "site_search.rs"]
+pub(crate) mod site_search;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -186,7 +188,7 @@ pub(super) fn render_book_pdf_counted(book: &Book, options: &PdfOptions) -> Resu
 }
 
 /// Render a self-contained HTML page per chapter, shared navigation, a landing
-/// page, and a chapter-addressed search index into one deterministic ZIP.
+/// page, an offline search page, and a chapter-addressed search index into one deterministic ZIP.
 ///
 /// Each page receives its chapter title and optional frontmatter language.
 /// The book-level title labels the landing page. The search index nests the
@@ -221,7 +223,8 @@ pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
     let mut page_options = options.clone();
     let mut archive = ZipWriter::new();
     let mut total = 0usize;
-    let mut search = String::from("{\"schema\":\"fmd-book-search-index-v1\",\"chapters\":[");
+    let search = site_search::index_json(book)?;
+    add_site_bytes(&mut total, search.len())?;
     for (index, chapter) in chapters.iter_mut().enumerate() {
         paths::rewrite_for_site(&mut chapter.doc, &known);
         resolve_images(&mut chapter.doc.blocks, &sources[index], &keys);
@@ -231,25 +234,17 @@ pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
             .or_else(|| options.lang.clone());
         let html = render_html_document(&chapter.doc, &page_options)?;
         let html = inject_book_nav(&html, book, &chapter.out_name);
+        let html = site_search::inject_link(&html);
         add_site_bytes(&mut total, html.len())?;
         archive.add_deflated(&chapter.out_name, html.as_bytes());
-        if index > 0 {
-            search.push(',');
-        }
-        let document_index = search_index_json(&build_search_index(&chapter.doc));
-        search.push_str(&format!(
-            "{{\"source\":{},\"page\":{},\"title\":{},\"index\":{}}}",
-            json_string(&sources[index]), json_string(&chapter.out_name),
-            json_string(&chapter.title), document_index,
-        ));
-        if search.len() > MAX_SITE_BYTES.saturating_sub(total) {
-            return Err(invalid("HTML site exceeds the 256 MiB uncompressed limit"));
-        }
     }
-    search.push_str("]}");
-    add_site_bytes(&mut total, search.len())?;
     archive.add_deflated("search-index.json", search.as_bytes());
     let first = &book.chapters[0];
+    let search_page = site_search::page(
+        &search, options.title.as_deref().unwrap_or(&first.title), options.lang.as_deref(),
+    )?;
+    add_site_bytes(&mut total, search_page.len())?;
+    archive.add_deflated(site_search::PAGE_NAME, search_page.as_bytes());
     let first_name = super::escape_attr_pub(&first.out_name);
     let title = super::escape_text_pub(options.title.as_deref().unwrap_or(&first.title));
     let landing = format!(

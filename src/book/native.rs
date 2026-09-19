@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use super::render::site_search;
 use crate::config::FmdConfig;
 use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::{Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions};
@@ -223,6 +224,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     let mut pages = 0u64;
     if matches!(args.to, BookTarget::Html | BookTarget::Both) {
         let book_lang = html_options.lang.clone();
+        let book_title = html_options.title.clone();
         for chapter in &loaded.book.chapters {
             let mut doc = chapter.doc.clone();
             super::rewrite_links_for_site(&mut doc, &known);
@@ -232,12 +234,19 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             let html = crate::render_html_document(&doc, &html_options)
                 .map_err(|e| error(70, "html_render_error", e))?;
             let html = super::inject_book_nav(&html, &loaded.book, &chapter.out_name);
+            let html = site_search::inject_link(&html);
             add_output(&mut rendered, &mut output_bytes, paths.site.join(&chapter.out_name), html.into_bytes())?;
         }
         html_options.lang = book_lang;
         // Restore the book title before a PDF in a combined export.
-        html_options.title = args.title.clone().or_else(|| loaded.manifest.title.clone())
-            .or_else(|| loaded.book.chapters.first().map(|chapter| chapter.title.clone()));
+        html_options.title = book_title;
+        let search = site_search::index_json(&loaded.book)
+            .map_err(|e| error(70, "book_search_error", e))?;
+        let search_page = site_search::page(
+            &search, html_options.title.as_deref().unwrap_or("Book"), html_options.lang.as_deref(),
+        ).map_err(|e| error(70, "book_search_error", e))?;
+        add_output(&mut rendered, &mut output_bytes, paths.site.join("search-index.json"), search.into_bytes())?;
+        add_output(&mut rendered, &mut output_bytes, paths.site.join(site_search::PAGE_NAME), search_page.into_bytes())?;
         let first = &loaded.book.chapters[0];
         let name = super::escape_attr_pub(&first.out_name);
         let title = super::escape_text_pub(&first.title);
@@ -256,14 +265,10 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             image_assets: std::mem::take(&mut html_options.image_assets),
             ..PdfOptions::default()
         };
-        let doc = super::book_pdf_document_with_assets(&loaded.book, &pdf_options.image_assets)
+        let (bytes, emitted_pages) = super::render::render_book_pdf_counted(&loaded.book, &pdf_options)
             .map_err(|e| error(70, "pdf_render_error", e))?;
-        let profile = crate::render_pdf_document_profiled(&doc, &pdf_options)
-            .map_err(|e| error(70, "pdf_render_error", e))?;
-        pages = profile.stages.iter().find(|stage| stage.stage == "page_content_stream_generation")
-            .or_else(|| profile.stages.iter().find(|stage| stage.stage == "pagination"))
-            .map_or(0, |stage| stage.count as u64);
-        add_output(&mut rendered, &mut output_bytes, paths.pdf, profile.bytes)?;
+        pages = emitted_pages;
+        add_output(&mut rendered, &mut output_bytes, paths.pdf, bytes)?;
     }
     if args.to == BookTarget::Epub {
         let bytes = crate::epub::render_book_epub(&loaded.book, &html_options)
@@ -441,5 +446,86 @@ mod tests {
         let cli = BookCli::try_parse_from(["fmd", "book", "missing", "--to", "epub", "--out", "-"]).unwrap();
         let BookCommand::Book(args) = cli.command;
         assert_eq!(run(args, true).err().unwrap().code, 64);
+    }
+
+    struct TestDirectory(PathBuf);
+    impl Drop for TestDirectory {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn fixture() -> TestDirectory {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        for _ in 0..100 {
+            let path = std::env::temp_dir().join(format!(
+                "fmd-native-publish-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    let dir = TestDirectory(path);
+                    let input = dir.0.join("chapters");
+                    std::fs::create_dir(&input).unwrap();
+                    std::fs::write(input.join("first.md"), "# First\n\n[Next](second.md#target)\n").unwrap();
+                    std::fs::write(input.join("second.md"), "# Target\n\nSearchable second chapter.\n").unwrap();
+                    return dir;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("creating test directory: {error}"),
+            }
+        }
+        panic!("could not allocate a test directory");
+    }
+
+    #[test]
+    fn native_html_publishes_the_offline_search_page_and_machine_index() {
+        let dir = fixture();
+        let input = dir.0.join("chapters");
+        let output = dir.0.join("site");
+        let cli = BookCli::try_parse_from([
+            "fmd", "book", input.to_str().unwrap(), "--to", "html", "--title", "Test book",
+            "--out-dir", output.to_str().unwrap(),
+        ]).unwrap();
+        let BookCommand::Book(args) = cli.command;
+        let receipt = run(args, true).unwrap_or_else(|e| panic!("{}", e.message));
+        let search = std::fs::read_to_string(output.join(site_search::PAGE_NAME)).unwrap();
+        assert!(search.contains("<title>Search — Test book</title>"));
+        assert!(search.contains("id=\"search-data\""));
+        let index = std::fs::read_to_string(output.join("search-index.json")).unwrap();
+        assert!(index.contains("\"source\":\"second.md\",\"page\":\"second.html\""));
+        for name in ["first.html", "second.html"] {
+            let page = std::fs::read_to_string(output.join(name)).unwrap();
+            assert!(page.contains("href=\"./~fmd-search.html\""));
+        }
+        assert_eq!(receipt.outputs.len(), 5);
+        assert!(receipt.json.contains("~fmd-search.html"));
+    }
+
+    #[test]
+    fn native_pdf_uses_bound_book_navigation_and_actual_emitted_page_count() {
+        let dir = fixture();
+        let input = dir.0.join("chapters");
+        let output = dir.0.join("book.pdf");
+        let loaded = inputs::load(&input, 64 * 1024 * 1024, 32 * 1024 * 1024)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let options = PdfOptions {
+            theme: FmdConfig::default().to_theme(),
+            title: Some("Test book".into()),
+            toc: true,
+            page_numbers: true,
+            metadata_epoch_seconds: metadata_epoch().unwrap_or_else(|e| panic!("{}", e.message)),
+            image_assets: loaded.images.clone(),
+            ..PdfOptions::default()
+        };
+        let (expected, page_count) = super::super::render::render_book_pdf_counted(&loaded.book, &options).unwrap();
+        let cli = BookCli::try_parse_from([
+            "fmd", "book", input.to_str().unwrap(), "--to", "pdf", "--title", "Test book",
+            "--out", output.to_str().unwrap(),
+        ]).unwrap();
+        let BookCommand::Book(args) = cli.command;
+        let receipt = run(args, true).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(std::fs::read(output).unwrap(), expected);
+        assert!(page_count >= 2);
+        assert!(receipt.json.contains(&format!("\"pages\":{page_count},")));
+        assert_eq!(receipt.outputs.len(), 1);
     }
 }

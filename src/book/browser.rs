@@ -136,7 +136,7 @@ impl FmdBook {
     }
 
     /// Add or replace one image keyed by its book-relative destination.
-    /// For `guide/start.md` containing `![chart](figure.svg)`, supply
+    /// For `guide/start.md` containing `figure.svg`, supply
     /// `guide/figure.svg`. Different chapters may use the same basename.
     ///
     /// # Errors
@@ -196,6 +196,17 @@ impl FmdBook {
     #[wasm_bindgen(js_name = renderSite)]
     pub fn render_site(&self) -> Result<Vec<u8>, JsValue> {
         self.renderer.render_site().map_err(to_js)
+    }
+
+    /// Check local HTML navigation on the retained, expanded book. Returns
+    /// fmd-book-link-report-v1 JSON without rendering pages or inspecting assets.
+    /// External URLs and non-chapter downloads are counted, not verified.
+    ///
+    /// # Errors
+    /// Rejects invalid books or validation/report budget overruns.
+    #[wasm_bindgen(js_name = validateLinks)]
+    pub fn validate_links(&self) -> Result<String, JsValue> {
+        self.renderer.validate_links().and_then(|report| report.to_json()).map_err(to_js)
     }
 }
 

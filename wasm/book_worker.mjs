@@ -1,16 +1,17 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
-import { prepareBookInput } from "./book_session.mjs";
+import { prepareBookInput, bookLinkOptions } from "./book_session.mjs";
 const LIMIT = 128 * 1024 * 1024;
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
   epub: ["renderBookEpub", "application/epub+zip", "epub"],
   site: ["renderBookSite", "application/zip", "zip"],
   preview: ["renderBookPreview", "application/json", "json"],
-  inspection: ["inspectBook", "application/json", "json"]
+  inspection: ["inspectBook", "application/json", "json"],
+  links: ["checkBookLinks", "application/json", "json"]
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
-  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview or inspection.");
+  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, inspection or links.");
   return formats[format];
 }
 function checkedOutput(bytes, sourceLength, maximum) {
@@ -106,7 +107,7 @@ export function createBookWorkerClient({ workerFactory, timeoutMs = 120000, maxO
         signal?.addEventListener("abort", onAbort, { once: true });
         if (settled) return;
         if (signal?.aborted) { onAbort(); return; }
-        input = prepareBookInput(files, format === "inspection" ? {} : options);
+        input = prepareBookInput(files, format === "inspection" ? {} : format === "links" ? bookLinkOptions(options) : options);
         if (settled) return;
         if (signal?.aborted) { onAbort(); return; }
         // Transfer only private copies, never detach caller-owned assets.
@@ -152,7 +153,7 @@ export function installBookWorker(scope, engine) {
         throw bookError("INVALID_OPTIONS", "Invalid output limit.");
       }
       busy = true; owned = true;
-      const input = prepareBookInput(data.files, data.format === "inspection" ? {} : data.options);
+      const input = prepareBookInput(data.files, data.format === "inspection" ? {} : data.format === "links" ? bookLinkOptions(data.options) : data.options);
       const result = await engine[method](input.files, input.options);
       checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
       // Transfer only the returned view, never a larger backing WASM memory.

@@ -1,6 +1,6 @@
-import type { BookFile, BookOptions, BookOutput } from "./book.js";
+import type { BookFile, BookOptions, BookOutput, BookLinksOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
-export type BookWorkerFormat = BookFormat | "preview" | "inspection";
+export type BookWorkerFormat = BookFormat | "preview" | "inspection" | "links";
 export interface BookPreviewOutput {
   readonly format: "book-preview";
   readonly mimeType: "application/json";
@@ -33,8 +33,12 @@ export interface BookWorker {
    * images and fonts are ignored and are not transferred to the worker. */
   render(files: readonly BookFile[], format: "inspection", options?: BookOptions,
     request?: { signal?: AbortSignal }): Promise<BookInspectionOutput>;
+  /** Expanded local HTML navigation checks. Includes are captured; images,
+   * fonts and presentation settings are ignored and never transferred. */
+  render(files: readonly BookFile[], format: "links", options?: BookOptions,
+    request?: { signal?: AbortSignal }): Promise<Omit<BookLinksOutput, "filename">>;
   render(files: readonly BookFile[], format: BookWorkerFormat, options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<Omit<BookOutput, "filename"> | BookPreviewOutput | BookInspectionOutput>;
+    request?: { signal?: AbortSignal }): Promise<Omit<BookOutput, "filename"> | BookPreviewOutput | BookInspectionOutput | Omit<BookLinksOutput, "filename">>;
   /** Terminates the running worker. The client can render again afterward. */
   cancel(): void;
   /** Idempotent; also cancels the current export. */

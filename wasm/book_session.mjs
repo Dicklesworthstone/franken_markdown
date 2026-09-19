@@ -167,6 +167,13 @@ export function prepareBookInput(files, options = {}) {
   return { files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })), options: settings };
 }
 
+/** Navigation checks need source/expansion policy only. Do not even read
+ * image/font/CSS getters on this path, much less clone or transfer their bytes. */
+export function bookLinkOptions(options = {}) {
+  record(options, "options");
+  return { includeSources: options.includeSources, expandIncludes: options.expandIncludes };
+}
+
 function output(bytes, kind, sourceLength) {
   if (!(bytes instanceof Uint8Array)) throw new TypeError("renderer did not return Uint8Array bytes");
   const [format, mimeType, extension] = {
@@ -215,6 +222,24 @@ export function createBookBindings(loadBookClass) {
     renderSite() {
       const raw = this.#live();
       return output(raw.renderSite(), "site", raw.sourceLength);
+    }
+    validateLinks() {
+      const raw = this.#live();
+      if (typeof raw.validateLinks !== "function") {
+        throw new Error("this WASM build lacks FmdBook.validateLinks; rebuild the matching package for book link checks");
+      }
+      let json;
+      try { json = raw.validateLinks(); }
+      catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      bookTextBytes(json, 4 * 1024 * 1024);
+      if (!json) throw new Error("book link checker returned an empty report");
+      const bytes = new TextEncoder().encode(json), sourceLength = raw.sourceLength;
+      return Object.freeze({ format: "book-links", mimeType: "application/json", extension: "json", bytes, sourceLength,
+        blob: () => new Blob([bytes], { type: "application/json" }),
+        filename: (baseName = "book-links") => `${String(baseName)}.json` });
     }
     dispose() {
       const raw = this.#raw;
@@ -281,6 +306,53 @@ export function createBookBindings(loadBookClass) {
     createBook,
     renderBookPdf: (files, options) => once(files, options, "renderPdf"),
     renderBookEpub: (files, options) => once(files, options, "renderEpub"),
-    renderBookSite: (files, options) => once(files, options, "renderSite")
+    renderBookSite: (files, options) => once(files, options, "renderSite"),
+    checkBookLinks: async (files, options) => once(files, bookLinkOptions(options), "validateLinks")
   });
+}
+
+/** Decode a link report against canonical chapter paths from a captured host
+ * collection. This validates the wire contract, not Markdown. Summary totals
+ * are recomputed; no engine-supplied optimistic verdict reaches the reader. */
+export function parseBookLinkReport(bytes, expectedPaths) {
+  const invalid = () => Object.assign(new Error("The book link checker returned an invalid or mismatched report."), { code: "INVALID_LINK_REPORT" });
+  const maximum = 4 * 1024 * 1024;
+  if (!(bytes instanceof Uint8Array) || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
+      || bytes.byteLength === 0 || bytes.byteLength > maximum
+      || !Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > MAX_CHAPTERS) throw invalid();
+  const integer = value => {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 250000) throw invalid();
+    return value;
+  };
+  const text = (value, limit) => {
+    try { bookTextBytes(value, limit); } catch { throw invalid(); }
+    return value;
+  };
+  const codes = new Set(["missing_chapter", "missing_anchor", "ambiguous_anchor", "invalid_fragment", "invalid_local_destination", "missing_footnote"]);
+  let value;
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw invalid(); }
+  if (!value || value.schema !== "fmd-book-link-report-v1" || value.scope !== "expanded-html-navigation"
+      || !Array.isArray(value.chapters) || value.chapters.length !== expectedPaths.length) throw invalid();
+  const seen = new Set(), summary = { chapters: expectedPaths.length, checked: 0, external: 0, unchecked: 0, findings: 0 };
+  const chapters = Array.from(value.chapters, (chapter, index) => {
+    if (!chapter || typeof chapter !== "object") throw invalid();
+    const path = text(chapter.path, 4096);
+    if (!path || path !== expectedPaths[index] || seen.has(path)) throw invalid();
+    seen.add(path);
+    const checked = integer(chapter.checked), external = integer(chapter.external), unchecked = integer(chapter.unchecked);
+    if (!Array.isArray(chapter.findings) || chapter.findings.length > checked || chapter.findings.length > 4096) throw invalid();
+    const findings = Array.from(chapter.findings, finding => {
+      if (!finding || !codes.has(finding.code)) throw invalid();
+      const destination = text(finding.destination, 8192), message = text(finding.message, 1024);
+      if (!message) throw invalid();
+      return Object.freeze({ code: finding.code, destination, message });
+    });
+    for (const [key, count] of Object.entries({ checked, external, unchecked, findings: findings.length })) {
+      summary[key] = integer(summary[key] + count);
+    }
+    if (summary.findings > 4096 || summary.checked + summary.external + summary.unchecked > 250000) throw invalid();
+    return Object.freeze({ path, checked, external, unchecked, findings: Object.freeze(findings) });
+  });
+  return Object.freeze({ schema: value.schema, scope: value.scope, chapters: Object.freeze(chapters), summary: Object.freeze(summary) });
 }

@@ -12,3 +12,5 @@ export const createBook = bindings.createBook;
 export const renderBookPdf = bindings.renderBookPdf;
 export const renderBookEpub = bindings.renderBookEpub;
 export const renderBookSite = bindings.renderBookSite;
+export const checkBookLinks = bindings.checkBookLinks;
+export { parseBookLinkReport } from "./book_session.mjs";

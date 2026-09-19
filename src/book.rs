@@ -20,6 +20,8 @@ mod merge;
 mod paths;
 #[path = "book/render.rs"]
 mod render;
+#[path = "book/validation.rs"]
+pub mod validation;
 
 pub use render::{
     BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site,

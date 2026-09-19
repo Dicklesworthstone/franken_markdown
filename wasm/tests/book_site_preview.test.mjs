@@ -108,3 +108,32 @@ test("navigation uses only engine-attested flat pages and decoded fragments", as
     assert.equal(resolveBookPreviewLink(preview, chapter.page, href), null, href);
   }
 });
+
+for (const method of [0, 8]) test(`method ${method}: current search-enabled sites retain only chapter pages`, async () => {
+  const source = entries([other, chapter]);
+  source.splice(3, 0, ["~fmd-search.html", '<!doctype html><script>throw new Error("never execute search here")</script>']);
+  const bytes = archive(source, method);
+  const preview = await decodeBookSiteArchive(bytes);
+  assert.deepEqual(preview.pages.map(page => page.path), [other.page, chapter.page]);
+  assert.equal(preview.pages[1].html, source[0][1]);
+  assert.equal(resolveBookPreviewLink(preview, chapter.page, "./~fmd-search.html"), null);
+  const output = await renderBookPreview({ async renderBookSite() { return { bytes, sourceLength: 19 }; } }, [], {});
+  assert.deepEqual(parseBookPreview(output.bytes), preview);
+  assert.equal(output.sourceLength, 19);
+});
+test("all 128 chapters plus the three generated auxiliary files are admitted", async () => {
+  const chapters = Array.from({ length: 128 }, (_, i) => ({ source: `${i}.md`, page: `${i}.html`, title: `Chapter ${i}` }));
+  const source = chapters.map(chapter => [chapter.page, `<h1>${chapter.title}</h1>`]);
+  source.push(["index.html", "Landing"], ["search-index.json", JSON.stringify({ schema: "fmd-book-search-index-v1", chapters })], ["~fmd-search.html", "Search"]);
+  assert.equal((await decodeBookSiteArchive(archive(source, 0))).pages.length, 128);
+});
+test("auxiliary pages cannot masquerade as indexed chapters or bypass integrity checks", async () => {
+  const source = entries(); source.push(["~fmd-search.html", "Search"]);
+  source[2][1] = JSON.stringify({ schema: "fmd-book-search-index-v1", chapters: [chapter, { ...other, page: "~fmd-search.html" }] });
+  await rejects(archive(source));
+  const extra = entries(); extra.push(["unindexed.html", "Not attested"]); await rejects(archive(extra));
+  const duplicate = entries(); duplicate.push(["~fmd-search.html", "One"], ["~fmd-search.html", "Two"]); await rejects(archive(duplicate));
+  const malformed = entries(); malformed.push(["~fmd-search.html", new Uint8Array([0xc0, 0x80])]); await rejects(archive(malformed));
+  const preview = await decodeBookSiteArchive(archive(entries()));
+  assert.throws(() => parseBookPreview(encode(JSON.stringify({ ...preview, pages: [{ ...preview.pages[0], path: "~fmd-search.html" }] }))), { code: "INVALID_BOOK_PREVIEW" });
+});

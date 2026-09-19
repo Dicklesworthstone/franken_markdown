@@ -4,6 +4,9 @@ export const BOOK_PREVIEW_LIMITS = Object.freeze({ archiveBytes: 64 * 1024 * 102
   pageBytes: 8 * 1024 * 1024, totalBytes: 32 * 1024 * 1024,
   messageBytes: 64 * 1024 * 1024, chapters: 128 });
 const L = BOOK_PREVIEW_LIMITS;
+// Generated host pages are not chapters and must never become iframe targets.
+// Older engine archives omit the optional offline search page.
+const auxiliaryNames = new Set(["index.html", "search-index.json", "~fmd-search.html"]);
 const error = (code, message) => Object.assign(new Error(message), { code });
 const invalid = () => error("INVALID_BOOK_PREVIEW", "The renderer returned an invalid or unsupported book-site archive.");
 const limit = () => error("PREVIEW_LIMIT", "This book exceeds the preview budget. Export its site, PDF or EPUB instead.");
@@ -40,7 +43,7 @@ function pageName(value) {
   // Rust emits flat, portable output names; source-directory resolution is not
   // guessed here. Only names attested by the generated search index can open.
   if (!value || /[\\/\x00-\x20\x7f<>:"|?*#%]/.test(value) || !value.endsWith(".html")
-      || value === "index.html" || value.startsWith(".")) throw invalid();
+      || auxiliaryNames.has(value) || value.startsWith(".")) throw invalid();
   return value;
 }
 function decode(bytes) { try { return decoder.decode(bytes); } catch { throw invalid(); } }
@@ -55,7 +58,7 @@ function directory(bytes) {
   const end = bytes.length - 22;
   if (end < 0 || u32(end) !== 0x06054b50 || u16(end + 4) || u16(end + 6) || u16(end + 20)) throw invalid();
   const count = u16(end + 10), start = u32(end + 16), size = u32(end + 12);
-  if (count < 3 || count > L.chapters + 2) throw limit();
+  if (count < 3 || count > L.chapters + auxiliaryNames.size) throw limit();
   if (u16(end + 8) !== count || start + size !== end) throw invalid();
   const entries = [], names = new Set(); let at = start, localEnd = 0, total = 0;
   for (let i = 0; i < count; i++) {
@@ -66,7 +69,7 @@ function directory(bytes) {
         || u16(at + 30) || u16(at + 32) || u16(at + 34) || !nameLength || nameLength > 255
         || at + 46 + nameLength > end || local !== localEnd || local + 30 + nameLength > start) throw invalid();
     const name = decode(bytes.subarray(at + 46, at + 46 + nameLength));
-    if (name !== "index.html" && name !== "search-index.json") pageName(name);
+    if (!auxiliaryNames.has(name)) pageName(name);
     const folded = name.toLowerCase(); if (names.has(folded)) throw invalid(); names.add(folded);
     if (length > L.pageBytes || (total += length) > L.totalBytes) throw limit();
     if (u32(local) !== 0x04034b50 || u16(local + 4) !== u16(at + 6) || u16(local + 6) !== 0x800
@@ -119,8 +122,9 @@ export async function decodeBookSiteArchive(value) {
   }
   let index;
   try { index = JSON.parse(contents.get("search-index.json")); } catch { throw invalid(); }
+  const chapterEntries = entries.filter(entry => !auxiliaryNames.has(entry.name));
   if (!index || index.schema !== "fmd-book-search-index-v1" || !Array.isArray(index.chapters)
-      || index.chapters.length !== entries.length - 2) throw invalid();
+      || index.chapters.length !== chapterEntries.length) throw invalid();
   const pages = index.chapters.map(chapter => ({ path: chapter?.page, source: chapter?.source,
     title: chapter?.title, html: contents.get(chapter?.page) }));
   return checkedPreview({ schema: "fmd-book-preview-v1", pages });

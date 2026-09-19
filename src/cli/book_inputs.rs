@@ -48,9 +48,11 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Manifest::default(),
         Err(error) => return Err(format!("reading book.toml: {error}")),
     };
-    let order = chapter_order(&discovered, &manifest.order)?;
+    let order = chapter_order(&discovered, &manifest.order, &manifest.include_only)?;
     if order.is_empty() {
-        return Err(format!("no Markdown files found in {}", input.display()));
+        let message = if discovered.is_empty() { "no Markdown files found" }
+            else { "no published Markdown chapters remain after include_only selection" };
+        return Err(format!("{message} in {}", input.display()));
     }
     let mut inputs = Vec::with_capacity(order.len());
     let mut source_bytes = Vec::with_capacity(order.len());
@@ -60,6 +62,11 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
     // allowing a short expansion to hide unbounded resolver I/O.
     let include_paths = std::cell::RefCell::new(BTreeSet::new());
     let per_file = max_input_bytes.min(MAX_TOTAL_SOURCE_BYTES);
+    // Declared sources retain overwrite protection even when no chapter uses
+    // them. Validate their identity without reading unused Markdown bodies.
+    for relative in &manifest.include_only {
+        protected_paths.insert(regular_path(&root, relative, per_file)?);
+    }
     for relative in order {
         let (path, bytes) = read_regular(&root, &relative, per_file)?;
         charge_read(&read_bytes, bytes.len())?;
@@ -194,7 +201,19 @@ fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<BTreeSet<String>,
     Ok(chapters)
 }
 
-fn chapter_order(discovered: &BTreeSet<String>, requested: &[String]) -> Result<Vec<String>, String> {
+fn chapter_order(
+    discovered: &BTreeSet<String>, requested: &[String], include_only: &[String],
+) -> Result<Vec<String>, String> {
+    let mut resources = BTreeSet::new();
+    for name in include_only {
+        let name = relative_path("", name)?;
+        if !resources.insert(name.clone()) {
+            return Err(format!("book.toml: duplicate include_only source {name:?}"));
+        }
+        if !discovered.contains(&name) {
+            return Err(format!("book.toml: include_only source {name:?} is not a discovered regular Markdown file"));
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut ordered = Vec::with_capacity(discovered.len());
     for name in requested {
@@ -205,9 +224,12 @@ fn chapter_order(discovered: &BTreeSet<String>, requested: &[String]) -> Result<
         if !discovered.contains(&name) {
             return Err(format!("book.toml: chapter {name:?} is not a discovered regular Markdown file"));
         }
+        if resources.contains(&name) {
+            return Err(format!("book.toml: {name:?} cannot be both an ordered chapter and an include_only source"));
+        }
         ordered.push(name);
     }
-    ordered.extend(discovered.iter().filter(|path| !seen.contains(*path)).cloned());
+    ordered.extend(discovered.iter().filter(|path| !seen.contains(*path) && !resources.contains(*path)).cloned());
     Ok(ordered)
 }
 
@@ -239,7 +261,7 @@ fn relative_path(parent: &str, requested: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
-fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec<u8>), String> {
+fn regular_path(root: &Path, relative: &str, limit: u64) -> Result<PathBuf, String> {
     let relative = relative_path("", relative)?;
     let mut path = root.to_path_buf();
     for component in relative.split('/') {
@@ -258,6 +280,11 @@ fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec
     if !canonical.starts_with(root) {
         return Err(format!("book path escapes root: {relative}"));
     }
+    Ok(canonical)
+}
+
+fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec<u8>), String> {
+    let canonical = regular_path(root, relative, limit)?;
     let file = fs::File::open(&canonical).map_err(|error| format!("opening {relative}: {error}"))?;
     let metadata = file.metadata().map_err(|error| format!("reading {relative}: {error}"))?;
     if !metadata.is_file() || metadata.len() > limit {
@@ -388,9 +415,9 @@ mod tests {
     #[test]
     fn manifest_order_is_explicit_with_lexical_remainder() {
         let files = BTreeSet::from(["a.md".into(), "b.md".into(), "z.md".into()]);
-        assert_eq!(chapter_order(&files, &["z.md".into()]).unwrap(), ["z.md", "a.md", "b.md"]);
-        assert!(chapter_order(&files, &["missing.md".into()]).is_err());
-        assert!(chapter_order(&files, &["a.md".into(), "./a.md".into()]).is_err());
+        assert_eq!(chapter_order(&files, &["z.md".into()], &[]).unwrap(), ["z.md", "a.md", "b.md"]);
+        assert!(chapter_order(&files, &["missing.md".into()], &[]).is_err());
+        assert!(chapter_order(&files, &["a.md".into(), "./a.md".into()], &[]).is_err());
     }
 
     #[test]
@@ -406,5 +433,29 @@ mod tests {
         charge_read(&total, 1).unwrap();
         assert!(charge_read(&total, 1).is_err());
         assert_eq!(total.get(), MAX_TOTAL_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn include_only_paths_are_removed_without_reordering_other_chapters() {
+        let files = BTreeSet::from([
+            "a.md".into(), "b.md".into(), "parts/共享.md".into(), "z.md".into(),
+        ]);
+        let order = chapter_order(&files, &["z.md".into()], &["./parts/共享.md".into()]).unwrap();
+        assert_eq!(order, ["z.md", "a.md", "b.md"]);
+        assert_eq!(files.len(), 4, "selection must not alter discovery");
+    }
+
+    #[test]
+    fn include_only_rejects_unknown_duplicate_escaping_and_conflicting_roles() {
+        let files = BTreeSet::from(["a.md".into(), "parts/shared.md".into()]);
+        for resources in [
+            vec!["missing.md".into()], vec!["../outside.md".into()],
+            vec!["parts/shared.md".into(), "./parts/shared.md".into()],
+            vec!["/parts/shared.md".into()],
+        ] {
+            assert!(chapter_order(&files, &[], &resources).is_err(), "{resources:?}");
+        }
+        assert!(chapter_order(&files, &["parts/shared.md".into()], &["parts\\shared.md".into()]).is_err());
+        assert!(chapter_order(&files, &[], &files.iter().cloned().collect::<Vec<_>>()).unwrap().is_empty());
     }
 }

@@ -1,4 +1,4 @@
-//! The supported `book.toml` schema: metadata strings and an ordered path list.
+//! The supported `book.toml` schema: metadata, chapter order, and include-only sources.
 //! Parsing is quote-aware, so commas, brackets and `#` inside filenames are
 //! data, not array delimiters or comments. Unsupported keys fail explicitly.
 
@@ -8,6 +8,8 @@ pub(super) struct Manifest {
     pub author: Option<String>,
     pub lang: Option<String>,
     pub order: Vec<String>,
+    /// Discovered Markdown sources that may be included but are not chapters.
+    pub include_only: Vec<String>,
 }
 
 pub(super) fn parse(source: &str) -> Result<Manifest, String> {
@@ -22,12 +24,12 @@ pub(super) fn parse(source: &str) -> Result<Manifest, String> {
             parser.bump();
         }
         if start == parser.at {
-            return Err(parser.error("expected a metadata or order key"));
+            return Err(parser.error("expected a metadata, order, or include_only key"));
         }
         let key = &source[start..parser.at];
         let canonical = if key == "chapters" { "order" } else { key };
-        if !matches!(canonical, "title" | "author" | "lang" | "order") {
-            return Err(parser.error(&format!("unsupported key {key:?}; use title, author, lang, order")));
+        if !matches!(canonical, "title" | "author" | "lang" | "order" | "include_only") {
+            return Err(parser.error(&format!("unsupported key {key:?}; use title, author, lang, order, include_only")));
         }
         if !keys.insert(canonical) {
             return Err(parser.error(&format!("duplicate {canonical} key")));
@@ -39,6 +41,7 @@ pub(super) fn parse(source: &str) -> Result<Manifest, String> {
             "title" => result.title = Some(parser.string()?),
             "author" => result.author = Some(parser.string()?),
             "lang" => result.lang = Some(parser.string()?),
+            "include_only" => result.include_only = parser.array()?,
             _ => result.order = parser.array()?,
         }
         parser.horizontal();
@@ -163,7 +166,7 @@ impl Parser<'_> {
         }
         loop {
             if values.len() == 4096 {
-                return Err(self.error("more than 4096 chapter entries"));
+                return Err(self.error("more than 4096 path entries"));
             }
             values.push(self.string()?);
             self.space();
@@ -176,7 +179,7 @@ impl Parser<'_> {
                         return Ok(values);
                     }
                 }
-                _ => return Err(self.error("expected ',' or ']' in chapter array")),
+                _ => return Err(self.error("expected ',' or ']' in path array")),
             }
         }
     }
@@ -219,5 +222,28 @@ mod tests {
             let error = parse(source).unwrap_err();
             assert!(error.starts_with("book.toml:"), "{source}: {error}");
         }
+    }
+
+    #[test]
+    fn include_only_is_an_independent_quote_aware_path_array() {
+        let manifest = parse(
+            "order=['start.md']\ninclude_only=[\n'parts/a,b#].md', # shared\n\"parts/\\u4e2d.md\",\n]\n",
+        ).unwrap();
+        assert_eq!(manifest.order, ["start.md"]);
+        assert_eq!(manifest.include_only, ["parts/a,b#].md", "parts/中.md"]);
+        assert!(parse("title='Old book'\n").unwrap().include_only.is_empty());
+    }
+
+    #[test]
+    fn include_only_rejects_duplicate_keys_invalid_values_and_over_budget_arrays() {
+        for source in [
+            "include_only='parts.md'", "include_only=[1]",
+            "include_only=[]\ninclude_only=[]", "include_only=['x.md' 'y.md']",
+        ] {
+            assert!(parse(source).is_err(), "accepted {source}");
+        }
+        let entries = std::iter::repeat_n("'part.md'", 4096).collect::<Vec<_>>().join(",");
+        assert!(parse(&format!("include_only=[{entries}]")).is_ok());
+        assert!(parse(&format!("include_only=[{entries},'one-more.md']")).is_err());
     }
 }

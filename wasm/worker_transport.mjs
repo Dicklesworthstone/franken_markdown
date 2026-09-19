@@ -245,6 +245,23 @@ export class OwnedWorkerRpc {
   }
 }
 
+// Only a bounded, recognized diagnostic is evidence of a recoverable
+// application error. Anything else may follow an incomplete remote mutation.
+function workerDiagnostic(error) {
+  const fallback = { code: "WORKER_OPERATION_FAILED", message: "worker operation failed", fatal: true };
+  try {
+    // Engine/host exceptions are not structured-cloned yet. Read accessors
+    // once, and fail closed if describing an exception itself throws.
+    const code = error?.code;
+    const message = error?.message;
+    const fatal = error?.fatal;
+    const recognized = typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code);
+    return { code: recognized ? code : fallback.code,
+      message: typeof message === "string" ? message.slice(0, 4096) : fallback.message,
+      fatal: !recognized || fatal === true };
+  } catch { return fallback; }
+}
+
 /** Install on a dedicated-worker endpoint. No method lookup/eval/import is
  * driven by message contents: dispatch is an explicit application callback.
  * The supported client sends one request at a time, so no remote queue grows. */
@@ -252,10 +269,11 @@ export function serveOwnedWorker(endpoint, dispatch) {
   let busy = false;
   let closed = false;
   let previousId = 0;
-  const sendError = (id, error, fatal) => {
-    const code = typeof error?.code === "string" && /^[A-Z0-9_]{1,64}$/.test(error.code)
-      ? error.code : "WORKER_OPERATION_FAILED";
-    const message = typeof error?.message === "string" ? error.message.slice(0, 4096) : "worker operation failed";
+  const sendError = (id, error, forceFatal = false) => {
+    const detail = workerDiagnostic(error);
+    const fatal = forceFatal || detail.fatal;
+    if (fatal) closed = true;
+    const { code, message } = detail;
     try { endpoint.postMessage({ protocol: WORKER_PROTOCOL, id, ok: false, fatal, error: { code, message } }); }
     catch { closed = true; }
   };
@@ -277,9 +295,10 @@ export function serveOwnedWorker(endpoint, dispatch) {
     try {
       result = await dispatch(request.method, request.args);
     } catch (error) {
-      const fatal = typeof error?.code !== "string" || error.fatal === true;
-      if (fatal) closed = true;
-      sendError(request.id, error, fatal);
+      // Disposal or a protocol violation may close the endpoint while the
+      // dispatcher awaits. Never publish a second terminal acknowledgment.
+      if (closed) return;
+      sendError(request.id, error);
       busy = false;
       return;
     }

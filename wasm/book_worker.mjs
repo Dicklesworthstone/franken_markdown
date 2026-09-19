@@ -26,8 +26,11 @@ function diagnostic(error) {
   if (typeof error === "string" && error.length <= 4096) {
     try { error = JSON.parse(error); } catch { error = null; }
   }
-  return { code: typeof error?.code === "string" ? error.code.slice(0, 80) : "BOOK_ERROR",
-    message: typeof error?.message === "string" ? error.message.slice(0, 2048) : "Book rendering failed." };
+  try {
+    const code = error?.code, message = error?.message;
+    return { code: typeof code === "string" ? code.slice(0, 80) : "BOOK_ERROR",
+      message: typeof message === "string" ? message.slice(0, 2048) : "Book rendering failed." };
+  } catch { return { code: "BOOK_ERROR", message: "Book rendering failed." }; }
 }
 
 /** One worker per export. Cancellation terminates synchronous Rust work, not
@@ -47,34 +50,38 @@ export function createBookWorkerClient({ workerFactory, timeoutMs = 120000, maxO
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
-    if (signal && (typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function")) {
+    if (signal !== undefined && (signal === null || typeof signal.aborted !== "boolean"
+        || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function")) {
       throw bookError("INVALID_OPTIONS", "signal must be an AbortSignal.");
     }
     if (signal?.aborted) throw bookError("EXPORT_CANCELLED", "Book export cancelled before starting.");
-    const input = prepareBookInput(files, format === "inspection" ? {} : options);
-    // Only these private copies are transferred. The caller can edit/revoke its
-    // assets immediately, without mutating the captured export or losing bytes.
-    const transfer = [...input.options.images, ...input.options.fontAssets].map(asset => asset.bytes.buffer);
     const id = ++serial;
     return new Promise((resolve, reject) => {
-      let worker = null, timer = null, settled = false;
+      let worker = null, timer = null, settled = false, retired = false;
       const onAbort = () => finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
-      function finish(error, result) {
-        if (settled) return;
-        settled = true; clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
-        if (active?.id === id) active = null;
-        if (worker) {
-          try {
-            worker.removeEventListener("message", onMessage);
-            worker.removeEventListener("error", onError);
-            worker.removeEventListener("messageerror", onError);
-          } catch { /* A failed factory must still settle the export. */ }
-          try { worker.terminate(); } catch { /* Promise still settles on a dead worker. */ }
+      function retireWorker() {
+        if (!worker || retired) return;
+        retired = true;
+        for (const [kind, listener] of [["message", onMessage], ["error", onError], ["messageerror", onError]]) {
+          try { worker.removeEventListener(kind, listener); }
+          catch { /* Attempt every detach even when a host adapter fails. */ }
         }
-        if (error) reject(error); else resolve(result);
+        try {
+          const terminated = worker.terminate();
+          if (terminated && typeof terminated.catch === "function") terminated.catch(() => {});
+        } catch { /* Settlement cannot depend on a dead worker's cleanup. */ }
+      }
+      function finish(error, result, failed = error !== null) {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (active?.id === id) active = null;
+        try { signal?.removeEventListener("abort", onAbort); }
+        catch { /* A signal adapter cannot retain the active export slot. */ }
+        retireWorker();
+        if (failed) reject(error); else resolve(result);
       }
       function onError(event) {
-        event.preventDefault?.();
+        try { event.preventDefault?.(); } catch { /* Still report the failure. */ }
         finish(bookError("WORKER_FAILED", "Book worker could not load or execute. Rebuild the matching WASM package and retry."));
       }
       function onMessage(event) {
@@ -89,15 +96,34 @@ export function createBookWorkerClient({ workerFactory, timeoutMs = 120000, maxO
           const bytes = data.bytes;
           finish(null, Object.freeze({ format: `book-${format}`, bytes, sourceLength: data.sourceLength, mimeType, extension,
             blob: () => new Blob([bytes], { type: mimeType }) }));
-        } catch (error) { finish(error); }
+        } catch (error) { finish(error, undefined, true); }
       }
+      // Reserve the slot before option/chapter getters, signal adapters, or
+      // the factory can reenter render(), cancel(), or dispose().
       active = { id, finish };
+      let input, transfer;
+      try {
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (settled) return;
+        if (signal?.aborted) { onAbort(); return; }
+        input = prepareBookInput(files, format === "inspection" ? {} : options);
+        if (settled) return;
+        if (signal?.aborted) { onAbort(); return; }
+        // Transfer only private copies, never detach caller-owned assets.
+        transfer = [...input.options.images, ...input.options.fontAssets].map(asset => asset.bytes.buffer);
+      } catch (error) { finish(error, undefined, true); return; }
       try {
         worker = workerFactory();
-        worker.addEventListener("message", onMessage); worker.addEventListener("error", onError);
-        worker.addEventListener("messageerror", onError);
-        signal?.addEventListener("abort", onAbort, { once: true });
-        if (signal?.aborted) { onAbort(); return; }
+        // The factory may cancel before it returns the worker we now own.
+        if (settled) { retireWorker(); return; }
+        if (!worker || ["postMessage", "terminate", "addEventListener", "removeEventListener"]
+            .some(method => typeof worker[method] !== "function")) {
+          throw bookError("WORKER_FAILED", "workerFactory must return an owned Worker-compatible endpoint.");
+        }
+        for (const [kind, listener] of [["message", onMessage], ["error", onError], ["messageerror", onError]]) {
+          worker.addEventListener(kind, listener);
+          if (settled) return;
+        }
         timer = setTimeout(() => finish(bookError("EXPORT_TIMEOUT", "Book export exceeded its time budget; the worker was terminated.")), timeoutMs);
         worker.postMessage({ schemaVersion: 1, id, format, ...input, maxOutputBytes }, transfer);
       } catch (error) { finish(bookError("WORKER_FAILED", diagnostic(error).message)); }

@@ -138,7 +138,7 @@ export class OwnedWorkerRpc {
         // rejected promise with an orphan left in the queue.
         const position = this.#queue.indexOf(entry);
         if (position >= 0) this.#queue.splice(position, 1);
-        this.#finish(entry, error);
+        this.#finish(entry, error, undefined, true);
       }
       this.#pump();
       return promise;
@@ -168,7 +168,7 @@ export class OwnedWorkerRpc {
     }
   }
 
-  #finish(entry, error, value) {
+  #finish(entry, error, value, failed = error !== null) {
     if (entry.done) return;
     entry.done = true;
     if (entry.timer !== null) clearTimeout(entry.timer);
@@ -176,7 +176,7 @@ export class OwnedWorkerRpc {
     entry.payload = null;
     try { entry.signal?.removeEventListener("abort", entry.onAbort); }
     catch { /* A signal adapter cannot prevent settlement or retain capacity. */ }
-    if (error) entry.reject(error); else entry.resolve(value);
+    if (failed) entry.reject(error); else entry.resolve(value);
   }
 
   #cancel(entry, code) {

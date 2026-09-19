@@ -151,6 +151,9 @@
     "BOOK_EDITING.md",
     "book_inspection.mjs",
     "demo/book_inspection_controls.mjs",
-    "INSPECTION.md"
+    "INSPECTION.md",
+    "demo/flow_file_session.mjs",
+    "demo/flow_file_controls.mjs",
+    "FILES.md"
   ]
 }

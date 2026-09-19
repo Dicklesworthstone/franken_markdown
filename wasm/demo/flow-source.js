@@ -2,11 +2,13 @@
 // when its WASM artifact, worker startup or Canvas renderer cannot load.
 import { createSourceControls, createSourceEditingControls } from "./flow_document.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
+import { createFileControls } from "./flow_file_controls.mjs";
 
 const source = document.querySelector("#source"), filename = document.querySelector("#source-filename");
 const status = document.querySelector("#source-status");
-let controls = null, drafts = null, editing = null, retained = null;
+let controls = null, drafts = null, editing = null, files = null, retained = null;
 function start() {
+  files?.dispose(); files = null;
   controls?.dispose(); drafts?.dispose(); editing?.dispose();
   const initial = retained && retained.view === source.value && retained.document.filename === filename.value
     ? retained.document : undefined;
@@ -26,6 +28,8 @@ function start() {
     replacement: document.querySelector("#source-replacement"), replace: document.querySelector("#source-replace"),
     replaceAll: document.querySelector("#source-replace-all"), status: document.querySelector("#source-edit-status")
   });
+  try { files = createFileControls({ root: document, window, controls, sourceEditor: source, filename }); }
+  catch { status.textContent = "Direct file saving is unavailable. Source import and Markdown downloads remain available."; }
   drafts = createDraftControls({ sourceEditor: source, filename,
     remember: document.querySelector("#remember-draft"), refresh: document.querySelector("#refresh-draft"),
     restore: document.querySelector("#restore-draft"), forget: document.querySelector("#forget-draft"),
@@ -42,6 +46,7 @@ window.addEventListener("pagehide", event => {
   if (event.persisted) {
     try { retained = { document: controls.snapshot(), view: source.value }; } catch { retained = null; }
   }
+  files?.dispose(); files = null;
   controls?.dispose(); drafts?.dispose(); editing?.dispose(); controls = null; drafts = null; editing = null;
 });
 window.addEventListener("pageshow", event => { if (event.persisted) start(); });

@@ -16,11 +16,13 @@
 //! receive only paths and canonical parent origins.
 
 use crate::{RenderError, Result};
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 const INCLUDE_PREFIX: &str = "{{#include";
 const MAX_DEPTH: usize = 16;
 const MAX_RESOLUTIONS: usize = 4096;
+const MAX_MAPPING_SPANS: usize = 262_144;
 
 /// Default expanded-document byte budget (64 MiB).
 pub const DEFAULT_MAX_EXPANDED_BYTES: usize = 64 * 1024 * 1024;
@@ -80,9 +82,171 @@ pub fn expand_includes_with_limit(
         stack: Vec::new(),
         resolutions: 0,
         max_output_bytes,
+        mapping: None,
     };
-    expansion.expand(src, 0, "<input>", false)?;
+    expansion.expand(src, 0, "<input>", false, 0)?;
     Ok(expansion.output)
+}
+
+/// A contiguous segment of expanded output and its original source bytes.
+/// Segments tile the output in order; removed directives and anchor marker
+/// lines have no segment. `source_id` indexes [`ExpandedDocument::sources`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpansionSpan {
+    pub expanded: Range<usize>,
+    pub source_id: usize,
+    pub original: Range<usize>,
+    /// True only for separators inserted by expansion. Their original range
+    /// is empty and points to the end of the selected source fragment.
+    pub generated: bool,
+}
+
+/// Expanded Markdown plus an exact byte map to canonical host source keys.
+/// Source keys are interned in deterministic first-visit order. No source file
+/// contents are retained or reread; hosts retain their own immutable snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedDocument {
+    pub text: String,
+    pub sources: Vec<String>,
+    pub spans: Vec<ExpansionSpan>,
+}
+
+/// An original position corresponding to one expanded UTF-8 character boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpansionLocation<'a> {
+    pub origin: &'a str,
+    pub byte_offset: usize,
+    pub generated: bool,
+}
+
+impl ExpandedDocument {
+    /// Resolve an expanded byte offset in O(log(number of spans)). Returns
+    /// `None` for EOF, out-of-bounds positions, and UTF-8 continuation bytes.
+    /// Generated separators resolve to the selected fragment's original end,
+    /// with `generated = true`, rather than claiming an invented source byte.
+    #[must_use]
+    pub fn source_at(&self, offset: usize) -> Option<ExpansionLocation<'_>> {
+        if offset >= self.text.len() || !self.text.is_char_boundary(offset) {
+            return None;
+        }
+        let index = self.spans.partition_point(|span| span.expanded.end <= offset);
+        let span = self.spans.get(index)?;
+        if !span.expanded.contains(&offset) {
+            return None;
+        }
+        let byte_offset = if span.generated {
+            span.original.start
+        } else {
+            let original = span.original.start.checked_add(offset - span.expanded.start)?;
+            if original >= span.original.end {
+                return None;
+            }
+            original
+        };
+        Some(ExpansionLocation {
+            origin: self.sources.get(span.source_id)?,
+            byte_offset,
+            generated: span.generated,
+        })
+    }
+}
+
+/// Expand Markdown and retain original-file byte positions for diagnostics,
+/// selections, and preview navigation, using the default 64 MiB output limit.
+/// `root_origin` is the canonical key of `src` and is passed to the resolver
+/// for root-level includes. It is metadata, not filesystem authorization.
+///
+/// # Errors
+/// All errors from [`expand_includes`]. Also rejects source maps exceeding
+/// 262,144 non-coalescible spans. No partial text or mapping is returned.
+pub fn expand_includes_mapped(
+    src: &str,
+    root_origin: &str,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
+) -> Result<ExpandedDocument> {
+    expand_includes_mapped_with_limit(src, root_origin, resolver, DEFAULT_MAX_EXPANDED_BYTES)
+}
+
+/// As [`expand_includes_mapped`], with an explicit expanded-byte budget.
+/// Existing string-only APIs use the same engine without allocating a map.
+///
+/// # Errors
+/// Same errors as [`expand_includes_mapped`], using `max_output_bytes`.
+pub fn expand_includes_mapped_with_limit(
+    src: &str,
+    root_origin: &str,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
+    max_output_bytes: usize,
+) -> Result<ExpandedDocument> {
+    let mut expansion = Expansion {
+        resolver,
+        output: String::with_capacity(src.len().min(max_output_bytes)),
+        stack: Vec::new(),
+        resolutions: 0,
+        max_output_bytes,
+        mapping: Some(ExpansionMapping::default()),
+    };
+    expansion.expand(src, 0, root_origin, false, 0)?;
+    let mapping = expansion.mapping.unwrap_or_default();
+    Ok(ExpandedDocument {
+        text: expansion.output,
+        sources: mapping.sources,
+        spans: mapping.spans,
+    })
+}
+
+#[derive(Default)]
+struct ExpansionMapping {
+    sources: Vec<String>,
+    ids: BTreeMap<String, usize>,
+    spans: Vec<ExpansionSpan>,
+}
+
+impl ExpansionMapping {
+    fn source_id(&mut self, origin: &str) -> usize {
+        if let Some(&id) = self.ids.get(origin) {
+            return id;
+        }
+        let id = self.sources.len();
+        self.sources.push(origin.to_string());
+        self.ids.insert(origin.to_string(), id);
+        id
+    }
+
+    fn record(
+        &mut self,
+        expanded: Range<usize>,
+        source_id: usize,
+        original: Range<usize>,
+        generated: bool,
+    ) -> Result<()> {
+        if expanded.is_empty() {
+            return Ok(());
+        }
+        if let Some(last) = self.spans.last_mut() {
+            let adjacent = if generated {
+                last.original == original
+            } else {
+                last.original.end == original.start
+            };
+            if last.source_id == source_id && last.generated == generated
+                && last.expanded.end == expanded.start && adjacent
+            {
+                last.expanded.end = expanded.end;
+                if !generated {
+                    last.original.end = original.end;
+                }
+                return Ok(());
+            }
+        }
+        if self.spans.len() == MAX_MAPPING_SPANS {
+            return Err(RenderError::InvalidInput(format!(
+                "include_map_budget: more than {MAX_MAPPING_SPANS} source mapping spans"
+            )));
+        }
+        self.spans.push(ExpansionSpan { expanded, source_id, original, generated });
+        Ok(())
+    }
 }
 
 struct Expansion<'a> {
@@ -91,6 +255,7 @@ struct Expansion<'a> {
     stack: Vec<ActiveInclude>,
     resolutions: usize,
     max_output_bytes: usize,
+    mapping: Option<ExpansionMapping>,
 }
 
 struct ActiveInclude {
@@ -100,12 +265,29 @@ struct ActiveInclude {
 }
 
 impl Expansion<'_> {
-    fn append(&mut self, text: &str) -> Result<()> {
+    fn source_id(&mut self, origin: &str) -> usize {
+        self.mapping.as_mut().map(|mapping| mapping.source_id(origin)).unwrap_or(0)
+    }
+
+    fn append(
+        &mut self,
+        text: &str,
+        source_id: usize,
+        original_start: usize,
+        generated: bool,
+    ) -> Result<()> {
         if text.len() > self.max_output_bytes.saturating_sub(self.output.len()) {
             return Err(RenderError::InvalidInput(format!(
                 "include_size: expanded document exceeds {} bytes",
                 self.max_output_bytes
             )));
+        }
+        if let Some(mapping) = &mut self.mapping {
+            let original_end = if generated { original_start } else { original_start + text.len() };
+            mapping.record(
+                self.output.len()..self.output.len() + text.len(), source_id,
+                original_start..original_end, generated,
+            )?;
         }
         self.output.push_str(text);
         Ok(())
@@ -117,17 +299,22 @@ impl Expansion<'_> {
         depth: usize,
         origin: &str,
         strip_anchors: bool,
+        source_offset: usize,
     ) -> Result<()> {
         if depth > MAX_DEPTH {
             return Err(RenderError::InvalidInput(format!(
                 "include_depth: include nesting exceeds {MAX_DEPTH} levels (origin {origin})"
             )));
         }
+        let source_id = self.source_id(origin);
         if !strip_anchors && !has_includes(src) {
-            return self.append(src);
+            return self.append(src, source_id, source_offset, false);
         }
+        let mut line_offset = source_offset;
         let mut fence: Option<(u8, usize)> = None;
         for line in src.split_inclusive('\n') {
+            let original_start = line_offset;
+            line_offset += line.len();
             if strip_anchors && anchor_marker(line).is_some() {
                 continue;
             }
@@ -139,28 +326,28 @@ impl Expansion<'_> {
                 }) {
                     fence = None;
                 }
-                self.append(line)?;
+                self.append(line, source_id, original_start, false)?;
                 continue;
             }
             if let Some((marker, length, tail)) = candidate {
                 if marker == b'~' || !tail.contains('`') {
                     fence = Some((marker, length));
-                    self.append(line)?;
+                    self.append(line, source_id, original_start, false)?;
                     continue;
                 }
             }
             if indented_code(line) {
-                self.append(line)?;
+                self.append(line, source_id, original_start, false)?;
                 continue;
             }
             let trimmed = line.trim();
             let Some(rest) = trimmed.strip_prefix(INCLUDE_PREFIX) else {
-                self.append(line)?;
+                self.append(line, source_id, original_start, false)?;
                 continue;
             };
             // A longer directive name is ordinary text, not an include.
             if rest.chars().next().is_some_and(|ch| !ch.is_whitespace() && ch != '}') {
-                self.append(line)?;
+                self.append(line, source_id, original_start, false)?;
                 continue;
             }
             let target = rest.strip_suffix("}}").map(str::trim).filter(|p| !p.is_empty())
@@ -201,12 +388,14 @@ impl Expansion<'_> {
                 label,
             });
             let result = self.expand(
-                &content[range], depth + 1, &resolved, matches!(selection, Selection::Anchor(_)),
+                &content[range.clone()], depth + 1, &resolved,
+                matches!(selection, Selection::Anchor(_)), range.start,
             );
             self.stack.pop();
             result?;
             if !self.output[start..].ends_with('\n') {
-                self.append("\n")?;
+                let included_source_id = self.source_id(&resolved);
+                self.append("\n", included_source_id, range.end, true)?;
             }
         }
         Ok(())
@@ -698,5 +887,167 @@ mod tests {
     fn unrelated_directive_names_are_literal() {
         let source = "{{#included part}}\n{{#includefoo}}\n";
         assert_eq!(expand_includes(source, &resolver(&[])).unwrap(), source);
+    }
+    fn assert_exact_map(document: &ExpandedDocument, originals: &[(&str, &str)]) {
+        let originals: BTreeMap<_, _> = originals.iter().copied().collect();
+        let mut covered = 0;
+        for span in &document.spans {
+            assert_eq!(span.expanded.start, covered, "mapping must tile the output");
+            assert!(span.expanded.start < span.expanded.end);
+            let original = originals[document.sources[span.source_id].as_str()];
+            assert!(original.is_char_boundary(span.original.start));
+            assert!(original.is_char_boundary(span.original.end));
+            if span.generated {
+                assert!(span.original.is_empty());
+                assert!(document.text[span.expanded.clone()].bytes().all(|byte| byte == b'\n'));
+            } else {
+                assert_eq!(&document.text[span.expanded.clone()], &original[span.original.clone()]);
+            }
+            covered = span.expanded.end;
+        }
+        assert_eq!(covered, document.text.len());
+        for (offset, _) in document.text.char_indices() {
+            let location = document.source_at(offset).expect("all characters have an origin");
+            assert!(originals[location.origin].is_char_boundary(location.byte_offset));
+        }
+        assert!(document.source_at(document.text.len()).is_none());
+    }
+
+    #[test]
+    fn mapped_plain_source_coalesces_and_rejects_non_character_positions() {
+        let source = "α\r\nplain\n";
+        let document = expand_includes_mapped(source, "root.md", &resolver(&[])).unwrap();
+        assert_eq!(document.text, source);
+        assert_eq!(document.sources, ["root.md"]);
+        assert_eq!(document.spans.len(), 1);
+        assert_eq!(document.spans[0].original, 0..source.len());
+        assert_eq!(document.source_at(0), Some(ExpansionLocation {
+            origin: "root.md", byte_offset: 0, generated: false,
+        }));
+        assert!(document.source_at(1).is_none(), "inside a UTF-8 scalar");
+        assert!(document.source_at(usize::MAX).is_none());
+        assert_exact_map(&document, &[("root.md", source)]);
+    }
+
+    #[test]
+    fn nested_expansion_maps_original_files_offsets_and_generated_separators() {
+        let root = "root\r\n{{#include a}}\r\nend\n";
+        let a = "α\n{{#include b:2}}\nω";
+        let b = "skip\n中";
+        let resolve = resolver(&[("a", a), ("b", b)]);
+        let document = expand_includes_mapped(root, "root.md", &resolve).unwrap();
+        assert_eq!(document.text, "root\r\nα\n中\nω\nend\n");
+        assert_eq!(document.sources, ["root.md", "a", "b"]);
+        for (text, origin, byte_offset) in [
+            ("α", "a", 0), ("中", "b", b.find('中').unwrap()),
+            ("ω", "a", a.find('ω').unwrap()), ("end", "root.md", root.find("end").unwrap()),
+        ] {
+            assert_eq!(document.source_at(document.text.find(text).unwrap()),
+                Some(ExpansionLocation { origin, byte_offset, generated: false }));
+        }
+        let separator = document.text.find('中').unwrap() + '中'.len_utf8();
+        assert_eq!(document.source_at(separator), Some(ExpansionLocation {
+            origin: "b", byte_offset: b.len(), generated: true,
+        }));
+        assert_exact_map(&document, &[("root.md", root), ("a", a), ("b", b)]);
+    }
+
+    #[test]
+    fn mapped_selectors_keep_full_file_offsets_across_stripped_markers() {
+        let part = concat!(
+            "outside\n<!-- ANCHOR: x -->\nα\n// ANCHOR: nested\n",
+            "β\n// ANCHOR_END: nested\n<!-- ANCHOR_END: x -->\n"
+        );
+        let root = "{{#include part:x}}";
+        let document = expand_includes_mapped(root, "root", &resolver(&[("part", part)])).unwrap();
+        assert_eq!(document.text, "α\nβ\n");
+        assert_eq!(document.spans.len(), 2, "removed marker bytes must not be coalesced");
+        for ch in ['α', 'β'] {
+            assert_eq!(document.source_at(document.text.find(ch).unwrap()),
+                Some(ExpansionLocation { origin: "part", byte_offset: part.find(ch).unwrap(), generated: false }));
+        }
+        assert_exact_map(&document, &[("root", root), ("part", part)]);
+        let root = "{{#include part:3:3}}";
+        let line = expand_includes_mapped(root, "root", &resolver(&[("part", part)])).unwrap();
+        assert_eq!(line.text, "α\n");
+        assert_eq!(line.spans[0].original.start, part.find('α').unwrap());
+        assert_exact_map(&line, &[("root", root), ("part", part)]);
+    }
+
+    #[test]
+    fn repeated_includes_intern_origins_without_merging_distinct_source_occurrences() {
+        let root = "{{#include part}}\n{{#include part}}\n";
+        let resolve = resolver(&[("part", "data\n")]);
+        let document = expand_includes_mapped(root, "root", &resolve).unwrap();
+        assert_eq!(document.sources, ["root", "part"]);
+        assert_eq!(document.spans.len(), 2);
+        assert_eq!(document.spans[0].original, document.spans[1].original);
+        assert_exact_map(&document, &[("root", root), ("part", "data\n")]);
+        assert_eq!(document, expand_includes_mapped(root, "root", &resolve).unwrap());
+        assert_eq!(document.text, expand_includes(root, &resolve).unwrap());
+    }
+
+    #[test]
+    fn empty_sources_and_empty_includes_have_truthful_maps() {
+        let resolve = resolver(&[("empty", "")]);
+        let empty = expand_includes_mapped_with_limit("", "root", &resolve, 0).unwrap();
+        assert_eq!(empty.sources, ["root"]);
+        assert!(empty.text.is_empty() && empty.spans.is_empty());
+        assert!(empty.source_at(0).is_none());
+        let root = "{{#include empty}}";
+        let document = expand_includes_mapped(root, "root", &resolve).unwrap();
+        assert_eq!(document.text, "\n");
+        assert_eq!(document.source_at(0), Some(ExpansionLocation {
+            origin: "empty", byte_offset: 0, generated: true,
+        }));
+        assert_exact_map(&document, &[("root", root), ("empty", "")]);
+        assert!(expand_includes_mapped_with_limit(root, "root", &resolve, 0).is_err());
+    }
+
+    #[test]
+    fn mapped_literal_code_keeps_one_root_span_without_resolver_calls() {
+        let source = "```md\n{{#include missing:x}}\n```\n    {{#include missing:2}}\n";
+        let calls = Cell::new(0usize);
+        let resolve = |_: &str, _: &str| -> ResolveResult {
+            calls.set(calls.get() + 1);
+            Ok(None)
+        };
+        let document = expand_includes_mapped(source, "root", &resolve).unwrap();
+        assert_eq!(calls.get(), 0);
+        assert_eq!(document.text, source);
+        assert_eq!(document.spans.len(), 1);
+        assert_exact_map(&document, &[("root", source)]);
+    }
+
+    #[test]
+    fn mapping_preserves_custom_root_context_and_legacy_budget_behavior() {
+        let source = "{{#include child:2}}";
+        let resolve = |path: &str, origin: &str| -> ResolveResult {
+            assert_eq!(path, "child");
+            assert_eq!(origin, "docs/root.md");
+            Ok(Some(("skip\n中".into(), "docs/child.md".into())))
+        };
+        let document = expand_includes_mapped(source, "docs/root.md", &resolve).unwrap();
+        assert_eq!(document.sources, ["docs/root.md", "docs/child.md"]);
+        let resolve = resolver(&[("child", "skip\n中")]);
+        for budget in 0..=5 {
+            let plain = expand_includes_with_limit(source, &resolve, budget).map_err(|e| e.to_string());
+            let mapped = expand_includes_mapped_with_limit(source, "<input>", &resolve, budget)
+                .map(|document| document.text).map_err(|e| e.to_string());
+            assert_eq!(plain, mapped, "byte budget {budget}");
+        }
+    }
+
+    #[test]
+    fn mapping_budget_limits_metadata_but_allows_adjacent_coalescing() {
+        let span = ExpansionSpan { expanded: 0..1, source_id: 0, original: 0..1, generated: false };
+        let mut mapping = ExpansionMapping {
+            spans: vec![span; MAX_MAPPING_SPANS], ..ExpansionMapping::default()
+        };
+        mapping.record(1..2, 0, 1..2, false).unwrap();
+        assert_eq!(mapping.spans.len(), MAX_MAPPING_SPANS);
+        let error = mapping.record(2..3, 1, 0..1, false).unwrap_err().to_string();
+        assert!(error.contains("include_map_budget"));
+        assert_eq!(mapping.spans.last().unwrap().expanded, 0..2);
     }
 }

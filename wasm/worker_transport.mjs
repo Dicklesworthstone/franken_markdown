@@ -17,7 +17,7 @@ export function workerLimits(options = {}) {
     throw failure("INVALID_OPTIONS", "worker limits must be an object");
   }
   for (const key of Object.keys(options)) {
-    if (!(key in defaults)) throw failure("INVALID_OPTIONS", `unknown worker limit: ${key}`);
+    if (!Object.hasOwn(defaults, key)) throw failure("INVALID_OPTIONS", `unknown worker limit: ${key}`);
   }
   const result = { ...defaults, ...options };
   for (const [key, min, max] of [
@@ -77,7 +77,17 @@ export class OwnedWorkerRpc {
       error: () => this.#stop(failure("WORKER_FAILED", "worker failed; this session cannot be reused")),
       messageerror: () => this.#stop(failure("WORKER_PROTOCOL_ERROR", "worker response could not be decoded"))
     };
-    for (const [kind, listener] of Object.entries(this.#listeners)) worker.addEventListener(kind, listener);
+    try {
+      for (const [kind, listener] of Object.entries(this.#listeners)) {
+        if (this.#closed) throw failure("WORKER_FAILED", "worker failed during initialization");
+        worker.addEventListener(kind, listener);
+      }
+      if (this.#closed) throw failure("WORKER_FAILED", "worker failed during initialization");
+    } catch {
+      const error = failure("WORKER_FAILED", "could not initialize the owned worker endpoint");
+      this.#stop(error);
+      throw error;
+    }
   }
 
   get closed() { return this.#closed; }
@@ -100,20 +110,36 @@ export class OwnedWorkerRpc {
         this.#stop(failure("WORKER_PROTOCOL_ERROR", "worker request identity counter exhausted"));
         throw failure("WORKER_PROTOCOL_ERROR", "worker request identity counter exhausted");
       }
-      const payload = prepare();
       let resolve, reject;
       const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
       const entry = {
-        id: this.#nextId++, method, payload, bytes: retainedBytes, resolve, reject,
+        id: this.#nextId++, method, payload: null, ready: false, bytes: retainedBytes, resolve, reject,
         signal: control.signal, onAbort: null, timer: null, done: false
       };
       entry.onAbort = () => this.#cancel(entry, "ABORTED");
       this.#bytes += retainedBytes;
       this.#queue.push(entry);
-      entry.signal?.addEventListener("abort", entry.onAbort, { once: true });
-      if (control.timeoutMs !== 0) entry.timer = setTimeout(() => this.#cancel(entry, "TIMEOUT"), control.timeoutMs);
-      // A custom signal can become aborted while its listener is attached.
-      if (entry.signal?.aborted) this.#cancel(entry, "ABORTED");
+      // Reserve both budgets and FIFO position BEFORE invoking caller code.
+      // A snapshot or signal adapter can reenter request(), cancel, or dispose.
+      // The pump must never dispatch an entry whose snapshot is not ready yet.
+      try {
+        entry.signal?.addEventListener("abort", entry.onAbort, { once: true });
+        if (!entry.done && entry.signal?.aborted) this.#cancel(entry, "ABORTED");
+        if (!entry.done) {
+          if (control.timeoutMs !== 0) entry.timer = setTimeout(() => this.#cancel(entry, "TIMEOUT"), control.timeoutMs);
+          const payload = prepare();
+          if (!entry.done) {
+            entry.payload = payload;
+            entry.ready = true;
+          }
+        }
+      } catch (error) {
+        // Settle the SAME promise that owns the reservation, not a separate
+        // rejected promise with an orphan left in the queue.
+        const position = this.#queue.indexOf(entry);
+        if (position >= 0) this.#queue.splice(position, 1);
+        this.#finish(entry, error);
+      }
       this.#pump();
       return promise;
     } catch (error) {
@@ -127,8 +153,9 @@ export class OwnedWorkerRpc {
 
   #pump() {
     if (this.#closed || this.#active !== null) return;
-    const entry = this.#queue.shift();
-    if (!entry) return;
+    const entry = this.#queue[0];
+    if (!entry || !entry.ready) return;
+    this.#queue.shift();
     this.#active = entry;
     try {
       this.#worker.postMessage({ protocol: WORKER_PROTOCOL, id: entry.id, method: entry.method,
@@ -145,9 +172,10 @@ export class OwnedWorkerRpc {
     if (entry.done) return;
     entry.done = true;
     if (entry.timer !== null) clearTimeout(entry.timer);
-    entry.signal?.removeEventListener("abort", entry.onAbort);
     this.#bytes -= entry.bytes;
     entry.payload = null;
+    try { entry.signal?.removeEventListener("abort", entry.onAbort); }
+    catch { /* A signal adapter cannot prevent settlement or retain capacity. */ }
     if (error) entry.reject(error); else entry.resolve(value);
   }
 
@@ -197,7 +225,10 @@ export class OwnedWorkerRpc {
   #stop(reason, culprit = null, sameError = false) {
     if (this.#closed) return;
     this.#closed = true;
-    for (const [kind, listener] of Object.entries(this.#listeners)) this.#worker.removeEventListener(kind, listener);
+    for (const [kind, listener] of Object.entries(this.#listeners)) {
+      try { this.#worker.removeEventListener(kind, listener); }
+      catch { /* Detach other listeners and terminate even if an adapter fails. */ }
+    }
     const waiting = this.#active ? [this.#active, ...this.#queue] : this.#queue;
     this.#active = null;
     this.#queue = [];

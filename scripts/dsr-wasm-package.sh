@@ -15,7 +15,7 @@ cargo build --no-default-features --target wasm32-unknown-unknown --lib
 cargo build --release --no-default-features --features wasm-bindgen --target wasm32-unknown-unknown --lib
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
 for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
-  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
@@ -25,7 +25,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
 done
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
-for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs flow-source.js flow_document.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
+for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js flow_document.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$PACKAGE/demo/$file"
 done
 cp examples/showcase.md "$ART/parity/showcase.md"

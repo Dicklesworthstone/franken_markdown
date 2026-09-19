@@ -5,8 +5,10 @@ import { createBookLibraryControls } from "./book_library_controls.mjs";
 import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 
+import { createBookInspectionControls, createBookInspectionPanel } from "./book_inspection_controls.mjs";
+
 const collection = createBookCollection();
-let library = null, preview = null, search = null;
+let library = null, preview = null, search = null, inspection = null;
 const controls = createBookControls({ root: document, worker: createBookWorker(), collection,
   confirm: text => window.confirm(text), onProjectReplaced: () => library?.detach() });
 try { library = createBookLibraryControls({ root: document, controls, collection, window }); }
@@ -23,8 +25,16 @@ try { search = createBookSearchControls({ root: document, controls, collection,
 catch {
   document.querySelector("#search-status").textContent = "Source search is unavailable. Chapter editing, source downloads and publication remain available.";
 }
+try {
+  createBookInspectionPanel(document);
+  inspection = createBookInspectionControls({ root: document, controls, collection,
+    worker: createBookWorker({ maxOutputBytes: 2 * 1024 * 1024 }) });
+} catch {
+  const status = document.querySelector("#inspection-status");
+  if (status) status.textContent = "Inspection is unavailable. Editing, local saves, preview and publication exports remain available.";
+}
 window.addEventListener("pagehide", event => {
-  if (event.persisted) { search?.suspend(); preview?.suspend(); library?.suspend(); controls.suspend(); }
-  else { search?.dispose(); preview?.dispose(); library?.dispose(); controls.dispose(); }
+  if (event.persisted) { inspection?.suspend(); search?.suspend(); preview?.suspend(); library?.suspend(); controls.suspend(); }
+  else { inspection?.dispose(); search?.dispose(); preview?.dispose(); library?.dispose(); controls.dispose(); }
 });
-window.addEventListener("pageshow", event => { if (event.persisted) { library?.resume(); preview?.resume(); search?.resume(); } });
+window.addEventListener("pageshow", event => { if (event.persisted) { library?.resume(); preview?.resume(); search?.resume(); inspection?.resume(); } });

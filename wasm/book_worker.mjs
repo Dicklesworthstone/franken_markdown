@@ -5,11 +5,12 @@ const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
   epub: ["renderBookEpub", "application/epub+zip", "epub"],
   site: ["renderBookSite", "application/zip", "zip"],
-  preview: ["renderBookPreview", "application/json", "json"]
+  preview: ["renderBookPreview", "application/json", "json"],
+  inspection: ["inspectBook", "application/json", "json"]
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
-  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub, site or preview.");
+  if (!Object.hasOwn(formats, format)) throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview or inspection.");
   return formats[format];
 }
 function checkedOutput(bytes, sourceLength, maximum) {
@@ -50,7 +51,7 @@ export function createBookWorkerClient({ workerFactory, timeoutMs = 120000, maxO
       throw bookError("INVALID_OPTIONS", "signal must be an AbortSignal.");
     }
     if (signal?.aborted) throw bookError("EXPORT_CANCELLED", "Book export cancelled before starting.");
-    const input = prepareBookInput(files, options);
+    const input = prepareBookInput(files, format === "inspection" ? {} : options);
     // Only these private copies are transferred. The caller can edit/revoke its
     // assets immediately, without mutating the captured export or losing bytes.
     const transfer = [...input.options.images, ...input.options.fontAssets].map(asset => asset.bytes.buffer);
@@ -125,7 +126,7 @@ export function installBookWorker(scope, engine) {
         throw bookError("INVALID_OPTIONS", "Invalid output limit.");
       }
       busy = true; owned = true;
-      const input = prepareBookInput(data.files, data.options);
+      const input = prepareBookInput(data.files, data.format === "inspection" ? {} : data.options);
       const result = await engine[method](input.files, input.options);
       checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
       // Transfer only the returned view, never a larger backing WASM memory.

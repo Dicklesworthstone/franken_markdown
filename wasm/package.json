@@ -148,6 +148,9 @@
     "PREVIEW.md",
     "demo/book_source_search.mjs",
     "demo/book_search_controls.mjs",
-    "BOOK_EDITING.md"
+    "BOOK_EDITING.md",
+    "book_inspection.mjs",
+    "demo/book_inspection_controls.mjs",
+    "INSPECTION.md"
   ]
 }

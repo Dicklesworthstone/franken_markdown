@@ -8,6 +8,7 @@
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
 mod styled;
+use crate::ast::Align;
 use crate::display::{
     AccessibleReadingNode, AccessibleReadingRole, DisplayImage, DisplayItem, DisplayList,
     DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath, VectorShapeType,
@@ -118,6 +119,8 @@ impl ResumableFlowDisplay {
     /// consume the remaining space. Already-prepared continuation rows also
     /// participate, so source/output batch boundaries cannot change that grid.
     /// Measurement uses the same shaper and cumulative budget as final layout.
+    /// Explicit GFM left/center/right alignment applies to each final shaped
+    /// line within its padded cell; unspecified alignment follows run direction.
     pub fn to_shaped_display_list<F>(
         &self,
         options: FlowLayoutOptions,
@@ -262,10 +265,12 @@ impl ResumableFlowDisplay {
                         let cell_width = (x + edges[1]) - cx;
                         let text = cells.get(column).map_or("", String::as_str);
                         let runs = if styled { meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]) } else { &[] };
+                        layout.alignment = meta.table_alignments.get(column).copied().unwrap_or(Align::None);
                         let used = layout.inline_text(text, runs, cx + 4.0, y + 4.0, cell_width - 8.0,
                             options.body_size, options.line_height,
                             if header { FlowTextRole::TableHeader } else { FlowTextRole::TableCell },
                             if header { "heading" } else { "text" }, span)?;
+                        layout.alignment = Align::None;
                         height = height.max(used);
                         children.push(AccessibleReadingNode {
                             role: if header { AccessibleReadingRole::TableHeaderCell } else { AccessibleReadingRole::TableCell },
@@ -317,6 +322,7 @@ struct Reflow<'a, F> {
     lines: usize,
     shape_bytes: usize,
     link_bytes: usize,
+    alignment: Align,
 }
 
 impl<'a, F> Reflow<'a, F>
@@ -330,7 +336,20 @@ where
         {
             return Err(FlowLayoutError::InvalidOptions);
         }
-        Ok(Self { list: DisplayList::new(), options, shape, lines: 0, shape_bytes: 0, link_bytes: 0 })
+        Ok(Self { list: DisplayList::new(), options, shape, lines: 0, shape_bytes: 0, link_bytes: 0,
+            alignment: Align::None })
+    }
+
+    /// Position the final reshaped line as a unit. Explicit alignment is physical
+    /// left/center/right, independent of glyph direction. Unspecified alignment
+    /// preserves the existing logical-start policy for LTR and RTL runs.
+    fn line_start(&self, x: f32, width: f32, advance: f32, direction: Direction) -> f32 {
+        match self.alignment {
+            Align::Left => x,
+            Align::Center => x + (width - advance) * 0.5,
+            Align::Right => x + width - advance,
+            Align::None => if direction == Direction::RightToLeft { x + width - advance } else { x },
+        }
     }
 
     fn shaped(&mut self, text: &str, size: f32, role: FlowTextRole) -> Result<OwnedTextRun, FlowLayoutError> {
@@ -513,9 +532,7 @@ where
                     end -= 1;
                 };
                 self.line()?;
-                let line_x = if run.context.direction == Direction::RightToLeft {
-                    x + width - run.total_advance
-                } else { x };
+                let line_x = self.line_start(x, width, run.total_advance, run.context.direction);
                 let bounds = DisplayRect::new(line_x, y + height, run.total_advance, leading);
                 self.item(DisplayItem::Text(DisplayTextRun {
                     bounds, text: run.logical_text.clone(), font_run: Some(run),
@@ -1032,5 +1049,67 @@ mod tests {
         }
         assert_eq!(table_column_edges(&[10.0, 10.0], &[20.0, 150.0], 120.0).unwrap(),
             [0.0, 28.0, 120.0]);
+    }
+
+    #[test]
+    fn gfm_alignment_positions_headers_and_body_within_the_shared_grid() {
+        let source = "| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |\n\nafter";
+        let list = engine(source).to_shaped_display_list(narrow(300.0), measured).unwrap();
+        for (text, x) in [("L", 4.0), ("C", 145.0), ("R", 286.0),
+            ("a", 4.0), ("b", 145.0), ("c", 286.0), ("after", 0.0)] {
+            let run = text_items(&list).into_iter().find(|run| run.text == text).unwrap();
+            assert_eq!(run.bounds.x, x, "{text}");
+        }
+        for row in &list.reading_order()[..2] {
+            assert_eq!(row.children.iter().map(|cell| cell.bounds.x).collect::<Vec<_>>(), [0.0, 100.0, 200.0]);
+            assert!(row.children.iter().all(|cell| cell.bounds.width == 100.0));
+        }
+    }
+
+    #[test]
+    fn alignment_uses_each_final_wrapped_line_without_losing_clusters() {
+        for (delimiter, align) in [(":---", Align::Left), (":---:", Align::Center), ("---:", Align::Right)] {
+            let source = format!("| H |\n| {delimiter} |\n| fi a\u{0301} 東京 😀 |\n");
+            let engine = engine(&source);
+            let list = engine.to_shaped_display_list(narrow(53.0), measured).unwrap();
+            let body = &list.reading_order()[1];
+            let runs: Vec<_> = text_items(&list).into_iter()
+                .filter(|run| run.bounds.y >= body.bounds.y).collect();
+            assert!(runs.len() > 1);
+            assert_eq!(runs.iter().map(|run| run.text.as_str()).collect::<String>(), "fi a\u{0301} 東京 😀");
+            for run in runs {
+                let expected = match align {
+                    Align::Left => 4.0,
+                    Align::Center => 4.0 + (45.0 - run.bounds.width) * 0.5,
+                    Align::Right => 49.0 - run.bounds.width,
+                    Align::None => unreachable!(),
+                };
+                assert_eq!(run.bounds.x, expected);
+                assert!(run.bounds.right() <= 49.0);
+                assert!(!run.text.starts_with('\u{0301}'));
+                assert_ne!(run.text, "f");
+                assert_ne!(run.text, "i");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_table_alignment_overrides_direction_but_unset_keeps_rtl_start() {
+        for (delimiter, expected) in [(":---", 4.0), (":---:", 40.0), ("---:", 76.0), ("---", 76.0)] {
+            let source = format!("| H |\n| {delimiter} |\n| אב |\n");
+            let list = engine(&source).to_shaped_display_list(narrow(100.0), |text, size, role| {
+                let mut run = measured(text, size, role)?;
+                run.context.direction = Direction::RightToLeft;
+                for cluster in &mut run.clusters {
+                    let start = cluster.x_start;
+                    cluster.x_start = run.total_advance - cluster.x_end;
+                    cluster.x_end = run.total_advance - start;
+                }
+                Ok(run)
+            }).unwrap();
+            let run = text_items(&list).into_iter().find(|run| run.text == "אב").unwrap();
+            assert_eq!(run.bounds.x, expected);
+            assert_eq!(run.font_run.as_ref().unwrap().context.direction, Direction::RightToLeft);
+        }
     }
 }

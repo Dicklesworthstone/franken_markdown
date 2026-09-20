@@ -1,7 +1,7 @@
 //! Mixed-face wrapping and interaction geometry. The parent owns all shaper,
 //! line and output admission, so the rich path cannot bypass those budgets.
 
-use super::{FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
+use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
 use crate::display::{DisplayItem, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, VectorShapeType};
 use crate::flow_display::FlowInlineRun;
 use crate::span::SourceSpan;
@@ -106,7 +106,16 @@ where
                 }
                 self.line()?;
                 let rtl = direction == Direction::RightToLeft;
-                let mut cursor = if rtl { x + width } else { x };
+                // Align the complete final line before emitting any fragments,
+                // so glyphs, strike marks and link targets share one placement.
+                // Preserve the exact existing RTL right edge without a lossy
+                // subtract/add round trip when alignment is unspecified.
+                let mut cursor = if rtl && matches!(self.alignment, Align::None | Align::Right) {
+                    x + width
+                } else {
+                    let start = self.line_start(x, width, final_width, direction);
+                    if rtl { start + final_width } else { start }
+                };
                 for fragment in fragments {
                     let spec = &runs[fragment.run_index];
                     let advance = fragment.run.total_advance;
@@ -364,5 +373,85 @@ mod tests {
         // Existing callers still get their prior, explicitly unstyled API.
         let plain = whole.to_shaped_display_list(options(160.0), measured).unwrap();
         assert_eq!(plain.anchors().filter(|anchor| !anchor.is_heading).count(), 0);
+    }
+
+    #[test]
+    fn centered_cell_faces_links_and_strikes_share_final_line_geometry() {
+        let source = "| H |\n| :---: |\n| [aa **bb** ~~cc~~](https://example.com) |\n";
+        let list = engine(source, 1).to_styled_display_list(options(200.0), shape).unwrap();
+        let row = &list.reading_order()[1];
+        let runs: Vec<_> = text_items(&list).into_iter()
+            .filter(|run| run.bounds.y >= row.bounds.y).collect();
+        assert_eq!(runs.iter().map(|run| run.text.as_str()).collect::<String>(), "aa bb cc");
+        assert_eq!(runs.iter().map(|run| run.bounds.width).sum::<f32>(), 90.0);
+        assert_eq!(runs.first().unwrap().bounds.x, 55.0);
+        assert_eq!(runs.last().unwrap().bounds.right(), 145.0);
+        for run in &runs {
+            assert_eq!(run.bounds.y, row.bounds.y + 4.0);
+            let link = list.link_at_point(run.bounds.x + run.bounds.width * 0.5,
+                run.bounds.y + run.bounds.height * 0.5).unwrap();
+            assert_eq!(link.anchor_id, "https://example.com");
+            assert_eq!(link.bounds, run.bounds);
+        }
+        let struck = runs.iter().find(|run| run.text == "cc").unwrap();
+        assert!(list.items().iter().any(|item| matches!(item, DisplayItem::Vector(path)
+            if path.color_role == "strikethrough" && path.bounds.x == struck.bounds.x
+                && path.bounds.width == struck.bounds.width)));
+        assert!(list.link_at_point(5.0, row.bounds.y + 10.0).is_none());
+    }
+
+    #[test]
+    fn right_aligned_wrapped_links_remain_clickable_on_every_line() {
+        let source = "| H |\n| ---: |\n| [alpha **beta** gamma](#dest) |\n\nafter";
+        let expected = engine(source, usize::MAX).to_styled_display_list(options(73.0), shape).unwrap();
+        for batch in [1, 2, 8] {
+            let list = engine(source, batch).to_styled_display_list(options(73.0), shape).unwrap();
+            assert_eq!(list, expected);
+            let row = &list.reading_order()[1];
+            let runs: Vec<_> = text_items(&list).into_iter().filter(|run|
+                run.bounds.y >= row.bounds.y && run.bounds.y < row.bounds.bottom()).collect();
+            assert_eq!(runs.iter().map(|run| run.text.as_str()).collect::<String>(), "alpha beta gamma");
+            let mut lines = Vec::<(f32, f32)>::new();
+            for run in runs {
+                let link = list.link_at_point(run.bounds.x + run.bounds.width * 0.5,
+                    run.bounds.y + 10.0).unwrap();
+                assert_eq!(link.anchor_id, "#dest");
+                assert_eq!(link.bounds, run.bounds);
+                if let Some(line) = lines.last_mut().filter(|line| line.0 == run.bounds.y) {
+                    line.1 = line.1.max(run.bounds.right());
+                } else { lines.push((run.bounds.y, run.bounds.right())); }
+            }
+            assert!(lines.len() > 1);
+            assert!(lines.iter().all(|line| line.1 == 69.0));
+            let after = text_items(&list).into_iter().find(|run| run.text == "after").unwrap();
+            assert_eq!(after.bounds.x, 0.0);
+        }
+    }
+
+    #[test]
+    fn rtl_styled_cells_align_the_whole_line_without_reordering_logical_text() {
+        for (delimiter, left) in [(":---", 4.0), (":---:", 50.0), ("---:", 96.0), ("---", 96.0)] {
+            let source = format!("| H |\n| {delimiter} |\n| אב**גד** |\n");
+            let list = engine(&source, 1).to_styled_display_list(options(150.0), |text, size, role, style| {
+                let mut run = shape(text, size, role, style)?;
+                run.context.direction = Direction::RightToLeft;
+                for cluster in &mut run.clusters {
+                    let start = cluster.x_start;
+                    cluster.x_start = run.total_advance - cluster.x_end;
+                    cluster.x_end = run.total_advance - start;
+                }
+                Ok(run)
+            }).unwrap();
+            let row = &list.reading_order()[1];
+            let runs: Vec<_> = text_items(&list).into_iter()
+                .filter(|run| run.bounds.y >= row.bounds.y).collect();
+            assert_eq!(runs.len(), 2);
+            assert_eq!(runs[0].text, "אב");
+            assert_eq!(runs[1].text, "גד");
+            assert_eq!(runs[1].bounds.x, left);
+            assert_eq!(runs[0].bounds.x, left + 30.0);
+            assert_eq!(runs[0].bounds.right(), left + 50.0);
+            assert_eq!(row.children[0].text, "אבגד");
+        }
     }
 }

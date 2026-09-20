@@ -16,7 +16,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
-use crate::ast::{Block, Inline, ListItem};
+use crate::ast::{Align, Block, Inline, ListItem};
 use crate::display::{
     AccessibleReadingNode, AccessibleReadingRole, DisplayImage, DisplayItem, DisplayList,
     DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath, VectorShapeType,
@@ -186,6 +186,8 @@ struct BlockMeta {
     task: Option<bool>,
     inline_runs: Vec<FlowInlineRun>,
     cell_runs: Vec<Vec<FlowInlineRun>>,
+    // One allocation per parsed table, shared by its header and all body rows.
+    table_alignments: std::sync::Arc<[Align]>,
     image_link: Option<std::sync::Arc<str>>,
 }
 
@@ -289,6 +291,19 @@ impl ResumableFlowDisplay {
     #[must_use]
     pub fn source_span_for_block(&self, index: usize) -> Option<SourceSpan> {
         self.metadata.get(index).map(|meta| meta.span)
+    }
+
+    /// Parsed GFM column alignment for an emitted table header or body row.
+    /// Other blocks and out-of-range indices return `None`. The slice is shared
+    /// by all rows of one table; it is not inferred from rendered text or geometry.
+    #[must_use]
+    pub fn table_alignments_for_block(&self, index: usize) -> Option<&[Align]> {
+        match self.blocks.get(index)? {
+            DisplayBlock::TableHeader { .. } | DisplayBlock::TableRow { .. } => {
+                self.metadata.get(index).map(|meta| meta.table_alignments.as_ref())
+            }
+            _ => None,
+        }
     }
 
     /// Reflow the same document in a new generation. Invalidate previous asset
@@ -539,6 +554,7 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
     let mut next_request_id = 1;
     let mut next_list_id = 1_u64;
     let mut list_bytes = 0_usize;
+    let mut table_alignment_bytes = 0_usize;
     while let Some(item) = work.pop() {
         match item {
             Work::Item(item, context, mut meta) => {
@@ -609,9 +625,15 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                     }
                 }
                 Block::Table(table) => {
+                    table_alignment_bytes = table.align.len().checked_mul(std::mem::size_of::<Align>())
+                        .and_then(|bytes| table_alignment_bytes.checked_add(bytes))
+                        .filter(|bytes| *bytes <= limits.max_output_bytes)
+                        .ok_or_else(|| FlowDisplayError::BudgetExceeded("table alignment bytes".to_owned()))?;
+                    let alignments: std::sync::Arc<[Align]> = table.align.as_slice().into();
                     for (index, row) in std::iter::once(&table.head).chain(table.rows.iter()).enumerate() {
                         let mut cells = Vec::new();
                         let mut row_meta = meta.clone();
+                        row_meta.table_alignments = std::sync::Arc::clone(&alignments);
                         let mut remaining = output.remaining_bytes();
                         for cell in row {
                             let (text, runs) = inline::collect(cell, remaining)?;
@@ -873,6 +895,26 @@ mod tests {
             stepped.process_all().unwrap();
             assert_eq!(stepped.to_display_list(), expected);
             assert_eq!(stepped.blocks(), whole.blocks());
+        }
+    }
+
+    #[test]
+    fn table_alignment_metadata_survives_steps_without_leaking_between_tables() {
+        let source = "| L | C | R | N |\n| :--- | :---: | ---: | --- |\n| a | b | c | d |\n\nafter\n\n> | R | L |\n> | ---: | :--- |\n> | x | y |\n";
+        for batch in [1, 2, usize::MAX] {
+            let mut engine = ResumableFlowDisplay::new(source, batch);
+            engine.process_all().unwrap();
+            let expected = [Align::Left, Align::Center, Align::Right, Align::None];
+            assert_eq!(engine.table_alignments_for_block(0), Some(expected.as_slice()));
+            assert_eq!(engine.table_alignments_for_block(1), Some(expected.as_slice()));
+            assert!(std::sync::Arc::ptr_eq(&engine.metadata[0].table_alignments,
+                &engine.metadata[1].table_alignments));
+            assert!(engine.table_alignments_for_block(2).is_none());
+            assert_eq!(engine.table_alignments_for_block(3), Some([Align::Right, Align::Left].as_slice()));
+            assert_eq!(engine.table_alignments_for_block(4), Some([Align::Right, Align::Left].as_slice()));
+            assert!(engine.table_alignments_for_block(5).is_none());
+            engine.set_generation(2);
+            assert_eq!(engine.table_alignments_for_block(0), Some(expected.as_slice()));
         }
     }
 }

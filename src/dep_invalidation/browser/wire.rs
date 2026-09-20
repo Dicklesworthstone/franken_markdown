@@ -6,6 +6,9 @@ use crate::SourceSpan;
 use std::fmt::{self, Write};
 use std::ops::Range;
 
+#[path = "reading_inline.rs"]
+mod reading_inline;
+
 struct Json { text: String, limit: usize }
 impl Write for Json {
     fn write_str(&mut self, value: &str) -> fmt::Result {
@@ -174,17 +177,21 @@ pub(super) fn reading(state: &BrowserFlowSession, range: Range<usize>) -> Result
     encode(|w| {
         header(w, state)?;
         let nodes = state.session.display().reading_order();
+        let engine = state.session.engine();
+        if nodes.len() != engine.blocks().len() { return Err(fmt::Error); }
         pagination(w, &range, nodes.len())?;
         w.write_str(",\"nodes\":[")?;
-        for (i, node) in nodes[range].iter().enumerate() {
+        for (i, node) in nodes[range.clone()].iter().enumerate() {
             if i != 0 { w.write_char(',')?; }
-            reading_node(w, node, 0)?;
+            reading_node(w, node, engine, range.start + i, None)?;
         }
         w.write_str("]}")
     })
 }
-fn reading_node(w: &mut Json, node: &AccessibleReadingNode, depth: usize) -> fmt::Result {
-    if depth > 128 { return Err(fmt::Error); }
+fn reading_node(
+    w: &mut Json, node: &AccessibleReadingNode,
+    engine: &crate::flow_display::ResumableFlowDisplay, index: usize, cell: Option<usize>,
+) -> fmt::Result {
     w.write_str("{\"role\":")?;
     w.string(match node.role {
         AccessibleReadingRole::Document => "document",
@@ -206,10 +213,11 @@ fn reading_node(w: &mut Json, node: &AccessibleReadingNode, depth: usize) -> fmt
     w.write_str(",\"text\":")?; w.string(&node.text)?;
     w.write_str(",\"bounds\":")?; w.rect(node.bounds)?;
     w.write_str(",\"enclosingSourceSpan\":")?; w.span(node.source_span)?;
+    reading_inline::fields(w, node, engine, index, cell)?;
     w.write_str(",\"children\":[")?;
     for (i, child) in node.children.iter().enumerate() {
         if i != 0 { w.write_char(',')?; }
-        reading_node(w, child, depth + 1)?;
+        reading_node(w, child, engine, index, Some(i))?;
     }
     w.write_str("]}")
 }

@@ -1,4 +1,4 @@
-import type { FlowPageOptions, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
+import type { FlowPageOptions, FlowReadingInlineRun, FlowReadingLink, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
 export interface ReadingFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
@@ -11,6 +11,10 @@ export interface FlowReadingLimits {
   maxDepth?: number;
   /** 1,048,576 UTF-16 units, including container transcripts. */
   maxTextUnits?: number;
+  /** 50,000 runs across all pages and descendants. */
+  maxInlineRuns?: number;
+  /** 1,048,576 UTF-16 units across retained and active link targets. */
+  maxLinkUnits?: number;
 }
 export interface FlowReadOptions {
   token?: FlowTokenInput;
@@ -18,10 +22,16 @@ export interface FlowReadOptions {
   signal?: AbortSignal;
   limits?: FlowReadingLimits;
 }
-export interface FlowReadingEntry extends Omit<FlowReadingNode, "children"> {
+export interface FlowReadingInlineEntry extends FlowReadingInlineRun {
+  /** Validated UTF-16 coordinates in this node's reading text, not Markdown. */
+  readonly startUtf16: number; readonly endUtf16: number;
+}
+export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink"> {
   /** Preorder index, scoped to this exact snapshot, not a persistent node ID. */
   readonly index: number;
   readonly children: readonly FlowReadingEntry[];
+  readonly inlineRuns: readonly FlowReadingInlineEntry[];
+  readonly imageLink: FlowReadingLink | null;
 }
 export interface FlowReadingLocation extends FlowToken {
   readonly nodeIndex: number;
@@ -58,6 +68,8 @@ export class FlowReadingDocument {
   /** Logical leaves separated by blank lines; aggregate container text omitted. */
   readonly text: string;
   readonly textUnits: number;
+  readonly inlineRunCount: number;
+  readonly linkUnits: number;
   assertCurrent(): void;
   locate(index: number): FlowReadingLocation;
   /** Literal, non-overlapping matches within a leaf, not across semantic blocks.
@@ -70,8 +82,24 @@ export function readFlowDocument(session: ReadingFlowSession, options?: FlowRead
 /** Host must fence the source revision first. Validates Unicode and UTF-8 bounds;
  * source is limited to 4 MiB UTF-8, matching the browser flow admission limit. */
 export function sourceSpanToUtf16(source: string, span: FlowSourceSpan): Readonly<{ start: number; end: number }>;
+export interface FlowReadingLinkActivation {
+  /** Passed the conservative scheme filter; the host must still authorize it. */
+  readonly target: string;
+  readonly link: FlowReadingLink;
+  readonly location: FlowReadingLocation;
+  /** Logical reading-text range, null for a linked image description. */
+  readonly startUtf16: number | null;
+  readonly endUtf16: number | null;
+}
+export interface FlowReaderViewOptions {
+  /** Opt-in callback for primary click/Enter; omitted means inert link text.
+   * URLs never become href/src attributes. Hosts own navigation, authorization,
+   * unsubmitted-editor fences and async error handling. Stale sessions refuse
+   * activation. Adjacent style runs in the same link share one Tab stop. */
+  onLink?: (activation: FlowReadingLinkActivation) => void;
+}
 export class FlowReaderView {
-  constructor(container: HTMLElement);
+  constructor(container: HTMLElement, options?: FlowReaderViewOptions);
   readonly disposed: boolean;
   readonly document: FlowReadingDocument | null;
   /** Builds safe semantic DOM offscreen and replaces only this container's
@@ -80,7 +108,8 @@ export class FlowReaderView {
   render(document: FlowReadingDocument): void;
   /** Focus without automatically scrolling the page or navigating a URL. */
   focusNode(index: number): FlowReadingLocation;
-  /** Uses native DOM Range selection. No clipboard writes or permissions. */
+  /** Uses native DOM Range selection across styled text segments. Refuses
+   * changed, inserted or reordered DOM text. No clipboard writes/permissions. */
   selectMatch(match: FlowReadingMatch): string;
   clear(): void;
   /** Clears only its DOM. Does not dispose the session or remove the container. */

@@ -109,6 +109,19 @@ export interface FlowSnapshot extends FlowPage {
     readonly retainedPayloadBytes: number;
   };
 }
+/** Retained destination plus the core's conservative activation decision.
+ * An activeTarget is not host authorization to navigate or fetch. */
+export interface FlowReadingLink { readonly target: string; readonly activeTarget: string | null; }
+export interface FlowReadingInlineStyle {
+  readonly bold: boolean; readonly italic: boolean; readonly code: boolean; readonly strikethrough: boolean;
+}
+/** Ordered, non-overlapping UTF-8 ranges in this node's unsplit reading text.
+ * These are not source offsets or shaped Canvas fragment coordinates. */
+export interface FlowReadingInlineRun {
+  readonly startByte: number; readonly endByte: number;
+  readonly style: FlowReadingInlineStyle;
+  readonly link: FlowReadingLink | null;
+}
 export interface FlowReadingNode {
   readonly role: "document" | "heading" | "paragraph" | "code-block" | "list" | "list-item"
     | "table" | "table-header-row" | "table-row" | "table-header-cell" | "table-cell"
@@ -118,6 +131,10 @@ export interface FlowReadingNode {
   readonly bounds: FlowRect;
   readonly enclosingSourceSpan: FlowSourceSpan;
   readonly children: readonly FlowReadingNode[];
+  /** Optional for legacy schema-1 producers; emitted by current native flow. */
+  readonly inlineRuns?: readonly FlowReadingInlineRun[];
+  /** Enclosing link on a standalone image, including empty-alt images. */
+  readonly imageLink?: FlowReadingLink | null;
 }
 export interface FlowReadingPage extends FlowPage { readonly nodes: readonly FlowReadingNode[]; }
 export interface FlowAssetRequest {

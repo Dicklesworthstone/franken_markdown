@@ -25,6 +25,7 @@ use crate::html::slug_inlines;
 use crate::span::SourceSpan;
 
 mod inline;
+mod footnotes;
 mod limits;
 mod lists;
 pub use lists::FlowListItem;
@@ -203,6 +204,9 @@ struct PreparedBlock {
 /// `batch_size` source lines and emits at most `batch_size` completed display
 /// blocks. A nested container may require additional steps after source EOF.
 /// Resume changes neither block identity nor asset IDs nor heading anchors.
+/// Footnotes use linked `[n]` citations and level-six note sections after the
+/// body, preserving rich blocks and source spans. They are not page-bottom
+/// notes or typographically shaped superscript markers.
 #[derive(Debug)]
 pub struct ResumableFlowDisplay {
     source: String,
@@ -540,12 +544,17 @@ fn push_reading(list: &mut DisplayList, role: AccessibleReadingRole, text: &str,
 enum Work<'a> {
     Block(&'a Block, BlockMeta),
     Item(&'a ListItem, FlowListItem, BlockMeta),
+    Note(usize),
 }
 
 fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque<PreparedBlock>, FlowDisplayError> {
     let document = crate::parse_markdown_spanned(source);
     limits::audit_document(&document, source, limits)?;
+    let notes = footnotes::Footnotes::new(&document);
     let mut work = Vec::new();
+    // The source frontier still controls admission after reordering: a moved
+    // note retains its original definition span, never a synthesized offset.
+    for &index in notes.order().iter().rev() { work.push(Work::Note(index)); }
     for block in document.blocks().iter().rev() {
         work.push(Work::Block(&block.node, BlockMeta { span: block.span, ..BlockMeta::default() }));
     }
@@ -557,6 +566,19 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
     let mut table_alignment_bytes = 0_usize;
     while let Some(item) = work.pop() {
         match item {
+            Work::Note(index) => {
+                let note = notes.note(index);
+                // A compact, navigable note section. Reuse normal heading
+                // targets and shaped inline links on native and browser hosts;
+                // the original note body remains ordinary rich flow content.
+                output.push_back(PreparedBlock {
+                    block: DisplayBlock::Heading { level: 6, text: format!("[{}]", notes.number(index)) },
+                    meta: BlockMeta { span: note.span, heading_id: Some(notes.anchor(index)), ..BlockMeta::default() },
+                })?;
+                for block in note.blocks.iter().rev() {
+                    work.push(Work::Block(block, BlockMeta { span: note.span, ..BlockMeta::default() }));
+                }
+            }
             Work::Item(item, context, mut meta) => {
                 // Independently charge retained ancestry before allocating it.
                 // Children/image splits share this Arc; transient parent paths
@@ -597,14 +619,14 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                     slugs.insert(id.clone(), 1);
                     slugs.insert(base, suffix);
                     meta.heading_id = Some(id);
-                    let (text, runs) = inline::collect(inlines, output.remaining_bytes())?;
+                    let (text, runs) = inline::collect(&notes.inlines(inlines), output.remaining_bytes())?;
                     meta.inline_runs = runs;
                     output.push_back(PreparedBlock {
                         block: DisplayBlock::Heading { level: *level, text }, meta,
                     })?;
                 }
                 Block::Paragraph(inlines) => {
-                    emit_inlines(inlines, &mut meta, &mut output, &mut next_request_id)?;
+                    emit_inlines(&notes.inlines(inlines), &mut meta, &mut output, &mut next_request_id)?;
                 }
                 Block::CodeBlock { lang, code } => output.push_back(PreparedBlock {
                     block: DisplayBlock::CodeBlock { language: lang.clone(), source: code.clone() }, meta,
@@ -636,7 +658,7 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                         row_meta.table_alignments = std::sync::Arc::clone(&alignments);
                         let mut remaining = output.remaining_bytes();
                         for cell in row {
-                            let (text, runs) = inline::collect(cell, remaining)?;
+                            let (text, runs) = inline::collect(&notes.inlines(cell), remaining)?;
                             remaining = remaining.saturating_sub(text.len());
                             for run in &runs {
                                 remaining = remaining.saturating_sub(run.link.as_ref().map_or(0, |link| link.len()));
@@ -653,17 +675,15 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                 Block::HtmlBlock(text) | Block::MathBlock(text) => {
                     emit_text(text.clone(), &mut meta, &mut output)?;
                 }
-                Block::FootnoteDefinition { id, blocks } => {
-                    emit_text(format!("[^{id}]:"), &mut meta, &mut output)?;
-                    for child in blocks.iter().rev() { work.push(Work::Block(child, meta.clone())); }
-                }
+                // Definitions are rendered once, in numbered note order.
+                Block::FootnoteDefinition { .. } => {}
                 Block::DefinitionList(items) => {
                     for item in items {
-                        for term in &item.terms { emit_inlines(term, &mut meta, &mut output, &mut next_request_id)?; }
+                        for term in &item.terms { emit_inlines(&notes.inlines(term), &mut meta, &mut output, &mut next_request_id)?; }
                         for definition in &item.definitions {
                             let mut child = meta.clone();
                             child.list_depth = child.list_depth.saturating_add(1);
-                            emit_inlines(definition, &mut child, &mut output, &mut next_request_id)?;
+                            emit_inlines(&notes.inlines(definition), &mut child, &mut output, &mut next_request_id)?;
                         }
                     }
                 }

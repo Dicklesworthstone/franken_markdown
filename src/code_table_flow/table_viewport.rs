@@ -84,6 +84,136 @@ impl ConstrainedTableFlow {
         Ok(changed)
     }
 
+    /// Materialize one page of whole body rows with a repeated semantic header.
+    ///
+    /// `first_body_row` is a zero-based continuation cursor, not a pixel offset.
+    /// The returned cursor is the first row not emitted. Stop when it equals
+    /// [`Self::row_count`]; do not derive the next cursor from page height.
+    /// Unlike a scrolling viewport, a page never hides rows beneath a pinned
+    /// header or cuts a body row at the bottom edge. Headers repeat regardless
+    /// of `pinned_headers`, which is a scrolling-only policy.
+    ///
+    /// `Ok(None)` means there is no drawable content, the cursor is already at
+    /// the end of a nonempty table, or the available height cannot hold a header
+    /// and at least one remaining body row. In the latter case retry the SAME
+    /// cursor on a taller/fresh page; no content has been consumed. A header-only
+    /// table may emit one header page and returns cursor zero (already complete).
+    ///
+    /// Widths and measurement progress are never changed. Call
+    /// [`Self::complete_measurement`] before starting when all columns must use
+    /// final rather than provisional widths, and do not refine between pages.
+    /// Horizontal scrolling, alignment, per-cell clips and source provenance use
+    /// the same renderer as [`Self::materialize_viewport`]. This fixed-height,
+    /// plain-text table flow does not shape or wrap rich cell contents.
+    ///
+    /// At most 16,384 body-cell slots plus headers are materialized per call,
+    /// even with an enormous page height. Copied text retains the 4 MiB budget.
+    /// Invalid geometry or an out-of-range cursor returns
+    /// [`CodeTableError::ArithmeticOverflow`]; budget failures return no partial
+    /// page and do not change the caller's cursor or the table.
+    pub fn materialize_page(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        page_height: f32,
+        first_body_row: usize,
+    ) -> Result<Option<(DisplayList, usize)>, CodeTableError> {
+        self.constraints.validate()?;
+        let width = self.constraints.container_width;
+        let table_width = self.total_table_width();
+        let left = origin_x - self.scroll_x;
+        let right = origin_x + width;
+        let page_bottom = origin_y + page_height;
+        if first_body_row > self.rows.len()
+            || [origin_x, origin_y, page_height, self.scroll_x, table_width,
+                left, right, left + table_width, page_bottom]
+                .iter().any(|value| !value.is_finite())
+            || page_height < 0.0 || self.scroll_x < 0.0
+            || self.column_widths.iter().any(|width| !width.is_finite() || *width <= 0.0)
+        {
+            return Err(CodeTableError::ArithmeticOverflow);
+        }
+        if width == 0.0 || table_width == 0.0 || page_height == 0.0
+            || left + table_width <= origin_x
+            || (!self.rows.is_empty() && first_body_row == self.rows.len())
+        {
+            return Ok(None);
+        }
+        if right <= origin_x || page_bottom <= origin_y {
+            return Err(CodeTableError::ArithmeticOverflow);
+        }
+        let header_height = Self::header_height();
+        let row_height = Self::row_height();
+        if page_height < header_height {
+            return Ok(None);
+        }
+        // Use f64 for capacity arithmetic so an almost-full final row cannot
+        // round up to a whole row. Bound metadata before allocating any output.
+        let capacity = ((f64::from(page_height) - f64::from(header_height))
+            / f64::from(row_height)).floor() as usize;
+        let count = capacity.min(self.rows.len() - first_body_row)
+            .min(MAX_VIEWPORT_CELLS / self.column_count().max(1));
+        if count == 0 && first_body_row < self.rows.len() {
+            return Ok(None);
+        }
+        let next_row = first_body_row + count;
+        let height = header_height + count as f32 * row_height;
+        let bottom = origin_y + height;
+        let body_top = origin_y + header_height;
+        if !bottom.is_finite() || bottom > page_bottom || body_top <= origin_y {
+            return Err(CodeTableError::ArithmeticOverflow);
+        }
+        let clip = DisplayRect::new(origin_x, origin_y, width, height);
+        let header_bounds = DisplayRect::new(left, origin_y, table_width, header_height);
+        let mut items = vec![border(self, header_bounds, "table-header-bg", 1.0)];
+        let mut copied_bytes = 0;
+        let header_cells = self.emit_cells(&self.headers, None, header_bounds, clip,
+            &mut items, &mut copied_bytes)?;
+        items.push(border(self,
+            DisplayRect::new(left, body_top - 1.0, table_width, 1.0),
+            "table-border", 1.0));
+        let mut children = vec![AccessibleReadingNode {
+            role: AccessibleReadingRole::TableHeaderRow,
+            text: format!("Header row with {} columns", self.headers.len()),
+            source_span: self.source_span,
+            bounds: header_bounds,
+            children: header_cells,
+        }];
+        for (offset, index) in (first_body_row..next_row).enumerate() {
+            let row_y = body_top + offset as f32 * row_height;
+            let row_bottom = row_y + row_height;
+            if !row_bottom.is_finite() || row_bottom <= row_y || row_bottom > bottom {
+                return Err(CodeTableError::ArithmeticOverflow);
+            }
+            let bounds = DisplayRect::new(left, row_y, table_width, row_height);
+            let cells = self.emit_cells(&self.rows[index], Some(index), bounds, clip,
+                &mut items, &mut copied_bytes)?;
+            items.push(border(self,
+                DisplayRect::new(left, row_bottom - 0.5, table_width, 0.5),
+                "table-border", 0.5));
+            children.push(AccessibleReadingNode {
+                role: AccessibleReadingRole::TableRow,
+                text: format!("Row {index}"),
+                source_span: self.source_span,
+                bounds,
+                children: cells,
+            });
+        }
+        let mut output = DisplayList::new();
+        output.push_item(DisplayItem::Clip(DisplayClip { bounds: clip, child_count: items.len() }));
+        for item in items { output.push_item(item); }
+        output.push_reading_node(AccessibleReadingNode {
+            role: AccessibleReadingRole::Table,
+            text: format!("Table with {} columns and {} rows; body rows {}..{} ({})",
+                self.column_count(), self.row_count(), first_body_row, next_row,
+                if self.is_fully_measured() { "fully measured" } else { "provisional estimates" }),
+            source_span: self.source_span,
+            bounds: clip,
+            children,
+        });
+        Ok(Some((output, next_row)))
+    }
+
     pub(super) fn materialize_table_viewport(
         &self,
         origin_x: f32,
@@ -406,6 +536,112 @@ mod tests {
         assert!(!flow.set_constraints(narrow).unwrap());
         assert!(flow.set_constraints(original).unwrap());
         assert_eq!(flow.column_width(0).unwrap(), old_width);
+    }
+
+    #[test]
+    fn pages_repeat_headers_without_losing_rows_or_changing_measurement() {
+        let rows = (0..107).map(|index| vec![cell(&format!("Body {index}"))]).collect();
+        let flow = ConstrainedTableFlow::try_new(vec![Align::Left], vec![cell("Header")],
+            rows, SourceSpan::new(4, 9), TableConstraints::default()).unwrap();
+        let width = flow.column_width(0).unwrap();
+        let mut cursor = 0;
+        let mut seen = Vec::new();
+        // The spare 27 points are not enough for a third 28-point row.
+        let page_height = 32.0 + 2.0 * 28.0 + 27.0;
+        while cursor < flow.row_count() {
+            let (page, next) = flow.materialize_page(10.0, 75.0, page_height, cursor)
+                .unwrap().unwrap();
+            assert_eq!(next, (cursor + 2).min(flow.row_count()));
+            let root = &page.reading_order()[0];
+            assert_eq!(root.children[0].role, AccessibleReadingRole::TableHeaderRow);
+            assert_eq!(root.children[0].bounds.y, 75.0);
+            assert_eq!(root.children[0].children[0].bounds.width, width);
+            assert_eq!(root.children[0].children[0].source_span, SourceSpan::new(4, 9));
+            for row in &root.children[1..] {
+                assert!(row.bounds.y >= 107.0);
+                assert!(row.bounds.y + row.bounds.height <= 75.0 + page_height);
+                assert_eq!(row.children[0].bounds.width, width);
+            }
+            for item in page.items() {
+                if let DisplayItem::Text(run) = item {
+                    if run.color_role == "table-cell" { seen.push(run.text.clone()); }
+                }
+            }
+            let DisplayItem::Clip(clip) = &page.items()[0] else { panic!("root clip") };
+            assert_eq!(clip.child_count, page.items().len() - 1);
+            cursor = next;
+        }
+        assert_eq!(seen, (0..107).map(|index| format!("Body {index}")).collect::<Vec<_>>());
+        assert_eq!(flow.column_width(0).unwrap(), width);
+        assert_eq!(flow.measured_rows_count(), 100);
+        assert!(flow.materialize_page(10.0, 75.0, page_height, cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn short_pages_do_not_orphan_headers_or_consume_the_next_row() {
+        let flow = table(3);
+        for height in [0.0, 31.0, 32.0, 59.0, f32::from_bits(60.0_f32.to_bits() - 1)] {
+            assert!(flow.materialize_page(0.0, 0.0, height, 1).unwrap().is_none());
+        }
+        let (page, next) = flow.materialize_page(0.0, 0.0, 60.0, 1).unwrap().unwrap();
+        assert_eq!(next, 2);
+        assert_eq!(page.reading_order()[0].children[1].text, "Row 1");
+        assert_eq!(page.reading_order()[0].bounds.height, 60.0);
+        assert_eq!(flow.row_count(), 3);
+    }
+
+    #[test]
+    fn header_only_tables_and_disabled_pinning_have_explicit_page_semantics() {
+        let empty = table(0);
+        assert!(empty.materialize_page(0.0, 0.0, 31.0, 0).unwrap().is_none());
+        let (page, next) = empty.materialize_page(0.0, 0.0, 32.0, 0).unwrap().unwrap();
+        assert_eq!(next, 0);
+        assert_eq!(page.reading_order()[0].children.len(), 1);
+        let mut flow = table(3);
+        flow.constraints_mut().pinned_headers = false;
+        let (page, next) = flow.materialize_page(0.0, 500.0, 60.0, 2).unwrap().unwrap();
+        assert_eq!(next, 3);
+        assert_eq!(page.reading_order()[0].children[0].bounds.y, 500.0);
+        assert_eq!(page.reading_order()[0].children[1].text, "Row 2");
+    }
+
+    #[test]
+    fn pagination_rejects_invalid_geometry_and_invalid_cursors() {
+        let flow = table(2);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(flow.materialize_page(bad, 0.0, 60.0, 0).is_err());
+            assert!(flow.materialize_page(0.0, bad, 60.0, 0).is_err());
+            assert!(flow.materialize_page(0.0, 0.0, bad, 0).is_err());
+        }
+        assert!(flow.materialize_page(0.0, 0.0, -1.0, 0).is_err());
+        assert!(flow.materialize_page(0.0, 0.0, 60.0, 3).is_err());
+        assert!(flow.materialize_page(0.0, f32::MAX, f32::MAX, 0).is_err());
+        // Finite coordinates can still be too coarse to represent a row.
+        assert!(flow.materialize_page(0.0, 1.0e30, 60.0, 0).is_err());
+    }
+
+    #[test]
+    fn enormous_pages_still_materialize_a_bounded_prefix() {
+        let flow = table(MAX_VIEWPORT_CELLS + 1);
+        let (page, next) = flow.materialize_page(0.0, 0.0, 1.0e9, 0).unwrap().unwrap();
+        assert_eq!(next, MAX_VIEWPORT_CELLS);
+        assert_eq!(page.reading_order()[0].children.len(), MAX_VIEWPORT_CELLS + 1);
+        let (_, end) = flow.materialize_page(0.0, 0.0, 60.0, next).unwrap().unwrap();
+        assert_eq!(end, flow.row_count());
+    }
+
+    #[test]
+    fn page_text_budget_errors_leave_the_table_and_cursor_reusable() {
+        let huge = "x".repeat(MAX_CELL_TEXT_BYTES);
+        let flow = ConstrainedTableFlow::try_new(vec![Align::Left], vec![cell("Header")],
+            vec![vec![cell("Small")], vec![cell(&huge)]], SourceSpan::default(),
+            TableConstraints::default()).unwrap();
+        assert!(matches!(flow.materialize_page(0.0, 0.0, 88.0, 0),
+            Err(CodeTableError::OutputBudgetExceeded { .. })));
+        let (page, next) = flow.materialize_page(0.0, 0.0, 60.0, 0).unwrap().unwrap();
+        assert_eq!(next, 1);
+        assert!(page.items().iter().any(|item| matches!(item, DisplayItem::Text(run) if run.text == "Small")));
+        assert_eq!(flow.row_count(), 2);
     }
 
 }

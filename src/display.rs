@@ -3,7 +3,7 @@
 //! Plan §12.8 & §27.4:
 //! - "Display output expresses text runs, vector paths, image references, clipping,
 //!   logical geometry, semantic reading order, and selection provenance. It contains
-//!   no Metal texture pointers, AppKit types, FCB window IDs, arbitrary script, or
+//!   no Metal texture pointers, AppKit types, or FCB window IDs, arbitrary script, or
 //!   live closures that can perform ambient I/O. A host maps upstream asset/source
 //!   IDs to its own resource and authorization domains."
 //! - "The core is synchronous-resumable and host-neutral."
@@ -12,6 +12,13 @@
 
 use crate::span::SourceSpan;
 use crate::text::OwnedTextRun;
+
+#[path = "display/spatial.rs"]
+mod spatial;
+pub use spatial::{
+    DisplayQueryError, DisplayQueryMode, DisplayViewportItem, DisplayViewportPage,
+    MAX_DISPLAY_CLIP_DEPTH, MAX_DISPLAY_QUERY_ITEMS, MAX_INDEXED_DISPLAY_ITEMS,
+};
 
 /// A 2D bounding rectangle in logical layout coordinates: `(x, y, width, height)`.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -273,6 +280,7 @@ pub struct DisplayList {
     items: Vec<DisplayItem>,
     reading_order: Vec<AccessibleReadingNode>,
     total_bounds: DisplayRect,
+    spatial: spatial::IndexCache,
 }
 
 impl DisplayList {
@@ -283,6 +291,7 @@ impl DisplayList {
             items: Vec::new(),
             reading_order: Vec::new(),
             total_bounds: DisplayRect::new(0.0, 0.0, 0.0, 0.0),
+            spatial: spatial::IndexCache::new(),
         }
     }
 
@@ -311,6 +320,7 @@ impl DisplayList {
     pub fn push_item(&mut self, item: DisplayItem) {
         self.total_bounds = self.total_bounds.union(item.bounds());
         self.items.push(item);
+        self.spatial = spatial::IndexCache::new();
     }
 
     /// Append an accessible reading structure node.
@@ -318,13 +328,12 @@ impl DisplayList {
         self.reading_order.push(node);
     }
 
-    /// Hit test all display items at logical coordinate `(x, y)` in reverse drawing order.
+    /// Hit-test visible primitives in reverse drawing order, respecting every
+    /// active clip. Clip commands never count as hits. Invalid geometry returns
+    /// no hit; use `hit_test_filtered` to receive the validation error.
     #[must_use]
     pub fn hit_test(&self, x: f32, y: f32) -> Option<&DisplayItem> {
-        self.items
-            .iter()
-            .rev()
-            .find(|item| item.bounds().contains_point(x, y))
+        self.hit_test_filtered(x, y, |_| true).ok().flatten().map(|(_, item)| item)
     }
 
     /// Iterator over all semantic heading and link anchors.

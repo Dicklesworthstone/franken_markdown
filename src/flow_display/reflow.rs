@@ -12,6 +12,7 @@ use crate::display::{
     AccessibleReadingNode, AccessibleReadingRole, DisplayImage, DisplayItem, DisplayList,
     DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath, VectorShapeType,
 };
+use crate::flow_display::FlowInlineRun;
 use crate::span::SourceSpan;
 use crate::text::{Direction, OwnedTextRun};
 use std::collections::HashMap;
@@ -30,8 +31,9 @@ pub enum FlowTextRole {
 
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
-/// reshaping at line boundaries. The same ceiling separately bounds retained
-/// link-target bytes in styled output. Hosts must bound their shaper's execution.
+/// table measurement and reshaping at line boundaries. The same ceiling
+/// separately bounds retained link-target bytes in styled output. Hosts must
+/// bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowLayoutOptions {
     pub viewport_width: f32,
@@ -67,6 +69,8 @@ pub enum FlowLayoutError {
     InvalidShapedRun,
     BudgetExceeded(&'static str),
     ClusterTooWide { advance: f32, available: f32 },
+    /// Even emergency cluster-boundary wrapping cannot fit all columns.
+    TableTooNarrow { minimum: f32, available: f32 },
 }
 
 impl fmt::Display for FlowLayoutError {
@@ -79,6 +83,9 @@ impl fmt::Display for FlowLayoutError {
             Self::BudgetExceeded(name) => write!(f, "flow layout budget exceeded: {name}"),
             Self::ClusterTooWide { advance, available } => {
                 write!(f, "indivisible text cluster is {advance} wide; available width is {available}")
+            }
+            Self::TableTooNarrow { minimum, available } => {
+                write!(f, "table columns require at least {minimum} points including padding; available width is {available}")
             }
         }
     }
@@ -105,6 +112,12 @@ impl ResumableFlowDisplay {
     /// boundary. An over-wide indivisible cluster returns an error rather than
     /// clipping text or silently splitting a ligature/combining sequence.
     /// Output is returned atomically; a failure publishes no partial display list.
+    ///
+    /// Tables share one measured column grid across headers and body rows.
+    /// Compact columns reach their natural width before long narrative columns
+    /// consume the remaining space. Already-prepared continuation rows also
+    /// participate, so source/output batch boundaries cannot change that grid.
+    /// Measurement uses the same shaper and cumulative budget as final layout.
     pub fn to_shaped_display_list<F>(
         &self,
         options: FlowLayoutOptions,
@@ -160,11 +173,15 @@ impl ResumableFlowDisplay {
             .filter(|result| result.generation == self.generation)
             .map(|result| (result.request_id, result)).collect();
         let mut y = 0.0;
-        for (block, meta) in self.blocks.iter().zip(&self.metadata) {
+        let mut table_edges = Vec::new();
+        for (block_index, (block, meta)) in self.blocks.iter().zip(&self.metadata).enumerate() {
             let x = f32::from(meta.list_depth) * 20.0 + f32::from(meta.quote_depth) * 16.0;
             let width = options.viewport_width - x;
             if width <= 0.0 { return Err(FlowLayoutError::InvalidOptions); }
             let span = meta.span;
+            if !matches!(block, DisplayBlock::TableRow { .. }) {
+                table_edges.clear();
+            }
             match block {
                 DisplayBlock::Heading { level, text } => {
                     let factor = match level { 1 => 2.0, 2 => 22.0 / 14.0, 3 => 18.0 / 14.0, _ => 16.0 / 14.0 };
@@ -219,12 +236,31 @@ impl ResumableFlowDisplay {
                 }
                 DisplayBlock::TableHeader { cells } | DisplayBlock::TableRow { cells } => {
                     let header = matches!(block, DisplayBlock::TableHeader { .. });
-                    let cell_width = width / cells.len().max(1) as f32;
-                    if cell_width <= 8.0 { return Err(FlowLayoutError::InvalidOptions); }
+                    if table_edges.is_empty() {
+                        // Preparation owns the complete parsed table even when
+                        // step() has only published its header. Inspect references,
+                        // not cloned cell text, and stop at the next table/header.
+                        let emitted = self.blocks[block_index..].iter()
+                            .zip(&self.metadata[block_index..]);
+                        let waiting = self.prepared.iter().flat_map(|prepared| {
+                            prepared.iter().map(|item| (&item.block, &item.meta))
+                        });
+                        let rows = emitted.chain(waiting).enumerate()
+                            .take_while(|(offset, (row, row_meta))| {
+                                *offset == 0 || (matches!(row, DisplayBlock::TableRow { .. })
+                                    && row_meta.span == span
+                                    && row_meta.list_depth == meta.list_depth
+                                    && row_meta.quote_depth == meta.quote_depth)
+                            })
+                            .map(|(_, row)| row);
+                        table_edges = layout.table_columns(rows, width, styled)?;
+                    }
                     let mut height = options.line_height;
                     let mut children = Vec::new();
-                    for (column, text) in cells.iter().enumerate() {
-                        let cx = x + column as f32 * cell_width;
+                    for (column, edges) in table_edges.windows(2).enumerate() {
+                        let cx = x + edges[0];
+                        let cell_width = (x + edges[1]) - cx;
+                        let text = cells.get(column).map_or("", String::as_str);
                         let runs = if styled { meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]) } else { &[] };
                         let used = layout.inline_text(text, runs, cx + 4.0, y + 4.0, cell_width - 8.0,
                             options.body_size, options.line_height,
@@ -233,7 +269,7 @@ impl ResumableFlowDisplay {
                         height = height.max(used);
                         children.push(AccessibleReadingNode {
                             role: if header { AccessibleReadingRole::TableHeaderCell } else { AccessibleReadingRole::TableCell },
-                            text: text.clone(), source_span: span,
+                            text: text.to_owned(), source_span: span,
                             bounds: DisplayRect::new(cx, y, cell_width, 0.0), children: Vec::new(),
                         });
                     }
@@ -314,6 +350,97 @@ where
         let run = (self.shape)(text, size, role, style).map_err(FlowLayoutError::Shaping)?;
         validate_run(&run, text, size)?;
         Ok(run)
+    }
+
+    /// Measure the entire admitted table once. Only column metrics survive;
+    /// glyph runs are dropped after each cell fragment. A late wide cell cannot
+    /// be missed by a sampling heuristic, and all shaping is budget-charged.
+    fn table_columns<'b, I>(&mut self, rows: I, width: f32, styled: bool)
+        -> Result<Vec<f32>, FlowLayoutError>
+    where
+        I: Iterator<Item = (&'b DisplayBlock, &'b BlockMeta)>,
+    {
+        let mut minimum = Vec::<f64>::new();
+        let mut preferred = Vec::<f64>::new();
+        for (block, meta) in rows {
+            let (cells, role) = match block {
+                DisplayBlock::TableHeader { cells } => (cells, FlowTextRole::TableHeader),
+                DisplayBlock::TableRow { cells } => (cells, FlowTextRole::TableCell),
+                _ => break,
+            };
+            // Empty text must not bypass metadata admission. Each output cell
+            // requires a border item even when there are no glyphs to emit.
+            if cells.len() > self.options.max_items {
+                return Err(FlowLayoutError::BudgetExceeded("table columns"));
+            }
+            if cells.len() > minimum.len() {
+                minimum.resize(cells.len(), 1.0);
+                preferred.resize(cells.len(), 1.0);
+            }
+            for (column, text) in cells.iter().enumerate() {
+                let runs = if styled { meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]) } else { &[] };
+                let (min, ideal) = self.cell_measures(text, runs, role)?;
+                minimum[column] = minimum[column].max(min);
+                preferred[column] = preferred[column].max(ideal);
+            }
+        }
+        table_column_edges(&minimum, &preferred, width)
+    }
+
+    fn cell_measures(&mut self, text: &str, runs: &[FlowInlineRun], role: FlowTextRole)
+        -> Result<(f64, f64), FlowLayoutError>
+    {
+        // Match inline_text's unstyled fast path, including shaping across
+        // adjacent default spans (otherwise ligature metrics could disagree).
+        let rich = !runs.is_empty()
+            && !runs.iter().all(|run| run.style == FlowInlineStyle::default() && run.link.is_none());
+        if rich {
+            let mut end = 0;
+            for run in runs {
+                if run.range.start != end || run.range.start >= run.range.end
+                    || text.get(run.range.clone()).is_none()
+                {
+                    return Err(FlowLayoutError::InvalidShapedRun);
+                }
+                end = run.range.end;
+            }
+            if end != text.len() { return Err(FlowLayoutError::InvalidShapedRun); }
+        }
+        let mut minimum = 1.0_f64;
+        let mut preferred = 1.0_f64;
+        let mut offset = 0;
+        for physical in text.split_terminator('\n') {
+            if physical.len() > self.options.max_shape_bytes {
+                return Err(FlowLayoutError::BudgetExceeded("bytes per table physical line"));
+            }
+            let mut advance = 0.0_f64;
+            if rich {
+                let physical_end = offset + physical.len();
+                let first = runs.partition_point(|run| run.range.end <= offset);
+                for spec in runs.iter().skip(first) {
+                    if spec.range.start >= physical_end { break; }
+                    let start = spec.range.start.max(offset);
+                    let end = spec.range.end.min(physical_end);
+                    if start == end { continue; }
+                    let size = if spec.style.code { self.options.code_size } else { self.options.body_size };
+                    let run = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
+                    advance += f64::from(run.total_advance);
+                    for cluster in &run.clusters {
+                        minimum = minimum.max(f64::from(cluster.advance()));
+                    }
+                }
+            } else if !physical.is_empty() {
+                let run = self.shaped(physical, self.options.body_size, role)?;
+                advance = f64::from(run.total_advance);
+                for cluster in &run.clusters {
+                    minimum = minimum.max(f64::from(cluster.advance()));
+                }
+            }
+            if !advance.is_finite() { return Err(FlowLayoutError::InvalidShapedRun); }
+            preferred = preferred.max(advance);
+            offset += physical.len() + 1;
+        }
+        Ok((minimum, preferred.max(minimum)))
     }
 
     fn line(&mut self) -> Result<(), FlowLayoutError> {
@@ -433,6 +560,54 @@ where
             role, text: text.to_owned(), source_span: span, bounds, children: Vec::new(),
         });
     }
+}
+
+/// Deterministic capped water filling. Compact columns are capped at their
+/// preferred width before narrative columns share the remaining width. Lower
+/// bounds preserve whole shaped clusters plus padding. Absolute shared edges
+/// avoid accumulating independently rounded widths differently in each row.
+fn table_column_edges(minimum: &[f64], preferred: &[f64], width: f32)
+    -> Result<Vec<f32>, FlowLayoutError>
+{
+    if minimum.is_empty() { return Ok(Vec::new()); }
+    let padding = 8.0_f64;
+    let lower: Vec<_> = minimum.iter().map(|value| value + padding).collect();
+    let upper: Vec<_> = preferred.iter().zip(&lower)
+        .map(|(value, min)| (value + padding).max(*min)).collect();
+    let min_sum: f64 = lower.iter().sum();
+    let preferred_sum: f64 = upper.iter().sum();
+    let available = f64::from(width);
+    if !min_sum.is_finite() || !preferred_sum.is_finite() {
+        return Err(FlowLayoutError::InvalidShapedRun);
+    }
+    if min_sum > available {
+        return Err(FlowLayoutError::TableTooNarrow { minimum: min_sum as f32, available: width });
+    }
+    let widths = if preferred_sum <= available {
+        let extra = (available - preferred_sum) / lower.len() as f64;
+        upper.iter().map(|value| value + extra).collect::<Vec<_>>()
+    } else {
+        let mut lo = 0.0;
+        let mut hi = available;
+        for _ in 0..64 {
+            let level = (lo + hi) * 0.5;
+            let used: f64 = lower.iter().zip(&upper).map(|(min, max)| level.clamp(*min, *max)).sum();
+            if used <= available { lo = level; } else { hi = level; }
+        }
+        lower.iter().zip(&upper).map(|(min, max)| lo.clamp(*min, *max)).collect::<Vec<_>>()
+    };
+    let mut edges = Vec::with_capacity(widths.len() + 1);
+    edges.push(0.0);
+    let mut edge = 0.0;
+    for (index, allocated) in widths.iter().enumerate() {
+        edge += allocated;
+        let right = if index + 1 == widths.len() { width } else { edge as f32 };
+        if right - edges[index] <= padding as f32 {
+            return Err(FlowLayoutError::TableTooNarrow { minimum: min_sum as f32, available: width });
+        }
+        edges.push(right);
+    }
+    Ok(edges)
 }
 
 fn validate_run(run: &OwnedTextRun, text: &str, size: f32) -> Result<(), FlowLayoutError> {
@@ -762,5 +937,100 @@ mod tests {
             stepped.process_all().unwrap();
             assert_eq!(stepped.to_shaped_display_list(narrow(100.0), measured).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn table_columns_give_narrative_space_without_wasting_it_on_ids() {
+        let source = "| ID | Description |\n| --- | --- |\n| 7 | a much longer narrative description |\n| 42 | short |\n";
+        let list = engine(source).to_shaped_display_list(narrow(200.0), measured).unwrap();
+        let header = &list.reading_order()[0];
+        assert_eq!(header.children[0].bounds.width, 28.0);
+        assert_eq!(header.children[1].bounds.width, 172.0);
+        for row in list.reading_order() {
+            assert_eq!(row.children[0].bounds.x, 0.0);
+            assert_eq!(row.children[0].bounds.width, 28.0);
+            assert_eq!(row.children[1].bounds.x, 28.0);
+            assert_eq!(row.children[1].bounds.right(), 200.0);
+            assert!(row.children.iter().all(|cell| cell.bounds.height == row.bounds.height));
+        }
+        assert!(text_items(&list).iter().any(|run| run.text == "42"));
+    }
+
+    #[test]
+    fn table_columns_include_unpublished_continuations_and_are_batch_stable() {
+        let source = "| A | B |\n| --- | --- |\n| x | a long narrative |\n| wide identifier | x |\n";
+        let complete = engine(source).to_shaped_display_list(narrow(200.0), measured).unwrap();
+        let expected = &complete.reading_order()[0].children;
+        let mut stepped = ResumableFlowDisplay::new(source, 1);
+        while stepped.blocks().is_empty() { stepped.step().unwrap(); }
+        assert_eq!(stepped.blocks().len(), 1);
+        let partial = stepped.to_shaped_display_list(narrow(200.0), measured).unwrap();
+        assert_eq!(&partial.reading_order()[0].children, expected);
+        stepped.process_all().unwrap();
+        assert_eq!(stepped.to_shaped_display_list(narrow(200.0), measured).unwrap(), complete);
+    }
+
+    #[test]
+    fn table_columns_do_not_leak_between_adjacent_tables_or_nested_blocks() {
+        let source = "| ID | Long description |\n| --- | --- |\n| 1 | narrative text |\n\n> | Long description | ID |\n> | --- | --- |\n> | narrative text | 1 |\n";
+        let list = engine(source).to_shaped_display_list(narrow(200.0), measured).unwrap();
+        let headers: Vec<_> = list.reading_order().iter()
+            .filter(|node| node.role == AccessibleReadingRole::TableHeaderRow).collect();
+        assert_eq!(headers.len(), 2);
+        assert!(headers[0].children[0].bounds.width < headers[0].children[1].bounds.width);
+        assert!(headers[1].children[0].bounds.width > headers[1].children[1].bounds.width);
+        assert!(headers[1].bounds.x > headers[0].bounds.x);
+        assert_eq!(headers[1].children[1].bounds.right(), 200.0);
+    }
+
+    #[test]
+    fn table_measurement_uses_inline_faces_and_preserves_link_geometry() {
+        let source = "| ID | Description |\n| --- | --- |\n| **WW** | [a long description](https://example.com) |\n";
+        let engine = engine(source);
+        let plain = engine.to_shaped_display_list(narrow(200.0), measured).unwrap();
+        let rich = engine.to_styled_display_list(narrow(200.0), |text, size, role, style| {
+            let mut run = measured(text, size, role)?;
+            if style.bold {
+                for cluster in &mut run.clusters { cluster.x_start *= 2.0; cluster.x_end *= 2.0; }
+                for glyph in &mut run.glyphs { glyph.x_advance *= 2.0; }
+                run.total_advance *= 2.0;
+            }
+            Ok(run)
+        }).unwrap();
+        assert_eq!(plain.reading_order()[0].children[0].bounds.width, 28.0);
+        assert_eq!(rich.reading_order()[0].children[0].bounds.width, 48.0);
+        let cell = &rich.reading_order()[1].children[1];
+        for anchor in rich.anchors().filter(|anchor| !anchor.is_heading) {
+            assert!(anchor.bounds.x >= cell.bounds.x + 4.0);
+            assert!(anchor.bounds.right() <= cell.bounds.right() - 4.0);
+            assert!(anchor.bounds.bottom() <= cell.bounds.bottom());
+        }
+        assert!(rich.anchors().any(|anchor| anchor.anchor_id == "https://example.com"));
+    }
+
+    #[test]
+    fn table_measurement_failure_is_atomic_and_charges_the_shared_budget() {
+        let engine = engine("| A | B |\n| --- | --- |\n| x | y |\n");
+        let before = engine.to_display_list();
+        let options = FlowLayoutOptions { max_total_shape_bytes: 3, ..narrow(200.0) };
+        assert!(matches!(engine.to_shaped_display_list(options, measured),
+            Err(FlowLayoutError::BudgetExceeded("total shaping bytes"))));
+        assert!(matches!(engine.to_shaped_display_list(narrow(35.0), measured),
+            Err(FlowLayoutError::TableTooNarrow { .. })));
+        assert_eq!(engine.to_display_list(), before);
+        assert!(engine.to_shaped_display_list(narrow(200.0), measured).is_ok());
+    }
+
+    #[test]
+    fn column_water_filling_preserves_minima_and_exact_outer_edges() {
+        for width in [36.0, 40.0, 60.0, 120.0, 200.0, 1000.0] {
+            let edges = table_column_edges(&[10.0, 10.0], &[20.0, 150.0], width).unwrap();
+            assert_eq!(edges[0], 0.0);
+            assert_eq!(*edges.last().unwrap(), width);
+            assert!(edges.windows(2).all(|pair| pair[1] - pair[0] >= 18.0));
+            assert_eq!(edges, table_column_edges(&[10.0, 10.0], &[20.0, 150.0], width).unwrap());
+        }
+        assert_eq!(table_column_edges(&[10.0, 10.0], &[20.0, 150.0], 120.0).unwrap(),
+            [0.0, 28.0, 120.0]);
     }
 }

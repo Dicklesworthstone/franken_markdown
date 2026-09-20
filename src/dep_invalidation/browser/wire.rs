@@ -8,6 +8,8 @@ use std::ops::Range;
 
 #[path = "reading_inline.rs"]
 mod reading_inline;
+#[path = "viewport.rs"]
+mod viewport;
 
 struct Json { text: String, limit: usize }
 impl Write for Json {
@@ -85,45 +87,7 @@ pub(super) fn snapshot(state: &BrowserFlowSession, range: Range<usize>, glyphs: 
         w.write_str(",\"items\":[")?;
         for (relative, item) in items[range.clone()].iter().enumerate() {
             if relative != 0 { w.write_char(',')?; }
-            write!(w, "{{\"index\":{},\"bounds\":", range.start + relative)?;
-            w.rect(item.bounds())?;
-            w.write_str(",\"enclosingSourceSpan\":")?; w.span(item.source_span())?;
-            match item {
-                DisplayItem::Text(text) => {
-                    w.write_str(",\"kind\":\"text\",\"text\":")?; w.string(&text.text)?;
-                    w.write_str(",\"colorRole\":")?; w.string(&text.color_role)?;
-                    w.write_str(",\"fontSize\":")?; w.number(text.font_size)?;
-                    w.write_str(",\"fontRun\":")?;
-                    if let Some(run) = &text.font_run { font_run(w, run, glyphs)?; } else { w.write_str("null")?; }
-                }
-                DisplayItem::Vector(path) => {
-                    w.write_str(",\"kind\":\"vector\",\"shape\":")?;
-                    w.string(match path.shape {
-                        VectorShapeType::HorizontalRule => "horizontal-rule",
-                        VectorShapeType::TableBorder => "table-border",
-                        VectorShapeType::CalloutAccentBar => "callout-accent-bar",
-                        VectorShapeType::CheckboxOutline => "checkbox-outline",
-                        VectorShapeType::CheckboxCheck => "checkbox-check",
-                        VectorShapeType::DiagramBox => "diagram-box",
-                        VectorShapeType::DiagramArrow => "diagram-arrow",
-                        VectorShapeType::DiagramConnector => "diagram-connector",
-                    })?;
-                    w.write_str(",\"strokeWidth\":")?; w.number(path.stroke_width)?;
-                    w.write_str(",\"colorRole\":")?; w.string(&path.color_role)?;
-                }
-                DisplayItem::Image(image) => {
-                    w.write_str(",\"kind\":\"image\",\"requestId\":")?; w.identity(image.request_id)?;
-                    w.write_str(",\"destination\":")?; w.string(&image.destination)?;
-                    w.write_str(",\"altText\":")?; w.string(&image.alt_text)?;
-                    write!(w, ",\"isResolved\":{}", image.is_resolved)?;
-                }
-                DisplayItem::Anchor(anchor) => {
-                    w.write_str(",\"kind\":\"anchor\",\"target\":")?; w.string(&anchor.anchor_id)?;
-                    write!(w, ",\"isHeading\":{},\"level\":{}", anchor.is_heading, anchor.level)?;
-                }
-                DisplayItem::Clip(clip) => write!(w, ",\"kind\":\"clip\",\"childCount\":{}", clip.child_count)?,
-            }
-            w.write_char('}')?;
+            display_item(w, range.start + relative, item, glyphs, None)?;
         }
         w.write_str("],\"cache\":{")?;
         let stats = state.fonts.stats();
@@ -132,6 +96,52 @@ pub(super) fn snapshot(state: &BrowserFlowSession, range: Range<usize>, glyphs: 
         w.write_str(",\"evictions\":")?; w.identity(stats.evictions)?;
         write!(w, ",\"retainedEntries\":{},\"retainedPayloadBytes\":{}}}}}", stats.retained_entries, stats.retained_payload_bytes)
     })
+}
+
+fn display_item(w: &mut Json, index: usize, item: &DisplayItem, glyphs: bool,
+    clip: Option<DisplayRect>) -> fmt::Result
+{
+    write!(w, "{{\"index\":{},\"bounds\":", index)?;
+    w.rect(item.bounds())?;
+    w.write_str(",\"enclosingSourceSpan\":")?; w.span(item.source_span())?;
+    match item {
+        DisplayItem::Text(text) => {
+            w.write_str(",\"kind\":\"text\",\"text\":")?; w.string(&text.text)?;
+            w.write_str(",\"colorRole\":")?; w.string(&text.color_role)?;
+            w.write_str(",\"fontSize\":")?; w.number(text.font_size)?;
+            w.write_str(",\"fontRun\":")?;
+            if let Some(run) = &text.font_run { font_run(w, run, glyphs)?; } else { w.write_str("null")?; }
+        }
+        DisplayItem::Vector(path) => {
+            w.write_str(",\"kind\":\"vector\",\"shape\":")?;
+            w.string(match path.shape {
+                VectorShapeType::HorizontalRule => "horizontal-rule",
+                VectorShapeType::TableBorder => "table-border",
+                VectorShapeType::CalloutAccentBar => "callout-accent-bar",
+                VectorShapeType::CheckboxOutline => "checkbox-outline",
+                VectorShapeType::CheckboxCheck => "checkbox-check",
+                VectorShapeType::DiagramBox => "diagram-box",
+                VectorShapeType::DiagramArrow => "diagram-arrow",
+                VectorShapeType::DiagramConnector => "diagram-connector",
+            })?;
+            w.write_str(",\"strokeWidth\":")?; w.number(path.stroke_width)?;
+            w.write_str(",\"colorRole\":")?; w.string(&path.color_role)?;
+        }
+        DisplayItem::Image(image) => {
+            w.write_str(",\"kind\":\"image\",\"requestId\":")?; w.identity(image.request_id)?;
+            w.write_str(",\"destination\":")?; w.string(&image.destination)?;
+            w.write_str(",\"altText\":")?; w.string(&image.alt_text)?;
+            write!(w, ",\"isResolved\":{}", image.is_resolved)?;
+        }
+        DisplayItem::Anchor(anchor) => {
+            w.write_str(",\"kind\":\"anchor\",\"target\":")?;
+            w.string(&anchor.anchor_id)?;
+            write!(w, ",\"isHeading\":{},\"level\":{}", anchor.is_heading, anchor.level)?;
+        }
+        DisplayItem::Clip(clip) => write!(w, ",\"kind\":\"clip\",\"childCount\":{}", clip.child_count)?,
+    }
+    if let Some(clip) = clip { w.write_str(",\"effectiveClip\":")?; w.rect(clip)?; }
+    w.write_char('}')
 }
 
 fn font_run(w: &mut Json, run: &OwnedTextRun, glyphs: bool) -> fmt::Result {
@@ -243,16 +253,19 @@ pub(super) fn assets(state: &BrowserFlowSession, range: Range<usize>) -> Result<
 }
 
 pub(super) fn hit(state: &BrowserFlowSession, x: f32, y: f32) -> Result<String, BrowserFlowError> {
+    let display = state.session.display();
+    let link = display.hit_test_filtered(x, y,
+        |item| matches!(item, DisplayItem::Anchor(anchor) if !anchor.is_heading))
+        .map_err(viewport::query_error)?;
+    let found = display.hit_test_filtered(x, y,
+        |item| matches!(item, DisplayItem::Text(_) | DisplayItem::Image(_)))
+        .map_err(viewport::query_error)?;
     encode(|w| {
         header(w, state)?;
-        let display = state.session.display();
         w.write_str(",\"linkTarget\":")?;
-        if let Some(link) = display.link_at_point(x, y) { w.string(&link.anchor_id)?; } else { w.write_str("null")?; }
+        if let Some((_, DisplayItem::Anchor(link))) = link { w.string(&link.anchor_id)?; }
+        else { w.write_str("null")?; }
         w.write_str(",\"hit\":")?;
-        // Ignore heading/link/vector overlays for text caret hit testing.
-        let found = display.items().iter().enumerate().rev().find(|(_, item)| {
-            matches!(item, DisplayItem::Text(_) | DisplayItem::Image(_)) && item.bounds().contains_point(x, y)
-        });
         if let Some((index, item)) = found {
             write!(w, "{{\"itemIndex\":{index},\"enclosingSourceSpan\":")?; w.span(item.source_span())?;
             if let DisplayItem::Text(text) = item {

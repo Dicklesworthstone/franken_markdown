@@ -106,6 +106,17 @@ impl FmdFlowSession {
         self.inner.snapshot_json(id(revision)?, id(layout_revision)?, offset, limit, glyphs).map_err(js_error)
     }
 
+    /// Bounded indexed query; the original snapshot API remains available.
+    #[wasm_bindgen(js_name = viewportJson)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn viewport_json(&self, revision: &str, layout_revision: &str,
+        x: f32, y: f32, width: f32, height: f32, after: usize,
+        limit: usize, glyphs: bool) -> Result<String, JsValue>
+    {
+        self.inner.viewport_json(id(revision)?, id(layout_revision)?,
+            crate::display::DisplayRect::new(x, y, width, height), after, limit, glyphs).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = readingJson)]
     pub fn reading_json(&self, revision: &str, layout_revision: &str, offset: usize,
         limit: usize) -> Result<String, JsValue>

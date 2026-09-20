@@ -4,7 +4,7 @@ export class FlowReadingError extends Error {
 }
 const fail = (code, message) => { throw new FlowReadingError(code, message); };
 const invalid = message => fail("INVALID_READING_DATA", message);
-const DEFAULTS = Object.freeze({ maxNodes: 10000, maxDepth: 64, maxTextUnits: 1048576, maxInlineRuns: 50000, maxLinkUnits: 1048576 });
+const DEFAULTS = Object.freeze({ maxNodes: 10000, maxDepth: 64, maxTextUnits: 1048576, maxInlineRuns: 50000, maxLinkUnits: 1048576, maxListEntries: 50000 });
 const ROLES = new Set(["document", "heading", "paragraph", "code-block", "list", "list-item", "table",
   "table-header-row", "table-row", "table-header-cell", "table-cell", "blockquote", "thematic-break", "image"]);
 const ROWS = new Set(["table-header-row", "table-row"]);
@@ -143,6 +143,72 @@ function inlineMetadata(raw, budget, retained) {
   return { inlineRuns: Object.freeze(inlineRuns), imageLink };
 }
 
+// Paths are supplied by the native AST projection, never inferred from source
+// envelopes, list-looking text, role alone, or Canvas indentation.
+function listMetadata(raw, depth, budget, retained) {
+  if (raw.listPath === undefined) return null; // Legacy schema-1 producer.
+  const path = raw.listPath;
+  if (!Array.isArray(path)) invalid("list ancestry must be an array");
+  if (depth !== 0 && path.length) invalid("nested reading children inherit their root's list ownership");
+  retained.listEntries += path.length;
+  if (path.length > budget.maxDepth || retained.listEntries > budget.maxListEntries) {
+    fail("READING_LIMIT", "reading list ancestry limit exceeded");
+  }
+  return Object.freeze(Array.from(path, item => {
+    const keys = ["listId", "ordered", "start", "itemIndex", "task"];
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || Object.keys(item).length !== keys.length || !keys.every(key => Object.hasOwn(item, key))
+        || typeof item.listId !== "string" || typeof item.start !== "string"
+        || typeof item.ordered !== "boolean" || !integer(item.itemIndex)
+        || !(item.task === null || typeof item.task === "boolean")) invalid("invalid list item identity");
+    const listId = identity(item.listId), start = identity(item.start);
+    if (listId === "0" || (item.ordered && BigInt(start) + BigInt(item.itemIndex) > 18446744073709551615n)) {
+      invalid("invalid list identity or overflowing ordinal");
+    }
+    return Object.freeze({ listId, ordered: item.ordered, start, itemIndex: item.itemIndex, task: item.task });
+  }));
+}
+
+function validateListOrder(roots) {
+  let structured = null, previous = [];
+  const seen = new Set();
+  const sameList = (a, b) => a.listId === b.listId && a.ordered === b.ordered && a.start === b.start;
+  for (const node of roots) {
+    const hasPath = node.listPath !== null;
+    if (structured === null) structured = hasPath;
+    if (structured !== hasPath) invalid("mixed legacy and structured list ownership");
+    if (!hasPath) continue;
+    const path = node.listPath;
+    let common = 0;
+    while (common < path.length && common < previous.length
+        && path[common].listId === previous[common].listId && path[common].itemIndex === previous[common].itemIndex) {
+      if (!sameList(path[common], previous[common]) || path[common].task !== previous[common].task) {
+        invalid("list item metadata changed within one snapshot");
+      }
+      common++;
+    }
+    if (common < path.length) {
+      // Every item has one leading ListItem block, even for an empty/code-first
+      // item. A continuation cannot silently introduce a missing ancestor.
+      if (path.length !== common + 1 || node.role !== "list-item" || node.children.length) {
+        invalid("list item is missing its leading reading block");
+      }
+      const item = path[common], before = previous[common];
+      if (before?.listId === item.listId) {
+        if (!sameList(item, before) || item.itemIndex !== before.itemIndex + 1) {
+          invalid("list items are not consecutive within one list");
+        }
+      } else {
+        if (seen.has(item.listId) || item.itemIndex !== 0) invalid("closed or foreign list identity was reused");
+        seen.add(item.listId);
+      }
+    } else if (node.role === "list-item") {
+      invalid("duplicate or ownerless list-item reading block");
+    }
+    previous = path;
+  }
+}
+
 /** Immutable, session-bound semantic snapshot. Construct with readFlowDocument. */
 export class FlowReadingDocument {
   #session; #matches = new WeakSet();
@@ -154,7 +220,7 @@ export class FlowReadingDocument {
     // Container transcripts summarize children. Search/copy leaves once, not
     // both a table row's aggregate "A | B" and its individually typed cells.
     this.text = nodes.filter(node => !node.children.length && node.text).map(node => node.text).join("\n\n");
-    this.textUnits = textUnits; this.inlineRunCount = retained.runs; this.linkUnits = retained.links;
+    this.textUnits = textUnits; this.inlineRunCount = retained.runs; this.linkUnits = retained.links; this.listEntryCount = retained.listEntries;
     owned.add(this); sessions.set(this, session); Object.freeze(this);
   }
   assertCurrent() { check(this.#session, this.token); }
@@ -205,7 +271,7 @@ export async function readFlowDocument(session, options = {}) {
   const budget = limits(options.limits), expected = token(options.token ?? session.token), signal = options.signal;
   if (signal !== undefined && (!signal || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function"
       || typeof signal.removeEventListener !== "function")) fail("INVALID_OPTIONS", "signal must be an AbortSignal");
-  const roots = [], nodes = [], seen = new WeakSet(), retained = { runs: 0, links: 0 }; let textUnits = 0;
+  const roots = [], nodes = [], seen = new WeakSet(), retained = { runs: 0, links: 0, listEntries: 0 }; let textUnits = 0;
   function clone(raw, depth, parent = null) {
     if (!raw || typeof raw !== "object" || seen.has(raw)) invalid("cyclic or aliased reading tree");
     if (depth > budget.maxDepth || nodes.length >= budget.maxNodes) fail("READING_LIMIT", "reading node/depth limit exceeded");
@@ -222,7 +288,7 @@ export async function readFlowDocument(session, options = {}) {
         || (ROWS.has(parent) && !CELLS.has(raw.role))
         || (parent === "list" && raw.role !== "list-item")) invalid("inconsistent reading structure");
     const node = { index: nodes.length, role: raw.role, text: raw.text, bounds: rectangle(raw.bounds),
-      ...inlineMetadata(raw, budget, retained),
+      ...inlineMetadata(raw, budget, retained), listPath: listMetadata(raw, depth, budget, retained),
       enclosingSourceSpan: span(raw.enclosingSourceSpan), ...(raw.role === "heading" ? { level: raw.level } : {}), children: [] };
     nodes.push(node);
     for (const child of raw.children) node.children.push(clone(child, depth + 1, raw.role));
@@ -244,6 +310,7 @@ export async function readFlowDocument(session, options = {}) {
     offset = page.nextOffset;
   } while (offset !== null);
   cancelled(signal); check(session, expected);
+  validateListOrder(roots);
   return new FlowReadingDocument(owned, session, expected, roots, nodes, textUnits, retained);
 }
 

@@ -26,6 +26,8 @@ use crate::span::SourceSpan;
 
 mod inline;
 mod limits;
+mod lists;
+pub use lists::FlowListItem;
 pub use inline::{FlowInlineRun, FlowInlineStyle, active_link_target};
 use inline::emit_inlines;
 mod reflow;
@@ -176,6 +178,8 @@ struct BlockMeta {
     span: SourceSpan,
     heading_id: Option<String>,
     list_depth: u16,
+    // One shared immutable allocation per AST item, not a path copy per output.
+    list_path: std::sync::Arc<[FlowListItem]>,
     quote_depth: u16,
     marker: Option<String>,
     ordered: bool,
@@ -520,7 +524,7 @@ fn push_reading(list: &mut DisplayList, role: AccessibleReadingRole, text: &str,
 // boundaries, belong to parse_markdown_spanned, not this projection.
 enum Work<'a> {
     Block(&'a Block, BlockMeta),
-    Item(&'a ListItem, bool, u64, BlockMeta),
+    Item(&'a ListItem, FlowListItem, BlockMeta),
 }
 
 fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque<PreparedBlock>, FlowDisplayError> {
@@ -533,12 +537,26 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
     let mut output = Projection::new(limits);
     let mut slugs = HashMap::<String, usize>::new();
     let mut next_request_id = 1;
+    let mut next_list_id = 1_u64;
+    let mut list_bytes = 0_usize;
     while let Some(item) = work.pop() {
         match item {
-            Work::Item(item, ordered, number, mut meta) => {
+            Work::Item(item, context, mut meta) => {
+                // Independently charge retained ancestry before allocating it.
+                // Children/image splits share this Arc; transient parent paths
+                // are conservatively charged too. Text/output budgets still apply.
+                list_bytes = meta.list_path.len().checked_add(1)
+                    .and_then(|n| n.checked_mul(std::mem::size_of::<FlowListItem>()))
+                    .and_then(|n| list_bytes.checked_add(n))
+                    .filter(|n| *n <= limits.max_output_bytes)
+                    .ok_or_else(|| FlowDisplayError::BudgetExceeded("list ancestry bytes".to_owned()))?;
+                let mut path = meta.list_path.to_vec();
+                path.push(context);
+                meta.list_path = path.into();
                 meta.list_depth = meta.list_depth.saturating_add(1);
-                meta.ordered = ordered;
-                meta.marker = Some(if ordered { format!("{number}.") } else { "•".to_owned() });
+                meta.ordered = context.ordered;
+                let number = context.start.saturating_add(context.item_index as u64);
+                meta.marker = Some(if context.ordered { format!("{number}.") } else { "•".to_owned() });
                 meta.task = item.task;
                 let first_is_paragraph = matches!(item.blocks.first(), Some(Block::Paragraph(_)));
                 if !first_is_paragraph {
@@ -580,8 +598,14 @@ fn prepare_document(source: &str, limits: &FlowDisplayLimits) -> Result<VecDeque
                     for child in children.iter().rev() { work.push(Work::Block(child, meta.clone())); }
                 }
                 Block::List(list) => {
+                    let list_id = next_list_id;
+                    next_list_id = next_list_id.checked_add(1)
+                        .ok_or_else(|| FlowDisplayError::BudgetExceeded("list identities".to_owned()))?;
                     for (index, item) in list.items.iter().enumerate().rev() {
-                        work.push(Work::Item(item, list.ordered, list.start.saturating_add(index as u64), meta.clone()));
+                        work.push(Work::Item(item, FlowListItem {
+                            list_id, ordered: list.ordered, start: list.start,
+                            item_index: index, task: item.task,
+                        }, meta.clone()));
                     }
                 }
                 Block::Table(table) => {
@@ -704,8 +728,7 @@ mod tests {
         // secondary parser's Paragraph expectation was contrary to the core.
         for source in ["    ```rust", "\t~~~"] {
             let mut engine = ResumableFlowDisplay::new(source, 1);
-            let blocks = engine.process_all().unwrap();
-            assert!(matches!(&blocks[0], DisplayBlock::CodeBlock { language: None, .. }));
+            assert!(matches!(&engine.process_all().unwrap()[0], DisplayBlock::CodeBlock { language: None, .. }));
         }
     }
 

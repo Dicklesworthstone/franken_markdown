@@ -74,6 +74,7 @@ pub(super) fn fields(
         if !matches!(block, DisplayBlock::TableHeader { .. } | DisplayBlock::TableRow { .. })
             && !node.children.is_empty() { return Err(fmt::Error); }
     }
+    list_path(w, engine, index, cell)?;
     w.write_str(",\"inlineRuns\":[")?;
     let mut previous_end = offset;
     for (i, run) in runs.iter().enumerate() {
@@ -89,6 +90,23 @@ pub(super) fn fields(
     }
     w.write_str("],\"imageLink\":")?;
     link(w, image_link)
+}
+
+fn list_path(w: &mut Json, engine: &ResumableFlowDisplay, index: usize, cell: Option<usize>) -> fmt::Result {
+    w.write_str(",\"listPath\":[")?;
+    // The row owns list membership; its nested cells must not repeat ancestry.
+    if cell.is_none() {
+        for (i, item) in engine.list_path_for_block(index).ok_or(fmt::Error)?.iter().enumerate() {
+            if i != 0 { w.write_char(',')?; }
+            w.write_str("{\"listId\":")?; w.identity(item.list_id)?;
+            write!(w, ",\"ordered\":{},\"start\":", item.ordered)?; w.identity(item.start)?;
+            write!(w, ",\"itemIndex\":{},\"task\":", item.item_index)?;
+            if let Some(checked) = item.task { write!(w, "{checked}")?; }
+            else { w.write_str("null")?; }
+            w.write_char('}')?;
+        }
+    }
+    w.write_char(']')
 }
 
 fn link(w: &mut Json, target: Option<&str>) -> fmt::Result {
@@ -141,7 +159,7 @@ mod tests {
     fn image_links_survive_even_with_empty_alt_text() {
         let (engine, list) = projected("[![](x.png)](https://example.com)");
         let output = encode(|w| fields(w, &list.reading_order()[0], &engine, 0, None)).unwrap();
-        assert!(output.starts_with(",\"inlineRuns\":[],\"imageLink\":{\"target\":\"https://example.com\""));
+        assert!(output.contains(",\"inlineRuns\":[],\"imageLink\":{\"target\":\"https://example.com\""));
     }
 
     #[test]
@@ -161,5 +179,17 @@ mod tests {
         assert!(page.contains("\"bold\":true"));
         assert!(page.contains("\"activeTarget\":\"#plain\""));
         assert_eq!(page, reading(&state, 1..2).unwrap());
+    }
+
+    #[test]
+    fn list_membership_is_serialized_on_continuations_and_not_repeated_on_cells() {
+        let (engine, list) = projected("7. first\n\n   next\n\n   | A |\n   | --- |\n   | B |\n8. last\n");
+        for index in [0, 1] {
+            let output = encode(|w| fields(w, &list.reading_order()[index], &engine, index, None)).unwrap();
+            assert!(output.contains("\"listPath\":[{\"listId\":\"1\",\"ordered\":true,\"start\":\"7\",\"itemIndex\":0,\"task\":null}]"));
+        }
+        let index = engine.blocks().iter().position(|b| matches!(b, DisplayBlock::TableHeader { .. })).unwrap();
+        let output = encode(|w| fields(w, &list.reading_order()[index].children[0], &engine, index, Some(0))).unwrap();
+        assert!(output.contains("\"listPath\":[]"));
     }
 }

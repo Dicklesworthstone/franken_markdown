@@ -113,6 +113,7 @@ function bytes(value, max = FLOW_ASSET_LIMIT) {
   return value;
 }
 function response(value, expected) {
+  if (typeof value !== "string" || value.length > 16 * 1024 * 1024) fail("INVALID_WASM_RESPONSE", "flow response exceeds the JSON limit");
   let parsed;
   try { parsed = JSON.parse(value); } catch { fail("INVALID_WASM_RESPONSE", "flow response is not JSON"); }
   if (!parsed || parsed.schemaVersion !== 1 || typeof parsed.revision !== "string" || typeof parsed.layoutRevision !== "string") {
@@ -132,6 +133,83 @@ function checkedPage(value, key, offset, limit) {
   const end = offset + value[key].length;
   if (value.nextOffset !== (end < value.total ? end : null)) fail("INVALID_WASM_RESPONSE", "flow pagination did not advance consistently");
   return value;
+}
+
+// Shared ingress/response checks for direct, worker and Canvas viewport reads.
+// Rectangles follow the existing native f32 coordinate contract. Preserve the
+// original inventory cursor: visible pages are deliberately not dense pages.
+function viewportRect(value) {
+  record(value, ["x", "y", "width", "height"], "viewport");
+  const out = {};
+  for (const key of ["x", "y", "width", "height"]) {
+    if (typeof value[key] !== "number" || Math.abs(value[key]) > 1e12) fail("INVALID_ARGUMENT", "viewport coordinate exceeds its bound");
+    out[key] = finite(value[key], key);
+  }
+  if (value.width < 0 || value.height < 0) fail("INVALID_ARGUMENT", "viewport extents must be nonnegative");
+  finite(out.x + out.width, "right"); finite(out.y + out.height, "bottom");
+  return Object.freeze(out);
+}
+export function viewportOptions(value) {
+  record(value, ["viewport", "afterIndex", "limit", "glyphs", "token"], "viewport options");
+  const out = { viewport: viewportRect(value.viewport),
+    afterIndex: integer(value.afterIndex ?? 0, "afterIndex"),
+    limit: integer(value.limit ?? 512, "limit", 1, 2048),
+    glyphs: boolean(value.glyphs ?? false, "glyphs") };
+  if (value.token !== undefined) out.token = token(value.token);
+  return out;
+}
+export function validateViewportPage(value, options, expected) {
+  const query = viewportOptions(options);
+  const wanted = token(expected);
+  try {
+    if (!value || value.schemaVersion !== 1 || value.queryKind !== "viewport-v1"
+        || value.shapingProfile !== "bundled-simple-ltr"
+        || value.revision !== wanted.revision || value.layoutRevision !== wanted.layoutRevision
+        || value.afterIndex !== query.afterIndex || !Number.isInteger(value.total)
+        || value.total < query.afterIndex || value.total > 1000000
+        || !Array.isArray(value.items) || value.items.length > query.limit
+        || !Number.isInteger(value.visitedEntries) || value.visitedEntries < value.items.length
+        || value.visitedEntries > value.total) throw new Error("invalid viewport inventory");
+    const echoed = viewportRect(value.viewport);
+    if (Object.keys(echoed).some(key => echoed[key] !== query.viewport[key])) throw new Error("viewport changed");
+    viewportRect(value.totalBounds);
+    let previous = query.afterIndex - 1;
+    for (const item of value.items) {
+      if (!item || !Number.isInteger(item.index) || item.index <= previous || item.index >= value.total
+          || !["text", "vector", "image", "anchor"].includes(item.kind)) throw new Error("invalid viewport item");
+      viewportRect(item.bounds);
+      viewportRect(item.effectiveClip);
+      previous = item.index;
+    }
+    if (value.nextIndex !== null && (value.items.length !== query.limit
+        || value.nextIndex !== previous + 1 || value.nextIndex >= value.total)) throw new Error("invalid viewport cursor");
+  } catch (error) {
+    throw new FlowError("INVALID_WASM_RESPONSE", "inconsistent indexed viewport page", { cause: error });
+  }
+  return value;
+}
+
+// Canvas queries cover the original double-precision viewport conservatively.
+// Round outward once here, then viewportOptions performs idempotent f32 ingress.
+// Ink is still clipped to the ORIGINAL camera rectangle by the presentation layer.
+export function coveringViewport(value) {
+  viewportRect(value);
+  const bits = new DataView(new ArrayBuffer(4));
+  const round = (number, up) => {
+    let rounded = Math.fround(number);
+    if (up ? rounded >= number : rounded <= number) return rounded;
+    if (rounded === 0) return up ? 2 ** -149 : -(2 ** -149);
+    bits.setFloat32(0, rounded);
+    bits.setUint32(0, bits.getUint32(0) + ((rounded > 0) === up ? 1 : -1));
+    return bits.getFloat32(0);
+  };
+  const axis = (start, extent) => {
+    const left = round(start, false);
+    return [left, extent === 0 ? 0 : round(round(start + extent, true) - left, true)];
+  };
+  const [x, width] = axis(value.x, value.width);
+  const [y, height] = axis(value.y, value.height);
+  return viewportRect({ x, y, width, height });
 }
 
 export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
@@ -175,6 +253,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
   };
   const api = {
     get disposed() { return backend === null; },
+    get supportsViewport() { return call(b => typeof b.viewportJson === "function"); },
     get revision() { return current().revision; },
     get layoutRevision() { return current().layoutRevision; },
     get token() { return current(); },
@@ -210,6 +289,18 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
       return current();
     },
     snapshot(options) { return page("snapshot", options); },
+    viewport(options) {
+      alive();
+      const query = viewportOptions(options);
+      const expected = query.token === undefined ? current() : fence(query.token);
+      const { x, y, width, height } = query.viewport;
+      const data = call(b => {
+        if (typeof b.viewportJson !== "function") fail("UNSUPPORTED_WASM_PACKAGE", "this native package does not expose indexed viewport queries");
+        return b.viewportJson(expected.revision, expected.layoutRevision, x, y, width, height,
+          query.afterIndex, query.limit, query.glyphs);
+      });
+      return validateViewportPage(response(data, expected), query, expected);
+    },
     readingOrder(options) { return page("reading", options); },
     pendingAssets(options) { return page("assets", options); },
     pages(options = {}) {

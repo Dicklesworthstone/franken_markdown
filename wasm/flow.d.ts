@@ -19,6 +19,30 @@ export interface FlowEditOptions {
 }
 export interface FlowPageOptions { offset?: number; limit?: number; token?: FlowTokenInput; }
 export interface FlowSnapshotOptions extends FlowPageOptions { glyphs?: boolean; }
+/** Spatial cursor, not a snapshot offset. Reuse viewport/token until nextIndex is null. */
+export interface FlowViewportOptions {
+  viewport: FlowRect;
+  afterIndex?: number;
+  limit?: number;
+  glyphs?: boolean;
+  token?: FlowTokenInput;
+}
+export type FlowViewportItem = Exclude<FlowItem, FlowClipItem> & { readonly effectiveClip: FlowRect };
+export interface FlowViewportPage extends FlowToken {
+  readonly schemaVersion: 1;
+  readonly queryKind: "viewport-v1";
+  readonly shapingProfile: "bundled-simple-ltr";
+  readonly viewport: FlowRect;
+  readonly totalBounds: FlowRect;
+  readonly afterIndex: number;
+  /** Complete inventory count, including clip commands omitted from items. */
+  readonly total: number;
+  /** Leaf entries inspected by this query, excluding initial index construction. */
+  readonly visitedEntries: number;
+  readonly nextIndex: number | null;
+  /** Includes all text at visible Y to preserve shared line baselines. */
+  readonly items: readonly FlowViewportItem[];
+}
 export interface FlowPage extends FlowToken {
   readonly schemaVersion: 1;
   readonly offset: number;
@@ -199,6 +223,8 @@ export interface FlowSelection extends FlowToken {
  */
 export interface FlowSession {
   readonly disposed: boolean;
+  /** False with older native binaries; snapshot remains usable. */
+  readonly supportsViewport: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -212,6 +238,7 @@ export interface FlowSession {
   provideAsset(result: FlowAssetResult): FlowToken;
   reloadAssets(expectedRevision: FlowIdentity): FlowToken;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot;
+  viewport(options: FlowViewportOptions): FlowViewportPage;
   readingOrder(options?: FlowPageOptions): FlowReadingPage;
   pendingAssets(options?: FlowPageOptions): FlowAssetPage;
   /** Captures a token when called; editing between pages makes iteration throw. */

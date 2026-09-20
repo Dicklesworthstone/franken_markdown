@@ -1,13 +1,13 @@
 import type {
   FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput,
+  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput, FlowViewportOptions, FlowViewportPage,
   FlowExportFormat, FlowExportOptionsByFormat, FlowExportResult
 } from "./flow.js";
 export type {
   FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
   FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput,
+  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput, FlowViewportOptions, FlowViewportPage,
   FlowExportFormat, FlowExportOptions, FlowHtmlExportOptions, FlowPdfExportOptions,
   FlowExportOptionsByFormat, FlowExportDiagnostic, FlowExportResult
 } from "./flow.js";
@@ -47,6 +47,8 @@ export interface FlowWorkerOptions {
  * below are last-acknowledged values, not speculative queued mutations. */
 export interface WorkerFlowSession {
   readonly disposed: boolean;
+  /** Negotiated at creation; false for legacy worker/native packages. */
+  readonly supportsViewport: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -61,6 +63,7 @@ export interface WorkerFlowSession {
   provideAsset(result: FlowAssetResult, control?: FlowWorkerControl): Promise<FlowToken>;
   reloadAssets(expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<FlowToken>;
   snapshot(options?: FlowSnapshotOptions, control?: FlowWorkerControl): Promise<FlowSnapshot>;
+  viewport(options: FlowViewportOptions, control?: FlowWorkerControl): Promise<FlowViewportPage>;
   readingOrder(options?: FlowPageOptions, control?: FlowWorkerControl): Promise<FlowReadingPage>;
   pendingAssets(options?: FlowPageOptions, control?: FlowWorkerControl): Promise<FlowAssetPage>;
   /** Captures the last-acknowledged token immediately. Each next() requests one

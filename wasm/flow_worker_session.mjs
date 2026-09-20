@@ -1,4 +1,4 @@
-import { sourceText } from "./flow_session.mjs";
+import { sourceText, validateViewportPage } from "./flow_session.mjs";
 import { OwnedWorkerRpc, FlowWorkerError, workerLimits, serveOwnedWorker } from "./worker_transport.mjs";
 import { fields, flowToken, normalizeFlowRequest, requestWeight, snapshotArguments, acknowledgedState } from "./flow_worker_protocol.mjs";
 import { validateFlowExportResult } from "./flow_export.mjs";
@@ -32,9 +32,18 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     if (requestWeight(initial) > limits.maxPendingBytes) throw new FlowWorkerError("WORKER_QUEUE_FULL", "source exceeds worker ingress budget");
     if (typeof factory !== "function") throw new FlowWorkerError("INVALID_WORKER", "workerFactory must be a function");
     let state = null;
+    let supportsViewport = false;
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
+      if (method === "create") {
+        // Legacy workers returned null. Capabilities travel in the creation
+        // VALUE, not state, so older clients retain their strict state schema.
+        if (result !== null && (!result || typeof result.supportsViewport !== "boolean")) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid worker capability acknowledgment");
+        }
+        supportsViewport = result?.supportsViewport === true;
+      }
       if (state && (BigInt(next.token.revision) < BigInt(state.token.revision)
           || BigInt(next.token.layoutRevision) < BigInt(state.token.layoutRevision))) {
         throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "worker revisions moved backwards");
@@ -45,7 +54,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "mutation acknowledgment does not match worker state");
         }
       }
-      if (["snapshot", "readingOrder", "pendingAssets", "hitTest", "selectText"].includes(method)) {
+      if (["snapshot", "viewport", "readingOrder", "pendingAssets", "hitTest", "selectText"].includes(method)) {
         const token = flowToken(result);
         if (result.schemaVersion !== 1 || token.revision !== next.token.revision
             || token.layoutRevision !== next.token.layoutRevision) {
@@ -72,8 +81,21 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     const call = (method, args, controls) => {
       try {
         alive();
+        if (method === "viewport" && !supportsViewport) {
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "this worker does not expose indexed viewport queries");
+        }
         const normalized = normalizeFlowRequest(method, args);
+        // Capture an omitted query token before enqueueing, not when the worker
+        // eventually reads it behind an edit or reflow.
+        if (method === "viewport" && normalized[0].token === undefined) normalized[0].token = { ...state.token };
         const pending = rpc.request(method, requestWeight(normalized), () => snapshotArguments(method, normalized), controls);
+        if (method === "viewport") return pending.then(result => {
+          try { return validateViewportPage(result, normalized[0], normalized[0].token); }
+          catch (error) {
+            rpc.dispose();
+            throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "viewport acknowledgment does not match its request", { cause: error });
+          }
+        });
         if (method !== "exportDocument") return pending;
         return pending.then(result => {
           try {
@@ -89,6 +111,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     };
     const api = {
       get disposed() { return rpc.closed; },
+      get supportsViewport() { alive(); return supportsViewport; },
       // These are the last ACKNOWLEDGED values. Await mutations before reading
       // their new token; no speculative source or revision is published locally.
       get token() { alive(); return { ...state.token }; },
@@ -106,6 +129,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       provideAsset(result, control) { return call("provideAsset", [result], control); },
       reloadAssets(revision, control) { return call("reloadAssets", [revision], control); },
       snapshot(options, control) { return call("snapshot", [options], control); },
+      viewport(options, control) { return call("viewport", [options], control); },
       readingOrder(options, control) { return call("readingOrder", [options], control); },
       pendingAssets(options, control) { return call("pendingAssets", [options], control); },
       hitTest(x, y, token, control) { return call("hitTest", [x, y, token], control); },
@@ -150,7 +174,7 @@ export function installFlowWorker(endpoint, createSession) {
       if (method === "create") {
         if (session) throw new FlowWorkerError("SESSION_EXISTS", "worker already owns a flow session");
         session = await createSession(...normalized);
-        value = null;
+        value = { supportsViewport: session.supportsViewport === true };
       } else {
         if (!session) throw new FlowWorkerError("SESSION_NOT_READY", "create the flow session first");
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,

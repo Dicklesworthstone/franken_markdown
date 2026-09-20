@@ -133,9 +133,160 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
+/// Cache only explicit Markdown roots, never recursively crawl linked files.
+/// An unreadable/unstable source retains its last successful dependency set.
+#[derive(Default)]
+pub(super) struct Graph {
+    roots: BTreeSet<PathBuf>,
+    documents: std::collections::BTreeMap<PathBuf, Snapshot>,
+    failures: BTreeSet<PathBuf>,
+}
+
+struct Snapshot {
+    fingerprint: super::Fingerprint,
+    paths: Vec<PathBuf>,
+}
+
+const MAX_DISCOVERY_BYTES: u64 = 64 * 1024 * 1024;
+
+impl Graph {
+    pub(super) fn new(roots: &[PathBuf]) -> Self {
+        Self { roots: roots.iter().cloned().collect(), ..Self::default() }
+    }
+
+    pub(super) fn add_root(&mut self, path: PathBuf) {
+        self.roots.insert(path);
+    }
+
+    pub(super) fn failures(&self) -> &BTreeSet<PathBuf> {
+        &self.failures
+    }
+
+    pub(super) fn refresh(
+        &mut self,
+        observed: &std::collections::BTreeMap<PathBuf, Option<super::Fingerprint>>,
+        settling: &BTreeSet<PathBuf>,
+    ) -> BTreeSet<PathBuf> {
+        for root in &self.roots {
+            if !is_markdown(root) || settling.contains(root) {
+                // Do not drop old edges during an unsettled edit. If the edit
+                // is undone, changed assets must still have their old baseline.
+                continue;
+            }
+            let Some(expected) = observed.get(root).copied().flatten() else {
+                self.failures.insert(root.clone());
+                continue;
+            };
+            if self.documents.get(root).is_some_and(|old| old.fingerprint == expected) {
+                self.failures.remove(root);
+                continue;
+            }
+            let Some(source) = read_source(root, expected, MAX_DISCOVERY_BYTES) else {
+                // In particular, do not cache `expected` after a racing save:
+                // the next poll must retry even if that fingerprint repeats.
+                self.failures.insert(root.clone());
+                continue;
+            };
+            let base = root.parent().unwrap_or_else(|| Path::new("."));
+            let paths = paths(&source, base);
+            self.documents.insert(root.clone(), Snapshot { fingerprint: expected, paths });
+            self.failures.remove(root);
+        }
+        let mut needed = self.roots.clone();
+        for snapshot in self.documents.values() {
+            needed.extend(snapshot.paths.iter().cloned());
+        }
+        needed
+    }
+}
+
+fn is_markdown(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md")
+            || extension.eq_ignore_ascii_case("markdown"))
+}
+
+/// Read a bounded, valid UTF-8 snapshot that matches the content observed by
+/// the polling pass. A second filesystem read must not silently bind a new
+/// graph to an old fingerprint during a write-temp-then-rename save.
+fn read_source(path: &Path, expected: super::Fingerprint, limit: u64) -> Option<String> {
+    use std::io::Read;
+    if expected.len > limit || !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > limit || bytes.len() as u64 != expected.len {
+        return None;
+    }
+    let hash = bytes.iter().fold(super::FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(super::FNV_PRIME)
+    });
+    if hash != expected.hash {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Source(PathBuf);
+    impl Source {
+        fn new(bytes: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "fmd-watch-snapshot-{}-{}.md", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut file = std::fs::File::create_new(&path).unwrap();
+            std::io::Write::write_all(&mut file, bytes).unwrap();
+            Self(path)
+        }
+        fn fingerprint(&self) -> super::super::Fingerprint {
+            super::super::fingerprint(&self.0).unwrap()
+        }
+    }
+    impl Drop for Source {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+
+    #[test]
+    fn snapshot_rejects_same_length_races_and_invalid_utf8() {
+        let source = Source::new(b"first");
+        let expected = source.fingerprint();
+        assert_eq!(read_source(&source.0, expected, 5).as_deref(), Some("first"));
+        std::fs::write(&source.0, b"other").unwrap();
+        assert!(read_source(&source.0, expected, 5).is_none());
+        std::fs::write(&source.0, [0xFF]).unwrap();
+        assert!(read_source(&source.0, source.fingerprint(), 5).is_none());
+    }
+
+    #[test]
+    fn oversized_snapshots_are_rejected_at_the_configured_bound() {
+        let source = Source::new(b"12345");
+        assert!(read_source(&source.0, source.fingerprint(), 4).is_none());
+        assert_eq!(read_source(&source.0, source.fingerprint(), 5).as_deref(), Some("12345"));
+    }
+
+    #[test]
+    fn racing_read_does_not_cache_a_fingerprint_and_is_retried() {
+        let source = Source::new(b"![p](p.png)");
+        let expected = source.fingerprint();
+        let observed = std::collections::BTreeMap::from([(source.0.clone(), Some(expected))]);
+        let mut graph = Graph::new(std::slice::from_ref(&source.0));
+        std::fs::write(&source.0, b"different source").unwrap();
+        graph.refresh(&observed, &BTreeSet::new());
+        assert!(graph.documents.is_empty());
+        assert!(graph.failures().contains(&source.0));
+        std::fs::write(&source.0, b"![p](p.png)").unwrap();
+        let needed = graph.refresh(&observed, &BTreeSet::new());
+        assert!(needed.contains(&source.0.parent().unwrap().join("p.png")));
+        assert!(graph.failures().is_empty());
+    }
 
     #[test]
     fn url_suffixes_encoding_and_parent_paths_are_resolved_once() {

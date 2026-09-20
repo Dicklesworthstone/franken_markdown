@@ -94,13 +94,23 @@ struct Fingerprint {
 
 /// Poll-based watcher: content hash, not inode, so write-temp-then-rename
 /// (atomic save) looks like a modification of the destination path.
+/// Explicit `.md`/`.markdown` inputs also track their parsed local dependencies.
+/// Dependency graphs refresh after source-content changes settle, not on every poll;
+/// unreferenced implicit assets are removed while explicit paths stay watched.
 pub struct PollWatcher<C> {
     paths: Vec<PathBuf>,
     debounce: Duration,
     clock: C,
     fingerprints: BTreeMap<PathBuf, Option<Fingerprint>>,
     ever_seen: BTreeSet<PathBuf>,
-    pending: BTreeMap<PathBuf, (ChangeKind, Instant)>,
+    pending: BTreeMap<PathBuf, PendingChange>,
+    dependencies: dependencies::Graph,
+}
+
+struct PendingChange {
+    before: Option<Fingerprint>,
+    previously_seen: bool,
+    changed_at: Instant,
 }
 
 impl<C: Clock> PollWatcher<C> {
@@ -108,7 +118,10 @@ impl<C: Clock> PollWatcher<C> {
     /// on the first [`poll`].
     #[must_use]
     pub fn new(paths: Vec<PathBuf>, debounce: Duration, clock: C) -> Self {
+        let mut seen = BTreeSet::new();
+        let paths: Vec<_> = paths.into_iter().filter(|path| seen.insert(path.clone())).collect();
         let mut watcher = Self {
+            dependencies: dependencies::Graph::new(&paths),
             paths,
             debounce,
             clock,
@@ -123,13 +136,23 @@ impl<C: Clock> PollWatcher<C> {
     /// Watch an additional path (local CSS/image discovered after a rebuild).
     pub fn add_path(&mut self, path: PathBuf) {
         if !self.paths.iter().any(|p| p == &path) {
+            self.dependencies.add_root(path.clone());
             let fp = fingerprint(&path);
             if fp.is_some() {
                 self.ever_seen.insert(path.clone());
             }
             self.fingerprints.insert(path.clone(), fp);
             self.paths.push(path);
+            self.refresh_dependencies(self.clock.now());
         }
+    }
+
+    /// Explicit Markdown roots whose dependency graph could not be refreshed.
+    /// Missing, invalid UTF-8, unstable reads and sources over 64 MiB retain
+    /// their last successful graph and are retried on subsequent polls.
+    #[must_use]
+    pub fn dependency_failures(&self) -> &BTreeSet<PathBuf> {
+        self.dependencies.failures()
     }
 
     /// Paths currently in the watch set, in insertion order.
@@ -144,7 +167,9 @@ impl<C: Clock> PollWatcher<C> {
         self.pending.len()
     }
 
-    /// One poll. Events fire only after [`debounce`] of quiet on that path.
+    /// One poll. Events fire only after the debounce interval of quiet on that
+    /// path. Changes that return to the pre-burst contents cancel each other;
+    /// a new file remains Created even if edited several times before emission.
     pub fn poll(&mut self) -> Vec<ChangeEvent> {
         self.scan(true)
     }
@@ -157,37 +182,74 @@ impl<C: Clock> PollWatcher<C> {
             let prev = self.fingerprints.get(path).copied().flatten();
             let had_file = self.ever_seen.contains(path);
             self.fingerprints.insert(path.clone(), fp);
-            if fp.is_some() {
-                self.ever_seen.insert(path.clone());
-            }
             if !emit {
+                if fp.is_some() {
+                    self.ever_seen.insert(path.clone());
+                }
                 continue;
             }
-            let kind = match (prev, fp) {
-                (None, Some(_)) if had_file => ChangeKind::Modified,
-                (None, Some(_)) => ChangeKind::Created,
-                (Some(_), None) => ChangeKind::Removed,
-                (Some(a), Some(b)) if a != b => ChangeKind::Modified,
-                _ => continue,
-            };
-            self.pending.insert(path.clone(), (kind, now));
+            if prev != fp {
+                self.pending.entry(path.clone())
+                    .and_modify(|pending| pending.changed_at = now)
+                    .or_insert(PendingChange {
+                        before: prev,
+                        previously_seen: had_file,
+                        changed_at: now,
+                    });
+            }
+            if self.pending.get(path).is_some_and(|pending| pending.before == fp) {
+                self.pending.remove(path);
+            }
         }
+        self.refresh_dependencies(now);
 
         let debounce = self.debounce;
         let mut out = Vec::new();
-        self.pending.retain(|path, (kind, t)| {
-            let waited = now.checked_duration_since(*t).unwrap_or(Duration::ZERO);
-            if waited >= debounce {
-                out.push(ChangeEvent {
-                    path: path.clone(),
-                    kind: *kind,
-                });
-                false
-            } else {
-                true
+        let fingerprints = &self.fingerprints;
+        let ever_seen = &mut self.ever_seen;
+        self.pending.retain(|path, pending| {
+            let waited = now.checked_duration_since(pending.changed_at).unwrap_or(Duration::ZERO);
+            if waited < debounce {
+                return true;
             }
+            let current = fingerprints.get(path).copied().flatten();
+            if current != pending.before {
+                let kind = match current {
+                    None => ChangeKind::Removed,
+                    Some(_) if pending.before.is_none() && !pending.previously_seen => ChangeKind::Created,
+                    Some(_) => ChangeKind::Modified,
+                };
+                if current.is_some() {
+                    ever_seen.insert(path.clone());
+                }
+                out.push(ChangeEvent { path: path.clone(), kind });
+            }
+            false
         });
         out
+    }
+
+    fn refresh_dependencies(&mut self, now: Instant) {
+        // Use the same clock sample as event emission: crossing the deadline
+        // during filesystem reads must not retire edges before their event.
+        let settling = self.pending.iter().filter(|(_, pending)| {
+            now.checked_duration_since(pending.changed_at).unwrap_or(Duration::ZERO) < self.debounce
+        }).map(|(path, _)| path.clone()).collect();
+        let needed = self.dependencies.refresh(&self.fingerprints, &settling);
+        self.paths.retain(|path| needed.contains(path));
+        self.fingerprints.retain(|path, _| needed.contains(path));
+        self.ever_seen.retain(|path| needed.contains(path));
+        self.pending.retain(|path, _| needed.contains(path));
+        for path in needed {
+            if !self.fingerprints.contains_key(&path) {
+                let fp = fingerprint(&path);
+                if fp.is_some() {
+                    self.ever_seen.insert(path.clone());
+                }
+                self.fingerprints.insert(path.clone(), fp);
+                self.paths.push(path);
+            }
+        }
     }
 }
 

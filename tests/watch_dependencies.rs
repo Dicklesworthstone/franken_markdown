@@ -124,3 +124,148 @@ fn unicode_parent_directories_are_preserved_without_canonicalizing_missing_files
     assert_eq!(referenced_local_paths("![p](../images/caf%C3%A9.png)", base),
         [base.join("../images/café.png")]);
 }
+
+#[test]
+fn polling_a_markdown_root_alone_discovers_and_refreshes_dependencies() {
+    let dir = Directory::new();
+    let input = dir.write("guide.MARKDOWN", b"![a][pic]\n\n[pic]: a.png\n");
+    let mut watcher = PollWatcher::new(vec![input.clone()], Duration::ZERO, ManualClock::new());
+    assert_eq!(watcher.paths(), &[input.clone(), dir.path("a.png")]);
+    assert!(watcher.poll().is_empty());
+    std::fs::write(&input, "![b](b.png)").unwrap();
+    assert_eq!(watcher.poll(), [ChangeEvent { path: input.clone(), kind: ChangeKind::Modified }]);
+    assert!(watcher.paths().contains(&dir.path("b.png")));
+    assert!(!watcher.paths().contains(&dir.path("a.png")));
+    dir.write("a.png", b"no longer referenced");
+    assert!(watcher.poll().is_empty());
+    let image = dir.write("b.png", b"newly referenced");
+    assert_eq!(watcher.poll(), [ChangeEvent { path: image, kind: ChangeKind::Created }]);
+}
+
+#[test]
+fn shared_dependencies_remain_until_the_last_source_drops_them() {
+    let dir = Directory::new();
+    let first = dir.write("one.md", b"![s](shared.png)");
+    let second = dir.write("two.md", b"![s](shared.png)");
+    let shared = dir.write("shared.png", b"shared image");
+    let mut watcher = PollWatcher::new(vec![first.clone(), second.clone()], Duration::ZERO, ManualClock::new());
+    assert_eq!(watcher.paths().iter().filter(|path| **path == shared).count(), 1);
+    std::fs::write(&first, "no image").unwrap();
+    watcher.poll();
+    assert!(watcher.paths().contains(&shared));
+    std::fs::write(&second, "no image").unwrap();
+    watcher.poll();
+    assert!(!watcher.paths().contains(&shared));
+}
+
+#[test]
+fn explicitly_supplied_paths_remain_watched_when_not_referenced() {
+    let dir = Directory::new();
+    let input = dir.write("doc.md", b"![p](p.png)");
+    let pinned = dir.write("p.png", b"old");
+    let mut watcher = PollWatcher::new(vec![input.clone(), pinned.clone(), input.clone()], Duration::ZERO, ManualClock::new());
+    assert_eq!(watcher.paths().iter().filter(|path| **path == input).count(), 1);
+    std::fs::write(&input, "no image").unwrap();
+    watcher.poll();
+    dir.write("p.png", b"new");
+    assert_eq!(watcher.poll(), [ChangeEvent { path: pinned, kind: ChangeKind::Modified }]);
+}
+
+#[test]
+fn linked_markdown_is_observed_but_not_recursively_crawled() {
+    let dir = Directory::new();
+    dir.write("other.md", b"![private](not-a-root.png)");
+    let root = dir.write("doc.md", b"[other](other.md)");
+    let mut watcher = PollWatcher::new(vec![root], Duration::ZERO, ManualClock::new());
+    assert!(watcher.paths().contains(&dir.path("other.md")));
+    assert!(!watcher.paths().contains(&dir.path("not-a-root.png")));
+    dir.write("not-a-root.png", b"not authorized by a root");
+    assert!(watcher.poll().is_empty());
+}
+
+#[test]
+fn invalid_utf8_and_deleted_sources_retain_the_last_graph_until_recovery() {
+    let dir = Directory::new();
+    let input = dir.write("doc.md", b"![p](p.png)");
+    let mut watcher = PollWatcher::new(vec![input.clone()], Duration::ZERO, ManualClock::new());
+    std::fs::write(&input, [0xFF, 0xFE]).unwrap();
+    watcher.poll();
+    assert!(watcher.dependency_failures().contains(&input));
+    assert!(watcher.paths().contains(&dir.path("p.png")));
+    std::fs::remove_file(&input).unwrap();
+    watcher.poll();
+    assert!(watcher.paths().contains(&dir.path("p.png")));
+    std::fs::write(&input, "![q](q.png)").unwrap();
+    watcher.poll();
+    assert!(watcher.dependency_failures().is_empty());
+    assert!(watcher.paths().contains(&dir.path("q.png")));
+    assert!(!watcher.paths().contains(&dir.path("p.png")));
+}
+
+#[test]
+fn adding_an_explicit_markdown_root_discovers_its_images_without_an_edit() {
+    let dir = Directory::new();
+    let root = dir.write("doc.md", b"![new](new.png)");
+    let mut watcher = PollWatcher::new(Vec::new(), Duration::ZERO, ManualClock::new());
+    watcher.add_path(root.clone());
+    watcher.add_path(root.clone());
+    assert_eq!(watcher.paths(), &[root, dir.path("new.png")]);
+    let image = dir.write("new.png", b"new");
+    assert_eq!(watcher.poll(), [ChangeEvent { path: image, kind: ChangeKind::Created }]);
+}
+
+#[test]
+fn creation_bursts_remain_created_and_canceled_creation_does_not_poison_history() {
+    let dir = Directory::new();
+    let path = dir.path("new.txt");
+    let clock = ManualClock::new();
+    let mut watcher = PollWatcher::new(vec![path.clone()], Duration::from_millis(300), clock.clone());
+    dir.write("new.txt", b"first");
+    assert!(watcher.poll().is_empty());
+    dir.write("new.txt", b"second");
+    assert!(watcher.poll().is_empty());
+    std::fs::remove_file(&path).unwrap();
+    assert!(watcher.poll().is_empty());
+    assert_eq!(watcher.pending_len(), 0);
+    dir.write("new.txt", b"third");
+    assert!(watcher.poll().is_empty());
+    dir.write("new.txt", b"fourth");
+    assert!(watcher.poll().is_empty());
+    clock.advance(Duration::from_millis(300));
+    assert_eq!(watcher.poll(), [ChangeEvent { path, kind: ChangeKind::Created }]);
+}
+
+#[test]
+fn edits_and_deletions_undone_within_the_window_emit_no_change() {
+    let dir = Directory::new();
+    let path = dir.write("file.txt", b"baseline");
+    let clock = ManualClock::new();
+    let mut watcher = PollWatcher::new(vec![path.clone()], Duration::from_millis(300), clock.clone());
+    dir.write("file.txt", b"edit");
+    watcher.poll();
+    std::fs::remove_file(&path).unwrap();
+    watcher.poll();
+    dir.write("file.txt", b"baseline");
+    watcher.poll();
+    clock.advance(Duration::from_millis(300));
+    assert!(watcher.poll().is_empty());
+    assert_eq!(watcher.pending_len(), 0);
+}
+
+#[test]
+fn transient_source_edit_cannot_hide_a_concurrent_image_change() {
+    let dir = Directory::new();
+    let source = b"![p](p.png)";
+    let input = dir.write("doc.md", source);
+    let image = dir.write("p.png", b"baseline image");
+    let clock = ManualClock::new();
+    let mut watcher = PollWatcher::new(vec![input.clone()], Duration::from_millis(300), clock.clone());
+    std::fs::write(&input, "temporarily no image").unwrap();
+    dir.write("p.png", b"changed image");
+    assert!(watcher.poll().is_empty());
+    assert!(watcher.paths().contains(&image));
+    std::fs::write(&input, source).unwrap();
+    assert!(watcher.poll().is_empty());
+    clock.advance(Duration::from_millis(300));
+    assert_eq!(watcher.poll(), [ChangeEvent { path: image, kind: ChangeKind::Modified }]);
+}

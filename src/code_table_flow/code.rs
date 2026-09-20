@@ -258,6 +258,10 @@ impl CodeFenceFlow {
         let text_x = bounds.x + PADDING_X - scroll;
         let left_column = (((bounds.x - text_x).max(0.0) / CELL_WIDTH).floor() as usize)
             .min(self.max_line_columns);
+        // Retain at most one checkpoint's clipped prefix for small scrolls.
+        // This preserves historical text origins without allowing unbounded
+        // offscreen copies; deep scrolling still starts at the indexed window.
+        let left_column = if left_column < CHECKPOINT_COLUMNS { 0 } else { left_column };
         let right_column = (((bounds.right() - text_x).max(0.0) / CELL_WIDTH).ceil() as usize)
             .min(self.max_line_columns);
         let clip = DisplayRect::new(bounds.x, top, bounds.width, bottom - top);
@@ -457,5 +461,17 @@ mod tests {
             assert_eq!(code.line_count(), count);
             assert_eq!(code.exact_code_copy(), source);
         }
+    }
+
+    #[test]
+    fn small_scroll_preserves_origin_without_copying_the_rest_of_a_long_line() {
+        let mut code = flow(&"x".repeat(100_000));
+        code.scroll_x = 50.0;
+        let dl = code.materialize_viewport(DisplayRect::new(0.0, 0.0, 300.0, 100.0), 0.0, 100.0).unwrap();
+        let run = dl.items().iter().find_map(|item| match item {
+            DisplayItem::Text(run) => Some(run), _ => None,
+        }).unwrap();
+        assert_eq!(run.bounds.x, -38.0);
+        assert!(run.text.len() < 50);
     }
 }

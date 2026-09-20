@@ -19,10 +19,9 @@
 use std::fmt;
 
 use crate::ast::Align;
-use crate::display::{
-    AccessibleReadingNode, AccessibleReadingRole, DisplayClip, DisplayItem, DisplayList,
-    DisplayRect, DisplayTextRun, DisplayVectorPath, VectorShapeType,
-};
+use crate::display::{AccessibleReadingNode, AccessibleReadingRole, DisplayList, DisplayRect};
+#[cfg(test)]
+use crate::display::{DisplayItem, VectorShapeType};
 use crate::span::SourceSpan;
 
 /// Default minimum column width in points to prevent text crushing.
@@ -52,13 +51,13 @@ pub const CODE_FONT_SIZE: f32 = 13.0;
 pub enum CodeTableError {
     /// Table column count exceeded safety maximum.
     ColumnBudgetExceeded { columns: usize, max: usize },
-    /// Table row count exceeded safety maximum.
+    /// Table or viewport row count exceeded safety maximum.
     RowBudgetExceeded { rows: usize, max: usize },
     /// Materialized viewport text exceeded its byte budget.
     OutputBudgetExceeded { bytes: usize, max: usize },
     /// Column index was out of bounds.
     InvalidColumnIndex { index: usize, len: usize },
-    /// Arithmetic overflow in layout coordinates.
+    /// Invalid or overflowing layout geometry or constraints.
     ArithmeticOverflow,
 }
 
@@ -87,6 +86,9 @@ impl std::error::Error for CodeTableError {}
 #[path = "code_table_flow/code.rs"]
 mod code;
 pub use code::CodeFenceFlow;
+
+#[path = "code_table_flow/table_viewport.rs"]
+mod table_viewport;
 
 // ---------------------------------------------------------------------------
 // Constrained Table Flow
@@ -194,7 +196,11 @@ pub struct ConstrainedTableFlow {
 }
 
 impl ConstrainedTableFlow {
-    /// Construct a new table flow item with bounded column count check.
+    /// Construct a table with at most 64 columns and 1,000,000 body rows.
+    ///
+    /// Column count includes every body row, so ragged input cannot silently
+    /// lose cells or bypass the column budget. Only row metadata is inspected
+    /// outside the initial bounded text-measurement sample.
     pub fn try_new(
         alignments: Vec<Align>,
         headers: Vec<TableCell>,
@@ -202,13 +208,7 @@ impl ConstrainedTableFlow {
         source_span: SourceSpan,
         constraints: TableConstraints,
     ) -> Result<Self, CodeTableError> {
-        let col_count = alignments.len().max(headers.len());
-        if col_count > MAX_COLUMNS_BUDGET {
-            return Err(CodeTableError::ColumnBudgetExceeded {
-                columns: col_count,
-                max: MAX_COLUMNS_BUDGET,
-            });
-        }
+        let col_count = table_viewport::admit(&alignments, &headers, &rows, constraints)?;
 
         let mut flow = Self {
             alignments,
@@ -255,7 +255,12 @@ impl ConstrainedTableFlow {
         &self.constraints
     }
 
-    /// Mutably access table constraints.
+    /// Mutably access table constraints for compatibility.
+    ///
+    /// Direct edits are validated before layout and measurement, but do not
+    /// remeasure existing widths. Prefer [`Self::set_constraints`] when changing
+    /// column limits; it atomically remeasures the current prefix and reports
+    /// whether anchored reflow is needed.
     pub fn constraints_mut(&mut self) -> &mut TableConstraints {
         &mut self.constraints
     }
@@ -330,17 +335,15 @@ impl ConstrainedTableFlow {
     }
 
     /// Perform bounded initial column width measurement inspecting header and up
-    /// to `MAX_MEASURE_ROWS` rows.
+    /// to `MAX_MEASURE_ROWS` rows, stopping each cell scan at the width cap.
     fn perform_bounded_measurement(&mut self) -> Result<(), CodeTableError> {
-        let font_size = 13.0f32;
+        self.constraints.validate()?;
         let col_count = self.column_count();
 
         // 1. Measure header cells
         for (i, cell) in self.headers.iter().enumerate() {
             if i < col_count {
-                let w = cell
-                    .intrinsic_width(font_size)
-                    .clamp(self.constraints.min_col_width, self.constraints.max_col_width);
+                let w = table_viewport::bounded_width(&cell.text, self.constraints);
                 if w > self.column_widths[i] {
                     self.column_widths[i] = w;
                 }
@@ -352,9 +355,7 @@ impl ConstrainedTableFlow {
         for row in &self.rows[..sample_limit] {
             for (i, cell) in row.iter().enumerate() {
                 if i < col_count {
-                    let w = cell
-                        .intrinsic_width(font_size)
-                        .clamp(self.constraints.min_col_width, self.constraints.max_col_width);
+                    let w = table_viewport::bounded_width(&cell.text, self.constraints);
                     if w > self.column_widths[i] {
                         self.column_widths[i] = w;
                     }
@@ -372,20 +373,18 @@ impl ConstrainedTableFlow {
     /// `MeasurementRefinement` with `reflow_required = true` so the host can
     /// trigger an explicit anchored reflow without surprise layout thrashing.
     pub fn measure_batch(&mut self, batch_size: usize) -> Result<MeasurementRefinement, CodeTableError> {
-        let font_size = 13.0f32;
+        self.constraints.validate()?;
         let col_count = self.column_count();
         let total_rows = self.rows.len();
         let start = self.measured_rows;
-        let end = (start + batch_size).min(total_rows);
+        let end = start.saturating_add(batch_size).min(total_rows);
 
         let mut expansions = Vec::new();
 
         for row in &self.rows[start..end] {
             for (col_idx, cell) in row.iter().enumerate() {
                 if col_idx < col_count {
-                    let w = cell
-                        .intrinsic_width(font_size)
-                        .clamp(self.constraints.min_col_width, self.constraints.max_col_width);
+                    let w = table_viewport::bounded_width(&cell.text, self.constraints);
                     let old_w = self.column_widths[col_idx];
                     if w > old_w {
                         self.column_widths[col_idx] = w;
@@ -431,11 +430,8 @@ impl ConstrainedTableFlow {
                 len: self.column_count(),
             });
         }
-        let font_size = 13.0f32;
-        let cell = TableCell::new(cell_text, SourceSpan::default());
-        let measured_w = cell
-            .intrinsic_width(font_size)
-            .clamp(self.constraints.min_col_width, self.constraints.max_col_width);
+        self.constraints.validate()?;
+        let measured_w = table_viewport::bounded_width(cell_text, self.constraints);
 
         if measured_w > self.column_widths[col_idx] {
             self.column_widths[col_idx] = measured_w;
@@ -445,10 +441,17 @@ impl ConstrainedTableFlow {
         }
     }
 
-    /// Materialize visible rows within `viewport_local_top` .. `viewport_local_top + viewport_height`.
+    /// Materialize visible rows in the same coordinate space as `origin_y`.
     ///
-    /// Row virtualization: Only visible body rows are emitted into the display list,
-    /// alongside the pinned semantic header row and cell border vectors.
+    /// Whole-table, pinned-body and per-cell clips prevent overflow into adjacent
+    /// content. Horizontally offscreen cells are not copied. The viewport admits
+    /// at most 16,384 body-cell slots, plus headers, and 4 MiB of copied cell text
+    /// across drawing and accessibility output. Oversized or invalid requests
+    /// return an error; empty or wholly offscreen windows emit nothing.
+    ///
+    /// Rendering never changes measurement state. Full semantic content remains
+    /// available through [`Self::full_accessible_tree`]. Alignment uses the same
+    /// approximate scalar-cell metrics as width measurement, not font shaping.
     pub fn materialize_viewport(
         &self,
         origin_x: f32,
@@ -456,177 +459,7 @@ impl ConstrainedTableFlow {
         viewport_local_top: f32,
         viewport_height: f32,
     ) -> Result<DisplayList, CodeTableError> {
-        let mut dl = DisplayList::new();
-        let header_h = Self::header_height();
-        let row_h = Self::row_height();
-        let total_w = self.total_table_width();
-        let total_h = self.total_height();
-
-        let visible_left = origin_x - self.scroll_x;
-        let table_bounds = DisplayRect::new(origin_x, origin_y, self.constraints.container_width, total_h);
-
-        // Header Row: pinned to top of visible table area or static at origin_y
-        let header_y = if self.constraints.pinned_headers {
-            let max_pin_y = (origin_y + total_h - header_h).max(origin_y);
-            viewport_local_top.clamp(origin_y, max_pin_y)
-        } else {
-            origin_y
-        };
-
-        // Clip container for independent horizontal scrolling
-        dl.push_item(DisplayItem::Clip(DisplayClip {
-            bounds: table_bounds,
-            child_count: 0,
-        }));
-
-        // Pinned header background/separator bar when scrolled past origin_y
-        let is_pinned = header_y > origin_y;
-        if is_pinned {
-            dl.push_item(DisplayItem::Vector(DisplayVectorPath {
-                bounds: DisplayRect::new(visible_left, header_y, total_w, header_h),
-                shape: VectorShapeType::TableBorder,
-                stroke_width: 1.0,
-                color_role: "table-header-bg".to_string(),
-                source_span: self.source_span,
-            }));
-        }
-
-        let mut cur_x = visible_left;
-        let mut header_cell_nodes = Vec::with_capacity(self.headers.len());
-        for (i, cell) in self.headers.iter().enumerate() {
-            let col_w = self.column_widths[i];
-            let cell_bounds = DisplayRect::new(cur_x, header_y, col_w, header_h);
-
-            dl.push_item(DisplayItem::Text(DisplayTextRun {
-                bounds: cell_bounds,
-                text: cell.text.clone(),
-                font_run: None,
-                color_role: "table-header".to_string(),
-                source_span: cell.source_span,
-                font_size: 13.0,
-            }));
-
-            header_cell_nodes.push(AccessibleReadingNode {
-                role: AccessibleReadingRole::TableHeaderCell,
-                text: format!("Header Col {i}: {}", cell.text),
-                source_span: cell.source_span,
-                bounds: cell_bounds,
-                children: Vec::new(),
-            });
-
-            cur_x += col_w;
-        }
-
-        // Header horizontal separator
-        dl.push_item(DisplayItem::Vector(DisplayVectorPath {
-            bounds: DisplayRect::new(visible_left, header_y + header_h - 1.0, total_w, 1.0),
-            shape: VectorShapeType::TableBorder,
-            stroke_width: 1.0,
-            color_role: "table-border".to_string(),
-            source_span: self.source_span,
-        }));
-
-        let header_row_node = AccessibleReadingNode {
-            role: AccessibleReadingRole::TableHeaderRow,
-            text: format!("Header row with {} columns", self.headers.len()),
-            source_span: self.source_span,
-            bounds: DisplayRect::new(visible_left, header_y, total_w, header_h),
-            children: header_cell_nodes,
-        };
-
-        // Virtualized body rows
-        let body_top = origin_y + header_h;
-        let viewport_local_bottom = viewport_local_top + viewport_height;
-
-        let visible_body_top = if self.constraints.pinned_headers && is_pinned {
-            header_y + header_h
-        } else {
-            viewport_local_top.max(body_top)
-        };
-
-        let start_row = if visible_body_top <= body_top {
-            0
-        } else {
-            let diff = visible_body_top - body_top;
-            ((diff / row_h).floor() as usize).min(self.rows.len())
-        };
-
-        let end_row = if viewport_local_bottom <= body_top {
-            start_row
-        } else {
-            let diff = viewport_local_bottom - body_top;
-            (((diff / row_h).ceil() as usize) + 1).min(self.rows.len())
-        };
-
-        let mut visible_row_nodes = Vec::with_capacity(end_row.saturating_sub(start_row));
-
-        for r in start_row..end_row {
-            let row_y = body_top + (r as f32 * row_h);
-            let row = &self.rows[r];
-
-            let mut cell_x = visible_left;
-            let mut row_cell_nodes = Vec::with_capacity(self.column_widths.len());
-
-            for (c, col_w) in self.column_widths.iter().enumerate() {
-                if let Some(cell) = row.get(c) {
-                    let cell_bounds = DisplayRect::new(cell_x, row_y, *col_w, row_h);
-                    dl.push_item(DisplayItem::Text(DisplayTextRun {
-                        bounds: cell_bounds,
-                        text: cell.text.clone(),
-                        font_run: None,
-                        color_role: "table-cell".to_string(),
-                        source_span: cell.source_span,
-                        font_size: 13.0,
-                    }));
-
-                    row_cell_nodes.push(AccessibleReadingNode {
-                        role: AccessibleReadingRole::TableCell,
-                        text: format!("Row {r}, Col {c}: {}", cell.text),
-                        source_span: cell.source_span,
-                        bounds: cell_bounds,
-                        children: Vec::new(),
-                    });
-                }
-                cell_x += *col_w;
-            }
-
-            // Row separator border
-            dl.push_item(DisplayItem::Vector(DisplayVectorPath {
-                bounds: DisplayRect::new(visible_left, row_y + row_h - 0.5, total_w, 0.5),
-                shape: VectorShapeType::TableBorder,
-                stroke_width: 0.5,
-                color_role: "table-border".to_string(),
-                source_span: self.source_span,
-            }));
-
-            visible_row_nodes.push(AccessibleReadingNode {
-                role: AccessibleReadingRole::TableRow,
-                text: format!("Row {r}"),
-                source_span: self.source_span,
-                bounds: DisplayRect::new(visible_left, row_y, total_w, row_h),
-                children: row_cell_nodes,
-            });
-        }
-
-        // Accessible reading node for the table hierarchy
-        let mut table_children = Vec::with_capacity(1 + visible_row_nodes.len());
-        table_children.push(header_row_node);
-        table_children.extend(visible_row_nodes);
-
-        dl.push_reading_node(AccessibleReadingNode {
-            role: AccessibleReadingRole::Table,
-            text: format!(
-                "Table with {} columns and {} rows ({})",
-                self.column_count(),
-                self.row_count(),
-                if self.is_fully_measured() { "fully measured" } else { "provisional estimates" }
-            ),
-            source_span: self.source_span,
-            bounds: table_bounds,
-            children: table_children,
-        });
-
-        Ok(dl)
+        self.materialize_table_viewport(origin_x, origin_y, viewport_local_top, viewport_height)
     }
 
     /// Build the full accessible reading tree for the entire table.

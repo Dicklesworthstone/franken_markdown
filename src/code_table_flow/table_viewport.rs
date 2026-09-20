@@ -13,6 +13,9 @@ use crate::display::{
     DisplayRect, DisplayTextRun, DisplayVectorPath, VectorShapeType,
 };
 
+#[path = "table_access.rs"]
+mod table_access;
+
 const MAX_TABLE_ROWS: usize = 1_000_000;
 const MAX_VIEWPORT_CELLS: usize = 16_384;
 const MAX_CELL_TEXT_BYTES: usize = 4 * 1024 * 1024;

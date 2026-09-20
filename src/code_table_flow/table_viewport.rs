@@ -1,5 +1,8 @@
 //! Admission and clipped, bounded table presentation. No measurement changes
 //! occur while painting: callers explicitly request width refinement.
+//! Cell drawing and viewport accessibility text use the same bounded scalar-cell
+//! prefix. Full source remains in the table and `full_accessible_tree`; clipping
+//! never changes clipboard/source data. This is approximate, unshaped geometry.
 
 use super::{
     Align, CodeTableError, ConstrainedTableFlow, TableCell, TableConstraints,
@@ -64,6 +67,25 @@ pub(super) fn bounded_width(text: &str, constraints: TableConstraints) -> f32 {
         .clamp(constraints.min_col_width, constraints.max_col_width)
 }
 
+/// Borrow the drawable scalar-cell prefix without allocating or decoding the
+/// hidden suffix. The budget also bounds work for caller-supplied huge widths.
+/// Every returned boundary comes from `char_indices`, never a guessed byte index.
+fn cell_prefix(text: &str, columns: usize, budget: usize) -> Result<(&str, usize), CodeTableError> {
+    let mut end = 0;
+    let mut count = 0;
+    for (byte, ch) in text.char_indices().take(columns) {
+        let next = byte + ch.len_utf8();
+        if next > budget {
+            return Err(CodeTableError::OutputBudgetExceeded {
+                bytes: MAX_CELL_TEXT_BYTES.saturating_add(1), max: MAX_CELL_TEXT_BYTES,
+            });
+        }
+        end = next;
+        count += 1;
+    }
+    Ok((&text[..end], count))
+}
+
 impl ConstrainedTableFlow {
     /// Apply new constraints atomically, remeasuring the already-admitted
     /// sample/prefix without advancing measurement progress. Returns whether
@@ -107,7 +129,9 @@ impl ConstrainedTableFlow {
     /// plain-text table flow does not shape or wrap rich cell contents.
     ///
     /// At most 16,384 body-cell slots plus headers are materialized per call,
-    /// even with an enormous page height. Copied text retains the 4 MiB budget.
+    /// even with an enormous page height. Only the drawable scalar-cell prefix
+    /// is copied into drawing and accessibility output, with a combined 4 MiB
+    /// budget. Use [`Self::full_accessible_tree`] for complete cell contents.
     /// Invalid geometry or an out-of-range cursor returns
     /// [`CodeTableError::ArithmeticOverflow`]; budget failures return no partial
     /// page and do not change the caller's cursor or the table.
@@ -347,15 +371,20 @@ impl ConstrainedTableFlow {
                 Some(row) => format!("Row {row}, Col {column}: "),
                 None => format!("Header Col {column}: "),
             };
-            let next = copied_bytes.saturating_add(cell.text.len().saturating_mul(2))
-                .saturating_add(label.len());
-            if next > MAX_CELL_TEXT_BYTES {
-                return Err(CodeTableError::OutputBudgetExceeded { bytes: next, max: MAX_CELL_TEXT_BYTES });
-            }
-            *copied_bytes = next;
+            // A cell can contain megabytes even though its column is capped at
+            // a few hundred points. Budget the visible prefix, not the source
+            // suffix that the cell clip will never display. Reserve both the
+            // drawing copy and the accessibility copy before allocating either.
+            let reserved = copied_bytes.saturating_add(label.len());
+            let remaining = MAX_CELL_TEXT_BYTES.checked_sub(reserved)
+                .ok_or(CodeTableError::OutputBudgetExceeded {
+                    bytes: reserved, max: MAX_CELL_TEXT_BYTES,
+                })?;
+            let columns = (width / CELL_ADVANCE).ceil() as usize;
+            let (visible, count) = cell_prefix(&cell.text, columns, remaining / 2)?;
+            *copied_bytes = reserved + visible.len() * 2;
             let offset = match self.alignments.get(column).copied().unwrap_or(Align::None) {
                 Align::Center | Align::Right => {
-                    let count = cell.text.chars().take((width / CELL_ADVANCE).ceil() as usize).count();
                     let free = (width - count as f32 * CELL_ADVANCE).max(0.0);
                     if self.alignments.get(column) == Some(&Align::Center) { free / 2.0 } else { free }
                 }
@@ -365,7 +394,7 @@ impl ConstrainedTableFlow {
             items.push(DisplayItem::Clip(DisplayClip { bounds, child_count: 1 }));
             items.push(DisplayItem::Text(DisplayTextRun {
                 bounds: DisplayRect::new(bounds.x + offset, bounds.y, width - offset, bounds.height),
-                text: cell.text.clone(),
+                text: visible.to_string(),
                 font_run: None,
                 color_role: (if row.is_some() { "table-cell" } else { "table-header" }).to_string(),
                 source_span: cell.source_span,
@@ -373,7 +402,7 @@ impl ConstrainedTableFlow {
             }));
             nodes.push(AccessibleReadingNode {
                 role: if row.is_some() { AccessibleReadingRole::TableCell } else { AccessibleReadingRole::TableHeaderCell },
-                text: label + &cell.text,
+                text: label + visible,
                 source_span: cell.source_span,
                 bounds,
                 children: Vec::new(),
@@ -501,8 +530,10 @@ mod tests {
     #[test]
     fn text_and_metadata_budgets_fail_before_unbounded_output() {
         let huge = "x".repeat(MAX_CELL_TEXT_BYTES);
+        let constraints = TableConstraints { min_col_width: 1.0e8, max_col_width: 1.0e8,
+            container_width: 1.0e8, pinned_headers: true };
         let flow = ConstrainedTableFlow::try_new(vec![Align::Left], vec![cell(&huge)],
-            vec![], SourceSpan::default(), TableConstraints::default()).unwrap();
+            vec![], SourceSpan::default(), constraints).unwrap();
         assert!(matches!(flow.materialize_viewport(0.0, 0.0, 0.0, 100.0),
             Err(CodeTableError::OutputBudgetExceeded { .. })));
         let flow = table(MAX_VIEWPORT_CELLS + 1);
@@ -633,9 +664,11 @@ mod tests {
     #[test]
     fn page_text_budget_errors_leave_the_table_and_cursor_reusable() {
         let huge = "x".repeat(MAX_CELL_TEXT_BYTES);
+        let constraints = TableConstraints { min_col_width: 1.0e8, max_col_width: 1.0e8,
+            container_width: 1.0e8, pinned_headers: true };
         let flow = ConstrainedTableFlow::try_new(vec![Align::Left], vec![cell("Header")],
             vec![vec![cell("Small")], vec![cell(&huge)]], SourceSpan::default(),
-            TableConstraints::default()).unwrap();
+            constraints).unwrap();
         assert!(matches!(flow.materialize_page(0.0, 0.0, 88.0, 0),
             Err(CodeTableError::OutputBudgetExceeded { .. })));
         let (page, next) = flow.materialize_page(0.0, 0.0, 60.0, 0).unwrap().unwrap();
@@ -644,4 +677,48 @@ mod tests {
         assert_eq!(flow.row_count(), 2);
     }
 
+
+    #[test]
+    fn cell_prefix_respects_unicode_boundaries_and_exact_byte_budgets() {
+        assert_eq!(cell_prefix("", usize::MAX, 0).unwrap(), ("", 0));
+        assert_eq!(cell_prefix("é🙂x", 0, 0).unwrap(), ("", 0));
+        assert_eq!(cell_prefix("é🙂x", 2, 6).unwrap(), ("é🙂", 2));
+        assert!(cell_prefix("é🙂x", 2, 5).is_err());
+        assert!(cell_prefix("é🙂x", usize::MAX, 6).is_err());
+        assert_eq!(cell_prefix("é🙂x", usize::MAX, 7).unwrap(), ("é🙂x", 3));
+    }
+
+    #[test]
+    fn oversized_cells_render_bounded_unicode_prefixes_without_changing_source() {
+        let source = format!("{}{}", "é中🙂".repeat(30), "x".repeat(MAX_CELL_TEXT_BYTES));
+        let constraints = TableConstraints { min_col_width: 60.0, max_col_width: 60.0,
+            container_width: 60.0, pinned_headers: true };
+        let columns = (60.0 / CELL_ADVANCE).ceil() as usize;
+        let expected: String = source.chars().take(columns).collect();
+        for alignment in [Align::None, Align::Left, Align::Center, Align::Right] {
+            let flow = ConstrainedTableFlow::try_new(vec![alignment], vec![cell(&source)],
+                vec![vec![cell(&source)]], SourceSpan::new(4, 9), constraints).unwrap();
+            let viewport = flow.materialize_viewport(0.0, 0.0, 0.0, 60.0).unwrap();
+            let (page, next) = flow.materialize_page(0.0, 0.0, 60.0, 0).unwrap().unwrap();
+            assert_eq!(next, 1);
+            for output in [&viewport, &page] {
+                let runs: Vec<_> = output.items().iter().filter_map(|item| match item {
+                    DisplayItem::Text(run) => Some(run), _ => None,
+                }).collect();
+                assert_eq!(runs.len(), 2);
+                for run in runs {
+                    assert_eq!(run.text, expected);
+                    assert_eq!(run.source_span, SourceSpan::new(4, 9));
+                    assert!(run.text.len() < 40);
+                }
+                let tree = &output.reading_order()[0];
+                assert_eq!(tree.children[0].children[0].text, format!("Header Col 0: {expected}"));
+                assert_eq!(tree.children[1].children[0].text, format!("Row 0, Col 0: {expected}"));
+            }
+            assert_eq!(flow.headers()[0].text, source);
+            assert_eq!(flow.rows[0][0].text, source);
+            assert!(flow.full_accessible_tree(DisplayRect::default())
+                .children[1].children[0].text.ends_with(&source));
+        }
+    }
 }

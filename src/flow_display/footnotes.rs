@@ -199,6 +199,17 @@ fn references(block: &Block, visit: &mut impl FnMut(&str)) {
     }
 }
 
+impl super::ResumableFlowDisplay {
+    /// Engine-assigned navigation identity for an emitted heading or note
+    /// section. Unlike `DisplayBlock::slug`, this includes collision suffixes
+    /// and generated note namespaces. None means not a heading or not emitted.
+    /// Consumers must not reconstruct these IDs from text or source positions.
+    #[must_use]
+    pub fn heading_id_for_block(&self, index: usize) -> Option<&str> {
+        self.metadata.get(index)?.heading_id.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

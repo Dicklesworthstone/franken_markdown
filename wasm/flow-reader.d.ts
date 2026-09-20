@@ -17,6 +17,8 @@ export interface FlowReadingLimits {
   maxLinkUnits?: number;
   /** 50,000 ancestry entries, counting repeated paths across all roots. */
   maxListEntries?: number;
+  /** 1,048,576 UTF-16 units across retained heading/note destination IDs. */
+  maxAnchorUnits?: number;
 }
 export interface FlowReadOptions {
   token?: FlowTokenInput;
@@ -28,9 +30,11 @@ export interface FlowReadingInlineEntry extends FlowReadingInlineRun {
   /** Validated UTF-16 coordinates in this node's reading text, not Markdown. */
   readonly startUtf16: number; readonly endUtf16: number;
 }
-export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath"> {
+export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath" | "anchorId"> {
   /** Preorder index, scoped to this exact snapshot, not a persistent node ID. */
   readonly index: number;
+  /** Exact engine-assigned destination, null when absent or legacy-unknown. */
+  readonly anchorId: string | null;
   readonly children: readonly FlowReadingEntry[];
   readonly inlineRuns: readonly FlowReadingInlineEntry[];
   readonly imageLink: FlowReadingLink | null;
@@ -76,8 +80,15 @@ export class FlowReadingDocument {
   readonly inlineRunCount: number;
   readonly linkUnits: number;
   readonly listEntryCount: number;
+  readonly anchorUnits: number;
   assertCurrent(): void;
   locate(index: number): FlowReadingLocation;
+  /** Resolve a local #fragment using engine IDs, percent-decoding once without
+   * changing case or treating '+' as space. Null for external, unknown, empty,
+   * malformed, or legacy-unavailable targets. Never navigates or performs I/O.
+   * Targets must be well-formed Unicode strings of at most 4,096 UTF-16 units;
+   * invalid arguments and stale/disposed snapshots throw FlowReadingError. */
+  locateFragment(target: string): FlowReadingLocation | null;
   /** Literal, non-overlapping matches within a leaf, not across semantic blocks.
    * Exact Unicode scalar boundaries; offsets remain UTF-16. Query <=1,024 units. */
   find(query: string, options?: FlowReadingSearchOptions): FlowReadingSearchResult;

@@ -4,7 +4,7 @@ import { FlowReaderView } from "../flow-reader.js";
 
 export function createReadingControls({ root, panel, query, insensitive, previous, next, outline,
   sourceButton, status, sourceEditor, getLocation, onNavigate = () => {} }) {
-  const view = new FlowReaderView(root), listeners = [];
+  const view = new FlowReaderView(root, { onLink: activateLink }), listeners = [];
   let snapshot = null, result = { matches: [], truncated: false }, cursor = -1, active = null;
   let enabled = false, disposed = false;
   const listen = (element, type, callback) => {
@@ -35,6 +35,23 @@ export function createReadingControls({ root, panel, query, insensitive, previou
     const element = root.querySelector(`[data-flow-node="${index}"]`);
     if (element) root.scrollTop += element.getBoundingClientRect().top - root.getBoundingClientRect().top - 16;
   };
+  function activateLink(activation) {
+    if (!enabled || !snapshot) return;
+    try {
+      // Fence unsaved editor changes as well as the session/layout revision.
+      // Check both ends before focus, scrolling, or host navigation can change.
+      getLocation(activation.location.nodeIndex, snapshot);
+      const destination = snapshot.locateFragment(activation.target);
+      if (!destination) {
+        status.textContent = "No matching internal destination. External links are not opened by this reader.";
+        return;
+      }
+      const index = destination.nodeIndex, location = getLocation(index, snapshot);
+      view.focusNode(index); active = index; reveal(index); onNavigate(location);
+      status.textContent = `Linked section: ${snapshot.nodes[index].text}. Source is unchanged.`;
+    } catch (failure) { error(failure); }
+    buttons();
+  }
   function move(step) {
     if (!enabled || !result.matches.length) return;
     const at = cursor < 0 ? (step > 0 ? 0 : result.matches.length - 1)

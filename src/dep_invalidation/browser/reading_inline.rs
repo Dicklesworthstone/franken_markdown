@@ -74,6 +74,13 @@ pub(super) fn fields(
         if !matches!(block, DisplayBlock::TableHeader { .. } | DisplayBlock::TableRow { .. })
             && !node.children.is_empty() { return Err(fmt::Error); }
     }
+    if cell.is_none() && matches!(block, DisplayBlock::Heading { .. }) {
+        // Use the exact destination assigned during AST projection. Source
+        // spans and repeated heading text cannot identify a unique target.
+        let id = engine.heading_id_for_block(index).ok_or(fmt::Error)?;
+        w.write_str(",\"anchorId\":")?;
+        w.string(id)?;
+    }
     list_path(w, engine, index, cell)?;
     w.write_str(",\"inlineRuns\":[")?;
     let mut previous_end = offset;
@@ -192,4 +199,43 @@ mod tests {
         let output = encode(|w| fields(w, &list.reading_order()[index].children[0], &engine, index, Some(0))).unwrap();
         assert!(output.contains("\"listPath\":[]"));
     }
+
+    #[test]
+    fn heading_and_note_destinations_match_display_anchors_without_guessing() {
+        let (engine, list) = projected("# Repeat\n\n# Repeat-2\n\n# Repeat\n\nUse [^n].\n\n[^n]: **Note**\n");
+        let mut ids = Vec::new();
+        for (index, node) in list.reading_order().iter().enumerate() {
+            let json = encode(|w| fields(w, node, &engine, index, None)).unwrap();
+            if let Some(id) = engine.heading_id_for_block(index) {
+                ids.push(id);
+                assert!(json.contains(&format!("\"anchorId\":\"{id}\"")));
+                assert!(list.anchors().any(|anchor| anchor.is_heading && anchor.anchor_id == id
+                    && anchor.bounds == node.bounds && anchor.source_span == node.source_span));
+            } else {
+                assert!(!json.contains("\"anchorId\""));
+            }
+        }
+        assert_eq!(ids, vec!["repeat", "repeat-2", "repeat-3", "fmd:note:1"]);
+        assert!(engine.heading_id_for_block(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn shaped_browser_footnotes_have_matching_citations_and_destinations() {
+        use crate::flow_display::FlowLayoutOptions;
+        use super::super::{BrowserFlowSession, reading};
+        let state = BrowserFlowSession::new("Use [^note].\n\n[^note]: A **styled** note.\n",
+            "sans", FlowLayoutOptions::default()).unwrap();
+        let page = reading(&state, 0..3).unwrap();
+        assert!(page.contains("\"activeTarget\":\"#fmd:note:1\""));
+        assert!(page.contains("\"anchorId\":\"fmd:note:1\""));
+        assert!(page.contains("\"bold\":true"));
+        let display = state.session.display();
+        let target = display.anchors().find(|anchor| anchor.is_heading
+            && anchor.anchor_id == "fmd:note:1").unwrap();
+        let citation = display.anchors().find(|anchor| !anchor.is_heading
+            && anchor.anchor_id == "#fmd:note:1").unwrap();
+        assert!(target.bounds.y > citation.bounds.y);
+        assert_eq!(page, reading(&state, 0..3).unwrap());
+    }
+
 }

@@ -4,7 +4,7 @@ export class FlowReadingError extends Error {
 }
 const fail = (code, message) => { throw new FlowReadingError(code, message); };
 const invalid = message => fail("INVALID_READING_DATA", message);
-const DEFAULTS = Object.freeze({ maxNodes: 10000, maxDepth: 64, maxTextUnits: 1048576, maxInlineRuns: 50000, maxLinkUnits: 1048576, maxListEntries: 50000 });
+const DEFAULTS = Object.freeze({ maxNodes: 10000, maxDepth: 64, maxTextUnits: 1048576, maxInlineRuns: 50000, maxLinkUnits: 1048576, maxListEntries: 50000, maxAnchorUnits: 1048576 });
 const ROLES = new Set(["document", "heading", "paragraph", "code-block", "list", "list-item", "table",
   "table-header-row", "table-row", "table-header-cell", "table-cell", "blockquote", "thematic-break", "image"]);
 const ROWS = new Set(["table-header-row", "table-row"]);
@@ -211,16 +211,17 @@ function validateListOrder(roots) {
 
 /** Immutable, session-bound semantic snapshot. Construct with readFlowDocument. */
 export class FlowReadingDocument {
-  #session; #matches = new WeakSet();
-  constructor(secret, session, expected, roots, nodes, textUnits, retained) {
+  #session; #matches = new WeakSet(); #anchors;
+  constructor(secret, session, expected, roots, nodes, textUnits, retained, anchors) {
     if (secret !== owned) fail("INVALID_ARGUMENT", "use readFlowDocument to obtain a reading document");
-    this.#session = session;
+    this.#session = session; this.#anchors = anchors;
     this.token = expected; this.roots = Object.freeze(roots); this.nodes = Object.freeze(nodes);
     this.headings = Object.freeze(nodes.filter(node => node.role === "heading"));
     // Container transcripts summarize children. Search/copy leaves once, not
     // both a table row's aggregate "A | B" and its individually typed cells.
     this.text = nodes.filter(node => !node.children.length && node.text).map(node => node.text).join("\n\n");
     this.textUnits = textUnits; this.inlineRunCount = retained.runs; this.linkUnits = retained.links; this.listEntryCount = retained.listEntries;
+    this.anchorUnits = retained.anchors;
     owned.add(this); sessions.set(this, session); Object.freeze(this);
   }
   assertCurrent() { check(this.#session, this.token); }
@@ -229,6 +230,20 @@ export class FlowReadingDocument {
     if (!integer(index, this.nodes.length - 1)) fail("INVALID_ARGUMENT", "unknown reading node");
     const node = this.nodes[index];
     return Object.freeze({ ...this.token, nodeIndex: index, bounds: node.bounds, enclosingSourceSpan: node.enclosingSourceSpan });
+  }
+  /** Resolve an exact local fragment against engine-supplied destinations.
+   * No slug guessing, document reload, location.hash writes, or external I/O. */
+  locateFragment(target) {
+    this.assertCurrent();
+    if (typeof target !== "string" || target.length > 4096 || !wellFormed(target)) {
+      fail("INVALID_ARGUMENT", "invalid bounded fragment target");
+    }
+    if (!target.startsWith("#") || target.length === 1) return null;
+    let id;
+    try { id = decodeURIComponent(target.slice(1)); } catch { return null; }
+    // Percent decode exactly once. '+' is literal, and matching is case-sensitive.
+    const index = this.#anchors.get(id);
+    return index === undefined ? null : this.locate(index);
   }
   /** Literal matches in unsplit logical leaf text. Never fragment/source offsets. */
   find(query, options = {}) {
@@ -271,7 +286,20 @@ export async function readFlowDocument(session, options = {}) {
   const budget = limits(options.limits), expected = token(options.token ?? session.token), signal = options.signal;
   if (signal !== undefined && (!signal || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function"
       || typeof signal.removeEventListener !== "function")) fail("INVALID_OPTIONS", "signal must be an AbortSignal");
-  const roots = [], nodes = [], seen = new WeakSet(), retained = { runs: 0, links: 0, listEntries: 0 }; let textUnits = 0;
+  const roots = [], nodes = [], seen = new WeakSet(), retained = { runs: 0, links: 0, listEntries: 0, anchors: 0 }; let textUnits = 0;
+  const anchors = new Map();
+  function anchorMetadata(raw, index) {
+    if (raw.anchorId === undefined || raw.anchorId === null) return null; // Legacy producer.
+    const id = raw.anchorId;
+    if (raw.role !== "heading" || typeof id !== "string" || !id.length) invalid("invalid heading destination");
+    retained.anchors += id.length;
+    if (retained.anchors > budget.maxAnchorUnits) fail("READING_LIMIT", "reading anchor retention limit exceeded");
+    if (!wellFormed(id) || /[\u0000-\u001f\u007f-\u009f]/u.test(id) || anchors.has(id)) {
+      invalid("invalid or duplicate heading destination");
+    }
+    anchors.set(id, index);
+    return id;
+  }
   function clone(raw, depth, parent = null) {
     if (!raw || typeof raw !== "object" || seen.has(raw)) invalid("cyclic or aliased reading tree");
     if (depth > budget.maxDepth || nodes.length >= budget.maxNodes) fail("READING_LIMIT", "reading node/depth limit exceeded");
@@ -288,6 +316,7 @@ export async function readFlowDocument(session, options = {}) {
         || (ROWS.has(parent) && !CELLS.has(raw.role))
         || (parent === "list" && raw.role !== "list-item")) invalid("inconsistent reading structure");
     const node = { index: nodes.length, role: raw.role, text: raw.text, bounds: rectangle(raw.bounds),
+      anchorId: anchorMetadata(raw, nodes.length),
       ...inlineMetadata(raw, budget, retained), listPath: listMetadata(raw, depth, budget, retained),
       enclosingSourceSpan: span(raw.enclosingSourceSpan), ...(raw.role === "heading" ? { level: raw.level } : {}), children: [] };
     nodes.push(node);
@@ -311,7 +340,7 @@ export async function readFlowDocument(session, options = {}) {
   } while (offset !== null);
   cancelled(signal); check(session, expected);
   validateListOrder(roots);
-  return new FlowReadingDocument(owned, session, expected, roots, nodes, textUnits, retained);
+  return new FlowReadingDocument(owned, session, expected, roots, nodes, textUnits, retained, anchors);
 }
 
 /** Convert an ENCLOSING original Markdown UTF-8 span for textarea navigation.

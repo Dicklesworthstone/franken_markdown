@@ -157,6 +157,9 @@ export interface FlowReadingListItem {
   readonly task: boolean | null;
 }
 export interface FlowReadingNode {
+  /** Engine-assigned heading/note destination, including collision suffixes.
+   * Absent on other roles and legacy producers; never infer from reading text. */
+  readonly anchorId?: string | null;
   readonly role: "document" | "heading" | "paragraph" | "code-block" | "list" | "list-item"
     | "table" | "table-header-row" | "table-row" | "table-header-cell" | "table-cell"
     | "blockquote" | "thematic-break" | "image";

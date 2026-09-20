@@ -1,4 +1,4 @@
-import type { FlowPageOptions, FlowReadingInlineRun, FlowReadingLink, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
+import type { FlowPageOptions, FlowReadingInlineRun, FlowReadingLink, FlowReadingListItem, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
 export interface ReadingFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
@@ -15,6 +15,8 @@ export interface FlowReadingLimits {
   maxInlineRuns?: number;
   /** 1,048,576 UTF-16 units across retained and active link targets. */
   maxLinkUnits?: number;
+  /** 50,000 ancestry entries, counting repeated paths across all roots. */
+  maxListEntries?: number;
 }
 export interface FlowReadOptions {
   token?: FlowTokenInput;
@@ -26,12 +28,15 @@ export interface FlowReadingInlineEntry extends FlowReadingInlineRun {
   /** Validated UTF-16 coordinates in this node's reading text, not Markdown. */
   readonly startUtf16: number; readonly endUtf16: number;
 }
-export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink"> {
+export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath"> {
   /** Preorder index, scoped to this exact snapshot, not a persistent node ID. */
   readonly index: number;
   readonly children: readonly FlowReadingEntry[];
   readonly inlineRuns: readonly FlowReadingInlineEntry[];
   readonly imageLink: FlowReadingLink | null;
+  /** Null for legacy unknown ancestry; empty for known outside-list blocks.
+   * Present paths are immutable and validated across the complete snapshot. */
+  readonly listPath: readonly FlowReadingListItem[] | null;
 }
 export interface FlowReadingLocation extends FlowToken {
   readonly nodeIndex: number;
@@ -70,6 +75,7 @@ export class FlowReadingDocument {
   readonly textUnits: number;
   readonly inlineRunCount: number;
   readonly linkUnits: number;
+  readonly listEntryCount: number;
   assertCurrent(): void;
   locate(index: number): FlowReadingLocation;
   /** Literal, non-overlapping matches within a leaf, not across semantic blocks.

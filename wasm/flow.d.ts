@@ -122,6 +122,16 @@ export interface FlowReadingInlineRun {
   readonly style: FlowReadingInlineStyle;
   readonly link: FlowReadingLink | null;
 }
+/** One parser-derived enclosing list item. IDs belong to this source snapshot,
+ * not stable editor identities. The outermost ancestor comes first. */
+export interface FlowReadingListItem {
+  readonly listId: string;
+  readonly ordered: boolean;
+  /** Exact unsigned 64-bit decimal starting ordinal. */
+  readonly start: string;
+  readonly itemIndex: number;
+  readonly task: boolean | null;
+}
 export interface FlowReadingNode {
   readonly role: "document" | "heading" | "paragraph" | "code-block" | "list" | "list-item"
     | "table" | "table-header-row" | "table-row" | "table-header-cell" | "table-cell"
@@ -135,6 +145,9 @@ export interface FlowReadingNode {
   readonly inlineRuns?: readonly FlowReadingInlineRun[];
   /** Enclosing link on a standalone image, including empty-alt images. */
   readonly imageLink?: FlowReadingLink | null;
+  /** Root ownership for every block, not only item-leading paragraphs. Empty
+   * means outside a list; absent means legacy unknown. Cells inherit the row. */
+  readonly listPath?: readonly FlowReadingListItem[];
 }
 export interface FlowReadingPage extends FlowPage { readonly nodes: readonly FlowReadingNode[]; }
 export interface FlowAssetRequest {

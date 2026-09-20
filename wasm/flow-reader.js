@@ -100,7 +100,10 @@ export class FlowReaderView {
         case "blockquote": el = make("blockquote"); break;
         case "thematic-break": el = make("hr"); break;
         case "list": el = make("div"); el.setAttribute("role", "list"); break;
-        case "list-item": el = make("div"); el.setAttribute("role", "listitem"); break;
+        case "list-item":
+          if (node.listPath?.length) el = make("p"); // The owning li supplies list-item semantics.
+          else { el = make("div"); el.setAttribute("role", "listitem"); }
+          break;
         case "table": el = make("table"); break;
         case "table-header-row": case "table-row": el = make("tr"); break;
         case "table-header-cell": el = make("th"); el.setAttribute("scope", "col"); break;
@@ -131,7 +134,7 @@ export class FlowReaderView {
           const table = make("table"), group = [];
           do { group.push(nodes[i++]); } while (i < nodes.length && row(nodes[i]) && sameSpan(node, nodes[i]));
           append(group, table, "table"); parent.append(table);
-        } else if (node.role === "list-item" && role !== "list") {
+        } else if (node.role === "list-item" && !node.listPath?.length && role !== "list") {
           const list = make("div"); list.setAttribute("role", "list");
           do { list.append(element(nodes[i++])); }
           while (i < nodes.length && nodes[i].role === "list-item" && sameSpan(node, nodes[i]));
@@ -144,7 +147,58 @@ export class FlowReaderView {
         } else { parent.append(element(node)); i++; }
       }
     };
-    append(snapshot.roots, fragment);
+    // Group by admitted AST identities. Continuations and table/image blocks
+    // remain inside their exact item; same source spans never merge two lists.
+    const appendLists = (nodes, parent) => {
+      const stack = [];
+      let pending = [], destination = parent;
+      const flush = () => { append(pending, destination, "owned-list-item"); pending = []; };
+      for (const node of nodes) {
+        const path = node.listPath;
+        let common = 0;
+        while (common < path.length && common < stack.length
+            && path[common].listId === stack[common].frame.listId
+            && path[common].itemIndex === stack[common].frame.itemIndex) common++;
+        if (common !== path.length || common !== stack.length) {
+          flush();
+          for (let depth = common; depth < path.length; depth++) {
+            const frame = path[depth], before = stack[depth];
+            let list = before?.frame.listId === frame.listId ? before.list : null;
+            if (!list) {
+              list = make(frame.ordered ? "ol" : "ul");
+              // HTML counters are signed 32-bit, unlike the lossless wire u64.
+              if (frame.ordered && BigInt(frame.start) <= 2147483647n) list.setAttribute("start", frame.start);
+              (depth ? stack[depth - 1].item : parent).append(list);
+            }
+            const item = make("li");
+            if (frame.ordered) {
+              const ordinal = BigInt(frame.start) + BigInt(frame.itemIndex);
+              if (ordinal <= 2147483647n) item.setAttribute("value", String(ordinal));
+              else {
+                // Never silently round/wrap a large ordinal through Number or
+                // HTML's counter reflection. Keep ordered semantics and show it.
+                item.style.listStyleType = "none";
+                const label = make("span"); label.className = "flow-reader-ordinal";
+                label.textContent = `${ordinal}. `; item.append(label);
+              }
+            }
+            if (frame.task !== null) {
+              const checkbox = make("input"); checkbox.type = "checkbox";
+              checkbox.checked = frame.task; checkbox.disabled = true; checkbox.tabIndex = -1;
+              checkbox.setAttribute("aria-label", frame.task ? "Completed task" : "Incomplete task");
+              item.append(checkbox); // Read-only, no events or source edits.
+            }
+            list.append(item); stack[depth] = { frame, list, item };
+          }
+          stack.length = path.length;
+          destination = stack.length ? stack[stack.length - 1].item : parent;
+        }
+        pending.push(node);
+      }
+      flush();
+    };
+    if (snapshot.roots[0]?.listPath != null) appendLists(snapshot.roots, fragment);
+    else append(snapshot.roots, fragment);
     snapshot.assertCurrent(); // A failed preparation leaves old DOM intact.
     this.#container.replaceChildren(fragment);
     this.#unlisten(); this.#listeners = listeners;

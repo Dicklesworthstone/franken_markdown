@@ -54,6 +54,8 @@ pub enum CodeTableError {
     ColumnBudgetExceeded { columns: usize, max: usize },
     /// Table row count exceeded safety maximum.
     RowBudgetExceeded { rows: usize, max: usize },
+    /// Materialized viewport text exceeded its byte budget.
+    OutputBudgetExceeded { bytes: usize, max: usize },
     /// Column index was out of bounds.
     InvalidColumnIndex { index: usize, len: usize },
     /// Arithmetic overflow in layout coordinates.
@@ -69,6 +71,9 @@ impl fmt::Display for CodeTableError {
             Self::RowBudgetExceeded { rows, max } => {
                 write!(f, "row count {rows} exceeds maximum {max}")
             }
+            Self::OutputBudgetExceeded { bytes, max } => {
+                write!(f, "viewport text size {bytes} exceeds maximum {max}")
+            }
             Self::InvalidColumnIndex { index, len } => {
                 write!(f, "column index {index} out of bounds (len: {len})")
             }
@@ -79,168 +84,9 @@ impl fmt::Display for CodeTableError {
 
 impl std::error::Error for CodeTableError {}
 
-// ---------------------------------------------------------------------------
-// Code Fence Flow
-// ---------------------------------------------------------------------------
-
-/// A code fence flow item with independent horizontal scrolling and line windowing.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CodeFenceFlow {
-    /// Authoritative raw source code for exact copying.
-    raw_code: String,
-    /// Language identifier (e.g. "rust", "python", "json").
-    lang: Option<String>,
-    /// Source span of the entire code block.
-    source_span: SourceSpan,
-    /// Lines extracted for indexed line-windowed rendering.
-    lines: Vec<String>,
-    /// Independent horizontal scroll position in points.
-    pub scroll_x: f32,
-    /// Whether long code lines wrap instead of scrolling horizontally.
-    pub wrap_lines: bool,
-    /// Longest line character count for width estimation.
-    max_line_chars: usize,
-}
-
-impl CodeFenceFlow {
-    /// Construct a new code fence flow item.
-    #[must_use]
-    pub fn new(lang: Option<String>, code: String, source_span: SourceSpan) -> Self {
-        let mut max_chars = 0;
-        let mut lines = Vec::new();
-        for line in code.lines() {
-            let char_count = line.chars().count();
-            if char_count > max_chars {
-                max_chars = char_count;
-            }
-            lines.push(line.to_string());
-        }
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-
-        Self {
-            raw_code: code,
-            lang,
-            source_span,
-            lines,
-            scroll_x: 0.0,
-            wrap_lines: false,
-            max_line_chars: max_chars,
-        }
-    }
-
-    /// Access authoritative raw source code for clipboard copying.
-    ///
-    /// Preserves exact indentation, tabs, and newlines without line numbers
-    /// or visual gutter decorators.
-    #[must_use]
-    pub fn exact_code_copy(&self) -> &str {
-        &self.raw_code
-    }
-
-    /// Language identifier.
-    #[must_use]
-    pub fn lang(&self) -> Option<&str> {
-        self.lang.as_deref()
-    }
-
-    /// Number of lines in the code fence.
-    #[must_use]
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
-    }
-
-    /// Source span of the entire block.
-    #[must_use]
-    pub fn source_span(&self) -> SourceSpan {
-        self.source_span
-    }
-
-    /// Estimated intrinsic width of the code content based on longest line.
-    #[must_use]
-    pub fn intrinsic_content_width(&self) -> f32 {
-        let char_w = CODE_FONT_SIZE * 0.6;
-        (self.max_line_chars as f32 * char_w).max(100.0) + 32.0 // padding
-    }
-
-    /// Total height of the code block given `available_width`.
-    #[must_use]
-    pub fn total_height(&self) -> f32 {
-        let line_h = CODE_FONT_SIZE * CODE_LINE_HEIGHT_FACTOR;
-        let padding_v = 16.0;
-        (self.lines.len() as f32 * line_h) + padding_v
-    }
-
-    /// Materialize only the visible lines intersecting `viewport_y` .. `viewport_y + viewport_height`.
-    ///
-    /// Implements virtualized line windowing so giant code fences (e.g. 10,000 lines)
-    /// only emit the visible lines into the display list, avoiding whole-fence clones.
-    pub fn materialize_viewport(
-        &self,
-        bounds: DisplayRect,
-        viewport_local_top: f32,
-        viewport_height: f32,
-    ) -> Result<DisplayList, CodeTableError> {
-        let mut dl = DisplayList::new();
-        let line_h = CODE_FONT_SIZE * CODE_LINE_HEIGHT_FACTOR;
-        let padding_top = 8.0f32;
-        let padding_left = 12.0f32;
-
-        let content_top = bounds.y + padding_top;
-        let viewport_local_bottom = viewport_local_top + viewport_height;
-
-        // Clip container for independent horizontal scrolling
-        dl.push_item(DisplayItem::Clip(DisplayClip {
-            bounds,
-            child_count: 0, // dynamic
-        }));
-
-        // Determine line window
-        let start_line = if viewport_local_top <= content_top {
-            0
-        } else {
-            let diff = viewport_local_top - content_top;
-            ((diff / line_h).floor() as usize).min(self.lines.len())
-        };
-
-        let end_line = if viewport_local_bottom <= content_top {
-            start_line
-        } else {
-            let diff = viewport_local_bottom - content_top;
-            (((diff / line_h).ceil() as usize) + 1).min(self.lines.len())
-        };
-
-        // Materialize visible lines
-        for idx in start_line..end_line {
-            let line_y = content_top + (idx as f32 * line_h);
-            let line_text = &self.lines[idx];
-
-            let line_x = bounds.x + padding_left - self.scroll_x;
-            let line_w = (line_text.chars().count() as f32 * (CODE_FONT_SIZE * 0.6)).max(20.0);
-
-            dl.push_item(DisplayItem::Text(DisplayTextRun {
-                bounds: DisplayRect::new(line_x, line_y, line_w, line_h),
-                text: line_text.clone(),
-                font_run: None,
-                color_role: "code".to_string(),
-                source_span: self.source_span,
-                font_size: CODE_FONT_SIZE,
-            }));
-        }
-
-        // Emit accessible reading node
-        dl.push_reading_node(AccessibleReadingNode {
-            role: AccessibleReadingRole::CodeBlock,
-            text: self.raw_code.clone(),
-            source_span: self.source_span,
-            bounds,
-            children: Vec::new(),
-        });
-
-        Ok(dl)
-    }
-}
+#[path = "code_table_flow/code.rs"]
+mod code;
+pub use code::CodeFenceFlow;
 
 // ---------------------------------------------------------------------------
 // Constrained Table Flow

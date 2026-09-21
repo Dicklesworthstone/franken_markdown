@@ -27,6 +27,7 @@ export function createPreviewController({
   let readingDocument = null,
     readingToken = null,
     readingError = null;
+  let readingJob = null;
   let readingRevision = null,
     startup = null,
     paint = null,
@@ -42,6 +43,7 @@ export function createPreviewController({
     images: null,
     document: null,
     readingError: null,
+    readingPending: false,
   });
   const layoutKeys = ["viewportWidth", "bodySize", "codeSize", "lineHeight"];
   const targetLayout = (value) => ({
@@ -73,6 +75,9 @@ export function createPreviewController({
     onState(state);
   };
   const settle = () => {
+    // Preserve whenIdle's transcript-settled contract without making the paint
+    // loop wait for optional reading I/O. Images remain independently tracked.
+    if (!disposed && (running || queued || (state.status === "ready" && state.readingPending))) return;
     const all = waiters;
     waiters = [];
     for (const resolve of all) resolve(state);
@@ -207,6 +212,68 @@ export function createPreviewController({
         publish({ images: Object.freeze({ status: "error", code: "ASSET_LOAD_FAILED" }) });
     });
   }
+  const sameReadingToken = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.layoutRevision;
+  const hasReading = (current) => readDocument
+    ? sameReadingToken(readingToken, current.token)
+    : readingRevision === current.revision;
+  const readingOwnerCurrent = (job) => !disposed && epoch === job.epoch && session === job.session
+    && !job.session.disposed && appliedSource === desired?.source && layoutCurrent()
+    && sameReadingToken(job.token, job.session.token);
+  function beginReading(current) {
+    // Exactly one outstanding reader callback, even across worker restarts.
+    // Do not race/abandon it and enqueue another on every input event. A slow
+    // reader can delay semantic navigation, but cannot hold up Canvas or edits.
+    if (!current || readingJob || disposed || current.disposed || state.status !== "ready"
+        || appliedSource !== desired?.source || !layoutCurrent()
+        || !sameReadingToken(state.frame, current.token) || hasReading(current)) return;
+    const job = { session: current, epoch, token: Object.freeze({ ...current.token }) };
+    readingJob = job;
+    void (async () => {
+      let result, failure, failed = false;
+      try { result = await transcript(current); } catch (error) { failure = error; failed = true; }
+      if (readingJob === job) readingJob = null;
+      if (readingOwnerCurrent(job)) {
+        // Cache successes AND failures for this token, so scrolling does not
+        // turn an unavailable optional reader into an automatic retry loop.
+        reading = result?.text ?? "";
+        readingRevision = job.token.revision;
+        readingToken = job.token;
+        readingDocument = result?.document ?? null;
+        readingError = result?.error ?? (failed ? Object.freeze({
+          code: typeof failure?.code === "string" ? failure.code : "READING_ERROR",
+        }) : null);
+        // A scroll-only paint may be underway with this same layout. Retain
+        // the valid result for that paint, but never announce old pixels ready.
+        if (state.status === "ready" && sameReadingToken(state.frame, job.token)) {
+          publish({ reading, document: readingDocument, readingError, readingPending: false });
+        }
+      } else if (!disposed && session === current && epoch === job.epoch && current.disposed) {
+        publish({ status: "error", readingPending: false,
+          error: Object.freeze({ code: "SESSION_LOST", message: "Reading lost the worker; restart explicitly." }) });
+      }
+      // Coalesce discarded generations into the latest already-painted layout.
+      // No repaint/reparse is needed solely because semantic data arrived.
+      beginReading(session);
+      settle();
+    })().catch((failure) => {
+      if (readingJob === job) readingJob = null;
+      // Never let a late observer/adapter failure overwrite a newer owner or
+      // a successfully admitted result. The publication itself may have called
+      // back into update/restart before throwing.
+      let canReport = false;
+      try { canReport = readingOwnerCurrent(job) && !hasReading(current); } catch { /* Lost owner. */ }
+      if (canReport) {
+        readingRevision = job.token.revision;
+        readingToken = job.token;
+        readingDocument = null;
+        reading = "";
+        readingError = Object.freeze({ code: typeof failure?.code === "string" ? failure.code : "READING_ERROR" });
+        try { publish({ reading, document: null, readingError, readingPending: false }); }
+        catch { /* State is retained even when a host observer throws. */ }
+      }
+      settle();
+    });
+  }
   async function transcript(current) {
     if (readDocument) {
       const expected = current.token;
@@ -267,7 +334,11 @@ export function createPreviewController({
     // A selectable text counterpart, not an invented accessibility structure.
     // Limit DOM/transcript retention separately from the renderer's data pages.
     while (offset < 2048 && length < 1024 * 1024) {
+      if (current.disposed || !sameReadingToken(current.token, expected))
+        throw new FlowError("STALE_LAYOUT", "reading layout changed before the next page");
       const page = await current.readingOrder({ offset, limit: 256, token: expected });
+      if (current.disposed || !sameReadingToken(current.token, expected))
+        throw new FlowError("STALE_LAYOUT", "reading layout changed while receiving a page");
       for (const node of page.nodes) {
         if (typeof node.text !== "string")
           throw new FlowError("INVALID_WASM_RESPONSE", "reading node lacks text");
@@ -339,8 +410,6 @@ export function createPreviewController({
           }
           if (!currentIntent()) continue;
           const expected = current.token;
-          const nextReading = await transcript(current);
-          if (!currentIntent()) continue;
           const controller = new AbortController();
           paint = controller;
           const owner = assets;
@@ -355,12 +424,11 @@ export function createPreviewController({
           });
           if (paint === controller) paint = null;
           if (!currentIntent()) continue;
-          if (nextReading) {
-            reading = nextReading.text;
-            readingRevision = nextReading.revision;
-            readingDocument = nextReading.document ?? null;
-            readingToken = nextReading.token ?? null;
-            readingError = nextReading.error ?? null;
+          const readingPending = !hasReading(current);
+          if (readingPending) {
+            reading = "";
+            readingDocument = null;
+            readingError = null;
           }
           publish({
             status: "ready",
@@ -368,8 +436,10 @@ export function createPreviewController({
             reading,
             document: readingDocument,
             readingError,
+            readingPending,
             error: null,
           });
+          beginReading(current);
           beginImages(current);
           if (currentIntent()) break;
         } catch (error) {
@@ -428,6 +498,7 @@ export function createPreviewController({
       images: null,
       document: null,
       readingError: null,
+      readingPending: false,
     });
     schedule();
   }
@@ -496,8 +567,10 @@ export function createPreviewController({
     },
     restart,
     whenIdle() {
-      // Preview idle does not mean that optional background image I/O settled.
-      if (!running && !queued) return Promise.resolve(state);
+      // Includes reading for the latest ready frame, but not independent image
+      // I/O. Observe ready + readingPending for first-Canvas-frame readiness.
+      if (!running && !queued && (state.status !== "ready" || !state.readingPending))
+        return Promise.resolve(state);
       return new Promise((resolve) => waiters.push(resolve));
     },
     dispose() {
@@ -526,6 +599,7 @@ export function createPreviewController({
         images: null,
         document: null,
         readingError: null,
+        readingPending: false,
       });
       settle();
     },

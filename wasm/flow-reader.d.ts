@@ -70,8 +70,21 @@ export interface FlowReadingMatch extends FlowToken {
 export interface FlowReadingSearchOptions {
   /** Default false. Folds A-Z only; no locale, normalization or Unicode folding. */
   asciiCaseInsensitive?: boolean;
+  /** Default false. Frozen Unicode 15.1 default full case folding, non-Turkic.
+   * Mutually exclusive with asciiCaseInsensitive:true. No normalization or
+   * accent removal. Expansions must match whole source scalars (ss finds ß;
+   * s does not match half of ß). Original selectable UTF-16 ranges are retained. */
+  caseInsensitive?: boolean;
+  /** Default false. Adjacent Unicode letters/marks/numbers/connectors/joiners
+   * prevent a match. Not locale-sensitive or UAX #29 word segmentation. */
+  wholeWord?: boolean;
   /** Default and maximum 1,000. Results report whether additional matches exist. */
   maxMatches?: number;
+}
+export interface FlowReadingAsyncSearchOptions extends FlowReadingSearchOptions {
+  /** Cancels local cooperative search; never sends a worker RPC or terminates
+   * the session. Source edits, reflows and disposal invalidate pending work. */
+  signal?: AbortSignal;
 }
 export interface FlowReadingSearchResult {
   readonly matches: readonly FlowReadingMatch[];
@@ -105,6 +118,9 @@ export class FlowReadingDocument {
   /** Literal, non-overlapping matches within a leaf, not across semantic blocks.
    * Exact Unicode scalar boundaries; offsets remain UTF-16. Query <=1,024 units. */
   find(query: string, options?: FlowReadingSearchOptions): FlowReadingSearchResult;
+  /** Same matching and bounds as find, but yields real event-loop turns during
+   * large scans. No partial results. Auxiliary scanning memory is query-sized. */
+  findAsync(query: string, options?: FlowReadingAsyncSearchOptions): Promise<FlowReadingSearchResult>;
   /** Accepts only genuine matches returned by this snapshot; fences revisions. */
   matchText(match: FlowReadingMatch): string;
 }

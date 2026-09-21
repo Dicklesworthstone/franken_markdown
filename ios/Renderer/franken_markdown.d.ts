@@ -140,15 +140,34 @@ export interface FmdRenderer {
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderSemanticDiff(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions): Promise<FmdRenderOutput>;
+  renderSemanticDiff(
+    oldMarkdown: string,
+    newMarkdown: string,
+    options?: FmdDiffOptions,
+  ): Promise<FmdRenderOutput>;
   renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   searchIndex(markdown: string): Promise<FmdSearchIndex>;
-  semanticDiff(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions): Promise<FmdSemanticDiff>;
+  semanticDiff(
+    oldMarkdown: string,
+    newMarkdown: string,
+    options?: FmdDiffOptions,
+  ): Promise<FmdSemanticDiff>;
 }
 
-export interface FmdBookFile { path: string; source: string; }
-export interface FmdDiffOptions { oldName?: string; newName?: string; }
-export interface FmdFinding { severity?: string; code: string; message?: string; detail?: string; }
+export interface FmdBookFile {
+  path: string;
+  source: string;
+}
+export interface FmdDiffOptions {
+  oldName?: string;
+  newName?: string;
+}
+export interface FmdFinding {
+  severity?: string;
+  code: string;
+  message?: string;
+  detail?: string;
+}
 export interface FmdDocumentStats {
   schema: "fmd-document-stats-v1";
   bytes: number;
@@ -192,20 +211,39 @@ export interface FmdSemanticDiff {
   [key: string]: unknown;
 }
 
-export function init(input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module): Promise<void>;
+export function init(
+  input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module,
+): Promise<void>;
 export function capabilities(): Promise<FmdCapabilities>;
 export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
-export function renderBookPdf(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-export function renderBookSite(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderBookPdf(
+  files: FmdBookFile[],
+  options?: FmdRenderOptions,
+): Promise<FmdRenderOutput>;
+export function renderBookSite(
+  files: FmdBookFile[],
+  options?: FmdRenderOptions,
+): Promise<FmdRenderOutput>;
 export function renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-export function renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderInteractiveHtml(
+  markdown: string,
+  options?: FmdRenderOptions,
+): Promise<FmdRenderOutput>;
 export function renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-export function renderSemanticDiff(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions): Promise<FmdRenderOutput>;
+export function renderSemanticDiff(
+  oldMarkdown: string,
+  newMarkdown: string,
+  options?: FmdDiffOptions,
+): Promise<FmdRenderOutput>;
 export function renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function searchIndex(markdown: string): Promise<FmdSearchIndex>;
-export function semanticDiff(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions): Promise<FmdSemanticDiff>;
+export function semanticDiff(
+  oldMarkdown: string,
+  newMarkdown: string,
+  options?: FmdDiffOptions,
+): Promise<FmdSemanticDiff>;
 export function createRenderer(
-  input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module
+  input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module,
 ): Promise<FmdRenderer>;

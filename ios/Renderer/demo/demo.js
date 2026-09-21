@@ -38,7 +38,7 @@ const els = {
   author: requiredElement("#author"),
   customCss: requiredElement("#custom-css"),
   allowHtml: requiredElement("#allow-html"),
-  lineNumbers: requiredElement("#line-numbers")
+  lineNumbers: requiredElement("#line-numbers"),
 };
 
 let renderer = null;
@@ -82,7 +82,7 @@ for (const input of [
   els.author,
   els.customCss,
   els.allowHtml,
-  els.lineNumbers
+  els.lineNumbers,
 ]) {
   input.addEventListener("input", schedulePreview);
   input.addEventListener("change", schedulePreview);
@@ -162,7 +162,7 @@ function renderOptions() {
     customCss,
     allowRawHtml: els.allowHtml.checked,
     codeLineNumbers: els.lineNumbers.checked,
-    metadataEpochSeconds: 1700000000
+    metadataEpochSeconds: 1700000000,
   };
 }
 
@@ -172,11 +172,12 @@ function textOrUndefined(value) {
 }
 
 function filenameBase() {
-  return textOrUndefined(els.title.value)
-    ?.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    || "franken-markdown";
+  return (
+    textOrUndefined(els.title.value)
+      ?.toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "franken-markdown"
+  );
 }
 
 function renderDiagnostics(diagnostics) {

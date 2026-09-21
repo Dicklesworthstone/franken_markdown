@@ -5,33 +5,33 @@
  * Render output object exposed to JavaScript.
  */
 export class FmdRenderResult {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Recoverable parser diagnostics as stable JSON.
-     */
-    diagnosticsJson(): string;
-    /**
-     * Rendered output bytes. HTML is UTF-8; PDF is binary.
-     */
-    readonly bytes: Uint8Array;
-    /**
-     * Default file extension without a leading dot.
-     */
-    readonly extension: string;
-    /**
-     * Stable output format (`html`, `pdf`, `svg`, `epub`, `zip`, or `diff-html`).
-     */
-    readonly format: string;
-    /**
-     * Browser MIME type for Blob construction.
-     */
-    readonly mimeType: string;
-    /**
-     * Source size in bytes.
-     */
-    readonly sourceLength: number;
+  private constructor();
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Recoverable parser diagnostics as stable JSON.
+   */
+  diagnosticsJson(): string;
+  /**
+   * Rendered output bytes. HTML is UTF-8; PDF is binary.
+   */
+  readonly bytes: Uint8Array;
+  /**
+   * Default file extension without a leading dot.
+   */
+  readonly extension: string;
+  /**
+   * Stable output format (`html`, `pdf`, `svg`, `epub`, `zip`, or `diff-html`).
+   */
+  readonly format: string;
+  /**
+   * Browser MIME type for Blob construction.
+   */
+  readonly mimeType: string;
+  /**
+   * Source size in bytes.
+   */
+  readonly sourceLength: number;
 }
 
 /**
@@ -54,19 +54,42 @@ export function documentStats(markdown: string): string;
 /**
  * Compile in-memory Markdown files into one continuous, bookmarked PDF book.
  */
-export function renderBookPdf(paths: string[], sources: string[], title: string | null | undefined, author: string | null | undefined, font: string | null | undefined, dark_mode: string | null | undefined, font_scale: number | null | undefined, page_numbers: boolean): FmdRenderResult;
+export function renderBookPdf(
+  paths: string[],
+  sources: string[],
+  title: string | null | undefined,
+  author: string | null | undefined,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  font_scale: number | null | undefined,
+  page_numbers: boolean,
+): FmdRenderResult;
 
 /**
  * Compile in-memory Markdown files into a deterministic, zero-JavaScript HTML
  * site ZIP. The host owns file selection; the core owns include expansion,
  * link rewriting, navigation, parsing, rendering, and the search index.
  */
-export function renderBookSite(paths: string[], sources: string[], title?: string | null, font?: string | null, dark_mode?: string | null, font_scale?: number | null): FmdRenderResult;
+export function renderBookSite(
+  paths: string[],
+  sources: string[],
+  title?: string | null,
+  font?: string | null,
+  dark_mode?: string | null,
+  font_scale?: number | null,
+): FmdRenderResult;
 
 /**
  * Render an EPUB 3 e-book through the same parser and HTML theme model.
  */
-export function renderEpubConfigured(markdown: string, font?: string | null, dark_mode?: string | null, title?: string | null, lang?: string | null, font_scale?: number | null): FmdRenderResult;
+export function renderEpubConfigured(
+  markdown: string,
+  font?: string | null,
+  dark_mode?: string | null,
+  title?: string | null,
+  lang?: string | null,
+  font_scale?: number | null,
+): FmdRenderResult;
 
 /**
  * Render Markdown to self-contained HTML using default browser-safe options.
@@ -82,7 +105,14 @@ export function renderHtml(markdown: string): FmdRenderResult;
  * # Errors
  * Returns a JavaScript error when options are invalid or rendering fails.
  */
-export function renderHtmlConfigured(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean): FmdRenderResult;
+export function renderHtmlConfigured(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  custom_css: string | null | undefined,
+  allow_raw_html: boolean,
+): FmdRenderResult;
 
 /**
  * Render Markdown to self-contained HTML with the complete browser option
@@ -98,7 +128,27 @@ export function renderHtmlConfigured(markdown: string, font: string | null | und
  * font asset is invalid, the scale is not positive and finite, or rendering
  * fails.
  */
-export function renderHtmlConfiguredAdvanced(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean, font_scale: number | null | undefined, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array, font_weights: Uint32Array, image_destinations: string[], image_bytes_flat: Uint8Array, image_bytes_lengths: Uint32Array, lang: string | null | undefined, toc: boolean, toc_depth?: number | null): FmdRenderResult;
+export function renderHtmlConfiguredAdvanced(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  custom_css: string | null | undefined,
+  allow_raw_html: boolean,
+  font_scale: number | null | undefined,
+  body_regular: Uint8Array,
+  body_bold: Uint8Array,
+  body_italic: Uint8Array,
+  body_bold_italic: Uint8Array,
+  mono_regular: Uint8Array,
+  font_weights: Uint32Array,
+  image_destinations: string[],
+  image_bytes_flat: Uint8Array,
+  image_bytes_lengths: Uint32Array,
+  lang: string | null | undefined,
+  toc: boolean,
+  toc_depth?: number | null,
+): FmdRenderResult;
 
 /**
  * Render Markdown to self-contained HTML with fonts and any number of host
@@ -109,7 +159,23 @@ export function renderHtmlConfiguredAdvanced(markdown: string, font: string | nu
  * Returns a JavaScript error when the image arrays are inconsistent, an option
  * is invalid, or rendering fails.
  */
-export function renderHtmlConfiguredMulti(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array, font_weights: Uint32Array, image_destinations: string[], image_bytes_flat: Uint8Array, image_bytes_lengths: Uint32Array): FmdRenderResult;
+export function renderHtmlConfiguredMulti(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  custom_css: string | null | undefined,
+  allow_raw_html: boolean,
+  body_regular: Uint8Array,
+  body_bold: Uint8Array,
+  body_italic: Uint8Array,
+  body_bold_italic: Uint8Array,
+  mono_regular: Uint8Array,
+  font_weights: Uint32Array,
+  image_destinations: string[],
+  image_bytes_flat: Uint8Array,
+  image_bytes_lengths: Uint32Array,
+): FmdRenderResult;
 
 /**
  * Render Markdown to self-contained HTML with browser package options and
@@ -120,13 +186,33 @@ export function renderHtmlConfiguredMulti(markdown: string, font: string | null 
  * # Errors
  * Returns a JavaScript error when options are invalid or rendering fails.
  */
-export function renderHtmlConfiguredWithFonts(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, custom_css: string | null | undefined, allow_raw_html: boolean, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array, font_weights: Uint32Array): FmdRenderResult;
+export function renderHtmlConfiguredWithFonts(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  custom_css: string | null | undefined,
+  allow_raw_html: boolean,
+  body_regular: Uint8Array,
+  body_bold: Uint8Array,
+  body_italic: Uint8Array,
+  body_bold_italic: Uint8Array,
+  mono_regular: Uint8Array,
+  font_weights: Uint32Array,
+): FmdRenderResult;
 
 /**
  * Render a self-hosting, single-file HTML workspace with its own editor,
  * preview, intelligence panel, and print/PDF path.
  */
-export function renderInteractiveHtmlConfigured(markdown: string, font?: string | null, dark_mode?: string | null, title?: string | null, lang?: string | null, font_scale?: number | null): FmdRenderResult;
+export function renderInteractiveHtmlConfigured(
+  markdown: string,
+  font?: string | null,
+  dark_mode?: string | null,
+  title?: string | null,
+  lang?: string | null,
+  font_scale?: number | null,
+): FmdRenderResult;
 
 /**
  * Render Markdown to PDF using default browser-safe options.
@@ -142,7 +228,16 @@ export function renderPdf(markdown: string): FmdRenderResult;
  * # Errors
  * Returns a JavaScript error when options are invalid or rendering fails.
  */
-export function renderPdfConfigured(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, author: string | null | undefined, metadata_epoch_seconds: number | null | undefined, allow_raw_html: boolean, code_line_numbers: boolean): FmdRenderResult;
+export function renderPdfConfigured(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  author: string | null | undefined,
+  metadata_epoch_seconds: number | null | undefined,
+  allow_raw_html: boolean,
+  code_line_numbers: boolean,
+): FmdRenderResult;
 
 /**
  * Render Markdown to PDF with browser package options, ANY number of image
@@ -159,7 +254,35 @@ export function renderPdfConfigured(markdown: string, font: string | null | unde
  * Returns a JavaScript error when the image arrays are inconsistent, an option
  * is invalid, or rendering fails.
  */
-export function renderPdfConfiguredMulti(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, author: string | null | undefined, metadata_epoch_seconds: number | null | undefined, allow_raw_html: boolean, code_line_numbers: boolean, image_destinations: string[], image_bytes_flat: Uint8Array, image_bytes_lengths: Uint32Array, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array, font_weights: Uint32Array, base_font_size: number | null | undefined, heading_scale: number | null | undefined, table_font_size: number | null | undefined, page_numbers: boolean, font_scale: number | null | undefined, lang: string | null | undefined, toc: boolean, toc_depth: number | null | undefined, fit_to_pages: number | null | undefined, microtype_protrusion: boolean): FmdRenderResult;
+export function renderPdfConfiguredMulti(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  author: string | null | undefined,
+  metadata_epoch_seconds: number | null | undefined,
+  allow_raw_html: boolean,
+  code_line_numbers: boolean,
+  image_destinations: string[],
+  image_bytes_flat: Uint8Array,
+  image_bytes_lengths: Uint32Array,
+  body_regular: Uint8Array,
+  body_bold: Uint8Array,
+  body_italic: Uint8Array,
+  body_bold_italic: Uint8Array,
+  mono_regular: Uint8Array,
+  font_weights: Uint32Array,
+  base_font_size: number | null | undefined,
+  heading_scale: number | null | undefined,
+  table_font_size: number | null | undefined,
+  page_numbers: boolean,
+  font_scale: number | null | undefined,
+  lang: string | null | undefined,
+  toc: boolean,
+  toc_depth: number | null | undefined,
+  fit_to_pages: number | null | undefined,
+  microtype_protrusion: boolean,
+): FmdRenderResult;
 
 /**
  * Render Markdown to PDF with browser package options, one optional image
@@ -171,7 +294,23 @@ export function renderPdfConfiguredMulti(markdown: string, font: string | null |
  * # Errors
  * Returns a JavaScript error when options are invalid or rendering fails.
  */
-export function renderPdfConfiguredWithAssets(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, author: string | null | undefined, metadata_epoch_seconds: number | null | undefined, allow_raw_html: boolean, code_line_numbers: boolean, image_destination: string, image_bytes: Uint8Array, body_regular: Uint8Array, body_bold: Uint8Array, body_italic: Uint8Array, body_bold_italic: Uint8Array, mono_regular: Uint8Array): FmdRenderResult;
+export function renderPdfConfiguredWithAssets(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  author: string | null | undefined,
+  metadata_epoch_seconds: number | null | undefined,
+  allow_raw_html: boolean,
+  code_line_numbers: boolean,
+  image_destination: string,
+  image_bytes: Uint8Array,
+  body_regular: Uint8Array,
+  body_bold: Uint8Array,
+  body_italic: Uint8Array,
+  body_bold_italic: Uint8Array,
+  mono_regular: Uint8Array,
+): FmdRenderResult;
 
 /**
  * Render Markdown to PDF with one browser-supplied image asset.
@@ -183,17 +322,39 @@ export function renderPdfConfiguredWithAssets(markdown: string, font: string | n
  * # Errors
  * Returns a JavaScript error when options are invalid or rendering fails.
  */
-export function renderPdfConfiguredWithImage(markdown: string, font: string | null | undefined, dark_mode: string | null | undefined, title: string | null | undefined, author: string | null | undefined, metadata_epoch_seconds: number | null | undefined, allow_raw_html: boolean, code_line_numbers: boolean, image_destination: string, image_bytes: Uint8Array): FmdRenderResult;
+export function renderPdfConfiguredWithImage(
+  markdown: string,
+  font: string | null | undefined,
+  dark_mode: string | null | undefined,
+  title: string | null | undefined,
+  author: string | null | undefined,
+  metadata_epoch_seconds: number | null | undefined,
+  allow_raw_html: boolean,
+  code_line_numbers: boolean,
+  image_destination: string,
+  image_bytes: Uint8Array,
+): FmdRenderResult;
 
 /**
  * Render a semantic AST diff as a self-contained visual HTML document.
  */
-export function renderSemanticDiffHtml(old_markdown: string, new_markdown: string, old_name?: string | null, new_name?: string | null): FmdRenderResult;
+export function renderSemanticDiffHtml(
+  old_markdown: string,
+  new_markdown: string,
+  old_name?: string | null,
+  new_name?: string | null,
+): FmdRenderResult;
 
 /**
  * Render a standalone vector poster with glyph outlines embedded as paths.
  */
-export function renderSvgConfigured(markdown: string, font?: string | null, dark_mode?: string | null, font_scale?: number | null, max_width_pt?: number | null): FmdRenderResult;
+export function renderSvgConfigured(
+  markdown: string,
+  font?: string | null,
+  dark_mode?: string | null,
+  font_scale?: number | null,
+  max_width_pt?: number | null,
+): FmdRenderResult;
 
 /**
  * Build the deterministic search index used by static-document experiences.
@@ -203,44 +364,360 @@ export function searchIndex(markdown: string): string;
 /**
  * Compute a semantic AST diff and return its stable JSON contract.
  */
-export function semanticDiff(old_markdown: string, new_markdown: string, old_name?: string | null, new_name?: string | null): string;
+export function semanticDiff(
+  old_markdown: string,
+  new_markdown: string,
+  old_name?: string | null,
+  new_name?: string | null,
+): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
-    readonly memory: WebAssembly.Memory;
-    readonly __wbg_fmdrenderresult_free: (a: number, b: number) => void;
-    readonly accessibilityAudit: (a: number, b: number, c: number) => void;
-    readonly capabilities: (a: number) => void;
-    readonly documentStats: (a: number, b: number, c: number) => void;
-    readonly fmdrenderresult_bytes: (a: number, b: number) => void;
-    readonly fmdrenderresult_diagnosticsJson: (a: number, b: number) => void;
-    readonly fmdrenderresult_extension: (a: number, b: number) => void;
-    readonly fmdrenderresult_format: (a: number, b: number) => void;
-    readonly fmdrenderresult_mimeType: (a: number, b: number) => void;
-    readonly fmdrenderresult_sourceLength: (a: number) => number;
-    readonly renderBookPdf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
-    readonly renderBookSite: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
-    readonly renderEpubConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
-    readonly renderHtml: (a: number, b: number, c: number) => void;
-    readonly renderHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
-    readonly renderHtmlConfiguredAdvanced: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number) => void;
-    readonly renderHtmlConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number) => void;
-    readonly renderHtmlConfiguredWithFonts: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number) => void;
-    readonly renderInteractiveHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
-    readonly renderPdf: (a: number, b: number, c: number) => void;
-    readonly renderPdfConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
-    readonly renderPdfConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number) => void;
-    readonly renderPdfConfiguredWithAssets: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number) => void;
-    readonly renderPdfConfiguredWithImage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => void;
-    readonly renderSemanticDiffHtml: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
-    readonly renderSvgConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
-    readonly searchIndex: (a: number, b: number, c: number) => void;
-    readonly semanticDiff: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
-    readonly __wbindgen_export: (a: number, b: number) => number;
-    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-    readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
+  readonly memory: WebAssembly.Memory;
+  readonly __wbg_fmdrenderresult_free: (a: number, b: number) => void;
+  readonly accessibilityAudit: (a: number, b: number, c: number) => void;
+  readonly capabilities: (a: number) => void;
+  readonly documentStats: (a: number, b: number, c: number) => void;
+  readonly fmdrenderresult_bytes: (a: number, b: number) => void;
+  readonly fmdrenderresult_diagnosticsJson: (a: number, b: number) => void;
+  readonly fmdrenderresult_extension: (a: number, b: number) => void;
+  readonly fmdrenderresult_format: (a: number, b: number) => void;
+  readonly fmdrenderresult_mimeType: (a: number, b: number) => void;
+  readonly fmdrenderresult_sourceLength: (a: number) => number;
+  readonly renderBookPdf: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+  ) => void;
+  readonly renderBookSite: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+  ) => void;
+  readonly renderEpubConfigured: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+  ) => void;
+  readonly renderHtml: (a: number, b: number, c: number) => void;
+  readonly renderHtmlConfigured: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+  ) => void;
+  readonly renderHtmlConfiguredAdvanced: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+    t: number,
+    u: number,
+    v: number,
+    w: number,
+    x: number,
+    y: number,
+    z: number,
+    a1: number,
+    b1: number,
+    c1: number,
+    d1: number,
+    e1: number,
+    f1: number,
+    g1: number,
+    h1: number,
+    i1: number,
+    j1: number,
+  ) => void;
+  readonly renderHtmlConfiguredMulti: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+    t: number,
+    u: number,
+    v: number,
+    w: number,
+    x: number,
+    y: number,
+    z: number,
+    a1: number,
+    b1: number,
+    c1: number,
+    d1: number,
+  ) => void;
+  readonly renderHtmlConfiguredWithFonts: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+    t: number,
+    u: number,
+    v: number,
+    w: number,
+    x: number,
+  ) => void;
+  readonly renderInteractiveHtmlConfigured: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+  ) => void;
+  readonly renderPdf: (a: number, b: number, c: number) => void;
+  readonly renderPdfConfigured: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+  ) => void;
+  readonly renderPdfConfiguredMulti: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+    t: number,
+    u: number,
+    v: number,
+    w: number,
+    x: number,
+    y: number,
+    z: number,
+    a1: number,
+    b1: number,
+    c1: number,
+    d1: number,
+    e1: number,
+    f1: number,
+    g1: number,
+    h1: number,
+    i1: number,
+    j1: number,
+    k1: number,
+    l1: number,
+    m1: number,
+    n1: number,
+    o1: number,
+    p1: number,
+    q1: number,
+    r1: number,
+    s1: number,
+    t1: number,
+    u1: number,
+    v1: number,
+  ) => void;
+  readonly renderPdfConfiguredWithAssets: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+    t: number,
+    u: number,
+    v: number,
+    w: number,
+    x: number,
+    y: number,
+    z: number,
+    a1: number,
+    b1: number,
+    c1: number,
+  ) => void;
+  readonly renderPdfConfiguredWithImage: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+    l: number,
+    m: number,
+    n: number,
+    o: number,
+    p: number,
+    q: number,
+    r: number,
+    s: number,
+  ) => void;
+  readonly renderSemanticDiffHtml: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+  ) => number;
+  readonly renderSvgConfigured: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+    j: number,
+    k: number,
+  ) => void;
+  readonly searchIndex: (a: number, b: number, c: number) => void;
+  readonly semanticDiff: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+    h: number,
+    i: number,
+  ) => void;
+  readonly __wbindgen_export: (a: number, b: number) => number;
+  readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;
@@ -263,4 +740,9 @@ export function initSync(module: { module: SyncInitInput } | SyncInitInput): Ini
  *
  * @returns {Promise<InitOutput>}
  */
-export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;
+export default function __wbg_init(
+  module_or_path?:
+    | { module_or_path: InitInput | Promise<InitInput> }
+    | InitInput
+    | Promise<InitInput>,
+): Promise<InitOutput>;

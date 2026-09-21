@@ -1,11 +1,26 @@
-import type { FlowSession, FlowExportResult, FlowHtmlExportOptions } from "@franken-suite/franken-markdown/flow";
-import type { WorkerFlowSession, FlowPdfExportOptions } from "@franken-suite/franken-markdown/flow-worker";
+import type {
+  FlowExportResult,
+  FlowHtmlExportOptions,
+  FlowSession,
+} from "@franken-suite/franken-markdown/flow";
+import type {
+  FlowPdfExportOptions,
+  WorkerFlowSession,
+} from "@franken-suite/franken-markdown/flow-worker";
+
 declare const direct: FlowSession;
 declare const worker: WorkerFlowSession;
 const html: FlowHtmlExportOptions = { title: "Document", toc: true, darkMode: "disabled" };
-const pdf: FlowPdfExportOptions = { author: "Host", pageNumbers: true, metadataEpochSeconds: 0, maxOutputBytes: 1024 };
+const pdf: FlowPdfExportOptions = {
+  author: "Host",
+  pageNumbers: true,
+  metadataEpochSeconds: 0,
+  maxOutputBytes: 1024,
+};
 const a: Promise<FlowExportResult> = direct.exportDocument("html", html, direct.token);
-const b: Promise<FlowExportResult> = worker.exportDocument("pdf", pdf, worker.token, { signal: new AbortController().signal });
+const b: Promise<FlowExportResult> = worker.exportDocument("pdf", pdf, worker.token, {
+  signal: new AbortController().signal,
+});
 void [a, b];
 // @ts-expect-error supported formats are explicit
 worker.exportDocument("svg", {}, worker.token);

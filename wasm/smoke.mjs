@@ -58,7 +58,11 @@ const caps = await mod.capabilities();
 if (!caps || typeof caps !== "object" || caps.schema !== "fmd-wasm-capabilities-v1") {
   fail(`capabilities() did not return the wasm contract (schema=${caps && caps.schema})`);
 }
-if (!Array.isArray(caps.outputs) || !caps.outputs.includes("html") || !caps.outputs.includes("pdf")) {
+if (
+  !Array.isArray(caps.outputs) ||
+  !caps.outputs.includes("html") ||
+  !caps.outputs.includes("pdf")
+) {
   fail("capabilities().outputs must include html and pdf");
 }
 console.log(`smoke: capabilities ok (schema=${caps.schema} outputs=${caps.outputs.join(",")})`);
@@ -70,38 +74,50 @@ for (const md of corpus) {
 
   const html = await mod.renderHtml(source);
   const htmlText = dec.decode(html.bytes);
-  if (!htmlText.startsWith("<!DOCTYPE html>")) fail(`renderHtml(${stem}) did not start with <!DOCTYPE html>`);
+  if (!htmlText.startsWith("<!DOCTYPE html>"))
+    fail(`renderHtml(${stem}) did not start with <!DOCTYPE html>`);
   writeFileSync(`${outDir}/${stem}.wasm.html`, html.bytes);
 
   const pdf = await mod.renderPdf(source, { metadataEpochSeconds: epoch });
   const sig = dec.decode(pdf.bytes.slice(0, 5));
-  if (sig !== "%PDF-") fail(`renderPdf(${stem}) did not start with %PDF- (got ${JSON.stringify(sig)})`);
+  if (sig !== "%PDF-")
+    fail(`renderPdf(${stem}) did not start with %PDF- (got ${JSON.stringify(sig)})`);
   writeFileSync(`${outDir}/${stem}.wasm.pdf`, pdf.bytes);
 
   // WASM-side determinism: a second render through the module must be byte-identical.
   const html2 = await mod.renderHtml(source);
-  if (!bytesEqual(html.bytes, html2.bytes)) fail(`renderHtml(${stem}) is not byte-deterministic across runs`);
+  if (!bytesEqual(html.bytes, html2.bytes))
+    fail(`renderHtml(${stem}) is not byte-deterministic across runs`);
   const pdf2 = await mod.renderPdf(source, { metadataEpochSeconds: epoch });
-  if (!bytesEqual(pdf.bytes, pdf2.bytes)) fail(`renderPdf(${stem}) is not byte-deterministic across runs`);
+  if (!bytesEqual(pdf.bytes, pdf2.bytes))
+    fail(`renderPdf(${stem}) is not byte-deterministic across runs`);
 
-  console.log(`smoke: ${stem} -> html ${html.bytes.byteLength}B, pdf ${pdf.bytes.byteLength}B (deterministic)`);
+  console.log(
+    `smoke: ${stem} -> html ${html.bytes.byteLength}B, pdf ${pdf.bytes.byteLength}B (deterministic)`,
+  );
 }
 
 // Negative-path contract through the package API (generated module + wrapper).
 console.log("smoke: negative-path checks");
 // Empty Markdown still renders a valid document.
 const empty = await mod.renderHtml("");
-if (!dec.decode(empty.bytes).startsWith("<!DOCTYPE html>")) fail("empty Markdown should still render a document");
+if (!dec.decode(empty.bytes).startsWith("<!DOCTYPE html>"))
+  fail("empty Markdown should still render a document");
 // Malformed Markdown renders and exposes a diagnostics array (no throw).
 const diag = await mod.renderHtml("[unclosed](\n\n```\nunterminated\n");
 if (!Array.isArray(diag.diagnostics)) fail("renderHtml result must expose a diagnostics array");
 // Raw HTML is escaped by default (fail-closed).
 const escaped = await mod.renderHtml("<script>alert(1)</script>");
-if (dec.decode(escaped.bytes).includes("<script>alert(1)")) fail("raw HTML must be escaped by default");
+if (dec.decode(escaped.bytes).includes("<script>alert(1)"))
+  fail("raw HTML must be escaped by default");
 // Invalid options are refused through the package API.
 await expectThrow("invalid darkMode", () => mod.renderHtml("x", { darkMode: "bogus" }));
-await expectThrow("negative metadataEpochSeconds", () => mod.renderPdf("x", { metadataEpochSeconds: -1 }));
-await expectThrow("non-integer metadataEpochSeconds", () => mod.renderPdf("x", { metadataEpochSeconds: 1.5 }));
+await expectThrow("negative metadataEpochSeconds", () =>
+  mod.renderPdf("x", { metadataEpochSeconds: -1 }),
+);
+await expectThrow("non-integer metadataEpochSeconds", () =>
+  mod.renderPdf("x", { metadataEpochSeconds: 1.5 }),
+);
 console.log("smoke: negative-path ok");
 
 // Multiple PDF image assets must ALL embed (the multi-image ABI path). Build two
@@ -148,4 +164,6 @@ if (!dec.decode(padded.bytes).includes("<title>  Padded Title  </title>")) {
 }
 console.log("smoke: verbatim-metadata ok");
 
-console.log("smoke: ok — generated wasm module loaded, rendered deterministically, and enforced the API contract.");
+console.log(
+  "smoke: ok — generated wasm module loaded, rendered deterministically, and enforced the API contract.",
+);

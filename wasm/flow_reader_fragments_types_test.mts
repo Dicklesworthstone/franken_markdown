@@ -1,6 +1,6 @@
-import { readFlowDocument } from "./flow-reader.js";
-import type { ReadingFlowSession, FlowReadingLocation, FlowReadingEntry } from "./flow-reader.js";
 import type { FlowReadingNode } from "./flow.js";
+import type { FlowReadingEntry, FlowReadingLocation, ReadingFlowSession } from "./flow-reader.js";
+import { readFlowDocument } from "./flow-reader.js";
 
 declare const session: ReadingFlowSession;
 const document = await readFlowDocument(session, { limits: { maxAnchorUnits: 4096 } });

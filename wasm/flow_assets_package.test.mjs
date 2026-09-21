@@ -1,9 +1,11 @@
 // Package shipping checks, not generated-WASM or Rust execution proof.
-import test from "node:test";
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { FlowImageAssets, FlowAssetError } from "@franken-suite/franken-markdown/flow-assets";
-import { Session, png, image } from "./tests/flow_image_fixtures.mjs";
+import test from "node:test";
+import { FlowAssetError, FlowImageAssets } from "@franken-suite/franken-markdown/flow-assets";
+import { image, png, Session } from "./tests/flow_image_fixtures.mjs";
+
 const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
 const runtime = ["flow-assets.js", "flow-assets.d.ts", "flow_raster.mjs", "ASSETS.md"];
 
@@ -14,12 +16,23 @@ test("public package subpath imports and performs dimension-only image delivery"
     assert.equal((await assets.loadPending()).loaded, 1);
     assert.equal(session.writes[0].bytes, undefined);
     assert.equal(new FlowAssetError("TEST", "test").code, "TEST");
-  } finally { assets.dispose(); }
+  } finally {
+    assets.dispose();
+  }
 });
 
 test("manifest ships the image API, decoder seam, local grant helper and integration", async () => {
-  assert.deepEqual(manifest.exports["./flow-assets"], { types: "./flow-assets.d.ts", import: "./flow-assets.js" });
-  for (const file of [...runtime, "demo/local_image_sources.mjs", "demo/flow_preview_controller.mjs", "demo/flow-canvas.js", "demo/flow-canvas.html"]) {
+  assert.deepEqual(manifest.exports["./flow-assets"], {
+    types: "./flow-assets.d.ts",
+    import: "./flow-assets.js",
+  });
+  for (const file of [
+    ...runtime,
+    "demo/local_image_sources.mjs",
+    "demo/flow_preview_controller.mjs",
+    "demo/flow-canvas.js",
+    "demo/flow-canvas.html",
+  ]) {
     assert(manifest.files.includes(file), `missing manifest file ${file}`);
     assert((await readFile(new URL(file, import.meta.url))).length > 0, `empty file ${file}`);
   }
@@ -34,6 +47,13 @@ test("both package assemblers copy the image runtime and explicit local-file hel
     const source = await readFile(new URL(`../scripts/${script}`, import.meta.url), "utf8");
     const list = source.match(/for file in ([\s\S]*?); do/)[1];
     for (const file of runtime) assert(list.includes(file), `${script} does not assemble ${file}`);
-    assert(source.split("\n").some(line => line.startsWith("cp ") && line.includes("wasm/demo/local_image_sources.mjs")), `${script} misses helper`);
+    assert(
+      source
+        .split("\n")
+        .some(
+          (line) => line.startsWith("cp ") && line.includes("wasm/demo/local_image_sources.mjs"),
+        ),
+      `${script} misses helper`,
+    );
   }
 });

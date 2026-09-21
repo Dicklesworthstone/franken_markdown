@@ -22,12 +22,12 @@ export interface FmdView extends HTMLElement {
   addEventListener<K extends keyof FmdViewEventMap>(
     type: K,
     listener: (this: FmdView, ev: FmdViewEventMap[K]) => void,
-    options?: boolean | AddEventListenerOptions
+    options?: boolean | AddEventListenerOptions,
   ): void;
   addEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject,
-    options?: boolean | AddEventListenerOptions
+    options?: boolean | AddEventListenerOptions,
   ): void;
 }
 
@@ -36,5 +36,5 @@ export interface FmdView extends HTMLElement {
  * import; call this explicitly for a non-global registry.
  */
 export function registerFmdView(
-  registry?: Pick<CustomElementRegistry, "define" | "get">
+  registry?: Pick<CustomElementRegistry, "define" | "get">,
 ): "fmd-view";

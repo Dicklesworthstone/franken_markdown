@@ -5,7 +5,11 @@ const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
 const SLOTS = new Set([
-  "body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"
+  "body-regular",
+  "body-bold",
+  "body-italic",
+  "body-bold-italic",
+  "mono-regular",
 ]);
 
 function record(value, name) {
@@ -25,9 +29,11 @@ export function bookTextBytes(value, maximum = MAX_SOURCE_BYTES) {
     const c = value.charCodeAt(i);
     if (c >= 0xd800 && c <= 0xdbff) {
       const next = value.charCodeAt(++i);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new TypeError("book text contains malformed Unicode");
+      if (!(next >= 0xdc00 && next <= 0xdfff))
+        throw new TypeError("book text contains malformed Unicode");
       bytes += 4;
-    } else if (c >= 0xdc00 && c <= 0xdfff) throw new TypeError("book text contains malformed Unicode");
+    } else if (c >= 0xdc00 && c <= 0xdfff)
+      throw new TypeError("book text contains malformed Unicode");
     else bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
     if (bytes > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
   }
@@ -77,8 +83,10 @@ function imageAsset(value) {
 function fontAsset(value) {
   const font = record(value, "font asset");
   if (!SLOTS.has(font.slot)) throw new TypeError("unknown font asset slot");
-  if (font.weight !== undefined &&
-      (!Number.isInteger(font.weight) || font.weight < 1 || font.weight > 1000)) {
+  if (
+    font.weight !== undefined &&
+    (!Number.isInteger(font.weight) || font.weight < 1 || font.weight > 1000)
+  ) {
     throw new RangeError("font weight must be an integer in 1..=1000");
   }
   return { slot: font.slot, bytes: assetBytes(font.bytes), weight: font.weight };
@@ -93,9 +101,13 @@ function normalizeOptions(value) {
     throw new TypeError("darkMode must be auto or disabled (light/system aliases accepted)");
   }
   const fontScale = options.fontScale;
-  if (fontScale !== undefined && (typeof fontScale !== "number" ||
-      !Number.isFinite(fontScale) || !Number.isFinite(Math.fround(fontScale)) ||
-      Math.fround(fontScale) <= 0)) {
+  if (
+    fontScale !== undefined &&
+    (typeof fontScale !== "number" ||
+      !Number.isFinite(fontScale) ||
+      !Number.isFinite(Math.fround(fontScale)) ||
+      Math.fround(fontScale) <= 0)
+  ) {
     throw new RangeError("fontScale must be a finite, positive f32-representable number");
   }
   const expandIncludes = options.expandIncludes;
@@ -120,22 +132,30 @@ function normalizeOptions(value) {
     customCss: optionalString(options.customCss, "customCss"),
     toc: boolean(options.toc, "toc"),
     pageNumbers: boolean(options.pageNumbers, "pageNumbers"),
-    font, darkMode, fontScale, expandIncludes: expansion, includeSources,
+    font,
+    darkMode,
+    fontScale,
+    expandIncludes: expansion,
+    includeSources,
     images: normalizedImages,
-    fontAssets: fonts.map(fontAsset)
+    fontAssets: fonts.map(fontAsset),
   };
 }
 
 function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = MAX_SOURCE_BYTES) {
   if (!Array.isArray(files) || files.length < minimum || files.length > maxCount) {
-    throw new RangeError("book needs at least one chapter and at most 4096 chapter/include sources combined");
+    throw new RangeError(
+      "book needs at least one chapter and at most 4096 chapter/include sources combined",
+    );
   }
-  const paths = [], sources = [];
+  const paths = [],
+    sources = [];
   let total = 0;
   for (const file of files) {
     record(file, "book source");
     // Capture getters once: the validated strings are the strings sent to Rust.
-    const path = file.path, source = file.source;
+    const path = file.path,
+      source = file.source;
     if (typeof path !== "string" || typeof source !== "string") {
       throw new TypeError("each book source needs string path and source fields");
     }
@@ -145,7 +165,8 @@ function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = 
       }
       total += bookTextBytes(text, maxBytes - total);
     }
-    paths.push(path); sources.push(source);
+    paths.push(path);
+    sources.push(source);
   }
   return { paths, sources, total };
 }
@@ -155,16 +176,29 @@ function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = 
  * Internal transport helper; never detaches or retains caller-owned buffers.
  */
 export function prepareBookInput(files, options = {}) {
-  const normalized = normalizeFiles(files), settings = normalizeOptions(options);
-  const resources = normalizeFiles(settings.includeSources, 0,
-    MAX_CHAPTERS - normalized.paths.length, MAX_SOURCE_BYTES - normalized.total);
+  const normalized = normalizeFiles(files),
+    settings = normalizeOptions(options);
+  const resources = normalizeFiles(
+    settings.includeSources,
+    0,
+    MAX_CHAPTERS - normalized.paths.length,
+    MAX_SOURCE_BYTES - normalized.total,
+  );
   if (!settings.expandIncludes && resources.paths.length) {
-    throw new TypeError("includeSources requires expandIncludes; remove resources or enable expansion");
+    throw new TypeError(
+      "includeSources requires expandIncludes; remove resources or enable expansion",
+    );
   }
-  settings.includeSources = resources.paths.map((path, i) => ({ path, source: resources.sources[i] }));
-  settings.images = settings.images.map(image => ({ ...image, bytes: image.bytes.slice() }));
-  settings.fontAssets = settings.fontAssets.map(font => ({ ...font, bytes: font.bytes.slice() }));
-  return { files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })), options: settings };
+  settings.includeSources = resources.paths.map((path, i) => ({
+    path,
+    source: resources.sources[i],
+  }));
+  settings.images = settings.images.map((image) => ({ ...image, bytes: image.bytes.slice() }));
+  settings.fontAssets = settings.fontAssets.map((font) => ({ ...font, bytes: font.bytes.slice() }));
+  return {
+    files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })),
+    options: settings,
+  };
 }
 
 /** Navigation checks need source/expansion policy only. Do not even read
@@ -175,29 +209,44 @@ export function bookLinkOptions(options = {}) {
 }
 
 function output(bytes, kind, sourceLength) {
-  if (!(bytes instanceof Uint8Array)) throw new TypeError("renderer did not return Uint8Array bytes");
+  if (!(bytes instanceof Uint8Array))
+    throw new TypeError("renderer did not return Uint8Array bytes");
   const [format, mimeType, extension] = {
     pdf: ["book-pdf", "application/pdf", "pdf"],
     epub: ["book-epub", "application/epub+zip", "epub"],
-    site: ["book-site", "application/zip", "zip"]
+    site: ["book-site", "application/zip", "zip"],
   }[kind];
   return Object.freeze({
-    format, mimeType, extension, sourceLength, bytes,
-    blob() { return new Blob([bytes], { type: mimeType }); },
-    filename(baseName = "book") { return `${String(baseName)}.${extension}`; }
+    format,
+    mimeType,
+    extension,
+    sourceLength,
+    bytes,
+    blob() {
+      return new Blob([bytes], { type: mimeType });
+    },
+    filename(baseName = "book") {
+      return `${String(baseName)}.${extension}`;
+    },
   });
 }
 
 export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
-    constructor(raw) { this.#raw = raw; }
+    constructor(raw) {
+      this.#raw = raw;
+    }
     #live() {
       if (this.#raw === null) throw new Error("book session has been disposed");
       return this.#raw;
     }
-    get chapterCount() { return this.#live().chapterCount; }
-    get sourceLength() { return this.#live().sourceLength; }
+    get chapterCount() {
+      return this.#live().chapterCount;
+    }
+    get sourceLength() {
+      return this.#live().sourceLength;
+    }
     setImage(destination, bytes) {
       const raw = this.#live();
       const asset = imageAsset({ destination, bytes });
@@ -226,20 +275,30 @@ export function createBookBindings(loadBookClass) {
     validateLinks() {
       const raw = this.#live();
       if (typeof raw.validateLinks !== "function") {
-        throw new Error("this WASM build lacks FmdBook.validateLinks; rebuild the matching package for book link checks");
+        throw new Error(
+          "this WASM build lacks FmdBook.validateLinks; rebuild the matching package for book link checks",
+        );
       }
       let json;
-      try { json = raw.validateLinks(); }
-      catch (error) {
+      try {
+        json = raw.validateLinks();
+      } catch (error) {
         if (typeof error === "string") throw new Error(error.slice(0, 2048));
         throw error;
       }
       bookTextBytes(json, 4 * 1024 * 1024);
       if (!json) throw new Error("book link checker returned an empty report");
-      const bytes = new TextEncoder().encode(json), sourceLength = raw.sourceLength;
-      return Object.freeze({ format: "book-links", mimeType: "application/json", extension: "json", bytes, sourceLength,
+      const bytes = new TextEncoder().encode(json),
+        sourceLength = raw.sourceLength;
+      return Object.freeze({
+        format: "book-links",
+        mimeType: "application/json",
+        extension: "json",
+        bytes,
+        sourceLength,
         blob: () => new Blob([bytes], { type: "application/json" }),
-        filename: (baseName = "book-links") => `${String(baseName)}.json` });
+        filename: (baseName = "book-links") => `${String(baseName)}.json`,
+      });
     }
     dispose() {
       const raw = this.#raw;
@@ -250,24 +309,37 @@ export function createBookBindings(loadBookClass) {
 
   async function createBook(files, options = {}) {
     const prepared = prepareBookInput(files, options);
-    const normalized = { paths: prepared.files.map(file => file.path), sources: prepared.files.map(file => file.source) };
+    const normalized = {
+      paths: prepared.files.map((file) => file.path),
+      sources: prepared.files.map((file) => file.source),
+    };
     const settings = prepared.options;
     const BookClass = await loadBookClass();
     if (typeof BookClass !== "function") {
-      throw new Error("this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source");
+      throw new Error(
+        "this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source",
+      );
     }
     // This is a capability gate, not an include parser. Rust alone decides
     // whether a marker is an active directive, a selector, or a code example.
-    const expand = settings.expandIncludes && (settings.includeSources.length > 0
-      || normalized.sources.some(source => source.includes("{{#include")));
+    const expand =
+      settings.expandIncludes &&
+      (settings.includeSources.length > 0 ||
+        normalized.sources.some((source) => source.includes("{{#include")));
     let raw;
     try {
       if (expand) {
         if (typeof BookClass.fromSources !== "function") {
-          throw new Error("this WASM build lacks FmdBook.fromSources; rebuild the matching package for book includes");
+          throw new Error(
+            "this WASM build lacks FmdBook.fromSources; rebuild the matching package for book includes",
+          );
         }
-        raw = BookClass.fromSources(normalized.paths, normalized.sources,
-          settings.includeSources.map(file => file.path), settings.includeSources.map(file => file.source));
+        raw = BookClass.fromSources(
+          normalized.paths,
+          normalized.sources,
+          settings.includeSources.map((file) => file.path),
+          settings.includeSources.map((file) => file.source),
+        );
       } else {
         raw = new BookClass(normalized.paths, normalized.sources);
       }
@@ -298,8 +370,11 @@ export function createBookBindings(loadBookClass) {
 
   async function once(files, options, method) {
     const session = await createBook(files, options);
-    try { return session[method](); }
-    finally { session.dispose(); }
+    try {
+      return session[method]();
+    } finally {
+      session.dispose();
+    }
   }
 
   return Object.freeze({
@@ -307,7 +382,8 @@ export function createBookBindings(loadBookClass) {
     renderBookPdf: (files, options) => once(files, options, "renderPdf"),
     renderBookEpub: (files, options) => once(files, options, "renderEpub"),
     renderBookSite: (files, options) => once(files, options, "renderSite"),
-    checkBookLinks: async (files, options) => once(files, bookLinkOptions(options), "validateLinks")
+    checkBookLinks: async (files, options) =>
+      once(files, bookLinkOptions(options), "validateLinks"),
   });
 }
 
@@ -315,44 +391,100 @@ export function createBookBindings(loadBookClass) {
  * collection. This validates the wire contract, not Markdown. Summary totals
  * are recomputed; no engine-supplied optimistic verdict reaches the reader. */
 export function parseBookLinkReport(bytes, expectedPaths) {
-  const invalid = () => Object.assign(new Error("The book link checker returned an invalid or mismatched report."), { code: "INVALID_LINK_REPORT" });
+  const invalid = () =>
+    Object.assign(new Error("The book link checker returned an invalid or mismatched report."), {
+      code: "INVALID_LINK_REPORT",
+    });
   const maximum = 4 * 1024 * 1024;
-  if (!(bytes instanceof Uint8Array) || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
-      || bytes.byteLength === 0 || bytes.byteLength > maximum
-      || !Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > MAX_CHAPTERS) throw invalid();
-  const integer = value => {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]" ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > maximum ||
+    !Array.isArray(expectedPaths) ||
+    !expectedPaths.length ||
+    expectedPaths.length > MAX_CHAPTERS
+  )
+    throw invalid();
+  const integer = (value) => {
     if (!Number.isSafeInteger(value) || value < 0 || value > 250000) throw invalid();
     return value;
   };
   const text = (value, limit) => {
-    try { bookTextBytes(value, limit); } catch { throw invalid(); }
+    try {
+      bookTextBytes(value, limit);
+    } catch {
+      throw invalid();
+    }
     return value;
   };
-  const codes = new Set(["missing_chapter", "missing_anchor", "ambiguous_anchor", "invalid_fragment", "invalid_local_destination", "missing_footnote"]);
+  const codes = new Set([
+    "missing_chapter",
+    "missing_anchor",
+    "ambiguous_anchor",
+    "invalid_fragment",
+    "invalid_local_destination",
+    "missing_footnote",
+  ]);
   let value;
-  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { throw invalid(); }
-  if (!value || value.schema !== "fmd-book-link-report-v1" || value.scope !== "expanded-html-navigation"
-      || !Array.isArray(value.chapters) || value.chapters.length !== expectedPaths.length) throw invalid();
-  const seen = new Set(), summary = { chapters: expectedPaths.length, checked: 0, external: 0, unchecked: 0, findings: 0 };
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw invalid();
+  }
+  if (
+    !value ||
+    value.schema !== "fmd-book-link-report-v1" ||
+    value.scope !== "expanded-html-navigation" ||
+    !Array.isArray(value.chapters) ||
+    value.chapters.length !== expectedPaths.length
+  )
+    throw invalid();
+  const seen = new Set(),
+    summary = {
+      chapters: expectedPaths.length,
+      checked: 0,
+      external: 0,
+      unchecked: 0,
+      findings: 0,
+    };
   const chapters = Array.from(value.chapters, (chapter, index) => {
     if (!chapter || typeof chapter !== "object") throw invalid();
     const path = text(chapter.path, 4096);
     if (!path || path !== expectedPaths[index] || seen.has(path)) throw invalid();
     seen.add(path);
-    const checked = integer(chapter.checked), external = integer(chapter.external), unchecked = integer(chapter.unchecked);
-    if (!Array.isArray(chapter.findings) || chapter.findings.length > checked || chapter.findings.length > 4096) throw invalid();
-    const findings = Array.from(chapter.findings, finding => {
+    const checked = integer(chapter.checked),
+      external = integer(chapter.external),
+      unchecked = integer(chapter.unchecked);
+    if (
+      !Array.isArray(chapter.findings) ||
+      chapter.findings.length > checked ||
+      chapter.findings.length > 4096
+    )
+      throw invalid();
+    const findings = Array.from(chapter.findings, (finding) => {
       if (!finding || !codes.has(finding.code)) throw invalid();
-      const destination = text(finding.destination, 8192), message = text(finding.message, 1024);
+      const destination = text(finding.destination, 8192),
+        message = text(finding.message, 1024);
       if (!message) throw invalid();
       return Object.freeze({ code: finding.code, destination, message });
     });
-    for (const [key, count] of Object.entries({ checked, external, unchecked, findings: findings.length })) {
+    for (const [key, count] of Object.entries({
+      checked,
+      external,
+      unchecked,
+      findings: findings.length,
+    })) {
       summary[key] = integer(summary[key] + count);
     }
-    if (summary.findings > 4096 || summary.checked + summary.external + summary.unchecked > 250000) throw invalid();
+    if (summary.findings > 4096 || summary.checked + summary.external + summary.unchecked > 250000)
+      throw invalid();
     return Object.freeze({ path, checked, external, unchecked, findings: Object.freeze(findings) });
   });
-  return Object.freeze({ schema: value.schema, scope: value.scope, chapters: Object.freeze(chapters), summary: Object.freeze(summary) });
+  return Object.freeze({
+    schema: value.schema,
+    scope: value.scope,
+    chapters: Object.freeze(chapters),
+    summary: Object.freeze(summary),
+  });
 }

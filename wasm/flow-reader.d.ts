@@ -1,4 +1,15 @@
-import type { FlowPageOptions, FlowReadingInlineRun, FlowReadingLink, FlowReadingListItem, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
+import type {
+  FlowPageOptions,
+  FlowReadingInlineRun,
+  FlowReadingLink,
+  FlowReadingListItem,
+  FlowReadingNode,
+  FlowReadingPage,
+  FlowRect,
+  FlowSourceSpan,
+  FlowToken,
+  FlowTokenInput,
+} from "./flow.js";
 export interface ReadingFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
@@ -28,9 +39,11 @@ export interface FlowReadOptions {
 }
 export interface FlowReadingInlineEntry extends FlowReadingInlineRun {
   /** Validated UTF-16 coordinates in this node's reading text, not Markdown. */
-  readonly startUtf16: number; readonly endUtf16: number;
+  readonly startUtf16: number;
+  readonly endUtf16: number;
 }
-export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath" | "anchorId"> {
+export interface FlowReadingEntry
+  extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath" | "anchorId"> {
   /** Preorder index, scoped to this exact snapshot, not a persistent node ID. */
   readonly index: number;
   /** Exact engine-assigned destination, null when absent or legacy-unknown. */
@@ -95,10 +108,16 @@ export class FlowReadingDocument {
   /** Accepts only genuine matches returned by this snapshot; fences revisions. */
   matchText(match: FlowReadingMatch): string;
 }
-export function readFlowDocument(session: ReadingFlowSession, options?: FlowReadOptions): Promise<FlowReadingDocument>;
+export function readFlowDocument(
+  session: ReadingFlowSession,
+  options?: FlowReadOptions,
+): Promise<FlowReadingDocument>;
 /** Host must fence the source revision first. Validates Unicode and UTF-8 bounds;
  * source is limited to 4 MiB UTF-8, matching the browser flow admission limit. */
-export function sourceSpanToUtf16(source: string, span: FlowSourceSpan): Readonly<{ start: number; end: number }>;
+export function sourceSpanToUtf16(
+  source: string,
+  span: FlowSourceSpan,
+): Readonly<{ start: number; end: number }>;
 export interface FlowReadingLinkActivation {
   /** Passed the conservative scheme filter; the host must still authorize it. */
   readonly target: string;

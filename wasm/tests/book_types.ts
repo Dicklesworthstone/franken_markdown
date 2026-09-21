@@ -1,8 +1,11 @@
-import { createBook, renderBookEpub, type BookOutput } from "../book.js";
+import { type BookOutput, createBook, renderBookEpub } from "../book.js";
+
 const files = [{ path: "index.md", source: "# Home" }] as const;
 const session = await createBook(files, {
-  title: "Book", fontScale: 1.125, pageNumbers: true,
-  images: [{ destination: "image.png", bytes: new DataView(new ArrayBuffer(1)) }]
+  title: "Book",
+  fontScale: 1.125,
+  pageNumbers: true,
+  images: [{ destination: "image.png", bytes: new DataView(new ArrayBuffer(1)) }],
 });
 try {
   const result: BookOutput = session.renderPdf();
@@ -10,7 +13,9 @@ try {
   const bytes: Uint8Array = result.bytes;
   const name: string = result.filename("manual");
   void [blob, bytes, name];
-} finally { session.dispose(); }
+} finally {
+  session.dispose();
+}
 const epub: BookOutput = await renderBookEpub(files);
 void epub;
 // @ts-expect-error String scale presets are intentionally not part of this API.

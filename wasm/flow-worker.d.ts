@@ -1,15 +1,51 @@
 import type {
-  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
-  FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput, FlowViewportOptions, FlowViewportPage,
-  FlowExportFormat, FlowExportOptionsByFormat, FlowExportResult
+  FlowAssetPage,
+  FlowAssetResult,
+  FlowCreateOptions,
+  FlowEditOptions,
+  FlowExportFormat,
+  FlowExportOptionsByFormat,
+  FlowExportResult,
+  FlowGlyphOutlines,
+  FlowHit,
+  FlowIdentity,
+  FlowLayoutOptions,
+  FlowPageOptions,
+  FlowReadingPage,
+  FlowSelection,
+  FlowSnapshot,
+  FlowSnapshotOptions,
+  FlowToken,
+  FlowTokenInput,
+  FlowViewportOptions,
+  FlowViewportPage,
 } from "./flow.js";
+
 export type {
-  FlowAssetPage, FlowAssetResult, FlowCreateOptions, FlowEditOptions, FlowGlyphOutlines, FlowHit,
-  FlowIdentity, FlowLayoutOptions, FlowPageOptions, FlowReadingPage, FlowSelection,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput, FlowViewportOptions, FlowViewportPage,
-  FlowExportFormat, FlowExportOptions, FlowHtmlExportOptions, FlowPdfExportOptions,
-  FlowExportOptionsByFormat, FlowExportDiagnostic, FlowExportResult
+  FlowAssetPage,
+  FlowAssetResult,
+  FlowCreateOptions,
+  FlowEditOptions,
+  FlowExportDiagnostic,
+  FlowExportFormat,
+  FlowExportOptions,
+  FlowExportOptionsByFormat,
+  FlowExportResult,
+  FlowGlyphOutlines,
+  FlowHit,
+  FlowHtmlExportOptions,
+  FlowIdentity,
+  FlowLayoutOptions,
+  FlowPageOptions,
+  FlowPdfExportOptions,
+  FlowReadingPage,
+  FlowSelection,
+  FlowSnapshot,
+  FlowSnapshotOptions,
+  FlowToken,
+  FlowTokenInput,
+  FlowViewportOptions,
+  FlowViewportPage,
 } from "./flow.js";
 
 export interface FlowWorkerControl {
@@ -58,16 +94,39 @@ export interface WorkerFlowSession {
   readonly pendingOperations: number;
   readonly pendingBytes: number;
   getSource(control?: FlowWorkerControl): Promise<string>;
-  edit(startUtf16: number, endUtf16: number, replacement: string, options: FlowEditOptions, control?: FlowWorkerControl): Promise<FlowToken>;
-  editBytes(startByte: number, endByte: number, replacement: string, options: FlowEditOptions, control?: FlowWorkerControl): Promise<FlowToken>;
-  replaceSource(source: string, options: FlowEditOptions, control?: FlowWorkerControl): Promise<FlowToken>;
-  reflow(options: FlowLayoutOptions, token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowToken>;
+  edit(
+    startUtf16: number,
+    endUtf16: number,
+    replacement: string,
+    options: FlowEditOptions,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
+  editBytes(
+    startByte: number,
+    endByte: number,
+    replacement: string,
+    options: FlowEditOptions,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
+  replaceSource(
+    source: string,
+    options: FlowEditOptions,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
+  reflow(
+    options: FlowLayoutOptions,
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
   provideAsset(result: FlowAssetResult, control?: FlowWorkerControl): Promise<FlowToken>;
   /** One atomic completion, up to 1,024 images and 32 MiB (8 MiB per payload).
    * The configured worker queue limit also applies, before copying any bytes.
    * Exact views are copied at enqueue; caller buffers are never detached.
    * Queued abort removes the whole batch; in-flight abort loses the session. */
-  provideAssets(results: readonly FlowAssetResult[], control?: FlowWorkerControl): Promise<FlowToken>;
+  provideAssets(
+    results: readonly FlowAssetResult[],
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
   reloadAssets(expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<FlowToken>;
   snapshot(options?: FlowSnapshotOptions, control?: FlowWorkerControl): Promise<FlowSnapshot>;
   viewport(options: FlowViewportOptions, control?: FlowWorkerControl): Promise<FlowViewportPage>;
@@ -75,19 +134,50 @@ export interface WorkerFlowSession {
   pendingAssets(options?: FlowPageOptions, control?: FlowWorkerControl): Promise<FlowAssetPage>;
   /** Captures the last-acknowledged token immediately. Each next() requests one
    * page; no prefetch or mixed generations. Control applies to each page call. */
-  pages(options?: Omit<FlowSnapshotOptions, "offset">, control?: FlowWorkerControl): AsyncIterableIterator<FlowSnapshot>;
-  hitTest(x: number, y: number, token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowHit>;
-  selectText(itemIndex: number, startUtf16: number, endUtf16: number, token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowSelection>;
-  copySource(startByte: number, endByte: number, expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<string>;
+  pages(
+    options?: Omit<FlowSnapshotOptions, "offset">,
+    control?: FlowWorkerControl,
+  ): AsyncIterableIterator<FlowSnapshot>;
+  hitTest(
+    x: number,
+    y: number,
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<FlowHit>;
+  selectText(
+    itemIndex: number,
+    startUtf16: number,
+    endUtf16: number,
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<FlowSelection>;
+  copySource(
+    startByte: number,
+    endByte: number,
+    expectedRevision: FlowIdentity,
+    control?: FlowWorkerControl,
+  ): Promise<string>;
   fontBytes(fontId: FlowIdentity, control?: FlowWorkerControl): Promise<Uint8Array>;
   /** Immutable glyph paths; input IDs are copied at enqueue, never transferred from the caller. */
-  glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array, control?: FlowWorkerControl): Promise<FlowGlyphOutlines>;
-  assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<Uint8Array | null>;
+  glyphOutlines(
+    fontId: FlowIdentity,
+    glyphIds: readonly number[] | Uint16Array,
+    control?: FlowWorkerControl,
+  ): Promise<FlowGlyphOutlines>;
+  assetBytes(
+    requestId: FlowIdentity,
+    expectedRevision: FlowIdentity,
+    control?: FlowWorkerControl,
+  ): Promise<Uint8Array | null>;
   /** Runs the shared document renderer inside this worker. Input is a captured
    * source/layout revision; queued cancellation is safe, in-flight cancellation
    * terminates this session, like every other synchronous WASM operation. */
-  exportDocument<F extends FlowExportFormat>(format: F, options: FlowExportOptionsByFormat[F] | undefined,
-    token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowExportResult>;
+  exportDocument<F extends FlowExportFormat>(
+    format: F,
+    options: FlowExportOptionsByFormat[F] | undefined,
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<FlowExportResult>;
   /** Immediate, idempotent termination. Rejects all outstanding operations. */
   dispose(): void;
 }
@@ -99,5 +189,8 @@ export class FlowWorkerError extends Error {
  * UI thread, retries a mutation or recovers lost source. Hosts retain their
  * authoritative Markdown and explicitly recreate after a fatal cancellation.
  */
-export function createWorkerFlowSession(source: string, options?: FlowCreateOptions,
-  workerOptions?: FlowWorkerOptions): Promise<WorkerFlowSession>;
+export function createWorkerFlowSession(
+  source: string,
+  options?: FlowCreateOptions,
+  workerOptions?: FlowWorkerOptions,
+): Promise<WorkerFlowSession>;

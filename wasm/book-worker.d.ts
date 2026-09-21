@@ -1,4 +1,4 @@
-import type { BookFile, BookOptions, BookOutput, BookLinksOutput } from "./book.js";
+import type { BookFile, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
 export type BookWorkerFormat = BookFormat | "preview" | "inspection" | "links";
 export interface BookPreviewOutput {
@@ -24,21 +24,46 @@ export interface BookWorker {
   readonly busy: boolean;
   /** A single export owns a worker. Concurrent calls reject with BOOK_BUSY.
    * Assets are snapshotted, never transferred out of caller-owned buffers. */
-  render(files: readonly BookFile[], format: BookFormat, options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<Omit<BookOutput, "filename">>;
+  render(
+    files: readonly BookFile[],
+    format: BookFormat,
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<Omit<BookOutput, "filename">>;
   /** Bounded chapter HTML derived from the Rust site export. Not PDF pages. */
-  render(files: readonly BookFile[], format: "preview", options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<BookPreviewOutput>;
+  render(
+    files: readonly BookFile[],
+    format: "preview",
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPreviewOutput>;
   /** Source-only structural/accessibility inspection. Publication options,
    * images and fonts are ignored and are not transferred to the worker. */
-  render(files: readonly BookFile[], format: "inspection", options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<BookInspectionOutput>;
+  render(
+    files: readonly BookFile[],
+    format: "inspection",
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<BookInspectionOutput>;
   /** Expanded local HTML navigation checks. Includes are captured; images,
    * fonts and presentation settings are ignored and never transferred. */
-  render(files: readonly BookFile[], format: "links", options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<Omit<BookLinksOutput, "filename">>;
-  render(files: readonly BookFile[], format: BookWorkerFormat, options?: BookOptions,
-    request?: { signal?: AbortSignal }): Promise<Omit<BookOutput, "filename"> | BookPreviewOutput | BookInspectionOutput | Omit<BookLinksOutput, "filename">>;
+  render(
+    files: readonly BookFile[],
+    format: "links",
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<Omit<BookLinksOutput, "filename">>;
+  render(
+    files: readonly BookFile[],
+    format: BookWorkerFormat,
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<
+    | Omit<BookOutput, "filename">
+    | BookPreviewOutput
+    | BookInspectionOutput
+    | Omit<BookLinksOutput, "filename">
+  >;
   /** Terminates the running worker. The client can render again afterward. */
   cancel(): void;
   /** Idempotent; also cancels the current export. */

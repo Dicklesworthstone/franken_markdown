@@ -1,9 +1,15 @@
 /** One chapter. Array order is reading order; paths are book-relative. */
-export interface BookFile { path: string; source: string; }
+export interface BookFile {
+  path: string;
+  source: string;
+}
 export type BookAssetBytes = Uint8Array | ArrayBuffer | ArrayBufferView;
 export type BookFontSlot =
-  | "body-regular" | "body-bold" | "body-italic"
-  | "body-bold-italic" | "mono-regular";
+  | "body-regular"
+  | "body-bold"
+  | "body-italic"
+  | "body-bold-italic"
+  | "mono-regular";
 
 export interface BookImage {
   /** For guide/start.md using figure.svg, supply guide/figure.svg. */
@@ -82,12 +88,27 @@ export interface BookSession {
 /** Expand selected sources and parse once. Uses the main renderer's shared init. */
 export function createBook(files: readonly BookFile[], options?: BookOptions): Promise<BookSession>;
 /** One-shot exports always dispose their WASM book, including on failure. */
-export function renderBookPdf(files: readonly BookFile[], options?: BookOptions): Promise<BookOutput>;
-export function renderBookEpub(files: readonly BookFile[], options?: BookOptions): Promise<BookOutput>;
-export function renderBookSite(files: readonly BookFile[], options?: BookOptions): Promise<BookOutput>;
+export function renderBookPdf(
+  files: readonly BookFile[],
+  options?: BookOptions,
+): Promise<BookOutput>;
+export function renderBookEpub(
+  files: readonly BookFile[],
+  options?: BookOptions,
+): Promise<BookOutput>;
+export function renderBookSite(
+  files: readonly BookFile[],
+  options?: BookOptions,
+): Promise<BookOutput>;
 
 export interface BookLinkFinding {
-  readonly code: "missing_chapter" | "missing_anchor" | "ambiguous_anchor" | "invalid_fragment" | "invalid_local_destination" | "missing_footnote";
+  readonly code:
+    | "missing_chapter"
+    | "missing_anchor"
+    | "ambiguous_anchor"
+    | "invalid_fragment"
+    | "invalid_local_destination"
+    | "missing_footnote";
   readonly destination: string;
   readonly message: string;
 }
@@ -102,7 +123,13 @@ export interface BookLinkReport {
   readonly schema: "fmd-book-link-report-v1";
   readonly scope: "expanded-html-navigation";
   readonly chapters: readonly ChapterLinkReport[];
-  readonly summary: Readonly<{ chapters: number; checked: number; external: number; unchecked: number; findings: number }>;
+  readonly summary: Readonly<{
+    chapters: number;
+    checked: number;
+    external: number;
+    unchecked: number;
+    findings: number;
+  }>;
 }
 export interface BookLinksOutput {
   readonly format: "book-links";
@@ -117,7 +144,13 @@ export interface BookLinksOutput {
 /** Expand and check with guaranteed disposal. Only includeSources and
  * expandIncludes are used; fonts, images and presentation settings are ignored.
  * Use the worker "links" route for cancellation of synchronous Rust work. */
-export function checkBookLinks(files: readonly BookFile[], options?: BookOptions): Promise<BookLinksOutput>;
+export function checkBookLinks(
+  files: readonly BookFile[],
+  options?: BookOptions,
+): Promise<BookLinksOutput>;
 /** Validate report bytes against canonical, normalized chapter paths in reading
  * order. Recomputes totals and freezes the result. Does not parse Markdown. */
-export function parseBookLinkReport(bytes: Uint8Array, expectedPaths: readonly string[]): BookLinkReport;
+export function parseBookLinkReport(
+  bytes: Uint8Array,
+  expectedPaths: readonly string[],
+): BookLinkReport;

@@ -1,4 +1,10 @@
-import type { FlowAssetPage, FlowAssetRequest, FlowAssetResult, FlowPageOptions, FlowToken } from "./flow.js";
+import type {
+  FlowAssetPage,
+  FlowAssetRequest,
+  FlowAssetResult,
+  FlowPageOptions,
+  FlowToken,
+} from "./flow.js";
 import type { FlowCanvasImage } from "./flow-canvas.js";
 /** Satisfied by both FlowSession and WorkerFlowSession; neither is owned here. */
 export interface ImageFlowSession {
@@ -54,10 +60,16 @@ export interface FlowImageOptions {
   /** Authorize each request in its source generation, including base URI,
    * destination, redirects and credentials. Return null to decline. A loader
    * must bound its own I/O/allocation; bytes are snapshotted on receipt. */
-  load: (request: Readonly<FlowAssetRequest>, context: FlowImageLoadContext) => Uint8Array | null | Promise<Uint8Array | null>;
+  load: (
+    request: Readonly<FlowAssetRequest>,
+    context: FlowImageLoadContext,
+  ) => Uint8Array | null | Promise<Uint8Array | null>;
   /** Defaults to createImageBitmap. Only admitted static PNG/JPEG reaches this
    * callback. Return an exclusively owned CanvasImageSource with close(). */
-  decode?: (blob: Blob, context: FlowImageDecodeContext) => (CanvasImageSource & OwnedFlowImage) | Promise<CanvasImageSource & OwnedFlowImage>;
+  decode?: (
+    blob: Blob,
+    context: FlowImageDecodeContext,
+  ) => (CanvasImageSource & OwnedFlowImage) | Promise<CanvasImageSource & OwnedFlowImage>;
   /** Once per physically settled batch that attempted work or was aborted,
    * and on clear/dispose. Never once per image. Observer exceptions are ignored. */
   onChange?: (stats: FlowImageStats) => void;
@@ -100,7 +112,10 @@ export class FlowImageAssets {
   /** Source changes revoke images automatically; reflows preserve them. */
   synchronize(): FlowToken;
   /** Borrow only for the matching current paint; the manager owns close(). */
-  resolveImage(image: FlowCanvasImage, token: FlowToken): (CanvasImageSource & OwnedFlowImage) | null;
+  resolveImage(
+    image: FlowCanvasImage,
+    token: FlowToken,
+  ): (CanvasImageSource & OwnedFlowImage) | null;
   /** Immediately revoke and close. Also clear the painter; call reloadAssets
    * on the session before reauthorizing previously resolved requests. */
   clear(): void;

@@ -1,5 +1,14 @@
-import type { FlowGlyphOutlines, FlowHit, FlowIdentity, FlowLayoutOptions, FlowRect,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput } from "./flow.js";
+import type {
+  FlowGlyphOutlines,
+  FlowHit,
+  FlowIdentity,
+  FlowLayoutOptions,
+  FlowRect,
+  FlowSnapshot,
+  FlowSnapshotOptions,
+  FlowToken,
+  FlowTokenInput,
+} from "./flow.js";
 
 /** Structural subset satisfied by both synchronous and worker flow sessions. */
 export interface CanvasFlowSession {
@@ -7,7 +16,10 @@ export interface CanvasFlowSession {
   readonly token: FlowToken;
   readonly layoutOptions: Required<FlowLayoutOptions>;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot | Promise<FlowSnapshot>;
-  glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array): FlowGlyphOutlines | Promise<FlowGlyphOutlines>;
+  glyphOutlines(
+    fontId: FlowIdentity,
+    glyphIds: readonly number[] | Uint16Array,
+  ): FlowGlyphOutlines | Promise<FlowGlyphOutlines>;
   hitTest(x: number, y: number, token: FlowTokenInput): FlowHit | Promise<FlowHit>;
 }
 /** May lower the defaults, never raise them. Counts bound retained/processed
@@ -22,8 +34,19 @@ export interface FlowCanvasLimits {
   maxCachedCommands?: number; // 262,144
   maxFrameCommands?: number; // 1,048,576 distinct visible path commands.
 }
-export type FlowCanvasColor = "background" | "text" | "heading" | "code" | "link"
-  | "border" | "table-border" | "accent" | "quote" | "muted" | "strikethrough" | "selection";
+export type FlowCanvasColor =
+  | "background"
+  | "text"
+  | "heading"
+  | "code"
+  | "link"
+  | "border"
+  | "table-border"
+  | "accent"
+  | "quote"
+  | "muted"
+  | "strikethrough"
+  | "selection";
 export interface FlowCanvasOptions {
   /** Must return a fresh surface of exactly the requested pixel size, never
    * the target. Defaults to OffscreenCanvas, then a detached HTML canvas. */
@@ -52,7 +75,10 @@ export interface FlowCanvasPaintOptions {
   /** Called only for resolved image descriptors. Return an already-authorized,
    * decoded image or null for a placeholder. No fetching/decoding is implicit.
    * The renderer never closes returned caller-owned ImageBitmaps. */
-  resolveImage?: (image: FlowCanvasImage, token: FlowToken) => CanvasImageSource | null | Promise<CanvasImageSource | null>;
+  resolveImage?: (
+    image: FlowCanvasImage,
+    token: FlowToken,
+  ) => CanvasImageSource | null | Promise<CanvasImageSource | null>;
   selection?: FlowTokenInput & { readonly rectangles: readonly FlowRect[] };
 }
 export interface FlowCanvasFrame extends FlowToken {

@@ -113,7 +113,7 @@ class FmdView extends HTMLElement {
           sourceLength: out.sourceLength,
           diagnostics: out.diagnostics,
         },
-      })
+      }),
     );
   }
 }

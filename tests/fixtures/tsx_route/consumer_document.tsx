@@ -1,7 +1,8 @@
 // FCB-009/FCB-071 consumer verification document (TSX).
 // Exercises: function components, typed props, generic hooks, fragments,
 // embedded expression containers, self-closing elements, entities.
-import React, { useState, useEffect } from "react";
+import type React from "react";
+import { useEffect, useState } from "react";
 
 interface Props {
   title: string;
@@ -12,7 +13,7 @@ interface Props {
 export const ConsumerPanel: React.FC<Props> = ({ title, count = 0, onSelect }) => {
   const [items, setItems] = useState<string[]>([]);
   useEffect(() => {
-    setItems(prev => [...prev, title]);
+    setItems((prev) => [...prev, title]);
   }, [title]);
 
   const doubled = count * 2;

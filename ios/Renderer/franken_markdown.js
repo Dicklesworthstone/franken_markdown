@@ -1,17 +1,17 @@
 import initWasm, {
+  renderEpubConfigured,
+  renderHtmlConfiguredAdvanced,
+  renderInteractiveHtmlConfigured,
+  renderPdfConfiguredMulti,
+  renderSvgConfigured,
   accessibilityAudit as wasmAccessibilityAudit,
   capabilities as wasmCapabilities,
   documentStats as wasmDocumentStats,
   renderBookPdf as wasmRenderBookPdf,
   renderBookSite as wasmRenderBookSite,
-  renderEpubConfigured,
-  renderHtmlConfiguredAdvanced,
-  renderInteractiveHtmlConfigured,
-  renderPdfConfiguredMulti,
   renderSemanticDiffHtml as wasmRenderSemanticDiffHtml,
-  renderSvgConfigured,
   searchIndex as wasmSearchIndex,
-  semanticDiff as wasmSemanticDiff
+  semanticDiff as wasmSemanticDiff,
 } from "./pkg/franken_markdown.js";
 
 let initPromise = null;
@@ -67,8 +67,8 @@ export async function renderHtml(markdown, options = {}) {
       lengths,
       stringOption(options.lang),
       Boolean(options.toc),
-      integerOption(options.tocDepth, "tocDepth")
-    )
+      integerOption(options.tocDepth, "tocDepth"),
+    ),
   );
 }
 
@@ -77,7 +77,8 @@ export async function renderPdf(markdown, options = {}) {
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
   const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
-  const baseFontSize = numberOption(options.baseFontSize) ?? (fontScale !== undefined ? 11 * fontScale : undefined);
+  const baseFontSize =
+    numberOption(options.baseFontSize) ?? (fontScale !== undefined ? 11 * fontScale : undefined);
 
   // Flatten any number of images into the three parallel arrays the core ABI
   // accepts (wasm-bindgen cannot pass a Vec<Vec<u8>>): a destination per image,
@@ -120,44 +121,50 @@ export async function renderPdf(markdown, options = {}) {
       Boolean(options.toc),
       integerOption(options.tocDepth, "tocDepth"),
       integerOption(options.fitToPages, "fitToPages"),
-      options.microtype === "protrusion" || options.microtypeProtrusion === true
-    )
+      options.microtype === "protrusion" || options.microtypeProtrusion === true,
+    ),
   );
 }
 
 export async function renderSvg(markdown, options = {}) {
   await init();
-  return normalizeResult(renderSvgConfigured(
-    String(markdown),
-    stringOption(options.font),
-    darkModeOption(options.darkMode),
-    fontScaleOption(options.fontScale ?? options.typeSize),
-    numberOption(options.maxWidthPt)
-  ));
+  return normalizeResult(
+    renderSvgConfigured(
+      String(markdown),
+      stringOption(options.font),
+      darkModeOption(options.darkMode),
+      fontScaleOption(options.fontScale ?? options.typeSize),
+      numberOption(options.maxWidthPt),
+    ),
+  );
 }
 
 export async function renderEpub(markdown, options = {}) {
   await init();
-  return normalizeResult(renderEpubConfigured(
-    String(markdown),
-    stringOption(options.font),
-    darkModeOption(options.darkMode),
-    verbatimOption(options.title),
-    stringOption(options.lang),
-    fontScaleOption(options.fontScale ?? options.typeSize)
-  ));
+  return normalizeResult(
+    renderEpubConfigured(
+      String(markdown),
+      stringOption(options.font),
+      darkModeOption(options.darkMode),
+      verbatimOption(options.title),
+      stringOption(options.lang),
+      fontScaleOption(options.fontScale ?? options.typeSize),
+    ),
+  );
 }
 
 export async function renderInteractiveHtml(markdown, options = {}) {
   await init();
-  return normalizeResult(renderInteractiveHtmlConfigured(
-    String(markdown),
-    stringOption(options.font),
-    darkModeOption(options.darkMode),
-    verbatimOption(options.title),
-    stringOption(options.lang),
-    fontScaleOption(options.fontScale ?? options.typeSize)
-  ));
+  return normalizeResult(
+    renderInteractiveHtmlConfigured(
+      String(markdown),
+      stringOption(options.font),
+      darkModeOption(options.darkMode),
+      verbatimOption(options.title),
+      stringOption(options.lang),
+      fontScaleOption(options.fontScale ?? options.typeSize),
+    ),
+  );
 }
 
 export async function documentStats(markdown) {
@@ -177,50 +184,59 @@ export async function accessibilityAudit(markdown) {
 
 export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {
   await init();
-  return parseJson(wasmSemanticDiff(
-    String(oldMarkdown),
-    String(newMarkdown),
-    verbatimOption(options.oldName),
-    verbatimOption(options.newName)
-  ), "semantic diff JSON");
+  return parseJson(
+    wasmSemanticDiff(
+      String(oldMarkdown),
+      String(newMarkdown),
+      verbatimOption(options.oldName),
+      verbatimOption(options.newName),
+    ),
+    "semantic diff JSON",
+  );
 }
 
 export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {}) {
   await init();
-  return normalizeResult(wasmRenderSemanticDiffHtml(
-    String(oldMarkdown),
-    String(newMarkdown),
-    verbatimOption(options.oldName),
-    verbatimOption(options.newName)
-  ));
+  return normalizeResult(
+    wasmRenderSemanticDiffHtml(
+      String(oldMarkdown),
+      String(newMarkdown),
+      verbatimOption(options.oldName),
+      verbatimOption(options.newName),
+    ),
+  );
 }
 
 export async function renderBookSite(files, options = {}) {
   await init();
   const normalized = bookFilesOption(files);
-  return normalizeResult(wasmRenderBookSite(
-    normalized.map((file) => file.path),
-    normalized.map((file) => file.source),
-    verbatimOption(options.title),
-    stringOption(options.font),
-    darkModeOption(options.darkMode),
-    fontScaleOption(options.fontScale ?? options.typeSize)
-  ));
+  return normalizeResult(
+    wasmRenderBookSite(
+      normalized.map((file) => file.path),
+      normalized.map((file) => file.source),
+      verbatimOption(options.title),
+      stringOption(options.font),
+      darkModeOption(options.darkMode),
+      fontScaleOption(options.fontScale ?? options.typeSize),
+    ),
+  );
 }
 
 export async function renderBookPdf(files, options = {}) {
   await init();
   const normalized = bookFilesOption(files);
-  return normalizeResult(wasmRenderBookPdf(
-    normalized.map((file) => file.path),
-    normalized.map((file) => file.source),
-    verbatimOption(options.title),
-    verbatimOption(options.author),
-    stringOption(options.font),
-    darkModeOption(options.darkMode),
-    fontScaleOption(options.fontScale ?? options.typeSize),
-    options.pageNumbers !== false
-  ));
+  return normalizeResult(
+    wasmRenderBookPdf(
+      normalized.map((file) => file.path),
+      normalized.map((file) => file.source),
+      verbatimOption(options.title),
+      verbatimOption(options.author),
+      stringOption(options.font),
+      darkModeOption(options.darkMode),
+      fontScaleOption(options.fontScale ?? options.typeSize),
+      options.pageNumbers !== false,
+    ),
+  );
 }
 
 export async function createRenderer(input) {
@@ -238,7 +254,7 @@ export async function createRenderer(input) {
     renderSemanticDiff,
     renderSvg,
     searchIndex,
-    semanticDiff
+    semanticDiff,
   });
 }
 
@@ -280,7 +296,7 @@ function normalizeResult(result) {
     filename(baseName = "document") {
       const cleanBase = String(baseName).trim() || "document";
       return `${cleanBase}.${output.extension}`;
-    }
+    },
   };
   return Object.freeze(output);
 }
@@ -345,12 +361,11 @@ function epochOption(value) {
   }
   if (!Number.isSafeInteger(epoch) || epoch < 0) {
     throw new TypeError(
-      "metadataEpochSeconds must be a finite non-negative integer <= Number.MAX_SAFE_INTEGER"
+      "metadataEpochSeconds must be a finite non-negative integer <= Number.MAX_SAFE_INTEGER",
     );
   }
   return epoch;
 }
-
 
 /**
  * Coerce an optional typography override to a finite number for the core
@@ -474,7 +489,9 @@ function fontScaleOption(value) {
     if (Number.isFinite(parsed) && parsed > 0) {
       return Math.min(3.0, Math.max(0.5, parsed));
     }
-    throw new TypeError(`unknown fontScale '${value}'. Valid choices: xs, sm, md, lg, xl, 2xl, or a number/percentage.`);
+    throw new TypeError(
+      `unknown fontScale '${value}'. Valid choices: xs, sm, md, lg, xl, 2xl, or a number/percentage.`,
+    );
   }
   throw new TypeError("fontScale must be a number or string");
 }
@@ -531,11 +548,11 @@ function fontSlotOption(value, label) {
     "body-bold",
     "body-italic",
     "body-bold-italic",
-    "mono-regular"
+    "mono-regular",
   ]);
   if (slot === undefined || !allowed.has(slot)) {
     throw new TypeError(
-      `${label} must be one of body-regular, body-bold, body-italic, body-bold-italic, mono-regular`
+      `${label} must be one of body-regular, body-bold, body-italic, body-bold-italic, mono-regular`,
     );
   }
   return slot;
@@ -547,13 +564,7 @@ function fontBytesForSlot(assets, slot) {
 }
 
 function fontWeightsForSlots(assets) {
-  const slots = [
-    "body-regular",
-    "body-bold",
-    "body-italic",
-    "body-bold-italic",
-    "mono-regular"
-  ];
+  const slots = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
   return Uint32Array.from(slots, (slot) => {
     const asset = assets.find((entry) => entry.slot === slot);
     return asset === undefined || asset.weight === undefined ? 0 : asset.weight;

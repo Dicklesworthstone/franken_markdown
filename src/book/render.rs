@@ -1,6 +1,6 @@
 //! Reusable, host-independent book rendering from one parsed book.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Book, BookInput, build_book, inject_book_nav, merge, out_name, paths};
 use crate::wasm::WasmRenderOptions;
@@ -27,9 +27,9 @@ const MAX_SITE_BYTES: usize = 256 * 1024 * 1024;
 /// Assets are supplied as bytes, keyed by book-relative source paths. No
 /// filesystem, network, environment, or native runtime is accessed.
 ///
-/// Render options can change without reparsing. They do not retroactively
-/// change the parsed Markdown dialect. Each render validates asset budgets;
-/// direct changes through `options_mut` cannot bypass those checks.
+/// Render options can change without reparsing source documents. They do not
+/// retroactively change the parsed Markdown dialect. Each render validates
+/// asset budgets; direct changes through `options_mut` cannot bypass checks.
 #[derive(Debug, Clone)]
 pub struct BookRenderer {
     book: Book,
@@ -197,6 +197,8 @@ pub(super) fn render_book_pdf_counted(book: &Book, options: &PdfOptions) -> Resu
 /// The book-level title labels the landing page. The search index nests the
 /// existing per-document index under an explicit source/output path, avoiding
 /// merged-document heading IDs that do not exist in any chapter page.
+/// Chapter links bind to exact normalized source paths, never merely to a
+/// matching flattened output name. Unknown files remain unknown.
 ///
 /// # Errors
 /// Rejects invalid/duplicate paths or output names, invalid assets, and more
@@ -215,7 +217,10 @@ pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
             return Err(invalid("invalid, nonportable, or colliding HTML output filename"));
         }
     }
-    let known = book.chapters.iter().map(|chapter| chapter.out_name.clone()).collect();
+    // Source identity is not recoverable from flattened output names: a/b.md
+    // and a__b.md both produce a__b.html. Build the exact map once per export.
+    let known: BTreeMap<_, _> = sources.iter().zip(&book.chapters)
+        .map(|(source, chapter)| (source.as_str(), chapter.out_name.as_str())).collect();
     let keys = asset_keys(&options.image_assets);
     // One AST copy for the entire site, not an extra copy per transformation.
     let mut chapters = book.chapters.clone();
@@ -229,7 +234,7 @@ pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
     let search = site_search::index_json(book)?;
     add_site_bytes(&mut total, search.len())?;
     for (index, chapter) in chapters.iter_mut().enumerate() {
-        paths::rewrite_for_site(&mut chapter.doc, &known);
+        resolve_site_links(&mut chapter.doc.blocks, &sources[index], &known);
         resolve_images(&mut chapter.doc.blocks, &sources[index], &keys);
         page_options.title = Some(chapter.title.clone());
         page_options.lang = chapter.frontmatter.as_ref()
@@ -300,34 +305,64 @@ fn asset_keys(assets: &[PdfImageAsset]) -> BTreeSet<&str> {
     assets.iter().map(|asset| asset.destination.trim()).collect()
 }
 
+fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTreeMap<&str, &str>) {
+    walk_inline_nodes(blocks, &mut |inline| {
+        if let Inline::Link { dest, .. } = inline {
+            if let Some((target, suffix)) = paths::chapter_destination(
+                source, dest, |path| known.contains_key(path),
+            ) {
+                if let Some(output) = known.get(target.as_str()) {
+                    *dest = format!("{output}{suffix}");
+                }
+            }
+        }
+    });
+}
+
 fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
+    walk_inline_nodes(blocks, &mut |inline| {
+        if let Inline::Image { dest, .. } = inline {
+            if let Some((target, suffix)) = paths::destination(source, dest) {
+                let key = format!("{target}{suffix}");
+                if keys.contains(key.as_str()) {
+                    *dest = key;
+                }
+            }
+        }
+    });
+}
+
+// Links and images share structural traversal, not destination semantics.
+// In particular, an image whose URL resembles a chapter must remain an image
+// asset, and a link around an image must visit both distinct nodes.
+fn walk_inline_nodes(blocks: &mut [Block], visit: &mut impl FnMut(&mut Inline)) {
     for block in blocks {
         match block {
             Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-                resolve_inline_images(inlines, source, keys);
+                visit_inline_nodes(inlines, visit);
             }
             Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-                resolve_images(inner, source, keys);
+                walk_inline_nodes(inner, visit);
             }
             Block::List(list) => {
                 for item in &mut list.items {
-                    resolve_images(&mut item.blocks, source, keys);
+                    walk_inline_nodes(&mut item.blocks, visit);
                 }
             }
             Block::Table(table) => {
                 for cell in &mut table.head {
-                    resolve_inline_images(cell, source, keys);
+                    visit_inline_nodes(cell, visit);
                 }
                 for row in &mut table.rows {
                     for cell in row {
-                        resolve_inline_images(cell, source, keys);
+                        visit_inline_nodes(cell, visit);
                     }
                 }
             }
             Block::DefinitionList(items) => {
                 for item in items {
                     for inlines in item.terms.iter_mut().chain(&mut item.definitions) {
-                        resolve_inline_images(inlines, source, keys);
+                        visit_inline_nodes(inlines, visit);
                     }
                 }
             }
@@ -336,21 +371,14 @@ fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
     }
 }
 
-fn resolve_inline_images(inlines: &mut [Inline], source: &str, keys: &BTreeSet<&str>) {
+fn visit_inline_nodes(inlines: &mut [Inline], visit: &mut impl FnMut(&mut Inline)) {
     for inline in inlines {
+        visit(inline);
         match inline {
-            Inline::Image { dest, .. } => {
-                if let Some((target, suffix)) = paths::destination(source, dest) {
-                    let key = format!("{target}{suffix}");
-                    if keys.contains(key.as_str()) {
-                        *dest = key;
-                    }
-                }
-            }
             Inline::Emphasis(inner)
             | Inline::Strong(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => resolve_inline_images(inner, source, keys),
+            | Inline::Link { content: inner, .. } => visit_inline_nodes(inner, visit),
             _ => {}
         }
     }
@@ -476,5 +504,126 @@ mod tests {
     #[test]
     fn json_metadata_escaping_preserves_controls_and_unicode() {
         assert_eq!(json_string("a\n\t\0\"\\中"), "\"a\\n\\t\\u0000\\\"\\\\中\"");
+    }
+
+    fn link(dest: &str) -> Inline {
+        Inline::Link {
+            dest: dest.into(), title: None, content: vec![Inline::Text("Chapter".into())],
+        }
+    }
+
+    fn link_destinations(blocks: &mut [Block]) -> Vec<String> {
+        let mut destinations = Vec::new();
+        walk_inline_nodes(blocks, &mut |inline| {
+            if let Inline::Link { dest, .. } = inline {
+                destinations.push(dest.clone());
+            }
+        });
+        destinations
+    }
+
+    #[test]
+    fn site_links_require_exact_source_identity_not_flattened_output_names() {
+        let known = BTreeMap::from([
+            ("a/b.md", "a__b.html"), ("target.md", "target.html"),
+            ("LICENSE", "LICENSE.html"),
+        ]);
+        let mut blocks = vec![Block::Paragraph([
+            "/a__b.md", "/target.markdown", "/a/b.md#part",
+            "../target?print#part", "/LICENSE", "https://host/target.md", "#target",
+        ].into_iter().map(link).collect())];
+        resolve_site_links(&mut blocks, "guide/start.md", &known);
+        assert_eq!(link_destinations(&mut blocks), [
+            "/a__b.md", "/target.markdown", "a__b.html#part",
+            "target.html?print#part", "LICENSE.html", "https://host/target.md", "#target",
+        ]);
+    }
+
+    #[test]
+    fn site_aliases_preserve_ambiguity_and_explicit_directory_intent() {
+        let known = BTreeMap::from([
+            ("manual.md", "manual.html"), ("manual/index.md", "manual__index.html"),
+        ]);
+        let mut blocks = vec![Block::Paragraph(vec![
+            link("/manual"), link("/manual/#intro"), link("/manual.md#intro"),
+        ])];
+        resolve_site_links(&mut blocks, "guide/start.md", &known);
+        assert_eq!(link_destinations(&mut blocks), [
+            "/manual", "manual__index.html#intro", "manual.html#intro",
+        ]);
+    }
+
+    #[test]
+    fn site_and_asset_transforms_visit_every_container_without_conflating_roles() {
+        use crate::{Align, DefinitionItem, List, ListItem, Table};
+
+        let image = Inline::Image { dest: "../target".into(), title: None, alt: "Asset".into() };
+        let linked_image = Inline::Link {
+            dest: "../target#heading".into(), title: None,
+            content: vec![Inline::Strong(vec![Inline::Emphasis(vec![
+                Inline::Strikethrough(vec![image.clone()]),
+            ])])],
+        };
+        let mut blocks = vec![
+            Block::Heading { level: 1, inlines: vec![linked_image.clone()] },
+            Block::BlockQuote(vec![Block::List(List {
+                ordered: false, start: 1, tight: true,
+                items: vec![ListItem {
+                    task: None, blocks: vec![Block::Paragraph(vec![linked_image.clone()])],
+                }],
+            })]),
+            Block::Table(Table {
+                align: vec![Align::Left], head: vec![vec![linked_image.clone()]],
+                rows: vec![vec![vec![linked_image.clone()]]],
+            }),
+            Block::DefinitionList(vec![DefinitionItem {
+                terms: vec![vec![linked_image.clone()]],
+                definitions: vec![vec![linked_image.clone()]],
+            }]),
+            Block::FootnoteDefinition {
+                id: "note".into(), blocks: vec![Block::Paragraph(vec![linked_image])],
+            },
+            Block::Paragraph(vec![image]),
+            Block::CodeBlock { lang: None, code: "[not a link](../target)".into() },
+        ];
+        let code = blocks.last().cloned();
+        let known = BTreeMap::from([("target.md", "target.html")]);
+        resolve_site_links(&mut blocks, "guide/start.md", &known);
+        assert_eq!(link_destinations(&mut blocks), vec!["target.html#heading"; 7]);
+        let mut image_count = 0;
+        walk_inline_nodes(&mut blocks, &mut |inline| {
+            if let Inline::Image { dest, .. } = inline {
+                assert_eq!(dest, "../target", "chapter rewriting changed an image");
+                image_count += 1;
+            }
+        });
+        assert_eq!(image_count, 8);
+        resolve_images(&mut blocks, "guide/start.md", &BTreeSet::from(["target"]));
+        walk_inline_nodes(&mut blocks, &mut |inline| {
+            if let Inline::Image { dest, .. } = inline { assert_eq!(dest, "target"); }
+        });
+        assert_eq!(link_destinations(&mut blocks), vec!["target.html#heading"; 7]);
+        assert_eq!(blocks.last().cloned(), code);
+    }
+
+    #[test]
+    fn rendered_html_retains_missing_sources_instead_of_capturing_another_chapter() {
+        let inputs = [
+            BookInput {
+                path: "start.md".into(),
+                source: "[Missing](/a__b.md) [Actual](/a/b.md#part)".into(),
+            },
+            BookInput { path: "a/b.md".into(), source: "# Part".into() },
+        ];
+        let book = build_book(&inputs).unwrap();
+        let known = book.chapters.iter()
+            .map(|chapter| (chapter.path.as_str(), chapter.out_name.as_str())).collect();
+        let original = book.chapters[0].doc.clone();
+        let mut document = original.clone();
+        resolve_site_links(&mut document.blocks, "start.md", &known);
+        let html = render_html_document(&document, &HtmlOptions::default()).unwrap();
+        assert!(html.contains("href=\"/a__b.md\""));
+        assert!(html.contains("href=\"a__b.html#part\""));
+        assert_eq!(book.chapters[0].doc, original);
     }
 }

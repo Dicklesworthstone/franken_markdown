@@ -461,16 +461,18 @@ function snapshotItemText(item) {
   // These items originate in the native JSON facade. Refuse lossy JSON
   // coercions rather than accidentally equate NaN/null or undefined/omitted.
   let text;
+  let negativeZero = false;
   try {
     text = JSON.stringify(item, function (key, value) {
       if (this[key] !== value && this[key] && typeof this[key] === "object")
         throw deltaFailure();
+      if (Object.is(value, -0)) negativeZero = true;
       if (
         value === undefined ||
         typeof value === "bigint" ||
         typeof value === "function" ||
         typeof value === "symbol" ||
-        (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0))) ||
+        (typeof value === "number" && !Number.isFinite(value)) ||
         (value && typeof value === "object" &&
           !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype)
       ) throw deltaFailure();
@@ -480,7 +482,9 @@ function snapshotItemText(item) {
     throw deltaFailure();
   }
   if (typeof text !== "string") throw deltaFailure();
-  return text;
+  // JSON.parse can produce -0 from native JSON, but JSON.stringify loses
+  // its sign. Preserve those legitimate pages through full structured clone.
+  return negativeZero ? null : text;
 }
 
 function snapshotItemTexts(items) {
@@ -489,6 +493,7 @@ function snapshotItemTexts(items) {
   let bytes = 0;
   for (const item of items) {
     const text = snapshotItemText(item);
+    if (text === null) return null;
     bytes += text.length * 2;
     if (bytes > SNAPSHOT_DELTA_CACHE_BYTES) return null;
     texts.push(text);
@@ -589,6 +594,7 @@ export class SnapshotDeltaDecoder {
         ) throw deltaFailure();
         const [index, item] = change;
         const text = snapshotItemText(item);
+        if (text === null) throw deltaFailure();
         replacementBytes += text.length * 2;
         if (replacementBytes > SNAPSHOT_DELTA_CACHE_BYTES) throw deltaFailure();
         bytes += (text.length - (texts[index]?.length ?? 0)) * 2;

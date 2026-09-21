@@ -8,6 +8,7 @@
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
 mod gutters;
+mod long_content;
 mod styled;
 use crate::ast::Align;
 use crate::display::{
@@ -115,9 +116,10 @@ impl ResumableFlowDisplay {
     /// clipping text or silently splitting a ligature/combining sequence.
     /// Output is returned atomically; a failure publishes no partial display list.
     ///
-    /// Long prose uses bounded measurement windows without introducing line
-    /// breaks at window boundaries. A word or unresolved line which needs more
-    /// context than the configured window still returns a budget error.
+    /// Long prose, code lines and table cells use bounded measurement windows
+    /// without introducing line breaks at window boundaries. Code retains its
+    /// cluster wrapping rather than adopting prose word wrapping. A word or
+    /// unresolved line needing more context than the window remains an error.
     ///
     /// Lists share font-measured marker gutters across their items, including
     /// already-prepared siblings. Nested content inherits every ancestor gutter;
@@ -128,6 +130,7 @@ impl ResumableFlowDisplay {
     /// consume the remaining space. Already-prepared continuation rows also
     /// participate, so source/output batch boundaries cannot change that grid.
     /// Measurement uses the same shaper and cumulative budget as final layout.
+    /// Long-cell scratch space is bounded without skipping late wide clusters.
     /// Explicit GFM left/center/right alignment applies to each final shaped
     /// line within its padded cell; unspecified alignment follows run direction.
     pub fn to_shaped_display_list<F>(
@@ -409,7 +412,11 @@ where
             }
             for (column, text) in cells.iter().enumerate() {
                 let runs = if styled { meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]) } else { &[] };
-                let (min, ideal) = self.cell_measures(text, runs, role)?;
+                let (min, ideal) = if text.split_terminator('\n').any(|line| line.len() > self.options.max_shape_bytes) {
+                    self.windowed_cell_measures(text, runs, role, width)?
+                } else {
+                    self.cell_measures(text, runs, role)?
+                };
                 minimum[column] = minimum[column].max(min);
                 preferred[column] = preferred[column].max(ideal);
             }
@@ -499,6 +506,13 @@ where
     fn text(&mut self, text: &str, x: f32, y: f32, width: f32, size: f32, leading: f32,
         role: FlowTextRole, color: &str, span: SourceSpan) -> Result<f32, FlowLayoutError>
     {
+        // Code reaches this method directly. Route long physical lines through
+        // continuation layout, retaining the same role/cluster-break policy.
+        // The short-text branch of inline_text only returns here when every
+        // physical line fits, so this cannot recurse on a long line.
+        if text.split_terminator('\n').any(|line| line.len() > self.options.max_shape_bytes) {
+            return self.inline_text(text, &[], x, y, width, size, leading, role, color, span);
+        }
         let mut height = 0.0;
         // split_terminator keeps interior blank code lines but does not create
         // an extra display line for the parser's terminal code newline.

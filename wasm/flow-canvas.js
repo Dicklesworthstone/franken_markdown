@@ -2,7 +2,7 @@
 // fillText(), DOM insertion, URL loading, or implicit worker/session ownership.
 
 import { validateOutlineBatch } from "./flow_outlines.mjs";
-import { FlowError, identity } from "./flow_session.mjs";
+import { FlowError, identity, coveringViewport, validateViewportPage } from "./flow_session.mjs";
 
 const fail = (code, message) => {
   throw new FlowError(code, message);
@@ -293,6 +293,13 @@ export class FlowCanvasRenderer {
       return result;
     };
     check();
+    // Negotiate once per paint. A method name alone is not a capability, and
+    // a rejected indexed read must never trigger an unbounded snapshot retry.
+    const indexed = session.supportsViewport === true;
+    if (indexed && typeof session.viewport !== "function") {
+      fail("UNSUPPORTED_WASM_PACKAGE", "session advertises indexed viewports without a viewport method");
+    }
+    const viewport = indexed ? coveringViewport(view) : null;
     const plans = [],
       need = new Map(),
       outlines = new Map(),
@@ -305,45 +312,56 @@ export class FlowCanvasRenderer {
       totalBounds = null,
       glyphCount = 0,
       frameCommands = 0;
-    let clips = [];
+    let clips = [], scannedItems = 0, receivedItems = 0;
     while (true) {
-      const page = await read(
-        session.snapshot({ offset, limit: 256, glyphs: true, token: expected }),
-      );
-      if (
-        page?.schemaVersion !== 1 ||
-        !same(token(page), expected) ||
-        page.offset !== offset ||
-        !Number.isSafeInteger(page.total) ||
-        page.total < offset ||
-        !Array.isArray(page.items) ||
-        page.items.length !== Math.min(256, page.total - offset) ||
-        page.nextOffset !==
-          (offset + page.items.length < page.total ? offset + page.items.length : null) ||
-        (total !== null && page.total !== total)
-      )
-        fail("INVALID_WASM_RESPONSE", "inconsistent drawing page");
-      if (page.total > this.#limits.maxScannedItems)
-        fail("BUDGET_EXCEEDED", "drawing inventory exceeds scan budget");
-      if (page.shapingProfile !== "bundled-simple-ltr")
-        fail("UNSUPPORTED_DISPLAY_ITEM", "Canvas currently supports the bundled flow profile");
-      total = page.total;
-      totalBounds ??= rect(page.totalBounds);
+      let page, next;
+      if (indexed) {
+        const query = { viewport, afterIndex: offset, limit: 256, glyphs: true, token: expected };
+        page = validateViewportPage(await read(session.viewport(query)), query, expected);
+        next = page.nextIndex;
+        scannedItems += page.visitedEntries;
+      } else {
+        page = await read(session.snapshot({ offset, limit: 256, glyphs: true, token: expected }));
+        if (page?.schemaVersion !== 1 || !same(token(page), expected) || page.offset !== offset
+            || !Number.isSafeInteger(page.total) || page.total < offset || !Array.isArray(page.items)
+            || page.items.length !== Math.min(256, page.total - offset)
+            || page.nextOffset !== (offset + page.items.length < page.total ? offset + page.items.length : null)) {
+          fail("INVALID_WASM_RESPONSE", "inconsistent drawing page");
+        }
+        if (page.total > this.#limits.maxScannedItems) fail("BUDGET_EXCEEDED", "drawing inventory exceeds scan budget");
+        if (page.shapingProfile !== "bundled-simple-ltr") fail("UNSUPPORTED_DISPLAY_ITEM", "Canvas currently supports the bundled flow profile");
+        next = page.nextOffset;
+        scannedItems += page.items.length;
+      }
+      if (scannedItems > this.#limits.maxScannedItems) fail("BUDGET_EXCEEDED", "drawing query exceeds scan budget");
+      const boundsForPage = rect(page.totalBounds);
+      if ((total !== null && page.total !== total) || (totalBounds !== null
+          && Object.keys(totalBounds).some(key => totalBounds[key] !== boundsForPage[key]))) {
+        fail("INVALID_WASM_RESPONSE", "drawing inventory changed between pages");
+      }
+      total = page.total; totalBounds ??= boundsForPage;
+      receivedItems += page.items.length;
+      let sequentialIndex = offset;
       for (const item of page.items) {
-        if (item?.index !== offset)
-          fail("INVALID_WASM_RESPONSE", "drawing items are not in stream order");
-        const index = offset++;
+        // Indexed pages retain sparse ORIGINAL item IDs. Their effective clips
+        // include ancestors omitted by the spatial query; never reconstruct a
+        // clip stack from a sparse page or renumber items as visible ordinals.
+        if (!indexed && item?.index !== sequentialIndex++) fail("INVALID_WASM_RESPONSE", "drawing items are not in stream order");
+        const index = item.index;
         const bounds = rect(item.bounds);
-        clips = clips.filter((clip) => clip.end > index);
-        if (item.kind === "clip") {
-          uint(item.childCount, "clip child count", total - index - 1);
-          if (clips.length >= 64) fail("BUDGET_EXCEEDED", "Canvas clip nesting exceeds 64");
-          if (item.childCount) clips.push({ bounds, end: index + item.childCount + 1 });
-          continue;
+        if (!indexed) {
+          clips = clips.filter(clip => clip.end > index);
+          if (item.kind === "clip") {
+            uint(item.childCount, "clip child count", total - index - 1);
+            if (clips.length >= 64) fail("BUDGET_EXCEEDED", "Canvas clip nesting exceeds 64");
+            if (item.childCount) clips.push({ bounds, end: index + item.childCount + 1 });
+            continue;
+          }
         }
         if (bounds.y + bounds.height <= view.y || bounds.y >= view.y + view.height) continue;
         if (item.kind === "anchor") continue; // Interaction remains in the session.
-        const clip = clips.reduce((area, active) => intersect(area, active.bounds), view);
+        const clip = indexed ? intersect(view, rect(item.effectiveClip))
+          : clips.reduce((area, active) => intersect(area, active.bounds), view);
         // Retain every text fragment at visible Y, even outside horizontal view,
         // so a style at the other end of a line cannot change its baseline on scroll.
         if (
@@ -410,7 +428,8 @@ export class FlowCanvasRenderer {
           });
         } else fail("UNSUPPORTED_DISPLAY_ITEM", "unknown display primitive");
       }
-      if (page.nextOffset === null) break;
+      if (next === null) break;
+      offset = next;
     }
     const retain = (id, glyphId, entry) => {
       const k = key(id, glyphId);
@@ -564,7 +583,10 @@ export class FlowCanvasRenderer {
       scrollX: view.x,
       scrollY: view.y,
       totalBounds,
-      scannedItems: total,
+      totalItems: total,
+      queryMode: indexed ? "indexed-viewport" : "snapshot",
+      scannedItems,
+      receivedItems,
       visibleItems: plans.length,
       glyphs: glyphCount,
       missingImages,

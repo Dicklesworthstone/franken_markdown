@@ -8,6 +8,8 @@ import type {
   FlowSnapshotOptions,
   FlowToken,
   FlowTokenInput,
+  FlowViewportOptions,
+  FlowViewportPage,
 } from "./flow.js";
 
 /** Structural subset satisfied by both synchronous and worker flow sessions. */
@@ -15,6 +17,9 @@ export interface CanvasFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
   readonly layoutOptions: Required<FlowLayoutOptions>;
+  /** Only true enables indexed reads; missing/false preserves legacy snapshots. */
+  readonly supportsViewport?: boolean;
+  viewport?(options: FlowViewportOptions): FlowViewportPage | Promise<FlowViewportPage>;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot | Promise<FlowSnapshot>;
   glyphOutlines(
     fontId: FlowIdentity,
@@ -26,7 +31,7 @@ export interface CanvasFlowSession {
  * structures, not exact browser allocator overhead or GPU memory. */
 export interface FlowCanvasLimits {
   maxPixels?: number; // 16,777,216 pixels per surface; staging and target coexist.
-  maxScannedItems?: number; // 500,000: the complete inventory is still scanned.
+  maxScannedItems?: number; // 500,000 candidate visits across indexed pages, or the full legacy inventory.
   maxVisibleItems?: number; // 10,000
   maxGlyphs?: number; // 50,000
   maxDrawCommands?: number; // 2,000,000 including repeated glyph drawing.
@@ -88,7 +93,14 @@ export interface FlowCanvasFrame extends FlowToken {
   readonly scrollX: number;
   readonly scrollY: number;
   readonly totalBounds: FlowRect;
+  /** Full inventory, including clips omitted by indexed viewport queries. */
+  readonly totalItems: number;
+  readonly queryMode: "indexed-viewport" | "snapshot";
+  /** Native leaf visits across queries, or all legacy items. Excludes the
+   * native index's initial construction and is not a timing measurement. */
   readonly scannedItems: number;
+  /** Items actually returned to JavaScript, including non-ink context. */
+  readonly receivedItems: number;
   readonly visibleItems: number;
   readonly glyphs: number;
   readonly missingImages: number;

@@ -65,9 +65,25 @@ of identical pixels across all operating systems.
 The target's backing store is the viewport only, not the entire document. The
 renderer reads 256-item pages under one captured source/layout token, retains
 visible-Y drawing items, and applies scroll and explicit device-pixel transforms.
-It still scans the complete drawing inventory on each paint: there is no spatial
-index or claim of constant-time scrolling. To change wrapping, call/await
-`editor.reflow(...)` first; changing paint width alone only changes the viewport.
+When `session.supportsViewport === true`, it uses the existing native spatial
+index through `viewport({ viewport, afterIndex, limit: 256, glyphs: true, token })`.
+Offscreen drawing pages are not serialized or transferred to JavaScript. The
+native index is built lazily once per display list, invalidated by edits/reflow,
+and can still visit many entries for heavily overlapping geometry. There is no
+constant-time scrolling claim and no duplicate JavaScript document index.
+
+Spatial pages retain original item IDs and include effective clips for omitted
+ancestors. Their text-line context includes horizontally offscreen and fully
+clipped text at visible Y, preserving shared baselines across pages and horizontal
+scrolls. The f32 query rectangle rounds outward; actual ink and hit testing retain
+the original logical viewport. All pages must agree on token, total inventory,
+bounds and query. A sparse cursor is never interpreted as a visible-item count.
+
+Older/custom sessions that do not advertise viewport support keep the bounded
+full-snapshot path. An advertised but missing/failing viewport implementation is
+an error, never a silent full-scan retry. No new option or opt-in is needed in
+the existing live preview. To change wrapping, call/await `editor.reflow(...)`
+first; changing paint width alone only changes the viewport.
 
 Clipping covers exactly the declared number of subsequent primitives and
 survives page boundaries, including nested clips. Tables, blockquote accents,
@@ -126,6 +142,14 @@ in (0, 8], with each resulting pixel dimension also at most 16,384. Default work
 caps are 500,000 scanned items, 10,000 retained visible-Y items, 50,000 glyphs,
 1,048,576 distinct per-frame path commands and 2,000,000 executed commands.
 
+For indexed paints, `maxScannedItems` charges the sum of native `visitedEntries`
+across pages, rather than rejecting a large document for its offscreen inventory.
+Legacy paints still admit/scan the complete inventory under that same limit.
+Frames expose `queryMode`, `totalItems`, `scannedItems` and `receivedItems` to
+separate full document size, native candidate visits and transferred primitives.
+Native visits exclude initial index construction and tree traversal overhead;
+these counts are not timing benchmarks or a bound on native index-build work.
+
 The LRU outline cache retains at most 2,048 glyphs and 262,144 path commands;
 font metrics have a separate 32-entry cap. Cached paths contain no source spans,
 absolute coordinates, document content, link targets or image authorizations.
@@ -160,8 +184,8 @@ Types: `tsc --noEmit --strict --target ES2022 --module NodeNext
 Serve the assembled package and open `demo/flow-canvas.html`. It connects the
 production worker session, outline API and Canvas backend: source edits are
 coalesced, resizing changes measured wrapping, and scrolling repaints only a
-viewport-sized surface. The drawing inventory is still scanned as described
-above. A selectable reading-text panel provides a logical-text counterpart,
+viewport-sized surface. Matching packages use indexed viewport pages; legacy
+packages retain the bounded full scan described above. A selectable reading-text panel provides a logical-text counterpart,
 not a claimed full accessibility widget. Link clicks report targets rather than
 navigating. Images remain placeholders until the user explicitly selects local
 files. The picker, reference insertion and revocation controls use `./flow-assets`;
@@ -175,3 +199,13 @@ controller tests using explicit session/painter doubles, separate from the
 Chromium pixel and generated-WASM tests. The demo itself needs the matching
 built `pkg/` and a server allowing module workers; it does not install a fallback
 renderer when that artifact is missing.
+
+## Indexed rendering regressions
+
+`node --test wasm/flow_canvas_viewport.test.mjs` checks the production renderer
+and actual direct/outline facades with explicit native-wire and 2D recording
+doubles. It includes sparse pagination, a million-item inventory without prefix
+reads, nested clips, cross-page baselines, f32 coverage, work budgets, legacy
+negotiation, image ownership, cancellation and 30 seeded mixed-scene comparisons
+against the dense path. These prove JS behavior, not native performance or a
+built WASM artifact. Native spatial-index tests remain a separate build gate.

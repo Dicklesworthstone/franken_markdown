@@ -119,8 +119,10 @@ The selectable reading text below comes from the same session, not a second Mark
 <details id="reader-panel" open><summary>Search, outline, and selectable reading</summary>
 <p>The same engine supplies this semantic reading surface. Text can be selected and copied normally; its browser typography is independent of Canvas. Navigation selects enclosing Markdown blocks, not guessed inline offsets.</p>
 <label for="find-text">Find logical reading text</label>
-<input id="find-text" type="search" maxlength="1024" autocomplete="off" aria-describedby="reading-status">
-<label><input id="find-insensitive" type="checkbox"> Ignore A–Z case (ASCII only)</label>
+<input id="find-text" type="search" maxlength="1024" autocomplete="off" aria-describedby="reading-search-help reading-status">
+<label><input id="find-insensitive" type="checkbox"> Ignore case (Unicode)</label>
+<label><input id="find-whole-word" type="checkbox"> Whole words only</label>
+<p id="reading-search-help">Literal matches stay inside a paragraph or table cell. Unicode case folding matches Straße with STRASSE; it does not remove accents or normalize spelling. Whole words are bounded by non-letter, non-mark, non-number characters (connectors and joiners also remain inside a word).</p>
 <p><button id="find-previous" type="button" disabled>Previous match</button> <button id="find-next" type="button" disabled>Next match</button> <button id="reading-source" type="button" disabled>Show enclosing source</button></p>
 <label for="outline">Document headings</label><select id="outline" disabled></select>
 <p id="reading-status" role="status">Waiting for a semantic reading snapshot.</p>

@@ -68,6 +68,7 @@ function start() {
     panel: document.querySelector("#reader-panel"),
     query: document.querySelector("#find-text"),
     insensitive: document.querySelector("#find-insensitive"),
+    wholeWord: document.querySelector("#find-whole-word"),
     previous: document.querySelector("#find-previous"),
     next: document.querySelector("#find-next"),
     outline: document.querySelector("#outline"),

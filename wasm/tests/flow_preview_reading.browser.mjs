@@ -81,6 +81,7 @@ export async function run() {
     const update = async (more = {}) => {
       controller.update({ source: source.value, width: 400, height: 300, ...more });
       await controller.whenIdle();
+      await controls.whenIdle();
     };
     try {
       await update();
@@ -98,6 +99,7 @@ export async function run() {
     );
     f.query.value = "needle";
     f.query.dispatchEvent(new Event("input"));
+    await f.controls.whenIdle();
     assert(
       !el("find-next").disabled && el("reading-status").textContent.startsWith("0 of 2"),
       "search counts",
@@ -123,6 +125,7 @@ export async function run() {
     assert(f.locations.length === 1 && f.locations[0].nodeIndex === 0, "heading location");
     f.query.value = "needle";
     f.query.dispatchEvent(new Event("input"));
+    await f.controls.whenIdle();
     const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, cancelable: true });
     f.query.dispatchEvent(event);
     assert(
@@ -134,6 +137,7 @@ export async function run() {
   await test("unsent textarea edits cannot steer source selection or Canvas through old search controls", async (f) => {
     f.query.value = "needle";
     f.query.dispatchEvent(new Event("input"));
+    await f.controls.whenIdle();
     f.source.value = "unsubmitted edit";
     el("find-next").click();
     assert(
@@ -145,6 +149,7 @@ export async function run() {
   await test("scroll-only paints preserve the selected DOM; reflow rebuilds current-token navigation", async (f) => {
     f.query.value = "needle";
     f.query.dispatchEvent(new Event("input"));
+    await f.controls.whenIdle();
     el("find-next").click();
     const before = f.root.firstChild,
       snapshot = f.controller.state.document;
@@ -188,6 +193,7 @@ export async function run() {
     f.controls.dispose();
     f.query.value = "needle";
     f.query.dispatchEvent(new Event("input"));
+    await f.controls.whenIdle();
     assert(
       f.root.childNodes.length === 0 && el("find-next").disabled && f.source.value === sourceText,
       "disposed controls inert",

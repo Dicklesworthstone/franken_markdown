@@ -293,6 +293,17 @@ export class FlowCanvasRenderer {
       return result;
     };
     check();
+    // A resolved Promise only yields to other microtasks. Use an actual event
+    // loop turn so input, abort and replacement paints can interrupt expensive
+    // synchronous sessions and warm-cache drawing. Never signal the worker.
+    let work = 0;
+    const checkpoint = (cost = 1) => {
+      work += cost;
+      if (work < 4096) return null;
+      work = 0;
+      check();
+      return read(new Promise((resolve) => setTimeout(resolve, 0)));
+    };
     // Negotiate once per paint. A method name alone is not a capability, and
     // a rejected indexed read must never trigger an unbounded snapshot retry.
     const indexed = session.supportsViewport === true;
@@ -343,6 +354,8 @@ export class FlowCanvasRenderer {
       receivedItems += page.items.length;
       let sequentialIndex = offset;
       for (const item of page.items) {
+        const pause = checkpoint();
+        if (pause) await pause;
         // Indexed pages retain sparse ORIGINAL item IDs. Their effective clips
         // include ancestors omitted by the spatial query; never reconstruct a
         // clip stack from a sparse page or renumber items as visible ordinals.
@@ -372,12 +385,21 @@ export class FlowCanvasRenderer {
         if (plans.length >= this.#limits.maxVisibleItems)
           fail("BUDGET_EXCEEDED", "too many visible drawing items");
         if (item.kind === "text") {
-          const plan = textPlan(item, bounds, clip, this.#limits.maxGlyphs - glyphCount);
+          const planning = textPlan(item, bounds, clip, this.#limits.maxGlyphs - glyphCount);
+          let part = planning.next();
+          while (!part.done) {
+            const pause = checkpoint(part.value);
+            if (pause) await pause;
+            part = planning.next();
+          }
+          const plan = part.value;
           glyphCount += plan.glyphs.length;
           requireFont(plan.fontId);
           for (const glyph of plan.glyphs) {
             requireFont(glyph.fontId);
             need.get(glyph.fontId).add(glyph.glyphId);
+            const pause = checkpoint();
+            if (pause) await pause;
           }
           plans.push(plan);
         } else if (item.kind === "vector") {
@@ -444,6 +466,8 @@ export class FlowCanvasRenderer {
       const known = this.#metrics.get(id);
       if (known) metrics.set(id, known);
       for (const glyphId of ids) {
+        const pause = checkpoint();
+        if (pause) await pause;
         const k = key(id, glyphId),
           entry = this.#cache.get(k);
         if (entry) {
@@ -477,43 +501,56 @@ export class FlowCanvasRenderer {
         if (this.#metrics.size >= 32 && !this.#metrics.has(id))
           this.#metrics.delete(this.#metrics.keys().next().value);
         this.#metrics.set(id, m);
+        let copiedCommands = 0;
         for (const glyph of batch.glyphs) {
+          copiedCommands += glyph.commands.length;
           const entry = { commands: glyph.commands.map((command) => Object.freeze([...command])) };
           retain(id, glyph.glyphId, entry);
           this.#cachePath(key(id, glyph.glyphId), entry);
         }
+        // Keep validation and immutable snapshot copying in the SAME turn.
+        // Otherwise a custom provider could mutate an admitted path while a
+        // suspended copy still borrows it. Wire batches already cap this unit
+        // at 65,536 commands; cooperate between, not inside, admitted batches.
+        const pause = checkpoint(copiedCommands + batch.glyphs.length + 1);
+        if (pause) await pause;
         if (!requested.length) break;
       }
     }
     let missingImages = 0;
-    for (const plan of plans)
+    for (const plan of plans) {
+      const pause = checkpoint();
+      if (pause) await pause;
       if (plan.kind === "image") {
         if (plan.info.isResolved && resolveImage)
           plan.image = await read(resolveImage(plan.info, expected));
         if (plan.image == null) missingImages++;
       }
+    }
     check();
     const baselines = new Map();
-    for (const plan of plans)
-      if (plan.kind === "text") {
-        const k = lineKey(plan),
-          line = baselines.get(k) ?? { ascent: 0, descent: 0 };
-        for (const id of new Set([plan.fontId, ...plan.glyphs.map((glyph) => glyph.fontId)])) {
-          const m = metrics.get(id),
-            scale = plan.size / m.unitsPerEm;
-          line.ascent = Math.max(line.ascent, m.ascent * scale);
-          line.descent = Math.max(line.descent, -m.descent * scale);
-        }
-        baselines.set(k, line);
-      }
     let drawCommands = 0;
-    for (const plan of plans)
-      if (plan.kind === "text") {
-        for (const glyph of plan.glyphs)
-          drawCommands += outlines.get(key(glyph.fontId, glyph.glyphId)).commands.length;
+    for (const plan of plans) {
+      const pause = checkpoint();
+      if (pause) await pause;
+      if (plan.kind !== "text") continue;
+      const k = lineKey(plan), line = baselines.get(k) ?? { ascent: 0, descent: 0 };
+      for (const id of plan.fontIds) {
+        const m = metrics.get(id), scale = plan.size / m.unitsPerEm;
+        line.ascent = Math.max(line.ascent, m.ascent * scale);
+        line.descent = Math.max(line.descent, -m.descent * scale);
+        const pause = checkpoint();
+        if (pause) await pause;
       }
-    if (drawCommands > this.#limits.maxDrawCommands)
-      fail("BUDGET_EXCEEDED", "Canvas path execution budget exceeded");
+      baselines.set(k, line);
+      for (const glyph of plan.glyphs) {
+        drawCommands += outlines.get(key(glyph.fontId, glyph.glyphId)).commands.length;
+        if (drawCommands > this.#limits.maxDrawCommands)
+          fail("BUDGET_EXCEEDED", "Canvas path execution budget exceeded");
+        const pause = checkpoint();
+        if (pause) await pause;
+      }
+    }
     const stage = this.#factory(pixelsWide, pixelsHigh);
     if (
       stage === this.#canvas ||
@@ -529,8 +566,14 @@ export class FlowCanvasRenderer {
     context.fillRect(0, 0, pixelsWide, pixelsHigh);
     context.setTransform(pixelRatio, 0, 0, pixelRatio, -view.x * pixelRatio, -view.y * pixelRatio);
     context.fillStyle = this.#colors.selection;
-    for (const area of selection) context.fillRect(area.x, area.y, area.width, area.height);
+    for (const area of selection) {
+      context.fillRect(area.x, area.y, area.width, area.height);
+      const pause = checkpoint();
+      if (pause) await pause;
+    }
     for (const plan of plans) {
+      const pause = checkpoint();
+      if (pause) await pause;
       context.save();
       context.beginPath();
       context.rect(plan.clip.x, plan.clip.y, plan.clip.width, plan.clip.height);
@@ -550,7 +593,12 @@ export class FlowCanvasRenderer {
           context.save();
           context.translate(glyph.x, baseline - glyph.yOffset);
           context.scale(plan.size / m.unitsPerEm, -plan.size / m.unitsPerEm);
-          drawPath(context, entry.commands);
+          // A single cached glyph can contain an entire wire batch of paths.
+          // Yield inside its contour stream, not just between text items.
+          for (const cost of drawPath(context, entry.commands)) {
+            const pause = checkpoint(cost);
+            if (pause) await pause;
+          }
           context.fill("nonzero");
           context.restore();
         }
@@ -634,7 +682,7 @@ export class FlowCanvasRenderer {
   }
 }
 
-function textPlan(item, bounds, clip, glyphBudget) {
+function* textPlan(item, bounds, clip, glyphBudget) {
   const run = item.fontRun;
   if (
     !run ||
@@ -655,6 +703,8 @@ function textPlan(item, bounds, clip, glyphBudget) {
   if (run.glyphs.length > glyphBudget) fail("BUDGET_EXCEEDED", "too many visible glyphs");
   const size = number(item.fontSize, "font size", 1000000);
   if (size <= 0 || size !== run.fontSize) fail("INVALID_WASM_RESPONSE", "font sizes disagree");
+  const primaryFontId = identity(run.fontId), fontIds = new Set([primaryFontId]);
+  const color = item.colorRole;
   const glyphs = new Array(run.glyphs.length);
   let count = 0;
   for (let index = 0; index < run.clusters.length; index++) {
@@ -670,6 +720,7 @@ function textPlan(item, bounds, clip, glyphBudget) {
     const right = number(cluster.xEnd, "cluster end");
     if (x < 0 || right < x) fail("INVALID_WASM_RESPONSE", "reversed cluster geometry");
     const id = identity(cluster.fontId);
+    fontIds.add(id);
     for (let j = start; j < end; j++) {
       const glyph = run.glyphs[j];
       if (glyphs[j] || glyph?.clusterIndex !== index || glyph.fontId !== id)
@@ -689,10 +740,12 @@ function textPlan(item, bounds, clip, glyphBudget) {
       };
       advance += step;
       count++;
+      if (count % 128 === 0) yield 128;
     }
     if (Math.abs(advance - (right - x)) > 0.02 + Math.abs(advance) * 0.00001)
       fail("INVALID_WASM_RESPONSE", "glyph advances disagree with cluster geometry");
   }
+  if (count % 128) yield count % 128;
   if (count !== glyphs.length)
     fail("INVALID_WASM_RESPONSE", "glyphs are missing cluster ownership");
   return {
@@ -700,19 +753,24 @@ function textPlan(item, bounds, clip, glyphBudget) {
     bounds,
     clip,
     size,
-    fontId: identity(run.fontId),
+    fontId: primaryFontId,
+    fontIds,
     glyphs,
-    color: item.colorRole,
+    color,
   };
 }
-function drawPath(context, commands) {
+function* drawPath(context, commands) {
+  let work = 0;
   context.beginPath();
   for (const [op, a, b, c, d] of commands) {
     if (op === "M") context.moveTo(a, b);
     else if (op === "L") context.lineTo(a, b);
     else if (op === "Q") context.quadraticCurveTo(a, b, c, d);
     else context.closePath();
+    if (++work === 128) { work = 0; yield 128; }
   }
+  // Even an empty outline consumes a glyph draw and Canvas save/restore pair.
+  yield work || 1;
 }
 function drawVector(context, plan) {
   const b = plan.bounds;

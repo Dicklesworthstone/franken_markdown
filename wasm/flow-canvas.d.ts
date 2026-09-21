@@ -75,7 +75,7 @@ export interface FlowCanvasPaintOptions {
   /** Explicit device-pixel ratio in (0, 8]; default 1, never read from ambient state. */
   pixelRatio?: number;
   token?: FlowTokenInput;
-  /** Cancels paint waiting only; never terminates the worker/editing session. */
+  /** Cancels paint waits and cooperative work; never terminates the worker/session. */
   signal?: AbortSignal;
   /** Called only for resolved image descriptors. Return an already-authorized,
    * decoded image or null for a placeholder. No fetching/decoding is implicit.

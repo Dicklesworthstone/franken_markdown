@@ -110,6 +110,31 @@ The method's returned frame identifies precisely the painted source and layout.
 geometry. Call `clear()` immediately to stop presenting revoked resources;
 re-render failure must not be treated as authorization to keep showing them.
 
+## Cooperative rendering
+
+Expensive JavaScript paints now yield to real event-loop turns, rather than
+only chaining already-resolved Promises. This lets input events, cancellation,
+source changes and newer paints interrupt synchronous snapshot scans, large
+text-fragment preparation, baseline work and warm-cache drawing. Small paints
+stay on the no-timer fast path; no new option or scheduler dependency is needed.
+
+A shared work counter requests a zero-delay timer around every 4,096 logical
+work units. Glyph preparation and contour execution checkpoint in 128-unit
+chunks, including inside a single large cached outline. Empty outlines and
+vector/selection work also count. This is cooperative scheduling, not a hard
+millisecond deadline: native calls, JSON parsing, individual Canvas operations,
+and already-bounded wire validation/copying remain synchronous. In particular,
+outline validation and immutable copying stay in the same turn (at most 65,536
+commands per wire batch) so a provider cannot mutate admitted data during a
+suspended copy. Worker RPC cancellation is still never used for paint aborts.
+
+Only the private staging surface is drawn during these slices. Every resumed
+slice rechecks cancellation, disposal and source/layout identity. A superseded,
+revoked or stale stage is discarded; it cannot publish partially drawn paths
+or later resurrect pixels after `clear()`/`dispose()`. The final token check and
+target blit remain in one uninterrupted turn. Font caches retain only admitted
+immutable paths, independent of whether the paint eventually completes.
+
 ## Explicit image and accessibility ownership
 
 Pending or unresolved images get a geometric placeholder. For resolved image
@@ -209,3 +234,19 @@ reads, nested clips, cross-page baselines, f32 coverage, work budgets, legacy
 negotiation, image ownership, cancellation and 30 seeded mixed-scene comparisons
 against the dense path. These prove JS behavior, not native performance or a
 built WASM artifact. Native spatial-index tests remain a separate build gate.
+
+## Cooperative and browser regressions
+
+`node --test wasm/flow_canvas_viewport.test.mjs wasm/flow_canvas_cooperative.test.mjs`
+includes real event-loop timers, a 50,000-glyph fragment, a single 65,536-command
+warm cached contour, empty-outline glyphs, vector-only work, reflow/edit races,
+replacement paints and disposal. The recording surfaces remain explicit doubles.
+
+`python wasm/tests/run_flow_canvas_viewport.py --chromium /path/to/chromium`
+uses actual Chromium Canvas pixels and event scheduling. It compares indexed
+and dense output across scroll/pixel-ratio combinations, nested clips, images,
+selection and cross-page mixed-face baselines. DOM input aborts a partially
+staged cached contour while prior target pixels remain intact; a replacement
+paint wins without late pixel resurrection. Modules are loaded from local bytes,
+without a server or network. Native sessions and font contours are synthetic;
+this does not claim Rust decoding or a generated-WASM build.

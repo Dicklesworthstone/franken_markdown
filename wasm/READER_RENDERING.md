@@ -96,3 +96,48 @@ with real Chromium DOM and explicit native-page fixtures. They cover coalescing,
 physical cleanup ownership, input during construction, outline work, selection
 reuse, stale layouts, disabled old links, failure recovery and remounting. They
 are not a generated-WASM or complete worker-preview build gate.
+
+## Cooperative snapshot admission
+
+`readFlowDocument` now yields during the validation and copying that precedes
+DOM rendering, not only while awaiting native pages. The normal live reader uses
+this path without another option. Input can interrupt a single large paragraph,
+one styled leaf with many runs, a table with thousands of descendants, or long
+link and heading metadata. It also yields between synchronous native-page reads,
+so already-resolved promises cannot starve the event loop through a whole book.
+
+One shared work counter yields around 16,384 logical units. Text validation and
+UTF-8-to-UTF-16 inline mapping report work in roughly 4,096-unit chunks; nodes,
+style runs and list ancestry also count. Small snapshots schedule no timer.
+Headings and leaf-only transcript parts are collected during the same traversal
+instead of scanning the admitted nodes again. Existing text, node, depth, link,
+inline-run, list and anchor limits remain unchanged: exhaustion rejects, rather
+than silently truncating a semantic document.
+
+Every resumed slice checks cancellation and source/layout identity. Nothing is
+published until the entire tree and cross-page list ownership are valid. Aborted
+or failed iterators are closed and timer listeners are released. Cancellation is
+local; it never sends a worker cancellation request or terminates the session.
+Native calls, JSON parsing, bounded array copies, final string joining and native
+regular-expression operations remain synchronous. Work units are not a hard
+wall-clock deadline or a bound on native memory.
+
+Native pages are plain snapshot data. Custom providers should keep their returned
+pages stable while the read is in flight; they are not a live mutable-source API.
+Admission captures bounded array membership and primitive fields before using
+them across a yield. Validated styles, geometry and link values are privately
+copied rather than read back from mutable objects after validation. Values not
+yet captured still pass all normal validation. This does not grant untrusted
+providers authority to invent source provenance or navigate links.
+
+```sh
+node --test wasm/flow_reading_admission.test.mjs
+python wasm/tests/run_flow_reading_render_controls.py --chromium /usr/bin/chromium
+python wasm/tests/run_flow_reading_search.py --chromium /usr/bin/chromium
+```
+
+The admission suite exercises actual event-loop cancellation, oversized leaves,
+50,000 inline runs, a 9,999-node table, long metadata, surrogate boundaries,
+mutation across yields, cross-page list validation, budgets and listener cleanup.
+Native pages remain explicit fixtures; no generated-WASM performance claim is
+made by these tests.

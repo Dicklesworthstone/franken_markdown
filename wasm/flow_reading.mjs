@@ -81,15 +81,27 @@ function check(session, expected) {
 function integer(value, max = 0xffffffff) {
   return Number.isSafeInteger(value) && value >= 0 && value <= max;
 }
-function wellFormed(text) {
+// Shared scalar validation: short synchronous callers drain the same iterator,
+// while reading admission can yield inside one oversized text/link/anchor.
+function* textChunks(text) {
+  let work = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);
     if (c >= 0xd800 && c <= 0xdbff) {
       const low = text.charCodeAt(++i);
       if (!(low >= 0xdc00 && low <= 0xdfff)) return false;
+      work++;
     } else if (c >= 0xdc00 && c <= 0xdfff) return false;
+    if (++work >= 4096) { yield work; work = 0; }
   }
+  if (work) yield work;
   return true;
+}
+function wellFormed(text) {
+  const chunks = textChunks(text);
+  let step = chunks.next();
+  while (!step.done) step = chunks.next();
+  return step.value;
 }
 function rectangle(value) {
   if (
@@ -151,12 +163,20 @@ function wait(promise, signal) {
 
 // Mirrors the core's conservative activation filter. A target is still data;
 // passing this filter never authorizes the host to navigate or fetch anything.
-function activeTarget(target) {
+function* activeTarget(target) {
   let start = 0,
     end = target.length;
   const whitespace = /\p{White_Space}/u;
-  while (start < end && whitespace.test(target[start])) start++;
-  while (end > start && whitespace.test(target[end - 1])) end--;
+  let work = 0;
+  while (start < end && whitespace.test(target[start])) {
+    start++;
+    if (++work === 4096) { yield work; work = 0; }
+  }
+  while (end > start && whitespace.test(target[end - 1])) {
+    end--;
+    if (++work === 4096) { yield work; work = 0; }
+  }
+  if (work) yield work;
   const value = target.slice(start, end);
   if (!value || /[\u0000-\u001f\u007f-\u009f\\]/u.test(value)) return null;
   const prefix = value.split(/[/?#]/u, 1)[0],
@@ -165,150 +185,109 @@ function activeTarget(target) {
     return null;
   return value;
 }
-function inlineMetadata(raw, budget, retained) {
+function* inlineMetadata(raw, budget, retained) {
   const input = raw.inlineRuns === undefined ? [] : raw.inlineRuns;
   if (!Array.isArray(input)) invalid("inline runs must be an array");
   retained.runs += input.length;
   if (retained.runs > budget.maxInlineRuns)
     fail("READING_LIMIT", "reading inline-run limit exceeded");
-  if (
-    input.length &&
-    (raw.children.length || ["image", "thematic-break", "code-block"].includes(raw.role))
-  ) {
+  if (input.length && (raw.children.length || ["image", "thematic-break", "code-block"].includes(raw.role)))
     invalid("inline ranges require a semantic text leaf");
-  }
-  function link(value) {
+  // Capture bounded array membership before suspending. Primitive fields are
+  // captured, validated and privately copied before their objects are released;
+  // no field is validated before a yield and then read again unvalidated.
+  const runs = input.slice(), imageInput = raw.imageLink, text = raw.text;
+  function* link(value) {
     if (value === null) return null;
-    if (
-      !value ||
-      typeof value !== "object" ||
-      Array.isArray(value) ||
-      typeof value.target !== "string" ||
-      !(value.activeTarget === null || typeof value.activeTarget === "string")
-    )
+    if (!value || typeof value !== "object" || Array.isArray(value)) invalid("invalid reading link");
+    const target = value.target, active = value.activeTarget;
+    if (typeof target !== "string" || !(active === null || typeof active === "string"))
       invalid("invalid reading link");
-    // Charge both strings, even if the JS engine shares their storage.
-    retained.links += value.target.length + (value.activeTarget?.length ?? 0);
+    retained.links += target.length + (active?.length ?? 0);
     if (retained.links > budget.maxLinkUnits)
       fail("READING_LIMIT", "reading link retention limit exceeded");
-    if (
-      !wellFormed(value.target) ||
-      (value.activeTarget !== null &&
-        (!wellFormed(value.activeTarget) || activeTarget(value.target) !== value.activeTarget))
-    ) {
+    if (!(yield* textChunks(target)) || (active !== null
+        && (!(yield* textChunks(active)) || (yield* activeTarget(target)) !== active)))
       invalid("inconsistent or unsafe reading link activation");
-    }
-    return Object.freeze({ target: value.target, activeTarget: value.activeTarget });
+    return Object.freeze({ target, activeTarget: active });
   }
-  // Advance monotonically across reading text: O(text + runs), without a
-  // byte-sized lookup table or rescanning a prefix for every styled fragment.
-  let byte = 0,
-    utf16 = 0,
-    previousEnd = 0;
-  function position(offset) {
-    while (byte < offset && utf16 < raw.text.length) {
-      const cp = raw.text.codePointAt(utf16);
+  let byte = 0, utf16 = 0, previousEnd = 0;
+  function* position(offset) {
+    let work = 0;
+    while (byte < offset && utf16 < text.length) {
+      const cp = text.codePointAt(utf16), units = cp > 65535 ? 2 : 1;
       byte += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
-      utf16 += cp > 65535 ? 2 : 1;
+      utf16 += units;
+      work += units;
+      if (work >= 4096) { yield work; work = 0; }
     }
+    if (work) yield work;
     if (byte !== offset) invalid("inline range splits UTF-8 or exceeds reading text");
     return utf16;
   }
-  const inlineRuns = Array.from(input, (run) => {
-    if (
-      !run ||
-      !integer(run.startByte) ||
-      !integer(run.endByte) ||
-      run.startByte < previousEnd ||
-      run.endByte <= run.startByte
-    )
+  const inlineRuns = [];
+  for (const run of runs) {
+    if (!run) invalid("unordered or empty inline range");
+    const { startByte, endByte, style, link: linkInput } = run;
+    if (!integer(startByte) || !integer(endByte) || startByte < previousEnd || endByte <= startByte)
       invalid("unordered or empty inline range");
-    previousEnd = run.endByte;
-    const style = run.style,
-      keys = ["bold", "italic", "code", "strikethrough"];
-    if (
-      !style ||
-      typeof style !== "object" ||
-      Array.isArray(style) ||
-      Object.keys(style).length !== keys.length ||
-      !keys.every((key) => Object.hasOwn(style, key) && typeof style[key] === "boolean")
-    )
+    previousEnd = endByte;
+    const keys = ["bold", "italic", "code", "strikethrough"];
+    if (!style || typeof style !== "object" || Array.isArray(style)
+        || Object.keys(style).length !== keys.length || !keys.every(key => Object.hasOwn(style, key)))
       invalid("invalid reading inline style");
-    const startUtf16 = position(run.startByte),
-      endUtf16 = position(run.endByte);
-    return Object.freeze({
-      startByte: run.startByte,
-      endByte: run.endByte,
-      startUtf16,
-      endUtf16,
-      style: Object.freeze({
-        bold: style.bold,
-        italic: style.italic,
-        code: style.code,
-        strikethrough: style.strikethrough,
-      }),
-      link: link(run.link),
-    });
-  });
-  const imageLink = raw.imageLink === undefined ? null : link(raw.imageLink);
+    const copiedStyle = { bold: style.bold, italic: style.italic, code: style.code, strikethrough: style.strikethrough };
+    if (!Object.values(copiedStyle).every(value => typeof value === "boolean"))
+      invalid("invalid reading inline style");
+    Object.freeze(copiedStyle);
+    const copiedLink = yield* link(linkInput);
+    const startUtf16 = yield* position(startByte), endUtf16 = yield* position(endByte);
+    inlineRuns.push(Object.freeze({ startByte, endByte, startUtf16, endUtf16, style: copiedStyle, link: copiedLink }));
+    yield 32;
+  }
+  const imageLink = imageInput === undefined ? null : yield* link(imageInput);
   if (imageLink !== null && raw.role !== "image") invalid("image link requires an image node");
   return { inlineRuns: Object.freeze(inlineRuns), imageLink };
 }
 
 // Paths are supplied by the native AST projection, never inferred from source
 // envelopes, list-looking text, role alone, or Canvas indentation.
-function listMetadata(raw, depth, budget, retained) {
+function* listMetadata(raw, depth, budget, retained) {
   if (raw.listPath === undefined) return null; // Legacy schema-1 producer.
   const path = raw.listPath;
   if (!Array.isArray(path)) invalid("list ancestry must be an array");
   if (depth !== 0 && path.length)
     invalid("nested reading children inherit their root's list ownership");
   retained.listEntries += path.length;
-  if (path.length > budget.maxDepth || retained.listEntries > budget.maxListEntries) {
+  if (path.length > budget.maxDepth || retained.listEntries > budget.maxListEntries)
     fail("READING_LIMIT", "reading list ancestry limit exceeded");
+  const entries = path.slice(), output = [];
+  for (const item of entries) {
+    const keys = ["listId", "ordered", "start", "itemIndex", "task"];
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || Object.keys(item).length !== keys.length || !keys.every(key => Object.hasOwn(item, key)))
+      invalid("invalid list item identity");
+    const { listId: rawId, start: rawStart, ordered, itemIndex, task } = item;
+    if (typeof rawId !== "string" || typeof rawStart !== "string" || typeof ordered !== "boolean"
+        || !integer(itemIndex) || !(task === null || typeof task === "boolean"))
+      invalid("invalid list item identity");
+    const listId = identity(rawId), start = identity(rawStart);
+    if (listId === "0" || (ordered && BigInt(start) + BigInt(itemIndex) > 18446744073709551615n))
+      invalid("invalid list identity or overflowing ordinal");
+    output.push(Object.freeze({ listId, ordered, start, itemIndex, task }));
+    yield 16;
   }
-  return Object.freeze(
-    Array.from(path, (item) => {
-      const keys = ["listId", "ordered", "start", "itemIndex", "task"];
-      if (
-        !item ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        Object.keys(item).length !== keys.length ||
-        !keys.every((key) => Object.hasOwn(item, key)) ||
-        typeof item.listId !== "string" ||
-        typeof item.start !== "string" ||
-        typeof item.ordered !== "boolean" ||
-        !integer(item.itemIndex) ||
-        !(item.task === null || typeof item.task === "boolean")
-      )
-        invalid("invalid list item identity");
-      const listId = identity(item.listId),
-        start = identity(item.start);
-      if (
-        listId === "0" ||
-        (item.ordered && BigInt(start) + BigInt(item.itemIndex) > 18446744073709551615n)
-      ) {
-        invalid("invalid list identity or overflowing ordinal");
-      }
-      return Object.freeze({
-        listId,
-        ordered: item.ordered,
-        start,
-        itemIndex: item.itemIndex,
-        task: item.task,
-      });
-    }),
-  );
+  return Object.freeze(output);
 }
 
-function validateListOrder(roots) {
+function* validateListOrder(roots) {
   let structured = null,
     previous = [];
   const seen = new Set();
   const sameList = (a, b) =>
     a.listId === b.listId && a.ordered === b.ordered && a.start === b.start;
   for (const node of roots) {
+    yield 32;
     const hasPath = node.listPath !== null;
     if (structured === null) structured = hasPath;
     if (structured !== hasPath) invalid("mixed legacy and structured list ownership");
@@ -328,6 +307,7 @@ function validateListOrder(roots) {
         invalid("list item metadata changed within one snapshot");
       }
       common++;
+      yield 8;
     }
     if (common < path.length) {
       // Every item has one leading ListItem block, even for an empty/code-first
@@ -358,7 +338,7 @@ export class FlowReadingDocument {
   #session;
   #matches = new WeakSet();
   #anchors;
-  constructor(secret, session, expected, roots, nodes, textUnits, retained, anchors) {
+  constructor(secret, session, expected, roots, nodes, textUnits, retained, anchors, headings, text) {
     if (secret !== owned)
       fail("INVALID_ARGUMENT", "use readFlowDocument to obtain a reading document");
     this.#session = session;
@@ -366,13 +346,8 @@ export class FlowReadingDocument {
     this.token = expected;
     this.roots = Object.freeze(roots);
     this.nodes = Object.freeze(nodes);
-    this.headings = Object.freeze(nodes.filter((node) => node.role === "heading"));
-    // Container transcripts summarize children. Search/copy leaves once, not
-    // both a table row's aggregate "A | B" and its individually typed cells.
-    this.text = nodes
-      .filter((node) => !node.children.length && node.text)
-      .map((node) => node.text)
-      .join("\n\n");
+    this.headings = Object.freeze(headings);
+    this.text = text; // Leaf transcript already collected during admission.
     this.textUnits = textUnits;
     this.inlineRunCount = retained.runs;
     this.linkUnits = retained.links;
@@ -477,61 +452,71 @@ export async function readFlowDocument(session, options = {}) {
       typeof signal.removeEventListener !== "function")
   )
     fail("INVALID_OPTIONS", "signal must be an AbortSignal");
-  const roots = [],
-    nodes = [],
-    seen = new WeakSet(),
-    retained = { runs: 0, links: 0, listEntries: 0, anchors: 0 };
-  let textUnits = 0;
+  const roots = [], nodes = [], headings = [], parts = [], seen = new WeakSet();
+  const retained = { runs: 0, links: 0, listEntries: 0, anchors: 0 };
+  let textUnits = 0, work = 0;
   const anchors = new Map();
-  function anchorMetadata(raw, index) {
-    if (raw.anchorId === undefined || raw.anchorId === null) return null; // Legacy producer.
+  const current = () => { cancelled(signal); check(session, expected); };
+  async function admit(iterator) {
+    try {
+      let step = iterator.next();
+      while (!step.done) {
+        work += step.value;
+        if (work >= 16384) {
+          work = 0;
+          await readingSearchTurn(signal, current);
+        }
+        step = iterator.next();
+      }
+      return step.value;
+    } finally { iterator.return(); }
+  }
+  function* anchorMetadata(raw, index) {
     const id = raw.anchorId;
+    if (id === undefined || id === null) return null;
     if (raw.role !== "heading" || typeof id !== "string" || !id.length)
       invalid("invalid heading destination");
     retained.anchors += id.length;
     if (retained.anchors > budget.maxAnchorUnits)
       fail("READING_LIMIT", "reading anchor retention limit exceeded");
-    if (!wellFormed(id) || /[\u0000-\u001f\u007f-\u009f]/u.test(id) || anchors.has(id)) {
+    if (!(yield* textChunks(id)) || /[\u0000-\u001f\u007f-\u009f]/u.test(id) || anchors.has(id))
       invalid("invalid or duplicate heading destination");
-    }
     anchors.set(id, index);
     return id;
   }
-  function clone(raw, depth, parent = null) {
+  function* clone(raw, depth, parent = null) {
     if (!raw || typeof raw !== "object" || seen.has(raw)) invalid("cyclic or aliased reading tree");
     if (depth > budget.maxDepth || nodes.length >= budget.maxNodes)
       fail("READING_LIMIT", "reading node/depth limit exceeded");
     seen.add(raw);
-    if (!ROLES.has(raw.role) || typeof raw.text !== "string" || !Array.isArray(raw.children))
+    const { role, text, children: input, level, anchorId, inlineRuns, imageLink, listPath } = raw;
+    if (!ROLES.has(role) || typeof text !== "string" || !Array.isArray(input))
       invalid("invalid reading node");
-    textUnits += raw.text.length;
-    if (textUnits > budget.maxTextUnits || raw.children.length > budget.maxNodes - nodes.length)
+    textUnits += text.length;
+    if (textUnits > budget.maxTextUnits || input.length > budget.maxNodes - nodes.length)
       fail("READING_LIMIT", "reading retention limit exceeded");
-    if (!wellFormed(raw.text)) invalid("reading text contains an unpaired surrogate");
-    if (
-      (raw.role === "heading" && (!integer(raw.level, 6) || raw.level < 1)) ||
-      (LEAVES.has(raw.role) && raw.children.length) ||
-      (raw.role === "thematic-break" && raw.text !== "") ||
-      (CELLS.has(raw.role) && !ROWS.has(parent)) ||
-      (parent === "table" && !ROWS.has(raw.role)) ||
-      (ROWS.has(parent) && !CELLS.has(raw.role)) ||
-      (parent === "list" && raw.role !== "list-item")
-    )
+    const children = input.slice();
+    const bounds = rectangle(raw.bounds), enclosingSourceSpan = span(raw.enclosingSourceSpan);
+    const captured = { role, text, children, anchorId, inlineRuns, imageLink, listPath };
+    if (!(yield* textChunks(text))) invalid("reading text contains an unpaired surrogate");
+    if ((role === "heading" && (!integer(level, 6) || level < 1))
+        || (LEAVES.has(role) && children.length) || (role === "thematic-break" && text !== "")
+        || (CELLS.has(role) && !ROWS.has(parent)) || (parent === "table" && !ROWS.has(role))
+        || (ROWS.has(parent) && !CELLS.has(role)) || (parent === "list" && role !== "list-item"))
       invalid("inconsistent reading structure");
     const node = {
-      index: nodes.length,
-      role: raw.role,
-      text: raw.text,
-      bounds: rectangle(raw.bounds),
-      anchorId: anchorMetadata(raw, nodes.length),
-      ...inlineMetadata(raw, budget, retained),
-      listPath: listMetadata(raw, depth, budget, retained),
-      enclosingSourceSpan: span(raw.enclosingSourceSpan),
-      ...(raw.role === "heading" ? { level: raw.level } : {}),
-      children: [],
+      index: nodes.length, role, text, bounds,
+      anchorId: yield* anchorMetadata(captured, nodes.length),
+      ...(yield* inlineMetadata(captured, budget, retained)),
+      listPath: yield* listMetadata(captured, depth, budget, retained),
+      enclosingSourceSpan, ...(role === "heading" ? { level } : {}), children: [],
     };
     nodes.push(node);
-    for (const child of raw.children) node.children.push(clone(child, depth + 1, raw.role));
+    if (role === "heading") headings.push(node);
+    // Do not repeat aggregate table/list transcripts as well as their leaves.
+    if (!children.length && text) parts.push(text);
+    yield 32;
+    for (const child of children) node.children.push(yield* clone(child, depth + 1, role));
     Object.freeze(node.children);
     return Object.freeze(node);
   }
@@ -560,12 +545,20 @@ export async function readFlowDocument(session, options = {}) {
     if (page.nextOffset !== (end < page.total ? end : null))
       invalid("reading pagination did not advance");
     total = page.total;
-    for (const raw of page.nodes) roots.push(clone(raw, 0));
-    offset = page.nextOffset;
+    // Capture page membership/cursor before yielding to admission. Each node's
+    // own bounded fields are admitted separately; native pages are plain data.
+    const input = page.nodes.slice(), next = page.nextOffset;
+    function* pageNodes() {
+      for (const raw of input) roots.push(yield* clone(raw, 0));
+    }
+    await admit(pageNodes());
+    current();
+    offset = next;
   } while (offset !== null);
   cancelled(signal);
   check(session, expected);
-  validateListOrder(roots);
+  await admit(validateListOrder(roots));
+  current();
   return new FlowReadingDocument(
     owned,
     session,
@@ -575,6 +568,8 @@ export async function readFlowDocument(session, options = {}) {
     textUnits,
     retained,
     anchors,
+    headings,
+    parts.join("\n\n"),
   );
 }
 

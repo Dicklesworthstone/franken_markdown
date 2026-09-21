@@ -6,7 +6,11 @@
       "route": "headless:rust",
       "entry": "crates/fcb-source/tests/fcb_012_production.rs",
       "expect": {
-        "strings": ["escaped \"quotes\"", "unicode \u00e9\u4e2d\u6587", "surrogate pair \ud83d\ude00"],
+        "strings": [
+          "escaped \"quotes\"",
+          "unicode \u00e9\u4e2d\u6587",
+          "surrogate pair \ud83d\ude00"
+        ],
         "numbers": [0, -17, 123, 2.5, 1e-10],
         "literals": [true, false, null]
       }

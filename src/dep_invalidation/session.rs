@@ -17,6 +17,9 @@ use crate::text::OwnedTextRun;
 use std::collections::HashMap;
 use std::fmt;
 
+#[path = "asset_batch.rs"]
+mod asset_batch;
+
 /// Reusing an unchanged URL is unsafe unless the host also knows its bytes and
 /// authorization are unchanged. The conservative default discards all assets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -197,23 +200,7 @@ impl FlowSession {
     pub fn provide_asset<F>(&mut self, result: AssetResult, shape: F) -> Result<(), FlowSessionError>
     where F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
     {
-        if result.generation != self.revision() {
-            return Err(FlowDisplayError::StaleAssetGeneration {
-                expected: self.revision(), actual: result.generation,
-            }.into());
-        }
-        if !self.pending_assets().iter().any(|request| request.id == result.request_id) {
-            return Err(FlowDisplayError::UnknownAssetRequest(result.request_id).into());
-        }
-        let revision = next_revision(self.layout_revision)?;
-        let mut candidate = completed(self.source(), self.engine.batch_size(), self.revision(), self.engine.limits())?;
-        for accepted in self.engine.resolved_assets() { candidate.provide_asset(accepted.clone())?; }
-        candidate.provide_asset(result)?;
-        let display = candidate.to_styled_display_list(self.options, shape)?;
-        self.engine = candidate;
-        self.display = display;
-        self.layout_revision = revision;
-        Ok(())
+        self.provide_assets(vec![result], shape)
     }
 
     /// On success, discard retained assets and reissue requests in a fresh generation.

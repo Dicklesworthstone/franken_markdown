@@ -41,7 +41,6 @@ export class FlowImageAssets {
   #session; #load; #decode; #onChange; #limits; #timeout; #retainSourceBytes;
   #revision = null; #epoch = 0; #disposed = false; #run = null;
   #images = new Map(); #attempts = new Set(); #pixels = 0; #bytes = 0;
-  #publication = Promise.resolve();
   constructor(session, options) {
     if (!session || typeof session.pendingAssets !== "function" || typeof session.provideAsset !== "function") {
       fail("INVALID_OPTIONS", "a synchronous or worker flow session is required");
@@ -114,7 +113,8 @@ export class FlowImageAssets {
     if (signal?.aborted) fail("ABORTED", "image loading was aborted");
     const expected = this.synchronize();
     if (this.#run) fail("ASSET_BUSY", "the previous image batch has not physically settled");
-    const run = { controller: new AbortController(), epoch: this.#epoch, expected, attempted: 0 };
+    const run = { controller: new AbortController(), epoch: this.#epoch, expected, attempted: 0,
+      ready: [], publishing: false, batching: false };
     this.#run = run;
     const abort = () => run.controller.abort(assetFailure("ABORTED", "image loading was aborted"));
     signal?.addEventListener("abort", abort, { once: true });
@@ -144,6 +144,12 @@ export class FlowImageAssets {
     if (!allowCancelled && run.controller.signal.aborted) throw run.controller.signal.reason;
   }
   async #batch(run) {
+    // Negotiate once, before granting loader authority. An unadvertised method
+    // is not evidence of atomic completion support in an older/custom session.
+    run.batching = this.#session.supportsAssetBatches === true;
+    if (run.batching && typeof this.#session.provideAssets !== "function") {
+      fail("ASSET_PROTOCOL_ERROR", "session advertises image batches without a batch method");
+    }
     const requests = [], ids = new Set(); let offset = 0, total = null;
     // Read the COMPLETE pending inventory before any mutation changes its page
     // offsets/layout revision. Never page through a shrinking pending list.
@@ -212,32 +218,76 @@ export class FlowImageAssets {
             || (info.mime === "image/jpeg" && image.width === info.height && image.height === info.width))) {
         fail("INVALID_IMAGE", "decoder returned inconsistent dimensions or no owned bitmap");
       }
-      const publish = async () => {
-        this.#check(run);
-        // Default stays dimension-only. Export hosts can explicitly retain the
-        // SAME immutable encoded snapshot in the native session. Copy one image
-        // at a time inside the serialized publication lane, not every decoder.
-        const payload = this.#retainSourceBytes ? new Uint8Array(await blob.arrayBuffer()) : undefined;
-        this.#check(run); // Authorization can change while copying the Blob.
-        const before = token(this.#session.token);
-        const ack = await this.#session.provideAsset({ requestId: item.id, generation: item.generation,
-          width: image.width, height: image.height, ...(payload ? { bytes: payload } : {}) });
-        // Cancellation is not rollback. A dispatched native mutation may still
-        // succeed; retain its bitmap ONLY while its authorization stays valid.
-        this.#check(run, true);
-        const accepted = token(ack), current = token(this.#session.token);
-        if (accepted.revision !== current.revision || BigInt(accepted.layoutRevision) <= BigInt(before.layoutRevision)
-            || BigInt(accepted.layoutRevision) > BigInt(current.layoutRevision)) {
-          fail("ASSET_PROTOCOL_ERROR", "image acknowledgment does not match session state");
+      await this.#enqueue(run, {
+        result: { requestId: item.id, generation: item.generation, width: image.width, height: image.height },
+        blob,
+        accept: () => {
+          this.#images.set(item.id, { image, pixels, url: item.url }); image = null; pixels = 0;
         }
-        this.#images.set(item.id, { image, pixels, url: item.url }); image = null; pixels = 0;
-      };
-      const delivery = this.#publication.then(publish);
-      this.#publication = delivery.catch(() => {});
-      await delivery;
+      });
       return true;
     } finally {
       close(image); this.#pixels -= pixels; this.#bytes -= bytes;
     }
+  }
+  #enqueue(run, entry) {
+    const delivery = new Promise((resolve, reject) => { run.ready.push({ ...entry, resolve, reject }); });
+    if (!run.publishing) {
+      run.publishing = true;
+      // Coalesce ready decoder continuations, not an entire load wave. A fast
+      // image never waits for a slow/hung sibling just to fill a transaction.
+      queueMicrotask(() => {
+        this.#flush(run).catch(error => {
+          // Defensive terminal settlement: no queued lane may lose its promise
+          // and leave physical accounting permanently busy after an exception.
+          for (const pending of run.ready.splice(0)) pending.reject(error);
+          run.publishing = false;
+        });
+      });
+    }
+    return delivery;
+  }
+  async #flush(run) {
+    try {
+      while (run.ready.length) {
+        const group = []; let bytes = 0;
+        do {
+          const next = run.ready[0], size = this.#retainSourceBytes ? next.blob.size : 0;
+          // The loader lanes bound result count and retained bitmaps. Bound
+          // copied native payloads separately to maxAssetBytes (8 MiB), leaving
+          // metadata headroom in the default 16 MiB worker ingress budget.
+          if (group.length && (!run.batching || size > this.#limits.maxAssetBytes - bytes)) break;
+          bytes += size; group.push(run.ready.shift());
+        } while (run.ready.length);
+        try {
+          this.#check(run);
+          const results = [];
+          for (const entry of group) {
+            // Copy only this admitted group, from the SAME immutable snapshots
+            // used for decoding. Dimension-only delivery allocates no payload.
+            const payload = this.#retainSourceBytes ? new Uint8Array(await entry.blob.arrayBuffer()) : undefined;
+            this.#check(run); // Authorization can change while copying a Blob.
+            results.push({ ...entry.result, ...(payload ? { bytes: payload } : {}) });
+          }
+          const before = token(this.#session.token);
+          // Never pass cancellation to a dispatched worker mutation: it would
+          // destroy the document. Never replay a rejected batch as singles.
+          const ack = run.batching ? await this.#session.provideAssets(results)
+            : await this.#session.provideAsset(results[0]);
+          // Cancellation is not rollback. Retain a committed group's bitmaps
+          // only while its source and authorization are still valid.
+          this.#check(run, true);
+          const accepted = token(ack), current = token(this.#session.token);
+          if (accepted.revision !== current.revision || BigInt(accepted.layoutRevision) <= BigInt(before.layoutRevision)
+              || BigInt(accepted.layoutRevision) > BigInt(current.layoutRevision)) {
+            fail("ASSET_PROTOCOL_ERROR", "image acknowledgment does not match session state");
+          }
+          for (const entry of group) entry.accept();
+          for (const entry of group) entry.resolve();
+        } catch (error) {
+          for (const entry of group) entry.reject(error);
+        }
+      }
+    } finally { run.publishing = false; }
   }
 }

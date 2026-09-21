@@ -4,6 +4,10 @@ import type { FlowCanvasImage } from "./flow-canvas.js";
 export interface ImageFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
+  /** Optional on legacy sessions. Only true enables automatic coalescing. */
+  readonly supportsAssetBatches?: boolean;
+  /** When advertised, must complete every result in one atomic transaction. */
+  provideAssets?(results: readonly FlowAssetResult[]): FlowToken | Promise<FlowToken>;
   pendingAssets(options?: FlowPageOptions): FlowAssetPage | Promise<FlowAssetPage>;
   provideAsset(result: FlowAssetResult): FlowToken | Promise<FlowToken>;
 }
@@ -12,7 +16,7 @@ export interface ImageFlowSession {
 export interface FlowImageLimits {
   maxConcurrentLoads?: number; // 4, including callbacks still running after abort.
   maxAssets?: number; // 256 pending/attempted per source generation.
-  maxAssetBytes?: number; // 8 MiB per encoded image.
+  maxAssetBytes?: number; // 8 MiB per image AND per retained-payload delivery group.
   maxInFlightBytes?: number; // 16 MiB of admitted immutable encoded snapshots.
   maxImagePixels?: number; // 16,777,216 per bitmap, checked BEFORE decoding.
   maxRetainedPixels?: number; // 33,554,432 across reserved and retained bitmaps.
@@ -85,8 +89,11 @@ export class FlowImageAssets {
   readonly busy: boolean;
   readonly stats: FlowImageStats;
   /** Does not roll back an in-flight native delivery or terminate the worker.
-   * One physical batch at a time; overlap throws ASSET_BUSY. Individual image
-   * failures are reported without preventing unrelated deliveries. */
+   * One physical load run at a time; overlap throws ASSET_BUSY. Ready images
+   * coalesce on batch-capable sessions without waiting for slow loaders. Each
+   * native group is atomic, NOT the entire load run. A rejected group reports
+   * all its members, never replays singles, and does not block other groups.
+   * Legacy sessions retain serialized single-image delivery. */
   loadPending(options?: { signal?: AbortSignal }): Promise<FlowImageReport>;
   /** Wait for actual callback completion. A host ignoring abort may never settle. */
   whenIdle(): Promise<void>;

@@ -24,9 +24,22 @@ const token = await session.provideAssets([
 
 Collect the complete pending inventory before delivering a batch: completion
 removes requests, so paging that inventory while delivering can skip entries.
-The host chooses when to flush a group. The existing `FlowImageAssets` loader
-continues using individual `provideAsset` calls; it does not automatically
-coalesce completions. Single-image APIs remain unchanged.
+Low-level hosts choose when to flush a group. `FlowImageAssets.loadPending()`
+automatically coalesces ready images when `supportsAssetBatches` is true. It
+flushes without waiting for slow loaders and serializes groups behind any
+in-flight native delivery. Legacy sessions keep their single-image path; an
+advertised but rejected batch is never retried as individual writes.
+
+A loader group contains at most `maxConcurrentLoads` images (default four).
+With `retainSourceBytes: true`, its aggregate encoded bytes are also bounded by
+`maxAssetBytes` (default 8 MiB), leaving metadata headroom in the default worker
+queue. Lower or already occupied queue limits can still refuse admission.
+Bitmaps and immutable snapshots remain charged until physical delivery settles.
+One group's failure reports every member and closes their unpublished bitmaps,
+without blocking other groups or silently retrying failed requests. The entire
+`loadPending()` run is not a single atomic transaction. Its authorization,
+cancellation, revision fencing and once-per-run observer contract are unchanged.
+The existing local-image demo benefits without a separate opt-in.
 
 ## Transactions and ownership
 
@@ -71,6 +84,7 @@ native binding.
 
 ```sh
 node --test wasm/flow_asset_batch.test.mjs wasm/flow_asset_batch_worker.test.mjs
+node --test wasm/flow_assets.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_assets_batching.test.mjs
 tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM wasm/flow_asset_batch_types_test.mts
 ```
 

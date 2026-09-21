@@ -39,18 +39,35 @@ images.dispose();
 The manager reads every pending-request page under one source/layout token
 **before** supplying results. Providing an image removes it from the pending
 inventory and changes layout; reading later pages during delivery would skip
-requests. Loading/decoding uses up to four concurrent lanes, while all native
-`provideAsset` calls are serialized and acknowledged. Images can finish out of
-order without being assigned to another request. One image's refusal, bad bytes,
-or failed layout transaction does not prevent unrelated images from completing.
+requests. Loading/decoding uses up to four concurrent lanes. When the session
+advertises `supportsAssetBatches`, ready decoder results coalesce into serialized
+`provideAssets` calls: one native parse/reflow per ready group, not per image.
+The first ready image does not wait for a slow loader to fill a group. Results
+that finish during a native write join the next group, still holding their lane
+and reservations until acknowledged. Legacy sessions retain serialized
+`provideAsset` calls; support is never inferred from a method name alone.
 
-After decoding, actual oriented dimensions are supplied as **dimension-only**
-results. Encoded payloads are not duplicated in the worker/WASM asset store.
+Images can finish out of order without being assigned to another request. A
+loader refusal or invalid decode remains a per-image outcome. A rejected native
+group fails all its members without publishing a bitmap prefix, replaying single
+writes or preventing other groups from completing. `loadPending()` is not one
+whole-inventory atomic transaction. See `ASSET_BATCHES.md` for the lower-level
+API and its native rollback contract.
+
+By default, actual oriented dimensions are supplied as **dimension-only**
+results, without duplicating encoded bytes in the worker/WASM asset store.
+`retainSourceBytes: true` also supplies the same immutable encoded snapshot used
+for decoding, so document export can resolve the image. Encoded delivery groups
+are capped at `maxAssetBytes` in aggregate (default 8 MiB), as well as being
+bounded by the loader lane count. Lower or occupied worker queue budgets and
+native cumulative payload limits still apply; rejection is not silently retried.
 The manager owns decoded bitmaps; `resolveImage` only lends them to a matching
 current frame. Disposal, revocation, rejected layout and late stale results close
 owned bitmaps. No automatic cross-request deduplication or global URL cache can
-bypass per-request authorization. This is a Canvas image path, not an image-byte
-resolver for PDF export; `session.assetBytes` remains null for these deliveries.
+bypass per-request authorization. `session.assetBytes` remains null for default
+dimension-only deliveries; export requires explicit encoded retention. Revoking
+bitmaps does not revoke native bytes: reload native assets or recreate the
+session before exporting after any authorization change.
 
 A source edit invalidates image ownership; an ordinary reflow does not.
 `synchronize()` makes that revocation immediate, and is also invoked by loading
@@ -123,7 +140,7 @@ scratch buffers. The host must limit its own I/O *before* returning bytes.
 
 ## Verification
 
-`node --test wasm/flow_assets.test.mjs wasm/flow_raster.test.mjs` exercises the
+`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs` exercises the
 production admission/ownership code with explicitly synthetic containers,
 bitmaps, and session doubles, including an asynchronous session. It does not
 claim real Rust/WASM or browser decoding.
@@ -162,7 +179,8 @@ The controller's `whenIdle()` means preview-loop idle, not completion of optiona
 image I/O. `state.images` separately reports loading, results or an image error.
 Individual image failures leave text usable and unresolved images as placeholders.
 The local picker never uploads bytes. It is a demonstration of explicit host grants,
-not a generic network loader or an image resolver for other export formats.
+not a generic network loader. The demo explicitly retains admitted bytes for
+its document-export path and automatically benefits from ready-image coalescing.
 
 Additional checks:
 

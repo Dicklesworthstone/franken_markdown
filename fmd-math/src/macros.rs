@@ -21,8 +21,9 @@
 //! - **Recursion is refused, by name**: a macro that re-enters its own
 //!   expansion — directly, through another macro, or through an argument —
 //!   is a precise [`MathError::Malformed`] naming the macro, never a hang.
-//! - **Expansion is budgeted**: total spliced tokens and nesting depth are
-//!   capped, so a fan-out bomb errors cleanly.
+//! - **Expansion is budgeted**: total spliced tokens, including intermediate
+//!   replacements that disappear during rescanning, and nesting depth are
+//!   capped, so both visible and empty-output fan-out bombs error cleanly.
 //!
 //! # Provenance (§11.3)
 //!
@@ -45,7 +46,7 @@ use crate::node::Span;
 use crate::token::{Tok, TokKind, lex};
 use std::collections::BTreeMap;
 
-/// Total tokens an expansion may produce before it is refused as a bomb.
+/// Total intermediate replacement tokens an expansion may produce.
 const EXPANSION_TOKEN_BUDGET: usize = 65_536;
 /// Nesting depth of macro-within-macro expansion.
 const EXPANSION_DEPTH_BUDGET: usize = 32;
@@ -451,6 +452,8 @@ impl<'a> Expansion<'a> {
                 at: call_start.start,
             });
         }
+        // Calls cost work even when their replacement emits no tokens.
+        self.charge(1, call_start)?;
         let params = self.table.get(name).map(|l| l.params).unwrap_or(0);
         // Collect the arguments: balanced groups, or one token (TeX's
         // undelimited-argument rule), skipping intervening spaces.
@@ -496,6 +499,11 @@ impl<'a> Expansion<'a> {
                 args.push(&toks[start..k]);
                 end_span = toks[k].span;
                 j = k + 1;
+            } else if matches!(first.kind, TokKind::EndGroup) {
+                return Err(MathError::Malformed {
+                    what: format!("\\{name}: missing argument #{argn} before closing group"),
+                    at: first.span.start,
+                });
             } else {
                 args.push(core::slice::from_ref(first));
                 end_span = first.span;
@@ -507,9 +515,10 @@ impl<'a> Expansion<'a> {
         Ok(j)
     }
 
-    /// Splice a macro's body: `#k` becomes the argument's tokens (their own
-    /// spans — they are source text), everything else the body token with
-    /// the call site's span; nested calls expand recursively.
+    /// Substitute the entire body before rescanning it. A nested invocation
+    /// such as `\inner{#2}{#1}` must see the outer call's actual arguments,
+    /// not literal parameter tokens from the outer definition. Substitution
+    /// boundaries must not become artificial boundaries for nested arguments.
     fn splice(
         &mut self,
         name: &'a str,
@@ -519,80 +528,76 @@ impl<'a> Expansion<'a> {
         depth: usize,
         out: &mut Vec<Tok<'a>>,
     ) -> Result<(), MathError> {
-        active.push(name.to_owned());
-        // The body is cloned out of the table so nested expansion may
-        // consult the table freely (bodies are small; the budget bounds
-        // the total work).
-        let body = self
-            .table
-            .get(name)
-            .map(|l| l.body.clone())
-            .unwrap_or_default();
+        let body = self.table.get(name).map(|live| live.body.as_slice()).unwrap_or(&[]);
+        // Check before cloning: an oversized definition must not allocate a
+        // second unbounded token buffer just to discover its budget failure.
+        if body.len() > self.budget {
+            return Err(Self::budget_error(call_span));
+        }
+        let body = body.to_vec();
+        let mut replacement = Vec::new();
         let mut j = 0;
         while j < body.len() {
-            let t = &body[j];
-            match t.kind {
-                TokKind::Char('#') => {
-                    let d = body.get(j + 1).and_then(|n| match n.kind {
-                        TokKind::Char(c) => c.to_digit(10),
-                        _ => None,
+            let token = &body[j];
+            if matches!(token.kind, TokKind::Char('#')) {
+                let index = body.get(j + 1).and_then(|next| match next.kind {
+                    TokKind::Char(c @ '1'..='9') => Some(c as usize - '1' as usize),
+                    _ => None,
+                });
+                let Some(argument) = index.and_then(|index| args.get(index)) else {
+                    return Err(MathError::Malformed {
+                        what: format!("macro \\{name} body has an invalid parameter reference"),
+                        at: call_span.start,
                     });
-                    let Some(d) = d else {
-                        return Err(MathError::Malformed {
-                            what: format!("macro \\{name} body has a stray '#'"),
-                            at: call_span.start,
-                        });
-                    };
-                    let arg = args.get(d as usize - 1).copied().unwrap_or(&[]);
-                    // Argument tokens keep their own spans; nested calls
-                    // within them expand under the active stack.
-                    let mut k = 0;
-                    while k < arg.len() {
-                        match arg[k].kind {
-                            TokKind::ControlWord(n) if self.table.contains_key(n) => {
-                                k = self.call(arg, k, n, active, depth + 1, out)?
-                            }
-                            _ => {
-                                self.push(out, arg[k].clone(), call_span, false)?;
-                                k += 1;
-                            }
-                        }
-                    }
-                    j += 2;
-                }
-                TokKind::ControlWord(n) if self.table.contains_key(n) => {
-                    j = self.call(&body, j, n, active, depth + 1, out)?;
-                }
-                _ => {
-                    self.push(out, t.clone(), call_span, true)?;
-                    j += 1;
-                }
+                };
+                self.charge(argument.len(), call_span)?;
+                // Literal argument tokens retain their original source spans.
+                replacement.extend_from_slice(argument);
+                j += 2;
+            } else {
+                self.charge(1, call_span)?;
+                let mut token = token.clone();
+                token.span = call_span;
+                replacement.push(token);
+                j += 1;
             }
         }
+
+        active.push(name.to_owned());
+        let result = (|| {
+            let mut cursor = 0;
+            while cursor < replacement.len() {
+                match replacement[cursor].kind {
+                    TokKind::ControlWord(nested) if self.table.contains_key(nested) => {
+                        cursor = self.call(&replacement, cursor, nested, active, depth + 1, out)?;
+                    }
+                    _ => {
+                        // Already charged when materializing the replacement.
+                        out.push(replacement[cursor].clone());
+                        cursor += 1;
+                    }
+                }
+            }
+            Ok(())
+        })();
         active.pop();
-        Ok(())
+        result
     }
 
-    /// Push one token, rewriting body-material spans to the call site and
-    /// enforcing the token budget.
-    fn push(
-        &mut self,
-        out: &mut Vec<Tok<'a>>,
-        mut tok: Tok<'a>,
-        call_span: Span,
-        rewrite_span: bool,
-    ) -> Result<(), MathError> {
-        if self.budget == 0 {
-            return Err(MathError::Malformed {
-                what: format!("macro expansion produced more than {EXPANSION_TOKEN_BUDGET} tokens"),
-                at: call_span.start,
-            });
+    fn budget_error(span: Span) -> MathError {
+        MathError::Malformed {
+            what: format!(
+                "macro expansion requires more than {EXPANSION_TOKEN_BUDGET} token work units"
+            ),
+            at: span.start,
         }
-        self.budget -= 1;
-        if rewrite_span {
-            tok.span = call_span;
-        }
-        out.push(tok);
+    }
+
+    /// Charge before allocating replacements, including material later
+    /// consumed by a nested macro. Counting final output alone leaves
+    /// exponential empty-output expansions effectively unbounded.
+    fn charge(&mut self, units: usize, span: Span) -> Result<(), MathError> {
+        self.budget = self.budget.checked_sub(units).ok_or_else(|| Self::budget_error(span))?;
         Ok(())
     }
 }
@@ -676,7 +681,6 @@ mod tests {
         let set = MacroSet::pack("fmd-math/pack/default").unwrap();
         let src = r"a\minus b";
         let toks = expand(lex(src), &set, src.len()).unwrap();
-        // \minus → '-', carrying the \minus call's span.
         let minus = toks
             .iter()
             .find(|t| matches!(t.kind, TokKind::Char('-')))
@@ -697,13 +701,11 @@ mod tests {
         let src = r"\newcommand{\half}[1]{\frac{#1}{2}}\half{x}";
         let toks = expand(lex(src), &set, src.len()).unwrap();
         let call_start = src.find(r"\half{x}").unwrap();
-        // The literal argument x keeps its true source span.
         let x = toks
             .iter()
             .find(|t| matches!(t.kind, TokKind::Char('x')))
             .unwrap();
         assert_eq!(&src[x.span.start..x.span.end], "x");
-        // Body material (\frac, the 2, the braces) carries the call span.
         let frac = toks
             .iter()
             .find(|t| matches!(t.kind, TokKind::ControlWord("frac")))
@@ -727,8 +729,6 @@ mod tests {
         set.define("loop", 0, r"a\loop").unwrap();
         let err = expand_str(r"\loop", &set).unwrap_err();
         assert!(err.to_string().contains("recursive macro: \\loop"), "{err}");
-
-        // Mutual recursion too.
         let mut set = MacroSet::new();
         set.define("ping", 0, r"\pong").unwrap();
         set.define("pong", 0, r"\ping").unwrap();
@@ -738,50 +738,29 @@ mod tests {
 
     #[test]
     fn expansion_bombs_hit_the_budget() {
-        // Exponential fan-out without self-reference: geometric doubling
-        // through a chain long enough to exceed the token budget.
         let mut set = MacroSet::new();
         set.define("a", 0, "xx").unwrap();
         for (prev, name) in [
-            ("a", "b"),
-            ("b", "c"),
-            ("c", "d"),
-            ("d", "e"),
-            ("e", "f"),
-            ("f", "g"),
-            ("g", "h"),
-            ("h", "i"),
-            ("i", "j"),
-            ("j", "k"),
-            ("k", "l"),
-            ("l", "m"),
-            ("m", "n"),
-            ("n", "o"),
-            ("o", "p"),
-            ("p", "q"),
-            ("q", "r"),
+            ("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"),
+            ("e", "f"), ("f", "g"), ("g", "h"), ("h", "i"),
+            ("i", "j"), ("j", "k"), ("k", "l"), ("l", "m"),
+            ("m", "n"), ("n", "o"), ("o", "p"), ("p", "q"), ("q", "r"),
         ] {
             let body = format!("\\{prev}\\{prev}");
             set.define(name, 0, &body).unwrap();
         }
         let err = expand_str(r"\r", &set).unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("more than") || msg.contains("nests deeper"),
-            "{msg}"
-        );
+        assert!(msg.contains("more than") || msg.contains("nests deeper"), "{msg}");
     }
 
     #[test]
     fn shadowing_rules_are_latexs() {
         let set = MacroSet::new();
-        // \newcommand refuses to redefine.
         let err = expand_str(r"\newcommand{\x}{a}\newcommand{\x}{b}", &set).unwrap_err();
         assert!(err.to_string().contains("already defined"), "{err}");
-        // \renewcommand requires a definition.
         let err = expand_str(r"\renewcommand{\y}{a}", &set).unwrap_err();
         assert!(err.to_string().contains("not defined"), "{err}");
-        // The legal pair works.
         let out = expand_str(r"\newcommand{\x}{a}\renewcommand{\x}{b}\x", &set).unwrap();
         assert_eq!(out, "b");
     }
@@ -815,11 +794,9 @@ mod tests {
         a.define("dd", 0, r"\mathrm{d}").unwrap();
         a.define("half", 1, r"\frac{#1}{2}").unwrap();
         let mut b = MacroSet::new();
-        // Insertion order must not matter (sorted table).
         b.define("half", 1, r"\frac{#1}{2}").unwrap();
         b.define("dd", 0, r"\mathrm{d}").unwrap();
         assert_eq!(a.canonical_bytes(), b.canonical_bytes());
-        // Any content edit changes the bytes (a pack change re-typesets).
         let mut c = MacroSet::new();
         c.define("dd", 0, r"\mathrm{D}").unwrap();
         c.define("half", 1, r"\frac{#1}{2}").unwrap();
@@ -841,17 +818,100 @@ mod tests {
     #[test]
     fn packs_exist_by_content_id_and_name() {
         for id in [
-            "fmd-math/pack/default",
-            "default",
-            "fmd-math/pack/basic",
-            "basic",
-            "fmd-math/pack/empty",
-            "empty",
+            "fmd-math/pack/default", "default", "fmd-math/pack/basic",
+            "basic", "fmd-math/pack/empty", "empty",
         ] {
             assert!(MacroSet::pack(id).is_some(), "{id}");
         }
         assert!(MacroSet::pack("nonexistent").is_none());
         assert_eq!(MacroSet::pack("default").unwrap().len(), 1);
         assert!(MacroSet::pack("empty").unwrap().is_empty());
+    }
+
+    #[test]
+    fn nested_parameterized_macros_receive_substituted_arguments() {
+        let mut set = MacroSet::new();
+        set.define("ratio", 2, r"\frac{#1}{#2}").unwrap();
+        set.define("inverse", 2, r"\ratio{#2}{#1}").unwrap();
+        set.define("twice", 1, r"\inverse{2}{#1}+\inverse{2}{#1}").unwrap();
+        assert_eq!(
+            expand_str(r"\twice{x+y}", &set).unwrap(),
+            r"\frac {x+y}{2}+\frac {x+y}{2}",
+        );
+    }
+
+    #[test]
+    fn parameter_slots_are_not_nested_argument_boundaries() {
+        let mut set = MacroSet::new();
+        set.define("pair", 2, "#1+#2").unwrap();
+        set.define("apply", 2, "#1{#2}").unwrap();
+        // The nested call starts in argument #1, consumes its first argument
+        // there, then consumes its second argument from the enclosing body.
+        assert_eq!(expand_str(r"\apply{\pair{x}}{y}", &set).unwrap(), "x+y");
+        set.define("identity", 1, "#1").unwrap();
+        assert_eq!(expand_str(r"\apply{\identity}{x}", &set).unwrap(), "x");
+    }
+
+    #[test]
+    fn nested_expansion_preserves_literal_spans_and_rebases_generated_tokens() {
+        let mut set = MacroSet::new();
+        set.define("ratio", 2, r"\frac{#1}{#2}").unwrap();
+        set.define("half", 1, r"\ratio{#1}{2}").unwrap();
+        let src = r"a+\half{中}";
+        let call_start = src.find(r"\half").unwrap();
+        let tokens = expand(lex(src), &set, src.len()).unwrap();
+        for token in &tokens {
+            assert!(token.span.start <= token.span.end && token.span.end <= src.len());
+            match token.kind {
+                TokKind::Char('中') => assert_eq!(&src[token.span.start..token.span.end], "中"),
+                TokKind::Char('2') | TokKind::ControlWord("frac") => {
+                    assert_eq!((token.span.start, token.span.end), (call_start, src.len()));
+                }
+                _ => {}
+            }
+        }
+        assert!(tokens.iter().any(|token| matches!(token.kind, TokKind::Char('中'))));
+    }
+
+    #[test]
+    fn empty_output_fanout_is_bounded_too() {
+        let mut set = MacroSet::new();
+        set.define("a", 0, "").unwrap();
+        for (previous, name) in [
+            ("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"),
+            ("e", "f"), ("f", "g"), ("g", "h"), ("h", "i"),
+            ("i", "j"), ("j", "k"), ("k", "l"), ("l", "m"),
+            ("m", "n"), ("n", "o"), ("o", "p"), ("p", "q"), ("q", "r"),
+        ] {
+            set.define(name, 0, &format!("\\{previous}\\{previous}")).unwrap();
+        }
+        let error = expand_str(r"\r", &set).unwrap_err();
+        assert!(error.to_string().contains("token work units"), "{error}");
+    }
+
+    #[test]
+    fn discarded_intermediate_replacements_still_consume_budget() {
+        let mut set = MacroSet::new();
+        set.define("discard", 1, "").unwrap();
+        set.define("large", 1, r"\discard{#1#1#1#1#1#1#1#1#1}").unwrap();
+        let source = format!("\\large{{{}}}", "x".repeat(8192));
+        let error = expand_str(&source, &set).unwrap_err();
+        assert!(error.to_string().contains("token work units"), "{error}");
+    }
+
+    #[test]
+    fn composed_recursive_arguments_remain_rejected() {
+        let mut set = MacroSet::new();
+        set.define("identity", 1, "#1").unwrap();
+        let error = expand_str(r"\identity{\identity{x}}", &set).unwrap_err();
+        assert!(error.to_string().contains("recursive macro"), "{error}");
+    }
+
+    #[test]
+    fn missing_argument_cannot_consume_a_closing_group() {
+        let mut set = MacroSet::new();
+        set.define("identity", 1, "#1").unwrap();
+        let error = expand_str(r"{\identity}", &set).unwrap_err();
+        assert!(error.to_string().contains("missing argument #1"), "{error}");
     }
 }

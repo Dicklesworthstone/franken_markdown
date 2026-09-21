@@ -150,6 +150,10 @@ export interface FlowReaderViewOptions {
    * activation. Adjacent style runs in the same link share one Tab stop. */
   onLink?: (activation: FlowReadingLinkActivation) => void;
 }
+export interface FlowReaderRenderOptions {
+  /** Cancels local DOM preparation, not the native session or worker. */
+  signal?: AbortSignal;
+}
 export class FlowReaderView {
   constructor(container: HTMLElement, options?: FlowReaderViewOptions);
   readonly disposed: boolean;
@@ -158,6 +162,12 @@ export class FlowReaderView {
    * children. Preparation failures retain prior DOM. The same snapshot is a
    * no-op, preserving native focus/selection while the Canvas merely scrolls. */
   render(document: FlowReadingDocument): void;
+  /** Same semantic DOM as render, with event-loop yields during large builds.
+   * Publishes once, only when complete and current. New sync/async renders,
+   * clear and dispose supersede pending work. Rejection keeps prior DOM and
+   * selection; no clipboard writes, native requests or automatic retry.
+   * Individual DOM operations and the final replacement are synchronous. */
+  renderAsync(document: FlowReadingDocument, options?: FlowReaderRenderOptions): Promise<void>;
   /** Focus without automatically scrolling the page or navigating a URL. */
   focusNode(index: number): FlowReadingLocation;
   /** Uses native DOM Range selection across styled text segments. Refuses

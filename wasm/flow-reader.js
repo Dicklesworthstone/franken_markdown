@@ -27,6 +27,8 @@ export class FlowReaderView {
   #disposed = false;
   #onLink;
   #listeners = [];
+  #generation = 0;
+  #pending = null;
   constructor(container, options = {}) {
     if (
       !container ||
@@ -56,10 +58,68 @@ export class FlowReaderView {
   #alive() {
     if (this.#disposed) fail("VIEW_DISPOSED", "reading view is disposed");
   }
+  #invalidate() {
+    this.#generation++;
+    this.#pending?.abort();
+  }
   render(snapshot) {
     this.#alive();
     requireReadingDocument(snapshot);
+    this.#invalidate();
     if (snapshot === this.#document) return; // Preserve browser selection/focus on scrolling.
+    const generation = this.#generation;
+    const check = () => {
+      this.#alive();
+      if (generation !== this.#generation) fail("RENDER_SUPERSEDED", "reading render was replaced");
+      snapshot.assertCurrent();
+    };
+    const build = this.#prepare(snapshot, check);
+    try { while (!build.next().done) { /* Same preparation, without task yields. */ } }
+    finally { build.return(); }
+  }
+  /** Build privately in bounded DOM-work slices; publish the complete tree once.
+   * A newer render (sync or async), clear, or dispose revokes an older attempt.
+   * Never sends worker requests, reparses source, or publishes partial structure. */
+  async renderAsync(snapshot, options = {}) {
+    this.#alive();
+    requireReadingDocument(snapshot);
+    if (!options || typeof options !== "object" || Array.isArray(options)
+        || Object.keys(options).some(key => key !== "signal")) {
+      fail("INVALID_OPTIONS", "only signal is accepted for reading rendering");
+    }
+    const signal = options.signal;
+    if (signal !== undefined && (!signal || typeof signal.aborted !== "boolean"
+        || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function")) {
+      fail("INVALID_OPTIONS", "signal must be an AbortSignal");
+    }
+    if (signal?.aborted) fail("ABORTED", "reading render was aborted");
+    this.#invalidate();
+    if (snapshot === this.#document) return;
+    const generation = this.#generation, controller = new AbortController();
+    this.#pending = controller;
+    const check = () => {
+      this.#alive();
+      if (generation !== this.#generation) fail("RENDER_SUPERSEDED", "reading render was replaced");
+      if (signal?.aborted) fail("ABORTED", "reading render was aborted");
+      snapshot.assertCurrent();
+    };
+    const build = this.#prepare(snapshot, check);
+    let work = 0;
+    try {
+      check();
+      for (let step = build.next(); !step.done; step = build.next()) {
+        work += step.value;
+        if (work >= 256) {
+          work = 0;
+          await renderTurn(check, [controller.signal, signal]);
+        }
+      }
+    } finally {
+      build.return(); // Removes listeners from every unpublished staged link.
+      if (this.#pending === controller) this.#pending = null;
+    }
+  }
+  *#prepare(snapshot, check) {
     const doc = this.#container.ownerDocument,
       fragment = doc.createDocumentFragment();
     const elements = new Map(),
@@ -113,9 +173,9 @@ export class FlowReaderView {
       }
       return el;
     };
-    const text = (node, parent) => {
+    const text = function* (node, parent) {
       const segments = [];
-      const part = (start, end, destination, style = null) => {
+      const part = function* (start, end, destination, style = null) {
         if (start === end && node.text.length) return;
         let holder = destination;
         for (const [flag, tag] of [
@@ -134,11 +194,12 @@ export class FlowReaderView {
           leaf = doc.createTextNode(expected);
         holder.append(leaf);
         segments.push({ leaf, expected, start, end });
+        yield 1 + Math.ceil(expected.length / 4096);
       };
       let end = 0;
       for (let i = 0; i < node.inlineRuns.length; ) {
         const first = node.inlineRuns[i];
-        if (first.startUtf16 > end) part(end, first.startUtf16, parent);
+        if (first.startUtf16 > end) yield* part(end, first.startUtf16, parent);
         // Styling inside one logical link must not create one Tab stop per font.
         let next = i + 1,
           linkEnd = first.endUtf16;
@@ -153,20 +214,22 @@ export class FlowReaderView {
               break;
             linkEnd = candidate.endUtf16;
             next++;
+            yield 1; // One long logical link can span every admitted style run.
           }
         const link = linkElement(node, first.link, first.startUtf16, linkEnd),
           holder = link ?? parent;
         if (link) parent.append(link);
         for (; i < next; i++) {
           const run = node.inlineRuns[i];
-          part(run.startUtf16, run.endUtf16, holder, run.style);
+          yield* part(run.startUtf16, run.endUtf16, holder, run.style);
         }
         end = linkEnd;
       }
-      if (end < node.text.length || !segments.length) part(end, node.text.length, parent);
+      if (end < node.text.length || !segments.length) yield* part(end, node.text.length, parent);
       textNodes.set(node.index, { root: parent, segments });
     };
-    const element = (node) => {
+    const element = function* (node) {
+      yield 1;
       let el;
       switch (node.role) {
         case "heading":
@@ -220,10 +283,10 @@ export class FlowReaderView {
       el.tabIndex = -1;
       el.setAttribute("data-flow-node", String(node.index));
       elements.set(node.index, el);
-      if (node.children.length) append(node.children, el, node.role);
+      if (node.children.length) yield* append(node.children, el, node.role);
       else if (node.role === "code-block") {
         const code = make("code");
-        text(node, code);
+        yield* text(node, code);
         el.append(code);
       } else if (node.role === "image") {
         const caption = make("figcaption"),
@@ -233,16 +296,16 @@ export class FlowReaderView {
           description = make("span");
         label.textContent = "Image: ";
         holder.append(label, description);
-        text(node, description);
+        yield* text(node, description);
         if (link) caption.append(link);
         el.append(caption);
-      } else if (node.role !== "thematic-break") text(node, el);
+      } else if (node.role !== "thematic-break") yield* text(node, el);
       return el;
     };
     // Current flow emits standalone rows/items with truthful enclosing block
     // spans. Group consecutive siblings only; never infer order or nesting from
     // pixel indentation, guessed Markdown, or source text.
-    const append = (nodes, parent, role = null) => {
+    const append = function* (nodes, parent, role = null) {
       for (let i = 0; i < nodes.length; ) {
         const node = nodes[i];
         if (row(node) && role !== "table") {
@@ -250,14 +313,15 @@ export class FlowReaderView {
             group = [];
           do {
             group.push(nodes[i++]);
+            yield 1;
           } while (i < nodes.length && row(nodes[i]) && sameSpan(node, nodes[i]));
-          append(group, table, "table");
+          yield* append(group, table, "table");
           parent.append(table);
         } else if (node.role === "list-item" && !node.listPath?.length && role !== "list") {
           const list = make("div");
           list.setAttribute("role", "list");
           do {
-            list.append(element(nodes[i++]));
+            list.append(yield* element(nodes[i++]));
           } while (i < nodes.length && nodes[i].role === "list-item" && sameSpan(node, nodes[i]));
           parent.append(list);
         } else if (row(node)) {
@@ -265,26 +329,27 @@ export class FlowReaderView {
           const section = make(node.role === "table-header-row" ? "thead" : "tbody"),
             kind = node.role;
           do {
-            section.append(element(nodes[i++]));
+            section.append(yield* element(nodes[i++]));
           } while (i < nodes.length && nodes[i].role === kind);
           parent.append(section);
         } else {
-          parent.append(element(node));
+          parent.append(yield* element(node));
           i++;
         }
       }
     };
     // Group by admitted AST identities. Continuations and table/image blocks
     // remain inside their exact item; same source spans never merge two lists.
-    const appendLists = (nodes, parent) => {
+    const appendLists = function* (nodes, parent) {
       const stack = [];
       let pending = [],
         destination = parent;
-      const flush = () => {
-        append(pending, destination, "owned-list-item");
+      const flush = function* () {
+        yield* append(pending, destination, "owned-list-item");
         pending = [];
       };
       for (const node of nodes) {
+        yield 1;
         const path = node.listPath;
         let common = 0;
         while (
@@ -295,8 +360,9 @@ export class FlowReaderView {
         )
           common++;
         if (common !== path.length || common !== stack.length) {
-          flush();
+          yield* flush();
           for (let depth = common; depth < path.length; depth++) {
+            yield 1;
             const frame = path[depth],
               before = stack[depth];
             let list = before?.frame.listId === frame.listId ? before.list : null;
@@ -341,17 +407,26 @@ export class FlowReaderView {
         }
         pending.push(node);
       }
-      flush();
+      yield* flush();
     };
-    if (snapshot.roots[0]?.listPath != null) appendLists(snapshot.roots, fragment);
-    else append(snapshot.roots, fragment);
-    snapshot.assertCurrent(); // A failed preparation leaves old DOM intact.
-    this.#container.replaceChildren(fragment);
-    this.#unlisten();
-    this.#listeners = listeners;
-    this.#document = snapshot;
-    this.#elements = elements;
-    this.#text = textNodes;
+    let published = false;
+    try {
+      if (snapshot.roots[0]?.listPath != null) yield* appendLists(snapshot.roots, fragment);
+      else yield* append(snapshot.roots, fragment);
+      check(); // Never publish after an input event revoked the staged tree.
+      this.#container.replaceChildren(fragment);
+      check(); // Reentrant host DOM hooks must not overwrite a newer attempt.
+      this.#unlisten();
+      this.#listeners = listeners;
+      this.#document = snapshot;
+      this.#elements = elements;
+      this.#text = textNodes;
+      published = true;
+    } finally {
+      if (!published) {
+        for (const [el, type, listener] of listeners) el.removeEventListener(type, listener);
+      }
+    }
   }
   focusNode(index) {
     this.#alive();
@@ -417,6 +492,10 @@ export class FlowReaderView {
   }
   clear() {
     if (this.#disposed) return;
+    this.#invalidate();
+    this.#clearDOM();
+  }
+  #clearDOM() {
     this.#unlisten();
     this.#document = null;
     this.#elements.clear();
@@ -425,8 +504,28 @@ export class FlowReaderView {
   }
   dispose() {
     if (this.#disposed) return;
-    this.clear();
-    this.#onLink = undefined;
     this.#disposed = true;
+    this.#invalidate();
+    this.#clearDOM();
+    this.#onLink = undefined;
   }
+}
+
+// Event-loop tasks, not only resolved-Promise microtasks. There is at most one
+// timer per suspended attempt; every settlement releases it and its listeners.
+function renderTurn(check, signals) {
+  check();
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const signal of signals) signal?.removeEventListener("abort", finish);
+      try { check(); resolve(); } catch (error) { reject(error); }
+    };
+    const timer = setTimeout(finish, 0);
+    for (const signal of signals) signal?.addEventListener("abort", finish, { once: true });
+    if (signals.some(signal => signal?.aborted)) finish();
+  });
 }

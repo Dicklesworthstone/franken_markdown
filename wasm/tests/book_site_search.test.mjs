@@ -97,6 +97,9 @@ class Element {
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = [...children]; }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
+  removeEventListener(name, fn) {
+    if (this.listeners.get(name) === fn) this.listeners.delete(name);
+  }
   dispatch(name, properties = {}) {
     const event = {preventDefault() { this.prevented = true; }, ...properties};
     this.listeners.get(name)?.(event);

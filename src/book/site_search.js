@@ -74,60 +74,77 @@
   // Folding final sigma as well makes caseless matching independent of word
   // context: scalar/chunk lowercasing must agree with whole-query lowercasing.
   const normalize = value => value.toLowerCase().replace(/ς/gu, "σ").replace(/\s+/gu, " ");
-  const CHUNK = 4096, WORK_SLICE = 16384;
+  const CHUNK = 4096, WORK_SLICE = 65536;
 
-  // The bound is on SOURCE work, not normalized output: a megabyte of spaces
-  // still yields, even though it contributes only one searchable character.
-  // Offsets map every folded UTF-16 unit back to the original scalar's start.
+  // Bound SOURCE work, not normalized output: long whitespace runs must
+  // yield too. Normalize bounded strings in bulk; materialize source maps
+  // only for chunks that actually contain a hit, not every byte of the book.
   function* normalizedChunks(value) {
     let position = 0, space = false;
     while (position < value.length) {
-      const start = position, stop = Math.min(value.length, start + CHUNK);
-      let body = "";
-      const offsets = [];
-      while (position < stop) {
-        const at = position, code = value.codePointAt(position);
-        const scalar = String.fromCodePoint(code);
-        position += scalar.length;
-        const whitespace = code <= 127
-          ? code === 32 || (code >= 9 && code <= 13) : /\s/u.test(scalar);
-        if (whitespace) {
-          if (!space) { body += " "; offsets.push(at); }
-          space = true;
-        } else {
-          space = false;
-          const folded = code <= 127
-            ? String.fromCharCode(code >= 65 && code <= 90 ? code + 32 : code)
-            : normalize(scalar);
-          body += folded;
-          for (let i = 0; i < folded.length; i++) offsets.push(at);
+      const start = position, leadingSpace = space;
+      position = Math.min(value.length, start + CHUNK);
+      if (position < value.length && /[\uDC00-\uDFFF]/u.test(value[position])
+          && /[\uD800-\uDBFF]/u.test(value[position - 1])) position++;
+      const stop = position, folded = normalize(value.slice(start, stop));
+      const body = leadingSpace && folded.startsWith(" ") ? folded.slice(1) : folded;
+      space = folded.endsWith(" ");
+      let offsets;
+      yield {body, work: stop - start, offsetAt(index) {
+        if (!offsets) {
+          offsets = [];
+          let whitespace = leadingSpace;
+          for (let at = start; at < stop;) {
+            const scalar = String.fromCodePoint(value.codePointAt(at)), origin = at;
+            at += scalar.length;
+            if (/\s/u.test(scalar)) {
+              if (!whitespace) offsets.push(origin);
+              whitespace = true;
+            } else {
+              whitespace = false;
+              const count = normalize(scalar).length;
+              for (let i = 0; i < count; i++) offsets.push(origin);
+            }
+          }
         }
-      }
-      yield {body, offsets, work: position - start};
+        return offsets[index];
+      }};
     }
   }
 
   function matcher(terms) {
     const longest = Math.max(...terms.map(term => term.length)), all = (1 << terms.length) - 1;
-    let tail = "", positions = [], head = "", length = 0, mask = 0, offset = -1;
+    let tail = "", segments = [], head = "", length = 0, mask = 0, offset = -1;
     return {
       add(chunk) {
-        const window = tail + chunk.body, origins = positions.concat(chunk.offsets);
+        const window = tail + chunk.body;
+        if (chunk.body.length) segments.push({chunk, from: 0, length: chunk.body.length});
         for (let i = 0; i < terms.length; i++) {
           if (mask & (1 << i)) continue;
-          const at = window.indexOf(terms[i]);
+          let at = window.indexOf(terms[i]);
           if (at < 0) continue;
           mask |= 1 << i;
-          const source = origins[at];
-          if (offset < 0 || source < offset) offset = source;
+          for (const segment of segments) {
+            if (at >= segment.length) { at -= segment.length; continue; }
+            const source = segment.chunk.offsetAt(segment.from + at);
+            if (offset < 0 || source < offset) offset = source;
+            break;
+          }
         }
         head += chunk.body.slice(0, Math.max(0, longest + 2 - head.length));
         length += chunk.body.length;
-        // Retain enough context for a phrase split across arbitrarily many
-        // chunks (including chunks consisting entirely of collapsed spaces).
+        // Retain normalized phrase context, plus lazy source-map segments.
+        // Empty whitespace chunks neither erase nor grow this bounded tail.
         const keep = Math.min(longest - 1, window.length);
         tail = keep ? window.slice(-keep) : "";
-        positions = keep ? origins.slice(-keep) : [];
+        let drop = window.length - keep, first = 0;
+        while (first < segments.length && drop >= segments[first].length) {
+          drop -= segments[first++].length;
+        }
+        if (first) segments = segments.slice(first);
+        if (drop && segments.length) {
+          segments[0].from += drop; segments[0].length -= drop;
+        }
         // Once all terms occur and exact equality is impossible, later text
         // cannot change membership, ranking, or the earliest source offset.
         return mask === all && length > longest + 2;
@@ -197,7 +214,7 @@
         const inBody = body.mask === all;
         const score = (inBody ? 20 : 0) + (row.heading ? 10 : 0)
           + (body.exact ? 30 : 0) + (inBody && body.prefix ? 5 : 0);
-        const result = {row, score, offset: body.offset};
+        const result = {row, score, offset: body.offset, titleOffset: titleMatch.offset};
         if (!representative || compare(result, representative) < 0) representative = result;
       }
       visited++;
@@ -211,23 +228,22 @@
     return {results, total, terms};
   }
 
-  function excerpt(value, terms) {
-    // Find context in original UTF-16 coordinates even when lowercase expands
-    // a scalar (e.g. U+0130). Never cut a surrogate pair at either boundary.
-    const lower = value.toLowerCase();
-    let at = -1;
-    for (const term of terms) {
-      const found = lower.indexOf(term);
-      if (found >= 0 && (at < 0 || found < at)) at = found;
-    }
-    let original = 0, folded = 0;
-    if (at >= 0) {
-      for (const scalar of value) {
-        if (folded >= at) break;
-        folded += scalar.toLowerCase().length;
-        original += scalar.length;
+  function excerpt(value, terms, offset) {
+    // Production callers pass the source coordinate already found by search:
+    // rendering/paginating results must not synchronously rescan giant entries.
+    // Keep the two-argument API, using the identical bounded-memory matcher.
+    if (offset === undefined) {
+      const normalized = terms.map(normalize).filter(Boolean);
+      offset = -1;
+      if (normalized.length) {
+        const match = matcher(normalized);
+        for (const chunk of normalizedChunks(value)) {
+          if (match.add(chunk)) break;
+        }
+        offset = match.result().offset;
       }
     }
+    const original = Number.isInteger(offset) ? Math.max(0, Math.min(value.length, offset)) : 0;
     let start = Math.max(0, original - 65), end = Math.min(value.length, start + 260);
     if (start > 0 && /[\uDC00-\uDFFF]/u.test(value[start])) start--;
     if (end < value.length && /[\uDC00-\uDFFF]/u.test(value[end])) end++;
@@ -241,11 +257,20 @@
     let rows;
     try { rows = prepare(JSON.parse(get("search-data").textContent)); }
     catch (error) { status.textContent = error.message; input.disabled = true; return null; }
-    let generation = 0, timer, answer = null, page = 0;
+    let generation = 0, timer, answer = null, page = 0, disposed = false;
+    const listeners = [];
+    const listen = (element, type, callback) => {
+      // The guard also fences callbacks already captured by a dispatcher when
+      // disposal removes the listener, not just future DOM event dispatches.
+      const handler = event => { if (!disposed) callback(event); };
+      element.addEventListener(type, handler);
+      listeners.push([element, type, handler]);
+    };
     const clear = () => {
       answer = null; page = 0; list.replaceChildren(); previous.disabled = next.disabled = true;
     };
     const show = () => {
+      if (disposed) return;
       list.replaceChildren();
       if (!answer) return;
       const start = page * LIMITS.page;
@@ -253,8 +278,9 @@
         const row = result.row, item = document.createElement("li");
         const link = document.createElement("a"), detail = document.createElement("p");
         link.href = "./" + row.page + (row.anchor ? "#" + encodeURIComponent(row.anchor) : "");
-        link.textContent = row.title + (row.anchor ? " — " + row.anchor : "");
-        detail.textContent = excerpt(row.text, answer.terms);
+        link.textContent = excerpt(row.title, answer.terms, result.titleOffset)
+          + (row.anchor ? " — " + excerpt(row.anchor, [], 0) : "");
+        detail.textContent = excerpt(row.text, answer.terms, result.offset);
         item.append(link, detail); list.append(item);
       }
       list.start = start + 1;
@@ -267,41 +293,47 @@
       next.disabled = end === answer.results.length;
     };
     const run = async token => {
-      if (token !== generation) return;
+      if (disposed || token !== generation) return;
       clear();
       if (!input.value.trim()) { status.textContent = "Enter words or a quoted phrase to search this book."; return; }
       status.textContent = "Searching…";
       try {
-        const result = await search(rows, input.value, {cancelled: () => token !== generation});
-        if (token !== generation || !result) return;
+        const result = await search(rows, input.value, {cancelled: () => disposed || token !== generation});
+        if (disposed || token !== generation || !result) return;
         answer = result; show();
       } catch (error) {
-        if (token === generation) { clear(); status.textContent = error.message; }
+        if (!disposed && token === generation) { clear(); status.textContent = error.message; }
       }
     };
-    form.addEventListener("submit", event => {
+    listen(form, "submit", event => {
       event.preventDefault(); clearTimeout(timer); void run(++generation);
     });
-    input.addEventListener("input", () => {
+    listen(input, "input", () => {
       clearTimeout(timer); const token = ++generation; clear();
       status.textContent = input.value.trim() ? "Ready to search…" : "Enter words or a quoted phrase to search this book.";
       timer = setTimeout(() => { void run(token); }, 150);
     });
-    input.addEventListener("keydown", event => {
+    listen(input, "keydown", event => {
       if (event.key === "Escape") {
         event.preventDefault(); clearTimeout(timer); generation++; input.value = ""; clear();
         status.textContent = "Search cleared.";
       }
     });
-    previous.addEventListener("click", () => { if (page > 0) { page--; show(); } });
-    next.addEventListener("click", () => {
+    listen(previous, "click", () => { if (page > 0) { page--; show(); } });
+    listen(next, "click", () => {
       if (answer && (page + 1) * LIMITS.page < answer.results.length) { page++; show(); }
     });
     try {
       const query = new URL(address || document.location.href).searchParams.get("q");
       if (query !== null) { input.value = query.slice(0, LIMITS.query + 1); void run(++generation); }
     } catch (_) { /* An opaque local origin does not prevent explicit searches. */ }
-    return {dispose() { generation++; clearTimeout(timer); rows = []; clear(); }};
+    return {dispose() {
+      if (disposed) return;
+      disposed = true; generation++; clearTimeout(timer);
+      for (const [element, type, handler] of listeners) element.removeEventListener(type, handler);
+      listeners.length = 0;
+      rows = []; clear();
+    }};
   }
 
   const api = Object.freeze({LIMITS, prepare, parseQuery, search, excerpt, mount});

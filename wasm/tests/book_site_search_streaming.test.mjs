@@ -116,3 +116,28 @@ test("streaming results and scores agree with a whole-string reference", async (
     }
   }
 });
+
+test("misses normalize in bulk and source maps are built only for matched chunks", async () => {
+  const {api, context} = load(`
+    globalThis.mapped = 0;
+    const scalar = String.fromCodePoint;
+    String.fromCodePoint = function (...args) {
+      globalThis.mapped++;
+      return scalar(...args);
+    };
+  `);
+  const content = "İ".repeat(500000) + "needle";
+  assert.equal((await api.search([row(content)], "missing", noWait)).total, 0);
+  assert.equal(context.mapped, 0, "a miss must not build per-scalar source maps");
+  const result = await api.search([row(content)], "needle", noWait);
+  assert.equal(result.results[0].offset, 500000);
+  assert.ok(context.mapped <= 4097, `mapped ${context.mapped} scalars for one hit`);
+});
+
+test("long phrases retain lazy source origins across many mostly-whitespace chunks", async () => {
+  const words = Array(200).fill("a"), query = '"' + words.join(" ") + '"';
+  const content = "prefix " + words.join(" ".repeat(4096));
+  const result = await api.search([row(content)], query, noWait);
+  assert.equal(result.total, 1);
+  assert.equal(result.results[0].offset, 7);
+});

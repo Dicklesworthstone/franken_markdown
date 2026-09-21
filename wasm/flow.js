@@ -2,6 +2,7 @@ import { init, renderHtml, renderPdf } from "./franken_markdown.js";
 import { createFlowAdapter, FlowError, normalizeFlowError, validateCreation } from "./flow_session.mjs";
 
 import { withGlyphOutlines } from "./flow_outlines.mjs";
+import { withAssetBatches } from "./flow_asset_batch.mjs";
 import { withFlowExports } from "./flow_export.mjs";
 
 export { init, FlowError };
@@ -28,7 +29,7 @@ export async function createFlowSession(markdown, options = {}) {
       }
       return raw.glyphOutlinesJson(id, glyphIds);
     });
-    return withFlowExports(session, { html: renderHtml, pdf: renderPdf }, prepared.font);
+    return withFlowExports(withAssetBatches(session, () => raw), { html: renderHtml, pdf: renderPdf }, prepared.font);
   } catch (error) {
     if (raw) { try { raw.free(); } catch { /* Preserve the original creation failure. */ } }
     throw normalizeFlowError(error);

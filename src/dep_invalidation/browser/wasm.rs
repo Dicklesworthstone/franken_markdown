@@ -72,6 +72,12 @@ impl FmdFlowSession {
             generation: id(generation)?, width, height, bytes }).map_err(js_error)
     }
 
+    /// One data-only batch, one native parse/reflow, no partial publication.
+    #[wasm_bindgen(js_name = provideAssetsPacked)]
+    pub fn provide_assets_packed(&mut self, metadata: &str, payload: &[u8]) -> Result<(), JsValue> {
+        self.inner.provide_assets_packed(metadata, payload).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = reloadAssets)]
     pub fn reload_assets(&mut self, revision: &str) -> Result<(), JsValue> {
         self.inner.reload_assets(id(revision)?).map_err(js_error)

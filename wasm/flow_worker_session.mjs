@@ -33,6 +33,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     if (typeof factory !== "function") throw new FlowWorkerError("INVALID_WORKER", "workerFactory must be a function");
     let state = null;
     let supportsViewport = false;
+    let supportsAssetBatches = false;
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
@@ -42,13 +43,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         if (result !== null && (!result || typeof result.supportsViewport !== "boolean")) {
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid worker capability acknowledgment");
         }
+        if (result?.supportsAssetBatches !== undefined && typeof result.supportsAssetBatches !== "boolean") {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid asset-batch capability acknowledgment");
+        }
+        supportsAssetBatches = result?.supportsAssetBatches === true;
         supportsViewport = result?.supportsViewport === true;
       }
       if (state && (BigInt(next.token.revision) < BigInt(state.token.revision)
           || BigInt(next.token.layoutRevision) < BigInt(state.token.layoutRevision))) {
         throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "worker revisions moved backwards");
       }
-      if (["edit", "editBytes", "replaceSource", "reflow", "provideAsset", "reloadAssets"].includes(method)) {
+      if (["edit", "editBytes", "replaceSource", "reflow", "provideAsset", "provideAssets", "reloadAssets"].includes(method)) {
         const token = flowToken(result);
         if (token.revision !== next.token.revision || token.layoutRevision !== next.token.layoutRevision) {
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "mutation acknowledgment does not match worker state");
@@ -84,6 +89,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         if (method === "viewport" && !supportsViewport) {
           throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "this worker does not expose indexed viewport queries");
         }
+        if (method === "provideAssets" && !supportsAssetBatches) {
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "this worker does not expose atomic asset batches");
+        }
         const normalized = normalizeFlowRequest(method, args);
         // Capture an omitted query token before enqueueing, not when the worker
         // eventually reads it behind an edit or reflow.
@@ -112,6 +120,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     const api = {
       get disposed() { return rpc.closed; },
       get supportsViewport() { alive(); return supportsViewport; },
+      get supportsAssetBatches() { alive(); return supportsAssetBatches; },
       // These are the last ACKNOWLEDGED values. Await mutations before reading
       // their new token; no speculative source or revision is published locally.
       get token() { alive(); return { ...state.token }; },
@@ -127,6 +136,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       replaceSource(source, options, control) { return call("replaceSource", [source, options], control); },
       reflow(options, token, control) { return call("reflow", [options, token], control); },
       provideAsset(result, control) { return call("provideAsset", [result], control); },
+      provideAssets(results, control) { return call("provideAssets", [results], control); },
       reloadAssets(revision, control) { return call("reloadAssets", [revision], control); },
       snapshot(options, control) { return call("snapshot", [options], control); },
       viewport(options, control) { return call("viewport", [options], control); },
@@ -174,9 +184,12 @@ export function installFlowWorker(endpoint, createSession) {
       if (method === "create") {
         if (session) throw new FlowWorkerError("SESSION_EXISTS", "worker already owns a flow session");
         session = await createSession(...normalized);
-        value = { supportsViewport: session.supportsViewport === true };
+        value = { supportsViewport: session.supportsViewport === true, supportsAssetBatches: session.supportsAssetBatches === true };
       } else {
         if (!session) throw new FlowWorkerError("SESSION_NOT_READY", "create the flow session first");
+        if (method === "provideAssets" && session.supportsAssetBatches !== true) {
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "this native session does not support atomic asset batches");
+        }
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,
         // arbitrary property paths, eval, imports nor dispose are remotely callable.
         value = method === "getSource" ? session.source : await session[method](...normalized);

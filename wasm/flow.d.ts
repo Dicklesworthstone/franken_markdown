@@ -228,6 +228,8 @@ export interface FlowSession {
   readonly disposed: boolean;
   /** False with older native binaries; snapshot remains usable. */
   readonly supportsViewport: boolean;
+  /** False for older native packages; batching never falls back to partial writes. */
+  readonly supportsAssetBatches: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -239,6 +241,11 @@ export interface FlowSession {
   replaceSource(source: string, options: FlowEditOptions): FlowToken;
   reflow(options: FlowLayoutOptions, token: FlowTokenInput): FlowToken;
   provideAsset(result: FlowAssetResult): FlowToken;
+  /** One atomic parse/reflow and layout revision for up to 1,024 pending images.
+   * At most 8 MiB per payload and 32 MiB combined, including retained assets.
+   * Empty input is a no-op; any rejected result consumes no requests.
+   * Caller buffers are copied, never detached. Requires supportsAssetBatches. */
+  provideAssets(results: readonly FlowAssetResult[]): FlowToken;
   reloadAssets(expectedRevision: FlowIdentity): FlowToken;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot;
   viewport(options: FlowViewportOptions): FlowViewportPage;

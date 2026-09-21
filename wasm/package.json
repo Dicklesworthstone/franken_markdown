@@ -94,6 +94,8 @@
     "flow.js",
     "flow.d.ts",
     "flow_session.mjs",
+    "flow_asset_batch.mjs",
+    "ASSET_BATCHES.md",
     "flow_export.mjs",
     "EXPORT.md",
     "FLOW.md",

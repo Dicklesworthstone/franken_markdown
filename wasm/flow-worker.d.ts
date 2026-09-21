@@ -49,6 +49,8 @@ export interface WorkerFlowSession {
   readonly disposed: boolean;
   /** Negotiated at creation; false for legacy worker/native packages. */
   readonly supportsViewport: boolean;
+  /** Negotiated with the worker/native package. No partial-write fallback. */
+  readonly supportsAssetBatches: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -61,6 +63,11 @@ export interface WorkerFlowSession {
   replaceSource(source: string, options: FlowEditOptions, control?: FlowWorkerControl): Promise<FlowToken>;
   reflow(options: FlowLayoutOptions, token: FlowTokenInput, control?: FlowWorkerControl): Promise<FlowToken>;
   provideAsset(result: FlowAssetResult, control?: FlowWorkerControl): Promise<FlowToken>;
+  /** One atomic completion, up to 1,024 images and 32 MiB (8 MiB per payload).
+   * The configured worker queue limit also applies, before copying any bytes.
+   * Exact views are copied at enqueue; caller buffers are never detached.
+   * Queued abort removes the whole batch; in-flight abort loses the session. */
+  provideAssets(results: readonly FlowAssetResult[], control?: FlowWorkerControl): Promise<FlowToken>;
   reloadAssets(expectedRevision: FlowIdentity, control?: FlowWorkerControl): Promise<FlowToken>;
   snapshot(options?: FlowSnapshotOptions, control?: FlowWorkerControl): Promise<FlowSnapshot>;
   viewport(options: FlowViewportOptions, control?: FlowWorkerControl): Promise<FlowViewportPage>;

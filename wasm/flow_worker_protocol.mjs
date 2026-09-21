@@ -4,11 +4,12 @@
 import { FLOW_ASSET_LIMIT, identity, sourceText, validateCreation, layoutOptions, viewportOptions } from "./flow_session.mjs";
 import { FlowWorkerError } from "./worker_transport.mjs";
 import { outlineGlyphIds } from "./flow_outlines.mjs";
+import { normalizeAssetBatch } from "./flow_asset_batch.mjs";
 import { normalizeFlowExport } from "./flow_export.mjs";
 const fail = (code, message) => { throw new FlowWorkerError(code, message); };
 const LAYOUT_KEYS = ["viewportWidth", "bodySize", "codeSize", "lineHeight"];
 const ARITIES = Object.freeze({ create: 2, getSource: 0, edit: 4, editBytes: 4, replaceSource: 2,
-  reflow: 2, provideAsset: 1, reloadAssets: 1, snapshot: 1, viewport: 1, readingOrder: 1, pendingAssets: 1,
+  reflow: 2, provideAsset: 1, provideAssets: 1, reloadAssets: 1, snapshot: 1, viewport: 1, readingOrder: 1, pendingAssets: 1,
   hitTest: 3, selectText: 4, copySource: 3, fontBytes: 1, assetBytes: 2, glyphOutlines: 2, exportDocument: 3 });
 
 export function fields(value, allowed, name) {
@@ -97,6 +98,7 @@ export function normalizeFlowRequest(method, args) {
       return [partial, flowToken(args[1])];
     }
     case "provideAsset": return [asset(args[0])];
+    case "provideAssets": return [normalizeAssetBatch(args[0])];
     case "reloadAssets": case "fontBytes": return [identity(args[0])];
     case "glyphOutlines": return [identity(args[0]), outlineGlyphIds(args[1])];
     case "assetBytes": return args.map(value => identity(value));
@@ -126,6 +128,16 @@ export function requestWeight(args) {
   return 128 + size(args);
 }
 export function snapshotArguments(method, normalized) {
+  if (method === "provideAssets") {
+    const transfer = [];
+    const results = normalized[0].map(result => {
+      if (result.bytes === undefined) return { ...result };
+      const bytes = new Uint8Array(result.bytes);
+      transfer.push(bytes.buffer);
+      return { ...result, bytes };
+    });
+    return { args: [results], transfer };
+  }
   if (method !== "provideAsset" || normalized[0].bytes === undefined) return { args: normalized };
   // Always copy the exact view. Never detach a caller's ArrayBuffer, Node Buffer
   // pool or WASM memory, and never let later caller writes modify queued input.

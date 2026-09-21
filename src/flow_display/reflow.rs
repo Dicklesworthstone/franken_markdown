@@ -7,6 +7,7 @@
 
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
+mod gutters;
 mod styled;
 use crate::ast::Align;
 use crate::display::{
@@ -32,9 +33,9 @@ pub enum FlowTextRole {
 
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
-/// table measurement and reshaping at line boundaries. The same ceiling
-/// separately bounds retained link-target bytes in styled output. Hosts must
-/// bound their shaper's execution.
+/// table/list measurement, continuation windows and final-line reshaping.
+/// The same ceiling separately bounds retained link-target bytes in styled
+/// output. Hosts must bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowLayoutOptions {
     pub viewport_width: f32,
@@ -114,6 +115,14 @@ impl ResumableFlowDisplay {
     /// clipping text or silently splitting a ligature/combining sequence.
     /// Output is returned atomically; a failure publishes no partial display list.
     ///
+    /// Long prose uses bounded measurement windows without introducing line
+    /// breaks at window boundaries. A word or unresolved line which needs more
+    /// context than the configured window still returns a budget error.
+    ///
+    /// Lists share font-measured marker gutters across their items, including
+    /// already-prepared siblings. Nested content inherits every ancestor gutter;
+    /// ordinary bullets keep the existing minimum indentation.
+    ///
     /// Tables share one measured column grid across headers and body rows.
     /// Compact columns reach their natural width before long narrative columns
     /// consume the remaining space. Already-prepared continuation rows also
@@ -172,13 +181,15 @@ impl ResumableFlowDisplay {
             return Err(FlowLayoutError::Input(error.clone()));
         }
         let mut layout = Reflow::new(options, shape)?;
+        let pending = self.prepared.iter().flat_map(|prepared| prepared.iter().map(|item| &item.meta));
+        let gutters = layout.measure_list_gutters(&self.metadata, pending)?;
         let resolved: HashMap<_, _> = self.resolved_assets.iter()
             .filter(|result| result.generation == self.generation)
             .map(|result| (result.request_id, result)).collect();
         let mut y = 0.0;
         let mut table_edges = Vec::new();
         for (block_index, (block, meta)) in self.blocks.iter().zip(&self.metadata).enumerate() {
-            let x = f32::from(meta.list_depth) * 20.0 + f32::from(meta.quote_depth) * 16.0;
+            let x = gutters.indent(meta);
             let width = options.viewport_width - x;
             if width <= 0.0 { return Err(FlowLayoutError::InvalidOptions); }
             let span = meta.span;
@@ -203,7 +214,7 @@ impl ResumableFlowDisplay {
                 }
                 DisplayBlock::Paragraph { text } | DisplayBlock::ListItem { text, .. }
                 | DisplayBlock::Quote { text } => {
-                    layout.marker(meta, x, y)?;
+                    layout.marker(meta, x, y, gutters.width(meta))?;
                     let height = layout.inline_text(text, if styled { &meta.inline_runs } else { &[] },
                         x, y, width, options.body_size, options.line_height,
                         FlowTextRole::Body, "text", span)?;
@@ -546,7 +557,7 @@ where
         Ok(height)
     }
 
-    fn marker(&mut self, meta: &BlockMeta, x: f32, y: f32) -> Result<(), FlowLayoutError> {
+    fn marker(&mut self, meta: &BlockMeta, x: f32, y: f32, gutter: f32) -> Result<(), FlowLayoutError> {
         let Some(marker) = &meta.marker else { return Ok(()); };
         let bounds = DisplayRect::new((x - 20.0).max(0.0), y, 16.0, self.options.line_height);
         if let Some(checked) = meta.task {
@@ -554,8 +565,8 @@ where
             if checked { self.vector(bounds, VectorShapeType::CheckboxCheck, "accent", meta.span)?; }
         } else {
             let run = self.shaped(marker, self.options.body_size, FlowTextRole::Marker)?;
-            if run.total_advance > x - 4.0 {
-                return Err(FlowLayoutError::ClusterTooWide { advance: run.total_advance, available: (x - 4.0).max(0.0) });
+            if run.total_advance > gutter - 4.0 {
+                return Err(FlowLayoutError::ClusterTooWide { advance: run.total_advance, available: (gutter - 4.0).max(0.0) });
             }
             self.item(DisplayItem::Text(DisplayTextRun {
                 bounds: DisplayRect::new(x - 4.0 - run.total_advance, y, run.total_advance, self.options.line_height),

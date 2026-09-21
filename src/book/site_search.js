@@ -64,14 +64,80 @@
         while (position < query.length && !/\s/u.test(query[position])) position++;
         term = query.slice(start, position);
       }
-      term = term.toLowerCase().replace(/\s+/gu, " ").trim();
+      term = normalize(term).trim();
       if (term && !terms.includes(term)) terms.push(term);
       if (terms.length > LIMITS.terms) fail("Use at most eight search words or phrases.");
     }
     return terms;
   }
 
-  const normalize = value => value.toLowerCase().replace(/\s+/gu, " ");
+  // Folding final sigma as well makes caseless matching independent of word
+  // context: scalar/chunk lowercasing must agree with whole-query lowercasing.
+  const normalize = value => value.toLowerCase().replace(/ς/gu, "σ").replace(/\s+/gu, " ");
+  const CHUNK = 4096, WORK_SLICE = 16384;
+
+  // The bound is on SOURCE work, not normalized output: a megabyte of spaces
+  // still yields, even though it contributes only one searchable character.
+  // Offsets map every folded UTF-16 unit back to the original scalar's start.
+  function* normalizedChunks(value) {
+    let position = 0, space = false;
+    while (position < value.length) {
+      const start = position, stop = Math.min(value.length, start + CHUNK);
+      let body = "";
+      const offsets = [];
+      while (position < stop) {
+        const at = position, code = value.codePointAt(position);
+        const scalar = String.fromCodePoint(code);
+        position += scalar.length;
+        const whitespace = code <= 127
+          ? code === 32 || (code >= 9 && code <= 13) : /\s/u.test(scalar);
+        if (whitespace) {
+          if (!space) { body += " "; offsets.push(at); }
+          space = true;
+        } else {
+          space = false;
+          const folded = code <= 127
+            ? String.fromCharCode(code >= 65 && code <= 90 ? code + 32 : code)
+            : normalize(scalar);
+          body += folded;
+          for (let i = 0; i < folded.length; i++) offsets.push(at);
+        }
+      }
+      yield {body, offsets, work: position - start};
+    }
+  }
+
+  function matcher(terms) {
+    const longest = Math.max(...terms.map(term => term.length)), all = (1 << terms.length) - 1;
+    let tail = "", positions = [], head = "", length = 0, mask = 0, offset = -1;
+    return {
+      add(chunk) {
+        const window = tail + chunk.body, origins = positions.concat(chunk.offsets);
+        for (let i = 0; i < terms.length; i++) {
+          if (mask & (1 << i)) continue;
+          const at = window.indexOf(terms[i]);
+          if (at < 0) continue;
+          mask |= 1 << i;
+          const source = origins[at];
+          if (offset < 0 || source < offset) offset = source;
+        }
+        head += chunk.body.slice(0, Math.max(0, longest + 2 - head.length));
+        length += chunk.body.length;
+        // Retain enough context for a phrase split across arbitrarily many
+        // chunks (including chunks consisting entirely of collapsed spaces).
+        const keep = Math.min(longest - 1, window.length);
+        tail = keep ? window.slice(-keep) : "";
+        positions = keep ? origins.slice(-keep) : [];
+        // Once all terms occur and exact equality is impossible, later text
+        // cannot change membership, ranking, or the earliest source offset.
+        return mask === all && length > longest + 2;
+      },
+      result() {
+        return {mask, offset, prefix: head.startsWith(terms[0]),
+          exact: terms.length === 1 && length === head.length && head.trim() === terms[0]};
+      },
+    };
+  }
   const compare = (a, b) => b.score - a.score || a.row.order - b.row.order;
   function retain(best, result) {
     if (best.length === LIMITS.results && compare(result, best[best.length - 1]) >= 0) return;
@@ -90,8 +156,26 @@
     const cancelled = options.cancelled || (() => false);
     const yieldTask = options.yieldTask || (() => new Promise(resolve => setTimeout(resolve, 0)));
     if (!terms.length) return {results: [], total: 0, terms};
-    const results = [];
+    const results = [], all = (1 << terms.length) - 1;
     let total = 0, work = 0, visited = 0;
+    const scan = async value => {
+      if (cancelled()) return null;
+      const match = matcher(terms);
+      for (const chunk of normalizedChunks(value)) {
+        const done = match.add(chunk);
+        work += chunk.work;
+        if (work >= WORK_SLICE) {
+          await yieldTask();
+          work = 0; visited = 0;
+          if (cancelled()) return null;
+        }
+        if (done) break;
+      }
+      return match.result();
+    };
+    // Prepared rows are chapter-contiguous. Keep only the last title summary,
+    // not another full-sized lowercase copy or one cache entry per paragraph.
+    let lastTitle, titleMatch;
     // Group repeated matches within a section; headings outrank its body hits.
     let section = null, representative = null;
     const flush = () => {
@@ -102,19 +186,22 @@
       if (cancelled()) return null;
       const key = row.page + "#" + row.anchor;
       if (key !== section) { flush(); section = key; }
-      const body = normalize(row.text), title = normalize(row.title);
-      const matches = terms.every(term => body.includes(term) || title.includes(term));
-      if (matches) {
-        const inBody = terms.every(term => body.includes(term));
+      if (row.title !== lastTitle) {
+        titleMatch = await scan(row.title);
+        if (!titleMatch) return null;
+        lastTitle = row.title;
+      }
+      const body = row.text === lastTitle ? titleMatch : await scan(row.text);
+      if (!body || cancelled()) return null;
+      if ((body.mask | titleMatch.mask) === all) {
+        const inBody = body.mask === all;
         const score = (inBody ? 20 : 0) + (row.heading ? 10 : 0)
-          + (terms.length === 1 && body.trim() === terms[0] ? 30 : 0)
-          + (inBody && body.startsWith(terms[0]) ? 5 : 0);
-        const result = {row, score};
+          + (body.exact ? 30 : 0) + (inBody && body.prefix ? 5 : 0);
+        const result = {row, score, offset: body.offset};
         if (!representative || compare(result, representative) < 0) representative = result;
       }
-      work += row.text.length + row.title.length;
       visited++;
-      if (work >= 65536 || visited >= 128) {
+      if (visited >= 128) {
         await yieldTask();
         work = 0; visited = 0;
       }

@@ -22,6 +22,17 @@ export function createReadingControls({
   let snapshot = null, snapshotSource = null, result = empty(), cursor = -1, active = null;
   let enabled = false, disposed = false, composing = false;
   let pending = null, searched = null, settled = Promise.resolve();
+  // One physical DOM builder and one latest intent, not one abandoned tree per
+  // preview notification. Generic paint-busy states pause navigation without
+  // restarting an otherwise current build on every scroll event.
+  let renderJob = null, renderWanted = null, renderFailed = null;
+  let renderSettled = Promise.resolve(), previewReady = false;
+  const sameRender = (a, b) => a && b && a.document === b.document && a.source === b.source;
+  const cancelRender = () => {
+    renderWanted = null;
+    renderFailed = null;
+    renderJob?.controller.abort();
+  };
   const listen = (element, type, callback) => {
     const guarded = event => { if (!disposed) callback(event); };
     element.addEventListener(type, guarded);
@@ -53,6 +64,8 @@ export function createReadingControls({
   const reset = () => { cancel(); searched = null; result = empty(); cursor = -1; active = null; };
   const sourceChanged = () => {
     enabled = false;
+    previewReady = false;
+    cancelRender();
     reset();
     status.textContent = "STALE_REVISION: Source changed; search and navigation are paused until a matching preview is ready.";
     buttons();
@@ -217,7 +230,93 @@ export function createReadingControls({
       status.textContent = "Selected the enclosing original Markdown block, not an inferred inline range.";
     } catch (failure) { if (!disposed) error(failure); }
   });
+  const renderCurrent = job => {
+    if (disposed || !sameRender(job, renderWanted) || job.controller.signal.aborted)
+      throw new FlowReadingError("RENDER_SUPERSEDED", "reading presentation was replaced");
+    if (sourceEditor.value !== job.source)
+      throw new FlowReadingError("STALE_REVISION", "reading presentation does not match the editor");
+    job.document.assertCurrent();
+  };
+  const enableCurrent = () => {
+    if (!previewReady || !sameRender(renderWanted, { document: snapshot, source: snapshotSource })) return;
+    if (sourceEditor.value !== snapshotSource) { sourceChanged(); return; }
+    snapshot.assertCurrent();
+    enabled = true;
+    if (!sameKey(searched, key())) search();
+    else summary();
+  };
+  async function prepareOutline(job) {
+    const doc = root.ownerDocument, fragment = doc.createDocumentFragment();
+    const option = doc.createElement("option");
+    option.value = "";
+    option.textContent = "Choose a heading";
+    fragment.append(option);
+    let work = 0;
+    for (const heading of job.document.headings) {
+      const item = doc.createElement("option");
+      item.value = String(heading.index);
+      item.textContent = `${"  ".repeat(heading.level - 1)}H${heading.level}: ${heading.text}`;
+      fragment.append(item);
+      if (++work === 256) {
+        work = 0;
+        await outlineTurn(job.controller.signal);
+        renderCurrent(job);
+      }
+    }
+    return fragment;
+  }
+  function beginRender() {
+    if (disposed || !previewReady || renderJob || !renderWanted) return;
+    if (sameRender(renderWanted, renderFailed)) { error(renderFailed.error); return; }
+    if (renderWanted.document === snapshot && renderWanted.source === snapshotSource) {
+      enableCurrent();
+      return;
+    }
+    const job = { ...renderWanted, controller: new AbortController() };
+    renderJob = job;
+    enabled = false;
+    reset();
+    status.textContent = "Preparing selectable reading text; Canvas and source remain usable.";
+    buttons();
+    renderSettled = Promise.resolve().then(async () => {
+      renderCurrent(job);
+      if (!previewReady) { job.controller.abort(); return; }
+      // Fence unsent editor input before doing DOM work. Empty documents have
+      // no location; their source value is still checked throughout this job.
+      if (job.document.nodes.length) getLocation(0, job.document);
+      renderCurrent(job);
+      const choices = await prepareOutline(job);
+      renderCurrent(job);
+      if (typeof view.renderAsync !== "function")
+        throw new FlowReadingError("UNSUPPORTED_READER", "use a matching reader with asynchronous rendering");
+      await view.renderAsync(job.document, { signal: job.controller.signal });
+      renderCurrent(job);
+      if (view.document !== job.document)
+        throw new FlowReadingError("READING_DOM_CHANGED", "reading view did not publish the requested document");
+      // A completed tree may be retained while a scroll-only paint is busy,
+      // but navigation is enabled only for a subsequently ready preview.
+      if (previewReady && job.document.nodes.length) getLocation(0, job.document);
+      renderCurrent(job);
+      outline.replaceChildren(choices);
+      renderCurrent(job);
+      snapshot = job.document;
+      snapshotSource = job.source;
+    }).catch(failure => {
+      if (disposed || !sameRender(job, renderWanted) || job.controller.signal.aborted) return;
+      // Cache a refused build for this exact snapshot/source, rather than retry
+      // it indefinitely on every scroll or image-state notification.
+      renderFailed = { ...job, error: { code: typeof failure?.code === "string" ? failure.code : "READING_ERROR" } };
+      if (previewReady) error(renderFailed.error);
+    }).finally(() => {
+      if (renderJob === job) renderJob = null;
+      if (disposed) return;
+      try { beginRender(); }
+      catch (failure) { enabled = false; error(failure); }
+      buttons();
+    });
+  }
   const clear = () => {
+    cancelRender();
     reset();
     view.clear();
     snapshot = null;
@@ -226,16 +325,26 @@ export function createReadingControls({
   };
   buttons();
   return Object.freeze({
-    get busy() { return pending !== null; },
-    whenIdle() { return settled; },
+    get busy() { return renderJob !== null || pending !== null; },
+    async whenIdle() {
+      // A completed build may start a search or release the latest queued
+      // replacement. Drain those local stages, not Canvas, images or worker I/O.
+      for (;;) {
+        const rendering = renderSettled, searching = settled;
+        await Promise.all([rendering, searching]);
+        if (rendering === renderSettled && searching === settled) return;
+      }
+    },
     update(state) {
       if (disposed) return;
       const wasEnabled = enabled;
       enabled = false;
+      previewReady = state.status === "ready" && !state.readingPending && !!state.document && !state.readingError;
       if (state.status === "idle" || state.status === "disposed") {
         clear();
         status.textContent = "Reading navigation is not active.";
       } else if (state.status === "ready" && state.readingPending) {
+        cancelRender();
         cancel();
         status.textContent = "Collecting semantic reading text; Canvas and source remain usable.";
       } else if (state.status === "ready") {
@@ -247,39 +356,35 @@ export function createReadingControls({
         } else {
           try {
             state.document.assertCurrent();
-            if (state.document !== snapshot) {
-              reset();
-              view.render(state.document);
-              snapshot = state.document;
-              snapshotSource = sourceEditor.value;
-              const fragment = root.ownerDocument.createDocumentFragment(),
-                option = root.ownerDocument.createElement("option");
-              option.value = "";
-              option.textContent = "Choose a heading";
-              fragment.append(option);
-              for (const heading of snapshot.headings) {
-                const item = root.ownerDocument.createElement("option");
-                item.value = String(heading.index);
-                item.textContent = `${"  ".repeat(heading.level - 1)}H${heading.level}: ${heading.text}`;
-                fragment.append(item);
-              }
-              outline.replaceChildren(fragment);
-              enabled = true;
-              search();
-            } else if (sourceEditor.value !== snapshotSource) sourceChanged();
+            const wanted = { document: state.document, source: sourceEditor.value };
+            // Never relabel the displayed snapshot with a new, unsent source.
+            if (state.document === snapshot && wanted.source !== snapshotSource) sourceChanged();
             else {
-              enabled = true;
-              if (!sameKey(searched, key())) search();
-              else if (!wasEnabled) summary();
+              if (!sameRender(wanted, renderWanted)) {
+                renderJob?.controller.abort();
+                renderFailed = null;
+                renderWanted = wanted;
+                if (state.document !== snapshot) reset();
+              }
+              if (state.document === snapshot && !renderJob) {
+                enabled = true;
+                if (!sameKey(searched, key())) search();
+                else if (!wasEnabled) summary();
+              } else {
+                beginRender();
+                if (renderJob) status.textContent = "Preparing selectable reading text; Canvas and source remain usable.";
+              }
             }
           } catch (failure) {
             enabled = false;
+            cancelRender();
             cancel();
             error(failure);
           }
         }
       } else {
         cancel();
+        if (state.status !== "busy") cancelRender();
         status.textContent = "Preview changing or unavailable; navigation is paused. Previously shown text remains selectable.";
       }
       buttons();
@@ -293,5 +398,21 @@ export function createReadingControls({
       view.dispose();
       buttons();
     },
+  });
+}
+
+// Outline construction also cooperates: a large heading inventory must not
+// replace the DOM-render stall with a synchronous select-option build.
+function outlineTurn(signal) {
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      if (signal.aborted) reject(new FlowReadingError("ABORTED", "reading outline was aborted"));
+      else resolve();
+    };
+    const timer = setTimeout(finish, 0);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
   });
 }

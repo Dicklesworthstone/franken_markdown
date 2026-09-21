@@ -54,3 +54,45 @@ large exact ordinals, tasks, tables, Unicode cross-style selection, cancellation
 inside one large styled leaf, cleanup, stale generations, replacement, and
 reentrant publication. They do not execute generated WASM or certify assistive-
 technology conformance.
+
+## Live preview integration
+
+The live preview's `createReadingControls` now uses `renderAsync` automatically.
+Canvas-ready notifications return without synchronously constructing the whole
+reading surface. A heading menu is prepared in cooperative 256-heading slices,
+so a large outline does not move the same stall to another control.
+
+There is one physical render slot plus the latest requested snapshot/source.
+New ready notifications replace that intent; they never accumulate a queue of
+staged trees. A cancelled builder must finish cleanup before its replacement
+starts. Scroll-only busy/ready notifications do not repeatedly abandon a current
+build. A tree completing during a busy paint may be retained, but its navigation
+stays disabled until the matching preview is ready. Successful same-snapshot
+refreshes retain native DOM selection, search results and heading choices.
+
+While a replacement is being prepared, old text stays selectable but its links,
+headings and source navigation are paused. Source input cancels the current build
+immediately. Programmatic source changes are checked at completion, and the host's
+source/layout fence is checked before construction and before enabling a newly
+published ready document. Query/option changes during construction use the newest
+values after publication. Enter while presentation is paused does not queue a
+navigation request; Enter during an active search retains its existing bounded
+pending-direction behavior.
+
+`controls.busy` includes DOM preparation and search. `controls.whenIdle()` drains
+their current local work, including a coalesced replacement and any search started
+by publication. It does not wait for Canvas, image loading or native worker work.
+A failed build is remembered for that exact snapshot/source rather than retried
+on every ready notification. A fresh snapshot or explicit preview restart can
+recover; there is no blocking fallback for mismatched reader packages.
+
+```sh
+python wasm/tests/run_flow_reading_render_controls.py --chromium /usr/bin/chromium
+python wasm/tests/run_flow_reading_search.py --chromium /usr/bin/chromium
+```
+
+These integration checks use the production view, admission, search and controls
+with real Chromium DOM and explicit native-page fixtures. They cover coalescing,
+physical cleanup ownership, input during construction, outline work, selection
+reuse, stale layouts, disabled old links, failure recovery and remounting. They
+are not a generated-WASM or complete worker-preview build gate.

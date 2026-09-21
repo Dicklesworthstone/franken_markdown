@@ -44,6 +44,7 @@ async function fixture(roots = [node("paragraph", "Straße STRASSE")], extra = {
   f.setWhole = value => { wholeWord.checked = value; wholeWord.dispatchEvent(new Event("change")); };
   f.refresh = async () => { f.snapshot = await readFlowDocument(session); f.ready(); await f.controls.whenIdle(); };
   f.ready();
+  await f.controls.whenIdle(); // Includes cooperative DOM construction.
   cleanups.push(() => { f.controls.dispose(); shell.remove(); });
   return f;
 }

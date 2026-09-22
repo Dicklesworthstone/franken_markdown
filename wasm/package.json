@@ -82,7 +82,11 @@
       "types": "./document-worker.d.ts",
       "import": "./document_worker.mjs"
     },
-    "./document-worker/worker": "./document_worker_entry.js"
+    "./document-worker/worker": "./document_worker_entry.js",
+    "./interactive": {
+      "types": "./interactive.d.ts",
+      "import": "./interactive.js"
+    }
   },
   "files": [
     "franken_markdown.js",
@@ -170,6 +174,10 @@
     "document_worker_entry.js",
     "document-worker.d.ts",
     "DOCUMENT_WORKER.md",
-    "pdf_page.mjs"
+    "pdf_page.mjs",
+    "interactive.js",
+    "interactive.d.ts",
+    "interactive_runtime.mjs",
+    "INTERACTIVE.md"
   ]
 }

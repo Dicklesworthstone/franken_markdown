@@ -17423,10 +17423,11 @@ struct ListMarkerLayout {
 fn list_marker_layouts(
     list: &List,
     faces: &Faces,
+    size: f32,
     width_cache: &RefCell<WidthCache>,
 ) -> (Vec<ListMarkerLayout>, f32) {
     let mut layouts = Vec::with_capacity(list.items.len());
-    let mut marker_col = 8.0f32;
+    let mut marker_col = 8.0 * (size / 11.0);
     for (i, item) in list.items.iter().enumerate() {
         let text = match item.task {
             Some(true) => "[x]".to_string(),
@@ -17434,7 +17435,7 @@ fn list_marker_layouts(
             None if list.ordered => format!("{}.", list.start + i as u64),
             None => "•".to_string(),
         };
-        let width = text_width_cached(&text, 11.0, F_BODY, faces, width_cache);
+        let width = text_width_cached(&text, size, F_BODY, faces, width_cache);
         marker_col = marker_col.max(width);
         layouts.push(ListMarkerLayout { text, width });
     }
@@ -17442,9 +17443,12 @@ fn list_marker_layouts(
 }
 
 fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
-    let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, &cx.width_cache);
-    let marker_left = cx.page.left + indent + 2.0;
-    let content_indent = indent + marker_col + 11.0;
+    let size = cx.type_scale.body;
+    let scale = size / 11.0;
+    let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, size, &cx.width_cache);
+    // Labels and the hanging indent follow the same body scale as item text.
+    let marker_left = cx.page.left + indent + 2.0 * scale;
+    let content_indent = indent + marker_col + 11.0 * scale;
     let list_first_line = out.len();
 
     // Push this list onto the layout's list stack so every line laid out while
@@ -17493,10 +17497,10 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             // marker stays at the normal list size, aligned to the row's top;
             // an image's height must never become the bullet's font size.
             if let Some(line) = out.last_mut() {
-                line.size = line.size.max(11.0);
+                line.size = line.size.max(size);
                 line.segs.push(marker_seg);
                 if let Some(image) = &mut line.image {
-                    image.marker_size = Some(11.0);
+                    image.marker_size = Some(size);
                 }
             }
         } else {
@@ -17513,7 +17517,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                 marker_seg,
                 PrefixSpec {
                     content_indent,
-                    size: 11.0,
+                    size,
                     gap_after: 2.0,
                     flow: FlowSpec {
                         group,
@@ -37931,7 +37935,7 @@ mod table_wrap_tests {
             items: vec![empty_item(), empty_item(), empty_item()],
         };
 
-        let (layouts, marker_col) = list_marker_layouts(&list, &faces, &width_cache);
+        let (layouts, marker_col) = list_marker_layouts(&list, &faces, 11.0, &width_cache);
 
         let texts: Vec<&str> = layouts.iter().map(|layout| layout.text.as_str()).collect();
         assert_eq!(texts, vec!["8.", "9.", "10."]);

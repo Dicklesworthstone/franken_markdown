@@ -1,6 +1,7 @@
 import type {
   FlowAssetPage,
   FlowAssetResult,
+  FlowBatchEdit,
   FlowCreateOptions,
   FlowEditOptions,
   FlowExportFormat,
@@ -24,6 +25,7 @@ import type {
 export type {
   FlowAssetPage,
   FlowAssetResult,
+  FlowBatchEdit,
   FlowCreateOptions,
   FlowEditOptions,
   FlowExportDiagnostic,
@@ -87,6 +89,8 @@ export interface WorkerFlowSession {
   readonly supportsViewport: boolean;
   /** Negotiated with the worker/native package. No partial-write fallback. */
   readonly supportsAssetBatches: boolean;
+  /** True only when both worker and native package expose atomic source edits. */
+  readonly supportsEditBatches: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -105,6 +109,16 @@ export interface WorkerFlowSession {
     startByte: number,
     endByte: number,
     replacement: string,
+    options: FlowEditOptions,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
+  /** One transaction in original-source UTF-16 coordinates, not sequential edits.
+   * Up to 4,096 operations and 4 MiB combined UTF-8 replacements. Caller records
+   * are snapshotted at enqueue and charged to the worker queue. No partial-write
+   * fallback. Queued cancellation removes the batch; in-flight cancellation
+   * loses the session. Empty/identity batches retain the native revision. */
+  editMany(
+    edits: readonly FlowBatchEdit[],
     options: FlowEditOptions,
     control?: FlowWorkerControl,
   ): Promise<FlowToken>;

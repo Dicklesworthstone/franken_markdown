@@ -68,6 +68,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     let supportsViewportDeltas = false;
     let supportsViewport = false;
     let supportsAssetBatches = false;
+    let supportsEditBatches = false;
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
@@ -109,6 +110,13 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         ) {
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid viewport-delta capability");
         }
+        if (
+          result?.supportsEditBatches !== undefined &&
+          typeof result.supportsEditBatches !== "boolean"
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid edit-batch capability");
+        }
+        supportsEditBatches = result?.supportsEditBatches === true;
         supportsViewportDeltas = result?.supportsViewportDeltas === true;
         supportsSnapshotDeltas = result?.supportsSnapshotDeltas === true;
         supportsAssetBatches = result?.supportsAssetBatches === true;
@@ -125,6 +133,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         [
           "edit",
           "editBytes",
+          "editMany",
           "replaceSource",
           "reflow",
           "provideAsset",
@@ -206,6 +215,12 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
             "this worker does not expose atomic asset batches",
           );
         }
+        if (method === "editMany" && !supportsEditBatches) {
+          throw new FlowWorkerError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "this worker does not expose atomic source edit batches",
+          );
+        }
         const normalized = normalizeFlowRequest(method, args);
         // Capture an omitted query token before enqueueing, not when the worker
         // eventually reads it behind an edit or reflow.
@@ -267,6 +282,10 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         alive();
         return supportsAssetBatches;
       },
+      get supportsEditBatches() {
+        alive();
+        return supportsEditBatches;
+      },
       // These are the last ACKNOWLEDGED values. Await mutations before reading
       // their new token; no speculative source or revision is published locally.
       get token() {
@@ -302,6 +321,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       },
       editBytes(start, end, replacement, options, control) {
         return call("editBytes", [start, end, replacement, options], control);
+      },
+      editMany(edits, options, control) {
+        return call("editMany", [edits, options], control);
       },
       replaceSource(source, options, control) {
         return call("replaceSource", [source, options], control);
@@ -412,6 +434,7 @@ export function installFlowWorker(endpoint, createSession) {
         value = {
           supportsViewport: session.supportsViewport === true,
           supportsAssetBatches: session.supportsAssetBatches === true,
+          supportsEditBatches: session.supportsEditBatches === true && typeof session.editMany === "function",
           supportsSnapshotDeltas: true,
           supportsViewportDeltas: session.supportsViewport === true,
         };
@@ -422,6 +445,14 @@ export function installFlowWorker(endpoint, createSession) {
           throw new FlowWorkerError(
             "UNSUPPORTED_WASM_PACKAGE",
             "this native session does not support atomic asset batches",
+          );
+        }
+        if (method === "editMany" && (
+          session.supportsEditBatches !== true || typeof session.editMany !== "function"
+        )) {
+          throw new FlowWorkerError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "this native session does not support atomic source edit batches",
           );
         }
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,

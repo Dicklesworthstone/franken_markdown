@@ -9,6 +9,7 @@ import {
   FLOW_ASSET_LIMIT,
   identity,
   layoutOptions,
+  normalizeFlowEdits,
   sourceText,
   validateCreation,
   viewportOptions,
@@ -24,6 +25,7 @@ const ARITIES = Object.freeze({
   getSource: 0,
   edit: 4,
   editBytes: 4,
+  editMany: 2,
   replaceSource: 2,
   reflow: 2,
   provideAsset: 1,
@@ -145,6 +147,10 @@ export function normalizeFlowRequest(method, args) {
     case "editBytes":
       range(args[0], args[1]);
       return [args[0], args[1], sourceText(args[2], "replacement"), editOptions(args[3])];
+    case "editMany": {
+      const options = editOptions(args[1]);
+      return [normalizeFlowEdits(args[0]), options];
+    }
     case "replaceSource":
       return [sourceText(args[0]), editOptions(args[1])];
     case "reflow": {

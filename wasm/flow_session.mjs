@@ -86,7 +86,7 @@ function boolean(value, name) {
 }
 // Reject malformed UTF-16 before wasm-bindgen's UTF-8 encoder could silently
 // replace unpaired surrogates. Count UTF-8 bytes without allocating another copy.
-export function sourceText(value, name = "source") {
+function sourceByteLength(value, name) {
   if (typeof value !== "string") fail("INVALID_ARGUMENT", `${name} must be a string`);
   if (value.length > FLOW_SOURCE_LIMIT)
     fail("BUDGET_EXCEEDED", `${name} exceeds the 4 MiB source limit`);
@@ -105,6 +105,10 @@ export function sourceText(value, name = "source") {
     if (bytes > FLOW_SOURCE_LIMIT)
       fail("BUDGET_EXCEEDED", `${name} exceeds the 4 MiB source limit`);
   }
+  return bytes;
+}
+export function sourceText(value, name = "source") {
+  sourceByteLength(value, name);
   return value;
 }
 export function layoutOptions(value = {}, defaults = DEFAULT_LAYOUT) {
@@ -130,31 +134,40 @@ function textRange(start, end) {
   integer(end, "end");
   if (start > end) fail("INVALID_SELECTION", "selection start exceeds end");
 }
-// Preserve caller order. Native code validates overlap and source boundaries
-// against the captured revision; never degrade an atomic batch into many edits.
-function packEdits(value) {
+// Shared admission for direct calls and BOTH sides of the worker protocol.
+// Return owned, data-only records so queued work cannot observe later caller
+// mutation or reread getters. Native code remains authoritative for source
+// boundaries, overlapping ranges and the final document-size limit.
+export function normalizeFlowEdits(value) {
   if (!Array.isArray(value)) fail("INVALID_ARGUMENT", "edits must be an array");
   const count = value.length;
   if (count > FLOW_EDIT_LIMIT)
     fail("BUDGET_EXCEEDED", `edit batch exceeds ${FLOW_EDIT_LIMIT} operations`);
-  const ranges = new Uint32Array(count * 2);
-  const lengths = new Uint32Array(count);
-  const replacements = new Array(count);
-  const encoder = new TextEncoder();
+  const edits = [];
   let totalBytes = 0;
   for (let i = 0; i < count; i++) {
     const { start, end, replacement } = record(
       value[i], ["start", "end", "replacement"], `edit ${i}`,
     );
     textRange(start, end);
-    sourceText(replacement, `edit ${i} replacement`);
-    const length = encoder.encode(replacement).length;
-    totalBytes += length;
+    totalBytes += sourceByteLength(replacement, `edit ${i} replacement`);
     if (totalBytes > FLOW_SOURCE_LIMIT)
       fail("BUDGET_EXCEEDED", "combined edit replacements exceed the 4 MiB source limit");
+    edits.push({ start, end, replacement });
+  }
+  return edits;
+}
+
+function packEdits(value) {
+  const edits = normalizeFlowEdits(value);
+  const ranges = new Uint32Array(edits.length * 2);
+  const lengths = new Uint32Array(edits.length);
+  const replacements = new Array(edits.length);
+  for (let i = 0; i < edits.length; i++) {
+    const { start, end, replacement } = edits[i];
     ranges[i * 2] = start;
     ranges[i * 2 + 1] = end;
-    lengths[i] = length;
+    lengths[i] = sourceByteLength(replacement, "replacement");
     replacements[i] = replacement;
   }
   return { ranges, lengths, replacements: replacements.join("") };

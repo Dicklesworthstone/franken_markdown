@@ -1,3 +1,4 @@
+import * as epubBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
   renderHtmlConfiguredAdvanced,
@@ -140,17 +141,100 @@ export async function renderSvg(markdown, options = {}) {
 }
 
 export async function renderEpub(markdown, options = {}) {
+  // Capture source, settings and exact asset views before the initialization
+  // await. Later host edits cannot silently change the publication being built.
+  const prepared = epubArguments(markdown, options);
   await init();
-  return normalizeResult(
-    renderEpubConfigured(
-      String(markdown),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      verbatimOption(options.title),
-      stringOption(options.lang),
-      fontScaleOption(options.fontScale ?? options.typeSize),
-    ),
-  );
+  if (typeof epubBindings.renderEpubConfiguredAdvanced === "function") {
+    return normalizeResult(epubBindings.renderEpubConfiguredAdvanced(...prepared.args));
+  }
+  if (prepared.requiresAdvanced) {
+    const error = new Error("EPUB assets, CSS and navigation require a WASM package rebuilt from matching source");
+    error.code = "UNSUPPORTED_WASM_PACKAGE";
+    throw error;
+  }
+  // Older generated packages remain usable for their original narrow surface.
+  return normalizeResult(renderEpubConfigured(...prepared.args.slice(0, 6)));
+}
+
+function epubArguments(markdown, options) {
+  const {
+    font, darkMode, title, lang, fontScale, typeSize, customCss,
+    toc = false, tocDepth, pdfImages, fontAssets,
+  } = options;
+  const source = String(markdown);
+  const base = [source, stringOption(font), darkModeOption(darkMode),
+    verbatimOption(title), stringOption(lang), fontScaleOption(fontScale ?? typeSize)];
+  const css = customCss == null ? undefined : String(customCss);
+  epubTextBytes(source, 32 * 1024 * 1024, "source");
+  epubTextBytes(css ?? "", 4 * 1024 * 1024, "stylesheet");
+  if (typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
+  const depth = integerOption(tocDepth, "tocDepth");
+  if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
+  // Count before the shared normalizers allocate arrays or inspect entries.
+  for (const [input, maximum, label] of [[pdfImages, 4096, "pdfImages"], [fontAssets, 5, "fontAssets"]]) {
+    if (input != null && (!Array.isArray(input) || input.length > maximum)) {
+      throw new RangeError(`${label} must be an array with at most ${maximum} entries`);
+    }
+  }
+  const images = pdfImagesOption(pdfImages);
+  const fonts = fontAssetsOption(fontAssets);
+  const destinations = new Set();
+  let imageBytes = 0, destinationBytes = 0, fontBytes = 0;
+  for (const image of images) {
+    destinationBytes += epubTextBytes(image.destination, 8192, "image destination");
+    if (destinationBytes > 65536) throw new RangeError("EPUB image destinations exceed 64 KiB");
+    if (destinations.has(image.destination)) throw new TypeError("EPUB image destinations must be unique");
+    destinations.add(image.destination);
+    imageBytes += epubAssetLength(image.bytes);
+    if (imageBytes > 128 * 1024 * 1024) throw new RangeError("EPUB images exceed 128 MiB");
+  }
+  for (const asset of fonts) {
+    fontBytes += epubAssetLength(asset.bytes);
+    if (fontBytes > 128 * 1024 * 1024) throw new RangeError("EPUB fonts exceed 128 MiB");
+  }
+  // All counts, view bounds and totals passed. Copy payloads only now.
+  const flat = new Uint8Array(imageBytes);
+  const lengths = new Uint32Array(images.length);
+  let offset = 0;
+  for (let index = 0; index < images.length; index++) {
+    const bytes = images[index].bytes;
+    flat.set(bytes, offset);
+    lengths[index] = bytes.byteLength;
+    offset += bytes.byteLength;
+  }
+  const ownedFonts = fonts.map((asset) => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
+  return {
+    requiresAdvanced: images.length > 0 || fonts.length > 0 || css !== undefined || toc || depth !== undefined,
+    args: [...base, css, toc, depth, images.map((image) => image.destination), flat, lengths,
+      fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
+      fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
+      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts)],
+  };
+}
+
+function epubAssetLength(bytes) {
+  if (Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]") {
+    throw new TypeError("EPUB asset buffers must not use shared memory");
+  }
+  // Also detects detached zero-length views rather than accepting missing data.
+  new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength === 0 || bytes.byteLength > 32 * 1024 * 1024) {
+    throw new RangeError("EPUB assets must contain 1 byte through 32 MiB");
+  }
+  return bytes.byteLength;
+}
+
+function epubTextBytes(text, maximum, label) {
+  if (text.length > maximum) throw new RangeError(`EPUB ${label} exceeds its byte limit`);
+  let bytes = 0;
+  for (const character of text) {
+    const cp = character.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError(`EPUB ${label} contains an unpaired surrogate`);
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (bytes > maximum) throw new RangeError(`EPUB ${label} exceeds its byte limit`);
+  }
+  return bytes;
 }
 
 export async function renderInteractiveHtml(markdown, options = {}) {

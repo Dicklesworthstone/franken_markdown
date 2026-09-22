@@ -132,9 +132,10 @@ fn browser_package_sources_export_agent_friendly_api() {
 }
 
 #[test]
-fn browser_demo_sources_use_public_package_api() {
+fn browser_demo_sources_use_public_worker_package_api() {
     let html = fs::read_to_string("wasm/demo/index.html").unwrap();
     let js = fs::read_to_string("wasm/demo/demo.js").unwrap();
+    let package = fs::read_to_string("wasm/package.json").unwrap();
 
     assert!(html.contains("id=\"markdown\""));
     assert!(html.contains("id=\"preview\""));
@@ -146,18 +147,21 @@ fn browser_demo_sources_use_public_package_api() {
     assert!(html.contains("id=\"line-numbers\""));
     assert!(html.contains("script type=\"module\" src=\"./demo.js\""));
 
-    assert!(js.contains("import { createRenderer } from \"../franken_markdown.js\""));
-    assert!(js.contains("function requiredElement(selector)"));
+    assert!(js.contains("import { createWorkerRenderer } from \"../document_worker.mjs\""));
+    assert!(js.contains("factory = createWorkerRenderer"));
+    assert!(package.contains("\"./document-worker\""));
+    assert!(package.contains("\"import\": \"./document_worker.mjs\""));
+    assert!(package.contains("\"./document-worker/worker\": \"./document_worker_entry.js\""));
     assert!(js.contains("franken_markdown demo is missing required element"));
-    assert!(js.contains("markdown: requiredElement(\"#markdown\")"));
-    assert!(js.contains("renderer.renderHtml(markdown, options)"));
-    assert!(js.contains("renderer.renderPdf(markdown, renderOptions())"));
-    assert!(js.contains("darkMode: els.darkMode.value"));
+    assert!(js.contains("markdown: \"#markdown\""));
+    assert!(js.contains("clients[kind].render("));
+    assert!(js.contains("job.abort.signal"));
+    assert!(js.contains("darkMode:"));
     assert!(js.contains("customCss"));
     assert!(js.contains("allowRawHtml"));
     assert!(js.contains("codeLineNumbers"));
     assert!(js.contains("URL.createObjectURL(output.blob())"));
-    assert!(js.contains("output.filename(filenameBase())"));
+    assert!(js.contains("output.filename("));
     assert!(js.contains("els.preview.srcdoc = output.text()"));
     assert!(!js.contains("fetch("));
     assert!(!js.contains("XMLHttpRequest"));

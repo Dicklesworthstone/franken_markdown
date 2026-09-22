@@ -528,6 +528,16 @@ fn is_javascript_value_token(text: &str, span: &Span) -> bool {
 pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
     let Some(last) = spans.last() else { return 0; };
     let mut hold_from = last.start;
+    // Until an exponent receives a digit, the batch lexer emits its marker
+    // and optional sign separately. Retain the adjacent mantissa too: a later
+    // chunk can still turn all three spans into one number. EOF continues to
+    // use the batch classifier's existing malformed-number interpretation.
+    if let Some(number) = spans.iter().rev().take(3).find(|span| {
+        span.kind == Tok::Number
+            && matches!(&text[span.end..], "e" | "E" | "e+" | "E+" | "e-" | "E-")
+    }) {
+        hold_from = number.start;
+    }
     if text.ends_with("<!-") {
         hold_from = hold_from.min(text.len() - 3);
     } else if text.ends_with("<!") {

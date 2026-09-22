@@ -1336,8 +1336,8 @@ mod tests {
         for capacity in 3..=7 {
             for a in 1..=4 {
                 for b in 1..=4 {
-                    for limit in 1..=3 {
-                        let first = if (a + b + limit) % 2 == 0 {
+                    for limit in 1_usize..=3 {
+                        let first = if (a + b + limit as i32) % 2 == 0 {
                             BlockCandidates {
                                 variants: vec![
                                     BlockVariant {

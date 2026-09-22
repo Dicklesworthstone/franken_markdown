@@ -14,8 +14,7 @@
 
 use fmd_font::shaping::{Direction, ShapeOptions};
 use fmd_font::text_run::{
-    byte_to_utf16, utf16_to_byte, CaretAffinity, FontId, FontOrigin, OwnedTextRun, SelectionRect,
-    TextRunContext,
+    byte_to_utf16, utf16_to_byte, CaretAffinity, FontId, FontOrigin, OwnedTextRun, TextRunContext,
 };
 use fmd_font::Font;
 
@@ -211,7 +210,8 @@ fn selection_rectangles_cover_logical_ranges_and_merge() {
     assert!(rects[0].width > 0.0);
 
     // Negative control: inverted or empty selection returns empty vector
-    assert!(run.selection_rects(3..1, 0.0, 16.0).is_empty());
+    let inverted = std::ops::Range { start: 3, end: 1 };
+    assert!(run.selection_rects(inverted, 0.0, 16.0).is_empty());
     assert!(run.selection_rects(2..2, 0.0, 16.0).is_empty());
     assert!(run.selection_rects(50..60, 0.0, 16.0).is_empty());
 }

@@ -2,17 +2,22 @@
 //! stays in FlowSession. Metadata is canonical decimal fields, not JSON/code;
 //! payload lengths describe consecutive exact slices of one owned JS snapshot.
 
-use super::{
-    AssetRequestId, AssetResult, BrowserFlowError, BrowserFlowSession,
-    FlowDisplayError, FlowSessionError, MAX_BROWSER_ASSET_BYTES, parse_identity,
-};
+use super::{AssetResult, BrowserFlowError, BrowserFlowSession};
+#[cfg(any(feature = "wasm-bindgen", test))]
+use super::{AssetRequestId, FlowDisplayError, FlowSessionError, MAX_BROWSER_ASSET_BYTES, parse_identity};
+#[cfg(any(feature = "wasm-bindgen", test))]
 use std::collections::HashSet;
 
+#[cfg(any(feature = "wasm-bindgen", test))]
 const MAX_BATCH_COUNT: usize = 1024;
+#[cfg(any(feature = "wasm-bindgen", test))]
 const MAX_BATCH_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(any(feature = "wasm-bindgen", test))]
 const MAX_METADATA_BYTES: usize = 96 * 1024;
+#[cfg(any(feature = "wasm-bindgen", test))]
 const MAGIC: &str = "fmd-assets-v1\n";
 
+#[cfg(any(feature = "wasm-bindgen", test))]
 struct Descriptor {
     id: AssetRequestId,
     generation: u64,
@@ -21,10 +26,12 @@ struct Descriptor {
     bytes: Option<std::ops::Range<usize>>,
 }
 
+#[cfg(any(feature = "wasm-bindgen", test))]
 fn budget(name: &str) -> BrowserFlowError {
     FlowSessionError::Input(FlowDisplayError::BudgetExceeded(name.to_owned())).into()
 }
 
+#[cfg(any(feature = "wasm-bindgen", test))]
 fn descriptors(metadata: &str, payload_len: usize) -> Result<Vec<Descriptor>, BrowserFlowError> {
     if metadata.len() > MAX_METADATA_BYTES || payload_len > MAX_BATCH_BYTES {
         return Err(budget("asset batch transport"));
@@ -78,6 +85,7 @@ impl BrowserFlowSession {
     /// `-` means no bytes; `0` means a present empty payload. All numbers are
     /// canonical decimal integers. The JS facade admits/copies before WASM ingress;
     /// WASM's own argument conversion necessarily occurs before these checks.
+    #[cfg(any(feature = "wasm-bindgen", test))]
     pub(super) fn provide_assets_packed(&mut self, metadata: &str, payload: &[u8])
         -> Result<(), BrowserFlowError>
     {

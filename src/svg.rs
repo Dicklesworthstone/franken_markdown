@@ -25,7 +25,7 @@
 //! engine): greedy word wrap on raw `hmtx` advances (no Knuth-Plass, no
 //! kerning, no ligatures); inline links are coloured but not underlined;
 //! inline/display math renders its TeX source in the mono face; raw HTML
-//! blocks/inline HTML are skipped; footnote definitions are skipped in flow
+//! is preserved as inert vector text; footnote definitions are skipped in flow
 //! (matching the AST contract); images render their alt text.
 //!
 //! Light palette only: a standalone vector artifact cannot honour the
@@ -50,6 +50,13 @@ const SLOT_BODY: usize = 0; // + style index (regular/bold/italic/bold-italic)
 const SLOT_MONO: usize = 4;
 const SLOT_SYMBOL: usize = 5;
 const SLOT_COUNT: usize = 6;
+
+// Explicit paths also support the standalone #[path] SVG integration harness.
+#[path = "svg/text.rs"]
+mod text;
+#[cfg(test)]
+#[path = "svg/text_tests.rs"]
+mod text_tests;
 
 /// Options for the SVG poster backend.
 #[derive(Debug, Clone)]
@@ -301,6 +308,8 @@ struct Word {
     text: String,
     style: RStyle,
     w: f64,
+    /// Actual source whitespace before this run; zero across style boundaries.
+    gap: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +503,9 @@ impl Poster {
                 }
                 Inline::SoftBreak => out.push(Piece::Text(" ".to_string(), st)),
                 Inline::HardBreak => out.push(Piece::Break),
-                Inline::Html(_) => {}
+                Inline::Html(s) => {
+                    out.push(Piece::Text(s.clone(), RStyle { mono: true, ..st }));
+                }
                 Inline::FootnoteRef { id } => out.push(Piece::Text(
                     format!("[^{id}]"),
                     RStyle {
@@ -512,71 +523,6 @@ impl Poster {
                 )),
             }
         }
-    }
-
-    /// Greedy word wrap of flattened pieces to `width` at `size`.
-    fn wrap(&self, pieces: &[Piece], size: f64, width: f64) -> Vec<Vec<Word>> {
-        let mut lines: Vec<Vec<Word>> = Vec::new();
-        let mut cur: Vec<Word> = Vec::new();
-        let mut cur_w = 0.0;
-        let mut space_w = 0.0;
-        let mut flush = |cur: &mut Vec<Word>, cur_w: &mut f64| {
-            if !cur.is_empty() {
-                lines.push(std::mem::take(cur));
-            }
-            *cur_w = 0.0;
-        };
-        for piece in pieces {
-            match piece {
-                Piece::Break => flush(&mut cur, &mut cur_w),
-                Piece::Text(text, st) => {
-                    for word in text.split_whitespace() {
-                        let w = self.measure(word, *st, size);
-                        let gap = if cur.is_empty() { 0.0 } else { space_w };
-                        if !cur.is_empty() && cur_w + gap + w > width {
-                            flush(&mut cur, &mut cur_w);
-                        }
-                        if !cur.is_empty() {
-                            cur_w += space_w;
-                        }
-                        space_w = self.space_width(*st, size);
-                        cur_w += w;
-                        cur.push(Word {
-                            text: word.to_string(),
-                            style: *st,
-                            w,
-                        });
-                    }
-                }
-            }
-        }
-        flush(&mut cur, &mut cur_w);
-        lines
-    }
-
-    /// Draw one wrapped line starting at `x`, returning nothing; words are
-    /// separated by single spaces measured in the preceding word's style.
-    fn draw_words(&mut self, words: &[Word], x: f64, baseline: f64, size: f64) {
-        let mut pen = x;
-        for (i, word) in words.iter().enumerate() {
-            if i > 0 {
-                let prev = words[i - 1].style;
-                pen += self.space_width(prev, size);
-            }
-            pen = self.draw_text(pen, baseline, &word.text, word.style, size);
-        }
-    }
-
-    /// Total width of a wrapped line (for table cell alignment).
-    fn words_width(&self, words: &[Word], size: f64) -> f64 {
-        let mut total = 0.0;
-        for (i, word) in words.iter().enumerate() {
-            if i > 0 {
-                total += self.space_width(words[i - 1].style, size);
-            }
-            total += word.w;
-        }
-        total
     }
 
     // -- block painters ------------------------------------------------------
@@ -602,9 +548,9 @@ impl Poster {
                 });
                 self.y += 12.0;
             }
-            // Raw HTML has no vector representation; footnote definitions are
-            // collected by emitters that support notes (the poster does not).
-            Block::HtmlBlock(_) | Block::FootnoteDefinition { .. } => {}
+            // Never execute raw HTML, but do not silently discard its source.
+            Block::HtmlBlock(source) => self.code_panel(source, l, r),
+            Block::FootnoteDefinition { .. } => {}
             Block::DefinitionList(items) => {
                 let body_size = f64::from(self.scale.body);
                 for item in items {
@@ -716,7 +662,7 @@ impl Poster {
         let leading = size * 1.45;
         let pad = 8.0;
         let inset = 12.0;
-        let lines: Vec<&str> = code.lines().collect();
+        let lines = self.code_lines(code, size, r - l - 2.0 * inset);
         let h = lines.len() as f64 * leading + 2.0 * pad;
         self.ops.push(Op::Rect {
             x: l,
@@ -733,8 +679,7 @@ impl Poster {
         let mut ly = self.y + pad;
         for line in lines {
             let baseline = ly + size * 0.8;
-            let expanded = line.replace('\t', "    ");
-            self.draw_text(l + inset, baseline, &expanded, st, size);
+            self.draw_text(l + inset, baseline, &line, st, size);
             ly += leading;
         }
         self.y += h + f64::from(self.scale.body) * 0.7;
@@ -832,22 +777,10 @@ impl Poster {
                 },
                 &mut pieces,
             );
-            let text: String = pieces
+            let w = self.wrap(&pieces, size, f64::MAX)
                 .iter()
-                .filter_map(|p| match p {
-                    Piece::Text(t, _) => Some(t.as_str()),
-                    Piece::Break => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let w = self.measure(
-                &text,
-                RStyle {
-                    bold,
-                    ..RStyle::BODY
-                },
-                size,
-            ) + 2.0 * pad_x;
+                .map(|line| self.words_width(line, size))
+                .fold(0.0_f64, f64::max) + 2.0 * pad_x;
             natural[col] = natural[col].max(w.min(avail * 0.6));
         };
         for (c, cell) in table.head.iter().enumerate().take(ncols) {

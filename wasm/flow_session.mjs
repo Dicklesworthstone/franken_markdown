@@ -3,6 +3,7 @@
 // double to verify validation, fencing and disposal without claiming WASM proof.
 export const FLOW_SOURCE_LIMIT = 4 * 1024 * 1024;
 export const FLOW_ASSET_LIMIT = 8 * 1024 * 1024;
+export const FLOW_EDIT_LIMIT = 4096;
 const U64_MAX = 18446744073709551615n;
 const DEFAULT_LAYOUT = Object.freeze({
   viewportWidth: 800,
@@ -128,6 +129,35 @@ function textRange(start, end) {
   integer(start, "start");
   integer(end, "end");
   if (start > end) fail("INVALID_SELECTION", "selection start exceeds end");
+}
+// Preserve caller order. Native code validates overlap and source boundaries
+// against the captured revision; never degrade an atomic batch into many edits.
+function packEdits(value) {
+  if (!Array.isArray(value)) fail("INVALID_ARGUMENT", "edits must be an array");
+  const count = value.length;
+  if (count > FLOW_EDIT_LIMIT)
+    fail("BUDGET_EXCEEDED", `edit batch exceeds ${FLOW_EDIT_LIMIT} operations`);
+  const ranges = new Uint32Array(count * 2);
+  const lengths = new Uint32Array(count);
+  const replacements = new Array(count);
+  const encoder = new TextEncoder();
+  let totalBytes = 0;
+  for (let i = 0; i < count; i++) {
+    const { start, end, replacement } = record(
+      value[i], ["start", "end", "replacement"], `edit ${i}`,
+    );
+    textRange(start, end);
+    sourceText(replacement, `edit ${i} replacement`);
+    const length = encoder.encode(replacement).length;
+    totalBytes += length;
+    if (totalBytes > FLOW_SOURCE_LIMIT)
+      fail("BUDGET_EXCEEDED", "combined edit replacements exceed the 4 MiB source limit");
+    ranges[i * 2] = start;
+    ranges[i * 2 + 1] = end;
+    lengths[i] = length;
+    replacements[i] = replacement;
+  }
+  return { ranges, lengths, replacements: replacements.join("") };
 }
 function token(value) {
   if (!value || typeof value !== "object")
@@ -379,6 +409,9 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
     get supportsViewport() {
       return call((b) => typeof b.viewportJson === "function");
     },
+    get supportsEditBatches() {
+      return call((b) => typeof b.editManyUtf16Packed === "function");
+    },
     get revision() {
       return current().revision;
     },
@@ -400,6 +433,21 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
     },
     editBytes(startByte, endByte, replacement, options) {
       return edit("editBytes", startByte, endByte, replacement, options);
+    },
+    editMany(edits, options) {
+      alive();
+      const opts = editOptions(options);
+      if (opts.revision !== current().revision)
+        fail("STALE_REVISION", "document revision changed since this batch was prepared");
+      const packed = packEdits(edits);
+      call((b) => {
+        if (typeof b.editManyUtf16Packed !== "function")
+          fail("UNSUPPORTED_WASM_PACKAGE", "this native package does not expose atomic edit batches");
+        b.editManyUtf16Packed(
+          opts.revision, packed.ranges, packed.lengths, packed.replacements, opts.reuse,
+        );
+      });
+      return current();
     },
     replaceSource(source, options) {
       alive();

@@ -28,6 +28,12 @@ export interface FlowLayoutOptions {
 export interface FlowCreateOptions extends FlowLayoutOptions {
   font?: "sans" | "serif";
 }
+/** One edit in original source UTF-16 coordinates; end is exclusive. */
+export interface FlowBatchEdit {
+  readonly start: number;
+  readonly end: number;
+  readonly replacement: string;
+}
 export interface FlowEditOptions {
   expectedRevision: FlowIdentity;
   /** Explicitly attest external bytes, base URI and authorization are unchanged. Defaults false. */
@@ -292,6 +298,8 @@ export interface FlowSession {
   readonly supportsViewport: boolean;
   /** False for older native packages; batching never falls back to partial writes. */
   readonly supportsAssetBatches: boolean;
+  /** False for legacy native packages; atomic edits never fall back to partial writes. */
+  readonly supportsEditBatches: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -310,6 +318,12 @@ export interface FlowSession {
     replacement: string,
     options: FlowEditOptions,
   ): FlowToken;
+  /** Up to 4,096 unordered, non-overlapping edits against one source revision.
+   * Same-position insertions retain caller order. A changed batch publishes one
+   * source/layout revision; empty/identity input publishes none. Combined UTF-8
+   * replacement bytes and final source are bounded to 4 MiB. Requires
+   * supportsEditBatches; a failed batch leaves the prior snapshot intact. */
+  editMany(edits: readonly FlowBatchEdit[], options: FlowEditOptions): FlowToken;
   replaceSource(source: string, options: FlowEditOptions): FlowToken;
   reflow(options: FlowLayoutOptions, token: FlowTokenInput): FlowToken;
   provideAsset(result: FlowAssetResult): FlowToken;

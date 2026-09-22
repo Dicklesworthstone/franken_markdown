@@ -1,8 +1,9 @@
 // Dependency-free fallback for self-contained interactive exports. This is not
 // the Rust parser: keep its supported subset explicit and test real execution.
 // All state is document-local, including definitions, heading IDs and footnotes.
-function parseMarkdownClient(source) {
+function parseMarkdownClient(source, imageAssets) {
   'use strict';
+  if (!imageAssets) imageAssets = new Map();
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
   const MAX_DEPTH = 64;
   const escape = text => String(text).replace(/[&<>"']/g, ch => ({
@@ -19,6 +20,13 @@ function parseMarkdownClient(source) {
   const unescape = text => decode(text.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, '$1'));
   function safeUrl(raw, image) {
     const url = unescape(raw).trim();
+    if (image && imageAssets.has(url)) {
+      // An explicit binding replaces the destination, never grants permission
+      // to fetch it. Revalidate saved data before emitting an attribute.
+      const bound = imageAssets.get(url);
+      return fmdEmbeddedImageUrl(bound) ? bound : null;
+    }
+    if (image && fmdEmbeddedImageUrl(url)) return url;
     if (/[\u0000-\u0020\u007f-\u009f]/.test(url)) return null;
     const scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
     if (scheme && !(image ? /^(https?)$/i : /^(https?|mailto|tel)$/i).test(scheme[1])) return null;
@@ -354,4 +362,13 @@ function parseMarkdownClient(source) {
     footer += '<li id="' + note.id + '">' + renderedNotes[index] + backlinks + '</li>\n';
   });
   return body + footer + '</ol></section>\n';
+}
+
+// Only self-contained image payloads, never HTML, script, blob/file URLs or
+// a remotely fetched URL, may be stored in an explicit workspace binding.
+// Keep this separate from link admission: data images are not active links.
+function fmdEmbeddedImageUrl(uri) {
+  if (typeof uri !== 'string' || !/^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,/i.test(uri)) return false;
+  const data = uri.slice(uri.indexOf(',') + 1);
+  return data.length > 0 && data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && !/[\r\n]/.test(data);
 }

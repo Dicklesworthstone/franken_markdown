@@ -6,6 +6,18 @@
   editor.value = originalSource;
   // The textarea API itself normalizes CR and CRLF to LF. Keep untouched
   // source bytes (and exact undo) separate from that normalized editing view.
+  const assetData = document.querySelector('body > script#fmd-image-assets[type="application/json"]');
+  const imageAssets = new Map();
+  const assetEntries = assetData ? JSON.parse(assetData.textContent) : [];
+  if (Array.isArray(assetEntries)) {
+    for (const entry of assetEntries) {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') continue;
+      const key = entry[0].trim();
+      // First entry owns the key. The renderer validates each value as image
+      // data; a damaged binding must never silently authorize a URL fetch.
+      if (!imageAssets.has(key)) imageAssets.set(key, entry[1]);
+    }
+  }
   const originalEditorValue = editor.value;
   const currentSource = () => editor.value === originalEditorValue ? originalSource : editor.value;
   const preview = document.getElementById('fmd-content');
@@ -65,7 +77,7 @@
     debounceTimer = null;
     const source = currentSource();
     if (source !== lastRenderedSource) {
-      const html = source === originalSource ? originalRendered : parseMarkdownClient(source);
+      const html = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
       preview.innerHTML = html;
       lastRenderedSource = source;
     }

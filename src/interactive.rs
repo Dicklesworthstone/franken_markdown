@@ -1,6 +1,6 @@
 //! Interactive self-hosting single-file HTML document compiler.
 //!
-//! Generates a standalone, zero-network, self-contained HTML file containing:
+//! Generates a standalone HTML file with a self-contained editing runtime:
 //! - An interactive split-view live editor + preview.
 //! - Offline live markdown parsing & rendering.
 //! - Document intelligence stats panel (words, reading time, readability score).
@@ -10,6 +10,8 @@
 use crate::HtmlOptions;
 use crate::ast::Document;
 use crate::html::render_fragment;
+
+mod assets;
 
 #[inline(always)]
 fn escape_html_to(s: &str, out: &mut String) {
@@ -152,6 +154,9 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     out.push_str("<script type=\"application/json\" id=\"fmd-raw-source\">");
     push_source_json(markdown_src, &mut out);
     out.push_str("</script>\n");
+
+    // The same explicit image bytes must survive editing and save/reopen.
+    assets::push_manifest(opts, &mut out);
 
     // Client-side JavaScript
     out.push_str("<script>\n");

@@ -14,6 +14,7 @@ fn interactive_live_renderer_behavior() {
             "--test",
             "tests/interactive_renderer.test.mjs",
             "tests/interactive_controller.test.mjs",
+            "tests/interactive_images.test.mjs",
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();

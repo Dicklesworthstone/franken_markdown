@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 
 #[path = "watch/dependencies.rs"]
 mod dependencies;
+#[path = "watch/includes.rs"]
+mod includes;
+
+pub(crate) use includes::expand_file_includes;
 
 /// Default poll/debounce window in milliseconds (`--interval`).
 pub const DEFAULT_INTERVAL_MS: u64 = 300;

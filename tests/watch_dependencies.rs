@@ -184,6 +184,60 @@ fn linked_markdown_is_observed_but_not_recursively_crawled() {
 }
 
 #[test]
+fn nested_selected_includes_refresh_assets_without_editing_the_root() {
+    let dir = Directory::new();
+    std::fs::create_dir(dir.path("parts")).unwrap();
+    let input = dir.write("doc.md", b"# Book\n\n{{#include parts/chapter.md:shown}}\n");
+    dir.write("parts/chapter.md", b"<!-- ANCHOR: shown -->\n{{#include body.txt}}\n<!-- ANCHOR_END: shown -->\n{{#include ignored.md}}\n");
+    let body = dir.write("parts/body.txt", b"![picture](first.png)\n");
+    let mut watcher = PollWatcher::new(vec![input], Duration::ZERO, ManualClock::new());
+    assert!(watcher.dependency_failures().is_empty());
+    assert!(watcher.paths().contains(&body));
+    assert!(watcher.paths().contains(&dir.path("first.png")));
+    assert!(!watcher.paths().contains(&dir.path("parts/ignored.md")));
+    std::fs::write(&body, "![picture](second.png)\n").unwrap();
+    assert_eq!(watcher.poll(), [ChangeEvent { path: body, kind: ChangeKind::Modified }]);
+    assert!(!watcher.paths().contains(&dir.path("first.png")));
+    assert!(watcher.paths().contains(&dir.path("second.png")));
+    let image = dir.write("second.png", b"new image");
+    assert_eq!(watcher.poll(), [ChangeEvent { path: image, kind: ChangeKind::Created }]);
+}
+
+#[test]
+fn missing_and_deleted_includes_recover_and_preserve_working_asset_edges() {
+    let dir = Directory::new();
+    let input = dir.write("doc.md", b"{{#include later.md}}\n");
+    let mut watcher = PollWatcher::new(vec![input.clone()], Duration::ZERO, ManualClock::new());
+    assert!(watcher.dependency_failures().contains(&input));
+    assert!(watcher.paths().contains(&dir.path("later.md")));
+    let included = dir.write("later.md", b"![p](before.png)\n");
+    assert_eq!(watcher.poll(), [ChangeEvent { path: included.clone(), kind: ChangeKind::Created }]);
+    assert!(watcher.dependency_failures().is_empty());
+    assert!(watcher.paths().contains(&dir.path("before.png")));
+    std::fs::remove_file(&included).unwrap();
+    watcher.poll();
+    assert!(watcher.dependency_failures().contains(&input));
+    assert!(watcher.paths().contains(&dir.path("before.png")));
+    std::fs::write(&included, "![p](after.png)\n").unwrap();
+    watcher.poll();
+    assert!(watcher.dependency_failures().is_empty());
+    assert!(!watcher.paths().contains(&dir.path("before.png")));
+    assert!(watcher.paths().contains(&dir.path("after.png")));
+}
+
+#[test]
+fn literal_and_escaping_include_examples_never_become_dependencies() {
+    let dir = Directory::new();
+    let other = Directory::new();
+    let escaped = other.write("secret.md", b"private");
+    let source = format!("```md\n{{{{#include literal.md}}}}\n```\n\n    {{{{#include indented.md}}}}\n\n{{{{#include {} }}}}\n", escaped.display());
+    let input = dir.write("doc.md", source.as_bytes());
+    let watcher = PollWatcher::new(vec![input.clone()], Duration::ZERO, ManualClock::new());
+    assert!(watcher.dependency_failures().contains(&input));
+    assert_eq!(watcher.paths(), [input]);
+}
+
+#[test]
 fn invalid_utf8_and_deleted_sources_retain_the_last_graph_until_recovery() {
     let dir = Directory::new();
     let input = dir.write("doc.md", b"![p](p.png)");

@@ -3962,12 +3962,22 @@ fn parse_inlines_chars_with_refs_profiled(
                 i += 2;
             }
             '\n' => {
-                // Hard break: two+ trailing spaces or a trailing backslash before \n.
-                let hard = buf.ends_with("  ") || buf.ends_with('\\');
-                while buf.ends_with(' ') {
+                // Only source delimiters form a hard break. The decoded buffer
+                // can end in entity-produced spaces/backslashes or an escaped
+                // literal backslash; those remain content, not syntax.
+                let trailing_spaces = bytes[..i].iter().rev().take_while(|&&ch| ch == ' ').count();
+                let hard_backslash = bytes[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|&&ch| ch == '\\')
+                    .count()
+                    % 2
+                    == 1;
+                let hard = trailing_spaces >= 2 || hard_backslash;
+                for _ in 0..trailing_spaces {
                     buf.pop();
                 }
-                if buf.ends_with('\\') {
+                if hard_backslash {
                     buf.pop();
                 }
                 flush(&mut buf, &mut els);
@@ -4191,7 +4201,10 @@ fn parse_inlines_chars_with_refs_profiled(
             }
         }
     }
-    while buf.ends_with(' ') {
+    // Trim only trailing source spaces, preserving decoded character references
+    // at paragraph ends and inside nested link/strikethrough content.
+    let trailing_spaces = bytes.iter().rev().take_while(|&&ch| ch == ' ').count();
+    for _ in 0..trailing_spaces {
         buf.pop();
     }
     flush(&mut buf, &mut els);

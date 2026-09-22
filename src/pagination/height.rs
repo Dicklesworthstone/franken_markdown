@@ -78,6 +78,10 @@ pub struct BlockPolicy {
     pub keep_together: bool,
     pub keep_with_next: bool,
     pub break_before: bool,
+    /// Signed objective cost charged when pagination actually opens a new page
+    /// immediately before this block. This is independent of break_before:
+    /// callers may price optional boundaries or forced ones as needed.
+    pub break_before_cost: i64,
     pub min_before_break: usize,
     pub min_after_break: usize,
     pub before_break_penalty: Option<u64>,
@@ -90,6 +94,7 @@ impl Default for BlockPolicy {
             keep_together: false,
             keep_with_next: false,
             break_before: false,
+            break_before_cost: 0,
             min_before_break: 1,
             min_after_break: 1,
             before_break_penalty: None,
@@ -106,6 +111,7 @@ impl BlockPolicy {
             keep_together: false,
             keep_with_next: false,
             break_before: false,
+            break_before_cost: 0,
             min_before_break: 2,
             min_after_break: 2,
             before_break_penalty: None,
@@ -724,7 +730,11 @@ pub fn plan_blocks(
                 }
 
                 if occupied > 0 && !keep_previous {
-                    let state = search.close_page(state, false)?;
+                    let mut state = search.close_page(state, false)?;
+                    state.cost = state
+                        .cost
+                        .checked_add(i128::from(policy.break_before_cost))
+                        .ok_or(HeightPaginationError::CostOverflow)?;
                     search.place(
                         state,
                         block_index,
@@ -993,6 +1003,26 @@ mod tests {
     }
 
     #[test]
+    fn block_boundary_cost_is_charged_only_when_page_opens_there() {
+        let blocks = [block(&[(0, &[60])]), block(&[(0, &[60])])];
+        let policies = [
+            BlockPolicy::default(),
+            BlockPolicy {
+                break_before_cost: 777,
+                ..BlockPolicy::default()
+            },
+        ];
+        let plan = plan_blocks(&blocks, &policies, options(100)).unwrap();
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.total_demerits, 993);
+
+        let fits = [block(&[(0, &[30])]), block(&[(0, &[30])])];
+        let plan = plan_blocks(&fits, &policies, options(100)).unwrap();
+        assert_eq!(plan.page_count, 1);
+        assert_eq!(plan.total_demerits, 100);
+    }
+
+    #[test]
     fn keep_with_next_and_break_before_conflict_fail_closed() {
         let blocks = [block(&[(0, &[30])]), block(&[(0, &[30])])];
         let policies = [
@@ -1184,7 +1214,9 @@ mod tests {
                             0,
                             0,
                             pages + 1,
-                            next_cost + page_cost(opts, occupied, false),
+                            next_cost
+                                + page_cost(opts, occupied, false)
+                                + i128::from(policy.break_before_cost),
                             best,
                         );
                     }

@@ -315,6 +315,10 @@ struct Line {
 struct ImageLine {
     image: PdfImageData,
     alt: String,
+    /// Safe destination from a Markdown link enclosing this standalone image.
+    link: Option<LinkTarget>,
+    /// List-marker text shares this image's row but keeps its own font size.
+    marker_size: Option<f32>,
     width_pt: f32,
     height_pt: f32,
 }
@@ -4267,7 +4271,7 @@ fn layout_standalone_image(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let [Inline::Image { dest, alt, .. }] = inlines else {
+    let Some((dest, alt, link)) = standalone_image(inlines) else {
         return false;
     };
     let Some(image) = resolve_pdf_image(&cx.opts.image_assets, dest) else {
@@ -4310,12 +4314,34 @@ fn layout_standalone_image(
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
-            alt: alt.clone(),
+            alt: alt.to_string(),
+            link,
+            marker_size: None,
             width_pt,
             height_pt,
         }),
     });
     true
+}
+
+/// Recognize a single figure through Markdown's formatting and link wrappers.
+/// Multiple images or accompanying prose still use the inline text path. Walk
+/// wrappers iteratively so caller-built deeply nested ASTs need no recursion.
+fn standalone_image(mut inlines: &[Inline]) -> Option<(&str, &str, Option<LinkTarget>)> {
+    let mut link = None;
+    loop {
+        match inlines {
+            [Inline::Image { dest, alt, .. }] => return Some((dest, alt, link)),
+            [Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner)] => {
+                inlines = inner;
+            }
+            [Inline::Link { dest, content, .. }] => {
+                link = safe_pdf_link(dest);
+                inlines = content;
+            }
+            _ => return None,
+        }
+    }
 }
 
 fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfImageData> {
@@ -17455,35 +17481,49 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
         let (leading, rest) = item.blocks.split_at(split);
 
-        let mut toks = Vec::new();
-        for b in leading {
-            if let Block::Paragraph(inl) = b {
-                tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
-            }
-        }
-        apply_symbol_fallback(&mut toks, cx.faces);
         let group = cx.alloc_flow();
         let item_start_line = out.len();
         if let Some(top) = cx.list_stack.last_mut() {
             top.item = group;
         }
-        // Always emit the marker line (even for an empty leading run) so the
-        // bullet/number/task box shows at every nesting level.
-        layout_prefixed_inlines(
-            toks,
-            marker_seg,
-            PrefixSpec {
-                content_indent,
-                size: 11.0,
-                gap_after: 2.0,
-                flow: FlowSpec {
-                    group,
-                    kind: FlowKind::Paragraph,
+        if let [Block::Paragraph(inlines)] = leading
+            && layout_standalone_image(inlines, content_indent, out, cx)
+        {
+            // Keep the marker and leading figure on one indivisible row. The
+            // marker stays at the normal list size, aligned to the row's top;
+            // an image's height must never become the bullet's font size.
+            if let Some(line) = out.last_mut() {
+                line.size = line.size.max(11.0);
+                line.segs.push(marker_seg);
+                if let Some(image) = &mut line.image {
+                    image.marker_size = Some(11.0);
+                }
+            }
+        } else {
+            let mut toks = Vec::new();
+            for b in leading {
+                if let Block::Paragraph(inl) = b {
+                    tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
+                }
+            }
+            apply_symbol_fallback(&mut toks, cx.faces);
+            // Even an empty leading run needs its bullet/number/task marker.
+            layout_prefixed_inlines(
+                toks,
+                marker_seg,
+                PrefixSpec {
+                    content_indent,
+                    size: 11.0,
+                    gap_after: 2.0,
+                    flow: FlowSpec {
+                        group,
+                        kind: FlowKind::Paragraph,
+                    },
                 },
-            },
-            out,
-            cx,
-        );
+                out,
+                cx,
+            );
+        }
 
         // Recurse into nested lists (deeper indent via `layout_block` ->
         // `layout_list`) and render other child blocks at the content indent.
@@ -21373,13 +21413,63 @@ fn generate_page_content(
                 next_mcid += 1;
             }
         } else {
-            let first_visible_seg = first_visible_segment_index(line);
+            let marker_size = line.image.as_ref().and_then(|image| image.marker_size);
+            let first_visible_seg = if let Some(size) = marker_size {
+                // A leading list figure keeps a real, separately tagged label.
+                // Otherwise /Figure's alt text would replace the bullet or
+                // task state for assistive readers along with the image.
+                let prefix = container_prefix(line);
+                let mut path = SmallPath::from_slice(&prefix[..prefix.len().saturating_sub(1)]);
+                path.push(SElem {
+                    key: SKey::ListLabel(line.flow.group),
+                    tag: "Lbl",
+                });
+                append_marked_content_begin(&mut body, "Lbl", next_mcid);
+                let (_, marker_y) = line_text_position(line, y);
+                for seg in &line.segs {
+                    draw_seg(
+                        &mut body,
+                        &mut annots,
+                        &mut current_fill,
+                        next_mcid,
+                        seg,
+                        size,
+                        marker_y,
+                        subsets,
+                        subset_lookup,
+                        faces,
+                        shaped_cache,
+                        palette,
+                    );
+                }
+                body.push_str("EMC\n");
+                marks.push(StructMark {
+                    mcid: next_mcid,
+                    path,
+                    alt: None,
+                    bbox: None,
+                });
+                next_mcid += 1;
+                None
+            } else {
+                first_visible_segment_index(line)
+            };
             let marked = line.image.is_some() || first_visible_seg.is_some();
             let owner = next_mcid;
             if marked {
                 let leaf = leaf_elem(line);
                 append_marked_content_begin(&mut body, leaf.tag, next_mcid);
                 let mut path = container_prefix(line);
+                if line
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| image.link.is_some())
+                {
+                    path.push(SElem {
+                        key: SKey::Link(line.flow.group),
+                        tag: "Link",
+                    });
+                }
                 path.push(leaf);
                 let (alt, bbox) = if let Some(image) = &line.image {
                     let x0 = line.rule_x;
@@ -21400,6 +21490,18 @@ fn generate_page_content(
                 next_mcid += 1;
             }
             if let Some(image) = &line.image {
+                if let Some(target) = &image.link {
+                    annots.push(LinkAnnotation {
+                        rect: Rect {
+                            x0: line.rule_x,
+                            y0: y,
+                            x1: line.rule_x + image.width_pt,
+                            y1: y + image.height_pt,
+                        },
+                        target: target.clone(),
+                        owner_mcid: Some(owner),
+                    });
+                }
                 if image.image.vector.is_some() {
                     draw_svg_image(
                         &mut body,
@@ -21513,6 +21615,7 @@ enum SKey {
     BlockQuote(usize),
     List(u32),
     ListItem(u32),
+    ListLabel(u32),
     ListBody(u32),
     Paragraph(u32),
     Heading(u32),
@@ -21802,12 +21905,25 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
             if !annotation_is_resolved(annot, dest_ids) {
                 continue;
             }
-            let owner = annot.owner_mcid.and_then(|m| leaf_for_mcid.get(m).copied());
+            let owner = annot
+                .owner_mcid
+                .and_then(|m| leaf_for_mcid.get(m).copied())
+                .map(|leaf| {
+                    let parent = nodes[leaf].parent;
+                    if nodes[leaf].tag == "Figure" && nodes[parent].tag == "Link" {
+                        parent
+                    } else {
+                        leaf
+                    }
+                });
             if let Some(owner) = owner {
                 nodes[owner].kids.push(SKid::ObjR {
                     page: page_idx,
                     local,
                 });
+                if nodes[owner].page.is_none() {
+                    nodes[owner].page = Some(page_idx);
+                }
             }
             owners_this_page.push(owner);
             local += 1;
@@ -21924,8 +22040,10 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
         if line.rule {
             rules += 1;
         }
-        if line.image.is_some() {
+        if let Some(image) = &line.image {
             images += 1;
+            link_annotations += usize::from(image.link.is_some());
+            marks += usize::from(image.marker_size.is_some());
         }
         let mut visible = line.image.is_some();
         for seg in &line.segs {
@@ -22245,6 +22363,8 @@ mod font_slot_text_refs_tests {
                 smask: None,
             },
             alt: String::new(),
+            link: None,
+            marker_size: None,
             width_pt: 1.0,
             height_pt: 1.0,
         });
@@ -22698,7 +22818,9 @@ fn draw_svg_image(
                 shaped_cache,
                 page_resources.alpha_states,
             );
-            push_svg_link_annotation(annots, element, transform);
+            if image.link.is_none() {
+                push_svg_link_annotation(annots, element, transform);
+            }
             continue;
         }
         if !in_shape_group {
@@ -22712,7 +22834,11 @@ fn draw_svg_image(
             Some(text_resources),
             page_resources,
         );
-        push_svg_link_annotation(annots, element, transform);
+        // A Markdown link wraps the image as one interactive figure. Embedded
+        // SVG anchors must not create overlapping hitboxes for other targets.
+        if image.link.is_none() {
+            push_svg_link_annotation(annots, element, transform);
+        }
     }
     if in_shape_group {
         body.push_str("Q\n");
@@ -28259,6 +28385,15 @@ fn line_leading(line: &Line) -> f32 {
     line.size * 1.32
 }
 
+/// Text on an image row is the list marker, aligned to the first normal text
+/// baseline below the row's top. Image dimensions continue to drive pagination.
+fn line_text_position(line: &Line, y: f32) -> (f32, f32) {
+    match line.image.as_ref().and_then(|image| image.marker_size) {
+        Some(size) => (size, y + line_leading(line) - size * 1.32),
+        None => (line.size, y),
+    }
+}
+
 /// Place `[start, end)` onto one page. When `shrink_from` is set (45d2.4),
 /// inter-block gaps from that index onward flex toward
 /// [`flexed_gap`], matching the accounting the void-control chooser used to
@@ -28345,8 +28480,18 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
     let mut acc: BTreeMap<usize, (f32, f32, f32)> = BTreeMap::new();
     for p in placed {
         for &(id, bar_x) in &p.line.quote_bars {
-            let top_y = p.y + p.line.size * 0.85;
-            let bot_y = p.y - p.line.size * 0.20;
+            let (top_y, bot_y) = if let Some(image) = &p.line.image {
+                let mut top = p.y + image.height_pt;
+                let mut bottom = p.y;
+                if image.marker_size.is_some() {
+                    let (size, y) = line_text_position(p.line, p.y);
+                    top = top.max(y + size * 0.85);
+                    bottom = bottom.min(y - size * 0.20);
+                }
+                (top, bottom)
+            } else {
+                (p.y + p.line.size * 0.85, p.y - p.line.size * 0.20)
+            };
             acc.entry(id)
                 .and_modify(|e| e.2 = bot_y)
                 .or_insert((bar_x, top_y, bot_y));
@@ -35092,6 +35237,8 @@ mod pdf_writer_tests {
                 smask: None,
             },
             alt: String::new(),
+            link: None,
+            marker_size: None,
             width_pt: 320.5,
             height_pt: 180.25,
         };
@@ -40127,11 +40274,12 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
                 let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
                 (text, x, line_overshoot(line, &page))
             };
+            let (size, y) = line_text_position(line, p.y);
             runs.push(VerifyTextRun {
                 text,
                 x,
-                y: p.y,
-                size: line.size,
+                y,
+                size,
                 kind: flow_kind_label(line.flow.kind),
                 overshoot,
             });
